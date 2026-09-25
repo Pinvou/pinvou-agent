@@ -1185,4 +1185,36 @@ assert.equal(
   '短暂滞后的权威快照不得把已完成回合覆盖回执行中',
 );
 
+// Native code sessions own their model through their session controls; the
+// chat workspace's bridge state describes a different session. Error
+// notices must attribute the provider from the native session's own model.
+{
+  const { nativeModelServiceContext } = await import('../src/features/codex/code-native-lane.js');
+  const catalog = [
+    { id: 'chat-model', vendor: 'deepseek' },
+    { id: 'native-model', vendor: 'kimi' },
+  ];
+  const chatState = { currentSessionModelId: 'chat-model', activeModelId: 'chat-model', savedModels: catalog };
+  const chatLabel = modelErrors.providerLabelFromState(chatState, 'en');
+  const context = nativeModelServiceContext('native', 'native', 'native-model', chatState.savedModels);
+  assert.deepEqual(Object.keys(context).sort((a, b) => a.localeCompare(b)), ['currentSessionModelId', 'savedModels'],
+    'the native context must not carry the chat workspace active/effective model or provider');
+  const nativeLabel = modelErrors.providerLabelFromState(context, 'en');
+  assert.ok(nativeLabel && chatLabel && nativeLabel !== chatLabel,
+    'the native session provider label must come from its own model, not the chat model');
+  assert.equal(nativeModelServiceContext('next-native', 'previous-native', 'native-model', catalog), null,
+    'a controls snapshot owned by another session must not attribute the model');
+  assert.equal(nativeModelServiceContext('native', 'native', null, catalog), null,
+    'unloaded controls yield no model attribution');
+  assert.equal(nativeModelServiceContext(null, null, 'native-model', catalog), null);
+  const codexView = read('src', 'features', 'codex', 'CodexAcpView.jsx');
+  assert.match(codexView,
+    /nativeModelServiceContext\(activeId, nativeControlsOwner, nativeControls\.modelId, nativeSavedModels\)/);
+  assert.doesNotMatch(codexView, /modelServiceState: bs,/,
+    'native event handling must not pass the whole chat bridge state as model context');
+  assert.match(codexView,
+    /modelServiceState: sessionId === activeIdRef\.current \? eventContext\.modelServiceState : null/,
+    'background native sessions must not inherit the foreground session model context');
+}
+
 console.log('chat turn error isolation: ok');

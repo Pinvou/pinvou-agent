@@ -50,6 +50,7 @@ import {
   appendNativeSystemItem,
   createNativeLane,
   hydrateNativeLane,
+  nativeModelServiceContext,
   projectNativeLane,
   removeLocalUserMessage,
 } from './code-native-lane.js';
@@ -873,11 +874,8 @@ export function CodexAcpView({
   // error notice copy needs the current UI language and model config;
   // the latest values are threaded through a ref so closures never hold a
   // stale bridge state snapshot (same pattern as activeIdRef).
+  // Assigned below, once the native session's own model context is known.
   const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
-  nativeEventContextRef.current = {
-    language: bs && bs.settings && bs.settings.language,
-    modelServiceState: bs,
-  };
   useLayoutEffect(() => {
     // loadSession may optimistically point this ref at a just-created session before
     // the parent commits activeId. Do not overwrite that handoff from an intermediate
@@ -1010,25 +1008,23 @@ export function CodexAcpView({
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
-  // projectNativeLane only consumes bs's model-service fields
-  // (providerLabelFromState reads currentSessionModelId/activeModelId/
-  // savedModels/effectiveModelConfig/activeProvider; the language comes
-  // from settings.language). bs is a whole-state snapshot that changes
-  // reference on every streaming notify, so depending on it directly
-  // would invalidate this useMemo throughout streaming and re-project
-  // everything; the deps are narrowed to the consumed field references.
+  // Only the native session's authoritative controls identify its model.
+  // bs belongs to the chat workspace: reuse its shared model catalog, never
+  // its active/effective model or provider, which describe a different
+  // session. A stale controls owner or an unloaded model yields no context
+  // (the error text's own provider signal still applies). Deps are the
+  // consumed references only, so streaming notifies do not re-project.
   const nativeModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const nativeControlsOwner = nativeControlsSessionRef.current;
+  const nativeSavedModels = bs && bs.savedModels;
   const nativeModelServiceState = useMemo(
-    () => (bs ? {
-      currentSessionModelId: bs.currentSessionModelId,
-      activeModelId: bs.activeModelId,
-      savedModels: bs.savedModels,
-      effectiveModelConfig: bs.effectiveModelConfig,
-      activeProvider: bs.activeProvider,
-    } : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the field references providerLabelFromState actually consumes, not the whole bs snapshot
-    [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+    () => nativeModelServiceContext(activeId, nativeControlsOwner, nativeControls.modelId, nativeSavedModels),
+    [activeId, nativeControlsOwner, nativeControls.modelId, nativeSavedModels],
   );
+  nativeEventContextRef.current = {
+    language: nativeModelServiceLanguage,
+    modelServiceState: nativeModelServiceState,
+  };
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
       // Same as the main chat ChatView: the timeline error card's friendly
@@ -2492,7 +2488,14 @@ export function CodexAcpView({
       const sessionId = payload.session_id;
       if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
       const lane = getNativeLane(sessionId);
-      const changed = applyNativeChatEvent(lane, name, payload, nativeEventContextRef.current);
+      const eventContext = nativeEventContextRef.current;
+      // Background lanes must not inherit the foreground session's model or
+      // provider. Their explicit error evidence remains sufficient; the
+      // owning model context applies once that session is opened.
+      const changed = applyNativeChatEvent(lane, name, payload, {
+        language: eventContext.language,
+        modelServiceState: sessionId === activeIdRef.current ? eventContext.modelServiceState : null,
+      });
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
