@@ -1599,7 +1599,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
                 self.post_mouse_event(up, cg_button, dest, click_state)
                     .map_err(|retry| {
-                        ComputerUseError::failed(format!(
+                        // same_kind, not ::failed: a TCC revocation mid-click surfaces as
+                        // Unavailable, and re-wrapping it as `failed` would destroy exactly
+                        // the classification combine_drag_errors exists to preserve.
+                        error.same_kind(format!(
                             "click release failed twice ({error}; {retry}); \
                              the mouse button may still be pressed"
                         ))

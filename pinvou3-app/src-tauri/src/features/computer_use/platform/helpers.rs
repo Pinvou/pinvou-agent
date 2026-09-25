@@ -4,7 +4,7 @@
 //! inlined twice). No OS handles here: everything is a plain function so it
 //! stays unit-testable on every target.
 
-use super::super::types::ScrollDirection;
+use super::super::types::{ComputerUseError, ScrollDirection};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
 /// count by `WHEEL_DELTA` (120) internally, so an unclamped count overflows
@@ -14,14 +14,12 @@ use super::super::types::ScrollDirection;
 /// clamp at all — both go through this now.
 pub(crate) const MAX_SCROLL_CLICKS: u32 = 100;
 
-use super::super::types::ComputerUseError;
-
 /// Merge the interpolated-move and button-release results of `drag`. The
 /// release always runs, but `Result::and` kept only the first error: when the
 /// release failed too, callers never learned that the mouse button may still
 /// be pressed. Single-failure cases keep the ORIGINAL error kind: a release
-/// blocked by TCC/UIPI is `unavailable` — the "run elevated/regrant
-/// permission" classification upstreams rely on must survive the
+/// blocked by TCC/UIPI is `unavailable` — the kind drives the `unavailable: `
+/// vs `failed: ` prefix the model reads, so it must survive the
 /// stranded-button annotation (this was a per-platform copy that had drifted:
 /// macOS re-wrapped everything as `failed`, Linux omitted the stranded-button
 /// note in the release-only branch).
