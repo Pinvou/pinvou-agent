@@ -408,11 +408,14 @@
         // permission flow, which can block on an OS dialog.
         await refreshStatus(state.activeSessionId);
       } else {
-        // Disable wipes the backend state globally, so the pending map must
-        // go too — same phantom-dialog hazard as stop(). The latched stop goes
-        // with it: `set_enabled(false)` revokes everything, and leaving
-        // `stopped` set made the settings page tell a user who had just turned
-        // the toggle OFF to "turn it off and back on".
+        // Disable wipes the backend state globally, so the pending map must go
+        // too — same phantom-dialog hazard as stop(). The latched stop goes
+        // with it, and this mirrors the authoritative answer rather than
+        // guessing it: `computer_use_set_enabled(false)` lowers the stop flag
+        // on the backend (guard.rs `set_enabled`), so the next `refreshStatus`
+        // reports the same `stopped: false` instead of re-latching it. Leaving
+        // the flag raised was what made the settings page tell a user who had
+        // just switched the toggle OFF to "turn it off and back on".
         state.computerUse = Object.assign({}, state.computerUse, { stopped: false });
         clearAllPending();
         notify();
