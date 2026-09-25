@@ -106,11 +106,11 @@ extract_archive() {
   local archive="$1" dest="$2"
   mkdir -p "$dest"
   if [[ "$archive" == *.zip ]]; then
-    if ! command -v unzip >/dev/null 2>&1; then
-      echo "unzip is required to extract connector ZIP artifacts" >&2
-      exit 1
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -q -o "$archive" -d "$dest"
+    else
+      tar -xf "$archive" -C "$dest"
     fi
-    unzip -q -o "$archive" -d "$dest"
   else
     tar xzf "$archive" -C "$dest"
   fi

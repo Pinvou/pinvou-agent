@@ -14,14 +14,13 @@ run_required() {
   (cd "$ROOT" && "$@")
 }
 
-run_optional() {
+run_optional_skip2() {
   echo "== $* =="
   set +e
-  output="$(cd "$ROOT" && "$@" 2>&1)"
+  (cd "$ROOT" && "$@")
   rc=$?
   set -e
-  printf '%s\n' "$output"
-  if [ "$rc" -eq 2 ] && printf '%s\n' "$output" | grep -q '^SKIP:'; then
+  if [ "$rc" -eq 2 ]; then
     echo "SKIP: optional dependency missing for: $*"
     return 0
   fi
@@ -43,11 +42,11 @@ if [ ! -d "$ROOT/remote-control-relay/node_modules/ws" ]; then
 fi
 run_required npm --prefix pinvou3-app run build:ui
 run_required npm --prefix remote-control-relay test
-run_optional node pinvou3-app/tests/ui_smoke.js
-run_optional node pinvou3-app/tests/settings_ui_smoke.js
-run_optional node pinvou3-app/tests/kb_smoke.js
-run_optional node pinvou3-app/tests/tool_store_smoke.js
-run_optional npm --prefix pinvou3-app run test:webui
+run_optional_skip2 node pinvou3-app/tests/ui_smoke.js
+run_optional_skip2 node pinvou3-app/tests/settings_ui_smoke.js
+run_optional_skip2 node pinvou3-app/tests/kb_smoke.js
+run_optional_skip2 node pinvou3-app/tests/tool_store_smoke.js
+run_optional_skip2 npm --prefix pinvou3-app run test:webui
 
 if [ "${PINVOU3_AUDIT_LATEST_SESSIONS:-0}" != "0" ]; then
   run_required python3 scripts/session-replay-audit.py --latest "$PINVOU3_AUDIT_LATEST_SESSIONS"

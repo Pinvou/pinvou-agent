@@ -5,10 +5,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT/pinvou3-app"
 
-node "$REPO_ROOT/scripts/sync-version.mjs" --check
-VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
+V_TAURI="$(jq -r .version "$APP_DIR/src-tauri/tauri.conf.json")"
+V_CARGO="$(sed -n 's/^version = "\(.*\)"/\1/p' "$APP_DIR/src-tauri/Cargo.toml" | head -1)"
+V_NPM="$(jq -r .version "$APP_DIR/package.json")"
+if [ "$V_TAURI" != "$V_CARGO" ] || [ "$V_TAURI" != "$V_NPM" ]; then
+  echo "Version mismatch: tauri=$V_TAURI cargo=$V_CARGO npm=$V_NPM" >&2
+  exit 1
+fi
+
+VERSION="$V_TAURI"
 TAG="${1:-v$VERSION}"
-ARCH="$(dpkg --print-architecture)"
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 
 gh release view "$TAG" >/dev/null
 (cd "$APP_DIR" && npm ci --prefer-offline --no-audit && npm run build)
