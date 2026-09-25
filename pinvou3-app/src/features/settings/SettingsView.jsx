@@ -841,7 +841,8 @@ function hasStoredCredential(record) {
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
           {/* Always type="text" + WebkitTextSecurity masking: type=password triggers the WebView2 built-in eye button (duplicating the show/hide toggle), same as ProviderFormModal.
               type=password implied autoCorrect/autoCapitalize/spellCheck off; type=text does not, and handing a secret to the platform spellchecker (or letting autocapitalize mangle a pasted key) is not acceptable — so they are set explicitly, matching ProviderFormModal. */}
-          <input type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+          <input type="text" data-testid="model-api-key-input"
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
             value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
             style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}

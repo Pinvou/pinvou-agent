@@ -1612,8 +1612,10 @@ async function modalWidth(page, headingText) {
     return { text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
   });
   rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
-  // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
-  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] input[type="password"]');
+  // 表单值变化后上一次测试结果应清除(恢复提示文案)。按 testid 选择:API Key 输入框
+  // 统一为 type=text + WebkitTextSecurity 掩码(消除 WebView2 自带的第二个眼睛图标),
+  // 已存 Key 时占位符也是掩码,按 type 或 placeholder 选择都会落空。
+  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
   await imageTestKeyInput.type('k');
   await sleep(200);
   const imageTestCleared = await page.evaluate(() => {
