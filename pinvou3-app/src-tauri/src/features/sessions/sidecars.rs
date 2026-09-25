@@ -425,7 +425,15 @@ impl SessionStore {
         self.pinned_sessions.read().get(id).cloned()
     }
 
-    pub fn set_pinned(&self, id: &str, pinned: bool) {
+    /// Pins or unpins the session, durably.
+    ///
+    /// Returns the persist failure rather than only logging it: the caller is
+    /// a user action with an optimistic UI, and a governance write the user
+    /// can see take effect and then silently revert on the next read is
+    /// indistinguishable from a bug. Same contract as
+    /// [`SessionStore::set_session_model_id`] and `set_mode_and_persist`.
+    /// The in-memory cache is rolled back either way.
+    pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<()> {
         // One critical section for the cache switch, the durable id-level
         // RMW and the compensated rollback: without the io mutex two
         // concurrent mutators (or the retention purge) interleave their file
@@ -472,10 +480,11 @@ impl SessionStore {
                     pins.remove(id);
                 }
             }
-            // Session ids stay out of the log line: the failing sidecar
-            // file, named in the error context, identifies the write.
-            eprintln!("[sessions] persist pin state failed: {error:#}");
+            // Session ids stay out of the context: the failing sidecar
+            // file, named in the error chain, identifies the write.
+            return Err(error).context("persist pin state");
         }
+        Ok(())
     }
 
     pub fn save_pinned_sessions(&self) {
@@ -518,7 +527,9 @@ impl SessionStore {
         self.hidden_sessions.read().get(id).cloned()
     }
 
-    pub fn set_hidden(&self, id: &str, hidden: bool) {
+    /// Archives or un-archives the session, durably. Reports the persist
+    /// failure for the same reason as [`SessionStore::set_pinned`].
+    pub fn set_hidden(&self, id: &str, hidden: bool) -> Result<()> {
         // Same single-critical-section contract as `set_pinned` (its own io
         // mutex; the nested `set_pinned` below takes the pin mutex, never the
         // reverse, so the ordering is acyclic).
@@ -534,7 +545,12 @@ impl SessionStore {
             }
         }
         if hidden {
-            self.set_pinned(id, false);
+            // Best-effort: hiding is the user's stated direction and a
+            // session that stays pinned is still hidden. Its own persist
+            // failure is already reported on its own channel.
+            if let Err(error) = self.set_pinned(id, false) {
+                eprintln!("[sessions] clearing the pin while archiving failed: {error:#}");
+            }
         }
         let result = if hidden {
             apply_timestamped_id_mutation_locked(
@@ -567,8 +583,9 @@ impl SessionStore {
                     hidden_sessions.remove(id);
                 }
             }
-            eprintln!("[sessions] persist hidden state failed: {error:#}");
+            return Err(error).context("persist hidden state");
         }
+        Ok(())
     }
 
     pub fn save_hidden_sessions(&self) {

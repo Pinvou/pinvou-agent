@@ -673,7 +673,12 @@ pub async fn set_session_pinned(
     store
         .load(&id)
         .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
-    store.set_pinned(&id, pinned);
+    // Report a refused/failed persist instead of swallowing it: the list is
+    // re-read from the durable file, so a silently dropped write shows the
+    // user their pin reverting with no explanation.
+    store
+        .set_pinned(&id, pinned)
+        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -691,7 +696,9 @@ pub async fn set_session_archived(
     store
         .load(&id)
         .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
-    store.set_hidden(&id, archived);
+    store
+        .set_hidden(&id, archived)
+        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
