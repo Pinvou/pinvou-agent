@@ -3520,113 +3520,35 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   }
 
   // ── Aux chat ─────────────────────────────────────────────────────
-  // Same shape as desktop platform/tauri/bridge/aux-chat.js: aux sessions are
+  // The domain bodies live in the shared lane (cluster "auxChat" in
+  // src/shared/bridge-shared-helpers.js, round-31 M7): aux sessions are
   // filtered out of list_sessions by the backend (they never enter
-  // state.sessions), so sendMessageToSession cannot be reused; turn events are
-  // still routed into the per-session buffer by the existing chat:* listeners
-  // keyed on session_id.
-  function auxChatIsAuxSession(id) {
-    return typeof id === "string" && id.indexOf("aux-") === 0;
-  }
-  function auxChatEmptySnapshot() {
-    return { chatItems: [], busy: false, queued: [] };
-  }
-  async function auxChatEnsure(taskId) {
-    const task = String(taskId || "").trim();
-    if (!task) throw new Error(bt("targetSessionMissing"));
-    const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
-    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
-    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
-    await ensureSessionBufferLoaded(auxId);
-    return auxId;
-  }
-  async function auxChatSend(auxId, text) {
-    const sid = String(auxId || "").trim();
-    const message = String(text || "").trim();
-    if (!auxChatIsAuxSession(sid)) throw new Error(bt("targetSessionMissing"));
-    if (!message) throw new Error(bt("replyContentEmpty"));
-    await ensureSessionBufferLoaded(sid);
-    const buf = sessionStates[sid];
-    // Aux sessions never queue (queue is user-input semantics): reject
-    // outright when busy or queued messages exist; the caller retries.
-    if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
-      throw new Error(bt("turnAlreadyInProgress"));
-    }
-    // Command parity with doSendFor: Web goes through web_access_chat (the
-    // attachment-handle channel), desktop goes through chat.
-    const dispatched = IS_WEB
+  // state.sessions), so sendMessageToSession cannot be reused; turn events
+  // are still routed into the per-session buffer by the existing chat:*
+  // listeners keyed on session_id. This lane keeps only its genuine
+  // difference — the send dispatch (command parity with doSendFor: Web goes
+  // through web_access_chat, the attachment-handle channel; a desktop host
+  // of this file goes through chat). The web-only session_turn_in_progress
+  // translation wrapper is gone (M7): both lanes hit the same backend turn
+  // gate, and the aux-chat controller only console.warns send errors while
+  // the panel renders the static localized sendFailed copy — the translated
+  // text never reached the user on either lane.
+  function auxChatSendDispatch(sid, message) {
+    return IS_WEB
       ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
       : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
-    // Same lost-race translation as the main send path: the buffer check
-    // above only knows busy once turn_started lands in the buffer, so a
-    // concurrent-turn rejection can still slip through — surface the
-    // localized copy, not the raw untranslated error (round-24 minor-10).
-    return dispatched.catch(function (err) {
-      const errorText = String(err && err.message ? err.message : err || "");
-      if (errorText.includes("session_turn_in_progress")) throw new Error(bt("turnAlreadyInProgress"));
-      throw err;
-    });
   }
-  // Synchronous snapshot: when not loaded (no buffer) returns an empty
-  // structure — never throws and never triggers a load. Items are shallow-
-  // copied one by one (same shape as desktop aux-chat.js): streaming deltas
-  // mutate buffer items in place, so copying only the array would share
-  // object references and a caller comparing field by field could not
-  // detect changes.
-  function auxChatSnapshotItems(items) {
-    return (Array.isArray(items) ? items : []).map(function (item) {
-      return item && typeof item === "object" ? Object.assign({}, item) : item;
-    });
-  }
-  function auxChatSnapshot(auxId) {
-    const sid = String(auxId || "").trim();
-    if (!sid) return auxChatEmptySnapshot();
-    if (sid === state.activeSessionId) {
-      return {
-        chatItems: auxChatSnapshotItems(state.chatItems),
-        busy: !!state.busy,
-        queued: auxChatSnapshotItems(state.queued),
-      };
-    }
-    const buf = sessionStates[sid];
-    if (!buf) return auxChatEmptySnapshot();
-    // Same shape as desktop aux-chat.js: an always-open panel polling
-    // snapshot() counts as "reading" and refreshes LRU recency, otherwise
-    // after 32+ session switches the buffer is evicted by capacity and the
-    // panel wrongly shows the empty state.
-    touchSessionBuffer(sid, buf, false);
-    return {
-      chatItems: auxChatSnapshotItems(buf.chatItems),
-      busy: !!buf.busy,
-      queued: auxChatSnapshotItems(buf.queued),
-    };
-  }
-  async function auxChatDiscard(taskId) {
-    const task = String(taskId || "").trim();
-    if (!task) throw new Error(bt("targetSessionMissing"));
-    await invoke("discard_aux_session", { sessionId: task });
-    // Same shape as desktop aux-chat.js: the aux id is a pure function of the
-    // task id (aux-<taskId>, round-30 B8), so the buffer purge derives it —
-    // the old per-task id map was redundant state that was never pruned (M5).
-    // applyDeletedSession handles the backend's session:deleted as a fallback.
-    purgeSessionBuffer(`aux-${task}`);
-  }
-  // Atomic restart (M6), same shape as desktop aux-chat.js reset(): one
-  // backend command discards the old aux session (gated against its turns)
-  // and creates the fresh one. The aux id is derived (aux-<taskId>,
-  // round-30 B8), so the stale buffer purge needs no per-task id map; the
-  // backend's session:deleted also purges through applyDeletedSession as a
-  // fallback.
-  async function auxChatReset(taskId) {
-    const task = String(taskId || "").trim();
-    if (!task) throw new Error(bt("targetSessionMissing"));
-    const metadata = await invoke("reset_aux_session", { sessionId: task });
-    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
-    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
-    purgeSessionBuffer(auxId);
-    await ensureSessionBufferLoaded(auxId);
-    return auxId;
-  }
+  const auxChatShared = window.PinvouBridgeShared.create("auxChat", {
+    state, invoke, bt,
+    sessionStates: { get value() { return sessionStates; } },
+    ensureSessionBufferLoaded, purgeSessionBuffer, touchSessionBuffer, isBusyFor,
+    auxChatDispatch: auxChatSendDispatch,
+  });
+  const auxChatEnsure = auxChatShared.auxChatEnsure;
+  const auxChatSend = auxChatShared.auxChatSend;
+  const auxChatSnapshot = auxChatShared.auxChatSnapshot;
+  const auxChatDiscard = auxChatShared.auxChatDiscard;
+  const auxChatReset = auxChatShared.auxChatReset;
 
   function findFirstTurnItem(clientMessageId) {
     return state.chatItems.find(function (item) {

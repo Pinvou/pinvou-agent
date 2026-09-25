@@ -40,6 +40,10 @@ const desktopAuxChatBridge = readSource(
   path.join(bridgeRoot, 'bridge', 'aux-chat.js'),
   'utf8',
 );
+const sharedBridgeHelpers = readSource(
+  path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'),
+  'utf8',
+);
 const desktopBridgeSources = [
   readSource(path.join(bridgeRoot, 'bridge.js'), 'utf8'),
   ...fs.readdirSync(path.join(bridgeRoot, 'bridge'))
@@ -667,17 +671,24 @@ assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSes
   'WebUI domain facade must expose the same composer draft API as desktop');
 assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard",\s*reset: "auxChatReset"/,
   'WebUI domain facade must expose the same auxChat domain as desktop');
-assert.match(webBridge, /async function auxChatEnsure\(taskId\)/);
-assert.match(webBridge, /invoke\("get_or_create_aux_session", \{ sessionId: task \}\)/,
-  'WebUI aux chat must create-or-fetch the aux session by task id');
+// M7: the auxChat domain bodies live in the shared lane (cluster "auxChat");
+// both lanes consume it and keep only their send dispatch. Renaming an
+// operation in the shared cluster must turn these pins red.
+assert.match(sharedBridgeHelpers, /"auxChat": function \(deps\)/,
+  'the shared bridge base must register the auxChat cluster (M7)');
+assert.match(sharedBridgeHelpers, /async function auxChatEnsure\(taskId\)/);
+assert.match(webBridge, /PinvouBridgeShared\.create\("auxChat", \{/,
+  'the Web lane must consume the shared auxChat cluster (M7)');
+assert.match(desktopAuxChatBridge, /PinvouBridgeShared\.create\("auxChat", \{/,
+  'the desktop lane must consume the shared auxChat cluster (M7)');
+assert.match(sharedBridgeHelpers, /invoke\("get_or_create_aux_session", \{ sessionId: task \}\)/,
+  'aux chat must create-or-fetch the aux session by task id');
 assert.match(webBridge, /invoke\("web_access_chat", \{ message, attachmentHandles: \[\], sessionId: sid, restrictTools: true \}\)/,
   'WebUI aux chat sends must ride the bounded web chat command with tools restricted');
-assert.match(webBridge, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
-assert.match(webBridge, /async function auxChatReset\(taskId\)/);
-assert.match(webBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
-  'WebUI aux chat restart must ride the atomic reset command (M6)');
-assert.match(desktopAuxChatBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
-  'desktop aux chat restart must ride the atomic reset command (M6)');
+assert.match(sharedBridgeHelpers, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
+assert.match(sharedBridgeHelpers, /async function auxChatReset\(taskId\)/);
+assert.match(sharedBridgeHelpers, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
+  'aux chat restart must ride the atomic reset command (M6)');
 // M5: the aux id is a pure function of the task id (aux-<taskId>, round-30
 // B8), so both lanes derive it at the purge site — the redundant, never-pruned
 // auxIdByTask maps are gone.
@@ -685,16 +696,10 @@ assert.doesNotMatch(webBridge, /auxIdByTask/,
   'the WebUI aux id must be derived, not stored in an unbounded per-task map (M5)');
 assert.doesNotMatch(desktopAuxChatBridge, /auxIdByTask/,
   'the desktop aux id must be derived, not stored in an unbounded per-task map (M5)');
-assert.match(webBridge, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
-  'WebUI discard/reset must purge the derived aux buffer id');
-assert.match(desktopAuxChatBridge, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
-  'desktop discard/reset must purge the derived aux buffer id');
+assert.match(sharedBridgeHelpers, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
+  'aux discard must purge the derived aux buffer id');
 assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
-// Matched against the desktop aux-chat bridge source itself (round-30 B2):
-// the joined `bridge` string also contains the byte-identical literal from
-// the WEB copy (platform/web/bridge.js), which satisfied this pin even with
-// the desktop flag mutated to false.
 assert.match(desktopAuxChatBridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
   'desktop aux chat sends must restrict tools and skip attachments');
 assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,

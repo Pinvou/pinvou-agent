@@ -591,8 +591,17 @@ test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draf
 
 function loadTauriAuxChatFeature(sessionsBoot) {
   const root = { __PINVOU_SHARED_I18N__: {} };
+  // Since M7 the auxChat factory delegates the domain bodies to the shared
+  // lane; load bridge-shared-helpers.js into the same context first (the
+  // production script order in index.html).
+  const sharedSrc = fs.readFileSync(
+    path.join(bridgeDir, '..', '..', '..', 'shared', 'bridge-shared-helpers.js'),
+    'utf8',
+  );
   const src = fs.readFileSync(path.join(bridgeDir, 'aux-chat.js'), 'utf8');
-  vm.runInNewContext(src, { window: root, globalThis: root, setTimeout, clearTimeout });
+  const context = { window: root, globalThis: root, setTimeout, clearTimeout };
+  vm.runInNewContext(sharedSrc, context);
+  vm.runInNewContext(src, context);
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.auxChat;
   return factory({
     state: sessionsBoot.state,
