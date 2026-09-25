@@ -1360,6 +1360,23 @@ impl EnginePool {
         Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
+    /// Prepare an unsent composer's model (the current default model) without
+    /// borrowing any existing chat session or creating a synthetic one. It goes
+    /// through the same passthrough preparation and spawn-time finalization as
+    /// a session bridge, so served-name correction and probed endpoint facts
+    /// match what chat would use.
+    pub(crate) async fn fresh_bridge_for_draft(&self) -> Result<Pinvou3Bridge> {
+        let mut bridge = self.bridge.clone();
+        bridge.prefs = UserPrefs::load();
+        let model = bridge
+            .prefs
+            .active_model()
+            .cloned()
+            .context("No effective model is available for draft preparation")?;
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        Ok(Self::finalize_runtime_bridge(bridge, &prepared, false).await)
+    }
+
     async fn prepare_runtime_model(
         &self,
         session_id: &str,
