@@ -308,6 +308,31 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
     Ok(out)
 }
 
+/// Archive `id` wherever it appears: the legacy recent-work store and both
+/// timed stores (`current_focus`, `recent_activity`). Returns whether any
+/// item changed, so an id that is absent or already archived everywhere
+/// reports `false`.
+pub fn archive_recent_work(id: &str) -> io::Result<bool> {
+    let _guard = write_lock().lock();
+    let id = clean_id(id);
+    let now = Utc::now().to_rfc3339();
+    let mut items = load_recent_work()?;
+    let mut archived_work = false;
+    for item in &mut items {
+        if item.id == id && item.status != "archived" {
+            item.status = "archived".to_string();
+            item.updated_at = now.clone();
+            archived_work = true;
+        }
+    }
+    if archived_work {
+        write_recent_work_unlocked(&items)?;
+    }
+    let archived_focus = archive_timed_memory_unlocked("current_focus", &id)?;
+    let archived_activity = archive_timed_memory_unlocked("recent_activity", &id)?;
+    Ok(archived_work || archived_focus || archived_activity)
+}
+
 fn resolve_topic_authorities<T: Clone>(
     records: Vec<(PathBuf, T)>,
     topic: impl Fn(&T) -> &str,
@@ -1005,6 +1030,28 @@ pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
     delete_timed_memory_unlocked(kind, id)
 }
 
+/// Caller must hold [`write_lock`]: archives every matching non-archived
+/// timed-memory item in place (status → "archived").
+fn archive_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
+    let kind = normalize_timed_memory_kind(kind);
+    let id = clean_id(id);
+    let path = timed_memory_path(&kind);
+    let now = Utc::now().to_rfc3339();
+    let mut items = load_timed_memory_file(&path, &kind)?;
+    let mut changed = false;
+    for item in &mut items {
+        if item.id == id && item.status != "archived" {
+            item.status = "archived".to_string();
+            item.updated_at = now.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        write_timed_memory_file(&path, &items, &kind)?;
+    }
+    Ok(changed)
+}
+
 /// Caller must hold [`write_lock`] (see [`update_timed_memory_unlocked`]).
 pub(super) fn delete_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
     let kind = normalize_timed_memory_kind(kind);
@@ -1505,6 +1552,10 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
         block: String::new(),
         items: Vec::new(),
     })
+}
+
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences()
 }
 
 fn preference_stale_paths_unlocked(

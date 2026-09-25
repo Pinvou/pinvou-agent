@@ -11,12 +11,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
+// `SEARCH_LIMIT`, `PREVIEW_LIMIT` and `DIFF_LIMIT` are `pub` because the
+// headless CLI's `code` commands, which depend on this crate, apply the same
+// caps and reference these constants so the two surfaces cannot drift apart.
 const LIST_LIMIT: usize = 500;
-const SEARCH_LIMIT: usize = 300;
+pub const SEARCH_LIMIT: usize = 300;
 const WALK_LIMIT: usize = 20_000;
-const PREVIEW_LIMIT: usize = 512 * 1024;
+pub const PREVIEW_LIMIT: usize = 512 * 1024;
 const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
-const DIFF_LIMIT: usize = 1024 * 1024;
+pub const DIFF_LIMIT: usize = 1024 * 1024;
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
