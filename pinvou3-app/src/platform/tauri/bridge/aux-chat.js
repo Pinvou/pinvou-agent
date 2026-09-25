@@ -3,7 +3,7 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  *
  * "Aux chat" bridge: each task (taskId) gets one background aux chat session
- * (id shaped like aux-<base36 nanosecond timestamp>). Aux sessions are
+ * (id derived as aux-<taskId>). Aux sessions are
  * filtered out of list_sessions
  * by the backend (they never enter state.sessions), so the chat domain's
  * sendMessageToSession (which requires sid ∈ state.sessions) cannot be reused.
