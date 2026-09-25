@@ -21,15 +21,9 @@ for (const line of readme.split('\n')) {
   }
 }
 
-// The vendor set is intentionally a single file: only the Tailwind runtime
-// still ships as a classic script loaded before `tauri-bridge.js`. marked and
-// DOMPurify moved to npm dependencies bundled by Vite (Safari 14 baseline),
-// so this contract pins the one remaining asset explicitly instead of
-// assuming a minimum registry size.
-assert.ok(
-  registered.some((entry) => entry.file === 'tailwind.js'),
-  'expected the README registry to list the Tailwind runtime (tailwind.js)'
-);
+// Browser libraries now come from npm and are bundled or compiled by Vite.
+// Keep this generic integrity contract so a future classic vendor script
+// cannot be added without an explicit registry row and reviewed checksum.
 
 for (const entry of registered) {
   assert.ok(entry.version.trim().length > 0, `registry row for ${entry.file} is missing a version`);

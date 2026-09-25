@@ -43,7 +43,8 @@ test('desktop transform drops web-only bridge scripts and keeps everything else 
   const indexOf = (relative) => desktop.indexOf(relative);
   assert.ok(indexOf('shared/bridge-messages.js') < indexOf('platform/tauri/bridge/chat-events.js'));
   assert.ok(indexOf('shared/bridge-messages.js') < indexOf('platform/tauri/bridge.js'));
-  assert.ok(indexOf('shared/legacy-polyfills.js') < indexOf('vendor/tailwind.js'));
+  assert.ok(indexOf('shared/legacy-polyfills.js') < indexOf('platform/tauri/bridge.js'));
+  assert.equal(indexOf('vendor/tailwind.js'), -1, 'Tailwind must stay in build-time CSS');
   assert.ok(indexOf('platform/tauri/bridge.js') < desktop.length - 1);
 });
 

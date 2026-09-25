@@ -439,7 +439,7 @@
     @keyframes tsSpinner { to { transform: rotate(360deg); } }
 
     /* Voice popups (recording pill, ASR popover): enter/exit transitions.
-       Runtime Tailwind here has no tailwindcss-animate plugin, so these are
+       Tailwind here has no tailwindcss-animate plugin, so these are
        plain CSS classes (same approach as ts-modal-in). .voice-pop-out must
        stay after .voice-pop-in so an exit interrupting an enter still wins. */
     @keyframes voicePopIn { from { opacity:0; transform:translateY(8px) scale(0.94); } to { opacity:1; transform:translateY(0) scale(1); } }

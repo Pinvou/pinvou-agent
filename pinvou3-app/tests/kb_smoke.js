@@ -1201,6 +1201,7 @@ async function chooseRemoteUploadSource(page, testId) {
   await page.focus('[data-testid="remote-owner-people-tab"]');
   await page.keyboard.press('ArrowRight');
   await page.waitForSelector('#remote-owner-host-panel');
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'remote-owner-host-tab');
   const keyboardHostTab = await page.evaluate(() => ({
     selected: document.querySelector('[data-testid="remote-owner-host-tab"]')?.getAttribute('aria-selected'),
     focused: document.activeElement?.getAttribute('data-testid'),

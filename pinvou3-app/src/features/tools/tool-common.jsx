@@ -351,10 +351,11 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       const T = tc(t);
 
       return (
-        // 根节点不用 overflow-hidden class:vendor/tailwind.js 运行时把生成的
-        // .overflow-hidden 注入到 base.css 之后,会盖掉 .tool-card-output 的
-        // overflow-y:auto,导致 diff 被 200px max-height 裁剪且无法滚动(e2e 实测)。
-        // 内联样式优先级最高:显式 y 滚动 + x 裁剪(保圆角),expanded 时放开 max-height。
+        // The root avoids the overflow-hidden class: Tailwind utilities come after
+        // base.css and would override .tool-card-output's overflow-y:auto, clipping
+        // the diff at the 200px max-height with no way to scroll (verified in e2e).
+        // Inline styles win: explicit y scrolling + x clipping (keeps the rounded
+        // corners); max-height is lifted when expanded.
         <div
           data-testid="diff-view"
           className={`${outBox()} p-0`}
