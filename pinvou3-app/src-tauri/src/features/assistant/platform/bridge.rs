@@ -750,9 +750,9 @@ impl Pinvou3Bridge {
         }
         match crate::features::memory::ensure_runtime_prompt(session_id) {
             Ok(path) => out.push(InstructionSource::File(path)),
-            Err(err) => eprintln!(
-                "[pinvou3-app] memory runtime prompt unavailable for session {session_id}: {err}"
-            ),
+            Err(err) => {
+                eprintln!("[pinvou3-app] memory runtime prompt unavailable for a session: {err}")
+            }
         }
         out
     }
