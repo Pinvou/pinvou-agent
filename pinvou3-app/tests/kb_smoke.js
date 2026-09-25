@@ -124,7 +124,7 @@ function injectSource() {
           return Promise.resolve(snapshot);
         }
         case 'remote_kb_pending_joins': return Promise.resolve(window.__REMOTE_PENDING_JOINS__ || []);
-        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
+        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
         case 'shared_kb_host_lan_endpoints': return Promise.resolve(['https://192.168.1.20:3210']);
         case 'shared_kb_discover_nearby': {
           const discovered=[{
@@ -183,7 +183,7 @@ function injectSource() {
           }]);
         }
         case 'remote_kb_model_status': return Promise.resolve({ready:true,downloading:false,error:null});
-        case 'shared_kb_host_backup': return Promise.resolve({manifest:{format:1},recoveryCode:'AGE-SECRET-KEY-1MOCK'});
+        case 'shared_kb_host_backup': return Promise.resolve({recoveryCode:'AGE-SECRET-KEY-1MOCK'});
         case 'shared_kb_host_restore': return Promise.resolve({serverId:args?.serverId,name:'PINVOU Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'});
         case 'remote_kb_request_join': {
           if (window.__REMOTE_JOIN_PENDING_MODE__) {

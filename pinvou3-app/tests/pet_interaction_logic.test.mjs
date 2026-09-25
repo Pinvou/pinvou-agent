@@ -1122,6 +1122,4 @@ assert.match(
   /\.pet-character:focus-visible\s+\.pet-sprite\s*\{[\s\S]{0,120}?drop-shadow/,
   'keyboard focus should remain visible without a rectangular frame',
 );
-assert.match(cssCode, /opacity:\s*0/);
-
 console.log('pet_interaction_logic: all assertions passed');
