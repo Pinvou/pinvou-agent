@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
@@ -33,6 +33,7 @@ const RUST_TOOLCHAIN_SCRIPT_PATH = path.join(
   "ci",
   "ensure-rust-toolchain.ps1",
 );
+const RUSTC_STACK_WRAPPER_SCRIPTS_PATH = path.join(APP_ROOT, "src-tauri", "scripts");
 
 function pinnedRustToolchainChannel(configPath = RUST_TOOLCHAIN_CONFIG_PATH) {
   const config = fs.readFileSync(configPath, "utf8");
@@ -176,6 +177,67 @@ async function ensureWindowsRustToolchain(
     throw new Error(`Isolated Rust toolchain repair failed with exit code ${isolatedExitCode}`);
   }
   return { ...toolchain, source: "isolated" };
+}
+
+// Compiling codewhale-tui with the default 2 MiB compiler thread stack
+// overflows (STATUS_STACK_OVERFLOW on Windows). run-dev.sh and CI inject the
+// rustc stack wrapper themselves, but `npm run dev` / `npm run build*` started
+// directly from PowerShell or cmd bypass them. Build (or reuse) the native .exe
+// wrapper here and inject it through RUSTC_WRAPPER so only compiler child
+// processes receive RUST_MIN_STACK; the app runtime never inherits it.
+function prepareWindowsRustcStackWrapper(
+  {
+    environment = process.env,
+    platform = process.platform,
+    scriptsPath = RUSTC_STACK_WRAPPER_SCRIPTS_PATH,
+    spawnCompiler = spawnSync,
+    log = console.log,
+  } = {},
+) {
+  if (platform !== "win32") return null;
+
+  const configuredWrapper = environment.RUSTC_WRAPPER?.trim();
+  if (configuredWrapper) {
+    environment.RUSTC_WRAPPER = configuredWrapper;
+    log(`[build] Reusing configured rustc stack wrapper: ${configuredWrapper}`);
+    return { path: configuredWrapper, source: "environment" };
+  }
+
+  const sourcePath = path.join(scriptsPath, "rustc-stack-wrapper.rs");
+  const wrapperPath = path.join(scriptsPath, "rustc-stack-wrapper.exe");
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Windows rustc stack wrapper source is missing: ${sourcePath}`);
+  }
+
+  const needsCompilation = !fs.existsSync(wrapperPath)
+    || fs.statSync(sourcePath).mtimeMs > fs.statSync(wrapperPath).mtimeMs;
+  if (needsCompilation) {
+    const result = spawnCompiler(
+      "rustc",
+      ["-O", sourcePath, "-o", wrapperPath],
+      {
+        cwd: APP_ROOT,
+        env: { ...environment },
+        stdio: "inherit",
+        windowsHide: true,
+      },
+    );
+    if (result.error) {
+      throw new Error(`Failed to compile Windows rustc stack wrapper: ${result.error.message}`);
+    }
+    // Never fall back to an unwrapped compiler: it is known to overflow.
+    if (result.status !== 0 || !fs.existsSync(wrapperPath)) {
+      throw new Error(
+        `Failed to compile Windows rustc stack wrapper (exit ${result.status ?? "unknown"})`,
+      );
+    }
+  }
+
+  environment.RUSTC_WRAPPER = wrapperPath;
+  log(
+    `[build] ${needsCompilation ? "Prepared" : "Reused"} Windows rustc stack wrapper: ${wrapperPath}`,
+  );
+  return { path: wrapperPath, source: needsCompilation ? "compiled" : "cached" };
 }
 
 function tauriCommandIndex(args) {
@@ -468,6 +530,7 @@ async function main() {
     isDev,
     tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime),
   );
+  prepareWindowsRustcStackWrapper({ environment: tauriEnvironment });
   process.exitCode = await runTauri(preparedArgs, { environment: tauriEnvironment });
 }
 
@@ -498,6 +561,7 @@ module.exports = {
   prepareKnowledgeHost,
   prepareLinuxAsrRuntime,
   prepareWindowsCodexBridge,
+  prepareWindowsRustcStackWrapper,
   stageWindowsInstaller,
   stageWindowsOnnxRuntime,
   stageWindowsRuntime,
