@@ -11,14 +11,23 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-const LIST_LIMIT: usize = 500;
-const SEARCH_LIMIT: usize = 300;
-const WALK_LIMIT: usize = 20_000;
-const PREVIEW_LIMIT: usize = 512 * 1024;
-const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
-const DIFF_LIMIT: usize = 1024 * 1024;
+// `pub` for the stacked CLI families PR, which mirrors these limits and is
+// meant to reference them instead of re-declaring literals.
+//
+// Stated precisely, because the earlier wording here was not: the in-tree
+// `pinvou-cli` workspace does NOT depend on this crate — its only bridge is
+// `pinvou-product-backend`, which re-exports the headless runner plus its
+// request/report types and nothing else. A drift here therefore breaks no
+// build that exists today. These are pre-landed surface with no in-tree
+// consumer until that PR arrives.
+pub const LIST_LIMIT: usize = 500;
+pub const SEARCH_LIMIT: usize = 300;
+pub const WALK_LIMIT: usize = 20_000;
+pub const PREVIEW_LIMIT: usize = 512 * 1024;
+pub const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
+pub const DIFF_LIMIT: usize = 1024 * 1024;
 
-const IGNORED_DIRECTORIES: &[&str] = &[
+pub const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     ".hg",
     ".svn",

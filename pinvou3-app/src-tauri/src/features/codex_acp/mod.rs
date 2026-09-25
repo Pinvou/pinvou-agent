@@ -19,7 +19,7 @@ mod providers;
 pub(crate) mod reader_window;
 mod runtime;
 mod store;
-pub(crate) mod workspace;
+pub mod workspace;
 
 // 纯提取：连接池自身仍是本 facade 的 impl 块；安装、登录与 Kimi 内省的
 // 无副作用自由函数已迁入对应子模块，这里显式引入 mod.rs 实际使用的符号。
@@ -3112,7 +3112,7 @@ impl AcpPool {
     }
 
     /// Rebind eviction (review #463 eviction-tail TOCTOU + round-8 M1/M2):
-    /// like [`evict_if_idle`](Self::evict_if_idle) the recheck and the removal
+    /// like `evict_if_idle` the recheck and the removal
     /// are atomic under the sessions lock, but with the rebind predicate — a
     /// turn that starts after the command layer's post-migration recheck is
     /// observed as busy/configuring and keeps its runtime instead of being

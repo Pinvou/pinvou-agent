@@ -28,8 +28,9 @@ mod util;
 pub use self::types::{
     InjectedMemoryItem, MemoryProfile, MemoryReviewModel, MemoryReviewOutcome, MemorySuggestion,
     MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem, PendingMemoryItem, PreferenceFile,
-    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
-    TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
+    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RecentWorkPatch,
+    RuntimeMemorySnapshot, TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture,
+    WorkContextFile,
 };
 
 // ---- 路径访问器（io）----
@@ -44,19 +45,24 @@ pub use self::io::{
 
 // ---- 实体存储读写 pub 入口（io）----
 pub use self::io::{
-    PendingIgnoreOutcome, append_turn_assistant, confirm_pending_memory, delete_preference,
-    delete_timed_memory, delete_work_context, discard_turn_capture, enqueue_memory_candidate,
-    ignore_pending_memory, list_preferences_with_cleanup, load_current_focus, load_never_memory,
-    load_pending_memory, load_profile, load_recent_activity, load_recent_work, load_work_context,
+    PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, confirm_pending_memory,
+    delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences,
+    list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
+    load_profile, load_recent_activity, load_recent_work, load_work_context,
     load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user, take_turn_capture,
-    update_preference, update_profile, update_timed_memory, update_work_context,
+    record_turn_tool_complete, record_turn_tool_start, record_turn_user, save_profile,
+    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
+    upsert_recent_work,
 };
 
-// ---- 存储文本长度上限（io）----
-// CLI 的 `memory add` 校验需要与写入侧同一个上限常量，本地复制一份会在上限变化时
-// 重新引入假的 `memory_add_not_materialized` 失败。
+// ---- text normalization (util) ----
+// The CLI `memory add` verification compares against the stored text; the
+// stored form is `clean_candidate_sentence`-normalized, so the CLI needs the
+// exact function to avoid false "not materialized" failures on ordinary
+// punctuated input.
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+pub use self::util::clean_candidate_sentence;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;

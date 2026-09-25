@@ -15,8 +15,9 @@ use crate::platform::prefs::ModelPreset;
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
     enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
-    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
-    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    pending_item_from_suggestion, recent_activity_path,
+    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -3472,4 +3473,158 @@ fn organize_report_serializes_snake_case_for_frontend() {
     let serialized = serde_json::to_string(&report).unwrap();
     assert!(serialized.contains("\"started_at\""));
     assert!(!serialized.contains("startedAt"));
+}
+
+/// Round-trip contract for the restored CLI-consumed write surface: an
+/// upsert creates then updates in place, and an archive flips the status
+/// without deleting the item. These entry points had no executable proof in
+/// this crate (their consumer lives in the stacked CLI) — the shared write
+/// path is too load-bearing to ship untested.
+#[test]
+fn recent_work_upsert_and_archive_round_trip() {
+    let _home = IsolatedPinvouHome::new("recent-work-round-trip");
+
+    let created = upsert_recent_work(RecentWorkPatch {
+        id: None,
+        title: "Refactor session store".to_string(),
+        summary: Some("split sidecars from the boot map".to_string()),
+        source: Some("test".to_string()),
+        ttl_days: None,
+    })
+    .unwrap();
+    assert_eq!(created.status, "active");
+    assert_eq!(created.title, "Refactor session store");
+
+    // Same-title upsert without an id resolves to the same stable id and
+    // updates in place instead of duplicating the entry.
+    let updated = upsert_recent_work(RecentWorkPatch {
+        id: Some(created.id.clone()),
+        title: "Refactor session store v2".to_string(),
+        summary: None,
+        source: None,
+        ttl_days: Some(200), // clamped to the 90-day ceiling
+    })
+    .unwrap();
+    assert_eq!(updated.id, created.id);
+    let items = load_recent_work().unwrap();
+    assert_eq!(items.len(), 1, "an upsert must not duplicate the entry");
+    assert_eq!(items[0].title, "Refactor session store v2");
+    // The requested 200-day TTL must be clamped to the 90-day ceiling: the
+    // durable item's expiry sits within 90 days of now, not 200.
+    let expires =
+        chrono::DateTime::parse_from_rfc3339(&items[0].expires_at).expect("parse expires_at");
+    let horizon = chrono::Duration::days(90);
+    assert!(
+        expires <= chrono::Utc::now() + horizon,
+        "the 200-day request must be clamped to the 90-day ceiling: {expires}"
+    );
+    assert!(
+        expires > chrono::Utc::now() + chrono::Duration::days(89),
+        "the clamp must not collapse the TTL: {expires}"
+    );
+
+    assert!(archive_recent_work(&created.id).unwrap());
+    let items = load_recent_work().unwrap();
+    assert_eq!(items.len(), 1, "archiving keeps the item");
+    assert_eq!(items[0].status, "archived");
+    assert!(
+        !archive_recent_work(&created.id).unwrap(),
+        "re-archiving an already-archived item reports no change"
+    );
+    assert!(
+        !archive_recent_work("no-such-id").unwrap(),
+        "archiving an absent id reports no change"
+    );
+
+    // An empty (all-whitespace) title is rejected as invalid input, matching
+    // the clean_text normalization contract.
+    let error = upsert_recent_work(RecentWorkPatch {
+        id: None,
+        title: "   ".to_string(),
+        summary: None,
+        source: None,
+        ttl_days: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+/// `archive_recent_work` must consult BOTH timed stores: an id can exist in
+/// `current_focus` and `recent_activity` at the same time (ids are
+/// caller/LLM-supplied strings), and a find in one must not short-circuit
+/// the other's archive — the recent-work loop archives every match, so the
+/// timed fallback must not be first-wins.
+#[test]
+fn archive_recent_work_archives_the_id_in_both_timed_stores() {
+    let _home = IsolatedPinvouHome::new("archive-both-timed-stores");
+
+    let item = |kind: &str| super::types::TimedMemoryItem {
+        id: "shared-id".to_string(),
+        kind: kind.to_string(),
+        topic: "topic".to_string(),
+        text: "text".to_string(),
+        source: String::new(),
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+        last_hit: Utc::now().to_rfc3339(),
+        ttl_days: 21,
+        status: "active".to_string(),
+    };
+    {
+        let _guard = write_lock().lock();
+        write_timed_memory_file(
+            &current_focus_path(),
+            &[item("current_focus")],
+            "current_focus",
+        )
+        .unwrap();
+        write_timed_memory_file(
+            &recent_activity_path(),
+            &[item("recent_activity")],
+            "recent_activity",
+        )
+        .unwrap();
+    }
+
+    assert!(
+        archive_recent_work("shared-id").unwrap(),
+        "archiving an id present in both timed stores reports a change"
+    );
+    assert_eq!(
+        load_current_focus().unwrap()[0].status,
+        "archived",
+        "the current_focus copy must be archived"
+    );
+    assert_eq!(
+        load_recent_activity().unwrap()[0].status,
+        "archived",
+        "the recent_activity copy must be archived too, not skipped because the \
+         focus store already matched"
+    );
+}
+
+/// A full-replacement save must stamp `updated_at` the way the read-modify-
+/// write patch path does. `normalize()` does not touch the field, so without
+/// the stamp a save persists new content under the caller's stale snapshot
+/// timestamp — the write looks older than it is to anything reading the field
+/// for freshness or ordering.
+#[test]
+fn save_profile_stamps_the_update_time() {
+    let home = IsolatedPinvouHome::new("profile-save-stamp");
+    let mut profile = MemoryProfile::default();
+    profile.identity.call_name = "Ada".to_string();
+    profile.updated_at = "2000-01-01T00:00:00+00:00".to_string();
+    super::io::save_profile(&profile).expect("save profile");
+    let stored = load_profile().expect("load profile");
+    assert_eq!(stored.identity.call_name, "Ada");
+    assert_ne!(
+        stored.updated_at, "2000-01-01T00:00:00+00:00",
+        "the save must stamp its own time, not keep the caller's snapshot value"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&stored.updated_at).is_ok(),
+        "the stamp must be RFC3339 like update_profile's: {}",
+        stored.updated_at
+    );
+    drop(home);
 }

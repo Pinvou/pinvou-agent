@@ -29,6 +29,14 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
 /// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
+/// 资产种类：厂商 CLI 二进制（版本化外部资产，终态住 `assets/cli/<name>/<version>/`，
+/// 包只引用不拥有 —— §4 规则 2）。后续收编 pip 依赖时新增种类常量。
+/// Producer/consumer is the CLI families stack; no in-tree writer sets this
+/// kind yet (`BundleRecord.assets` stays empty in this tree).
+pub const ASSET_KIND_CLI: &str = "cli";
+
+/// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
+/// 机读 id / 目录 / frontmatter name 一律不动；见 docs/plugin-package-spec.md）。
 pub const EXTRA_DISPLAY_NAME: &str = "display_name";
 pub const EXTRA_DISPLAY_DESCRIPTION: &str = "display_description";
 
@@ -108,6 +116,16 @@ impl<'de> Deserialize<'de> for BundleSource {
     }
 }
 
+/// 外部资产引用（§3.1：name + version + sha256；kind 区分 CLI 二进制 / 后续 pip 等）。
+/// kind 用 String 而非枚举：新资产种类在老版本二进制上应能无损 roundtrip。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRef {
+    pub kind: String,
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+}
+
 /// 存储层包记录（§3.1：bundles.json 里唯一可写的部分）。
 /// `ready` 是派生态，永不进存储；`kind` 由查询层现算，同样不落盘。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,6 +138,9 @@ pub struct BundleRecord {
     /// 由后续完整性校验/统一管线填写。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
+    /// 外部资产引用（CLI 二进制等，包只引用不拥有）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetRef>,
     /// 安装时间，RFC3339/ISO8601 UTC（对齐 SessionMetadata.updated_at 的 chrono 惯例）
     pub installed_at: String,
     /// `Degraded` 异常态（§3.2：登记在、资源缺）的原因；修复动作统一为按来源
@@ -140,6 +161,7 @@ impl BundleRecord {
             id: id.into(),
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now_iso8601(),
             degraded: None,
@@ -266,6 +288,7 @@ impl BundleStore {
                 id: record.id,
                 source: existing.source.clone(),
                 installed: record.installed,
+                assets: existing.assets.clone(),
                 content_fingerprint: record
                     .content_fingerprint
                     .or_else(|| existing.content_fingerprint.clone()),
@@ -670,6 +693,7 @@ fn legacy_mcp_records() -> Vec<BundleRecord> {
             id,
             source: BundleSource::Preset,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded: None,
@@ -714,6 +738,7 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
             id,
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded: None,
@@ -752,6 +777,7 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
             id: id.to_string(),
             source: BundleSource::Builtin,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: now.clone(),
             degraded,
@@ -805,6 +831,7 @@ mod tests {
             id: id.to_string(),
             source,
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: None,
             installed_at: "2026-08-14T00:00:00+00:00".to_string(),
             degraded: None,

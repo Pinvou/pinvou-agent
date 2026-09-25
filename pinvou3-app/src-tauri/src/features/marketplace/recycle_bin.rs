@@ -596,6 +596,7 @@ mod tests {
             id: id.to_string(),
             source: BundleSource::Upload(format!("{id}.zip")),
             installed: true,
+            assets: Vec::new(),
             content_fingerprint: Some("fp".to_string()),
             installed_at: "2026-08-20T00:00:00+00:00".to_string(),
             degraded: None,
