@@ -3602,3 +3602,29 @@ fn archive_recent_work_archives_the_id_in_both_timed_stores() {
          focus store already matched"
     );
 }
+
+/// A full-replacement save must stamp `updated_at` the way the read-modify-
+/// write patch path does. `normalize()` does not touch the field, so without
+/// the stamp a save persists new content under the caller's stale snapshot
+/// timestamp — the write looks older than it is to anything reading the field
+/// for freshness or ordering.
+#[test]
+fn save_profile_stamps_the_update_time() {
+    let home = IsolatedPinvouHome::new("profile-save-stamp");
+    let mut profile = MemoryProfile::default();
+    profile.identity.call_name = "Ada".to_string();
+    profile.updated_at = "2000-01-01T00:00:00+00:00".to_string();
+    super::io::save_profile(&profile).expect("save profile");
+    let stored = load_profile().expect("load profile");
+    assert_eq!(stored.identity.call_name, "Ada");
+    assert_ne!(
+        stored.updated_at, "2000-01-01T00:00:00+00:00",
+        "the save must stamp its own time, not keep the caller's snapshot value"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&stored.updated_at).is_ok(),
+        "the stamp must be RFC3339 like update_profile's: {}",
+        stored.updated_at
+    );
+    drop(home);
+}

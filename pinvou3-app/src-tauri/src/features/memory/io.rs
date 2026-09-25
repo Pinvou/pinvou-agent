@@ -317,6 +317,13 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
 pub fn save_profile(profile: &MemoryProfile) -> io::Result<()> {
     let _guard = write_lock().lock();
     let mut normalized = profile.clone();
+    // Stamp the write, exactly like `update_profile`: `normalize()` leaves
+    // `updated_at` alone, so without this a full replacement persists new
+    // content under whatever timestamp the caller's snapshot happened to
+    // carry — a write that looks older than it is to anything reading the
+    // field for freshness, which is the one thing that makes the
+    // last-writer-wins shape above diagnosable after the fact.
+    normalized.updated_at = Utc::now().to_rfc3339();
     normalized.normalize();
     let path = profile_path();
     write_json_atomic(&path, &normalized)
