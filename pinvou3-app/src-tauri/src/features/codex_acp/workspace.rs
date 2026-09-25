@@ -11,9 +11,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-// `pub`: the CLI's workspace mirror differentially pins these (the mirror
-// is deleted only when the CLI adopts the real calls, and until then a drift
-// here must break the CLI build, not silently diverge).
+// `pub` for the stacked CLI families PR, which mirrors these limits and is
+// meant to reference them instead of re-declaring literals.
+//
+// Stated precisely, because the earlier wording here was not: the in-tree
+// `pinvou-cli` workspace does NOT depend on this crate — its only bridge is
+// `pinvou-product-backend`, which re-exports the headless runner plus its
+// request/report types and nothing else. A drift here therefore breaks no
+// build that exists today. These are pre-landed surface with no in-tree
+// consumer until that PR arrives.
 pub const LIST_LIMIT: usize = 500;
 pub const SEARCH_LIMIT: usize = 300;
 pub const WALK_LIMIT: usize = 20_000;
