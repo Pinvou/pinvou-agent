@@ -158,21 +158,14 @@ pub fn bundled_node() -> Option<PathBuf> {
     crate::platform::paths::bundled_connector_node()
 }
 
-/// Resolution must stay spawn-faithful: `command_exists("soffice")` also scans
-/// `extra_lookup_dirs()` (the cask app's MacOS dir), so a Homebrew-cask-only
-/// install would pass the dependency preflight while returning bare "soffice"
-/// — which `Command::new` then fails to resolve because GUI processes don't
-/// inherit the shell PATH. Prefer the PATH-only hit, then the cask absolute
-/// path, and only fall back to the bare name for the "missing dependency"
-/// diagnostics.
+/// `command_exists` is spawn-faithful here even though it also scans
+/// `extra_lookup_dirs()`: `lib.rs` `ensure_release_env` prepends every one of those
+/// dirs (Homebrew bin + the cask app's MacOS dir) to the *process* PATH during
+/// single-threaded startup, so a bare "soffice" that passes the preflight is also
+/// resolvable by the later spawn. The absolute cask path stays as the fallback that
+/// feeds the "dependency missing" diagnostics.
 pub fn libreoffice_tool_path() -> PathBuf {
-    let mut probe = Command::new("/usr/bin/which");
-    probe.arg("soffice");
-    let on_path =
-        crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    if on_path {
+    if command_exists("soffice") {
         PathBuf::from("soffice")
     } else {
         PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice")
