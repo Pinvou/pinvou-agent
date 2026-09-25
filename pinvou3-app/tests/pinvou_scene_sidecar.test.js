@@ -24,6 +24,45 @@ const webNormalizeSceneRegexSource = extractNormalizeSceneRegex(webBridgeSource)
 // eval 出真正的 RegExp 对象（源码里就是字面量正则）
 const tauriNormalizeSceneRegex = eval(tauriNormalizeSceneRegexSource);
 
+// scene sidecar 同步块（两个上报助手 + 同步函数）的源码整段取出，既用于两宿主
+// 逐字节比对，也用于在沙箱里真正执行失败路径。
+const CACHED_SCENE_EVENTS = [{ pos: 0, scene: 'design:poster' }];
+function extractSceneSyncBlock(source) {
+  const match = source.match(
+    /function reportSidecarReadFailure\(kind, sid, error\) \{[\s\S]*?async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
+async function runSceneSync(block, { readFails = false, saveFails = false } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    window: { localStorage: { setItem() {}, getItem() { return null; } } },
+    loadPinvouSceneEventsForSession: () => CACHED_SCENE_EVENTS.slice(),
+    normalizePinvouSceneEvents: (events) => (Array.isArray(events) ? events : []),
+    pinvouSceneStorageKey: (sid) => `pinvou_scene_events_v1:${sid}`,
+    async invoke(command) {
+      if (command === 'get_session_pinvou_scene_events') {
+        if (readFails) throw new Error('sidecar unreadable');
+        return [];
+      }
+      if (command === 'save_session_pinvou_scene_events') {
+        if (saveFails) throw new Error('No space left on device');
+        return null;
+      }
+      return null;
+    },
+  };
+  vm.runInNewContext(`${block}\nthis.__syncScene = syncPinvouSceneEventsForSession;`, sandbox, {
+    filename: 'scene-sidecar-block.js',
+  });
+  try {
+    return { value: await sandbox.__syncScene('s1'), warnings, threw: false };
+  } catch (error) {
+    return { value: null, warnings, threw: String(error) };
+  }
+}
+
 function createFeature(options = {}) {
   const sandbox = {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
@@ -254,19 +293,27 @@ function rec(name, pass, detail = '') {
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
-  // 锚定到函数体内再断言：不加界的 [\s\S]* 会跨过函数边界命中幸存的
-  // localStorage try/catch 与正常的 return cached，使断言恒假。
-  const sceneSyncBody = (source) => {
-    const match = source.match(/async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n {2}\}\n/);
-    return match ? match[0] : '';
-  };
-  const tauriSceneSync = sceneSyncBody(tauriBridgeSource);
-  const webSceneSync = sceneSyncBody(webBridgeSource);
-  rec('scene sidecar 损坏时不得静默回退，必须上报后再降级到本地缓存',
-    tauriSceneSync !== '' && webSceneSync !== '' &&
-      [tauriSceneSync, webSceneSync].every((body) =>
-        /catch \(error\) \{\s*reportSidecarReadFailure\([^)]*\);\s*return cached;/.test(body)),
-    'durable sidecar errors must remain observable on both bridges');
+  // 两个 bridge 的真实源码取出来跑，而不是对 catch 做形状匹配：形状断言分不出
+  // 「迁移写在 try 内」与「写在 try 外」，而后者会让写失败逃逸到裸 await 它的
+  // switchToSessionInternal，把装饰性标签的写失败升级成整个会话打不开。
+  const tauriSceneSync = extractSceneSyncBlock(tauriBridgeSource);
+  const webSceneSync = extractSceneSyncBlock(webBridgeSource);
+  rec('scene sidecar 同步在两个宿主上逐字节同一，避免二次漂移',
+    tauriSceneSync !== '' && tauriSceneSync === webSceneSync,
+    'tauri/web scene sidecar sync must stay byte-identical');
+
+  for (const [host, block] of [['tauri', tauriSceneSync], ['web', webSceneSync]]) {
+    const read = await runSceneSync(block, { readFails: true });
+    rec(`${host}: scene sidecar 读失败时上报后降级到本地缓存`,
+      !read.threw && JSON.stringify(read.value) === JSON.stringify(CACHED_SCENE_EVENTS) &&
+        read.warnings.some(text => text.includes('read failed')),
+      JSON.stringify(read));
+    const write = await runSceneSync(block, { saveFails: true });
+    rec(`${host}: scene sidecar 迁移写失败时上报后降级，绝不抛给会话切换`,
+      !write.threw && JSON.stringify(write.value) === JSON.stringify(CACHED_SCENE_EVENTS) &&
+        write.warnings.some(text => text.includes('migration write failed')),
+      JSON.stringify(write));
+  }
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
     /get_session_pinvou_scene_events/.test(tauriBridgeSource) &&
