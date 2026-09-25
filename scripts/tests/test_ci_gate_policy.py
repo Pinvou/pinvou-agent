@@ -668,6 +668,31 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertNotIn("keeping the existing swap configuration", source)
 
+    def test_fetch_connectors_verifies_checksums_with_loud_diagnostics(self):
+        # verify_file is called bare under `set -e` from three places (the
+        # --check gate, the post-download recheck and the pre-install binary
+        # check); a silent mismatch leaves the gate with nothing but
+        # "exit code 1". The diagnostic lives inside verify_file so no call
+        # site can drop it; the pre-download probe silences it explicitly.
+        source = (ROOT / "scripts" / "fetch-connectors.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'echo "sha256 mismatch: $1 (expected $2, actual $(compute_sha256 "$1"))" >&2',
+            source,
+        )
+        self.assertIn('echo "sha256 check failed: $1 is missing (expected $2)" >&2', source)
+        self.assertIn('[[ "$(compute_sha256 "$1")" == "$2" ]]', source)
+        self.assertIn("return 1", source)
+        # Three bare checks plus the silenced pre-download probe: the number
+        # of verification points must not shrink quietly.
+        self.assertEqual(
+            source.count("verify_file "),
+            4,
+            "fetch-connectors.sh must keep verifying: --check gate,"
+            " pre-download probe, post-download recheck and pre-install"
+            " binary check",
+        )
+        self.assertIn('verify_file "$archive" "$expected" >/dev/null 2>&1', source)
+
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
         windows_rust_test = self.pr_workflow.split(
