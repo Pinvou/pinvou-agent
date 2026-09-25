@@ -2811,13 +2811,17 @@ async fn click_without_a11y_element_executes_without_confirmation() {
     );
 }
 
-/// A granted token spends directly: no spend-time re-screen and no
-/// "world changed" re-request arm (the mainstream model — the API
-/// confirmation is one per-action id the client acknowledges). Even when
-/// the target now reads differently than at mint time, the approval
-/// executes; the token is single-use afterwards.
+/// A granted token still spends when the target stopped being consequential.
+///
+/// The spend path re-screens (see
+/// `approved_token_is_refused_on_a_different_target`), but a re-screen that
+/// comes back Clear is not a mismatch: executing is exactly what an
+/// unapproved run would already do at that point, so the approval is simply
+/// spent and no second dialog is raised. This is the arm that keeps the
+/// re-screen from turning every benign change in the world into a
+/// confirmation loop. The token is single-use afterwards.
 #[tokio::test]
-async fn approved_token_executes_without_rescreening_when_the_world_changed() {
+async fn approved_token_spends_when_the_target_screens_clear() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
@@ -2847,8 +2851,8 @@ async fn approved_token_executes_without_rescreening_when_the_world_changed() {
     let confirm_id = latest_confirm_id(&fixture.events);
     assert!(fixture.shared.mint_confirmation(&confirm_id));
 
-    // The world changed: the target point now holds a benign element
-    // (Clear). The approval still executes — spending does not re-screen.
+    // The world changed: the target point now holds a benign element, so the
+    // spend-time re-screen returns Clear and the approval executes.
     fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let replay = fixture
         .tool
@@ -3383,6 +3387,95 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     assert_eq!(fixture.mock.lock().downed.len(), 1, "nothing more ran");
 }
 
+/// A drag's approval is bound to **both** of its screened points.
+///
+/// `left_click_drag` screens its start and its drop point, but only one of
+/// them needs to hit for the dialog to appear. Binding the approval to the
+/// hitting point alone would leave the other end free: a model could get a
+/// drag approved while the drop point was innocuous, then let the page swap a
+/// destructive control in under it and replay the same call — the start still
+/// matches, the token spends, and the drop lands somewhere the user never saw.
+/// The hit label therefore names every screened point in order, so a change at
+/// either end fails the spend-time comparison.
+#[tokio::test]
+async fn approved_drag_is_refused_when_the_drop_target_changed() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let start = ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Delete file".to_string(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+        secure: false,
+    };
+    let benign_drop = ElementInfo {
+        name_screening_hit: false,
+        role: "AXGroup".to_string(),
+        name: "Documents".to_string(),
+        x: 12,
+        y: 12,
+        width: 4,
+        height: 4,
+        secure: false,
+    };
+    fixture.mock.lock().background = vec![start.clone(), benign_drop];
+
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 13, "y": 13}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        blocked.contains("Delete file") && blocked.contains("Documents"),
+        "the dialog must name both screened ends: {blocked}"
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved dropping onto "Documents". The drop target is now a
+    // different control; the start is untouched.
+    fixture.mock.lock().background = vec![
+        start.clone(),
+        ElementInfo {
+            name_screening_hit: false,
+            role: "AXButton".to_string(),
+            name: "Trash".to_string(),
+            x: 12,
+            y: 12,
+            width: 4,
+            height: 4,
+            secure: false,
+        },
+    ];
+    let redirected = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 13, "y": 13,
+                   "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = redirected.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("NOT executed"),
+        "a changed drop target must not inject: {text}"
+    );
+    assert!(
+        text.contains("Trash"),
+        "the fresh confirmation must name the new drop target: {text}"
+    );
+    assert!(
+        fixture.mock.lock().drags.is_empty(),
+        "no drag may reach the backend once the drop target changed"
+    );
+}
+
 /// An approval may not be redirected onto a different consequential target.
 ///
 /// The action's own parameters do not pin a target: `left_mouse_down` carries
@@ -3591,9 +3684,9 @@ async fn same_summary_type_text_swap_is_rejected() {
 }
 
 /// An unreadable cursor position at spend time (the normal state before the
-/// first Wayland move) is irrelevant to the token: the token binds only the
-/// session and the summary, with no cursor comparison — an unreadable cursor
-/// does not block executing an approved action.
+/// first Wayland move) does not block an approved action. There is no cursor
+/// comparison in the binding: an unknown cursor makes screening impossible,
+/// which is Clear, and a Clear re-screen spends the token and executes.
 #[tokio::test]
 async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     let (fixture, _restore) = fixture();

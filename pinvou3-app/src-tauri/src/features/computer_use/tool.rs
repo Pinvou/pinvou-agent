@@ -828,13 +828,43 @@ struct T3Hit {
     reason: &'static str,
 }
 
+/// Display bound for each half of a consent target line. Applied where the
+/// label is built rather than on [`ElementInfo`] itself, so screening keeps
+/// seeing the raw strings.
+const MAX_LABEL_CHARS: usize = 80;
+
+/// How a screened coordinate is named when no element could be read there.
+/// A target still occupies a slot in the label so the approval binding
+/// notices a control *appearing* where the user was shown empty space.
+const UNREADABLE_TARGET_LABEL: &str = "(no readable target)";
+
+/// The dialog-facing name of one element: `name (role)`, bounded so a hostile
+/// free-form role or name cannot stretch the consent dialog's target line.
+///
+/// The bound lives here, at the display site, rather than on
+/// [`ElementInfo::role`]: the role is *also* a screening input, and truncating
+/// it before screening would re-create on the role exactly the padding evasion
+/// `name_screening_hit` exists to close on the name.
+fn element_label(element: &ElementInfo) -> String {
+    format!(
+        "{} ({})",
+        platform::sanitize_name(&element.name, MAX_LABEL_CHARS),
+        platform::sanitize_name(&element.role, MAX_LABEL_CHARS)
+    )
+}
+
 /// Runs the denylist/password-field determination on one a11y element.
-/// Coordinate screening (screen_point) and keyboard focus screening share the
+/// Coordinate screening (screen_points) and keyboard focus screening share the
 /// same determination; the safety standard must be identical on both paths.
 fn screen_element(element: &ElementInfo) -> T3Screening {
+    // Both role predicates take the **raw** role. Linux and Windows build it
+    // from a platform enum so it is bounded by construction, but macOS passes
+    // `AXRole`/`AXSubrole` through and those are free-form strings supplied by
+    // the target app: matching a display-truncated copy would let ~80
+    // characters of padding hide `…SecureTextField` from the `contains` test.
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
-            element_label: format!("{} ({})", element.name, element.role),
+            element_label: element_label(element),
             reason: "a password/secure field",
         });
     }
@@ -844,41 +874,65 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     // consequential term past the window.
     //
     // The display name is matched too rather than trusting the flag alone.
-    // The flag is strictly the wider signal (the display name is a prefix of
-    // the raw one), so this adds no verdict a correct backend would have
-    // missed — but it means a backend that forgets to set the flag degrades
-    // to the old, narrower screening instead of silently disabling name
-    // screening altogether. The role is platform-bounded and matched directly.
+    // Folding drops exactly what sanitization rewrites, so the display name
+    // can only ever be the narrower signal — this adds no verdict a correct
+    // backend would have missed, but it means a backend that forgets to set
+    // the flag degrades to the old, narrower screening instead of silently
+    // disabling name screening altogether.
     if element.name_screening_hit
         || matches_t3_denylist(&element.name)
         || matches_t3_denylist(&element.role)
     {
         return T3Screening::Blocked(T3Hit {
-            element_label: format!("{} ({})", element.name, element.role),
+            element_label: element_label(element),
             reason: "a consequential control (financial/send/delete/submit/consent)",
         });
     }
     T3Screening::Clear
 }
 
-/// Screens the a11y element at one input coordinate against the
-/// denylist/password fields.
-fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
-    let element = match parts.backend.element_at_point(x, y) {
-        Ok(element) => element,
-        // Screening unavailable (a11y query failure) ≠ a denylist hit:
-        // screening is best-effort category detection, and no mainstream
-        // product asks for a confirmation over a screening infrastructure
-        // failure (in AT-SPI-unavailable, multi-monitor and similar scenarios,
-        // fail-closed would only cause confirmation storms). Let it execute.
-        Err(_) => return T3Screening::Clear,
-    };
-    match element {
-        Some(element) => screen_element(&element),
-        // No element at the target point = nothing to check (Clear): unnamed
-        // targets are everywhere on real desktops (canvas, hover targets,
-        // custom widgets) and the denylist is name-based, so an absent name
-        // is not a red flag.
+/// Screens every coordinate an action touches, and binds the verdict to **all**
+/// of them.
+///
+/// A multi-point action is one consent decision over several targets:
+/// `left_click_drag` screens its start and its drop point, and approving a
+/// drag whose start is consequential must not also approve whatever the drop
+/// point has become since. The label therefore names every screened target in
+/// order, not only the one that hit — it is both what the dialog shows and
+/// what the approval token is bound to, so a change at *either* end fails the
+/// spend-time comparison and re-raises confirmation.
+///
+/// For the single-point actions the label is exactly the one element's, so the
+/// binding is unchanged for them.
+fn screen_points(parts: &Parts, points: &[(i32, i32)]) -> T3Screening {
+    let mut labels: Vec<String> = Vec::with_capacity(points.len());
+    let mut reason: Option<&'static str> = None;
+    for &(x, y) in points {
+        // A screening failure and an absent element are deliberately the same
+        // verdict here. Screening unavailable (a11y query failure) is not a
+        // denylist hit — it is best-effort category detection, and no
+        // mainstream product asks for a confirmation over a screening
+        // infrastructure failure (in AT-SPI-unavailable, multi-monitor and
+        // similar scenarios, fail-closed would only cause confirmation
+        // storms). An absent element is not a red flag either: unnamed targets
+        // are everywhere on real desktops (canvas, hover targets, custom
+        // widgets) and the denylist is name-based.
+        let Ok(Some(element)) = parts.backend.element_at_point(x, y) else {
+            labels.push(UNREADABLE_TARGET_LABEL.to_string());
+            continue;
+        };
+        let label = element_label(&element);
+        if let T3Screening::Blocked(hit) = screen_element(&element) {
+            // First hit wins the reason line; the label still names them all.
+            reason.get_or_insert(hit.reason);
+        }
+        labels.push(label);
+    }
+    match reason {
+        Some(reason) => T3Screening::Blocked(T3Hit {
+            element_label: labels.join(" → "),
+            reason,
+        }),
         None => T3Screening::Clear,
     }
 }
@@ -906,7 +960,8 @@ fn is_typed_text_chord(keys: &[Key]) -> bool {
 /// - Coordinate-carrying clicks check the target point; `left_click_drag`
 ///   checks **both the start and the drop point** (dragging into the recycle
 ///   bin/Delete area is a typical consequential action; checking only the
-///   cursor would miss the endpoint).
+///   cursor would miss the endpoint). Both points are named in the hit label,
+///   so an approval for a drag is bound to both ends — see [`screen_points`].
 /// - Keyboard actions (type/key/hold_key) screen the focused element passed
 ///   in by `run` — keyboard input lands on the focus, not at the cursor, so
 ///   screening the cursor would miss a password field under focus. `run`
@@ -987,13 +1042,7 @@ fn t3_screening(
             Err(_) => return T3Screening::Clear,
         },
     };
-    for (x, y) in points {
-        match screen_point(parts, x, y) {
-            T3Screening::Clear => {}
-            other => return other,
-        }
-    }
-    T3Screening::Clear
+    screen_points(parts, &points)
 }
 
 /// Everything the T3 gate needs about the target as it is right now: the
@@ -1991,10 +2040,14 @@ fn execute_action(
                     );
                     let (rx, ry) = (ax.min(bx), ay.min(by));
                     let (rw, rh) = (ax.abs_diff(bx), ay.abs_diff(by));
+                    // The backends carry raw role/name so screening sees them
+                    // untruncated; bound them here, at the model-facing render.
                     Ok(format!(
                         "element at ({x}, {y}): role=\"{}\" name=\"{}\" bounds=({rx}, {ry}, \
                          {rw}x{rh}) in screenshot space secure={}",
-                        element.role, element.name, element.secure
+                        platform::sanitize_name(&element.role, MAX_LABEL_CHARS),
+                        platform::sanitize_name(&element.name, MAX_LABEL_CHARS),
+                        element.secure
                     ))
                 }
                 None => Ok(format!("no accessibility element found at ({x}, {y})")),
@@ -2180,9 +2233,11 @@ impl ToolSpec for ComputerUseTool {
          same-label or same-position window/UI change between screening (or approval) \
          and injection cannot be detected; on Linux a target whose accessibility role \
          cannot be read may still require confirmation as a precaution. An approved \
-         confirmation is bound to the exact action content but is NOT re-screened: it \
-         executes on whatever occupies the target position when it runs, which can be \
-         minutes after the user approved. The CONTENT you type is never screened, and \
+         confirmation is bound to the exact action content AND to the target the user \
+         was shown, and the target is re-screened when you spend the confirm_id: if it \
+         no longer names what the user approved, the action does not run and a fresh \
+         confirmation is raised for whatever is there now (your unspent confirm_id \
+         stays valid for a correct retry). The CONTENT you type is never screened, and \
          key chords are not screened for destructiveness. On macOS and Windows the \
          accessibility tree walk is additionally capped below the max_depth/max_nodes \
          arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \
