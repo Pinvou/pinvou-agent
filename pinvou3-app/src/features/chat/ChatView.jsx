@@ -2489,6 +2489,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           <div ref={scrollRef} data-testid="chat-scroll"
             style={{
               ...responsiveGutterStyle,
+              overflowAnchor: 'none',
               ...(hasMessages ? {} : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }),
             }}
             className={`flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>
@@ -2538,8 +2539,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
 
             {hasMessages && (
               <div ref={conversationContentRef} className="max-w-[800px] w-full min-w-0 mx-auto space-y-4">
+                {/* Keep this explicit 16px value aligned with space-y-4 so
+                    crossing the virtualization threshold does not change spacing. */}
                 <ConversationTimeline
                     turns={conversationProjection.turns}
+                    sessionId={activeSessionId}
+                    scrollElementRef={scrollRef}
+                    busy={busy}
+                    turnGapPx={16}
+                    followOutputRef={autoScrollRef}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}

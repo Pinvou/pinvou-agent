@@ -972,7 +972,8 @@ try {
   assert.ok(codexView.includes('respondAcpElicitation({ sessionId: targetId, elicitationId, action, content })'),
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
-  assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
+  assert.ok(codexView.includes('<ConversationTimeline') && codexView.includes('scrollElementRef={scroller}'),
+    'Codex must render through the shared virtualizable timeline by default');
   assert.ok(codexView.includes('<LiveConversationActivityIndicator')
     && codexView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
