@@ -411,9 +411,17 @@ assert.ok(
   linux.bundle.linux.deb.depends.includes("webkit2gtk-driver"),
   "Linux BrowserCore packages must install the WebKitGTK WebDriver backend",
 );
-// Computer Use links libpipewire/libgbm/libEGL unconditionally on Linux
-// (pipewire-sys resolves through pkg-config, so these are DT_NEEDED entries,
-// not dlopen). Tauri's deb bundler writes `Depends:` verbatim and never runs
+// Computer Use links all three of these unconditionally on Linux, as
+// DT_NEEDED entries resolved at process start — not dlopen — but they arrive
+// by two different routes, which matters if anyone ever tries to drop one:
+//   - libpipewire-0.3: `pipewire-sys` declares `links = "pipewire-0.3"` and
+//     resolves through pkg-config. Its .pc emits only `-lpipewire-0.3`.
+//   - libgbm / libEGL: `xcap` → `libwayshot-xcap`, via `gbm-sys`
+//     (`#[link(name = "gbm")]`) and `khronos-egl` (pkg-config `egl`).
+// libgbm1 is additionally a hard dependency of libwebkit2gtk-4.1-0, so it is
+// already transitively present; it is listed explicitly because the binary
+// links it directly and that should not depend on webkit's dependency list.
+// Tauri's deb bundler writes `Depends:` verbatim and never runs
 // dpkg-shlibdeps, so a missing entry installs cleanly and then fails to start
 // with a dynamic-linker error on any system that lacks the library.
 for (const library of ["libpipewire-0.3-0", "libgbm1", "libegl1"]) {
