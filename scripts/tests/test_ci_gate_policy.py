@@ -504,7 +504,8 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         self.assertIn(
-            'sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+            'sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash'
+            ' "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
             rust_test,
         )
         self.assertNotIn("ci-memguard", self.pr_workflow)
@@ -553,10 +554,13 @@ class CiGatePolicyTests(unittest.TestCase):
             # the whole job limit when it hangs, so the guard enforces an
             # identical structure at every call site.
             self.assertIn(
-                'run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                "run: timeout --kill-after=15 240 sudo"
+                " --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash"
+                ' "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
                 job,
                 f"ubuntu job '{job_name}' must hard-cap ci-memory-setup with"
-                " 'timeout --kill-after=15 240' (userspace hang backstop)",
+                " 'timeout --kill-after=15 240' (userspace hang backstop) and"
+                " pass GITHUB_ACTIONS and PINVOU3_CI_DISABLE_ZRAM through sudo",
             )
             self.assertIn(
                 '|| echo "::warning::ci-memory-setup',
@@ -568,8 +572,8 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_memory_setup_wrapped_at_every_call_site(self):
         # The wrapper contract is repo-wide, not just pr-check.yml: every
         # invocation of ci-memory-setup.sh in any workflow file must carry
-        # the `timeout --kill-after=15 240` cap and the non-fatal ::warning
-        # degradation on the same run line.
+        # the `timeout --kill-after=15 240` cap, the sudo env pass-through
+        # and the non-fatal ::warning degradation on the same run line.
         workflows = sorted(
             list((ROOT / ".github/workflows").glob("*.yml"))
             + list((ROOT / ".github/workflows").glob("*.yaml"))
@@ -590,6 +594,20 @@ class CiGatePolicyTests(unittest.TestCase):
                     " hang is uninterruptible; the outer cap is the last"
                     " backstop)",
                 )
+                # sudo's default env_reset strips GITHUB_ACTIONS (the hosted
+                # images keep no env_keep for it), which silently disables
+                # the script's ::warning annotations, and strips the
+                # PINVOU3_CI_DISABLE_ZRAM opt-out when a workflow sets it
+                # through `env:`. Every call site must pass both through.
+                self.assertIn(
+                    "sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM"
+                    ' bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must pass"
+                    " GITHUB_ACTIONS and PINVOU3_CI_DISABLE_ZRAM through sudo"
+                    " (env_reset would strip them, silently disabling the"
+                    " ::warning annotations and the zram opt-out)",
+                )
                 self.assertIn(
                     '|| echo "::warning::ci-memory-setup',
                     line,
@@ -600,6 +618,55 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertGreaterEqual(
             call_sites, 20, "expected the memory-setup wrapper at 20+ call sites"
         )
+
+    def test_memory_setup_script_pins_annotations_and_honest_degradation(self):
+        # Until now only the workflow call structure was pinned; the script
+        # content itself had no coverage, so a regression back to a
+        # misleading "kept the previous swap" message or to annotating
+        # every recoverable slow path would stay green. Pin three anchor
+        # groups: zswap disabled behind zram (exactly one compress-in-RAM
+        # layer), single-line ::warning annotations, and honest failure text.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        # With zram active, zswap must be disabled explicitly; stock Ubuntu
+        # kernels enable it and it would compress every swapped page twice.
+        self.assertIn("echo 0 >/sys/module/zswap/params/enabled", source)
+        # Degradations become step annotations in Actions, and the payload
+        # must fold newlines and CRs: workflow commands are single-line, and
+        # the runner's .NET line reader also treats a lone CR as a line
+        # terminator (which could forge a second workflow command).
+        self.assertIn('echo "::warning::[memory-setup] ${*//[', source)
+        self.assertIn("${*//[$'\\r\\n']/ }", source)
+        # Slow paths that normally recover (first modprobe miss, the image
+        # swap pre-activation, the as-is swapon retry and the last-resort
+        # image swapfile after all layers) stay log-only; annotating them
+        # would leave a standing warning on every job and dilute real ones.
+        # The function body is pinned verbatim: turning it back into a
+        # ::warning:: annotation turns this red.
+        self.assertIn(
+            'warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }',
+            source,
+        )
+        for recoverable in (
+            'warn_recoverable "modprobe zram failed${modprobe_err:+: ${modprobe_err}};',
+            'warn_recoverable "no swap active; activating the image swapfile'
+            ' before the slow module install"',
+            'warn_recoverable "swapon ${cand} failed as is; trying chmod 600'
+            ' + mkswap + swapon once"',
+            'warn_recoverable "no active swap after all layers; trying the'
+            ' image-provided swapfile"',
+        ):
+            with self.subTest(recoverable=recoverable):
+                self.assertIn(recoverable, source)
+        # A failed disk-swap rebuild must carry its diagnostics, and
+        # removed_note may only be set inside the branch where rm actually
+        # succeeded (an unconditional assignment makes the guard dead code).
+        self.assertIn(
+            "if rm -f /mnt/swapfile; then\n"
+            '        removed_note=" (the previous /mnt/swapfile was removed)"\n'
+            "      fi",
+            source,
+        )
+        self.assertNotIn("keeping the existing swap configuration", source)
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.

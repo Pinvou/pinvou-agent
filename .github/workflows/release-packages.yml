@@ -57,7 +57,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -114,7 +114,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       # Hosted runners are single-disk (/ and /mnt share one ext4; the x64 image boots
       # with only ~13-14G free); a cold release build (700+ crates, dep-level O2) once
@@ -254,7 +254,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       # The ARM64 image has ample headroom (~34G free), so the base tier
       # already clears the 24G floor; deleting the tool cache would buy
