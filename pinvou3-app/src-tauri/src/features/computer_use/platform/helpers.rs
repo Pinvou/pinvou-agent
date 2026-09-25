@@ -44,11 +44,13 @@ pub(crate) fn drag_waypoints(from: (i32, i32), to: (i32, i32), steps: usize) -> 
 }
 
 /// Sanitizer for accessible text that is shown to the user or the model:
-/// quotes are straightened, every control character (newlines, tabs, C0/C1)
-/// folds to a space, bidi and zero-width formatting characters are dropped,
-/// and the result is truncated and trimmed. Mapping before truncation
-/// guarantees a single clean line; the Linux copy used to truncate first,
-/// which let a cut point preserve a line break.
+/// quotes are straightened, every line-breaking character (newlines, tabs,
+/// C0/C1, and the Unicode line/paragraph separators) folds to a space, bidi
+/// and zero-width formatting characters are dropped, and the result is
+/// truncated and trimmed. Mapping and dropping before truncation is what keeps
+/// the result a single clean line and keeps invisible padding from eating the
+/// display window; the Linux copy used to truncate first, which let a cut
+/// point preserve a line break.
 ///
 /// The formatting characters are dropped rather than kept because this text
 /// ends up in the consent dialog's "target element" line: a right-to-left
@@ -60,7 +62,7 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
         .chars()
         .filter(|c| !is_invisible_formatting(*c))
         .map(|c| {
-            if c.is_control() {
+            if is_line_breaking(c) {
                 ' '
             } else if c == '"' {
                 '\''
@@ -73,19 +75,44 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
+/// Whether `c` would end a line for some consumer of this text.
+///
+/// `char::is_control` is category Cc only, which misses `U+2028 LINE
+/// SEPARATOR` and `U+2029 PARAGRAPH SEPARATOR` (Zl/Zp) — literally the
+/// Unicode line and paragraph breaks. They pass straight through a Cc-only
+/// test while CSS text layout and JS line splitting both honour them, so a
+/// label carrying one could forge a second `ui_tree` node line or break the
+/// consent dialog's target line in two.
+fn is_line_breaking(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
 /// Zero-width and bidi formatting characters: invisible to the user, but they
 /// change how the surrounding text renders. `char::is_control` covers only
 /// category Cc and lets every one of these through.
+///
+/// Kept in step with the matching-side list in `guard::is_invisible_for_matching`
+/// (that one additionally folds whitespace, which display must keep).
 fn is_invisible_formatting(c: char) -> bool {
     matches!(c,
         '\u{00AD}'
+        | '\u{034F}'
         | '\u{061C}'
-        | '\u{180E}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
         | '\u{200B}'..='\u{200F}'
         | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}'
+        | '\u{2065}'
         | '\u{2066}'..='\u{2069}'
-        | '\u{FEFF}')
+        | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FEFF}'
+        | '\u{FFA0}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// Runs the T3 denylist over the **whole** raw accessible name, in bounded
@@ -209,14 +236,27 @@ pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
     runs
 }
 
-/// The UTF-16 unit budget of one `CGEventKeyboardSetUnicodeString` call.
+/// The UTF-16 unit budget assumed for one `CGEventKeyboardSetUnicodeString`
+/// call.
 ///
-/// The API stores at most 20 UTF-16 units. enigo chunks the text by `char`
-/// before calling it, which is only equivalent while every character is in the
-/// BMP: 20 emoji are 40 UTF-16 units, so the OS keeps the first 20 and drops
-/// the rest — and the split can land inside a surrogate pair. `type` returned
-/// `Ok` regardless, telling the agent it had typed text that was silently cut
-/// in half.
+/// Apple documents no length limit, and the event object itself provably
+/// stores far more than 20 units, so the truncation happens somewhere below
+/// the setter and its unit is not specified anywhere. The 20 comes from
+/// enigo's macOS backend, which chunks by `char` for enigo#68 ("truncates
+/// strings down to 20 characters… undocumented").
+///
+/// Counting the budget in UTF-16 units rather than characters is therefore the
+/// conservative reading of an underspecified limit, not a documented fact: a
+/// chunk of ≤20 UTF-16 units is also ≤20 characters, so it satisfies enigo's
+/// bound either way, while a `char`-counted chunk does *not* satisfy a
+/// unit-counted one — 20 emoji are 40 units, and if the real cap is in units
+/// the OS keeps half and can cut inside a surrogate pair, with `type` still
+/// returning `Ok`.
+///
+/// Note this bounds truncation only. Chunking still splits grapheme clusters:
+/// a ZWJ sequence, a flag or a combining mark straddling a chunk boundary
+/// arrives as two separate events and can render differently from what was
+/// requested.
 #[cfg(target_os = "macos")]
 pub(crate) const MACOS_UNICODE_STRING_UTF16_UNITS: usize = 20;
 
@@ -402,6 +442,42 @@ mod tests {
         );
         assert_eq!(sanitize_name("De\u{200B}lete", 80), "Delete");
         assert_eq!(sanitize_name("D\u{00AD}elete", 80), "Delete");
+        // The rest of the default-ignorable families: all render as nothing,
+        // all used to survive. The Tag block in particular is the canonical
+        // invisible-text carrier.
+        for invisible in [
+            '\u{034F}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{180B}',
+            '\u{2065}',
+            '\u{3164}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{FFA0}',
+            '\u{FFF9}',
+            '\u{1D173}',
+            '\u{E0001}',
+            '\u{E0041}',
+        ] {
+            assert_eq!(
+                sanitize_name(&format!("De{invisible}lete"), 80),
+                "Delete",
+                "U+{:04X} must not survive into a consent label",
+                invisible as u32
+            );
+        }
+        // U+2028/U+2029 are Zl/Zp, not Cc, so `char::is_control` misses them —
+        // yet they are the Unicode line and paragraph breaks and would split
+        // the one-node-per-line tree format and the dialog's target line.
+        assert_eq!(sanitize_name("a\u{2028}b", 80), "a b");
+        assert_eq!(sanitize_name("a\u{2029}b", 80), "a b");
+        // Invisible padding must not consume the display window either: the
+        // drop happens before the truncation.
+        assert_eq!(
+            sanitize_name(&format!("{}Pay now", "\u{200B}".repeat(500)), 80),
+            "Pay now"
+        );
         // Ordinary text and the existing control folding are unchanged.
         assert_eq!(sanitize_name("a\0b\tc", 80), "a b c");
         assert_eq!(sanitize_name("say \"hi\"", 80), "say 'hi'");

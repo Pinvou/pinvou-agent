@@ -135,6 +135,14 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
 # (see src/platform/encoding.rs). computer_use's screenshot audit is content-addressed (SHA-256) and shares this crate.
 sha2 = "0.11"
+# computer_use's T3 screening folds attacker-controlled accessible names before
+# matching. NFKC is what collapses the compatibility families a hostile label
+# hides a term in (fullwidth ASCII, the Math Alphanumeric block, circled and
+# parenthesized letters, halfwidth katakana, CJK compatibility ideographs);
+# hand-rolling those tables would be a partial re-implementation of a Unicode
+# standard annex. Already in the graph transitively, so this direct edge adds
+# no package to either lockfile.
+unicode-normalization = "0.1"
 # 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
 zip = { version = "8", default-features = false, features = ["deflate"] }
