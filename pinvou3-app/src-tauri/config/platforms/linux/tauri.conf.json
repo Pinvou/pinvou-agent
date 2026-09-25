@@ -14,7 +14,10 @@
         "preRemoveScript": "packaging/linux/deb/scripts/prerm.sh",
         "depends": [
           "libwebkit2gtk-4.1-0 (>= 2.40)",
-          "webkit2gtk-driver"
+          "webkit2gtk-driver",
+          "libpipewire-0.3-0",
+          "libgbm1",
+          "libegl1"
         ],
         "recommends": [
           "poppler-utils",

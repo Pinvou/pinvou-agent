@@ -411,6 +411,17 @@ assert.ok(
   linux.bundle.linux.deb.depends.includes("webkit2gtk-driver"),
   "Linux BrowserCore packages must install the WebKitGTK WebDriver backend",
 );
+// Computer Use links libpipewire/libgbm/libEGL unconditionally on Linux
+// (pipewire-sys resolves through pkg-config, so these are DT_NEEDED entries,
+// not dlopen). Tauri's deb bundler writes `Depends:` verbatim and never runs
+// dpkg-shlibdeps, so a missing entry installs cleanly and then fails to start
+// with a dynamic-linker error on any system that lacks the library.
+for (const library of ["libpipewire-0.3-0", "libgbm1", "libegl1"]) {
+  assert.ok(
+    linux.bundle.linux.deb.depends.includes(library),
+    `Linux packages must depend on ${library}: the binary links it at load time`,
+  );
+}
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));

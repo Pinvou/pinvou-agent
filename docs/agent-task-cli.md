@@ -36,6 +36,7 @@ The binary is a dynamically linked Tauri program; task containers need the GTK3/
 ```dockerfile
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libwebkit2gtk-4.1-0 libgtk-3-0 libjavascriptcoregtk-4.1-0 \
+    libpipewire-0.3-0 libgbm1 libegl1 \
     libayatana-appindicator3-1 xvfb xauth ca-certificates procps curl
 ```
 
