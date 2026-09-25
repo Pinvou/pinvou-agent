@@ -13,8 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, RebindRootsError,
-    SessionAssignments,
+    MoveSessionOutcome, Project, ProjectStore, RebindRootsError, SessionAssignments,
 };
 use crate::features::sessions::SessionStore;
 
@@ -145,12 +144,12 @@ pub async fn delete_project(
     project_id: String,
     app: AppHandle,
     store: State<'_, ProjectStore>,
-) -> Result<DeleteProjectReport, String> {
-    let report = store
+) -> Result<(), String> {
+    store
         .delete_project(&project_id)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
-    Ok(report)
+    Ok(())
 }
 
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。

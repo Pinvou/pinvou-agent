@@ -25,7 +25,7 @@ use super::types::{
     PENDING_STATUS_IGNORED, PENDING_STATUS_OBSERVED, PENDING_STATUS_PENDING, PROFILE_VERSION,
     PendingMemoryItem, PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
     RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
-    RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem, RecentWorkPatch,
+    RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem,
     RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
     TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnMemoryCapture,
     WorkContextFile, looks_like_profile_preference_text, normalize_preference_topic,
@@ -36,8 +36,7 @@ use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
     invalid_data, json_lines_are_valid, looks_sensitive, looks_sensitive_or_task_like, parse_time,
     read_text_recovering, read_text_recovering_unlocked, recover_directory_json_files_unlocked,
-    stable_id_from_text, stable_id_with_prefix, write_json_atomic, write_json_atomic_unlocked,
-    write_text_atomic,
+    stable_id_with_prefix, write_json_atomic, write_json_atomic_unlocked, write_text_atomic,
 };
 
 pub(super) fn write_lock() -> &'static Mutex<()> {
@@ -307,128 +306,6 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
         }
     }
     Ok(out)
-}
-
-/// Save the profile as a full replacement of `profile.json` (unlike
-/// [`update_profile`], which is a read-modify-write patch). A headless
-/// caller that loaded its snapshot before a GUI identity update and saves
-/// afterwards silently reverts the newer write — the last-writer-wins
-/// cross-process shape disclosed for every restored memory surface.
-pub fn save_profile(profile: &MemoryProfile) -> io::Result<()> {
-    let _guard = write_lock().lock();
-    let mut normalized = profile.clone();
-    // Stamp the write, exactly like `update_profile`: `normalize()` leaves
-    // `updated_at` alone, so without this a full replacement persists new
-    // content under whatever timestamp the caller's snapshot happened to
-    // carry — a write that looks older than it is to anything reading the
-    // field for freshness, which is the one thing that makes the
-    // last-writer-wins shape above diagnosable after the fact.
-    normalized.updated_at = Utc::now().to_rfc3339();
-    normalized.normalize();
-    let path = profile_path();
-    write_json_atomic(&path, &normalized)
-}
-
-pub fn upsert_recent_work(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> {
-    let _guard = write_lock().lock();
-    upsert_recent_work_unlocked(patch)
-}
-
-/// Caller must hold [`write_lock`]: the unlocked RMW shares the critical
-/// section contract of the sibling `*_unlocked` helpers, and an uncalled
-/// caller would race a concurrent write into a lost update.
-pub(super) fn upsert_recent_work_unlocked(patch: RecentWorkPatch) -> io::Result<RecentWorkItem> {
-    let now = Utc::now();
-    let now_s = now.to_rfc3339();
-    let ttl_days = patch
-        .ttl_days
-        .unwrap_or(RECENT_WORK_DEFAULT_TTL_DAYS)
-        .clamp(1, 90);
-    let mut items = load_recent_work()?;
-    let title = clean_text(&patch.title, 50);
-    if title.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "recent work title is empty",
-        ));
-    }
-    let id = patch
-        .id
-        .map(|s| clean_id(&s))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| stable_id_from_text(&title));
-
-    let mut item = if let Some(existing) = items.iter_mut().find(|item| item.id == id) {
-        existing.title = title;
-        existing.summary = patch
-            .summary
-            .as_deref()
-            .map(|s| clean_text(s, 80))
-            .unwrap_or_default();
-        existing.source = patch
-            .source
-            .as_deref()
-            .map(|s| clean_text(s, 40))
-            .unwrap_or_default();
-        existing.status = "active".to_string();
-        existing.updated_at = now_s.clone();
-        existing.last_hit = now_s.clone();
-        existing.expires_at = (now + Duration::days(ttl_days)).to_rfc3339();
-        existing.clone()
-    } else {
-        let item = RecentWorkItem {
-            id,
-            title,
-            summary: patch
-                .summary
-                .as_deref()
-                .map(|s| clean_text(s, 80))
-                .unwrap_or_default(),
-            status: "active".to_string(),
-            source: patch
-                .source
-                .as_deref()
-                .map(|s| clean_text(s, 40))
-                .unwrap_or_default(),
-            created_at: now_s.clone(),
-            updated_at: now_s.clone(),
-            last_hit: now_s.clone(),
-            expires_at: (now + Duration::days(ttl_days)).to_rfc3339(),
-        };
-        items.push(item.clone());
-        item
-    };
-    normalize_recent_work(&mut item);
-    write_recent_work_unlocked(&items)?;
-    Ok(item)
-}
-
-pub fn archive_recent_work(id: &str) -> io::Result<bool> {
-    let _guard = write_lock().lock();
-    let id = clean_id(id);
-    let now = Utc::now().to_rfc3339();
-    let mut items = load_recent_work()?;
-    let mut changed = false;
-    for item in &mut items {
-        if item.id == id && item.status != "archived" {
-            item.status = "archived".to_string();
-            item.updated_at = now.clone();
-            changed = true;
-        }
-    }
-    if changed {
-        write_recent_work_unlocked(&items)?;
-    }
-    if !changed {
-        // Consult BOTH timed stores: an id can live in each, and a find in
-        // one must not short-circuit the other's archive (the recent-work
-        // loop above archives all matches, so the contract is "archive it
-        // everywhere it appears").
-        let archived_focus = archive_timed_memory_unlocked("current_focus", &id)?;
-        let archived_activity = archive_timed_memory_unlocked("recent_activity", &id)?;
-        changed = archived_focus || archived_activity;
-    }
-    Ok(changed)
 }
 
 fn resolve_topic_authorities<T: Clone>(
@@ -795,9 +672,9 @@ fn is_plain_filename(value: &str) -> bool {
 }
 
 fn quarantine_unparsable_journal(journal_path: &Path) {
-    // Shared platform primitive: the nanosecond-unique name preserves earlier
-    // evidence even when two corruptions land within the same second or after
-    // a pid was recycled (a bare `{name}.corrupt-{pid}` would rename-over it).
+    // The shared helper's sub-second name keeps earlier evidence: a bare
+    // `{name}.corrupt-{pid}` is renamed over by a second corruption in the
+    // same process (and fails outright on Windows, where the target exists).
     if let Err(error) = crate::platform::filesystem::quarantine_corrupt_file(journal_path) {
         // Rename can fail if the file is momentarily locked (e.g. Windows);
         // the journal then stays in place and is skipped again on the next
@@ -1126,28 +1003,6 @@ pub(super) fn update_timed_memory_unlocked(
 pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
     delete_timed_memory_unlocked(kind, id)
-}
-
-/// Caller must hold [`write_lock`]: archives every matching non-archived
-/// timed-memory item in place (status → "archived").
-pub(super) fn archive_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
-    let kind = normalize_timed_memory_kind(kind);
-    let id = clean_id(id);
-    let path = timed_memory_path(&kind);
-    let now = Utc::now().to_rfc3339();
-    let mut items = load_timed_memory_file(&path, &kind)?;
-    let mut changed = false;
-    for item in &mut items {
-        if item.id == id && item.status != "archived" {
-            item.status = "archived".to_string();
-            item.updated_at = now.clone();
-            changed = true;
-        }
-    }
-    if changed {
-        write_timed_memory_file(&path, &items, &kind)?;
-    }
-    Ok(changed)
 }
 
 /// Caller must hold [`write_lock`] (see [`update_timed_memory_unlocked`]).
@@ -1652,14 +1507,6 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     })
 }
 
-pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
-    load_preferences()
-}
-
-pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
-    load_preferences_with_cleanup()
-}
-
 fn preference_stale_paths_unlocked(
     dir: &Path,
     new_path: &Path,
@@ -1791,10 +1638,10 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
 }
 
 pub(super) fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
-    load_preferences_with_cleanup().map(|result| result.value)
+    list_preferences_with_cleanup().map(|result| result.value)
 }
 
-fn load_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
+pub fn list_preferences_with_cleanup() -> io::Result<TopicRead<Vec<PreferenceFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
     load_preferences_with_cleanup_unlocked()
 }
@@ -2013,12 +1860,6 @@ fn normalize_work_context(item: &mut WorkContextFile) {
     item.id = clean_id(&item.id);
     item.kind = "work_context".to_string();
     item.topic = normalize_work_context_topic(&item.topic);
-    // The final storage normalization must use the exported constant: the
-    // CLI validates against WORK_CONTEXT_TEXT_MAX_CHARS before writing, so a
-    // local literal here would make a constant change produce a phantom
-    // materialize failure where the CLI believes the text was stored while
-    // normalization truncated it (exactly the drift the exported constant
-    // exists to prevent).
     item.text = clean_text(&item.text, WORK_CONTEXT_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
     if item.id.is_empty() && !item.topic.is_empty() {

@@ -63,10 +63,6 @@ pub(super) fn stable_id_with_prefix(prefix: &str, value: &str) -> String {
     format!("{}_{hash:016x}", clean_id(prefix))
 }
 
-pub(super) fn stable_id_from_text(value: &str) -> String {
-    stable_id_with_prefix("rw", value)
-}
-
 pub(super) fn parse_time(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .ok()
@@ -406,7 +402,7 @@ pub(super) fn invalid_data(err: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
-pub fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
+pub(super) fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
     let cleaned = value
         .trim()
         .trim_start_matches("请记住")

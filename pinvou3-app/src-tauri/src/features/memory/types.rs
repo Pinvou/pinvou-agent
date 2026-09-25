@@ -100,19 +100,6 @@ pub struct ProfilePatch {
     pub style_notes: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RecentWorkPatch {
-    pub id: Option<String>,
-    pub title: String,
-    /// `None` is not "keep the existing value": the update REPLACES summary
-    /// with the normalized empty string (and the same applies to `source`),
-    /// so a caller that only retitles wipes the stored summary. Full-replace
-    /// keeps the patch shape total; pass the current value to preserve it.
-    pub summary: Option<String>,
-    pub source: Option<String>,
-    pub ttl_days: Option<i64>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecentWorkItem {
     pub id: String,

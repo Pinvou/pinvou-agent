@@ -217,10 +217,6 @@ pub async fn install_marketplace_tool(
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
-        // round-12 review:同步失败也只收集不中止——`?` 级联会跳过其余
-        // companion 的安装和末尾的包级 DenyAll 同步,留下「包装上了但
-        // consent 禁用集没跟上」的 fail-open 半态;收集齐再统一上抛。
-        let mut sync_errors: Vec<String> = Vec::new();
         for sid in mgr.companion_skills(&companion_tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -231,26 +227,11 @@ pub async fn install_marketplace_tool(
             }
             // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
             // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            // 同步失败即回滚这枚 companion 的安装：留着它就是一枚用户没同意、
-            // 却已可被模型调用的外部能力（见 register_install_consent_or_rollback）。
-            if let Err(e) = register_install_consent_or_rollback(&sid, || {
-                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                    .uninstall(&sid)
-            }) {
-                sync_errors.push(e);
-            }
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid);
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        if let Err(e) = register_install_consent_or_rollback(&companion_tool_id, || {
-            uninstall_marketplace_tool_sync(&companion_tool_id)
-        }) {
-            sync_errors.push(e);
-        }
-        if sync_errors.is_empty() {
-            Ok(())
-        } else {
-            Err::<(), String>(sync_errors.join("; "))
-        }
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
@@ -488,13 +469,7 @@ pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    // The uninstall's disabled-scope writes take the cross-process bundle
-    // lock, which can block on the desktop/CLI two-process pair; keep it off
-    // the async worker.
-    let tool = tool_id.clone();
-    tokio::task::spawn_blocking(move || uninstall_marketplace_tool_sync(&tool))
-        .await
-        .map_err(|e| format!("uninstall_marketplace_tool join: {e}"))??;
+    uninstall_marketplace_tool_sync(&tool_id)?;
     // mcp.json 可能移除了 server：递增修订号让在线引擎下一轮 get_or_spawn
     // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
     // 连接器工具不再出现在模型目录。
@@ -571,86 +546,18 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        //
-        // Residue cleanup, deliberately NOT a `?`. The companion's files are
-        // already deleted at this point, so aborting here would leave the
-        // caller with "uninstall failed" while the skill is gone and the tool
-        // is still installed — a half-state that the obvious user response
-        // (retry) cannot converge, because the retry fails on the same
-        // refused write. A stale deny entry, by contrast, is the fail-closed
-        // direction (it can only keep a package off) and is swept again by
-        // every boot's residue cleanup. Log and finish the transaction.
-        log_scope_residue_failure(
-            sid,
-            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid),
-        );
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid);
     }
     mgr.uninstall(tool_id)?;
     if recycles_with_package {
         // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
         for sid in &companions {
-            log_scope_residue_failure(
-                sid,
-                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid),
-            );
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid);
         }
     }
     // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    log_scope_residue_failure(
-        tool_id,
-        crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id),
-    );
+    crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id);
     Ok(())
-}
-
-/// Post-commit scope residue cleanup is best-effort by policy: the content is
-/// already gone, a leftover deny entry only keeps a package off (fail-closed),
-/// and the boot sweep retries. Reporting it as a failed uninstall would make
-/// a completed teardown look unfinished and invite an unconvergeable retry.
-fn log_scope_residue_failure(id: &str, result: Result<(), String>) {
-    if let Err(error) = result {
-        log::warn!("[marketplace] scope residue cleanup for '{id}' deferred: {error}");
-    }
-}
-
-/// Registers a freshly installed package's default-off consent, undoing the
-/// install if that registration is refused.
-///
-/// The install-time sync is the *only* thing that keeps a new package off in
-/// a DenyAll scope the user has already configured: an initialized scope
-/// never falls back to the computed "deny everything installed" default, so a
-/// package missing from its deny list is a package the model may call. If the
-/// sync is refused (the cross-process lock is held by a peer past the
-/// deadline, or the disk write failed) and we merely report the error, the
-/// package stays on disk, silently enabled, with nothing to re-derive it —
-/// the opposite of the user's standing default, produced by an operation the
-/// user was told had failed.
-///
-/// Rolling the install back is the outcome that converges: the failure the
-/// user sees matches the state on disk, and a retry starts clean. This is the
-/// install-side mirror of [`log_scope_residue_failure`] — on teardown the
-/// leftover entry is fail-closed and may be deferred; on install the missing
-/// entry is fail-open and may not.
-fn register_install_consent_or_rollback(
-    id: &str,
-    rollback: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    let error = match crate::features::marketplace::scope::sync_deny_all_scopes_after_install(id) {
-        Ok(()) => return Ok(()),
-        Err(error) => error,
-    };
-    match rollback() {
-        Ok(()) => Err(format!(
-            "'{id}' 同步禁用集失败，已回滚本次安装，请重试: {error}"
-        )),
-        // Both halves failed: the package is installed and NOT recorded as
-        // default-off. Say so explicitly — this is the one path where the
-        // user has to intervene, and a generic error would hide it.
-        Err(rollback_error) => Err(format!(
-            "'{id}' 同步禁用集失败（{error}），回滚安装同样失败（{rollback_error}）：\
-             该包已安装但未记入默认禁用集，请在工具市场手动关闭后重试"
-        )),
-    }
 }
 // ---------------------------------------------------------------------------
 // 技能市场（与工具市场并列：工具=MCP server，技能=SKILL.md 目录落 bundle/skills/）
@@ -696,11 +603,8 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    // 同步失败回滚安装，不留「已装但未记入禁用集」的 fail-open 半态。
-    register_install_consent_or_rollback(skill_id, || {
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .uninstall(skill_id)
-    })
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id);
+    Ok(())
 }
 
 /// 更新已安装的预置技能:复用 `install` 的原子覆盖管线落最新嵌入资源。
@@ -870,20 +774,7 @@ pub async fn import_plugin_package_cmd(
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
     // 与 `install_marketplace_tool` 同口径。
-    // The DenyAll write takes the cross-process bundle lock, which can
-    // block on the desktop/CLI two-process pair; keep it on spawn_blocking
-    // (like the import task above), not on the async worker.
-    let installed_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        // Refused consent rolls the import back: an imported package absent
-        // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
-            uninstall_marketplace_tool_sync(&installed_id)
-        })
-    })
-    .await
-    .map_err(|e| format!("sync_deny_all join: {e}"))??;
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -944,19 +835,7 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    // The DenyAll write takes the cross-process bundle lock; keep it on
-    // spawn_blocking, not on the async worker.
-    let installed_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        // Refused consent rolls the import back: an imported package absent
-        // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
-            uninstall_marketplace_tool_sync(&installed_id)
-        })
-    })
-    .await
-    .map_err(|e| format!("sync_deny_all join: {e}"))??;
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -998,19 +877,7 @@ pub async fn import_skill_md_bytes(
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。
-    // The DenyAll write takes the cross-process bundle lock; keep it on
-    // spawn_blocking, not on the async worker.
-    let installed_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        // Refused consent rolls the import back: an imported package absent
-        // from an initialized DenyAll scope's deny list is callable without
-        // the user ever enabling it.
-        register_install_consent_or_rollback(&installed_id, || {
-            uninstall_marketplace_tool_sync(&installed_id)
-        })
-    })
-    .await
-    .map_err(|e| format!("sync_deny_all join: {e}"))??;
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id);
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
@@ -1039,7 +906,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
-    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(skill_id)?;
+    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(skill_id);
     Ok(())
 }
 
@@ -1356,62 +1223,6 @@ pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A refused install-time consent write must UNDO the install, not just
-    /// report an error. Leaving the package on disk after telling the user
-    /// the install failed is the fail-open half-state: an initialized DenyAll
-    /// scope never re-derives its default, so the package would be callable
-    /// without the user ever enabling it.
-    #[test]
-    fn a_refused_consent_write_rolls_the_install_back() {
-        crate::platform::test_support::with_temp_home("pinvou3-install-consent", || {
-            // Corrupt consent file: the writer quarantines and refuses.
-            let consent = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::create_dir_all(consent.parent().unwrap()).unwrap();
-            std::fs::write(&consent, "{ not json").unwrap();
-
-            let rolled_back = std::cell::Cell::new(false);
-            let result = register_install_consent_or_rollback("weather", || {
-                rolled_back.set(true);
-                Ok(())
-            });
-            assert!(
-                result.is_err(),
-                "a refused consent write must fail the install"
-            );
-            assert!(
-                rolled_back.get(),
-                "the install must be rolled back, not left on disk"
-            );
-
-            // And a rollback that itself fails must say so explicitly rather
-            // than hide behind the original error: this is the one path where
-            // the user has to intervene.
-            std::fs::write(&consent, "{ not json either").unwrap();
-            let error = register_install_consent_or_rollback("weather", || {
-                Err("uninstall exploded".to_string())
-            })
-            .expect_err("still a failure");
-            assert!(
-                error.contains("uninstall exploded") && error.contains("手动关闭"),
-                "a failed rollback must name both faults and the manual step: {error}"
-            );
-        });
-    }
-
-    /// The happy path must not roll anything back.
-    #[test]
-    fn a_successful_consent_write_keeps_the_install() {
-        crate::platform::test_support::with_temp_home("pinvou3-install-consent-ok", || {
-            let rolled_back = std::cell::Cell::new(false);
-            register_install_consent_or_rollback("weather", || {
-                rolled_back.set(true);
-                Ok(())
-            })
-            .expect("a writable consent file must let the install stand");
-            assert!(!rolled_back.get());
-        });
-    }
 
     /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
     /// 凭据存在性经 `bundle_readiness_with_store` 注入 MemoryCredentialStore 现算，

@@ -39,14 +39,9 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    // The read does blocking disk I/O (installed-registry read plus a
-    // possible DenyAll fallback expansion scan); keep it off the async
-    // worker like the neighboring writers.
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::load_disabled_bundles_for(scope)
-    })
-    .await
-    .map_err(|e| format!("get_disabled_connectors join: {e}"))
+    Ok(crate::features::marketplace::load_disabled_bundles_for(
+        scope,
+    ))
 }
 
 /// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
@@ -74,12 +69,7 @@ pub async fn set_bundle_visibility(
 #[tauri::command]
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    // Blocking disk read; stay off the worker.
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::load_hidden_bundles_for(scope)
-    })
-    .await
-    .map_err(|e| format!("get_bundle_visibility join: {e}"))
+    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
 }
 
 // ---------------------------------------------------------------------------
@@ -95,19 +85,12 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // The write takes the cross-process bundle lock, which can block
-    // indefinitely while another GUI/CLI process holds it; keep it off the
-    // async worker like the adjacent visibility/skill writes.
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::scope::set_project_skills_enabled(enabled)
-    })
-    .await
-    .map_err(|e| format!("set_project_skills_enabled join: {e}"))??;
+    crate::features::marketplace::scope::set_project_skills_enabled(enabled)?;
     // The toggle affects code-session composed catalogs: rewrite the online
     // session composed catalogs, hot-refresh the load_skill hidden check and the
     // execpolicy rule set (project-level skills rejoin the deny/allow sets), and
     // broadcast the tool change (other windows/instances refresh their toggle
-    // state from it). A write failure is propagated by the `??` above, so this
+    // state from it). A write failure was propagated by the `?` above, so this
     // never broadcasts success for state that did not persist.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(())
@@ -116,10 +99,7 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    // Blocking disk read; stay off the worker.
-    tokio::task::spawn_blocking(crate::features::marketplace::scope::project_skills_enabled)
-        .await
-        .map_err(|e| format!("get_project_skills_enabled join: {e}"))
+    Ok(crate::features::marketplace::scope::project_skills_enabled())
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的
