@@ -32,14 +32,35 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let prev = std::env::var("PINVOU3_HOME").ok();
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-    f();
-    match prev {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+
+    // Restore through Drop, not straight-line code after `f()`. A failing
+    // assertion inside the closure unwinds, and with the restore written
+    // inline it would be skipped: the temp dir leaks AND PINVOU3_HOME stays
+    // pointed at it for every later test in this process, so one genuine
+    // failure cascades into a string of unrelated ones and the suite's red
+    // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
+    struct TempHomeRestore {
+        previous: Option<OsString>,
+        dir: std::path::PathBuf,
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    impl Drop for TempHomeRestore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    // Declared after `_g` so it drops BEFORE the lock is released: no other
+    // test may observe the temporary value.
+    let _restore = TempHomeRestore {
+        previous: prev.map(OsString::from),
+        dir: dir.clone(),
+    };
+    f();
 }
 
 /// 取 crate 唯一 env 锁并一步完成一组 env 的快照（原各文件私有的
