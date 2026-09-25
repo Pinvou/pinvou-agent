@@ -121,7 +121,12 @@ const expectedProtocolHashes = {
   // removed; artifact external-open traffic goes through openArtifactExternal
   // (open_artifact_window / open_in_system) and the whitelisted
   // openUserExternalUrl, so the runtime command surface is unchanged.
-  artifacts: 'bbf04dfb8e171cdd7db46fcd5f1cf095a885f978c6b26ed96f9891da7fb95822',
+  // Recomputed again for the Linux clipboard-image paste fallback:
+  // artifacts.js gains the addPasteImageFromClipboard invoke wrapping the
+  // paste_clipboard_image command (the native layer reads the
+  // WebKitGTK-invisible clipboard image and saves it server-side; web lane
+  // intentionally has no such backend).
+  artifacts: '38965b8774b590e32a586c5d734ae83148fdc59be19db9a57d237576ce604332',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed

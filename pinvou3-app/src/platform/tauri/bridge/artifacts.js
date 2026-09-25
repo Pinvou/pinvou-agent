@@ -183,6 +183,21 @@ function conversationAttachmentArgs(reference) { return pinvouSharedtauriArtifac
       addSystemItem(limitError || bt("pasteImageFailed") + e);
     }
   }
+  // Linux WebKitGTK 的 paste 事件不携带图像数据，由原生层读剪贴板 → 落盘 → 返回 path
+  // （图像字节不过 IPC）。无图像返回 null 并静默——与「剪贴板无内容可贴」既有行为一致；
+  // 落盘/读剪贴板失败走 addPasteImage 同款报错。
+  async function addPasteImageFromClipboard(formatError) {
+    try {
+      const path = await invoke("paste_clipboard_image");
+      if (!path) return null;
+      await addAttachmentByPath(path);
+      return path;
+    } catch (e) {
+      const limitError = typeof formatError === "function" ? formatError(e) : "";
+      addSystemItem(limitError || bt("pasteImageFailed") + e);
+      return null;
+    }
+  }
   function removeAttachment(id) {
     const removed = state.attachments.find(function (a) { return a.id === id; });
     if (removed) {
@@ -244,6 +259,7 @@ async function pickAndAttach() { return pinvouSharedtauriArtifacts().pickAndAtta
       openUserExternalUrl,
       addAttachmentByPath,
       addPasteImage,
+      addPasteImageFromClipboard,
       removeAttachment,
       pickAndAttach,
       uploadDeviceFiles,

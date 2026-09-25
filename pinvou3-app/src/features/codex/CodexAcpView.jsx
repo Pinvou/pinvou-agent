@@ -130,7 +130,12 @@ import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { notifyChatRoundCommitted } from '../tools/tool-events.js';
 import { AttachmentChips } from '../attachments/AttachmentChips.jsx';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
-import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/paste-image.js';
+import {
+  collectClipboardImages,
+  pasteEventNeedsClipboardFallback,
+  pasteImageClipboardFallbackAvailable,
+  readPasteImageAsBytes,
+} from '../attachments/paste-image.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
@@ -2326,7 +2331,33 @@ export function CodexAcpView({
     // WebKit-safe filter + image File extraction shared with the chat paste path;
     // whether to swallow the event is decided here (single preventDefault below).
     const images = collectClipboardImages(event);
-    if (!images.length) return;
+    if (!images.length) {
+      // Linux WebKitGTK surfaces an image clipboard as an empty clipboardData
+      // (swallowing the text part too); the native layer reads the clipboard
+      // instead, mirroring the chat paste path. Browsers hand images over
+      // through clipboardData items, so web keeps the device-upload path.
+      if (deviceFileUploadAvailable) return;
+      if (!pasteImageClipboardFallbackAvailable(bs && bs.platformCapabilities)) return;
+      if (!pasteEventNeedsClipboardFallback(event)) return;
+      event.preventDefault();
+      // 直连 invoke 与既有 save_paste_image 用法一致；语义对齐 chat 侧的
+      // bridge.attachments.addPasteImageFromClipboard（command 返回 null = 无图
+      // 像，静默维持「无内容可贴」）。fulfiller 内保持非 async：附件入列失败
+      // 单独 .catch，避免 .then 第二参覆盖不到而成为 unhandled rejection。
+      invoke('paste_clipboard_image').then((path) => {
+        if (!path) return;
+        addAttachmentByPath(path, attachmentKey).catch(showError);
+      }, (err) => {
+        const limitError = formatAttachmentLimitError(err, t.uiAttachments);
+        if (limitError) {
+          console.error('Codex clipboard paste failed:', err);
+          setError(limitError);
+        } else {
+          showError(err);
+        }
+      });
+      return;
+    }
     if (!deviceFileUploadAvailable && !canInvoke('save_paste_image')) return;
     event.preventDefault();
     images.forEach(file => {
