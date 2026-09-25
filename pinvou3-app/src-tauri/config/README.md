@@ -41,3 +41,23 @@ Windows 例外由统一构建入口先验证并 staging `private-runtimes/window
 
 基础配置的 `beforeBuildCommand` / `beforeBundleCommand` 会拒绝没有包装器标记的构建。
 不要直接运行 `npx tauri build` 或 `npx tauri bundle`，否则命令会在打包前明确失败。
+
+## Linux cross builds (`--target`)
+
+Architecture overlays follow the `--target <triple>` passed to the build
+entry (`--target X` or `--target=X`, last one wins), not the host
+architecture; without `--target` the host architecture is used as before. A
+Linux cross build to a machine segment `build.js` does not know fails instead
+of silently falling back to the host. Two sidecars can only be prepared for the
+host architecture, so a cross build must opt out of both or `build.js` stops
+before any preparation:
+
+- `PINVOU3_SKIP_LINUX_ASR=1`: skip the SenseVoice runtime (it only builds
+  natively) and drop its declaration from the architecture overlay;
+- `PINVOU3_SKIP_KNOWLEDGE_HOST=1`: skip the shared knowledge host (its cargo
+  build ignores `--target`) and drop `knowledge-host/` from the platform overlay.
+
+Only the value `1` enables a switch. The resulting package lacks the bundled
+SenseVoice engine and the shared knowledge host server. The Codex ACP Bridge is prepared
+for the target architecture (`PINVOU3_BRIDGE_TARGET_ARCH`), running npm with a
+second, host-architecture Node.
