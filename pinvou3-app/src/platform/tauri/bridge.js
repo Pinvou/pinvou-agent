@@ -1612,7 +1612,33 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   }
   function subscribeStateSlices(domains, fn) {
     subscriptionStateSlices(domains);
-    return subscribe(function () { return subscriptionStateSlices(domains); }, fn);
+    // Re-read every domain slice on each round: subscriptionStateValue's
+    // structural comparison guarantees slice identity (same content <=> same
+    // reference), so the combined object only needs rebuilding when one of the
+    // subscribed slices changes identity. Publications for unrelated domains
+    // reuse the previous combined object so React's Object.is check skips the
+    // render; the callback still fires on every notification, matching the
+    // single-domain subscription contract. Mirrors the web domain adapter's
+    // stablePick semantics.
+    let lastSlices = [];
+    let lastResult = null;
+    return subscribe(function () {
+      let changed = !lastResult;
+      const slices = [];
+      for (let i = 0; i < domains.length; i++) {
+        slices[i] = subscriptionStateSlice(domains[i]);
+        if (slices[i] !== lastSlices[i]) changed = true;
+      }
+      if (changed) {
+        const result = {};
+        for (let j = 0; j < slices.length; j++) {
+          Object.assign(result, slices[j]);
+        }
+        lastSlices = slices;
+        lastResult = Object.freeze(result);
+      }
+      return lastResult;
+    }, fn);
   }
 
   const scheduledFeature = installBridgeFeature("scheduled", { state, notify, invoke, bt, runSyncOnSession, addSystemItem, rememberScheduledRunOwner, isScheduledRunTerminal, purgeSessionBuffer, createNewSession, prefillComposer, sessionStates });
