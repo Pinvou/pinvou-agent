@@ -670,8 +670,24 @@ fn write_tree_node(
     }
     // Fetch failures do not consume budget: destroyed elements must not crowd out slots for
     // visible nodes.
-    let Ok(cached) = element.build_updated_cache(cache) else {
-        return Ok(());
+    //
+    // Access denied is the exception, and this is the leg where it actually
+    // happens: `build_updated_cache` is the cross-process call, so an elevated
+    // target blocked by UIPI fails HERE. (The cached getters below read a
+    // local record; per UIA they report "not in the cache", never
+    // E_ACCESSDENIED.) Swallowing it returned an empty tree and `Ok` — the
+    // caller could not tell "nothing on screen" from "not allowed to look".
+    //
+    // It is only propagated while the tree is still empty. Once any node has
+    // been serialized the denial is a single inaccessible branch inside a
+    // usable tree, which is the same churn the tolerated arm exists for, and
+    // failing the whole call over it would be worse than the partial answer.
+    let cached = match element.build_updated_cache(cache) {
+        Ok(cached) => cached,
+        Err(error) if writer.next_index == 0 && error.code() == E_ACCESSDENIED => {
+            return Err(map_uia_err("ui_tree node fetch", error));
+        }
+        Err(_) => return Ok(()),
     };
     writer.remaining -= 1;
     let index = writer.next_index;
