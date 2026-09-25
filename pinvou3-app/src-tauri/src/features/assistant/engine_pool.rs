@@ -325,6 +325,11 @@ pub(crate) fn turn_restrict_tools(
 /// TranscriptSanitizationRule swaps it for the display copy before the
 /// transcript is persisted) tells the model the turn is tool-less up front. The zero-tool
 /// guarantee itself is unchanged: this only makes the model aware of it.
+/// Kept as defense-in-depth after round-31 M8 isolated the aux engine
+/// configuration (minimal instructions, no MCP/subagents/memory/vision):
+/// markup emission is trained behavior that no prompt change fully removes,
+/// and the reminder restates the boundary next to the user message at a
+/// small fixed per-turn cost.
 pub(crate) const AUX_ZERO_TOOL_REMINDER: &str = "You are answering in an auxiliary Q&A session. This turn has NO tools: the tool list is empty. Do not attempt to call tools or run commands, and never emit tool-call markup or invoke blocks as text. Answer directly in plain text from the conversation and your own knowledge; if an action is truly needed, explain how the user can do it instead.";
 
 /// Merge the aux zero-tool boundary into the per-turn reminder (aux sessions
@@ -1536,6 +1541,12 @@ impl EnginePool {
             entries.keys().cloned().collect()
         };
         for sid in sids {
+            // Aux engines are isolated (no skill surface); recreating the
+            // composed directory here would make a `## Skills` block appear
+            // on the next aux turn (round-31 M8).
+            if crate::features::sessions::is_aux_session_id(&sid) {
+                continue;
+            }
             let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
             let _ = tokio::task::spawn_blocking(move || {
@@ -1771,7 +1782,11 @@ impl EnginePool {
         // skill 双 scope 治理：spawn 全量拼组合目录（物化时机一，V-7）。组合目录
         // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_roots
         // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
-        {
+        // Aux sessions are isolated pure-Q&A engines (zero tools, minimal
+        // instructions): they get no skill surface, so no composed directory
+        // is materialized — the send path and the toggle hot refresh skip aux
+        // on the same rule (round-31 M8).
+        if !crate::features::sessions::is_aux_session_id(session_id) {
             let sid = session_id.to_string();
             let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
