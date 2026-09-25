@@ -1598,7 +1598,12 @@ function hasStoredCredential(record) {
       // user toggles off and back on (set_enabled's re-enable is the only
       // resume path). Without this hint the stop state is invisible in
       // settings — the safety loop's exit must be discoverable.
-      const stopped = !!computerUse.stopped;
+      //
+      // Gated on the toggle still reading ON: the hint tells the user to turn
+      // the feature off and back on, so showing it next to a switch they have
+      // already turned off asked them to redo the step they had just taken —
+      // halfway through the only recovery path the feature offers.
+      const stopped = !!computerUse.stopped && !!computerUse.enabled;
       // macOS permission onboarding: one snapshot fetch on mount (and a
       // re-read after the user answers the OS dialogs). Null = unknown or no
       // permission flow (web stub rejection, older backend, non-macOS): the
