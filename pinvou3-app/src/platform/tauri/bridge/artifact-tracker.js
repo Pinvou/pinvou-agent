@@ -67,6 +67,8 @@ function findPresentedArtifact(path) { return pinvouSharedtauriArtifactTracker()
   //   after it: the model is answering a fresh "show it again" request, and
   //   replaying that turn must stay a visible new card.
 function updatePresentedArtifact(card) { return pinvouSharedtauriArtifactTracker().updatePresentedArtifact(card); }
+function sessionRecentlyRebound(sid) { return pinvouSharedtauriArtifactTracker().sessionRecentlyRebound(sid); }
+function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedtauriArtifactTracker().rebaseArtifactPathsForRebind(sid, paths); }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
@@ -87,11 +89,20 @@ function updatePresentedArtifact(card) { return pinvouSharedtauriArtifactTracker
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) {
+          // Relative→absolute opens reliably; or stale absolute → live
+          // workspace file, matched by basename — ONLY for a session the
+          // rebind command just moved (the workspace_rebound mark, review
+          // #463 round-10 Major 2). After a folder rebind the persisted
+          // entry keeps the vanished root, and the relative→absolute escape
+          // hatch never fires for an already-absolute stale entry, so the
+          // freshness-windowed mark is what lets the reconcile heal it.
+          ex.path = p; added = true;
+        }
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* disk-write failure must not block the frontend update */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block the frontend update */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -159,6 +170,8 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       basename,
       isAbsPath,
       normalizedPath,
+      sessionRecentlyRebound,
+      rebaseArtifactPathsForRebind,
       noteArtifactChange,
       isSharedMcpArtifactPath,
       artifactBelongsToSession,

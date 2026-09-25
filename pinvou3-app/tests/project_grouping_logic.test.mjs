@@ -8,6 +8,7 @@ import {
   needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
+  unavailableProjectRootPaths,
 } from "../src/features/projects/projectGrouping.js";
 
 const projectItem = (id, path, updatedAt) => ({
@@ -437,4 +438,24 @@ test("capUnavailableRootsForDisplay keeps one badge and folds the rest into +N",
   // A non-array argument (undefined when the backend field is absent) is
   // treated as an empty list.
   assert.deepEqual(capUnavailableRootsForDisplay(undefined, false), { visibleRoots: [], hiddenCount: 0 });
+});
+
+test("unavailableProjectRootPaths keys the badge strictly off the wire `available` field", () => {
+  // Review #463 round-14 R3: the sidebar rebind badge filter reads ONLY
+  // `available` — a backend that drops the field (main #566 did) leaves
+  // undefined, which is falsy, so every healthy root would badge. The Rust
+  // wire pin (project_root_status_wire_carries_available) locks the
+  // producer; this locks the consumer the sidebar actually runs.
+  assert.deepEqual(
+    unavailableProjectRootPaths([
+      { path: "/a/healthy", available: true },
+      { path: "/b/gone", available: false },
+    ]),
+    ["/b/gone"],
+  );
+  // Missing field reads as unavailable (the #566 regression shape).
+  assert.deepEqual(unavailableProjectRootPaths([{ path: "/a/unknown" }]), ["/a/unknown"]);
+  // Legacy bare-string roots stay supported, and a non-array is empty.
+  assert.deepEqual(unavailableProjectRootPaths(["/c/gone"]), []);
+  assert.deepEqual(unavailableProjectRootPaths(), []);
 });

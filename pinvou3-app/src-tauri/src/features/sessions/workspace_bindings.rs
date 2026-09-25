@@ -59,21 +59,37 @@ static REBIND_CRASH_AFTER_LEGACY_REWRITE: std::sync::atomic::AtomicBool =
 pub struct RebindBindingsOutcome {
     pub rebound: Vec<(String, PathBuf)>,
     pub failed_session_ids: Vec<String>,
-    /// True when the legacy global table is still on disk but this process
-    /// failed to rewrite/remove it in sync: the next boot migration would
-    /// re-bind the old paths over the fresh sidecars (silent resurrection),
-    /// so the report must not claim success (review #464 round-5 blocker 1).
-    /// A rerun converges — the rewrite is retried from the in-memory table.
-    pub legacy_sync_failed: bool,
-    /// Sessions the surviving legacy table would re-bind over their fresh
-    /// sidecars at the next boot (see `legacy_diverged_bindings`): non-empty
-    /// only together with `legacy_sync_failed`. The command layer merges these
-    /// ids into the report's failure list **independently of this run's
-    /// `rebound` set** — on a retry nothing is left to rewrite, so driving the
-    /// merge off `rebound` reported full success while the stale table
-    /// survived (review #464 round-6 blocking 1). Ids only: they are data for
-    /// the report; the paths stay out of the logs.
-    pub legacy_resurrection_ids: Vec<String>,
+}
+
+/// Plan of a plain-lane rebind (review #463 round-13 M1): the candidate
+/// translations plus the ids rejected before any write. Produced by
+/// [`SessionStore::plan_rebind_workspace_bindings`] — which also syncs the
+/// legacy global table, so a returned plan means the on-disk table already
+/// carries every translation — and consumed by
+/// [`SessionStore::apply_rebind_workspace_bindings`].
+#[derive(Debug, Default)]
+pub struct RebindBindingsPlan {
+    /// (session id, translated path, sidecar file) triples to move.
+    entries: Vec<(String, PathBuf, PathBuf)>,
+    /// Candidates rejected in the planning half (invalid session id); carried
+    /// into the outcome so the report treats them like write failures.
+    failed_session_ids: Vec<String>,
+}
+
+/// Why the legacy-table sync refused a rebind run (review #463 round-13 M2):
+/// the two causes have different remedies, so the planning half maps them to
+/// different typed markers — an unwritable table is fixed with permissions,
+/// a corrupt one only by repairing or removing the file.
+#[derive(Debug)]
+enum LegacyTableSyncFailure {
+    /// The table is on disk but THIS run's read/parse attempt failed. It must
+    /// not be rewritten or removed (the "repair it and retry" door, #464
+    /// round-3 minor 6), so a run with a non-empty plan cannot publish its
+    /// translations and aborts.
+    Corrupt,
+    /// The table parsed but the merged rewrite (or the empty-table removal)
+    /// could not be persisted.
+    Unwritable,
 }
 
 /// Schema version of the binding sidecar; used for migration if fields evolve.
@@ -121,23 +137,38 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
 /// refuse to read it and treat it as missing (bind rewrites it in the current
 /// version, which self-heals); all parse errors are logged.
 fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
-    let payload = std::fs::read(path).ok()?;
+    // Present-but-unreadable must not masquerade as absent (review #463
+    // round-11 minor 2): both the scan and the post-pass fence consume this
+    // accessor, so a silent skip reports success while the session's binding
+    // was never examined. Same disclosure treatment as the codex lane.
+    let payload = match std::fs::read(path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            // Log hygiene (review #463 round-13 M3): the path embeds
+            // sessions/<id>/, so only the error kind is logged — the same
+            // rule the rebind write-path logs below follow (8fc7f7201).
+            eprintln!(
+                "[sessions] read workspace binding sidecar failed: {:?}",
+                error.kind()
+            );
+            return None;
+        }
+    };
     match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
         Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => Some(sidecar),
         Ok(sidecar) => {
+            // Same log-hygiene rule as the io arm above (review #463 round-14
+            // should-fix 5): the path embeds sessions/<id>/, so it stays out
+            // of the log; the version number carries the diagnostic.
             eprintln!(
-                "[sessions] workspace binding sidecar version {} above supported {} ({}), ignored",
-                sidecar.version,
-                SESSION_WORKSPACE_SIDECAR_VERSION,
-                path.display()
+                "[sessions] workspace binding sidecar version {} above supported {}, ignored",
+                sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
             );
             None
         }
         Err(error) => {
-            eprintln!(
-                "[sessions] parse workspace binding sidecar failed ({}): {error}",
-                path.display()
-            );
+            eprintln!("[sessions] parse workspace binding sidecar failed: {error}");
             None
         }
     }
@@ -246,9 +277,12 @@ impl SessionStore {
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
+            // Same log-hygiene rule as the read/write arms (review #463
+            // round-14 minor 4): the path embeds sessions/<id>/, so only the
+            // error kind is logged.
             Err(error) => eprintln!(
-                "[sessions] remove workspace binding sidecar failed ({}): {error:#}",
-                file.display()
+                "[sessions] remove workspace binding sidecar failed: {:?}",
+                error.kind()
             ),
         }
     }
@@ -313,7 +347,17 @@ impl SessionStore {
                 return matched;
             }
         };
-        for entry in entries.flatten() {
+        // An entry that cannot be stat-ed is disclosed, not silently skipped
+        // (review #463 round-12 minor 2): the scan and the post-pass fence
+        // both consume this iterator, so a dropped entry reads as absence and
+        // the run could report success without ever examining that session.
+        for entry in entries.filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                eprintln!("[sessions] rebind workspace-binding scan dropped an entry ({error})");
+                None
+            }
+        }) {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -356,6 +400,17 @@ impl SessionStore {
     /// as [`Self::bind_session_workspace`] — and the caller must report the
     /// session as failed. The retry converges: the sidecar still matches the
     /// `from` prefix, so the next scan finds it again.
+    /// Whether ANY durable plain-lane binding artifact still references the
+    /// session: a cache entry or the binding sidecar on disk (review #463
+    /// round-10 minor 4). Session deletion clears the cache and removes the
+    /// session directory (sidecar included), so `false` means the session
+    /// died mid-rebind — the report and the event stream must not count a
+    /// dead id as rebound.
+    pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
+        self.session_workspaces.read().contains_key(id)
+            || self.session_workspace_sidecar_path(id).exists()
+    }
+
     #[cfg(test)]
     pub(crate) fn rebind_workspace_binding(&self, id: &str, next: PathBuf) -> bool {
         if validate_session_id(id).is_err() {
@@ -401,13 +456,18 @@ impl SessionStore {
         true
     }
 
-    /// Directory rebinding (the broken-link repair channel): translates every
-    /// plain-session binding under the `from` prefix to `to` in one pass
-    /// (atomic sidecar rewrite + in-memory cache sync). Same semantics and
-    /// idempotency as SessionAgentStore::rebind_workspace_prefix — a from→to
-    /// rerun with no matches is a no-op, and failures can be retried as a
-    /// whole. Session metadata (the metadata.workspace display field) is
-    /// rewritten uniformly by the command layer via set_workspace.
+    /// Directory rebinding (the broken-link repair channel), split into a
+    /// planning half and a mutation half (review #463 round-13 M1) so the
+    /// command layer can run the legacy-table sync BEFORE any rebind lane
+    /// mutates: [`Self::plan_rebind_workspace_bindings`] scans the candidates,
+    /// rejects invalid ids and syncs the legacy global table;
+    /// [`Self::apply_rebind_workspace_bindings`] then moves the sidecars and
+    /// the in-memory cache. [`Self::rebind_workspace_bindings`] runs the two
+    /// halves back to back. Same semantics and idempotency as
+    /// SessionAgentStore::rebind_workspace_prefix — a from→to rerun with no
+    /// matches is a no-op, and failures can be retried as a whole. Session
+    /// metadata (the metadata.workspace display field) is rewritten uniformly
+    /// by the command layer via set_workspace.
     ///
     /// Per-entry isolation (#464 MAJOR 4): an invalid id (boot migration
     /// leaves unvalidated failed entries in the in-memory legacy table) or a
@@ -420,31 +480,48 @@ impl SessionStore {
     /// fence (`workspace_bindings_under`): an unreadable sessions root
     /// is logged and yields the entries already found, so a transient
     /// `read_dir` failure cannot abort an otherwise healthy rebind. The `?` on
-    /// this signature is reserved for the sidecar write phase.
-    ///
-    /// Degraded-path honesty: when the legacy global table survives the write
-    /// (see `rewrite_legacy_session_workspaces_if_present`), the outcome also
-    /// names every session that table would resurrect, so the report can be
-    /// honest on a retry too. See [`RebindBindingsOutcome::legacy_resurrection_ids`].
+    /// the planning signature is reserved for the legacy-table sync.
     #[cfg(test)]
     pub(crate) fn inject_rebind_crash_after_legacy_rewrite(&self) {
         REBIND_CRASH_AFTER_LEGACY_REWRITE.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub fn rebind_workspace_bindings(
+    /// Phase 1 + phase 2 of the plain-lane rebind: build the plan and sync the
+    /// legacy global table. No binding artifact has moved when this returns,
+    /// so a sync failure aborts with the run truly untouched (table@from +
+    /// sidecars@from consistent) and the retry redoes the whole run once the
+    /// cause is fixed.
+    pub fn plan_rebind_workspace_bindings(
         &self,
         from: &Path,
         to: &Path,
-    ) -> Result<RebindBindingsOutcome> {
-        let mut outcome = RebindBindingsOutcome::default();
+    ) -> Result<RebindBindingsPlan> {
         // Phase 1 — plan. Candidates = sidecar scan ∪ in-memory legacy table,
         // via workspace_bindings_under (already the union — review #464 round-5
         // nit: a second in-memory union here duplicated it exactly). Nothing is
         // written yet: the plan is what the legacy-table rewrite must publish
         // BEFORE the sidecars move, and an invalid id is rejected here instead
         // of half-way through the write phase.
-        let candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
-        let mut plan: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        // A binding that exists only as a legacy-table line (no sidecar, not in
+        // the cache — e.g. a table repaired out-of-band) is invisible to that
+        // scan: preserving the line in the synced table while leaving it at
+        // `from` would let the next boot migration resurrect the vanished
+        // directory (review #463 round-14 M1). Feed parsed-table entries
+        // through the same gates (id validated, owner exists, from-prefix)
+        // into the candidate set; an unreadable or unparseable table feeds
+        // nothing and is handled by the sync's Corrupt gate below.
+        for (id, path) in self.legacy_session_workspaces_table() {
+            if candidates.iter().any(|(sid, _)| *sid == id)
+                || validate_session_id(&id).is_err()
+                || !self.workspace_binding_owner_exists(&id)
+                || !folded_path_is_same_or_nested(&path, from)
+            {
+                continue;
+            }
+            candidates.push((id, path));
+        }
+        let mut plan = RebindBindingsPlan::default();
         for (id, path) in candidates {
             // Shared containment + suffix cut (round-8 review should-fix 9):
             // one platform predicate serves all three lanes.
@@ -459,7 +536,7 @@ impl SessionStore {
                 // validator's message, which echoes it) stays out of the log;
                 // the report's failure list is the disclosure channel.
                 eprintln!("[sessions] rebind skipped a candidate with an invalid session id");
-                outcome.failed_session_ids.push(id);
+                plan.failed_session_ids.push(id);
                 continue;
             }
             let next = if suffix.as_os_str().is_empty() {
@@ -472,49 +549,79 @@ impl SessionStore {
                 .sessions_dir()
                 .join(&id)
                 .join(SESSION_WORKSPACE_SIDECAR_FILE);
-            plan.push((id, next, sidecar_path));
+            plan.entries.push((id, next, sidecar_path));
         }
         // Phase 2 — the legacy global table, before any sidecar moves (review
-        // #464 round-6 finding 5). The old order (sidecars first, table last)
-        // left a crash window that heals in the DANGEROUS direction: fresh
-        // sidecars on disk plus a stale table, with no report possible, so the
-        // next boot re-binds the deleted directory. Writing the translated
-        // table first means every crash window heals forward — a boot sees
-        // either the old table with old sidecars (no rebind happened), or the
-        // new table with old/new sidecars, where the boot migration rewrites
-        // the stragglers to `to`. The table holds translated values only, so a
-        // partial sidecar failure is finished by the boot migration rather
-        // than undone by it.
+        // #464 round-6 finding 5) and, at the command layer, before the codex
+        // lane runs at all (review #463 round-13 M1). The old order (sidecars
+        // first, table last) left a crash window that heals in the DANGEROUS
+        // direction: fresh sidecars on disk plus a stale table, with no report
+        // possible, so the next boot re-binds the deleted directory. Writing
+        // the translated table first means every crash window heals forward —
+        // a boot sees either the old table with old sidecars (no rebind
+        // happened), or the new table with old/new sidecars, where the boot
+        // migration rewrites the stragglers to `to`. The table holds
+        // translated values only, so a partial sidecar failure is finished by
+        // the boot migration rather than undone by it.
         //
-        // A failed write is NOT log-only: the next boot would re-bind the old
-        // paths over the fresh sidecars, so the outcome must carry the failure
-        // and the report cannot claim success (review #464 round-5 blocker 1).
-        // Which sessions that concerns is read from the table that survives,
-        // not from this run's write log: on a retry nothing is left to rewrite
-        // and the rebound set is empty while the stale table is still there
-        // (review #464 round-6 blocking 1).
-        let diverged = self.legacy_diverged_bindings(&plan);
-        if !self.rewrite_legacy_session_workspaces_if_present(&plan) {
-            outcome.legacy_sync_failed = true;
-            // Assigned only on the failure path: `diverged` describes the file
-            // as it was before the rewrite, so a successful rewrite (which
-            // already put the translated values on disk) must not report the
-            // sessions as resurrectable.
-            outcome.legacy_resurrection_ids = diverged;
-        }
-        // Test-only crash seam between phase 2 and phase 3 (round-8 review
-        // M4): it simulates a process death exactly where the phase order
-        // matters — the translated table is on disk while every sidecar is
-        // still at `from` — and returns "successfully crashed" instead of
-        // erroring, like a killed process would. Production never arms it.
+        // A failed sync aborts the run (review #463 round-12 B1): a surviving
+        // stale table (table@from) over fresh sidecars (sidecar@to) is the
+        // resurrection state — every later boot re-binds the vanished `from`
+        // over the moved sidecar, silently undoing a reported success. The
+        // command layer calls this before the codex lane mutates, so the
+        // abort copy "nothing was moved" is literally true, and the retry
+        // redoes the whole run once the cause is fixed. This does NOT
+        // conflict with the crash-heal pin: that window is process death
+        // between the sync and the sidecar pass (table@to over sidecars@from),
+        // which this Err path never produces.
+        self.sync_legacy_session_workspaces(&plan.entries)
+            .map_err(|failure| match failure {
+                LegacyTableSyncFailure::Corrupt => anyhow::anyhow!(
+                    "REBIND_LEGACY_TABLE_CORRUPT: the legacy workspace table could not be parsed, so nothing was moved — repair or remove the corrupt table and retry"
+                ),
+                LegacyTableSyncFailure::Unwritable => anyhow::anyhow!(
+                    "REBIND_LEGACY_TABLE_UNWRITABLE: the legacy workspace table could not be synced, so nothing was moved — make the sessions directory writable and retry"
+                ),
+            })?;
+        Ok(plan)
+    }
+
+    /// Phase 3 — move the in-memory cache and the sidecars of a planned
+    /// rebind. The legacy table already carries the plan's translations (the
+    /// planning half synced it), so a fault anywhere in this pass leaves
+    /// table@to over sidecars@from and the next boot heals forward. Per-entry
+    /// isolation: one failed write does not abort the round (review #464
+    /// MAJOR 4).
+    pub fn apply_rebind_workspace_bindings(
+        &self,
+        plan: RebindBindingsPlan,
+    ) -> RebindBindingsOutcome {
+        let mut outcome = RebindBindingsOutcome {
+            rebound: Vec::new(),
+            failed_session_ids: plan.failed_session_ids,
+        };
+        // Test-only crash seam between the table sync and the sidecar pass
+        // (round-8 review M4): it simulates a process death exactly where the
+        // phase order matters — the translated table is on disk while every
+        // sidecar is still at `from` — and returns "successfully crashed"
+        // instead of erroring, like a killed process would. Production never
+        // arms it.
         #[cfg(test)]
         if REBIND_CRASH_AFTER_LEGACY_REWRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            return Ok(outcome);
+            return outcome;
         }
-        // Phase 3 — move the in-memory cache and the sidecars. Per-entry
-        // isolation: one failed write does not abort the round (review #464
-        // MAJOR 4).
-        for (id, next, sidecar_path) in plan {
+        for (id, next, sidecar_path) in plan.entries {
+            // Owner re-check (review #463 round-14 M2): the session may have
+            // been deleted between the plan scan and this apply (the codex
+            // lane runs in between and session deletion is not fenced by
+            // begin_rebind). Recreating its directory and sidecar here would
+            // resurrect a dead id — and the metadata loop's absent-record
+            // classifier would then read the artifacts apply itself created
+            // and report the ghost as Rebound. Route it to the failure list.
+            if !self.workspace_binding_owner_exists(&id) {
+                outcome.failed_session_ids.push(id);
+                continue;
+            }
             // In-memory legacy-table entries may have no session directory
             // (never written as a sidecar); atomic_write does not create
             // parent directories, so create it first (same as
@@ -560,175 +667,152 @@ impl SessionStore {
                 outcome.failed_session_ids.push(id);
                 continue;
             }
-            // The cache is moved even when the legacy table could not be
-            // rewritten: this run resolves the live process the same way on
-            // either outcome, and the surviving table's divergent entries are
-            // reported rather than masked.
             self.session_workspaces
                 .write()
                 .insert(id.clone(), next.clone());
             outcome.rebound.push((id, next));
         }
-        Ok(outcome)
+        outcome
     }
 
-    /// Sessions whose live binding in the legacy global table differs from the
-    /// current in-memory binding — i.e. exactly the entries a next-boot
-    /// migration would write back over the fresh sidecars, resurrecting the
-    /// pre-rebind directory (review #464 round-6 blocking 1). The comparison
-    /// mirrors the boot migration's own population rule: a session record must
-    /// exist (`migrate_legacy_session_workspaces` skips ghost entries), and
-    /// only a file this process successfully parsed is consulted — a file whose
-    /// parse failed is deliberately preserved and can be neither trusted nor
-    /// rewritten (round-3 minor 6).
-    ///
-    /// Returned sorted by id so a retry reports the same set in the same order.
-    fn legacy_diverged_bindings(&self, plan: &[(String, PathBuf, PathBuf)]) -> Vec<String> {
-        if self
-            .legacy_session_workspaces_parse_failed
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Vec::new();
-        }
+    /// The two halves back to back (see the doc above
+    /// [`Self::plan_rebind_workspace_bindings`]): the form for callers with no
+    /// other lane to interleave between the sync and the sidecar pass.
+    pub fn rebind_workspace_bindings(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<RebindBindingsOutcome> {
+        let plan = self.plan_rebind_workspace_bindings(from, to)?;
+        Ok(self.apply_rebind_workspace_bindings(plan))
+    }
+
+    /// Best-effort read of the legacy global table: an absent, unreadable, or
+    /// unparseable file yields an empty map (the callers that need to
+    /// distinguish those states — the sync's Corrupt gate — re-read the file
+    /// themselves). Used to feed table-only bindings into the rebind plan.
+    fn legacy_session_workspaces_table(&self) -> HashMap<String, PathBuf> {
         let legacy = self
             .manager
             .sessions_dir()
             .join(LEGACY_SESSION_WORKSPACES_FILE);
         let Ok(content) = std::fs::read_to_string(&legacy) else {
-            return Vec::new();
+            return HashMap::new();
         };
-        let Ok(entries) = serde_json::from_str::<HashMap<String, PathBuf>>(&content) else {
-            // Readable but unparseable (the boot pass owns flagging that case;
-            // this call can also run on a long-lived process whose boot read a
-            // file that has since been damaged): nothing may be rewritten, so
-            // no session can be named as resurrectable.
-            return Vec::new();
-        };
-        let live = self.session_workspaces.read();
-        let sessions_dir = self.manager.sessions_dir();
-        // This runs BEFORE phase 3 applies the plan to the cache, so the cache
-        // still holds the pre-rebind values. The target must therefore be the
-        // planned translation first, falling back to the cache: comparing the
-        // stale table against the equally stale cache made every entry look in
-        // sync and reported an empty resurrection set (review #464 round-6
-        // blocking 1 regression).
-        let translations: HashMap<&str, &Path> = plan
-            .iter()
-            .map(|(id, next, _)| (id.as_str(), next.as_path()))
-            .collect();
-        let mut diverged: Vec<String> = entries
-            .into_iter()
-            .filter(|(id, path)| {
-                let target = translations
-                    .get(id.as_str())
-                    .copied()
-                    .or_else(|| live.get(id).map(|current| current.as_path()));
-                if target.is_some_and(|current| current == path) {
-                    return false;
-                }
-                sessions_dir.join(format!("{id}.json")).is_file()
-            })
-            .map(|(id, _)| id)
-            .collect();
-        diverged.sort_unstable();
-        diverged
+        serde_json::from_str(&content).unwrap_or_default()
     }
 
-    /// Minimal rewrite of the old global table (used only for the rebind's
-    /// degraded-path symmetry). #445 round-2 removed the generic persistence
-    /// (no other call surface); all that remains here: if the table is
-    /// non-empty, atomically rewrite it wholesale with the in-memory table
-    /// contents — with this run's translations for the sessions it plans to
-    /// move, whose cache entries are not written until phase 3 — and if the
-    /// merged table is empty, delete the file (no entries left to resurrect).
+    /// Legacy-table sync of the rebind (phase 2, run inside
+    /// [`Self::plan_rebind_workspace_bindings`] so it lands before any lane
+    /// mutates). #445 round-2 removed the generic persistence (no other call
+    /// surface); all that remains here: if the table is on disk, atomically
+    /// rewrite it wholesale with the merged view (the on-disk table ∪ the
+    /// in-memory cache ∪ this run's translations, translations winning) — and
+    /// if the merged view is empty, delete the file (no entries left to
+    /// resurrect).
     ///
-    /// Returns false when the file is still on disk but the sync failed — the
-    /// caller reports it (a silent success would resurrect old paths at the
-    /// next boot).
-    ///
-    /// The guard is boot migration state, not a fresh parse: when it is set,
-    /// the file was not successfully parsed on the one attempt that owns the
-    /// file (`migrate_legacy_session_workspaces`). Preservation of a
-    /// possibly-repairable file still wins — it must not be deleted or
-    /// overwritten (the round-3 "fix it and retry" door stays open) — but the
-    /// file does survive on disk with unknown contents, which is exactly the
-    /// "sync failed" condition this function's contract describes: the caller
-    /// must report `legacy_sync_failed` instead of claiming success while a
-    /// stale table sits ready to resurrect old paths at the next boot
-    /// (round-7 should-fix: the parse-failed arm used to report "in sync").
-    fn rewrite_legacy_session_workspaces_if_present(
+    /// The parse is re-attempted PER RUN (review #463 round-13 M2): the gate
+    /// must describe the file NOW, not the boot — a table the user repaired
+    /// or removed out-of-band converges without an app restart. Only a file
+    /// this run successfully parsed may be rewritten or removed (#464 round-3
+    /// minor 6, the "repair it and retry" door): a table this run cannot read
+    /// or parse is left untouched, and the run aborts with
+    /// [`LegacyTableSyncFailure::Corrupt`] only when the plan is non-empty —
+    /// an empty plan moves nothing, and the unparseable table is inert (no
+    /// boot can parse it either), so it is no reason to refuse the run.
+    fn sync_legacy_session_workspaces(
         &self,
         plan: &[(String, PathBuf, PathBuf)],
-    ) -> bool {
-        // A file this process never successfully parsed (corrupt but
-        // repairable) must not be deleted or overwritten — otherwise the
-        // first rebind closes the "repair the file and retry" door
-        // (review #464 round-3 minor 6). Still-on-disk ⇒ report the sync as
-        // failed (see the doc above).
-        if self
-            .legacy_session_workspaces_parse_failed
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return false;
-        }
+    ) -> std::result::Result<(), LegacyTableSyncFailure> {
         let legacy = self
             .manager
             .sessions_dir()
             .join(LEGACY_SESSION_WORKSPACES_FILE);
-        if !legacy.is_file() {
-            return true;
-        }
-        // Merged view = the live table ∪ this run's translations. The cache
-        // entries for those sessions are not applied until phase 3, so writing
-        // the bare cache here would publish the pre-rebind paths — the exact
-        // resurrection this rewrite exists to prevent.
+        let content = match std::fs::read_to_string(&legacy) {
+            Ok(content) => content,
+            // Absent is the converged case (the boot migration retired the
+            // file), and a table deleted out-of-band heals the same way.
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                // Unreadable is not absent, and it is certainly not parsed:
+                // invalid UTF-8 fails here rather than in the JSON pass below
+                // (#464 round-6 finding 4). Log hygiene: the path stays out
+                // of the log.
+                eprintln!(
+                    "[sessions] read legacy session workspaces failed: {}",
+                    error.kind()
+                );
+                return if plan.is_empty() {
+                    Ok(())
+                } else {
+                    Err(LegacyTableSyncFailure::Corrupt)
+                };
+            }
+        };
+        let parsed: HashMap<String, PathBuf> = match serde_json::from_str(&content) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("[sessions] parse legacy session workspaces failed: {error}");
+                return if plan.is_empty() {
+                    Ok(())
+                } else {
+                    Err(LegacyTableSyncFailure::Corrupt)
+                };
+            }
+        };
+        // Merged view = the on-disk table ∪ the live cache ∪ this run's
+        // translations, translations winning (review #463 round-14 M1): the
+        // parsed table is the base, so entries represented nowhere else — a
+        // table repaired out-of-band between boot and this run — survive the
+        // rewrite. A cache-∪-plan-only view would silently destroy them, and
+        // legacy-only entries have no sidecar to fall back on.
         let translations: HashMap<&str, &Path> = plan
             .iter()
             .map(|(id, next, _)| (id.as_str(), next.as_path()))
             .collect();
         let bindings = self.session_workspaces.read();
-        let mut merged: HashMap<String, PathBuf> = bindings
-            .iter()
-            .map(|(id, path)| match translations.get(id.as_str()) {
-                Some(next) => (id.clone(), (*next).to_path_buf()),
-                None => (id.clone(), path.clone()),
-            })
-            .collect();
-        // A candidate absent from the live table (an unsynced legacy-memory
-        // entry, or a sidecar-scanned session this process has not cached yet)
-        // is part of the translated set too: publishing it keeps the table and
-        // the sidecars in one domain.
+        let mut merged: HashMap<String, PathBuf> = parsed;
+        for (id, path) in bindings.iter() {
+            // The cache entries for those sessions are not applied until
+            // phase 3, so writing the bare cache value here would publish the
+            // pre-rebind path — the exact resurrection this rewrite exists to
+            // prevent.
+            match translations.get(id.as_str()) {
+                Some(next) => merged.insert(id.clone(), (*next).to_path_buf()),
+                None => merged.insert(id.clone(), path.clone()),
+            };
+        }
         for (id, next, _) in plan {
-            merged.entry(id.clone()).or_insert_with(|| next.clone());
+            merged.insert(id.clone(), next.clone());
         }
         drop(bindings);
         if merged.is_empty() {
             return match std::fs::remove_file(&legacy) {
-                Ok(()) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => {
                     eprintln!(
                         "[sessions] remove legacy session workspaces failed: {}",
                         error.kind()
                     );
-                    false
+                    Err(LegacyTableSyncFailure::Unwritable)
                 }
             };
         }
         match serde_json::to_vec_pretty(&merged) {
             Ok(payload) => match crate::platform::filesystem::atomic_write(&legacy, &payload) {
-                Ok(()) => true,
+                Ok(()) => Ok(()),
                 Err(error) => {
                     eprintln!(
                         "[sessions] rewrite legacy session workspaces failed: {}",
                         error.kind()
                     );
-                    false
+                    Err(LegacyTableSyncFailure::Unwritable)
                 }
             },
             Err(error) => {
                 eprintln!("[sessions] serialize legacy session workspaces failed: {error}");
-                false
+                Err(LegacyTableSyncFailure::Unwritable)
             }
         }
     }
@@ -751,20 +835,16 @@ impl SessionStore {
             Ok(content) => content,
             Err(error) if error.kind() == ErrorKind::NotFound => return,
             Err(error) => {
-                // Unreadable is not absent, and it is certainly not parsed:
-                // invalid UTF-8 fails here rather than in the JSON pass below
-                // (#464 round-6 finding 4). Leaving the flag clear let a later
-                // rebind treat a never-parsed file as syncable — with an empty
-                // cache it would delete a repairable table. The module
-                // invariant is stricter: only a file this process successfully
-                // parsed may be rewritten or removed. Log hygiene (round-8
-                // should-fix): the path stays out of the log.
+                // Unreadable is not absent: invalid UTF-8 fails here rather
+                // than in the JSON pass below (#464 round-6 finding 4). Keep
+                // the file untouched — only a successfully parsed table may
+                // be rewritten or removed, an invariant the rebind's sync
+                // re-checks per run (review #463 round-13 M2). Log hygiene
+                // (round-8 should-fix): the path stays out of the log.
                 eprintln!(
                     "[sessions] read legacy session workspaces failed: {}",
                     error.kind()
                 );
-                self.legacy_session_workspaces_parse_failed
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return;
             }
         };
@@ -772,11 +852,9 @@ impl SessionStore {
             Ok(bindings) => bindings,
             Err(error) => {
                 eprintln!("[sessions] parse legacy session workspaces failed: {error}");
-                // Corrupt-but-recoverable: keep the file and bar the rebind
-                // degraded-path rewrite from deleting a file we never parsed
-                // (#464 round-3 minor 6 / round-4 minor 4).
-                self.legacy_session_workspaces_parse_failed
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                // Corrupt-but-recoverable: keep the file; the rebind's sync
+                // re-attempts the parse per run and refuses to touch a table
+                // it cannot parse (#464 round-3 minor 6 / round-4 minor 4).
                 return;
             }
         };
@@ -790,6 +868,20 @@ impl SessionStore {
             {
                 continue;
             }
+            // Disagreement handling (review #463 round-11 B1a disposition):
+            // a sidecar that disagrees with a legacy entry is NOT skipped in
+            // favor of the entry, unlike the pre-absorption convergence arm —
+            // the absorbed (#464) phase order rewrites the table BEFORE the
+            // sidecars move, so the crash window between the two phases leaves
+            // table@to over sidecar@from, and this boot pass is what heals it
+            // forward (rebind_crash_between_phases_heals_forward_on_boot). A
+            // successful rebind can never leave the table BEHIND a moved
+            // sidecar: the sync publishes every plan translation, cache-only
+            // entries included (rebind_publishes_cache_only_legacy_entry_
+            // translation). The stale-table state (table@from, sidecar@to) is
+            // unreachable: the sync runs before any lane mutates and a failed
+            // sync aborts the whole run (review #463 round-12 B1 / round-13
+            // M1), so a surviving table always matches unmoved sidecars.
             if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
                 // Log hygiene (round-8 should-fix): the unmigrated id reaches
                 // the in-memory table, not the log; the failure list of a

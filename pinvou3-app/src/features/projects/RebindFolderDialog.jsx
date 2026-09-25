@@ -10,7 +10,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 
-const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, busySessionIds, t, busy, onCancel, onConfirm }) => {
+const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, busySessionIds, t, busy, restoreTargetRef, onCancel, onConfirm }) => {
   const dialogRef = useRef(null);
   const confirmButtonRef = useRef(null);
   const backdropPressRef = useRef(false);
@@ -24,12 +24,11 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
     onCancelRef.current = onCancel;
     busyRef.current = busy;
   });
-  // On close, focus returns to the triggering badge (review #463 Minor 8,
-  // same as MoveToProjectDialog); pressing Enter after the restore re-triggers
-  // onRebind — by then rebindDraft is already cleared, so that starts a
-  // brand-new rebind flow rather than a duplicate submit, consistent with
-  // the guard's semantics.
-  useDialogFocusRestore(dialogRef, confirmButtonRef);
+  // On close, focus returns to the project header row that opened this
+  // dialog via the container-supplied resolver (review #463 round-10 T7):
+  // the badge is unmounted by the operation it starts, so the hook's default
+  // target would be detached.
+  useDialogFocusRestore(dialogRef, confirmButtonRef, restoreTargetRef);
   // Tab cycling goes through the shared trap — it holds focus when busy has
   // disabled every control (the hand-rolled trap returned on the empty set
   // and leaked Tab to the background page, review #463 Major 4), handles
@@ -147,14 +146,20 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
                 {/* Post-busy-only runs (nothing failed) reach this state too:
                     the dialog is the entry point for the "retry once when
                     idle" remedy, so the summary must read as a report and not
-                    as a failure (round-8 MAJOR-2). */}
-                <div>
-                  {partial.failed > 0
-                    ? t.uiProjects.rebindPartial(partial.rebound, partial.failed)
-                    : (partial.rebound > 0
-                      ? t.uiProjects.rebindSuccess(partial.rebound)
-                      : t.uiProjects.rebindUpToDate)}
-                </div>
+                    as a failure (round-8 MAJOR-2). In the carryover-refused /
+                    budget-exhausted shape (failed=0, rebound=0, postBusy>0)
+                    NO summary line renders at all (round-10 minor 6): a
+                    "nothing needed rebinding" line directly above "sessions
+                    are busy" would deny what the busy line asserts. */}
+                {(partial.failed > 0 || partial.rebound > 0 || partial.postBusy === 0) && (
+                  <div>
+                    {partial.failed > 0
+                      ? t.uiProjects.rebindPartial(partial.rebound, partial.failed)
+                      : (partial.rebound > 0
+                        ? t.uiProjects.rebindSuccess(partial.rebound)
+                        : t.uiProjects.rebindUpToDate)}
+                  </div>
+                )}
                 {partial.postBusy > 0 && (
                   <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
                 )}
@@ -165,7 +170,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
                 <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
                   {t.uiProjects.rebindFailedSessions}
                 </div>
-                <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] break-all">
+                <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] whitespace-pre-wrap break-all">
                   {partial.failedIds.join('\n')}
                 </div>
               </div>
@@ -182,7 +187,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <span>{t.uiProjects.rebindBusyHint}</span>
             </div>
-            <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] break-all">
+            <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] whitespace-pre-wrap break-all">
               {busySessionIds.join('\n')}
             </div>
           </div>

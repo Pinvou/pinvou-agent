@@ -1486,7 +1486,7 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block session switching */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
@@ -3176,6 +3176,7 @@ function hasUnresolvedItem(type) { return pinvouSharedweb().hasUnresolvedItem(ty
 function basename(p) { return pinvouSharedweb().basename(p); }
 function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
+function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
 function artifactBelongsToSession(path, sid) { return pinvouSharedweb().artifactBelongsToSession(path, sid); }
@@ -3248,7 +3249,7 @@ function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresente
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block frontend updates */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block frontend updates */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -4095,6 +4096,7 @@ function recordPinvouReview(review) { return pinvouSharedweb().recordPinvouRevie
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
 function dismissPinvouReview() { return pinvouSharedweb().dismissPinvouReview(); }
+function applyWorkspaceReboundMark(payload) { return pinvouSharedweb().applyWorkspaceReboundMark(payload); }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
 function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(); }
 
@@ -4130,7 +4132,17 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
-  listen("session:list_changed", function () {
+  listen("session:list_changed", function (e) {
+    const payload = e && e.payload || {};
+    // The rebind command's mark (review #463 round-B Major 1 + round-C
+    // Major 1): consumed by rebaseArtifactPathsForRebind so the wholesale
+    // artifact saves of THIS host cannot durably revert the backend lane's
+    // rebase while a resident web-client buffer holds stale paths. Segment
+    // chain with append-on-chain / refresh-on-identical-retry semantics,
+    // memory-only and never pruned — the shared applyWorkspaceReboundMark
+    // owns the stamp (round-13 — previously byte-duplicated with the tauri
+    // listener).
+    applyWorkspaceReboundMark(payload);
     refreshHistoryList().catch(function (error) {
       console.error("[sessions] session:list_changed refresh failed", error);
     });

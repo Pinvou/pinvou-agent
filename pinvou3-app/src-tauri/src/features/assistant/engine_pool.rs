@@ -6222,6 +6222,37 @@ mod scheduled_model_tests {
             assert!(lifecycle.finish_once(|| {}).is_some());
         }
     }
+
+    /// Production-wiring probe (review #463 round-14 R2): every behavioral
+    /// test of `rebind_evict_with_gates` injects a hand-copied take closure
+    /// that hard-codes the scheduled arm away (`rebind_evictable(active,
+    /// false)`), so deleting `scheduled_running_sessions` from the PRODUCTION
+    /// closure in `evict_if_idle_for_rebind` shipped green. The pool itself
+    /// needs an AppHandle and cannot be unit-constructed, so pin the reads
+    /// in the production body — the layer the pure-predicate tests cannot
+    /// cover.
+    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("production fn must exist");
+        let end = src[start + signature.len()..]
+            .find("\n    pub ")
+            .map(|offset| start + signature.len() + offset)
+            .unwrap_or(src.len());
+        &src[start..end]
+    }
+
+    #[test]
+    fn rebind_engine_take_production_closure_reads_turn_and_scheduled_state() {
+        let src = include_str!("engine_pool.rs");
+        let body = production_body(src, "pub async fn evict_if_idle_for_rebind");
+        assert!(
+            body.contains("is_turn_active(session_id)"),
+            "the take must recheck the turn state before reclaiming",
+        );
+        assert!(
+            body.contains("scheduled_running_sessions"),
+            "the take must refuse eviction while a scheduled turn is running",
+        );
+    }
 }
 
 /// Wiring tests for spawn-time probe adoption, in two layers:

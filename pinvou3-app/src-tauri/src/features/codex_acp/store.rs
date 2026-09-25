@@ -313,24 +313,23 @@ pub(super) fn read_code_session_sidecar(
     };
     match serde_json::from_slice::<CodeSessionSidecar>(&payload) {
         Ok(sidecar) => {
-            // 未来高版本格式不能静默按 v1 解析：拒读并按缺失处理，交由恢复/回填
-            // 路径用当前版本重写。
+            // A future-version format must never parse silently as the
+            // current one: refuse to read it and treat it as missing; the
+            // restore/backfill path rewrites it in the current version. Log
+            // hygiene (review #463 round-14 should-fix 5): the path embeds
+            // the session id — same rule as the sessions side — so only the
+            // version numbers are logged, never the path.
             if sidecar.version > CODE_SESSION_SIDECAR_VERSION {
                 eprintln!(
-                    "[pinvou3-app] 原生代码会话 sidecar 版本 {} 高于当前支持的 {}，按缺失处理（{}）",
-                    sidecar.version,
-                    CODE_SESSION_SIDECAR_VERSION,
-                    path.display()
+                    "[pinvou3-app] 原生代码会话 sidecar 版本 {} 高于当前支持的 {}，按缺失处理",
+                    sidecar.version, CODE_SESSION_SIDECAR_VERSION,
                 );
                 return None;
             }
             Some(sidecar)
         }
         Err(error) => {
-            eprintln!(
-                "[pinvou3-app] 解析原生代码会话 sidecar 失败（{}）: {error:#}",
-                path.display()
-            );
+            eprintln!("[pinvou3-app] 解析原生代码会话 sidecar 失败: {error:#}");
             None
         }
     }
@@ -595,6 +594,21 @@ impl SessionAgentStore {
         }
     }
 
+    /// The workspace path recorded by the session's code-session SIDECAR (the
+    /// authoritative store for native code sessions), None when the sidecar
+    /// is absent, unreadable, or not a project binding. The rebind's
+    /// stranded-index detector compares the index against this directly
+    /// (review #463 round-14 R1): for an index-arm scan hit the surfaced
+    /// path IS the index path, so comparing against it can never detect an
+    /// index/sidecar divergence.
+    pub fn code_sidecar_workspace(&self, session_id: &str) -> Option<PathBuf> {
+        let sidecar = read_code_session_sidecar(&self.path, session_id)?;
+        if sidecar.workspace_kind != CodexWorkspaceKind::Project {
+            return None;
+        }
+        sidecar.workspace_path
+    }
+
     /// Index records still bound under `from`, i.e. a rewrite that did not
     /// stick. Used by the post-pass fence of
     /// [`Self::rebind_workspace_prefix`] (review #463 round-8 minor 8) and
@@ -669,6 +683,12 @@ impl SessionAgentStore {
                 matched.push((session_id, path));
             }
         }
+        // Owner gate (review #463 round-15 SF-B): retention deletes purge the
+        // SavedSession record and session directory without touching this
+        // index, so an index record can outlive its owner — rewriting it and
+        // reporting the dead id as Rebound violates the "dead ids are never
+        // reported" contract. The plain lane gates identically.
+        matched.retain(|(session_id, _)| self.binding_owner_exists(session_id));
         matched
     }
 
@@ -686,6 +706,31 @@ impl SessionAgentStore {
             });
         }
         Self::rebind_relative_suffix(path, to).map(|_| path.to_path_buf())
+    }
+
+    /// Whether ANY durable codex-lane binding artifact still references the
+    /// session: an index record or a code-session sidecar on disk (review
+    /// #463 round-10 minor 4). Session deletion removes both, so `false`
+    /// means the session died mid-rebind — the report and the event stream
+    /// must not count a dead id as rebound.
+    pub fn binding_artifacts_exist(&self, session_id: &str) -> bool {
+        self.records.read().contains_key(session_id)
+            || code_session_sidecar_path(&self.path, session_id).exists()
+    }
+
+    /// Whether the session still owns a durable SavedSession record
+    /// (`<id>.json` beside the session directories). Retention deletes purge
+    /// the record and the session directory WITHOUT touching this index
+    /// (review #463 round-15 SF-B), so an index record here can outlive its
+    /// owner; a binding without an owner is inert — the plain lane's
+    /// `workspace_binding_owner_exists` refuses exactly this shape, and the
+    /// rebind scan/write passes gate on it the same way so a dead session is
+    /// never rewritten and never classified Rebound.
+    fn binding_owner_exists(&self, session_id: &str) -> bool {
+        crate::features::sessions::validate_session_id(session_id).is_ok()
+            && code_session_sidecar_root(&self.path)
+                .join(format!("{session_id}.json"))
+                .is_file()
     }
 
     /// Directory rebind (broken-link repair): translates every project
@@ -744,6 +789,13 @@ impl SessionAgentStore {
                 let Some(suffix) = Self::rebind_relative_suffix(&path, from) else {
                     continue;
                 };
+                // Owner re-check (review #463 round-15 SF-B, mirrors the
+                // plain lane's round-14 M2): retention deletes do not touch
+                // this index, so a record can outlive its session — a dead
+                // owner is never rewritten (and never reported as moved).
+                if !self.binding_owner_exists(session_id) {
+                    continue;
+                }
                 let next = if suffix.as_os_str().is_empty() {
                     to.to_path_buf()
                 } else {
@@ -774,6 +826,13 @@ impl SessionAgentStore {
         // never silently counted as success.
         let mut sidecar_rewritten: Vec<String> = Vec::new();
         for session_id in code_session_dir_ids(&self.path, "rebind sidecar rewrite") {
+            // Same owner gate as the index rewrite above (round-15 SF-B): a
+            // sidecar whose session record is gone belongs to a deleted
+            // session; rewriting it would resurrect a dead id into the
+            // report.
+            if !self.binding_owner_exists(&session_id) {
+                continue;
+            }
             let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
                 continue;
             };
@@ -891,39 +950,7 @@ impl SessionAgentStore {
             }
         }
         if !index_rekeys.is_empty() {
-            // Count only: the log must not carry plaintext session ids (CodeQL
-            // cleartext-logging, review #463 round 7).
-            eprintln!(
-                "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
-                index_rekeys.len()
-            );
-            let mut originals: Vec<(String, Option<PathBuf>)> =
-                Vec::with_capacity(index_rekeys.len());
-            {
-                let mut records = self.records.write();
-                for (session_id, path) in &index_rekeys {
-                    if let Some(record) = records.get_mut(session_id) {
-                        originals.push((
-                            session_id.clone(),
-                            record.workspace_path.replace(path.clone()),
-                        ));
-                    }
-                }
-            }
-            if let Err(error) = self.persist() {
-                // Same rollback contract as the index move above: memory must
-                // not claim a repair disk does not have. The command layer
-                // reports this run as failed; a rerun converges, because the
-                // sidecar already sits on the target and the next pass repairs
-                // the index again.
-                let mut records = self.records.write();
-                for (session_id, original) in originals {
-                    if let Some(record) = records.get_mut(&session_id) {
-                        record.workspace_path = original;
-                    }
-                }
-                return Err(error);
-            }
+            self.commit_index_rekeys(&index_rekeys)?;
         }
         // Post-pass fence (review #463 round-8 minor 8). The rebind gate
         // serializes rebinds only, so a concurrent bind/remove can land in the
@@ -932,10 +959,19 @@ impl SessionAgentStore {
         // the index catches exactly that (and any other late writer): a record
         // still bound under `from` after the whole rewrite is finally stale, so
         // the command layer counts the session as failed and a rerun converges
-        // it via the on-disk prefix scan.
+        // it via the on-disk prefix scan. This fence is a point-in-time read;
+        // the window between it and the command's return is covered by the
+        // command layer's symmetric post-lane rescan into `final_stale`
+        // (review #463 round-15 disclosure gap).
         {
             let records = self.records.read();
             for session_id in Self::records_still_under_workspace(&records, from) {
+                // The write passes skip dead owners by design (round-15
+                // SF-B); the fence must not flag them as "still under from"
+                // or a deleted session would be reported failed.
+                if !self.binding_owner_exists(&session_id) {
+                    continue;
+                }
                 if !sidecar_final_stale.iter().any(|sid| sid == &session_id) {
                     sidecar_final_stale.push(session_id);
                 }
@@ -945,6 +981,88 @@ impl SessionAgentStore {
             affected,
             sidecar_final_stale,
         })
+    }
+
+    /// Commits a batch of index re-keys with the rollback contract of the
+    /// index move above (review #463 round-10 Major 1, extracted so the
+    /// divergence repair inside `rebind_workspace_prefix` and the
+    /// command-driven stranded-index repair share one implementation): memory
+    /// must never claim a repair disk does not have, so a persist failure
+    /// rolls every mutated record back to its pre-call binding and errors —
+    /// the caller reports this run as failed. Convergence on the rerun is
+    /// command-driven, not lane-driven: neither `from` nor `to` prefix scan
+    /// reaches a record stranded at an intermediate target, so the rerun's
+    /// to-lane admission must surface the sidecar and call
+    /// [`Self::repair_stranded_index_records`] again.
+    fn commit_index_rekeys(&self, rekeys: &[(String, PathBuf)]) -> Result<()> {
+        // Count only: the log must not carry plaintext session ids (CodeQL
+        // cleartext-logging, review #463 round 7).
+        eprintln!(
+            "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
+            rekeys.len()
+        );
+        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::with_capacity(rekeys.len());
+        {
+            let mut records = self.records.write();
+            for (session_id, path) in rekeys {
+                if let Some(record) = records.get_mut(session_id) {
+                    originals.push((
+                        session_id.clone(),
+                        record.workspace_path.replace(path.clone()),
+                    ));
+                }
+            }
+        }
+        if let Err(error) = self.persist() {
+            let mut records = self.records.write();
+            for (session_id, original) in originals {
+                if let Some(record) = records.get_mut(&session_id) {
+                    record.workspace_path = original;
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Re-keys index records that survived a divergence-repair persist
+    /// failure onto the sidecar's authoritative target (review #463 round-10
+    /// Major 1). The stranded shape: run 1 (from→to) delivered the index but
+    /// both sidecar passes failed; run 2 (from→to2) moved the sidecar and
+    /// then failed to persist the re-key — index@`to`, sidecar@`to2`. Run 3
+    /// (from→to2) matches neither prefix in either store pass, so the lane
+    /// alone reports an empty success while the index record still points at
+    /// the vanished `to` and boot restore (which skips sidecars while the
+    /// index holds a code record) keeps resurrecting it. The command layer
+    /// detects the strand via its to-lane scan — the sidecar surfaces the
+    /// session, the index disagrees — and drives this repair; it must run
+    /// BEFORE the metadata loop so a persist failure leaves the metadata
+    /// stale and the rerun re-admits (and re-repairs) the session.
+    ///
+    /// Records already sitting on their target are skipped (idempotent); the
+    /// returned list holds only the actually re-keyed session ids.
+    pub fn repair_stranded_index_records(
+        &self,
+        targets: &[(String, PathBuf)],
+    ) -> Result<Vec<String>> {
+        let mut rekeys = Vec::new();
+        {
+            let records = self.records.read();
+            for (session_id, path) in targets {
+                if records
+                    .get(session_id)
+                    .is_some_and(|record| record.workspace_path.as_ref() != Some(path))
+                {
+                    rekeys.push((session_id.clone(), path.clone()));
+                }
+            }
+        }
+        if rekeys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let repaired = rekeys.iter().map(|(sid, _)| sid.clone()).collect();
+        self.commit_index_rekeys(&rekeys)?;
+        Ok(repaired)
     }
 
     pub fn set_acp_session(
@@ -1269,6 +1387,13 @@ pub fn validate_codex_project_workspace(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rebind scan/write passes gate on a durable SavedSession record
+    /// (review #463 round-15 SF-B); store-layer tests create it directly.
+    fn touch_owner_record(store_path: &Path, session_id: &str) {
+        let record = code_session_sidecar_root(store_path).join(format!("{session_id}.json"));
+        fs::write(record, "{}").unwrap();
+    }
 
     #[test]
     fn backend_aliases_are_stable() {
@@ -1662,6 +1787,9 @@ mod tests {
         store
             .bind_code_native_session("s4", CodexWorkspaceKind::Project, Some(root.join("from-x")))
             .unwrap();
+        for sid in ["s1", "s2", "s3", "s4"] {
+            touch_owner_record(&store.path, sid);
+        }
 
         let matched = store.sessions_under_workspace(&from);
         // s1 matches in both the index and the sidecar; dedupe by session_id
@@ -1725,6 +1853,7 @@ mod tests {
             },
         )
         .unwrap();
+        touch_owner_record(&store.path, "orphan");
         // The candidate set covers off-index orphans too (review #463 M6):
         // the fence no longer misses orphans.
         let matched = store.sessions_under_workspace(&root.join("from"));
@@ -1774,6 +1903,7 @@ mod tests {
         store
             .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
             .unwrap();
+        touch_owner_record(&store.path, "s1");
 
         // Reproduce the interrupted run-1 end state directly: the index move
         // persisted but both sidecar passes failed, so the index sits at `to`
@@ -1810,6 +1940,143 @@ mod tests {
         );
         let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
         assert_eq!(sidecar.workspace_path.as_deref(), Some(to2.as_path()));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_repairs_a_stranded_index_record_the_lanes_cannot_reach() {
+        // review #463 round-10 Major 1: run 1 (from→to) delivered the index
+        // but both sidecar passes failed; run 2 (from→to2) moved the sidecar
+        // and its divergence re-key failed to persist — index@`to`,
+        // sidecar@`to2`. Run 3 (from→to2) matches NEITHER prefix in either
+        // store pass, so the lane alone reports an empty success while the
+        // index keeps pointing at the vanished `to`. The command's to-lane
+        // scan surfaces the sidecar, detects the disagreement, and drives
+        // the repair — the convergence the old rollback comment promised.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-stranded-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        let to2 = root.join("to2");
+        for dir in [&from, &to, &to2] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        touch_owner_record(&store.path, "s1");
+
+        // The run-2 persist-failure end state, constructed directly: the index
+        // move rolled back to its pre-run value (`to`), the sidecar write
+        // survived (`to2`).
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
+        }
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "s1"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(to2.clone()),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+
+        // The lane alone cannot converge it: no index record and no sidecar
+        // sits under `from`, and `to` is not under `to2`.
+        let run3 = store.rebind_workspace_prefix(&from, &to2).unwrap();
+        assert!(run3.affected.is_empty());
+        assert!(run3.sidecar_final_stale.is_empty());
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "precondition: the lane leaves the stranded index record at `to`"
+        );
+
+        // The command-driven repair re-keys it onto the sidecar's target.
+        let repaired = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert_eq!(repaired, vec!["s1".to_string()]);
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to2.as_path()),
+            "the index converges onto the sidecar-authoritative target"
+        );
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(to2.as_path()));
+
+        // Idempotent: an already-converged record is skipped, not rewritten.
+        let again = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert!(again.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn stranded_index_repair_rolls_back_when_persist_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-stranded-persist-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        let to2 = root.join("to2");
+        for dir in [&from, &to, &to2] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        touch_owner_record(&store.path, "s1");
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
+        }
+
+        // Occupy the persist tmp path with a directory so the write fails
+        // deterministically (same injection shape as the projects-store
+        // persist-failure test).
+        let tmp = store.path.with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .expect_err("a persist failure must be reported");
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "memory must roll back to the pre-repair binding, not claim a repair disk does not have"
+        );
+
+        // Clearing the obstruction converges on a same-process retry.
+        fs::remove_dir(&tmp).unwrap();
+        let repaired = store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .unwrap();
+        assert_eq!(repaired, vec!["s1".to_string()]);
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to2.as_path())
+        );
 
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1924,6 +2191,7 @@ mod tests {
             },
         )
         .unwrap();
+        touch_owner_record(&store.path, "orphan-deny");
         // Indexed native code session: both the rewrite pass and the retry
         // pass try to rewrite its sidecar.
         store
@@ -1933,6 +2201,7 @@ mod tests {
                 Some(from.clone()),
             )
             .unwrap();
+        touch_owner_record(&store.path, "indexed-deny");
         // Occupy the temp-file path both sessions persist through: writing
         // code-session.json.tmp fails immediately and rename is never
         // reached — a cross-platform-stable simulation of a persist failure.
@@ -1975,6 +2244,119 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// review #463 round-15 SF-D: the stranded-index detector's authority
+    /// accessor must read the SIDECAR, not the index (round-14 R1's vehicle).
+    /// A wiring swap back to code_project_workspace — verbatim the R1 bug —
+    /// must fail red.
+    #[test]
+    fn code_sidecar_workspace_reads_the_sidecar_not_the_index() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-sidecar-accessor-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let sidecar_path = root.join("real-sidecar-target");
+        let index_path = root.join("stale-index-target");
+        fs::create_dir_all(&sidecar_path).unwrap();
+        fs::create_dir_all(&index_path).unwrap();
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(sidecar_path.clone()),
+            )
+            .unwrap();
+        // Divergence shape: the index record disagrees with the sidecar.
+        {
+            let mut records = store.records.write();
+            records.get_mut("s1").unwrap().workspace_path = Some(index_path.clone());
+        }
+        assert_eq!(
+            store.code_sidecar_workspace("s1").as_deref(),
+            Some(sidecar_path.as_path()),
+            "the accessor must return the sidecar's path, not the index's"
+        );
+        assert_eq!(
+            store.code_project_workspace("s1").as_deref(),
+            Some(index_path.as_path()),
+            "precondition: the index genuinely disagrees"
+        );
+        // A temporary binding carries no project workspace.
+        store
+            .bind_code_native_session("tmp-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        assert_eq!(store.code_sidecar_workspace("tmp-1"), None);
+        // An unknown id reads as absent.
+        assert_eq!(store.code_sidecar_workspace("never-bound"), None);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// review #463 round-15 SF-B: retention deletes purge the SavedSession
+    /// record and the session directory WITHOUT touching this index, so an
+    /// index record can outlive its owner. The rebind scan and both write
+    /// passes gate on the durable owner record: a dead session is never
+    /// rewritten, never moved, and never reported — the plain lane's
+    /// workspace_binding_owner_exists rule mirrored.
+    #[test]
+    fn rebind_skips_sessions_whose_owner_record_is_gone() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-owner-gate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .bind_code_native_session("live", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        store
+            .bind_code_native_session("dead", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        touch_owner_record(&store.path, "live");
+        touch_owner_record(&store.path, "dead");
+        // Retention shape: the record (and the session directory) is gone,
+        // the index entry survives.
+        fs::remove_file(code_session_sidecar_root(&store.path).join("dead.json")).unwrap();
+
+        let matched = store.sessions_under_workspace(&from);
+        assert!(
+            matched.iter().all(|(sid, _)| sid != "dead"),
+            "the scan must not surface a session whose owner record is gone"
+        );
+        assert!(matched.iter().any(|(sid, _)| sid == "live"));
+
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(outcome.sidecar_final_stale.is_empty());
+        assert!(
+            outcome.affected.iter().all(|(sid, _)| sid != "dead"),
+            "a dead session is never rewritten or reported as moved"
+        );
+        assert_eq!(
+            store.get("dead").workspace_path.as_deref(),
+            Some(from.as_path()),
+            "the dead record stays untouched"
+        );
+        assert_eq!(
+            store.get("live").workspace_path.as_deref(),
+            Some(to.as_path()),
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn rebind_prefix_rolls_back_memory_when_index_persist_fails() {
         // review #463 minor: persist() runs after the in-memory index
@@ -1999,6 +2381,7 @@ mod tests {
         store
             .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
             .unwrap();
+        touch_owner_record(&store.path, "s1");
 
         // Occupy the index's temp-file path with a directory: fs::write to a
         // directory fails on every platform, so persist() fails

@@ -114,14 +114,21 @@ const expectedProtocolHashes = {
   // inside the listener callback spans (no invoke/listen call-set change).
   computerUse: '9d0bad5bab784eb784a92b8df52ff7e83adef94cc0f6cb7bdbb99f913217e5b8',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
+  // Recomputed for the shared-helper dedup combined with the rebind wave's
+  // workspace_binding redaction and retry-payload changes (see batch note
+  // above; recomputed against the merged tree). Verified unchanged by the
+  // #576 merge: the dead-code cleanup's markResolved removal lives in the
+  // shared payload, not in bridge.js's invoke/listen surface.
+  orchestration: 'fb61de464f7670ac7d42c88e1907360a1ca094058196e4f5d3ab9c7508677ab2',
   // Recomputed for the shared-helper dedup (see batch note above).
-  orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
   // Recomputed for the dead-code cleanup: the caller-less openInSystem /
   // openExternalUrl wrappers (open_in_system / open_external_url invokes) were
   // removed; artifact external-open traffic goes through openArtifactExternal
   // (open_artifact_window / open_in_system) and the whitelisted
   // openUserExternalUrl, so the runtime command surface is unchanged.
-  artifacts: 'bbf04dfb8e171cdd7db46fcd5f1cf095a885f978c6b26ed96f9891da7fb95822',
+  // Recomputed against the #463-merge tree (the rebind wave's artifact-path
+  // redaction composes with the cleanup).
+  artifacts: '3e78b6ae64c0e3659ecf32f2987d32d09727a00375ca13746f1a414843dd1b0c',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -212,12 +219,20 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
+  // Recomputed again for review #463 round-13: the workspace_rebound
+  // mark-stamp block moved verbatim into the shared
+  // applyWorkspaceReboundMark (it was byte-duplicated with the web lane),
+  // so the session:list_changed listener body shrinks to the delegation —
+  // no new invoke or listen entries (the extractor scans raw source, so
+  // body/comment text is part of the digest). Verified unchanged by the
+  // #576 merge.
+  sessions: 'af869efe2446b3025f7dff7d009f788dacd7a7e204f6cb7d83535620a48c4d10',
+  // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
   settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
-  // Recomputed for the dead-code cleanup: the never-emitted
+  // Recomputed for the audit dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
   // machinery were deleted with it (the backend download loop no longer has a

@@ -1019,6 +1019,8 @@ function leaveSessionView(id) { return pinvouSharedtauriSessions().leaveSessionV
 
 function applyDeletedSession(id) { return pinvouSharedtauriSessions().applyDeletedSession(id); }
 
+function applyWorkspaceReboundMark(payload) { return pinvouSharedtauriSessions().applyWorkspaceReboundMark(payload); }
+
   if (typeof listen === "function") {
     listen("session:deleted", function (event) {
       const payload = event && event.payload || {};
@@ -1026,7 +1028,17 @@ function applyDeletedSession(id) { return pinvouSharedtauriSessions().applyDelet
     }).catch(function (error) {
       console.error("[sessions] session:deleted listener failed", error);
     });
-    listen("session:list_changed", function () {
+    listen("session:list_changed", function (event) {
+      const payload = event && event.payload || {};
+      // The rebind command stamps the sessions whose persisted artifact paths
+      // its lanes rebased (rebound, failed AND post-busy ids — review #463
+      // round-10 Major 2 + round-B Major 1). The mark carries the rebind
+      // geometry as an ordered segment chain consumed by
+      // bridge/artifact-tracker.js (rebaseArtifactPathsForRebind /
+      // sessionRecentlyRebound); the stamp/append/refresh semantics live in
+      // the shared applyWorkspaceReboundMark (round-13 — previously
+      // byte-duplicated with the web lane).
+      applyWorkspaceReboundMark(payload);
       refreshHistoryList().catch(function (error) {
         console.error("[sessions] session:list_changed refresh failed", error);
       });
