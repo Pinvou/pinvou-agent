@@ -302,30 +302,36 @@ assert.equal(allowed.has('list_sessions'), false,
 assert.equal(allowed.has('list_archived_sessions'), false,
   'Web must not call the native archived list that exposes host workspace metadata');
 
-// Aux chat domain: platform/web/bridge.js's auxChatEnsure/auxChatDiscard
-// invoke these two commands directly; sending goes through the existing
-// web_access_chat (an aux session can be store.load'ed by id and is not
-// affected by the list_sessions filter). Missing either entry would make the
-// Web aux chat fail silently.
+// Aux chat domain: platform/web/bridge.js's auxChatEnsure/auxChatDiscard/
+// auxChatReset invoke these commands directly; sending goes through the
+// existing web_access_chat (an aux session can be store.load'ed by id and is
+// not affected by the list_sessions filter). Missing any entry would make
+// the Web aux chat fail silently.
 for (const command of [
   'get_or_create_aux_session',
   'discard_aux_session',
+  'reset_aux_session',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (aux chat)`);
 }
 assert.equal(allowed.has('get_aux_session'), false,
   'the dead get_aux_session command must stay removed from the Web surface');
 
-// get_or_create_aux_session crosses the Web/Relay boundary, so it must return
-// the minimal AuxSessionBinding projection (id only) — never the full
-// SessionMetadata, whose inherited host workspace path would leak to the
-// browser (the redaction invariant behind redact_session_metadata_for_web).
+// get_or_create_aux_session and reset_aux_session cross the Web/Relay
+// boundary, so they must return the minimal AuxSessionBinding projection (id
+// only) — never the full SessionMetadata, whose inherited host workspace
+// path would leak to the browser (the redaction invariant behind
+// redact_session_metadata_for_web).
 assert.match(commands, /pub struct AuxSessionBinding \{\s*pub id: String,?\s*\}/,
   'the aux session command must return an id-only projection');
 assert.match(commands, /fn get_or_create_aux_session\([\s\S]{0,300}?-> Result<AuxSessionBinding, String>/,
   'get_or_create_aux_session must not return raw SessionMetadata across the Web boundary');
 assert.match(commands, /get_or_create_aux_session\(&session_id\)[\s\S]{0,200}?AuxSessionBinding \{ id: metadata\.id \}/,
   'the aux session projection must be built from the store metadata without exposing it');
+assert.match(commands, /fn reset_aux_session\([\s\S]{0,400}?-> Result<AuxSessionBinding, String>/,
+  'reset_aux_session must not return raw SessionMetadata across the Web boundary');
+assert.match(commands, /fn reset_aux_session[\s\S]{0,600}?WebSessionOperation::ResetAuxSession/,
+  'reset_aux_session errors must fold into the stable web_session code');
 
 assert.equal(allowedEvents.has('acp:event'), true,
   'the shared ACP timeline must reach WebUI through the normal event transport');

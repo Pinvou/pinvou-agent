@@ -531,6 +531,42 @@ where
     delete(session_id).await
 }
 
+/// The gated delete half of the atomic aux reset (M6): resolve the task's
+/// derived aux id and delete it through the exact turn gate used by lazy
+/// spawn and send (`delete_chat_session_with_gate`), so a queued sender
+/// observes the completed delete instead of resurrecting the session. Returns
+/// the deleted aux id, or `None` when no aux record exists (idempotent —
+/// the create half then simply makes the fresh session). Never substitute a
+/// bare `store.delete`: the mutation test
+/// `aux_reset_delete_waits_for_the_turn_gate` holds the gate and goes red if
+/// this body proceeds without it.
+async fn reset_aux_session_delete_with_gate<F, Fut, G>(
+    turn_locks: &SessionTurnLocks,
+    store: &SessionStore,
+    main_id: &str,
+    evict_locked: F,
+    forget: G,
+) -> Result<Option<String>>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = ()>,
+    G: FnOnce(&str),
+{
+    let Some(aux_id) = store.aux_session_id(main_id) else {
+        return Ok(None);
+    };
+    let evict_id = aux_id.clone();
+    delete_chat_session_with_gate(
+        turn_locks,
+        store,
+        &aux_id,
+        || evict_locked(evict_id),
+        || forget(aux_id.as_str()),
+    )
+    .await?;
+    Ok(Some(aux_id))
+}
+
 #[cfg(test)]
 fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
 where
@@ -1992,6 +2028,52 @@ impl EnginePool {
             );
         }
         Ok(())
+    }
+
+    /// Atomically reset a task's auxiliary conversation (M6): delete the
+    /// existing aux session through the same turn gate as
+    /// `discard_aux_session` / chat delete, then create a fresh one and
+    /// return its metadata together with the deleted aux id (so the caller
+    /// can emit `session:deleted`). One primitive, one outcome — the
+    /// frontend's old two-invoke restart (discard, then ensure) had no
+    /// server-side ordering, and under the web relay's non-FIFO premise an
+    /// orphaned discard could execute after the recreate and destroy the
+    /// fresh transcript.
+    ///
+    /// Critical section: the aux session's turn gate, held across engine
+    /// reclaim + disk delete (inside `delete_chat_session_with_gate`). The
+    /// create half deliberately runs outside the gate:
+    /// `SessionStore::get_or_create_aux_session` is commutative — concurrent
+    /// creators converge on the same derived id with the same content
+    /// (store.rs documents why no creation lock is needed) — so a concurrent
+    /// `ensure` landing between the two halves yields the same end state as
+    /// any serialized order: exactly one fresh aux session. Deadlock-freedom:
+    /// the only graph lock this method acquires is the aux id's turn_lock
+    /// (taken and released inside the delete half); the create half takes no
+    /// turn lock, and the store-internal locks it touches are leaf locks
+    /// downstream of `turn_lock` in the documented order (turn_lock → pool →
+    /// scheduled_mutation → sidecar writes). A concurrent `ensure` takes no
+    /// locks at all, and a concurrent `discard` contends for the same single
+    /// turn_lock without holding a second lock, so no wait-cycle can form.
+    pub(crate) async fn reset_aux_chat_session(
+        &self,
+        main_id: &str,
+    ) -> Result<(
+        Option<String>,
+        deepseek_tui::session_manager::SessionMetadata,
+    )> {
+        let deleted_aux = reset_aux_session_delete_with_gate(
+            &self.turn_locks,
+            &self.store,
+            main_id,
+            |aux_id| async move {
+                self.evict_locked(&aux_id).await;
+            },
+            |aux_id| self.forget_session(aux_id),
+        )
+        .await?;
+        let metadata = self.store.get_or_create_aux_session(main_id)?;
+        Ok((deleted_aux, metadata))
     }
 
     /// Eval-only deletion keeps ordinary delete semantics, but also schedules the existing
@@ -3481,10 +3563,10 @@ mod scheduled_model_tests {
         entry_is_fresh, evict_if_idle_with_gates, forward_edit_resend_with_reminder,
         forward_forced_turn_restrict, generation_matches, identity_for_active_model,
         identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
-        rebind_evict_with_gates, rebind_evictable, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
-        turn_restrict_tools, user_display_message,
+        rebind_evict_with_gates, rebind_evictable, reset_aux_session_delete_with_gate,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
+        resolve_spawn_model, retry_shutdown_sends, scheduled_profile_after_turn_gate,
+        should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -5167,6 +5249,146 @@ mod scheduled_model_tests {
         assert!(!fake_engine_present.load(Ordering::Acquire));
         assert!(forgotten.load(Ordering::Acquire));
         assert!(store.load(&session_id).is_err());
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// M6 mutation pin: the aux reset's delete half must run under the aux
+    /// session's turn gate — replacing the gated delete with a bare
+    /// `store.delete` lets the body complete while a turn (the blocker below)
+    /// still owns the gate, and the "must wait" assertions go red.
+    #[tokio::test]
+    async fn aux_reset_delete_waits_for_the_turn_gate() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-reset-gate-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let aux_id = store
+            .get_or_create_aux_session(&main_id)
+            .expect("aux session")
+            .id;
+        let locks = SessionTurnLocks::default();
+        let gate = locks.for_session(&aux_id).await;
+        // A running aux turn owns the gate; the reset's delete half must queue behind it.
+        let blocker = gate.lock().await;
+        let evicted = Arc::new(AtomicBool::new(false));
+        let forgotten = Arc::new(AtomicBool::new(false));
+
+        let reset_locks = locks.clone();
+        let reset_store = store.clone();
+        let reset_main = main_id.clone();
+        let reset_evicted = evicted.clone();
+        let reset_forgotten = forgotten.clone();
+        let reset_aux = aux_id.clone();
+        let reset = tokio::spawn(async move {
+            reset_aux_session_delete_with_gate(
+                &reset_locks,
+                &reset_store,
+                &reset_main,
+                |evict_id| {
+                    assert_eq!(
+                        evict_id, reset_aux,
+                        "the gated delete must target the derived aux id"
+                    );
+                    let flag = reset_evicted.clone();
+                    async move {
+                        flag.store(true, Ordering::Release);
+                    }
+                },
+                move |_forget_id| {
+                    reset_forgotten.store(true, Ordering::Release);
+                },
+            )
+            .await
+        });
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !evicted.load(Ordering::Acquire),
+            "the reset's engine reclaim must wait for the aux turn gate"
+        );
+        assert!(
+            store.load(&aux_id).is_ok(),
+            "the aux record must survive while the turn gate is held"
+        );
+        drop(blocker);
+        drop(gate);
+
+        let deleted = reset
+            .await
+            .expect("reset task joins")
+            .expect("gated delete");
+        assert_eq!(deleted.as_deref(), Some(aux_id.as_str()));
+        assert!(evicted.load(Ordering::Acquire));
+        assert!(forgotten.load(Ordering::Acquire));
+        assert!(
+            store.load(&aux_id).is_err(),
+            "the aux record must be deleted once the gate frees"
+        );
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// M6: with no aux record the reset's delete half is an idempotent no-op
+    /// (the create half then simply makes the fresh session).
+    #[tokio::test]
+    async fn aux_reset_delete_is_a_no_op_without_an_aux() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-reset-absent-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let locks = SessionTurnLocks::default();
+        let deleted = reset_aux_session_delete_with_gate(
+            &locks,
+            &store,
+            &main_id,
+            |_evict_id| async { panic!("no aux engine to reclaim") },
+            |_forget_id| panic!("no aux session to forget"),
+        )
+        .await
+        .expect("no-op reset delete");
+        assert_eq!(deleted, None);
 
         match previous_home {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

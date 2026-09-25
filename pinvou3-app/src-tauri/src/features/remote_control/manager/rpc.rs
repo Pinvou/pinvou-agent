@@ -421,6 +421,7 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "get_active_persona"
         | "get_mode_state"
         | "get_or_create_aux_session"
+        | "reset_aux_session"
         | "get_session_model_id"
         | "get_session_persona_events"
         | "get_session_pinvou_reviews"

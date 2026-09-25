@@ -3375,12 +3375,16 @@ mod tests {
                 "{command} must be Web-scoped"
             );
         }
-        // The two auxiliary conversation (aux session) commands: the WebUI
-        // auxChat domain (bridge.js auxChatEnsure/auxChatDiscard) depends on
-        // them directly; once allowed, the central validator's
+        // The auxiliary conversation (aux session) commands: the WebUI
+        // auxChat domain (bridge.js auxChatEnsure/auxChatDiscard/auxChatReset)
+        // depends on them directly; once allowed, the central validator's
         // Required("sessionId") scope constraint pins them to an explicit
         // session.
-        for command in ["get_or_create_aux_session", "discard_aux_session"] {
+        for command in [
+            "get_or_create_aux_session",
+            "discard_aux_session",
+            "reset_aux_session",
+        ] {
             assert!(
                 policy.commands.contains(command),
                 "{command} must be allowed on Web (aux chat)"
@@ -3694,6 +3698,7 @@ mod tests {
             ("web_access_chat", "sessionId"),
             ("get_or_create_aux_session", "sessionId"),
             ("discard_aux_session", "sessionId"),
+            ("reset_aux_session", "sessionId"),
             ("delete_session", "id"),
             ("rename_session", "id"),
             ("set_session_model", "sessionId"),
@@ -3731,6 +3736,10 @@ mod tests {
         assert!(!web_scope_admits_absent_session(
             "get_or_create_aux_session"
         ));
+        // M6: reset CREATES the fresh session itself, so like the create leg
+        // it needs the parent record and must fail admission on an absent
+        // main — only the idempotent discard leg skips the load.
+        assert!(!web_scope_admits_absent_session("reset_aux_session"));
         assert!(!web_scope_admits_absent_session("web_access_chat"));
         assert!(!web_scope_admits_absent_session("delete_session"));
     }

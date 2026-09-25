@@ -14,6 +14,7 @@
 //!
 //! Auxiliary conversation (aux session; not in the ordinary session list):
 //! - `get_or_create_aux_session(session_id)` / `discard_aux_session(session_id)`
+//! - `reset_aux_session(session_id)` (atomic discard+recreate, M6)
 
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;

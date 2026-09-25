@@ -83,6 +83,7 @@
     "read_scheduled_task",
     "record_authority_sync_diagnostics",
     "rename_session",
+    "reset_aux_session",
     "resume_scheduled_task",
     "run_scheduled_task_now",
     "save_session_artifacts",

@@ -1091,6 +1091,61 @@ async fn discard_aux_session_inner(
     Ok(())
 }
 
+/// Atomically restart a main session's auxiliary conversation (M6): if an
+/// aux session exists, delete it through the pool's turn gate, then create a
+/// fresh one, returning the new binding. This replaces the frontend's old
+/// two-invoke restart (`discard_aux_session` then
+/// `get_or_create_aux_session`), whose halves had no server-side ordering —
+/// under the web relay's non-FIFO premise an orphaned discard could execute
+/// after the recreate and destroy the fresh transcript. One command, one
+/// outcome: there is no second invoke to orphan. The lock-graph reasoning
+/// for the shared critical section lives on
+/// `EnginePool::reset_aux_chat_session`.
+#[tauri::command]
+pub async fn reset_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<AuxSessionBinding, String> {
+    // Same folding as the two sibling commands: the command is
+    // web-allowlisted and the native chains embed host paths, which must not
+    // cross the relay to browser consoles; the detail stays in the desktop
+    // log via web_session_result.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::ResetAuxSession,
+        reset_aux_session_inner(session_id, app, store, pool).await,
+    )
+}
+
+async fn reset_aux_session_inner(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<AuxSessionBinding, String> {
+    // Reset CREATES, so its guards mirror get_or_create_aux_session, not the
+    // idempotent discard: chat kind only, and the main record must exist.
+    ensure_chat_session(&store, &session_id, "reset_aux_session")?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("reset_aux_session: main session not found: {e:#}"))?;
+    let (deleted_aux, metadata) = pool
+        .reset_aux_chat_session(&session_id)
+        .await
+        .map_err(|e| format!("reset_aux_session: {e:#}"))?;
+    // Same post-delete notification as discard_aux_session: the aux id is
+    // derived (`aux-{parent_id}`), so the fresh session reuses it and the
+    // deletion event is what tells every client to drop the old transcript's
+    // buffer before the next snapshot read.
+    if let Some(aux_id) = deleted_aux {
+        let payload = serde_json::json!({ "id": &aux_id });
+        let _ = app.emit("session:deleted", payload.clone());
+        crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
+    }
+    Ok(AuxSessionBinding { id: metadata.id })
+}
+
 /// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
 /// 在 TurnComplete 时落盘。重启/切换 session 后,
 /// 从 SavedSession.artifacts 重建前端产物列表。
