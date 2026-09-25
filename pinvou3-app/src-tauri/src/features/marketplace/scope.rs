@@ -46,16 +46,34 @@ pub struct DisabledBundlesFile {
     /// see skill_materialization.rs). Moved here with the skills side.
     #[serde(default)]
     pub project_skills_enabled: bool,
+    /// Scopes whose recorded consent was destroyed by a quarantined corrupt
+    /// file and has not been re-stated by the user since.
+    ///
+    /// Quarantining renames the corrupt bytes aside, which leaves the
+    /// canonical path *absent* — and absent is the fresh-install path, which
+    /// resolves to "nothing was ever disabled". Without this set the
+    /// quarantine therefore converts a correctly fail-closed degraded read
+    /// into a silent, permanent fail-open: every tool, connector and skill
+    /// the user had switched off in an AllowAll scope (which is what ordinary
+    /// chat resolves to) becomes callable again with no notification.
+    ///
+    /// A listed scope resolves exactly like a degraded read — deny every
+    /// installed package. An explicit write to that scope is the user
+    /// re-stating consent and clears its entry, so the state converges
+    /// through the ordinary UI instead of needing a repair tool.
+    #[serde(default)]
+    pub awaiting_reconsent: std::collections::BTreeSet<String>,
     /// 未知键原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
     /// Set when this value is a *degraded* stand-in rather than the user's
     /// recorded consent: the file exists but could not be read or parsed.
     /// Never serialized — a writer refuses on the same condition, so a
-    /// degraded value can never be persisted.
+    /// degraded value can never be persisted. The durable counterpart, for
+    /// consent already lost to a quarantine, is `awaiting_reconsent`.
     ///
     /// Resolution treats a degraded read as "deny everything installed" in
-    /// every scope (see [`resolve_scope_disabled_ids_with`]). Returning the
+    /// every scope (see `resolve_scope_disabled_ids_with`). Returning the
     /// empty default instead would silently re-enable every tool, connector
     /// and skill the user had switched off — an unreadable consent file must
     /// not widen what the model may call.
@@ -65,6 +83,23 @@ pub struct DisabledBundlesFile {
 
 fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
+}
+
+/// The fail-closed placeholder persisted after a corrupt file is quarantined:
+/// every scope listed in `awaiting_reconsent`, so resolution denies every
+/// installed package until the user re-states that scope's switches.
+///
+/// Built from the legacy migration rather than `Default` so a home that still
+/// carries the pre-#287 files recovers whatever they record; anything the
+/// migration restores is real recorded consent, and the fail-closed marker
+/// applies on top of it.
+fn awaiting_reconsent_file() -> DisabledBundlesFile {
+    let mut file = migrate_from_legacy_files();
+    file.awaiting_reconsent = SessionMode::ALL
+        .iter()
+        .map(|mode| mode.as_str().to_string())
+        .collect();
+    file
 }
 
 /// In-process serialization for `disabled_bundles.json` read-modify-write.
@@ -315,11 +350,20 @@ fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
 /// (sub-second-unique name, so even a same-second second corruption cannot
 /// destroy the first evidence):
 /// rebuilding from the default and saving would wipe every other scope's
-/// recorded denies on this write. The next write after a quarantine rebuilds
-/// from the migration default with the evidence preserved. The in-loader
-/// heal saves are best-effort — the caller's final save is the one that must
-/// succeed, and its failure propagates. Must run under
-/// [`with_disabled_bundles_lock`].
+/// recorded denies on this write.
+///
+/// The quarantine leaves the canonical path absent, which every reader would
+/// otherwise take as the fresh-install path — i.e. "nothing was ever
+/// disabled", silently re-enabling everything the user had switched off. So
+/// the quarantine is immediately followed by persisting a rebuilt file that
+/// lists every scope in `awaiting_reconsent`, which resolves fail-closed
+/// until the user re-states consent for that scope. This write still refuses:
+/// the caller computed its intent against consent state that no longer
+/// exists, and a retry now starts from a readable file.
+///
+/// The in-loader heal saves are best-effort — the caller's final save is the
+/// one that must succeed, and its failure propagates. Must run under
+/// `with_disabled_bundles_lock`.
 fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
@@ -349,11 +393,27 @@ fn load_disabled_bundles_file_locked() -> Result<DisabledBundlesFile, String> {
             // keeps a same-second second corruption from renaming over the
             // first capture (rename silently replaces on Unix).
             let quarantined = match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                Ok(quarantine) => format!(
-                    "; the corrupt bytes are quarantined at {} and the next write rebuilds \
-                     from defaults",
-                    quarantine.display()
-                ),
+                Ok(quarantine) => {
+                    // The rename left the path absent, which reads as a fresh
+                    // install. Re-establish a readable file that denies every
+                    // installed package in every scope until the user
+                    // re-states consent, so the quarantine cannot widen what
+                    // the model may call.
+                    let marker = awaiting_reconsent_file();
+                    match save_disabled_bundles_file(&marker) {
+                        Ok(()) => format!(
+                            "; the corrupt bytes are quarantined at {} and every scope now \
+                             denies all installed packages until you re-state its switches",
+                            quarantine.display()
+                        ),
+                        Err(save_error) => format!(
+                            "; the corrupt bytes are quarantined at {} but the fail-closed \
+                             placeholder could not be written ({save_error}) — re-check your \
+                             tool switches before the next session",
+                            quarantine.display()
+                        ),
+                    }
+                }
                 Err(quarantine_error) => format!(
                     "; quarantining failed ({quarantine_error}) — repair or remove the file \
                      before writing"
@@ -723,6 +783,13 @@ where
         return denyall_default();
     }
     let key = scope.as_str();
+    // Consent for this scope was destroyed by a quarantine and has not been
+    // re-stated. Same fail-closed answer as a degraded read — the difference
+    // is only that this one is durable, because the corrupt bytes are gone
+    // and nothing else on disk still says the user had switched anything off.
+    if file.awaiting_reconsent.contains(key) {
+        return denyall_default();
+    }
     if file.initialized.contains(key) {
         return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
     }
@@ -769,6 +836,11 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         let mut file = load_disabled_bundles_file_locked()?;
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
+        // An explicit write IS the user re-stating this scope's consent, so
+        // it converges the post-quarantine fail-closed state back to the
+        // recorded one. Per scope: toggling `plain` must not silently
+        // re-enable everything in `code`.
+        file.awaiting_reconsent.remove(&key);
         file.initialized.insert(key);
         save_disabled_bundles_file(&file)
     })
@@ -827,6 +899,10 @@ pub fn update_disabled_bundles_for(
         let mut file = file;
         let key = scope.as_str().to_string();
         file.scopes.insert(key.clone(), normalized);
+        // Re-stated consent for this scope; see `save_disabled_bundles_for`.
+        // The list the closure just edited was resolved fail-closed while the
+        // flag was set, so the write records exactly what the user now sees.
+        file.awaiting_reconsent.remove(&key);
         file.initialized.insert(key);
         save_disabled_bundles_file(&file)
     })
@@ -1116,6 +1192,12 @@ mod tests {
     /// default-based save would wipe them without evidence. The write is
     /// refused, the corrupt bytes are quarantined (renamed aside, preserved),
     /// and the NEXT write rebuilds from the migration default.
+    ///
+    /// The rename is immediately followed by writing a fail-closed placeholder
+    /// back to the canonical path, so the path must exist afterwards — an
+    /// absent file reads as a fresh install, i.e. "nothing was ever disabled".
+    /// `a_quarantine_keeps_denying_until_the_user_restates_consent` covers the
+    /// resolution side of that; here we only pin the evidence.
     #[test]
     fn corrupt_consent_file_refuses_the_write_and_quarantines() {
         with_temp_home("pinvou3-scope", || {
@@ -1130,9 +1212,19 @@ mod tests {
                 error.contains("corrupt") && error.contains("refusing"),
                 "the refusal must name the corruption: {error}"
             );
-            // The canonical file is gone (renamed aside) and the evidence is
-            // preserved verbatim under the timestamped quarantine name.
-            assert!(!path.exists(), "the corrupt file must be renamed aside");
+            // The corrupt bytes moved to the timestamped quarantine name, and
+            // the canonical path carries the fail-closed placeholder rather
+            // than being left absent.
+            assert!(
+                path.exists(),
+                "the quarantine must leave a readable file behind; an absent path reads as a \
+                 fresh install and silently re-enables everything the user had switched off"
+            );
+            assert_ne!(
+                std::fs::read_to_string(&path).unwrap(),
+                corrupt,
+                "the corrupt bytes must have been moved aside, not left in place"
+            );
             let mut evidence = std::fs::read_dir(path.parent().unwrap())
                 .unwrap()
                 .flatten()
@@ -1733,6 +1825,60 @@ mod tests {
             assert!(
                 !load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
                 "degraded read must deny in DenyAll scopes too"
+            );
+        });
+    }
+
+    /// The quarantine must not convert the fail-closed degraded read into a
+    /// silent, permanent fail-open.
+    ///
+    /// Quarantining renames the corrupt bytes away, and an ABSENT consent file
+    /// is the fresh-install path — which for the AllowAll `plain` scope that
+    /// ordinary chat resolves to means "nothing was ever disabled". Before the
+    /// `awaiting_reconsent` marker, the first write after a corruption
+    /// therefore re-enabled every tool the user had switched off, with no
+    /// notification and no expiry. This drives the real sequence: corrupt →
+    /// a writer runs and refuses → read.
+    #[test]
+    fn a_quarantine_keeps_denying_until_the_user_restates_consent() {
+        with_temp_home("pinvou3-scope-quarantine-reconsent", || {
+            let path = disabled_bundles_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{not json").unwrap();
+
+            // Any writer: it refuses this write and quarantines the bytes.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                .expect_err("a corrupt consent file must refuse the write");
+            assert!(
+                path.exists(),
+                "the quarantine must leave a readable file behind — an absent file reads as \
+                 a fresh install, i.e. nothing was ever disabled"
+            );
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.degraded,
+                "the rebuilt file parses; the fail-closed state is now durable, not degraded"
+            );
+            let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+            for builtin in builtin_cli_bundle_ids() {
+                assert!(
+                    denied.iter().any(|id| id == builtin),
+                    "after a quarantine the plain scope must still deny '{builtin}', got \
+                     {denied:?}"
+                );
+            }
+
+            // An explicit write to a scope IS the user re-stating consent, and
+            // converges that scope — and only that scope.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).is_empty(),
+                "re-stated consent for plain must be honoured verbatim"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+                "re-stating plain must not clear the fail-closed marker on code"
             );
         });
     }
