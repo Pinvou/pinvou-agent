@@ -75,10 +75,19 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
-// Only the benchmark-gated headless runner (agentic_task) warns about
-// retention eviction, so the re-export follows the same feature gate.
+// Only the benchmark-gated headless runner (agentic_task) mints headless ids
+// and warns about retention eviction, so both re-exports follow its gate.
+// Retention itself reaches `store` directly and needs neither.
+/// Re-export the headless session id prefix: the runner mints ids from it and
+/// retention keys the separate headless eviction budget on it, so the two must
+/// not drift into separate literals.
 #[cfg(feature = "benchmark-hooks")]
-pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
+pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
+/// Re-export the headless retention cap: it is the number the runner's
+/// eviction warning quotes, and quoting the chat cap there would name a budget
+/// headless runs no longer touch.
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
 /// Re-export the new-chat placeholder sentinel: the auto-rename trigger in
 /// the command layer must compare against the same value GUI-created and kept
 /// headless sessions carry, or a renamed constant silently breaks auto-rename.
@@ -150,6 +159,18 @@ pub struct SessionStore {
     /// 历史对话置顶表:session_id -> pinned_at。独立落盘到 `_pinned_sessions.json`,
     /// 不改 SavedSession 结构。
     pub(crate) pinned_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Whether the boot-time load of `_pinned_sessions.json` actually produced
+    /// the file's contents.
+    ///
+    /// `durable_pinned_sessions` falls back to the in-memory map when the file
+    /// cannot be read, on the reasoning that the boot map can only be a subset
+    /// and so can never widen the eviction set. That reasoning fails when the
+    /// file was ALREADY corrupt at boot: the load is a no-op on failure, so the
+    /// map is empty for the same reason the file is unusable, and the first
+    /// sweep — which `SessionStore::boot` runs immediately afterwards — would
+    /// exempt nothing and delete every pinned session. This flag lets the sweep
+    /// tell "no pins" from "pins unknown" and refuse to evict in the latter.
+    pub(crate) pinned_sessions_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
@@ -218,12 +239,19 @@ pub struct SessionStore {
     /// `manager.list_sessions()` 的进程内快照缓存。上游每次调用都会全目录
     /// read_dir + 逐文件前缀解析，而启动路径(boot 恢复/保留策略/AcpPool 元数据)
     /// 与每个 list 命令都会调它——同代元数据重复扫描 3+ 次。缓存以
-    /// `save_session_atomic`/`delete` 等 App 侧唯一写路径失效；绕过 App 写盘的
-    /// 外部进程改动不在守护范围(与上游每次现读的口径差异见 store.rs 注释)。
+    /// `save_session_atomic`/`delete` 等 App 侧唯一写路径失效。
+    ///
+    /// Entry = (generation, sessions-dir change token, snapshot). The
+    /// generation covers this process's writes; the token covers a peer
+    /// process's creates and deletes, which a headless `agent run` sharing
+    /// `PINVOU3_HOME` now produces under a live GUI. See
+    /// `SessionStore::sessions_dir_change_token` for what the token does and
+    /// does not observe.
     pub(crate) list_cache: Arc<
         RwLock<
             Option<(
                 u64,
+                Option<std::time::SystemTime>,
                 Arc<Vec<deepseek_tui::session_manager::SessionMetadata>>,
             )>,
         >,
