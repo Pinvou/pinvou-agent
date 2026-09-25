@@ -1813,7 +1813,7 @@ impl AppEngine {
 
     /// Turn submission for headless harnesses (L1 integration harness, live
     /// tests). Mirrors the production path: reserve the turn slot first, then
-    /// submit through [`Self::send_reserved_user_message`], the same shape as
+    /// submit through `Self::send_reserved_user_message`, the same shape as
     /// `EnginePool::send_user_message`. Production session turns call the
     /// reservation API through `EnginePool` instead; the reservation types are
     /// `pub(crate)`, so the integration-test process goes through this wrapper.
