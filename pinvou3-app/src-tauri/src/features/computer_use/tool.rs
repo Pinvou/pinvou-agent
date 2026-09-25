@@ -35,9 +35,7 @@ use deepseek_tui::tools::spec::{
 
 use super::audit::{AuditLog, AuditRecord};
 use super::backend::BackendHandle;
-use super::guard::{
-    ComputerUseShared, ConfirmationCheck, GuardRejection, is_secure_role, matches_t3_denylist,
-};
+use super::guard::{ComputerUseShared, GuardRejection, is_secure_role, matches_t3_denylist};
 use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
@@ -840,12 +838,21 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
             reason: "a password/secure field",
         });
     }
-    // The denylist matches the wider screening copy when the platform
-    // provided one: `name` is display-truncated, so a padded
-    // attacker-controlled label could otherwise push a consequential term
-    // past the match window.
-    let screening_text = element.screening_name.as_deref().unwrap_or(&element.name);
-    if matches_t3_denylist(screening_text) || matches_t3_denylist(&element.role) {
+    // `name_screening_hit` is the platform layer's denylist verdict on the
+    // **raw** accessible name: `name` is display-truncated, so matching only
+    // it here would let a padded attacker-controlled label push a
+    // consequential term past the window.
+    //
+    // The display name is matched too rather than trusting the flag alone.
+    // The flag is strictly the wider signal (the display name is a prefix of
+    // the raw one), so this adds no verdict a correct backend would have
+    // missed — but it means a backend that forgets to set the flag degrades
+    // to the old, narrower screening instead of silently disabling name
+    // screening altogether. The role is platform-bounded and matched directly.
+    if element.name_screening_hit
+        || matches_t3_denylist(&element.name)
+        || matches_t3_denylist(&element.role)
+    {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a consequential control (financial/send/delete/submit/consent)",
@@ -987,6 +994,72 @@ fn t3_screening(
         }
     }
     T3Screening::Clear
+}
+
+/// Everything the T3 gate needs about the target as it is right now: the
+/// screening verdict plus the two dialog-shaping decisions that must be taken
+/// from the same focused-element read.
+struct T3Context {
+    screening: T3Screening,
+    /// Whether keyboard input would land on a password/secure field, which
+    /// decides whether the full typed text may ride the confirm event.
+    secure_type_target: bool,
+    type_preview_full: Option<String>,
+}
+
+/// Screens the current target and derives the dialog-shaping decisions.
+///
+/// Used by both the first attempt and the confirm_id replay: the replay has
+/// to re-screen because an approval is bound to a target, and the target is
+/// ambient state the model can move between the dialog and the replay.
+///
+/// One focused-element read feeds BOTH the masked-preview decision and
+/// keyboard screening: two separate queries could race a focus change onto a
+/// password field and leak its full text into the confirm event.
+fn t3_context(parts: &Parts, action: &ComputerUseAction) -> T3Context {
+    let keyboard_class = matches!(
+        action,
+        ComputerUseAction::Type { .. }
+            | ComputerUseAction::KeyChord { .. }
+            | ComputerUseAction::HoldKey { .. }
+    );
+    let mut focused = None;
+    let focus_uncertain = if keyboard_class {
+        match parts.backend.focused_element() {
+            Ok(value) => {
+                focused = value;
+                false
+            }
+            Err(_) => {
+                // The Linux layer deliberately returns Err when the focused
+                // search exhausts its budget without a verdict ("never
+                // masquerade as none"): an uncertain focus must not be
+                // flattened into "nothing focused", or the full typed text
+                // could ride the confirm event while a password field actually
+                // holds focus. Screening itself stays fail-open (focused stays
+                // None), but the preview is masked like a secure target.
+                true
+            }
+        }
+    } else {
+        false
+    };
+    // The masked-target decision only shapes the dialog payload (whether the
+    // full typed text may ride the confirm event). Keyboard chords that carry
+    // character keys type their characters too, so the secure-target check
+    // covers them just like type.
+    let secure_type_target = keyboard_class
+        && (focus_uncertain
+            || focused
+                .as_ref()
+                .is_some_and(|element| element.secure || is_secure_role(&element.role)));
+    let type_preview_full = full_type_preview(action, secure_type_target);
+    let map = parts.state.lock().last_map.clone();
+    T3Context {
+        screening: t3_screening(parts, action, map.as_ref(), focused.as_ref()),
+        secure_type_target,
+        type_preview_full,
+    }
 }
 
 /// T3 screening covers only **activation-class** actions: clicks/press/
@@ -1420,31 +1493,24 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             }
         }
 
-        // T3 confirmation token: proceed only when the model passes back a
-        // confirm_id and the state holds a matching approval token (same
-        // session, same action summary, same action content).
+        // T3 confirmation gate. An action executes only when the current
+        // target screens Clear, or when the model passes back a confirm_id
+        // whose token matches this session, the action summary, the action
+        // content hash **and** the target the dialog actually named.
         if requires_t3_check(&action) {
             let summary = action_summary(&action);
             let binding = action_binding(&action);
-            match &parsed.confirm_id {
+            // Validate the token WITHOUT consuming it: the target still has
+            // to be re-screened, and a run that never reaches the backend
+            // must not burn the user's approval.
+            let approved = match &parsed.confirm_id {
                 Some(id) => {
                     match parts
                         .shared
-                        .take_confirmation(id, &parts.session_id, &summary, binding)
+                        .peek_confirmation(id, &parts.session_id, &summary, binding)
                     {
-                        // A granted token proceeds directly to execution — no
-                        // re-screen, no re-request arms (mainstream model: the
-                        // API confirmation is one per-action id the client
-                        // acknowledges; there is no crypto and no re-verification).
-                        // No a11y query happens on this path at all. The token is
-                        // bound to the full action content, so what executes is
-                        // identical to what was approved (review finding: a
-                        // summary-only binding let a same-length different text
-                        // spend the token).
-                        ConfirmationCheck::Granted => {
-                            confirmed_t3 = true;
-                        }
-                        ConfirmationCheck::Unknown => {
+                        Some(label) => Some((id.clone(), label)),
+                        None => {
                             return Err(
                                 "the confirm_id is invalid, expired, or was already used. Ask the \
                              user to confirm again."
@@ -1453,94 +1519,78 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         }
                     }
                 }
-                None => {
-                    // One focused-element read feeds BOTH the masked-preview
-                    // decision and keyboard screening below: two separate
-                    // queries could race a focus change onto a password field
-                    // and leak its full text into the confirm event.
-                    let mut focused = None;
-                    let focus_uncertain = if matches!(
-                        &action,
-                        ComputerUseAction::Type { .. }
-                            | ComputerUseAction::KeyChord { .. }
-                            | ComputerUseAction::HoldKey { .. }
-                    ) {
-                        match parts.backend.focused_element() {
-                            Ok(value) => {
-                                focused = value;
-                                false
-                            }
-                            Err(_) => {
-                                // The Linux layer deliberately returns Err when the
-                                // focused search exhausts its budget without a
-                                // verdict ("never masquerade as none"): an uncertain
-                                // focus must not be flattened into "nothing focused",
-                                // or the full typed text could ride the confirm event
-                                // while a password field actually holds focus.
-                                // Screening itself stays fail-open (focused stays
-                                // None), but the preview is masked like a secure
-                                // target.
-                                true
-                            }
-                        }
-                    } else {
-                        false
-                    };
-                    // The masked-target decision only shapes the dialog
-                    // payload (whether the full typed text may ride the
-                    // confirm event). Keyboard chords that carry character
-                    // keys type their characters too, so the secure-target
-                    // check covers them just like type.
-                    let secure_type_target = matches!(
-                        &action,
-                        ComputerUseAction::Type { .. }
-                            | ComputerUseAction::KeyChord { .. }
-                            | ComputerUseAction::HoldKey { .. }
-                    ) && (focus_uncertain
-                        || focused.as_ref().is_some_and(|element| {
-                            element.secure || is_secure_role(&element.role)
-                        }));
-                    // Optional full text for the confirm event, fixed at mint
-                    // time (never recomputed at spend time).
-                    let type_preview_full = full_type_preview(&action, secure_type_target);
-                    let map = parts.state.lock().last_map.clone();
-                    match t3_screening(&parts, &action, map.as_ref(), focused.as_ref()) {
-                        T3Screening::Clear => {}
-                        T3Screening::Blocked(hit) => {
-                            // The a11y queries above (focused element,
-                            // screening) take real time: re-check the
-                            // stop/disable/grant state BEFORE raising the
-                            // dialog, so a stop landing during screening does
-                            // not pop a consent surface for a feature that is
-                            // now off (the mint-side refusal stays as the
-                            // backstop for the race window that remains).
-                            if let Err(rejection) =
-                                parts.shared.verify_input_action(&parts.session_id)
-                            {
-                                return Err(rejection.message());
-                            }
-                            let mut blocked = request_confirmation(
-                                &parts,
-                                &action,
-                                &summary,
-                                &hit.element_label,
-                                hit.reason,
-                                type_preview_full.clone(),
-                                secure_type_target,
-                                binding,
-                            );
-                            // Warnings ride the blocked error too: the
-                            // auto-captured screenshot was persisted and
-                            // audited, but the success path that would attach
-                            // it never runs on a blocked action (the same gap
-                            // the drag failure path works around).
-                            for warning in &warnings {
-                                blocked.push_str(&format!("\nwarning: {warning}"));
-                            }
-                            return Err(blocked);
-                        }
+                None => None,
+            };
+            let had_token = approved.is_some();
+            // Screen the target as it is NOW, on both paths. The action's own
+            // parameters do not pin a target: mouse_down and a
+            // coordinate-less click act wherever the cursor happens to be,
+            // and even a coordinate-carrying click lands on whatever occupies
+            // that point. Spending a token without re-screening therefore let
+            // an approval granted for one control authorize a click on
+            // another — the model only had to move the cursor or scroll the
+            // page (neither is screened) between the dialog and the replay.
+            let context = t3_context(&parts, &action);
+            match context.screening {
+                // Nothing consequential under the target. Execution is what an
+                // unapproved run would already do, so a carried token is
+                // simply spent.
+                T3Screening::Clear => {
+                    if let Some((id, _)) = &approved {
+                        parts.shared.consume_confirmation(id);
+                        confirmed_t3 = true;
                     }
                 }
+                T3Screening::Blocked(hit) => match approved {
+                    // Approved, and still the same target: spend and execute.
+                    Some((id, label)) if label == hit.element_label => {
+                        parts.shared.consume_confirmation(&id);
+                        confirmed_t3 = true;
+                    }
+                    // Either no token at all, or a token approved for a
+                    // different target. Both raise a fresh confirmation naming
+                    // what is under the target now; the stale token is left
+                    // alone so a correct retry can still spend it.
+                    _ => {
+                        // The a11y queries above (focused element, screening)
+                        // take real time: re-check the stop/disable/grant
+                        // state BEFORE raising the dialog, so a stop landing
+                        // during screening does not pop a consent surface for
+                        // a feature that is now off (the mint-side refusal
+                        // stays as the backstop for the race window that
+                        // remains).
+                        if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id)
+                        {
+                            return Err(rejection.message());
+                        }
+                        let mut blocked = request_confirmation(
+                            &parts,
+                            &action,
+                            &summary,
+                            &hit.element_label,
+                            hit.reason,
+                            context.type_preview_full.clone(),
+                            context.secure_type_target,
+                            binding,
+                        );
+                        if had_token {
+                            blocked.push_str(
+                                "\nnote: the approved confirmation named a different target, so it \
+                                 was NOT spent. The target under this action changed after the \
+                                 user approved it.",
+                            );
+                        }
+                        // Warnings ride the blocked error too: the
+                        // auto-captured screenshot was persisted and audited,
+                        // but the success path that would attach it never runs
+                        // on a blocked action (the same gap the drag failure
+                        // path works around).
+                        for warning in &warnings {
+                            blocked.push_str(&format!("\nwarning: {warning}"));
+                        }
+                        return Err(blocked);
+                    }
+                },
             }
         }
 

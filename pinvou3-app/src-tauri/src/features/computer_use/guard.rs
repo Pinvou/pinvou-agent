@@ -64,8 +64,11 @@ fn physical_input_lock_timeout() -> Duration {
     }
 }
 
-/// The T3 consequential-action denylist (case-insensitive substring match;
-/// Chinese/English/Japanese/Traditional Chinese).
+/// The T3 consequential-action denylist. Terms are matched as substrings of
+/// [`fold_for_matching`] output, so every entry must itself already be in
+/// folded form: lowercase, and free of whitespace (the fold strips it, so a
+/// label split as `支 付` or `Place  Order` still matches).
+/// `t3_denylist_terms_are_prefolded` pins both properties.
 ///
 /// Only **consequence category** terms are listed — the five categories
 /// mainstream products confirm on (the same position as Google computer-use's
@@ -84,8 +87,8 @@ pub const T3_DENYLIST: &[&str] = &[
     "purchase",
     "checkout",
     "transfer",
-    "place order",
-    "order now",
+    "placeorder",
+    "ordernow",
     "购买",
     "購買",
     "支付",
@@ -96,13 +99,24 @@ pub const T3_DENYLIST: &[&str] = &[
     "轉帳",
     "結算",
     "購入",
-    "支払い",
+    // Stem, not 支払い: `"支払う".contains("支払い")` is false, so the
+    // inflected form on a real 支払う button used to screen Clear. 決済 is
+    // the standard Japanese checkout verb and 振込/振替 the standard bank
+    // transfer terms; none were covered by 送金 alone.
+    "支払",
+    "決済",
+    "振込",
+    "振替",
     "送金",
     "注文",
     "下单",
     "下單",
     "充值",
     "儲值",
+    "提现",
+    "提現",
+    "汇款",
+    "匯款",
     "捐款",
     "捐贈",
     "投资",
@@ -110,7 +124,10 @@ pub const T3_DENYLIST: &[&str] = &[
     "訂閱",
     "subscribe",
     "donate",
+    // Both spellings: the fold strips whitespace but keeps the hyphen, so
+    // "Top up" folds to "topup" while "Top-up" keeps its hyphen.
     "top-up",
+    "topup",
     // Sends.
     "send",
     "发送",
@@ -150,10 +167,111 @@ pub const T3_DENYLIST: &[&str] = &[
     "承諾",
 ];
 
+/// The longest [`T3_DENYLIST`] term, in folded characters. The streaming
+/// matcher in `platform::helpers` carries this much context across its window
+/// boundaries, so a term straddling two windows is still found; a longer term
+/// would be silently unmatchable, which `t3_denylist_terms_are_prefolded`
+/// pins.
+pub const T3_MATCH_WINDOW_CHARS: usize = 32;
+
+/// Whether `c` is invisible to the user and therefore must not separate two
+/// halves of a denylist term.
+///
+/// Covers C0/C1 controls plus the format and default-ignorable characters a
+/// hostile label can splice into a word while rendering identically: soft
+/// hyphen, the zero-width space/joiner family, the bidi overrides and
+/// isolates, the invisible-operator block, and the byte-order mark.
+fn is_invisible_for_matching(c: char) -> bool {
+    c.is_control()
+        || c.is_whitespace()
+        || matches!(c,
+            '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}')
+}
+
+/// Maps a character to the Latin letter it is visually indistinguishable
+/// from, so a single substituted code point cannot hide a denylist term.
+///
+/// Two families, both demonstrated as evasions: fullwidth ASCII
+/// (`Ｄｅｌｅｔｅ`, which `to_lowercase` leaves as fullwidth) and the Cyrillic
+/// and Greek letters that share a glyph with Latin (`Pаy` with a Cyrillic
+/// `а`). Halfwidth katakana (U+FF61..) is deliberately outside the fullwidth
+/// range mapped here, and no CJK ideograph is touched.
+fn fold_confusable(c: char) -> char {
+    match c {
+        // Fullwidth ASCII variants.
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+        // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
+        // Latin; the caller lowercases afterwards either way).
+        'а' | 'А' => 'a',
+        'в' | 'В' => 'b',
+        'с' | 'С' => 'c',
+        'е' | 'Е' | 'ё' | 'Ё' => 'e',
+        'н' | 'Н' => 'h',
+        'і' | 'І' => 'i',
+        'ј' | 'Ј' => 'j',
+        'к' | 'К' => 'k',
+        'м' | 'М' => 'm',
+        'о' | 'О' => 'o',
+        'р' | 'Р' => 'p',
+        'ѕ' | 'Ѕ' => 's',
+        'т' | 'Т' => 't',
+        'у' | 'У' => 'y',
+        'х' | 'Х' => 'x',
+        // Greek look-alikes.
+        'α' | 'Α' => 'a',
+        'Β' => 'b',
+        'Ε' => 'e',
+        'Η' => 'h',
+        'ι' | 'Ι' => 'i',
+        'κ' | 'Κ' => 'k',
+        'Μ' => 'm',
+        'Ν' => 'n',
+        'ο' | 'Ο' => 'o',
+        'ρ' | 'Ρ' => 'p',
+        'Τ' => 't',
+        'υ' | 'Υ' => 'y',
+        'χ' | 'Χ' => 'x',
+        'Ζ' => 'z',
+        other => other,
+    }
+}
+
+/// Folds text for denylist matching: drops everything invisible (controls,
+/// whitespace, zero-width and bidi formatting), maps confusables to Latin,
+/// then lowercases.
+///
+/// Each step closes a demonstrated evasion of the plain `to_lowercase()`
+/// match this replaces. A hostile `aria-label` only had to carry a zero-width
+/// space (`De<U+200B>lete`), a soft hyphen, fullwidth letters, a single
+/// Cyrillic `а` (`Pаy`) or an inserted space (`支 付`) to screen Clear while
+/// rendering identically to the user. Dropping the invisible characters
+/// rather than folding them to a space also closes the inverse hole, where
+/// space-folding a C0 character split a term the matcher would have found.
+pub fn fold_for_matching(text: &str) -> String {
+    text.chars()
+        .filter(|c| !is_invisible_for_matching(*c))
+        .map(fold_confusable)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// Whether a label hits the T3 consequential denylist.
 pub fn matches_t3_denylist(label: &str) -> bool {
-    let lower = label.to_lowercase();
-    T3_DENYLIST.iter().any(|term| lower.contains(term))
+    matches_t3_denylist_folded(&fold_for_matching(label))
+}
+
+/// The denylist match over text that is already [`fold_for_matching`] output.
+/// Exposed for the streaming matcher, which folds in bounded chunks so an
+/// arbitrarily long attacker-controlled label never has to be materialized.
+pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
+    T3_DENYLIST.iter().any(|term| folded.contains(term))
 }
 
 /// Whether the element role is a password/secure text field (a T3 signal;
@@ -174,12 +292,18 @@ pub enum GuardRejection {
     Stopped,
     /// An input-class action lacks a valid session grant.
     GrantRequired,
-    /// The session's confirmation dialog is unanswered. Every input action
-    /// from the session is rejected while a pending confirmation exists:
-    /// otherwise the model could click the dialog's own approve control — an
-    /// ordinary clickable element whose label screens Clear — and mint the
-    /// approval itself (round-17 self-approval finding). Observing stays
-    /// allowed; deny/stop/disable/expiry all clear the pending and unblock.
+    /// A confirmation dialog is unanswered. Every input action from **every**
+    /// session is rejected while any pending confirmation exists: otherwise
+    /// the model could click the dialog's own approve control — an ordinary
+    /// clickable element whose label screens Clear — and mint the approval
+    /// itself (round-17 self-approval finding). Observing stays allowed;
+    /// deny/stop/disable/expiry all clear the pending and unblock.
+    ///
+    /// The block is process-wide rather than per-session because the dialog
+    /// is a process-global window and physical input is a process-global
+    /// device: a per-session block left a second granted session free to
+    /// click the first session's "Allow this once" and mint its approval,
+    /// which is the same self-approval hole one indirection further out.
     ConfirmationPending,
     /// The cross-session physical input lock is held by another session and
     /// the bounded wait timed out (see
@@ -204,7 +328,7 @@ impl GuardRejection {
                     .to_string()
             }
             Self::ConfirmationPending => {
-                "a previous action is waiting for the user's confirmation in the app. No further input actions are accepted from this session until the dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
+                "an action is waiting for the user's confirmation in the app. No input actions are accepted until that dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
                     .to_string()
             }
             Self::InputBusy => {
@@ -260,25 +384,23 @@ pub struct PendingConfirmation {
     pub payload: serde_json::Value,
 }
 
-/// A minted approval token: bound to the session, the action summary and the
-/// action content hash; expires if not spent within [`CONFIRM_TTL`].
+/// A minted approval token: bound to the session, the action summary, the
+/// action content hash **and** the element label the dialog showed the user;
+/// expires if not spent within [`CONFIRM_TTL`].
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
     action_summary: String,
     action_binding: u64,
+    /// The screened target the user actually saw and approved. The action
+    /// parameters alone do not identify a target: `left_mouse_down` and a
+    /// coordinate-less `left_click` act wherever the cursor happens to be,
+    /// and even a coordinate-carrying click lands on whatever occupies that
+    /// point. Carrying the label lets the spend path re-screen and refuse a
+    /// token aimed at a different consequential control than the one on the
+    /// dialog.
+    element_label: String,
     minted_at: Instant,
-}
-
-/// The result of spending an approval token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfirmationCheck {
-    /// The token is valid and matches both the session and the action
-    /// summary; it has been consumed (single-use).
-    Granted,
-    /// No such token (unknown / already spent / expired / session or action
-    /// mismatch).
-    Unknown,
 }
 
 /// The two consent maps (pending confirmations, approved tokens) share one
@@ -508,37 +630,39 @@ impl ComputerUseShared {
 
     /// Gate for input-class actions: switch on, not stopped, the session
     /// holds a grant (grant lifetime: see the note at the top of this
-    /// module), and no confirmation dialog for this session is unanswered
-    /// (an unanswered dialog must not be clickable by the model itself — the
-    /// approve control is an ordinary clickable element, so letting input
-    /// through while a pending exists would let the session approve its own
-    /// consequential action). [`Self::verify_input_action`] must be checked
-    /// once more before injection.
+    /// module), and no confirmation dialog anywhere in the process is
+    /// unanswered (an unanswered dialog must not be clickable by the model
+    /// itself — the approve control is an ordinary clickable element, so
+    /// letting input through while a pending exists would let a session
+    /// approve a consequential action). [`Self::verify_input_action`] must be
+    /// checked once more before injection.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
             return Err(GuardRejection::GrantRequired);
         }
-        if self.has_outstanding_pending(session_id) {
+        if self.has_outstanding_pending() {
             return Err(GuardRejection::ConfirmationPending);
         }
         Ok(())
     }
 
-    /// Whether `session_id` has an unanswered (unexpired) pending
+    /// Whether **any** session has an unanswered (unexpired) pending
     /// confirmation. Expired pendings are swept under the same lock so a
     /// TTL'd-out dialog cannot block input until some other path happens to
     /// clear it.
-    fn has_outstanding_pending(&self, session_id: &str) -> bool {
+    ///
+    /// Deliberately not scoped to the calling session: the consent dialog is
+    /// a process-global window and physical input is a process-global device,
+    /// so a per-session block let a second granted session click the first
+    /// session's approve control (see [`GuardRejection::ConfirmationPending`]).
+    fn has_outstanding_pending(&self) -> bool {
         let mut consent = self.consent.lock();
         let now = Instant::now();
         consent
             .pending
             .retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
-        consent
-            .pending
-            .values()
-            .any(|entry| entry.session_id == session_id)
+        !consent.pending.is_empty()
     }
 
     /// Read-only re-check: whether the grant is still valid (switch, stop
@@ -768,58 +892,67 @@ impl ComputerUseShared {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
                 action_binding: entry.action_binding,
+                element_label: entry.element_label,
                 minted_at: now,
             },
         );
         true
     }
 
-    /// Spends an approval token (single-use). The tool calls it before
-    /// executing an action carrying a `confirm_id`; the token must exactly
-    /// match **this** session, the action summary **and** the action content
-    /// hash — the user approves a summary for readability but the token is
-    /// bound to the full action content, so a token approved for one
-    /// `type N characters` cannot be spent on a different same-length text.
-    /// On a match, execution proceeds — no second screening (mainstream
-    /// model: the API confirmation is just a per-action confirmation id; once
-    /// the client acknowledges, execute); on a mismatch the token is kept
-    /// (under exact binding, the only combination that can pass is the
-    /// user-approved original action replay — a wrong attempt should not burn
-    /// the user's confirmation).
-    pub fn take_confirmation(
+    /// Validates an approval token **without consuming it** and returns the
+    /// element label the user approved.
+    ///
+    /// The token must exactly match this session, the action summary and the
+    /// action content hash — the user approves a summary for readability, but
+    /// the token is bound to the full action content, so a token approved for
+    /// one `type N characters` cannot be spent on a different same-length
+    /// text. `None` on any mismatch, and the token is kept: under exact
+    /// binding the only combination that can pass is a replay of the
+    /// user-approved action, so a wrong attempt should not burn the
+    /// confirmation.
+    ///
+    /// Split from the consume step so the caller can re-screen the current
+    /// target against the returned label before spending: the action's own
+    /// parameters do not pin a target, so validating and consuming in one
+    /// step let an approval granted for one control be spent on another (see
+    /// [`ApprovedToken::element_label`]).
+    pub fn peek_confirmation(
         &self,
         confirm_id: &str,
         session_id: &str,
         action_summary: &str,
         action_binding: u64,
-    ) -> ConfirmationCheck {
+    ) -> Option<String> {
         // Defense in depth (mirrors the mint side): a token minted while
         // enabled must not be spendable after a stop/disable landed — the
         // spend path still dies at verify_input_action, but consuming the
-        // user's approval there would be the wrong direction. The check now
-        // lives under the consent lock (the mint side always did), so a
-        // disable landing between the check and the spend cannot consume the
-        // approval.
+        // user's approval there would be the wrong direction. The check lives
+        // under the consent lock (the mint side always did), so a disable
+        // landing between the check and the spend cannot consume the approval.
         let now = Instant::now();
         let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
-            return ConfirmationCheck::Unknown;
+            return None;
         }
-        let Some(token) = consent.approved_tokens.get(confirm_id) else {
-            return ConfirmationCheck::Unknown;
-        };
+        let token = consent.approved_tokens.get(confirm_id)?;
         if now.duration_since(token.minted_at) > CONFIRM_TTL {
             consent.approved_tokens.remove(confirm_id);
-            return ConfirmationCheck::Unknown;
+            return None;
         }
         if token.session_id != session_id
             || token.action_summary != action_summary
             || token.action_binding != action_binding
         {
-            return ConfirmationCheck::Unknown;
+            return None;
         }
-        consent.approved_tokens.remove(confirm_id);
-        ConfirmationCheck::Granted
+        Some(token.element_label.clone())
+    }
+
+    /// Consumes a token previously validated by [`Self::peek_confirmation`],
+    /// making it single-use. Called immediately before the injection request,
+    /// so an approval is not burned by a run that never reaches the backend.
+    pub fn consume_confirmation(&self, confirm_id: &str) {
+        self.consent.lock().approved_tokens.remove(confirm_id);
     }
 }
 
@@ -842,13 +975,34 @@ mod tests {
             .expect("pending minted while the feature is enabled")
     }
 
-    fn take(
+    /// The spend outcome, as a value the assertions can compare. Production
+    /// splits validate-then-consume so the tool can re-screen the target in
+    /// between; these tests exercise the session/summary/binding/TTL and
+    /// single-use semantics, which are unchanged by that split.
+    #[derive(Debug, PartialEq, Eq)]
+    enum SpendOutcome {
+        Granted,
+        Unknown,
+    }
+
+    fn take(shared: &ComputerUseShared, id: &str, session: &str, summary: &str) -> SpendOutcome {
+        take_bound(shared, id, session, summary, 0)
+    }
+
+    fn take_bound(
         shared: &ComputerUseShared,
         id: &str,
         session: &str,
         summary: &str,
-    ) -> ConfirmationCheck {
-        shared.take_confirmation(id, session, summary, 0)
+        binding: u64,
+    ) -> SpendOutcome {
+        match shared.peek_confirmation(id, session, summary, binding) {
+            Some(_) => {
+                shared.consume_confirmation(id);
+                SpendOutcome::Granted
+            }
+            None => SpendOutcome::Unknown,
+        }
     }
 
     #[test]
@@ -1095,10 +1249,7 @@ mod tests {
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
         // Cannot be spent before minting.
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
         assert!(
             shared.mint_confirmation(&id),
             "mint must report success for a live pending"
@@ -1108,26 +1259,20 @@ mod tests {
         // Only the correct session + action summary can spend it.
         assert_eq!(
             take(&shared, &id, "s-other", summary),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "token minted for s1 must not be spent by another session"
         );
         assert_eq!(
             take(&shared, &id, "s1", "type 5 characters"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "token must be bound to the action it approved"
         );
         // A mismatched wrong attempt does not destroy the token (under exact
         // binding, the only thing that can pass is the user-approved original
         // action).
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Granted
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Granted);
         // Single-use: the second spend fails.
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
     }
 
     /// deny consumes the pending; a denial records no server-side state — a
@@ -1147,7 +1292,7 @@ mod tests {
         // Retry the same id: the token is invalid.
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a denied id is simply unknown afterwards"
         );
         // Retry the same action: a new pending is minted (a new id) and the
@@ -1158,13 +1303,13 @@ mod tests {
         assert!(shared.mint_confirmation(&retry));
         assert_eq!(
             take(&shared, &retry, "s1", "left click"),
-            ConfirmationCheck::Granted
+            SpendOutcome::Granted
         );
         // deny on an unknown id fails.
         assert!(!shared.deny_confirmation("cu-unknown"));
         assert_eq!(
             take(&shared, "cu-unknown", "s1", "x"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "unknown id must stay Unknown"
         );
     }
@@ -1181,7 +1326,7 @@ mod tests {
         assert!(shared.deny_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left click x1 at Some((5, 6))"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a retracted token must not grant anything"
         );
         // Denying an already-spent (or unknown) id still reports false — the
@@ -1337,7 +1482,7 @@ mod tests {
         // old tokens must not allow a confirmation-free replay.
         assert_eq!(
             take(&shared, &s2_pending, "s2", "left click 3"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a disabled cycle must wipe minted approval tokens"
         );
         // Distinct from stop_all semantics: the stop flag is not raised and
@@ -1369,7 +1514,7 @@ mod tests {
         assert!(shared.pending_confirmation(&pending_id).is_none());
         assert_eq!(
             take(&shared, &token_id, "s2", "type 3 characters"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a flag-only disable must wipe minted approval tokens"
         );
 
@@ -1382,7 +1527,7 @@ mod tests {
         assert!(shared.pending_confirmation(&pending_id).is_none());
         assert_eq!(
             take(&shared, &token_id, "s2", "type 3 characters"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
 
         // The enable-side sweep (reset_stop semantics) rides on the same
@@ -1428,7 +1573,7 @@ mod tests {
         assert!(!shared.mint_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left_click (100,200)"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
     }
 
@@ -1452,14 +1597,8 @@ mod tests {
         }
         // An expired token reports Unknown at spend and is removed (a replay
         // is Unknown too).
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
     }
 
     /// The English "format" entry must stay: it is the reason the CJK
@@ -1496,7 +1635,7 @@ mod tests {
         shared.grant_session("s1");
         assert_eq!(
             take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "revoking a session must wipe its minted approval tokens"
         );
         // That session's pending confirmations are wiped too.
@@ -1517,7 +1656,7 @@ mod tests {
         shared.revoke_session("s1");
         assert_eq!(
             take(&shared, &other_id, "s2", summary),
-            ConfirmationCheck::Granted,
+            SpendOutcome::Granted,
             "revoking s1 must not touch s2's minted token"
         );
     }
@@ -1541,11 +1680,11 @@ mod tests {
         for (session, id) in &ids {
             assert_eq!(
                 take(&shared, id, session, "left click"),
-                ConfirmationCheck::Granted
+                SpendOutcome::Granted
             );
             assert_eq!(
                 take(&shared, id, session, "left click"),
-                ConfirmationCheck::Unknown,
+                SpendOutcome::Unknown,
                 "each token is single-use"
             );
         }
@@ -1594,7 +1733,7 @@ mod tests {
         shared.reset_stop();
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "no token may survive stop → resume"
         );
     }
@@ -1611,13 +1750,13 @@ mod tests {
             .expect("pending registered");
         assert!(shared.mint_confirmation(&id));
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "type 3 characters", 43),
-            ConfirmationCheck::Unknown,
+            take_bound(&shared, &id, "s1", "type 3 characters", 43),
+            SpendOutcome::Unknown,
             "a different content hash must not spend the token"
         );
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "type 3 characters", 42),
-            ConfirmationCheck::Granted,
+            take_bound(&shared, &id, "s1", "type 3 characters", 42),
+            SpendOutcome::Granted,
             "the exact approved content spends it; the failed attempt kept the token"
         );
         // Mint refuses while disabled, too (toggle-off race symmetry).
@@ -1718,7 +1857,7 @@ mod tests {
         assert!(shared.begin_input_action("s1").is_ok());
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Granted
+            SpendOutcome::Granted
         );
 
         // A stop sweeps the pending and unblocks.
@@ -1779,18 +1918,38 @@ mod tests {
         }
     }
 
-    /// A pending for another session never blocks this session's input.
+    /// A pending confirmation blocks input from **every** session, not only
+    /// the one that raised it.
+    ///
+    /// The dialog is a process-global window and its approve control is an
+    /// ordinary clickable element whose label screens Clear, so a per-session
+    /// block left a second granted session free to click "Allow this once"
+    /// and mint the first session's approval — the same self-approval hole
+    /// the per-session block was added to close, one indirection further out.
+    /// Observation stays allowed throughout, and deciding the dialog unblocks
+    /// both sessions.
     #[test]
-    fn another_sessions_pending_does_not_block_input() {
+    fn another_sessions_pending_blocks_input_everywhere() {
         let shared = enabled_shared();
         shared.grant_session("s1");
         shared.grant_session("s2");
-        let _id = new_pending(&shared, "s2", "left click");
-        assert!(shared.begin_input_action("s1").is_ok());
+        let id = new_pending(&shared, "s2", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending),
+            "a bystander session must not be able to click the dialog"
+        );
         assert_eq!(
             shared.begin_input_action("s2"),
             Err(GuardRejection::ConfirmationPending)
         );
+        assert!(
+            shared.check_readonly().is_ok(),
+            "observation stays allowed while a dialog pends"
+        );
+        assert!(shared.deny_confirmation(&id));
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert!(shared.begin_input_action("s2").is_ok());
     }
 
     /// Server truth for the consent UI: `pending_payload_for_session` serves
@@ -1866,13 +2025,13 @@ mod tests {
         shared.set_enabled(false);
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
         shared.set_enabled(true);
         shared.stop_all();
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
     }
 }

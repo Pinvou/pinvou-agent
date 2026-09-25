@@ -67,7 +67,7 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name, screening_name,
+    MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name, screening_hit,
 };
 use super::wayland_portal::{self, PortalInput};
 
@@ -574,18 +574,16 @@ async fn element_info_of(
     // screening copy must respect that erasure and never re-introduce the
     // raw text through a side channel — secure fields always confirm via the
     // password screen anyway.
-    let (name, screening) = if secure {
-        (String::new(), None)
+    let (name, name_screening_hit) = if secure {
+        (String::new(), false)
     } else {
         let raw = proxy.name().await.unwrap_or_default();
-        let display_name = sanitize_name(&raw, MAX_NAME_CHARS);
-        let screening = screening_name(&raw, &display_name);
-        (display_name, screening)
+        (sanitize_name(&raw, MAX_NAME_CHARS), screening_hit(&raw))
     };
     let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
     ElementInfo {
         role: role.name().to_string(),
-        screening_name: screening,
+        name_screening_hit,
         name,
         x,
         y,
@@ -742,10 +740,25 @@ async fn element_at_point_async(
     let root = root_accessible(conn).await?;
     let mut windows = app_windows(conn, &root, true).await?;
     active_first(&mut windows).await;
+    // One undecidable window must not abandon the whole hit test. AT-SPI
+    // reports all-zero extents for unmapped top-levels — and commonly for
+    // every window on Wayland — while `app_windows` enumerates without a
+    // visibility filter, so propagating the first extents failure meant a
+    // single hidden helper window anywhere on the bus disabled coordinate
+    // screening for the entire desktop, which the tool layer then reads as
+    // Clear. Skip the undecidable window, remember the fault, and surface it
+    // only when no window produced an answer.
+    let mut first_fault = None;
     for window in &windows {
-        // extents failure → containment undecidable → query failure (no
-        // continue).
-        let extents = screen_extents_strict(conn, window).await?;
+        let extents = match screen_extents_strict(conn, window).await {
+            Ok(extents) => extents,
+            Err(error) => {
+                if first_fault.is_none() {
+                    first_fault = Some(error);
+                }
+                continue;
+            }
+        };
         if !extents_contain(extents, x, y) {
             continue; // definitively does not cover the point.
         }
@@ -770,7 +783,13 @@ async fn element_at_point_async(
         let info = element_info_of(conn, &target, (x, y, 0, 0)).await;
         return Ok(Some(info));
     }
-    Ok(None)
+    // No window covered the point. If some window was undecidable, the answer
+    // is "query failure", not "nothing there" — the fault is only swallowed
+    // when another window answered.
+    match first_fault {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
 }
 
 /// Focused element. atspi 0.30's proxy layer has no GetFocusedObject-style

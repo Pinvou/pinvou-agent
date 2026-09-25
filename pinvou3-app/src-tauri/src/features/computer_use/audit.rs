@@ -81,6 +81,27 @@ pub(crate) fn audit_file_name(session_id: &str) -> String {
     format!("audit-{}-{hash}.jsonl", sanitize_session_id(session_id))
 }
 
+/// Deletes one session's audit trail. Called when the session itself is
+/// deleted.
+///
+/// The trail is per-session metadata about what the agent did on the user's
+/// screen: timestamps, click coordinates, typed-character counts and the
+/// absolute paths of screenshots. Nothing removed it, so deleting a session
+/// left its behavioural record on disk indefinitely — still naming
+/// screenshots the 100-file retention cap had already pruned. Best-effort by
+/// design: a missing file is success, and an audit failure must never break
+/// session deletion.
+pub fn remove_session_audit(session_id: &str) {
+    let path = audit_dir().join(audit_file_name(session_id));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            eprintln!("[computer-use] failed to remove the session audit log: {error}");
+        }
+    }
+}
+
 /// One audit record: a purely informational snapshot of one tool call.
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditRecord {

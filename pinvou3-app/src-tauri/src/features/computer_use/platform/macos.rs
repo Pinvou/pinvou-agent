@@ -95,8 +95,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    MACOS_UNICODE_STRING_UTF16_UNITS, TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll,
+    normalize_typed_newlines, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -993,8 +993,14 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     };
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     ElementInfo {
-        role: info.role,
-        screening_name: screening_name(&name, &display_name),
+        // AXRole/AXSubrole are free-form strings supplied by the target app,
+        // so the role is sanitized and bounded exactly like the name — the
+        // tree renderer already did this, but here it was passed through raw.
+        // The role rides into the consent dialog's target line (`name (role)`)
+        // and an unbounded string there pushes the Deny/Allow buttons out of
+        // the viewport.
+        role: sanitize_name(&info.role, MAX_NODE_NAME_CHARS),
+        name_screening_hit: screening_hit(&name),
         name: display_name,
         x: info.x,
         y: info.y,
@@ -1758,9 +1764,19 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             }
             let injector = self.enigo()?;
             let result = match run {
-                TypeRun::Text(chunk) => injector
-                    .text(&chunk)
-                    .map_err(|err| map_input_err("type text", err)),
+                // Re-chunked by UTF-16 width, not by character:
+                // `CGEventKeyboardSetUnicodeString` stores at most 20 UTF-16
+                // units, and enigo chunks by `char`, so 20 non-BMP characters
+                // (emoji, supplementary-plane CJK) produced 40 units of which
+                // the OS silently kept 20 — with the cut able to land inside a
+                // surrogate pair — while `type` still returned Ok.
+                TypeRun::Text(chunk) => utf16_chunks(&chunk, MACOS_UNICODE_STRING_UTF16_UNITS)
+                    .into_iter()
+                    .try_for_each(|part| {
+                        injector
+                            .text(part)
+                            .map_err(|err| map_input_err("type text", err))
+                    }),
                 TypeRun::Return => injector
                     .key(enigo::Key::Return, Direction::Click)
                     .map_err(|err| map_input_err("type text newline", err)),
