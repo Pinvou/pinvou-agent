@@ -22,6 +22,7 @@ import {
   reconcileLiveTaskIds,
 } from '../src/features/aux-chat/aux-chat-controller.mjs';
 import {
+  clearAuxQuotes,
   getAuxQuotes,
   stageAuxQuote,
 } from '../src/features/aux-chat/aux-quote.mjs';
@@ -134,7 +135,7 @@ function createHarness() {
     return panel;
   };
   const notifyChat = () => { for (const callback of [...chatListeners]) callback(); };
-  return { timers, auxChat, controller, mountPanel, notifyChat, flush };
+  return { timers, auxChat, controller, mountPanel, notifyChat, flush, chatListeners };
 }
 
 // A bound panel: mounted, ensure resolved, auxId live.
@@ -300,16 +301,22 @@ test('M6: a hung reset surfaces the failure state at the settle bound and frees 
   assert.equal(panel.view.discardFailed, false);
 });
 
-test('restart gating: Enter is rejected while restarting, and New Topic is refused behind a healthy in-flight reset (the N1 intent)', async () => {
+test('restart gating: Enter is rejected once the restart entry runs, and New Topic is refused behind a healthy in-flight reset (the N1 intent)', async () => {
   const h = createHarness();
   const panel = await mountBoundPanel(h, 'gated-task');
   panel.setDraftText('blocked text');
-  // Enter during restarting is rejected: the confirmed restart is about to
-  // reset the session this send would land in.
+  // Enter after the restart entry is rejected: the confirmed restart is about
+  // to reset the session this send would land in. The OPERATIVE guard is the
+  // nulled binding (round-18 B-1): the entry clears view.auxId in the same
+  // synchronous block that sets restarting, so `!sentAuxId` — not the
+  // restarting conjunct — is what blocks this dispatch (mutation-verified:
+  // deleting the restarting conjunct leaves this test green; the conjunct is
+  // belt-and-braces over the nulled binding and stays as defense in depth).
   confirmRestart(panel);
   assert.equal(panel.view.restarting, true);
+  assert.equal(panel.view.auxId, null, 'the restart entry nulls the binding — the operative Enter guard');
   void panel.send();
-  assert.equal(h.auxChat.calls.send.length, 0, 'a send during restarting never dispatches');
+  assert.equal(h.auxChat.calls.send.length, 0, 'a send past the restart entry never dispatches');
   assert.equal(h.auxChat.calls.reset.length, 1);
   // A→B→A resets `restarting` but leaves the healthy reset in flight: New
   // Topic must refuse a second reset (and un-arm the confirm, round-12 N1).
@@ -695,4 +702,409 @@ test('clearedIfSent clears only a composer that still equals the sent text', () 
   assert.equal(clearedIfSent('delivered', 'delivered'), '');
   assert.equal(clearedIfSent('delivered, edited', 'delivered'), 'delivered, edited');
   assert.equal(clearedIfSent('  delivered  ', 'delivered'), '');
+});
+
+// ── Round-31 M9: executing coverage for the survivor classes the mutation
+// sweep measured on the post-M6 controller (emit/subscribe/dispose, the
+// per-branch guards whose deletion used to stay green). Each test names the
+// mutation id(s) it kills.
+
+test('subscribe/emit: mutations reach subscribers as fresh copies and unsubscribe stops them (m16/m16b/m91/m92)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'emit-a');
+  const seen = [];
+  const unsubscribe = panel.subscribe((copy) => seen.push(copy));
+  panel.setDraftText('one');
+  panel.setDraftText('two');
+  assert.equal(seen.length, 2, 'each state mutation emits exactly once');
+  assert.equal(seen[0].draft, 'one');
+  assert.equal(seen[1].draft, 'two');
+  assert.notEqual(seen[0], seen[1], 'subscribers receive a fresh copy, not the live view');
+  panel.setDraftText('three');
+  assert.equal(seen[0].draft, 'one', 'an earlier copy is not mutated in place');
+  unsubscribe();
+  panel.setDraftText('four');
+  assert.equal(seen.length, 3, 'an unsubscribed listener is never invoked again');
+});
+
+test('emit: an unchanged snapshot pull does not re-notify subscribers (m18 anti-rerender short-circuit)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'rerender-a');
+  let emissions = 0;
+  panel.subscribe(() => { emissions += 1; });
+  h.notifyChat();
+  assert.equal(emissions, 0, 'an unchanged snapshot does not re-render (the main session streams through this notify)');
+  h.auxChat.snapshots.set('aux-rerender-a', { chatItems: [], busy: true, queued: [] });
+  h.notifyChat();
+  assert.equal(emissions, 1, 'a changed snapshot re-renders exactly once');
+  h.notifyChat();
+  assert.equal(emissions, 1, 'a repeated unchanged pull stays silent');
+});
+
+test('dispose() tears down every subscription, the arm timer and the listener set (m85/m86/m87/m88/m89)', async () => {
+  const h = createHarness();
+  // A late ensure resolution after dispose stays inert (the disposed leg of
+  // bindStale): a dead panel must never re-bind itself.
+  const ensureCalls = [];
+  h.auxChat.ensure = () => {
+    const d = deferred();
+    ensureCalls.push(d);
+    return d.promise;
+  };
+  const panel = h.mountPanel('disp-a');
+  assert.equal(h.chatListeners.size, 1);
+  panel.dispose();
+  assert.equal(h.chatListeners.size, 0, 'the chat-domain subscription is released');
+  ensureCalls[0].resolve('aux-disp-a');
+  await h.flush();
+  assert.equal(panel.view.auxId, null, 'a late ensure after dispose is inert');
+  h.auxChat.ensure = (taskId) => Promise.resolve(`aux-${taskId}`);
+
+  // The quote-store subscription is released: quotes staged for the old task
+  // after dispose must not land on the dead panel's view.
+  stageAuxQuote('disp-b', 'staged');
+  const panel2 = await mountBoundPanel(h, 'disp-b');
+  assert.equal(panel2.view.quotes.length, 1);
+  panel2.dispose();
+  stageAuxQuote('disp-b', 'second');
+  assert.equal(panel2.view.quotes.length, 1, 'the quote subscription is released');
+  clearAuxQuotes('disp-b');
+
+  // The draft-delete mirror is released: a store purge after dispose must not
+  // touch the dead panel's composer.
+  const panel3 = await mountBoundPanel(h, 'disp-c');
+  panel3.setDraftText('keep');
+  panel3.dispose();
+  h.controller.purgeTask('disp-c');
+  assert.equal(panel3.view.draft, 'keep', 'the draft-delete subscription is released');
+
+  // The armed New Topic confirm timer is cleared at dispose.
+  const panel4 = await mountBoundPanel(h, 'disp-d');
+  void panel4.restart();
+  assert.equal(panel4.view.restartArmed, true);
+  panel4.dispose();
+  h.timers.advance(50);
+  assert.equal(panel4.view.restartArmed, true, 'the armed confirm timer was cleared at dispose');
+
+  // Subscribers are never notified after dispose.
+  const panel5 = await mountBoundPanel(h, 'disp-e');
+  let calls = 0;
+  panel5.subscribe(() => { calls += 1; });
+  panel5.dispose();
+  panel5.setDraftText('x');
+  assert.equal(calls, 0, 'no emission reaches subscribers after dispose');
+});
+
+test('a send ack settling on a dead instance clears the remounted composer through the draft-delete mirror (m32, round-25 MAJOR-24-2)', async () => {
+  const h = createHarness();
+  const panel1 = await mountBoundPanel(h, 'mirror-a');
+  panel1.setDraftText('question');
+  void panel1.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  // The panel closes while the send is in flight; the registry entry survives
+  // (module-scoped by design) and the remounted panel restores the draft from
+  // the store — it still equals the in-flight text.
+  panel1.dispose();
+  const panel2 = await mountBoundPanel(h, 'mirror-a');
+  assert.equal(panel2.view.draft, 'question', 'the remount restores the unsent-looking draft');
+  // The ack settles on the dead instance: its consumption deletes the store
+  // entry and the mirror clears the MOUNTED composer's copy — otherwise the
+  // delivered message sits there staged for a duplicate Enter.
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel2.view.draft, '', 'the mirror clears the remounted composer when the ack consumes the store entry');
+});
+
+test('bind resets the binding and the stale banners for the new task (m21/m22)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'rebind-a');
+  panel.setDraftText('will fail');
+  void panel.send();
+  h.auxChat.calls.send[0].reject(new Error('send failed'));
+  await h.flush();
+  assert.equal(panel.view.sendFailed, true);
+  // The rebind synchronously drops the old binding and the old task's banner:
+  // neither may linger into the new task's ensure window.
+  panel.bind('rebind-b');
+  assert.equal(panel.view.auxId, null, 'the old binding is dropped while the new ensure runs');
+  assert.equal(panel.view.sendFailed, false, 'the old task\'s failure banner does not follow the rebind');
+  assert.equal(panel.view.bindingPending, true);
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-rebind-b');
+});
+
+test('bind resets the send latch: the new task sends while the old task\'s send is in flight (m26)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'latch-a');
+  panel.setDraftText('a in flight');
+  void panel.send();
+  assert.equal(panel.view.sending, true);
+  panel.bind('latch-b');
+  assert.equal(panel.view.sending, false, 'the panel-level send latch resets on rebind');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-latch-b');
+  panel.setDraftText('b message');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the new task can send while the old task\'s send is still in flight');
+  h.auxChat.calls.send[0].resolve({});
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+});
+
+test('bind clears a stale ensureFailed banner (m23)', async () => {
+  const h = createHarness();
+  const ensureCalls = [];
+  h.auxChat.ensure = () => {
+    const d = deferred();
+    ensureCalls.push(d);
+    return d.promise;
+  };
+  const panel = h.mountPanel('ef-a');
+  await h.flush();
+  ensureCalls[0].reject(new Error('ensure failed'));
+  await h.flush();
+  assert.equal(panel.view.ensureFailed, true);
+  h.auxChat.ensure = (taskId) => Promise.resolve(`aux-${taskId}`);
+  panel.bind('ef-b');
+  assert.equal(panel.view.ensureFailed, false, 'the init-failure banner does not follow the rebind');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-ef-b');
+});
+
+test('bind renews the quote subscription per task: the old task\'s quotes stop landing (m30)', async () => {
+  const h = createHarness();
+  stageAuxQuote('quote-a', 'excerpt a1');
+  const panel = await mountBoundPanel(h, 'quote-a');
+  assert.equal(panel.view.quotes.length, 1);
+  panel.bind('quote-b');
+  assert.equal(panel.view.quotes.length, 0, 'the new task starts with its own (empty) quotes');
+  await h.flush();
+  stageAuxQuote('quote-a', 'excerpt a2');
+  assert.equal(panel.view.quotes.length, 0, 'the dropped subscription no longer feeds the rebound panel');
+  panel.bind('quote-a');
+  assert.equal(panel.view.quotes.length, 2, 'rebinding restores the old task\'s staged quotes');
+  clearAuxQuotes('quote-a');
+});
+
+test('send entry: no dispatch without a binding or while the snapshot is busy (m42/m43)', async () => {
+  const h = createHarness();
+  const panel = h.mountPanel('guard-a');
+  panel.setDraftText('too early');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 0, 'no dispatch while the ensure is still in flight');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-guard-a');
+  h.auxChat.snapshots.set('aux-guard-a', { chatItems: [], busy: true, queued: [] });
+  h.notifyChat();
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 0, 'no dispatch while the session is busy — the backend would reject it as a bogus failure');
+  h.auxChat.snapshots.set('aux-guard-a', { chatItems: [], busy: false, queued: [] });
+  h.notifyChat();
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1, 'the idle session accepts the send');
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+});
+
+test('setDraftText clears the send-failure banner on the next keystroke (m41)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'banner-clear');
+  panel.setDraftText('will fail');
+  void panel.send();
+  h.auxChat.calls.send[0].reject(new Error('send failed'));
+  await h.flush();
+  assert.equal(panel.view.sendFailed, true);
+  panel.setDraftText('will fail, edited');
+  assert.equal(panel.view.sendFailed, false, 'typing after a failure clears the stale retry banner');
+});
+
+test('a stale watchdog failsafe after a rebind never releases the newer send\'s latch (m50/m51)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'own-a');
+  panel.setDraftText('a in flight');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  panel.bind('own-b');
+  await h.flush();
+  panel.setDraftText('b in flight');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2);
+  assert.equal(panel.view.sending, true);
+  // The raw buffer says B's turn started, but no notify delivered it (the
+  // coalesced-events premise the failsafe exists for): both failsafes fire at
+  // the bound — A's must die at the generation gate, B's at the busy re-read.
+  h.auxChat.snapshots.set('aux-own-b', { chatItems: [], busy: true, queued: [] });
+  h.timers.advance(SEND_WATCHDOG_MS);
+  assert.equal(panel.view.sending, true, 'neither stale failsafe may release the newer send\'s latch');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the duplicate-send window stays closed');
+  // Once the busy snapshot is observed, the busy-gated release owns the latch.
+  h.notifyChat();
+  assert.equal(panel.view.sending, false);
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+});
+
+test('a rejection settling after a task switch never banners the new task (m60)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'switch-a');
+  panel.setDraftText('a will fail');
+  void panel.send();
+  panel.bind('switch-b');
+  await h.flush();
+  h.auxChat.calls.send[0].reject(new Error('a failed late'));
+  await h.flush();
+  assert.equal(panel.view.sendFailed, false, 'the old task\'s failure does not banner the new task');
+  assert.equal(panel.view.auxId, 'aux-switch-b');
+});
+
+test('an ack settling after a task switch never touches the new task\'s composer (m55)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'cross-a');
+  panel.setDraftText('shared text');
+  void panel.send();
+  panel.bind('cross-b');
+  await h.flush();
+  panel.setDraftText('shared text');
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, 'shared text', 'the old task\'s ack must not clear the new task\'s composer');
+  // The old task's own store entry WAS consumed: a round trip restores nothing.
+  panel.bind('cross-a');
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'the delivered draft left the old task\'s store');
+});
+
+test('ack consumption: a clean ack purges the store so a task round trip restores an empty composer (m10/m53)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'store-a');
+  panel.setDraftText('delivered');
+  void panel.send();
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, '');
+  panel.bind('store-b');
+  await h.flush();
+  panel.bind('store-a');
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'a delivered message never re-appears from the draft store');
+});
+
+test('restart entry shows the preparing state and the nulled binding keeps the old transcript out (m73/m74/m75)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'win-a');
+  h.auxChat.snapshots.set('aux-win-a', {
+    chatItems: [{ type: 'user', text: 'hello' }],
+    busy: false,
+    queued: [],
+  });
+  h.notifyChat();
+  assert.equal(panel.view.snapshot.chatItems.length, 1, 'the transcript renders before the restart');
+  confirmRestart(panel);
+  assert.equal(panel.view.auxId, null);
+  assert.equal(panel.view.bindingPending, true, 'the preparing hint covers the reset window');
+  assert.equal(panel.view.snapshot.chatItems.length, 0, 'the old transcript clears at entry');
+  // A streaming notify during the reset window must not re-pull the doomed
+  // session's transcript: with the binding nulled, the chat subscription has
+  // nothing to pull.
+  h.notifyChat();
+  assert.equal(panel.view.snapshot.chatItems.length, 0, 'no stale re-pull during the reset window');
+  h.auxChat.snapshots.delete('aux-win-a');
+  h.auxChat.calls.reset[0].resolve('aux-win-a');
+  await h.flush();
+  assert.equal(panel.view.bindingPending, false);
+  assert.equal(panel.view.auxId, 'aux-win-a');
+});
+
+test('restart entry clears a stale ensureFailed banner (m71)', async () => {
+  const h = createHarness();
+  const ensureCalls = [];
+  h.auxChat.ensure = () => {
+    const d = deferred();
+    ensureCalls.push(d);
+    return d.promise;
+  };
+  const panel = h.mountPanel('ref-a');
+  await h.flush();
+  ensureCalls[0].reject(new Error('ensure failed'));
+  await h.flush();
+  assert.equal(panel.view.ensureFailed, true);
+  confirmRestart(panel);
+  assert.equal(panel.view.ensureFailed, false, 'the stale init failure does not render next to the reset outcome');
+  h.auxChat.calls.reset[0].resolve('aux-ref-a');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-ref-a');
+});
+
+test('restart entry releases the send latch so a late-settling send cannot dead the composer (m72, round-12 N2)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'n2-a');
+  panel.setDraftText('in flight');
+  void panel.send();
+  assert.equal(panel.view.sending, true);
+  confirmRestart(panel);
+  // The send settles late inside the reset window: classified keep-draft by
+  // the epoch, its finally deliberately does not touch the latch.
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  h.auxChat.calls.reset[0].resolve('aux-n2-a');
+  await h.flush();
+  panel.setDraftText('after the restart');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the composer is usable after the restart');
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+});
+
+test('a reset success landing after a rebind stays inert (m79)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'gen-a');
+  confirmRestart(panel);
+  panel.bind('gen-b');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-gen-b');
+  h.auxChat.calls.reset[0].resolve('aux-gen-a');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-gen-b', 'the moved-on panel never binds the reset\'s fresh session');
+  assert.equal(panel.view.discardFailed, false);
+});
+
+test('the armed New Topic confirm expires and the next click re-arms instead of confirming (m67)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'arm-a');
+  void panel.restart();
+  assert.equal(panel.view.restartArmed, true);
+  assert.equal(h.auxChat.calls.reset.length, 0);
+  h.timers.advance(50);
+  assert.equal(panel.view.restartArmed, false, 'the armed confirm expires after the confirm window');
+  void panel.restart();
+  assert.equal(panel.view.restartArmed, true, 'a click after expiry re-arms');
+  assert.equal(h.auxChat.calls.reset.length, 0, 'an expired arm never confirms on its own');
+  void panel.restart();
+  assert.equal(h.auxChat.calls.reset.length, 1, 'the second click inside the window confirms');
+  h.auxChat.calls.reset[0].resolve('aux-arm-a');
+  await h.flush();
+});
+
+test('setBridge refreshes the chat subscription on a bridge flip and never double-subscribes (m37/m39)', async () => {
+  const h = createHarness();
+  const panel = h.controller.createPanel();
+  const set1 = new Set();
+  const set2 = new Set();
+  const sub1 = (callback) => { set1.add(callback); return () => set1.delete(callback); };
+  const sub2 = (callback) => { set2.add(callback); return () => set2.delete(callback); };
+  panel.setBridge(h.auxChat, sub1);
+  panel.bind('flip-a');
+  assert.equal(set1.size, 1);
+  panel.setBridge(h.auxChat, sub1);
+  assert.equal(set1.size, 1, 'a same-bridge refresh must not double-subscribe');
+  panel.setBridge(h.auxChat, sub2);
+  assert.equal(set1.size, 0, 'the old subscription is released on a bridge flip');
+  assert.equal(set2.size, 1, 'the new subscription is live');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-flip-a');
+  // The live subscription still drives snapshot pulls.
+  h.auxChat.snapshots.set('aux-flip-a', { chatItems: [], busy: true, queued: [] });
+  for (const callback of [...set2]) callback();
+  assert.equal(panel.view.snapshot.busy, true);
 });
