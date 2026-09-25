@@ -5,10 +5,11 @@
 /// all targets).
 mod helpers;
 pub(crate) use helpers::normalize_typed_newlines;
-// The screening-name helpers are consumed inside platform/; the re-export
-// exists for the tool-layer regression test that pins the wider-copy match.
+// The screening helpers are consumed inside platform/; the re-export exists
+// for the tool-layer regression test that pins screening against the raw,
+// untruncated accessible name.
 #[cfg(test)]
-pub(crate) use helpers::{sanitize_name, screening_name};
+pub(crate) use helpers::{sanitize_name, screening_hit};
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
