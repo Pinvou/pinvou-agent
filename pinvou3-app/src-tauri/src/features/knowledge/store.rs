@@ -35,8 +35,16 @@ const SCHEMA_VERSION: i64 = 4;
 /// non-rebuildable data this rule exists to protect. Anything from v3 up
 /// migrates in place (the idempotent `IF NOT EXISTS` batch) or is refused
 /// (the newer-than-us check); it is never deleted.
+///
+/// The range is bounded below as well as above. `user_version` is a signed
+/// 32-bit field at byte offset 60 of the database header, carried by no
+/// checksum outside WAL frames, so a healthy v4 store that takes a single bit
+/// flip in that byte reads back negative — and a bare `version < 3` would
+/// classify it as a disposable v0-era store and delete exactly the
+/// non-rebuildable data this rule exists to protect. A negative version is
+/// not an old schema, it is a damaged header: refuse it like a future one.
 fn schema_is_disposable(version: i64) -> bool {
-    version < 3
+    (0..3).contains(&version)
 }
 
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
@@ -330,6 +338,27 @@ impl Store {
             // and create/migrate paths to give write connections the same
             // durability. It is a pure connection setting and takes no
             // database write lock.
+            //
+            // journal_mode is re-asserted for a different reason: it lives
+            // only in the DDL batch this branch skips, and the create path
+            // can silently fail to take it (`PRAGMA journal_mode = WAL`
+            // returns the CURRENT mode as a row instead of erroring when
+            // another connection holds a read lock, which the two-process
+            // pair makes reachable). A store stuck in rollback-journal mode
+            // would then get synchronous=NORMAL forever — a combination
+            // SQLite documents as risking corruption on power loss, whereas
+            // NORMAL under WAL is safe. Re-asserting is a no-op on a store
+            // that is already WAL and takes no write lock.
+            let mode: String = w.query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))?;
+            if !mode.eq_ignore_ascii_case("wal") {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!(
+                        "knowledge store is in '{mode}' journal mode, not WAL; refusing to \
+                         apply synchronous=NORMAL (unsafe without WAL)"
+                    )),
+                ));
+            }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
         } else {
             // Fresh create / in-place v3 migration: the DDL batch and the
@@ -489,13 +518,18 @@ impl Store {
             sql.push_str(" AND f.mtime <= ?");
             vals.push(Value::Integer(v));
         }
+        // Saturating, not `as`: SQLite integers are signed, so a `u64` past
+        // `i64::MAX` wraps negative and inverts the filter — `size >= -1`
+        // matches every row instead of none. Same failure class as the raw
+        // `limit` cast fixed above, and now reachable with caller-controlled
+        // values through the headless `KnowledgeService::search`.
         if let Some(v) = q.min_size {
             sql.push_str(" AND f.size >= ?");
-            vals.push(Value::Integer(v as i64));
+            vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
         if let Some(v) = q.max_size {
             sql.push_str(" AND f.size <= ?");
-            vals.push(Value::Integer(v as i64));
+            vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
         sql.push_str(" ORDER BY f.mtime DESC LIMIT ?");
         vals.push(Value::Integer(limit));
@@ -576,6 +610,19 @@ mod tests {
                  never be deleted"
             );
         }
+        // `user_version` is a signed field in an unchecksummed header slot, so
+        // a bit flip in a healthy v4 store reads back negative. A bare
+        // `version < 3` classified that as a disposable v0-era store and
+        // deleted exactly the data this rule protects. A negative version is a
+        // damaged header, not an old schema.
+        for version in -64..0 {
+            assert!(
+                !super::schema_is_disposable(version),
+                "a negative user_version ({version}) is a damaged header, not a pre-v3 \
+                 schema — it must be refused, never deleted"
+            );
+        }
+        assert!(!super::schema_is_disposable(i64::MIN));
     }
     use super::*;
 
