@@ -339,6 +339,20 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
         })();
 
         if let Err(err) = result {
+            // The skill install is part of what the failed connect did, so it
+            // is part of what the rollback must undo. Leaving it behind
+            // reports "not connected" while the skill stays materialized into
+            // code sessions — and when the failure was the consent sync
+            // itself, materialized WITHOUT the default-off entry that keeps a
+            // DenyAll scope from calling it. Best-effort, like the logout
+            // path's residue cleanup: the credential rollback below is the
+            // one whose failure must reach the caller.
+            if let Err(uninstall_error) = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
+                eprintln!(
+                    "[ima] rolling back the skill install after a failed connect: \
+                     {uninstall_error}"
+                );
+            }
             rollback_secret(&store, &client_id_ref(), previous_client_id)?;
             rollback_secret(&store, &api_key_ref(), previous_api_key)?;
             return Err(err);
