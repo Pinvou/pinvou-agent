@@ -165,3 +165,41 @@ impl Drop for UnreadableDirForTest {
         }
     }
 }
+
+/// POSIX mode bits of `path`, or `None` where the platform has none.
+///
+/// Permission assertions belong to the platform layer: a feature test that
+/// writes its own `#[cfg(unix)]` block puts an OS conditional outside an
+/// adapter (architecture guard `rust_target_cfg_outside_adapter`), and every
+/// such copy drifts on its own. Callers assert `Some(0o600)` and skip on
+/// `None`.
+#[cfg(test)]
+pub(crate) fn permission_bits(path: &std::path::Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        Some(std::fs::metadata(path).ok()?.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Loosens `path` to 0644 the way a pre-hardening build's umask left it, so a
+/// test can prove the next write tightens it. No-op (and reports `false`)
+/// where the platform has no mode bits.
+#[cfg(test)]
+pub(crate) fn loosen_to_world_readable_for_test(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
