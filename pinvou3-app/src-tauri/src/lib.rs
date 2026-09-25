@@ -1104,9 +1104,8 @@ pub fn run() {
             startup::mark("engine_pool:done");
 
             // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
-            //   1. 读一次 disabled_bundles.json——纯读、不落盘(persistence-free):
-            //      旧双文件迁移(disabled_connectors.json / disabled_skills.json →
-            //      包 id × SessionMode 单一禁用集)只在首次写入时物化;
+            //   1. 读一次 disabled_bundles.json——触发旧双文件迁移(disabled_connectors
+            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集);
             //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
             //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入

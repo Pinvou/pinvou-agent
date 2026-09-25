@@ -488,31 +488,15 @@ impl Pinvou3Bundle {
                 let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
                     .uninstall(tool_id)
                     .err();
-                // When the uninstall itself succeeds its internal cleanup already covers
-                // the disabled/hidden sets — this idempotent re-sweep is
-                // defense in depth; on rollback it is the ONLY cleanup
-                // surface and cannot be skipped — that residue is not part of
-                // the transaction snapshot, and leaving it would hide a
-                // future same-name reinstall (#522). With the on-disk state
-                // consolidated into the single disabled_bundles.json there is
-                // no whole-file rewrite needed here:
-                // The plain disabled list needs no separate whole-file rewrite
-                // here: remove_connector_from_disabled_scopes strips the id
-                // from every scope's disabled AND hidden lists inside the
-                // single cross-process critical section, while a
-                // load→save pair across two lock acquisitions would clobber a
-                // concurrent writer's toggle (the exact lost-update shape the
-                // lock exists to prevent). Janitorial cleanup stays
-                // best-effort like the sibling scope-cleanup sites in
-                // marketplace/mod.rs: a refused write (cross-process lock
-                // unavailable, or a corrupt consent file) is logged, not
-                // propagated, so a broken lock path cannot turn every boot's
-                // residue cleanup into a permanent no-op.
-                if let Err(error) =
-                    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id)
-                {
-                    log::warn!("[runtime_bundle] residue scope cleanup: {error}");
-                }
+                // 禁用/隐藏残留统一走 scope 模块的单临界区 RMW 助手:一次
+                // DISABLED_BUNDLES_FILE_LOCK 内 load→retain→条件 save(#455 收敛范式),
+                // plain + code 所有 scope 的 disabled/hidden 两套集合一并清理。此前
+                // plain 走「load → 内存 retain → 条件 save」两段独立取锁的临界区,
+                // 两段之间并发写方的更新会被旧快照整表覆盖(#522,与 #455 修复的 M-6b
+                // 两段式同型)。uninstall 成功时其内部清理已覆盖本步,这次幂等复扫是
+                // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
+                // 留着会让未来同名重装被误隐藏(#522)。
+                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
                 if let Some(error) = uninstall_error {
                     // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
                     // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。

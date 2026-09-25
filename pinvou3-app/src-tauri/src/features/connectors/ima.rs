@@ -334,25 +334,11 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)?;
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID);
             Ok(())
         })();
 
         if let Err(err) = result {
-            // The skill install is part of what the failed connect did, so it
-            // is part of what the rollback must undo. Leaving it behind
-            // reports "not connected" while the skill stays materialized into
-            // code sessions — and when the failure was the consent sync
-            // itself, materialized WITHOUT the default-off entry that keeps a
-            // DenyAll scope from calling it. Best-effort, like the logout
-            // path's residue cleanup: the credential rollback below is the
-            // one whose failure must reach the caller.
-            if let Err(uninstall_error) = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
-                eprintln!(
-                    "[ima] rolling back the skill install after a failed connect: \
-                     {uninstall_error}"
-                );
-            }
             rollback_secret(&store, &client_id_ref(), previous_client_id)?;
             rollback_secret(&store, &api_key_ref(), previous_api_key)?;
             return Err(err);
@@ -378,25 +364,15 @@ fn rollback_secret<S: CredentialStore>(
 pub async fn ima_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let store = SystemCredentialStore::new();
-        // The credentials are the logout's primary intent: attempt both
-        // deletes, then check. Everything below is best-effort residue
-        // cleanup, so a refused consent-scope write must not surface as a
-        // failure of a logout the credentials already completed (the
-        // leftover deny entry is the fail-closed direction and only hides an
-        // uninstalled skill).
         let client_result = store.delete(&client_id_ref());
         let api_key_result = store.delete(&api_key_ref());
-        client_result.map_err(|e| e.user_message())?;
-        api_key_result.map_err(|e| e.user_message())?;
         let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::scope 避免
         // connectors → assistant 依赖环。
-        if let Err(error) =
-            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID)
-        {
-            eprintln!("[ima] logout scope residue cleanup failed: {error}");
-        }
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID);
+        client_result.map_err(|e| e.user_message())?;
+        api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))
     })
     .await

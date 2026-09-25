@@ -1295,54 +1295,14 @@ impl EnginePool {
         self.mcp_config_revision.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Tool-policy compute for the chat send path. The policy closure does
-    /// blocking disk I/O via the marketplace readers; keep it off the async
-    /// worker. `None` = the compute task died
-    /// (join failure): the caller must keep the session's current disallowed
-    /// set — an empty list would broadcast allow-everything (fail-open).
-    pub async fn compute_disallowed_tools(&self) -> Option<Vec<String>> {
-        let app = self.app.clone();
-        let tool_policy = self.tool_policy.clone();
-        match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
-            Ok(tools) => Some(tools),
-            Err(error) => {
-                eprintln!(
-                    "[engine_pool] tool policy task failed, keeping the current \
-                     disallowed set: {error}"
-                );
-                None
-            }
-        }
+    pub fn compute_disallowed_tools(&self) -> Vec<String> {
+        (self.tool_policy)(&self.app)
     }
 
-    /// Recomputes the disallowed-tool set and broadcasts it to every live
-    /// session. `None` = the compute task died (join failure): nothing was
-    /// broadcast and the sessions keep their current sets.
-    ///
-    /// The return type is `Option`, like [`Self::compute_disallowed_tools`],
-    /// precisely because the fail-closed value is not representable as a
-    /// list: an empty `Vec` is indistinguishable from "nothing is
-    /// disallowed", so a caller that read the old return value would invert
-    /// the failure direction it is documented to have.
-    pub async fn refresh_disallowed_tools(&self) -> Option<Vec<String>> {
-        // The policy closure does blocking disk I/O via the marketplace
-        // readers; keep it off the async worker.
-        let app = self.app.clone();
-        let tool_policy = self.tool_policy.clone();
-        let tools = match tokio::task::spawn_blocking(move || tool_policy(&app)).await {
-            Ok(tools) => tools,
-            Err(error) => {
-                // Fail closed: broadcasting an empty list would allow every
-                // tool, so keep the sessions' current disallowed sets instead.
-                eprintln!(
-                    "[engine_pool] tool policy task failed, keeping the current \
-                     disallowed sets: {error}"
-                );
-                return None;
-            }
-        };
+    pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
+        let tools = self.compute_disallowed_tools();
         self.set_disallowed_all(tools.clone()).await;
-        Some(tools)
+        tools
     }
 
     /// Project-skills source root for the session: returns the bound real
@@ -1645,30 +1605,14 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        // The tool policy closure AND the per-session shaping both do
-        // blocking disk I/O via the marketplace readers (shaping consults
-        // the scope unavailable sets for non-plain sessions); keep both
-        // inside the same off-worker task (same rationale as
-        // refresh_disallowed_tools).
-        let disallowed_tools = {
-            let app = self.app.clone();
-            let tool_policy = self.tool_policy.clone();
-            let bridge = self.bridge.clone();
-            let session_id = session_id.to_string();
-            tokio::task::spawn_blocking(move || {
-                let computed = tool_policy(&app);
-                bridge.shape_disallowed_tools(&session_id, computed)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("tool policy join: {e}"))?
-        };
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
             bridge,
             session_id,
             extra_tools,
-            disallowed_tools,
+            self.bridge
+                .shape_disallowed_tools(session_id, self.compute_disallowed_tools()),
             turn_lifecycle.clone(),
             shell_manager,
             turn_shell_tasks,
@@ -2888,33 +2832,10 @@ impl EnginePool {
         for (sid, engine) in targets {
             // 全局热刷同样按会话整形（代码会话保留 present_artifact 隐藏），
             // 且发送前释放 entries 锁，避免跨 await 持有全局引擎表锁。
-            // The shaping reads consent state from disk for non-plain
-            // sessions (lock-free since the read path left the bundle
-            // flock), so it runs off the async worker like the policy
-            // compute above it; on a join failure keep that session's current
-            // disallowed set (fail-closed) instead of broadcasting an empty
-            // "allow everything" list.
-            let bridge = self.bridge.clone();
-            let sid_for_shape = sid.clone();
-            let tools_for_shape = tools.clone();
-            let shaped = match tokio::task::spawn_blocking(move || {
-                bridge.shape_disallowed_tools(&sid_for_shape, tools_for_shape)
-            })
-            .await
-            {
-                Ok(shaped) => shaped,
-                Err(error) => {
-                    eprintln!(
-                        "[engine_pool] set_disallowed_all {sid}: shaping task failed, \
-                         keeping the session's current disallowed set: {error}"
-                    );
-                    continue;
-                }
-            };
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: Some(shaped),
+                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
                 })
                 .await
             {
@@ -2940,28 +2861,11 @@ impl EnginePool {
             .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
             .collect::<Vec<_>>();
         for (sid, engine) in targets {
-            // scope_deny_ruleset reads consent state from disk (twice per
-            // session; the read path no longer waits on the bundle flock);
-            // keep the potentially blocking read off the async worker like
-            // the other disk-reading paths.
-            let ruleset = {
-                let bridge = self.bridge.clone();
-                let sid_for_task = sid.clone();
-                match tokio::task::spawn_blocking(move || bridge.scope_deny_ruleset(&sid_for_task))
-                    .await
-                {
-                    Ok(ruleset) => ruleset,
-                    Err(error) => {
-                        eprintln!(
-                            "[engine_pool] refresh_permission_rulesets {sid} failed: {error:?}"
-                        );
-                        continue;
-                    }
-                }
-            };
             if let Err(e) = engine
                 .handle
-                .send(Op::SetPermissionRuleset { ruleset })
+                .send(Op::SetPermissionRuleset {
+                    ruleset: self.bridge.scope_deny_ruleset(&sid),
+                })
                 .await
             {
                 eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
