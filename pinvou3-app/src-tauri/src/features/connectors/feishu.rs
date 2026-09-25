@@ -39,9 +39,10 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// lark-cli 是否已在 PATH(快速,~秒级)。
+/// lark-cli 是否已在 PATH(快速,~秒级)。与钉钉 `dws_cli_present` 同构:
+/// 复用下方三态探测并把两类失败都折叠为「不可用」。
 fn lark_cli_present() -> bool {
-    matches!(cc::run(lark(&["--version"])), Ok((true, _, _)))
+    lark_cli_probe().unwrap_or(false)
 }
 
 /// `--version` 三态探测,与钉钉 `dws_cli_probe` 同构:`Ok(true)` 已安装可用;
