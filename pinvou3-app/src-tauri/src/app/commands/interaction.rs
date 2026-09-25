@@ -229,6 +229,7 @@ pub async fn accept_plan(
         .map(|message| message.trim().to_string())
         .filter(|message| !message.is_empty())
         .unwrap_or_else(|| "✅ 就这么干".to_string());
+    crate::features::assistant::timing::start_turn(&session_id);
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
@@ -241,6 +242,11 @@ pub async fn accept_plan(
         )
         .await
     {
+        crate::features::assistant::timing::finish_turn(
+            &session_id,
+            "send_error",
+            Some(&format!("{error:#}")),
+        );
         // 发送失败：作废「未成活」快照（与 chat.rs 同款，按 id 精确删除）。
         super::checkpoints::drop_unsent_turn_checkpoint(
             checkpoint_ledger_root,

@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use deepseek_tui::AppMode;
@@ -62,6 +62,10 @@ use crate::platform::prefs::{SavedModel, UserPrefs};
 // 回收序列）。回收回到 lazy spawn 语义，下次发消息重建 + SyncSession 注水，
 // 无损；30 分钟取偏保守值，宁可少回收也不误伤刚要使用的会话。
 use crate::core::reaper::{IDLE_EVICT_AFTER_SECS, IdleReaperGuard};
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// Upper bound for side-effect awaits issued while the per-session turn gate
 /// is held: the phase-two subagent-cascade sends in `cancel_turn_with_gates`,
@@ -1517,16 +1521,21 @@ impl EnginePool {
         scheduled_unattended: bool,
         explicit_model_override: Option<SavedModel>,
     ) -> Result<AppEngine> {
+        let acquisition_started = Instant::now();
+        let runtime_lock_started = Instant::now();
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
+        let runtime_lock_ms = elapsed_ms(runtime_lock_started);
+        let prepare_model_started = Instant::now();
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended, explicit_model_override)
             .await?;
+        let prepare_model_ms = elapsed_ms(prepare_model_started);
         let model_update_revision = self.model_update_revisions.current(&prepared.model.id);
         let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
         let mcp_config_revision = self.mcp_config_revision.load(Ordering::Acquire);
 
-        let stale = {
+        let (fresh_engine, stale) = {
             let mut entries = self.entries.lock().await;
             if let Some(entry) = entries.get(session_id) {
                 if entry_is_fresh(
@@ -1534,18 +1543,46 @@ impl EnginePool {
                     entry.mcp_config_revision,
                     mcp_config_revision,
                 ) {
-                    return Ok(entry.engine.clone());
+                    (Some(entry.engine.clone()), None)
+                } else {
+                    (None, entries.remove(session_id))
                 }
+            } else {
+                (None, None)
             }
-            entries.remove(session_id)
         };
+        if let Some(engine) = fresh_engine {
+            crate::features::assistant::timing::record_engine_ready(
+                session_id,
+                crate::features::assistant::timing::EngineAcquireTiming {
+                    kind: "reused",
+                    total_ms: elapsed_ms(acquisition_started),
+                    runtime_lock_ms,
+                    prepare_model_ms,
+                    reclaim_ms: 0,
+                    finalize_bridge_ms: 0,
+                    tool_setup_ms: 0,
+                    materialize_skills_ms: 0,
+                    spawn_engine_ms: 0,
+                    load_session_ms: 0,
+                    sync_session_ms: 0,
+                },
+            );
+            return Ok(engine);
+        }
+        let acquire_kind = if stale.is_some() { "rebuilt" } else { "cold" };
+        let reclaim_started = Instant::now();
         if let Some(entry) = stale {
             self.reclaim_engine_entry(session_id, entry).await;
         }
+        let reclaim_ms = elapsed_ms(reclaim_started);
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
+        let finalize_bridge_started = Instant::now();
         let bridge =
             Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
+        let finalize_bridge_ms = elapsed_ms(finalize_bridge_started);
+        let tool_setup_started = Instant::now();
         // shell 执行目录与 engine cwd 同源：统一走 SessionStore::session_roots
         // （scheduled = automation workspace，原生代码绑项目会话 = 项目目录）。
         // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
@@ -1562,9 +1599,11 @@ impl EnginePool {
         extra_tools.push(Arc::new(
             crate::features::connectors::ima::ImaOpenApiTool::new(),
         ));
+        let tool_setup_ms = elapsed_ms(tool_setup_started);
         // skill 双 scope 治理：spawn 全量拼组合目录（物化时机一，V-7）。组合目录
         // 是 EngineConfig.skills_dir 的发现根（build_engine_config_for_session_roots
         // 注入路径），必须先于 spawn 存在，否则首轮 prompt 无 `## Skills` 块。
+        let materialize_skills_started = Instant::now();
         {
             let sid = session_id.to_string();
             let scope = self.bridge.session_policy(&sid).mode();
@@ -1580,6 +1619,7 @@ impl EnginePool {
             .map_err(|e| anyhow::anyhow!("materialize session skills join: {e}"))?
             .map_err(|e| anyhow::anyhow!("materialize session skills: {e}"))?;
         }
+        let materialize_skills_ms = elapsed_ms(materialize_skills_started);
         let turn_lifecycle = self.turn_lifecycles.for_session(session_id);
         // One wall-clock epoch for the entry ledger plus a process-monotonic
         // incarnation for the steer-id generation stamp. The stamp on ids
@@ -1593,6 +1633,7 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        let spawn_engine_started = Instant::now();
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -1607,11 +1648,16 @@ impl EnginePool {
             steer_incarnation,
         )
         .await?;
+        let spawn_engine_ms = elapsed_ms(spawn_engine_started);
 
         // 即使 messages 为空也必须同步：SyncSession 不只注入历史，还把底层 Engine
         // 的内部 session id 对齐到预创建的持久化会话。跳过会让首轮 SessionUpdated
         // 因 id mismatch 被拒绝，最终只落盘 user 而丢失 assistant。
-        match self.store.load(session_id) {
+        let load_session_started = Instant::now();
+        let loaded_session = self.store.load(session_id);
+        let load_session_ms = elapsed_ms(load_session_started);
+        let sync_session_started = Instant::now();
+        match loaded_session {
             Ok(saved) => {
                 if let Err(error) = engine
                     .sync_session(session_id.to_string(), saved.messages)
@@ -1643,6 +1689,7 @@ impl EnginePool {
                 });
             }
         }
+        let sync_session_ms = elapsed_ms(sync_session_started);
 
         self.entries.lock().await.insert(
             session_id.to_string(),
@@ -1654,6 +1701,22 @@ impl EnginePool {
                 spawned_at_ms,
                 steer_incarnation,
                 last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
+            },
+        );
+        crate::features::assistant::timing::record_engine_ready(
+            session_id,
+            crate::features::assistant::timing::EngineAcquireTiming {
+                kind: acquire_kind,
+                total_ms: elapsed_ms(acquisition_started),
+                runtime_lock_ms,
+                prepare_model_ms,
+                reclaim_ms,
+                finalize_bridge_ms,
+                tool_setup_ms,
+                materialize_skills_ms,
+                spawn_engine_ms,
+                load_session_ms,
+                sync_session_ms,
             },
         );
         Ok(engine)
@@ -2521,6 +2584,7 @@ impl EnginePool {
             // The window is ms-scale after create_session; every run owns a
             // fresh session, so nothing propagates to the next run.
             self.evict_locked(session_id).await;
+            crate::features::assistant::timing::start_turn(session_id);
             let engine = match self
                 .get_or_spawn_with_policy(session_id, true, None)
                 .await
@@ -2571,6 +2635,22 @@ impl EnginePool {
 
         drop(_running_slot);
         self.evict_locked(session_id).await;
+        // Reclaim first: if submission succeeded but the scheduler callback or
+        // terminal wait failed, the forwarder owns the authoritative terminal
+        // and consumes this timing turn while eviction cancels it. The calls
+        // below are idempotent fallbacks for failures before submission and
+        // cancellation before send.
+        match &result {
+            Err(error) => crate::features::assistant::timing::finish_turn(
+                session_id,
+                "send_error",
+                Some(&format!("{error:#}")),
+            ),
+            Ok(completion) if completion.turn_id.is_empty() => {
+                crate::features::assistant::timing::finish_turn(session_id, "Interrupted", None);
+            }
+            Ok(_) => {}
+        }
         result
     }
 
