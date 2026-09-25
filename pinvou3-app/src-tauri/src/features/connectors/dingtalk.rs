@@ -242,7 +242,7 @@ fn run_connect_flow(app: &AppHandle) {
         cc::emit(
             app,
             "dingtalk:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
         );
     }
 }

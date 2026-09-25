@@ -144,7 +144,7 @@ fn run_connect_flow(app: &AppHandle) {
         cc::emit(
             app,
             "wecom:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
         );
     }
 }
