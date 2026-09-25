@@ -47,6 +47,25 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// Id prefix minted by the headless `agent run` path (`agentic_{pid}_{n}`).
+///
+/// Retention keys the headless budget on it, so the prefix is a durable
+/// contract between the runner and the sweep rather than a formatting detail;
+/// `features::assistant::product_runtime::agentic_task::fresh_session_id`
+/// builds ids from it and a unit test pins the two together.
+pub(crate) const HEADLESS_SESSION_PREFIX: &str = "agentic_";
+
+/// Cap on retained headless `agent run` sessions, counted and evicted
+/// independently of the chat budget.
+///
+/// A CLI invocation must never be a destructive operation on the desktop
+/// user's conversations: sharing one budget meant each default-keep run
+/// evicted the oldest GUI chat (with its workspace and checkpoints), and the
+/// only notice went to a stderr the desktop user never reads. Sized like the
+/// chat budget — a headless batch is exactly the workload that benefits from
+/// keeping recent runs inspectable.
+pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
+
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
 /// it per UI language and the first send triggers the auto-rename. Sessions
@@ -229,6 +248,7 @@ impl SessionStore {
             list_cache_generation: Arc::new(AtomicU64::new(0)),
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
+            pinned_sessions_loaded: Arc::new(AtomicBool::new(false)),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
@@ -260,21 +280,23 @@ impl SessionStore {
     /// 重复扫描良性(幂等读),不值得再加装载互斥。
     pub(crate) fn list_sessions_cached(&self) -> std::io::Result<Arc<Vec<SessionMetadata>>> {
         let generation_now = self.list_cache_generation.load(Ordering::Acquire);
+        let foreign_now = Self::sessions_dir_change_token();
         loop {
-            if let Some((generation, cached)) = self.list_cache.read().clone() {
-                if generation == generation_now {
+            if let Some((generation, token, cached)) = self.list_cache.read().clone() {
+                if generation == generation_now && token == foreign_now {
                     return Ok(cached);
                 }
                 // 过期代数条目:等待的写方尚未清槽或守卫失效时被落地,击穿
                 // 重扫,不能把写前视图当有效快照返回。
             }
             let generation_at_scan = self.list_cache_generation.load(Ordering::Acquire);
+            let token_at_scan = Self::sessions_dir_change_token();
             let fresh = Arc::new(self.manager.list_sessions()?);
             let mut slot = self.list_cache.write();
             if self.list_cache_generation.load(Ordering::Acquire) == generation_at_scan {
                 // 扫描期间无写:安全回填。写锁保证只有一个 miss 竞争者落地,
                 // 后到者走到顶部已能命中(或带着更新的代数再扫一轮)。
-                *slot = Some((generation_at_scan, Arc::clone(&fresh)));
+                *slot = Some((generation_at_scan, token_at_scan, Arc::clone(&fresh)));
                 return Ok(fresh);
             }
             // 扫描期间发生过写:丢弃本次结果,重扫。连续写活跃时最多重扫
@@ -285,6 +307,31 @@ impl SessionStore {
     pub(crate) fn invalidate_list_cache(&self) {
         *self.list_cache.write() = None;
         self.list_cache_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Cheap staleness token for session records written by ANOTHER process.
+    ///
+    /// The generation counter above only moves on this process's own writes,
+    /// which was sound while `SessionStore` was the single writer. It is not
+    /// any more: a headless `agent run` sharing `PINVOU3_HOME` creates and
+    /// evicts records under a live GUI, and with a generation-only guard the
+    /// GUI keeps serving its boot-time snapshot indefinitely — evicted
+    /// sessions stay listed and reject the click that opens them, and the
+    /// run's own session never appears. Pairing the generation with the
+    /// sessions directory's mtime makes a foreign create or delete invalidate
+    /// the cache the same way a local write does.
+    ///
+    /// Directory mtime moves on entry creation and removal, which is exactly
+    /// the foreign mutation class that changes list membership; a foreign
+    /// in-place rewrite of one record (a title rename) does not move it and
+    /// still needs the owning process's own invalidation. `None` on a stat
+    /// failure compares equal to itself, so an unreadable directory degrades
+    /// to the previous generation-only behaviour rather than rescanning on
+    /// every call.
+    fn sessions_dir_change_token() -> Option<std::time::SystemTime> {
+        std::fs::metadata(crate::platform::paths::sessions_root())
+            .and_then(|meta| meta.modified())
+            .ok()
     }
 
     pub fn list(&self) -> Result<Vec<SessionMetadata>> {

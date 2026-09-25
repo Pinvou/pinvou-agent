@@ -21,7 +21,7 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::MAX_SESSIONS_PER_KIND;
+use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
 use super::validators::generate_session_id;
 
 /// 借用 paths 模块的进程级 env 锁——避免与其他 mutate PINVOU3_HOME
@@ -184,6 +184,7 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
     }
     *store.list_cache.write() = Some((
         generation_now.wrapping_sub(1),
+        None,
         std::sync::Arc::new(poisoned),
     ));
     let after = store
@@ -1994,6 +1995,7 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     phantom.title = "Scheduled run".into();
     *store.list_cache.write() = Some((
         generation_before.wrapping_add(1),
+        None,
         std::sync::Arc::new(vec![phantom]),
     ));
     let cached = store
@@ -2356,6 +2358,120 @@ fn chat_retention_falls_back_to_boot_pins_when_pin_file_is_unreadable() {
         store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
         "the oldest unpinned session is evicted instead"
     );
+}
+
+/// A pin file that is ALREADY corrupt when the process boots must stop the
+/// sweep, not run it with an empty exemption set.
+///
+/// The sibling test above seeds the boot map through `set_pinned` *before*
+/// corrupting the file, so the in-memory fallback is populated and the sweep
+/// is safe. The dangerous ordering is the reverse: `load_pinned_sessions` is a
+/// no-op on a parse failure, so the boot map ends up empty for exactly the
+/// same reason the file is unusable — and `SessionStore::boot` sweeps
+/// immediately afterwards, which would delete every pinned session.
+#[test]
+fn a_pin_file_corrupt_at_boot_stops_the_sweep_instead_of_evicting() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    // Exactly at the cap, so seeding itself evicts nothing.
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("boot-corrupt-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+
+    // Corrupt the file, then boot a second store over the same home: its load
+    // fails and leaves the in-memory map empty — the state the old fallback
+    // could not tell apart from "there are no pins".
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+    let rebooted = SessionStore::boot_with_scheduled_root(
+        crate::platform::paths::pinvou3_home().join("scheduled"),
+    )
+    .expect("re-boot against the corrupt pin file");
+
+    // Push past the cap through the rebooted store: this save runs the sweep,
+    // which is where an empty exemption set does its damage.
+    let mut overflow = create_saved_session_with_id_and_mode(
+        "boot-corrupt-pin-overflow".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    overflow.metadata.updated_at = now + chrono::Duration::seconds(1);
+    rebooted.save(&overflow).expect("push past the cap");
+
+    for id in &ids {
+        assert!(
+            rebooted.load(id).is_ok(),
+            "{id} was deleted while the keep-forever set was unknown; sitting over the cap is \
+             recoverable, deleting a session the user may have pinned is not"
+        );
+    }
+}
+
+/// Headless `agent run` sessions are evicted against their own budget.
+///
+/// Sharing the chat budget made every default-keep run permanently consume one
+/// of the user's 50 slots and delete their oldest conversation — transcript,
+/// workspace and checkpoints — with the only notice going to a stderr the
+/// desktop user never reads.
+#[test]
+fn headless_sessions_do_not_evict_gui_chats() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut chat_ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("gui-chat-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        // Oldest first, so a shared budget would take `gui-chat-0` next.
+        session.metadata.updated_at = now - chrono::Duration::seconds(1_000 - index as i64);
+        store.save(&session).expect("seed chat session");
+        chat_ids.push(session.metadata.id);
+    }
+
+    // Two headless runs against a chat store sitting exactly at the cap.
+    for index in 0..2 {
+        let mut headless = create_saved_session_with_id_and_mode(
+            format!("{HEADLESS_SESSION_PREFIX}4242_{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        headless.metadata.updated_at = now + chrono::Duration::seconds(index as i64);
+        store.save(&headless).expect("persist the headless session");
+    }
+
+    for id in &chat_ids {
+        assert!(
+            store.load(id).is_ok(),
+            "{id} was evicted by a headless run; a CLI invocation must not be a destructive \
+             operation on the desktop user's conversations"
+        );
+    }
 }
 
 #[test]
@@ -6018,7 +6134,10 @@ fn retention_rechecks_a_pin_that_lands_mid_sweep() {
     );
     // The protected session's fresh pin survives the side-map purge too.
     let pins = store.durable_pinned_sessions();
-    assert!(pins.contains(&victims[2]));
+    assert!(
+        pins.expect("a readable pin file yields a known set")
+            .contains(&victims[2])
+    );
 }
 
 #[test]
@@ -6141,7 +6260,9 @@ fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
     std::fs::write(&file, r#"[{"nope": 1}]"#).expect("re-seed a zero-id pin file");
     let durable_pins = store.durable_pinned_sessions();
     assert!(
-        durable_pins.contains("boot-pin"),
+        durable_pins
+            .expect("an unreadable file with a loaded boot map falls back, not to unknown")
+            .contains("boot-pin"),
         "the zero-id file must fall back to the boot map, not parse as no pins"
     );
 }

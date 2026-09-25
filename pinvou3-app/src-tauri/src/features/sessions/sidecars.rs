@@ -351,17 +351,28 @@ impl SessionStore {
         // cache guard — the file mutex is what keeps the two RMWs from
         // interleaving.
         let _io = self.session_models_io.lock();
-        let mut models = self.session_models.write();
-        let previous = models.get(id).cloned();
-        match model_id {
-            Some(mid) => {
-                models.insert(id.to_string(), mid);
+        // The cache write guard is scoped to the switch, not held across the
+        // durable RMW below (which reads the file, serializes, fsyncs and
+        // renames). `session_model_override` is read on the chat send path, so
+        // holding it across an fsync parks every send behind disk latency —
+        // and it buys nothing: `session_models_io`, already held, is what
+        // serializes this method against itself and against the purge.
+        // Matches the scoping `set_pinned` / `set_hidden` already use.
+        let (previous, desired) = {
+            let mut models = self.session_models.write();
+            let previous = models.get(id).cloned();
+            match model_id {
+                Some(mid) => {
+                    models.insert(id.to_string(), mid);
+                }
+                None => {
+                    models.remove(id);
+                }
             }
-            None => {
-                models.remove(id);
-            }
-        }
-        if let Err(error) = apply_session_model_mutation(id, models.get(id).map(String::as_str)) {
+            (previous, models.get(id).cloned())
+        };
+        if let Err(error) = apply_session_model_mutation(id, desired.as_deref()) {
+            let mut models = self.session_models.write();
             match previous {
                 Some(previous) => {
                     models.insert(id.to_string(), previous);
@@ -493,30 +504,58 @@ impl SessionStore {
     }
 
     pub fn load_pinned_sessions(&self) {
+        let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
+        // Absent counts as loaded: the save path deletes the file exactly when
+        // the map empties, so "no file" really is "no pins". Only a file that
+        // is present and unusable leaves the boot map unknown rather than
+        // empty — see `pinned_sessions_loaded`.
+        let absent = !file.exists();
         if let Some(pins) =
             load_timestamped_id_map(PINNED_SESSIONS_FILE, "pinned_at", "load_pinned_sessions")
         {
             *self.pinned_sessions.write() = pins;
+            self.pinned_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        } else if absent {
+            self.pinned_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     /// Durable pin protection for a retention sweep: the pin file is the
     /// cross-process truth, so the sweep re-reads it instead of trusting the
     /// map loaded at boot — a GUI pin made after this process started must
-    /// still protect the session from this process's sweep. Any missing,
-    /// unreadable, or unparseable file keeps the boot-time map: the save path
-    /// deletes the file exactly when the map empties, and a torn read (an
-    /// externally corrupted or legacy non-atomic file) must never widen the
-    /// eviction set.
-    pub(crate) fn durable_pinned_sessions(&self) -> std::collections::HashSet<String> {
+    /// still protect the session from this process's sweep.
+    ///
+    /// `None` means the exemption set is *unknown*: the file is present but
+    /// unreadable or unparseable, and the boot-time load failed on the same
+    /// condition, so the in-memory map is empty because of the fault rather
+    /// than because there are no pins. Falling back to it there would hand the
+    /// sweep an empty exemption set and delete every pinned session, so the
+    /// caller must refuse to evict instead. When the boot load did succeed the
+    /// map is a trustworthy subset (the file broke after boot) and is returned
+    /// — a subset can only narrow the eviction set, never widen it.
+    pub(crate) fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
-        std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|content| {
-                parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions")
-            })
-            .map(|pins| pins.into_keys().collect())
-            .unwrap_or_else(|| self.pinned_sessions.read().keys().cloned().collect())
+        let parsed = match std::fs::read_to_string(&file) {
+            Ok(content) => parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions"),
+            // Absent is authoritative: the save path removes the file when the
+            // last pin goes away.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Some(std::collections::HashSet::new());
+            }
+            Err(_) => None,
+        };
+        if let Some(pins) = parsed {
+            return Some(pins.into_keys().collect());
+        }
+        if self
+            .pinned_sessions_loaded
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Some(self.pinned_sessions.read().keys().cloned().collect());
+        }
+        None
     }
 
     pub fn is_hidden(&self, id: &str) -> bool {
