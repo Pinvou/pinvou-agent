@@ -92,9 +92,10 @@ impl SessionStore {
             .context("list sessions for retention")?
             .as_ref()
             .clone();
-        // Aux records ride the same snapshot. Two derived-id (round-30 B8)
-        // consumers read it: the pair-liveness ordering below and the orphan
-        // reclaim — no persisted mapping exists to consult.
+        // Aux records ride the same snapshot for the pair-liveness ordering
+        // below — the one derived-id (round-30 B8) consumer that needs
+        // `updated_at`; the orphan reclaim reads the raw directory instead
+        // (see below), and the eviction cascade probes each record directly.
         let aux_freshness: std::collections::HashMap<&str, chrono::DateTime<chrono::Utc>> =
             sessions
                 .iter()
@@ -108,30 +109,42 @@ impl SessionStore {
         // arise from an out-of-band main deletion or an interrupted cascade —
         // every in-band path (delete/discard/eviction) is all-or-nothing.
         // Reclaim it here; the boot sweep is what collects it after a crash.
-        // NotFound-only: a transient stat fault on the main record counts as
-        // "unknown", and unknown is never "absent" in a destructive path.
-        for metadata in sessions
-            .iter()
-            .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
-        {
-            // `get(4..)` instead of slicing: ids reach here from the listing,
+        // Identity comes from the FILENAME, never from parsing the record
+        // (round-31 M3): the metadata listing silently drops any record it
+        // cannot read (truncated, momentarily unopenable), so an orphan pass
+        // driven off that listing would leave exactly those records
+        // unreclaimable — invisible to every list, exempt from the budget,
+        // still holding the user's side-chat text. NotFound-only: a
+        // transient stat fault on the main record counts as "unknown", and
+        // unknown is never "absent" in a destructive path.
+        let aux_record_ids: Vec<String> = std::fs::read_dir(self.manager.sessions_dir())
+            .context("scan session records for orphan aux reclaim")?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let id = name.to_str()?.strip_suffix(".json")?;
+                // Only the exact lowercase prefix a derived id carries is
+                // classified; a case-variant alias file is not a record this
+                // pass can classify, so it is left alone.
+                id.starts_with("aux-").then(|| id.to_string())
+            })
+            .collect();
+        for aux_id in aux_record_ids {
+            // `get(4..)` instead of slicing: ids reach here from filenames,
             // and a multibyte char at the boundary must not panic (the
-            // is_aux_session_id boundary argument). Only the exact lowercase
-            // prefix a derived id carries is stripped; anything else (a
-            // case-variant alias file) is not a record this pass can
-            // classify, so it is left alone.
-            let Some(main_id) = metadata.id.get(4..) else {
+            // is_aux_session_id boundary argument).
+            let Some(main_id) = aux_id.get(4..) else {
                 continue;
             };
-            if !metadata.id.starts_with("aux-") || !self.durable_session_record_is_absent(main_id) {
+            if !self.durable_session_record_is_absent(main_id) {
                 continue;
             }
-            let (committed, result) = self.delete_session_record(&metadata.id);
+            let (committed, result) = self.delete_session_record(&aux_id);
             if committed {
                 // Push even when the result is an error: a partial commit
                 // (record gone, workspace cleanup failed) must still purge the
                 // record's side maps and invalidate the list snapshot.
-                deleted_ids.push(metadata.id.clone());
+                deleted_ids.push(aux_id.clone());
             }
             if let Err(error) = result {
                 // NotFound: the record was already gone (benign). InvalidInput:
@@ -199,15 +212,21 @@ impl SessionStore {
                 // FIRST, and a failed aux delete aborts the main eviction —
                 // a visible main whose side chat was destroyed while its
                 // record stayed would silently lose the pair's other half.
-                // Presence comes from the listing snapshot above, never from
-                // a per-record probe that could conflate a transient fault
-                // with "absent". The store layer cannot reach the pool
-                // (dependency direction), so deleting the aux record here
-                // reclaims no engine and emits no session:deleted — a still
-                // running aux engine is reclaimed by id as a fallback by the
-                // pool's idle-eviction sweep.
-                let aux_id = Self::aux_session_id_for(&id);
-                if aux_freshness.contains_key(aux_id.as_str()) {
+                // Presence comes from the fail-closed derived-id probe
+                // (`SessionStore::aux_session_id`), never from the listing
+                // snapshot (round-31 M3): the metadata listing silently
+                // drops records it cannot read, so gating on the snapshot
+                // would evict the main while stranding an unreadable
+                // `aux-<main>.json` — invisible to every list, exempt from
+                // the budget, and missed by the orphan pass's own former
+                // snapshot source. The probe counts only a genuine NotFound
+                // as absent, so a transient stat fault reads as "present"
+                // and the pair stays together. The store layer cannot reach
+                // the pool (dependency direction), so deleting the aux
+                // record here reclaims no engine and emits no
+                // session:deleted — a still running aux engine is reclaimed
+                // by id as a fallback by the pool's idle-eviction sweep.
+                if let Some(aux_id) = self.aux_session_id(&id) {
                     let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
                     if aux_committed {
                         // Push even on a partial commit (record gone, cleanup

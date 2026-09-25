@@ -393,19 +393,47 @@ pub(crate) mod turn_tool_restrict {
 /// The "last mile" from decision to dispatch is folded into one function: the
 /// forced result computed by `send_reserved_user_message` is handed to the
 /// engine's per-turn send entry as a [`turn_tool_restrict::TurnToolRestrict`],
-/// whose only constructor is this path. The doc comment above records why the
-/// parameter is a token instead of the caller's `bool`.
+/// whose only constructor is this path, and the outgoing per-turn reminder is
+/// produced here by [`merge_aux_zero_tool_reminder`]. The doc comment above
+/// records why the parameter is a token instead of the caller's `bool`; the
+/// reminder rides the same seam because a bare `Option<String>` assembled at
+/// the call site was exactly as unpinned (round-31 M9-rust: deleting the
+/// merge call kept the whole suite green) — through this function, removing
+/// either the token policy or the reminder merge turns an executing test red.
 pub(crate) fn forward_forced_turn_restrict<F>(
     session_id: &str,
     persona_conversational: bool,
     caller_restrict: bool,
-    send: impl FnOnce(turn_tool_restrict::TurnToolRestrict) -> F,
+    persona_reminder: Option<String>,
+    send: impl FnOnce(turn_tool_restrict::TurnToolRestrict, Option<String>) -> F,
 ) -> F {
-    send(turn_tool_restrict::TurnToolRestrict::forced(
-        session_id,
-        persona_conversational,
-        caller_restrict,
-    ))
+    send(
+        turn_tool_restrict::TurnToolRestrict::forced(
+            session_id,
+            persona_conversational,
+            caller_restrict,
+        ),
+        merge_aux_zero_tool_reminder(session_id, persona_reminder),
+    )
+}
+
+/// The edit-resend counterpart of [`forward_forced_turn_restrict`]'s last
+/// mile: `edit_last_turn_reserved` bypasses the send path, so its aux
+/// zero-tool reminder is merged into the resent message here — the merge and
+/// the engine dispatch are folded into one function so the wiring (not only
+/// the pure helper) is covered by an executing test (round-31 M9-rust: this
+/// was the second unpinned `merge_aux_zero_tool_reminder` call site).
+pub(crate) fn forward_edit_resend_with_reminder<F>(
+    session_id: &str,
+    new_message: String,
+    send: impl FnOnce(String) -> F,
+) -> F {
+    send(match merge_aux_zero_tool_reminder(session_id, None) {
+        Some(reminder) => {
+            format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}")
+        }
+        None => new_message,
+    })
 }
 
 fn scheduled_profile_after_turn_gate(
@@ -2593,17 +2621,17 @@ impl EnginePool {
             .as_ref()
             .map(crate::features::personas::equip_anchor);
         let persona_conversational = active_card.as_ref().is_some_and(|c| c.conversational_only);
-        let persona_reminder = merge_aux_zero_tool_reminder(session_id, persona_reminder);
         let engine = self.get_or_spawn(session_id).await?;
         forward_forced_turn_restrict(
             session_id,
             persona_conversational,
             restrict_tools_for_turn,
-            |restrict_tools| {
+            persona_reminder,
+            |restrict_tools, reminder| {
                 engine.send_reserved_user_message(
                     content,
                     mode,
-                    persona_reminder,
+                    reminder,
                     restrict_tools,
                     expert_snapshot,
                     reservation,
@@ -3022,7 +3050,7 @@ impl EnginePool {
     pub(crate) async fn edit_last_turn_reserved(
         &self,
         session_id: &str,
-        mut new_message: String,
+        new_message: String,
         display_message: Message,
         mut reservation: TurnReservation,
     ) -> Result<()> {
@@ -3053,22 +3081,21 @@ impl EnginePool {
         // 重发也是 turn 提交：刷新空闲时钟（理由同 send_reserved_user_message）。
         self.touch_engine_activity(session_id).await;
         // Aux zero-tool reminder for edit resends (round-14 minor-1): this
-        // path bypasses send_reserved_user_message, so merge the reminder
-        // into the resent message here — otherwise an aux edit-resend can
-        // regress to literal tool-call markup in the answer. The block is
-        // stripped from the stored context host-side — the reservation's
-        // TranscriptSanitizationRule swaps the raw prompt for the display
-        // copy before the transcript is persisted, same as on the send path.
-        // The tool *surface* stays zero via the spawn config; persona anchors
-        // share the pre-existing gap and are unchanged.
-        if let Some(reminder) = merge_aux_zero_tool_reminder(session_id, None) {
-            new_message =
-                format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}");
-        }
-        self.get_or_spawn(session_id)
-            .await?
-            .edit_last_turn_reserved(new_message, reservation)
-            .await
+        // path bypasses send_reserved_user_message, so the reminder is merged
+        // into the resent message by forward_edit_resend_with_reminder —
+        // otherwise an aux edit-resend can regress to literal tool-call
+        // markup in the answer. The block is stripped from the stored
+        // context host-side — the reservation's TranscriptSanitizationRule
+        // swaps the raw prompt for the display copy before the transcript is
+        // persisted, same as on the send path. The tool *surface* stays zero
+        // via the spawn config; persona anchors share the pre-existing gap
+        // and are unchanged. Folding the merge into the dispatch seam keeps
+        // the wiring itself pinned by an executing test (round-31 M9-rust).
+        let engine = self.get_or_spawn(session_id).await?;
+        forward_edit_resend_with_reminder(session_id, new_message, |message| {
+            engine.edit_last_turn_reserved(message, reservation)
+        })
+        .await
     }
 
     /// Manually compacts one session. Engines are spawned lazily, so a session
@@ -3453,12 +3480,13 @@ mod scheduled_model_tests {
         bounded_shutdown_sends, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_aux_cascade, delete_chat_session_with_gate,
         delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        entry_is_fresh, evict_if_idle_with_gates, forward_forced_turn_restrict, generation_matches,
-        identity_for_active_model, identity_for_saved_model, merge_aux_zero_tool_reminder,
-        quiesce_engine_before_reclaim, rebind_evict_with_gates, rebind_evictable,
-        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
-        resolve_spawn_model, retry_shutdown_sends, scheduled_profile_after_turn_gate,
-        should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
+        entry_is_fresh, evict_if_idle_with_gates, forward_edit_resend_with_reminder,
+        forward_forced_turn_restrict, generation_matches, identity_for_active_model,
+        identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
+        rebind_evict_with_gates, rebind_evictable, resolve_eval_model_selection_from,
+        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
+        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
@@ -3606,9 +3634,15 @@ mod scheduled_model_tests {
         let captured = std::cell::Cell::new(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("aux-1", false, false, |turn_tool_restrict| {
-                captured.set(Some(turn_tool_restrict));
-            });
+            forward_forced_turn_restrict(
+                "aux-1",
+                false,
+                false,
+                None,
+                |turn_tool_restrict, _reminder| {
+                    captured.set(Some(turn_tool_restrict));
+                },
+            );
         }
         let aux = captured
             .get()
@@ -3625,9 +3659,15 @@ mod scheduled_model_tests {
         captured.set(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("sess-plain", false, false, |turn_tool_restrict| {
-                captured.set(Some(turn_tool_restrict));
-            });
+            forward_forced_turn_restrict(
+                "sess-plain",
+                false,
+                false,
+                None,
+                |turn_tool_restrict, _reminder| {
+                    captured.set(Some(turn_tool_restrict));
+                },
+            );
         }
         let plain = captured.get().expect("a plain session must yield a token");
         assert!(
@@ -3642,9 +3682,15 @@ mod scheduled_model_tests {
         captured.set(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("sess-plain", false, true, |turn_tool_restrict| {
-                captured.set(Some(turn_tool_restrict));
-            });
+            forward_forced_turn_restrict(
+                "sess-plain",
+                false,
+                true,
+                None,
+                |turn_tool_restrict, _reminder| {
+                    captured.set(Some(turn_tool_restrict));
+                },
+            );
         }
         let caller_forced = captured
             .get()
@@ -3659,9 +3705,15 @@ mod scheduled_model_tests {
         captured.set(None);
         {
             let captured = &captured;
-            forward_forced_turn_restrict("sess-plain", true, false, |turn_tool_restrict| {
-                captured.set(Some(turn_tool_restrict));
-            });
+            forward_forced_turn_restrict(
+                "sess-plain",
+                true,
+                false,
+                None,
+                |turn_tool_restrict, _reminder| {
+                    captured.set(Some(turn_tool_restrict));
+                },
+            );
         }
         assert!(
             captured
@@ -3688,6 +3740,97 @@ mod scheduled_model_tests {
             !mismatched.restricts_tools_for(""),
             "an empty id (headless engine) is not an aux session; the token's own value applies"
         );
+    }
+
+    /// PR #433 review round-31 (M9-rust): the reminder leg of the send "last
+    /// mile". The pure `merge_aux_zero_tool_reminder` helper had test
+    /// coverage, but its CALL at the send dispatch did not — deleting the
+    /// merge left the whole suite green while aux turns lost the zero-tool
+    /// reminder and regressed to literal tool-call markup in the answer. The
+    /// merge now lives inside `forward_forced_turn_restrict`, the only path
+    /// to the engine's per-turn send entry: this capture closure pins the
+    /// reminder the engine actually receives, for aux and non-aux ids.
+    #[test]
+    fn send_dispatch_merges_aux_zero_tool_reminder_into_outgoing_reminder() {
+        // Aux id: the outgoing reminder carries the persona anchor first and
+        // the zero-tool boundary after it.
+        let reminder = forward_forced_turn_restrict(
+            "aux-reminder-wire",
+            false,
+            false,
+            Some("persona anchor".to_string()),
+            |_token, reminder| reminder,
+        )
+        .expect("an aux turn must always carry a reminder");
+        assert!(
+            reminder.starts_with("persona anchor\n\n"),
+            "the persona anchor keeps its lead position: {reminder}"
+        );
+        assert!(
+            reminder.contains(AUX_ZERO_TOOL_REMINDER),
+            "the zero-tool reminder must reach the outgoing aux turn"
+        );
+
+        // Aux id without a persona anchor: the reminder is the boundary alone.
+        let reminder =
+            forward_forced_turn_restrict("aux-reminder-wire", false, false, None, |_t, r| r);
+        assert_eq!(
+            reminder.as_deref(),
+            Some(AUX_ZERO_TOOL_REMINDER),
+            "with no persona anchor the aux reminder is the zero-tool boundary itself"
+        );
+
+        // Control: a plain session's reminder passes through untouched —
+        // no zero-tool block is ever attached to a normal turn.
+        let reminder = forward_forced_turn_restrict(
+            "sess-plain",
+            false,
+            false,
+            Some("persona anchor".to_string()),
+            |_t, r| r,
+        );
+        assert_eq!(reminder.as_deref(), Some("persona anchor"));
+        let reminder = forward_forced_turn_restrict("sess-plain", false, false, None, |_t, r| r);
+        assert!(
+            reminder.is_none(),
+            "a plain session with no persona anchor sends no reminder"
+        );
+    }
+
+    /// PR #433 review round-31 (M9-rust): the second call site.
+    /// `edit_last_turn_reserved` bypasses the send path, so its reminder is
+    /// merged into the resent message — a call that was likewise unpinned
+    /// (deleting it kept the suite green). The merge now lives inside
+    /// `forward_edit_resend_with_reminder`, the only path from the pool's
+    /// edit-resend entry to the engine: this capture closure pins the exact
+    /// message the engine receives, for aux and non-aux ids.
+    #[test]
+    fn edit_resend_dispatch_merges_aux_zero_tool_reminder_into_outgoing_message() {
+        let message = forward_edit_resend_with_reminder(
+            "aux-reminder-wire",
+            "edited question".to_string(),
+            |message| message,
+        );
+        assert!(
+            message.starts_with("<system-reminder>\n"),
+            "the aux edit resend must carry the reminder block: {message}"
+        );
+        assert!(
+            message.contains(AUX_ZERO_TOOL_REMINDER),
+            "the zero-tool reminder must reach the outgoing aux edit resend"
+        );
+        assert!(
+            message.ends_with("\n</system-reminder>\n\nedited question"),
+            "the user text rides after the reminder block: {message}"
+        );
+
+        // Control: a plain session's resent message is forwarded verbatim.
+        let message = forward_edit_resend_with_reminder(
+            "sess-plain",
+            "edited question".to_string(),
+            |message| message,
+        );
+        assert_eq!(message, "edited question");
     }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。

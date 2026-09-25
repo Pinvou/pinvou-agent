@@ -4984,6 +4984,139 @@ fn retention_keeps_orphan_aux_when_main_record_stat_faults() {
     std::fs::remove_file(&record).expect("clean up the symlink");
 }
 
+/// The fail-closed existence probe itself (round-31 M9-rust): a stat fault on
+/// the AUX record must read as "aux present", so no destructive path
+/// (delete cascade, retention eviction) can mistake EACCES/EIO/ELOOP for
+/// "no aux" and strand the record. Replacing the probe with a plain
+/// `Path::exists()` check — which swallows every non-NotFound fault into
+/// "absent" — turns this test red. The fault is a self-referential symlink
+/// (stat fails ELOOP), the same stand-in as the main-record fault above;
+/// unix-only because the fault needs a filesystem-level stand-in.
+#[cfg(unix)]
+#[test]
+fn aux_session_id_probe_fails_closed_when_aux_record_stat_faults() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::remove_file(&record).expect("remove the healthy aux record");
+    std::os::unix::fs::symlink(&record, &record)
+        .expect("self-referential symlink: stat fails ELOOP");
+
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "unknown is never 'absent': a stat fault on the aux record must read as present"
+    );
+
+    std::fs::remove_file(&record).expect("clean up the symlink");
+    assert!(
+        store.aux_session_id(&main.metadata.id).is_none(),
+        "a genuine NotFound still reports no aux after the fault clears"
+    );
+}
+
+/// Round-31 M3: the retention eviction cascade must gate aux presence on the
+/// fail-closed derived-id probe, not on the metadata listing — the listing
+/// silently drops any record it cannot read, so a truncated or momentarily
+/// unopenable aux record used to read as "no aux": the main was evicted
+/// alone and `aux-<main>.json` stranded, invisible to every list, exempt
+/// from the budget, and missed by the orphan pass (which shared the same
+/// parsed snapshot). The fault is a self-referential symlink (stat fails
+/// ELOOP → dropped from the listing), unix-only for the same reason as the
+/// main-record fault test. Pre-fix this goes red: the main is evicted while
+/// the faulted aux record stays on disk.
+#[cfg(unix)]
+#[test]
+fn retention_cascade_covers_aux_records_the_listing_drops() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let main_id = "retention-main-faulted-aux";
+    // Same eviction-line seeding as
+    // retention_evicts_main_session_together_with_its_aux: the main is the
+    // oldest, the aux is backdated so pair-liveness does not protect it, and
+    // MAX_SESSIONS_PER_KIND peers are newer.
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed oldest main");
+    let aux = store.create_aux_session(main_id).expect("create aux");
+    let mut aux_record = store.load(&aux.id).expect("load aux record");
+    aux_record.metadata.updated_at =
+        now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 2);
+    store
+        .save_session_atomic(&aux_record)
+        .expect("backdate the aux record");
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("retention-fault-peer-{index}"),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+
+    // Fault the aux record so the listing drops it: the producer skips any
+    // record it cannot read, which is exactly the fail-open gap.
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::remove_file(&record).expect("remove the healthy aux record");
+    std::os::unix::fs::symlink(&record, &record)
+        .expect("self-referential symlink: stat fails ELOOP");
+    store.invalidate_list_cache();
+    let listing = store
+        .list_sessions_cached()
+        .expect("list after faulting the aux record");
+    assert!(
+        !listing.iter().any(|metadata| metadata.id == aux.id),
+        "fixture: the faulted aux record must be ABSENT from the listing"
+    );
+    assert_eq!(
+        store.aux_session_id(main_id).as_deref(),
+        Some(aux.id.as_str()),
+        "fixture: the fail-closed probe must still see the faulted record"
+    );
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert!(
+        store.load(main_id).is_err(),
+        "over-cap main sessions must be evicted"
+    );
+    assert!(
+        std::fs::symlink_metadata(&record).is_err(),
+        "the cascade must reclaim the faulted aux record with its main, not strand it"
+    );
+}
+
 /// Boot housekeeping for the pre-redesign aux scheme (round-30 B8): the
 /// legacy `_aux_sessions.json` mapping sidecar is removed, and aux records
 /// minted under the old random scheme (`aux-<random>`, naming no existing
