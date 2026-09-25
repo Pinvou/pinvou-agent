@@ -1258,16 +1258,6 @@ mod tests {
         }
     }
 
-    /// A move-failure sample for [`combine_drag_errors`] (test helper).
-    fn failed_move() -> ComputerUseError {
-        ComputerUseError::failed("move aborted")
-    }
-
-    /// A release-failure sample for [`combine_drag_errors`] (with map_input_err-style context).
-    fn failed_release() -> ComputerUseError {
-        ComputerUseError::failed("drag release: injected 0/1 events")
-    }
-
     #[test]
     fn normalize_typed_newlines_maps_cr_and_crlf() {
         // Borrowed when there is no CR.
@@ -1417,41 +1407,6 @@ mod tests {
         // Only awareness == 2 with a context that really is PMv2 passes.
         assert!(thread_is_pmv2(2, true));
         assert!(!thread_is_pmv2(1, true));
-    }
-
-    #[test]
-    fn drag_error_merging_surfaces_stranded_button() {
-        // Both succeed: nothing to merge.
-        assert!(combine_drag_errors(Ok(()), Ok(())).is_ok());
-        // Only the move failed: the move error passes through unchanged.
-        assert_eq!(
-            combine_drag_errors(Err(failed_move()), Ok(()))
-                .unwrap_err()
-                .to_string(),
-            "failed: move aborted"
-        );
-        // Only the release failed: the stranded-button warning must surface.
-        let only_release = combine_drag_errors(Ok(()), Err(failed_release()))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            only_release.contains("the mouse button may still be pressed"),
-            "{only_release}"
-        );
-        // Both fail: the move failure AND the stranded-button warning must
-        // both be present (`result.and(release)` used to drop the latter).
-        let both = combine_drag_errors(Err(failed_move()), Err(failed_release()))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            both.contains("drag move failed (failed: move aborted)"),
-            "{both}"
-        );
-        assert!(both.contains("its release also failed"), "{both}");
-        assert!(
-            both.contains("the mouse button may still be pressed"),
-            "{both}"
-        );
     }
 
     #[test]

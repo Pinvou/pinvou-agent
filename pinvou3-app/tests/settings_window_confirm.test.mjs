@@ -122,7 +122,16 @@ test('feedback close routes through the in-app confirm layer', () => {
   assert.match(
     SETTINGS_VIEW,
     /<SheetConfirmDialog\s+testid="feedback-close-confirm"/,
-    'the confirm layer must be the shared SheetConfirmDialog (renders at z-[110], above the feedback panel z-[100])',
+    'the confirm layer must be the shared SheetConfirmDialog',
+  );
+  // The stacking order is the real invariant: if the shared dialog ever drops below the
+  // feedback panel (z-[100]) the confirm becomes unclickable and the panel locks. Pin it
+  // on the component itself now that the inline layer was folded into SheetConfirmDialog —
+  // asserting only the call site leaves the z-index claim living in a message string.
+  assert.match(
+    SETTINGS_VIEW,
+    /const SheetConfirmDialog[\s\S]{0,400}?className="fixed inset-0 z-\[110\]/,
+    'the shared confirm dialog must stack above the feedback panel (z-[100])',
   );
 
   // The OK button must route back into closeFeedback to truly close

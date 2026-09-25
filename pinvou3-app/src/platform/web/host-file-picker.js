@@ -39,8 +39,12 @@
     return node;
   }
 
+  // The ParentNode bulk-replace API lands in Safari 14.1, above the declared Safari
+  // 14.0 baseline (macOS 11 WKWebView), and is pinned against by
+  // tests/macos_phase2_contract.test.js. textContent is universally supported and
+  // drops element, text and comment children in a single operation.
   function clearChildren(node, replacement) {
-    while (node.firstChild) node.removeChild(node.firstChild);
+    node.textContent = "";
     if (replacement) node.append(replacement);
   }
 
@@ -332,7 +336,7 @@
             if (disposed || confirmedGeneration !== loadGeneration) return;
             mintInFlight = false;
             confirm.disabled = false;
-            body.replaceChildren(element("div", "pinvou-host-picker-error",
+            clearChildren(body, element("div", "pinvou-host-picker-error",
               labels.loadFailed(localizedPickerError(error))));
           });
         } else if (directoryMode) finish(currentPath);

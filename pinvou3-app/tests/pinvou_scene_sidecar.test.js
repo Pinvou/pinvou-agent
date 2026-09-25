@@ -254,9 +254,19 @@ function rec(name, pass, detail = '') {
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
-  rec('scene sidecar 损坏时不得由前端静默回退为空数组',
-    !/syncPinvouSceneEventsForSession[\s\S]*catch \{[\s\S]*return cached;/.test(tauriBridgeSource),
-    'durable sidecar errors must remain observable');
+  // 锚定到函数体内再断言：不加界的 [\s\S]* 会跨过函数边界命中幸存的
+  // localStorage try/catch 与正常的 return cached，使断言恒假。
+  const sceneSyncBody = (source) => {
+    const match = source.match(/async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n  \}\n/);
+    return match ? match[0] : '';
+  };
+  const tauriSceneSync = sceneSyncBody(tauriBridgeSource);
+  const webSceneSync = sceneSyncBody(webBridgeSource);
+  rec('scene sidecar 损坏时不得静默回退，必须上报后再降级到本地缓存',
+    tauriSceneSync !== '' && webSceneSync !== '' &&
+      [tauriSceneSync, webSceneSync].every((body) =>
+        /catch \(error\) \{\s*reportSidecarReadFailure\([^)]*\);\s*return cached;/.test(body)),
+    'durable sidecar errors must remain observable on both bridges');
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
     /get_session_pinvou_scene_events/.test(tauriBridgeSource) &&

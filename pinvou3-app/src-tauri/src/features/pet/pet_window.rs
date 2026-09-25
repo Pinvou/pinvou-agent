@@ -477,8 +477,9 @@ fn resize_pet_window_at_character_anchor(
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
-/// 缩放桌宠:右下角拉伸保持人物可见区域左上角不动;右键菜单缩放保持底边中点不动。
-/// 两种路径都会钳制在当前显示器工作区内。返回 clamp 后的实际值。
+/// 缩放桌宠:唯一生产调用方是 PetWindow 启动时的缩放初始化(不传 anchor)。
+/// `character_top_left` anchor 路径保留给未来的定点缩放,当前无调用方。
+/// 所有路径都会钳制在当前显示器工作区内。返回 clamp 后的实际值。
 pub async fn set_pet_scale(
     scale: f64,
     anchor: Option<String>,

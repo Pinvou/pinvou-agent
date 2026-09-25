@@ -614,7 +614,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             />
           );
         }
-        if (pv.kind === 'text') {
+        // includeJson re-kinds a parseable .json result from 'text' to 'json' (see
+        // artifact-preview.js), so both must land here — same as FilePreviewModal.
+        if (pv.kind === 'text' || pv.kind === 'json') {
           return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono text-[#444746] dark:text-[#C4C7C5]`}>{pv.text}</pre>;
         }
         // 可视化结果

@@ -245,12 +245,12 @@ function buildDesignRuntimeScript() {
     function drawHandles(element) {
       if (!element || !element.getBoundingClientRect) {
         handleLayer.style.display = 'none';
-        handleLayer.replaceChildren();
+        handleLayer.textContent = '';
         return;
       }
       const rect = element.getBoundingClientRect();
       handleLayer.style.display = 'block';
-      handleLayer.replaceChildren();
+      handleLayer.textContent = '';
       handles.forEach(function (item) {
         const dir = item[0], cursor = item[1];
         const p = handlePoint(rect, dir);
