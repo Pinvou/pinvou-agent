@@ -177,7 +177,9 @@ const expectedProtocolHashes = {
   // save_session_messages had no remaining caller, so its Rust command is
   // retired with it; the exposed bridge.chat API is unchanged).
   // Recomputed for the shared-helper dedup (see batch note above).
-  chat: '2258b9ed785b1a73bfd271427689c7db902edc5fa0d06eab47c28a11e7f40b86',
+  // Recomputed for per-frame stream notification coalescing; event names and
+  // invoke shapes remain unchanged.
+  chat: 'f05b89bf7afb71d803b1d820214a3f80355e60067d57e9302c27e2b8c70848db',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

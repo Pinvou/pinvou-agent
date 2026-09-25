@@ -400,7 +400,9 @@
   }
 
   // web+tauriMain 共享
-  function onSessionEvent(e, fn) {
+  // options.deferBackgroundNotify: stream deltas schedule their own coalesced
+  // publication, so the per-event background notify is skipped for them.
+  function onSessionEvent(e, fn, options) {
     const sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
     if (sid) {
       const eventBuffer = getBuffer(sid);
@@ -412,7 +414,7 @@
     }
     const isBg = sid && sid !== state.activeSessionId;
     runSyncOnSession(sid, fn);
-    if (isBg) notify();
+    if (isBg && !(options && options.deferBackgroundNotify)) notify();
   }
 
   // web+tauriMain 共享

@@ -1155,7 +1155,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
 function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) { return pinvouSharedtauriMain().markRemoteTurn(sid, buf, preserveCommittedRevision, cause); }
-function onSessionEvent(e, fn) { return pinvouSharedtauriMain().onSessionEvent(e, fn); }
+function onSessionEvent(e, fn, options) { return pinvouSharedtauriMain().onSessionEvent(e, fn, options); }
 function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduledRunSession(sid); }
 
   // Transcript persistence is authoritative in Rust. The UI only persists the
@@ -1997,6 +1997,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     state, listen, invoke, turnUsageDirty,
     sessionStates, renderMarkdown, bt,
     notify, onSessionEvent, runSyncOnSession,
+    // Live suppression probe for scheduleStreamNotify: inside a background
+    // working set the immediate first-delta notify is suppressed, so the
+    // stream scheduler must fall through to its bounded frame instead.
+    isNotifySuppressed: function () { return suppressNotify; },
     recordAuthoritySyncDiagnostic,
     authoritySyncBufferSnapshot,
     // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
