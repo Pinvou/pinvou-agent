@@ -128,7 +128,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                if let Err(error) = save_disabled_bundles_file(&file) {
+                if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
                     eprintln!("[scope] write disabled_bundles.json failed: {error}");
                 }
             }
@@ -151,7 +151,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         }
     };
     if strip_skill_prefixes(&mut file) {
-        if let Err(error) = save_disabled_bundles_file(&file) {
+        if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
         }
     }
@@ -208,14 +208,22 @@ fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
 /// layout in a later cycle).
 fn migrate_from_legacy_files() -> DisabledBundlesFile {
     let mut file = DisabledBundlesFile::default();
-    merge_connector_scopes_into(&mut file);
-    merge_skill_scopes_into(&mut file);
+    let connectors_unreadable = merge_connector_scopes_into(&mut file);
+    let skills_unreadable = merge_skill_scopes_into(&mut file);
+    if connectors_unreadable || skills_unreadable {
+        // Same rule as the new file: governance state that is present but unreadable must
+        // not silently become "nothing was disabled". Without this, one unreadable legacy
+        // file would migrate to a half state — and because the migration persists its
+        // result, the other half would be erased permanently.
+        eprintln!("[scope] legacy scope file unreadable; using fail-closed defaults");
+        return fail_closed_defaults();
+    }
     file
 }
 
 /// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
-/// （scope 条目按旧文件**覆盖写**）。
-fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
+/// （scope 条目按旧文件**覆盖写**）。返回该旧文件是否「存在但读不动」。
+fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_connectors.json"),
@@ -223,18 +231,18 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
             file.scopes.insert(key.to_string(), ids);
         },
         false,
-    );
+    )
 }
 
 /// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。
-fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
+/// 并继承 `project_skills_enabled`。返回该旧文件是否「存在但读不动」。
+fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_skills.json"),
         |file, key, ids| merge_ids_into_scope(file, key, ids),
         true,
-    );
+    )
 }
 
 /// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
@@ -244,14 +252,22 @@ fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
 ///
 /// `merge_ids` 决定 scope 条目的落库语义（连接器文件 = 覆盖写，技能文件 = 并集
 /// 合并）；`inherit_project_flag` 为真时继承 `project_skills_enabled`（仅技能文件）。
+///
+/// 返回 `true` 表示该旧文件**存在但无法消费**（读失败或结构不可解析）。缺文件是
+/// 迁移的常态，返回 `false`；两者必须分开，否则读失败会被当成"本来就没禁用过"。
 fn merge_legacy_scope_file_into(
     file: &mut DisabledBundlesFile,
     path: &std::path::Path,
     merge_ids: impl Fn(&mut DisabledBundlesFile, &str, Vec<String>),
     inherit_project_flag: bool,
-) {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
+) -> bool {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            eprintln!("[scope] read {} failed: {error}", path.display());
+            return true;
+        }
     };
     // 裸数组 → plain scope
     if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
@@ -259,13 +275,15 @@ fn merge_legacy_scope_file_into(
         if !ids.is_empty() {
             merge_ids(file, SessionMode::Plain.as_str(), ids);
         }
-        return;
+        return false;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
+        eprintln!("[scope] parse {} failed", path.display());
+        return true;
     };
     let Some(obj) = value.as_object() else {
-        return;
+        eprintln!("[scope] {} is not a JSON object", path.display());
+        return true;
     };
     if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
         for (key, arr) in scopes {
@@ -311,6 +329,7 @@ fn merge_legacy_scope_file_into(
             file.project_skills_enabled = enabled;
         }
     }
+    false
 }
 
 /// 并集合并到某 scope（去重、保序）。
@@ -1098,6 +1117,34 @@ mod tests {
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// The first-boot migration reads the two legacy files. One of them being present
+    /// but unreadable must fail closed exactly like the new file does — and must not be
+    /// persisted, or the half that *was* readable would overwrite the user's real state
+    /// for good, since the legacy files are never read again afterwards.
+    #[test]
+    fn unreadable_legacy_file_fails_closed_and_is_not_migrated() {
+        with_temp_home("pinvou3-scope-legacy-unreadable", || {
+            let home = paths::pinvou3_home();
+            std::fs::write(
+                home.join("disabled_skills.json"),
+                r#"{"scopes":{"plain":["pptx"]}}"#,
+            )
+            .unwrap();
+            std::fs::write(home.join("disabled_connectors.json"), "{not json").unwrap();
+
+            let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                denied.contains(&"visualizer".to_string()),
+                "an unreadable legacy file must fail closed over the full known set, not just \
+                 migrate the half it could read: {denied:?}"
+            );
+            assert!(
+                !disabled_bundles_path().exists(),
+                "the fail-closed guess must not be migrated onto disk"
             );
         });
     }
