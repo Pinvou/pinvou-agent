@@ -39,9 +39,19 @@ use crate::platform::prefs::UserPrefs;
 static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
+static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+
+/// The aux conversation's internal default title (Chinese constant): aux
+/// sessions never enter the regular session list, so this title is only used
+/// in the detail view and the on-disk record, and does not switch with the UI
+/// language.
+pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
 
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
@@ -162,6 +172,11 @@ impl SessionStore {
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
+        // Legacy of the pre-redesign aux mapping (round-30 B8): the main→aux
+        // association is now derived from the id itself (`aux-{parent_id}`),
+        // so the sidecar is dead state — remove it instead of leaving it
+        // behind forever. Best-effort; a leftover file is inert either way.
+        store.remove_legacy_aux_sessions_sidecar();
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -171,6 +186,25 @@ impl SessionStore {
         }
         store.purge_all_scheduled_side_maps();
         Ok(store)
+    }
+
+    /// One-time boot housekeeping for the pre-redesign aux mapping sidecar
+    /// (round-30 B8): `_aux_sessions.json` held the persisted main→aux table
+    /// when aux ids were random; with derived ids (`aux-{parent_id}`) the
+    /// association needs no persisted state, so the file is removed. Aux
+    /// records minted under the old random scheme (`aux-<random>`) name no
+    /// existing main session and are reclaimed by the retention sweep's
+    /// orphan pass — the feature was never released, so no migration of
+    /// those transcripts is provided.
+    fn remove_legacy_aux_sessions_sidecar(&self) {
+        let file = crate::platform::paths::sessions_root().join("_aux_sessions.json");
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!("[sessions] remove legacy aux session sidecar failed: {error}")
+            }
+        }
     }
 
     pub(crate) fn from_paths(
@@ -275,10 +309,17 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
+        // Aux conversations (aux- prefix) share the durable store too, so the
+        // detail view and history load normally, but they are attached to
+        // their main session, opened only through the aux chat panel, and
+        // never enter the regular session list.
         // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
         // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
         // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
-        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        out.retain(|metadata| {
+            !super::validators::is_sched_session_id(&metadata.id)
+                && !super::validators::is_aux_session_id(&metadata.id)
+        });
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
@@ -286,9 +327,37 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.manager
+        self.load_with_context(id, || format!("load_session({id})"))
+    }
+
+    fn load_with_context(
+        &self,
+        id: &str,
+        context: impl FnOnce() -> String,
+    ) -> Result<SavedSession> {
+        let session = self
+            .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id})"))
+            .with_context(context)?;
+        // Fail closed on case-variant aliases of AUX records: on
+        // case-insensitive filesystems `AUX-<suffix>.json` resolves to the
+        // real `aux-…` record while case-sensitive identity tests miss the
+        // mismatch, so a caller holding an alias would operate on a
+        // different session than the id claims. Requiring the loaded
+        // metadata id to equal the requested id makes every downstream
+        // prefix/identity decision trustworthy regardless of filesystem
+        // case semantics. The check is scoped to aux-prefixed ids (round-31
+        // M10): the case-alias concern it covers is aux-only, and a global
+        // check would change behavior for any non-aux session whose on-disk
+        // metadata.id differs from its filename — previously loadable, now
+        // a hard error.
+        if super::validators::is_aux_session_id(id) && session.metadata.id != id {
+            return Err(anyhow::Error::new(SessionIdMismatch {
+                requested: id.to_string(),
+                actual: session.metadata.id,
+            }));
+        }
+        Ok(session)
     }
 
     /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
@@ -347,8 +416,23 @@ impl SessionStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // An aux session is never a scheduled session, so this refusal guard
+        // applies to cascade targets naturally and the auxiliary-conversation
+        // path cannot bypass it.
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
+        }
+        // Auxiliary-conversation cascade: deleting a main session first
+        // deletes its aux session, whose id is derived (`aux-{id}`) — see
+        // [`Self::aux_session_id`], which is fail-closed: only a genuine
+        // NotFound counts as "no aux", so a transient stat fault can never
+        // skip the cascade. The aux id never owns an aux itself, so the
+        // recursion depth is bounded at 1 by the prefix check inside
+        // `aux_session_id`. The cascade is all-or-nothing: a failed aux
+        // delete aborts the main delete and preserves both records.
+        if let Some(aux_id) = self.aux_session_id(id) {
+            self.delete(&aux_id)
+                .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
         // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
@@ -424,6 +508,13 @@ impl SessionStore {
 
     fn invoke_session_manager_delete(&self, id: &str) -> std::io::Result<()> {
         #[cfg(test)]
+        if let Some(kind) = PRE_RECORD_DELETE_FAULTS.lock().remove(id) {
+            return Err(std::io::Error::new(
+                kind,
+                "injected failure before durable session deletion",
+            ));
+        }
+        #[cfg(test)]
         if let Some(kind) = POST_RECORD_DELETE_FAULTS.lock().remove(id) {
             validate_session_id(id).map_err(|error| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
@@ -435,6 +526,13 @@ impl SessionStore {
             ));
         }
         self.manager.delete_session(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_pre_record_delete_fault(&self, id: &str, kind: ErrorKind) -> Result<()> {
+        validate_session_id(id)?;
+        PRE_RECORD_DELETE_FAULTS.lock().insert(id.to_string(), kind);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -629,6 +727,171 @@ impl SessionStore {
             });
         }
         Ok(session)
+    }
+
+    /// The aux session id of a main session, derived as `aux-{parent_id}`
+    /// (round-30 B8): the main↔aux association is a pure function of the id,
+    /// so "one aux per main" holds by construction and no persisted mapping
+    /// exists. Parent ids are 13-char lowercase base36 and
+    /// [`validate_session_id`] accepts `[A-Za-z0-9_-]`, so the derived id is
+    /// always a valid session id and always carries the `aux-` prefix the
+    /// zero-tools gates and list filters key on.
+    pub(crate) fn aux_session_id_for(parent_id: &str) -> String {
+        format!("aux-{parent_id}")
+    }
+
+    /// The forward query `main_id → Option<aux_id>` (round-30 B8): compute the
+    /// derived id, then probe whether its record is on disk. Fail-closed —
+    /// `durable_session_record_is_absent` counts only a genuine NotFound as
+    /// absent, so a transient stat fault reads as "aux present" and no
+    /// destructive path (delete / discard / retention eviction) can mistake
+    /// "unknown" for "no aux". An aux id itself has no aux (the prefix check
+    /// keeps the delete cascade's recursion depth at 1).
+    pub fn aux_session_id(&self, main_id: &str) -> Option<String> {
+        if super::validators::is_aux_session_id(main_id) {
+            return None;
+        }
+        let aux_id = Self::aux_session_id_for(main_id);
+        if self.durable_session_record_is_absent(&aux_id) {
+            None
+        } else {
+            Some(aux_id)
+        }
+    }
+
+    /// Creates the auxiliary conversation of `parent_id` under the derived id
+    /// `aux-{parent_id}` (same prefixed-creation pattern as the `sched-`
+    /// precedent): a fixed internal default title, model and workspace
+    /// inherited from the main session (including the per-session model
+    /// binding in `_session_models.json`). Any failed step rolls back the
+    /// persisted session JSON so no orphan aux session survives.
+    /// Reuse semantics (return the existing record when it loads) live in
+    /// [`Self::get_or_create_aux_session`], not here. Concurrent creators
+    /// converge on the same derived id and write the same content, so no
+    /// creation lock is needed.
+    ///
+    /// Crate-visible for tests and the command layer only — outside callers
+    /// must go through [`Self::get_or_create_aux_session`].
+    pub(crate) fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        // Reject aux-of-aux in the creation path itself (not only via the
+        // get-or-create wrapper): an auxiliary conversation must not own
+        // another one, and an aux session is itself a Chat kind, so the
+        // command layer's `ensure_chat_session` cannot catch it.
+        if super::validators::is_aux_session_id(parent_id) {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        if super::validators::is_sched_session_id(parent_id) {
+            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+        }
+        let parent = match self.load(parent_id) {
+            Ok(parent) => parent,
+            // A genuinely missing parent (deleted, or evicted between the
+            // panel's last action and this ensure) is a different failure
+            // class than a transient read fault: name it so the panel's
+            // ensureFailed is recognizable instead of a generic load error.
+            Err(error) if is_not_found_error(&error) => {
+                bail!("the parent session no longer exists (deleted or evicted)")
+            }
+            Err(error) => {
+                return Err(error).with_context(|| "load the parent session for aux creation");
+            }
+        };
+        let id = Self::aux_session_id_for(parent_id);
+        // Note: the copied `metadata.workspace` is record-keeping only — no
+        // production reader resolves an aux session's roots from it
+        // (`SessionStore::session_roots` never reads `metadata.workspace`, and
+        // no workspace-binding sidecar is written for aux), so the aux
+        // execution root always resolves to the private
+        // `sessions/aux-<id>/workspace`. Keep it truthful for debugging, but
+        // do not read it as a binding.
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &parent.metadata.model,
+            &parent.metadata.workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = AUX_SESSION_TITLE.to_string();
+        // The per-session model binding lives in the `_session_models.json`
+        // sidecar, not in `metadata.model`: same order as `create_new` — write
+        // the sidecar before publishing the session JSON; when a later step
+        // fails and the session is rolled back, `purge_session_side_maps`
+        // removes this binding along with it.
+        if let Some(model_id) = self.session_model_override(parent_id) {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!(
+                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
+                    )
+                }
+            });
+        }
+        // The save above can trigger the retention sweep; the pair-liveness
+        // ordering protects a parent whose aux record is fresh, but a
+        // concurrent out-of-band delete can still commit the parent between
+        // the load at entry and now. Re-check and roll the newborn record
+        // back instead of leaving a dead-parent/live-aux orphan.
+        // NotFound-only (round-20 minor-9, the taxonomy used everywhere else
+        // in this module): only a genuinely gone parent rolls the create
+        // back. A transient load fault is not an eviction — rolling back
+        // there would destroy a healthy aux record and misreport the cause,
+        // so it propagates as an error instead.
+        let parent_evicted = match self.load(parent_id) {
+            Ok(_) => false,
+            Err(error) if is_not_found_error(&error) => true,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| "re-check the parent session after aux creation");
+            }
+        };
+        if parent_evicted {
+            let rollback = self.delete(&id);
+            // Ids stay out of these messages too: the command layer surfaces
+            // them to the caller and the boot log prints the chain.
+            return Err(match rollback {
+                Ok(()) => {
+                    anyhow::anyhow!("the parent session was evicted while creating its aux session")
+                }
+                Err(rollback_error) => anyhow::anyhow!(
+                    "the parent session was evicted while creating its aux session; rollback of the aux record failed: {rollback_error:#}"
+                ),
+            });
+        }
+        Ok(session.metadata)
+    }
+
+    /// Get-or-create for the derived aux id: the record exists and loads →
+    /// return it; a genuine NotFound → create it. Every other load failure
+    /// propagates — with a derived id, "recreate" would overwrite the record
+    /// at the same path, so an unreadable record (transient fault OR
+    /// permanent corruption) must never fall into the creation leg
+    /// (round-30 B4/B8). The panel surfaces the error as ensureFailed; the
+    /// user's recovery for a truly dead record is an explicit discard
+    /// (`discard_aux_session` deletes by id without parsing the record).
+    /// An auxiliary conversation must not own an aux session (aux-of-aux): an
+    /// aux session is itself a Chat kind, so the command layer's
+    /// `ensure_chat_session` cannot catch it — the single creation entry point
+    /// must reject it explicitly.
+    pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        if super::validators::is_aux_session_id(parent_id) {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        if super::validators::is_sched_session_id(parent_id) {
+            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+        }
+        let aux_id = Self::aux_session_id_for(parent_id);
+        match self.load(&aux_id) {
+            Ok(aux) => Ok(aux.metadata),
+            Err(error) if is_not_found_error(&error) => self.create_aux_session(parent_id),
+            Err(error) => Err(error).with_context(|| "load the aux session of this task"),
+        }
     }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
@@ -838,4 +1101,56 @@ impl SessionStore {
         )?;
         Ok(session)
     }
+}
+
+/// True when `error` carries an `io::Error` of kind `NotFound` anywhere in its
+/// chain — the "record is not on disk" case. Any other failure kind must be
+/// treated as "unknown" rather than "absent", so transient IO errors are never
+/// conflated with a missing record.
+pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::NotFound)
+    })
+}
+
+/// The case-variant alias rejection of [`SessionStore::load`], as a typed
+/// error so callers can tell it apart from a transient read fault: on
+/// case-insensitive filesystems `AUX-<suffix>.json` resolves to the real
+/// `aux-…` record while case-sensitive identity tests miss the mismatch, so
+/// the load path fails closed and every downstream prefix/identity decision
+/// stays trustworthy regardless of filesystem case semantics. The message is
+/// kept byte-compatible with the previous `bail!` text.
+#[derive(Debug)]
+pub(crate) struct SessionIdMismatch {
+    requested: String,
+    actual: String,
+}
+
+impl std::fmt::Display for SessionIdMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "session id mismatch: requested '{}' but record holds '{}'",
+            self.requested, self.actual
+        )
+    }
+}
+
+impl std::error::Error for SessionIdMismatch {}
+
+/// True when `error` carries an `io::Error` of kind `InvalidData` anywhere in
+/// its chain — the "record is permanently unreadable" case (truncated body, a
+/// newer `schema_version` than this build supports, malformed receipts).
+/// Tests use it to prove a fixture really produces the permanent-corruption
+/// class (as opposed to a transient fault, which the same paths treat very
+/// differently).
+#[cfg(test)]
+pub(super) fn is_invalid_data_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == ErrorKind::InvalidData)
+    })
 }

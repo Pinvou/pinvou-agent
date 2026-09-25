@@ -150,6 +150,13 @@
     state: { get, getMany, subscribe, subscribeMany },
     platform: {},
     chat: domain(["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft", "retryFirstTurn", "prefillComposer", "removeQueued", "prioritizeQueued", "editQueued", "cancelGeneration", "cancelShellTask"]),
+    auxChat: domain([], {
+      ensure: "auxChatEnsure",
+      send: "auxChatSend",
+      snapshot: "auxChatSnapshot",
+      discard: "auxChatDiscard",
+      reset: "auxChatReset",
+    }),
     voice: domain(["startVoiceInput", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText"]),
     knowledge: domain(["mountCollection", "setCollectionEnabled", "removeCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
     scheduled: domain(["loadScheduledTasks", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "deleteScheduledTask", "runScheduledTaskNow", "startScheduledTaskChat", "openScheduledRunChat", "exitScheduledRunChat"]),

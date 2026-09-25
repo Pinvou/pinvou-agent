@@ -3,7 +3,7 @@
  *
  * 背景：platform/{web,tauri}/bridge*.js 是以 <script src> 加载的普通脚本（非 ES module）。
  * 此前数百个逐字相同（byte-identical）的桥接工具函数在两条 lane 里各存一份，维护时必须双改；
- * 现已合并：238 个共享函数只在 sharedBridgeBase 定义一次（正文取自原 web 侧逐字镜像），
+ * 现已合并：246 个共享函数只在 sharedBridgeBase 定义一次（正文取自原 web 侧逐字镜像），
  * 每个 cluster 只是薄包装：
  *   - web / tauriMain: 两条 lane 主 IIFE 的共享函数；
  *   - tauri<X>:        tauri/bridge/<feature>.js feature 工厂的共享函数；
@@ -71,7 +71,7 @@
       personaPlaceholderTitles, sessionSwitchRequestToken, SHELL_TOOL_NAMES, shellPollState, DELIVERABLE_EXTS, monitorBaseline,
       monitorIntervalId, gpuUtilHistory, settingsWriteQueue, modelsLoadSeq, memoryOverviewSeq, personaPoolCache,
       deletedPersonaIds, lastEquippedSid, mountedCollectionDraftTarget, mountedCollectionUpdate, activeVoiceInput, VOICE_DEVICE_REQUEST_TIMEOUT_MS,
-      pe, sid
+      pe, sid, ensureSessionBufferLoaded, auxChatDispatch
     } = deps;
 
   // web+tauriMain 共享
@@ -3201,6 +3201,111 @@
       state.activeSkill = consumed.activeSkill;
     }
 
+  // auxChat cluster（round-31 M7）:aux 桥接域此前在 platform/tauri/bridge/aux-chat.js
+  // 与 platform/web/bridge.js 各存一份（~60 逻辑行仅 ~3 行不同）。函数体取自原 web
+  // 侧镜像；两处真实差异留在 lane 侧——send 派发（lane 以 auxChatDispatch 传入；
+  // desktop 走 chat、Web 走 web_access_chat）与 web 侧的
+  // session_turn_in_progress 文案翻译。翻译已删除：两条 lane 命中同一个后端
+  // turn 闩锁时，controller 只 console.warn、面板渲染静态本地化 sendFailed
+  // 文案，翻译后的错误文本从不到达用户（桌面侧一直是裸字符串），统一为一种行为。
+  function auxChatIsAuxSession(id) {
+    return typeof id === "string" && id.indexOf("aux-") === 0;
+  }
+  function auxChatEmptySnapshot() {
+    return { chatItems: [], busy: false, queued: [] };
+  }
+  async function auxChatEnsure(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    const metadata = await invoke("get_or_create_aux_session", { sessionId: task });
+    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+    // Aux sessions never become active: they use the background-buffer
+    // load_session(setActive:false) path.
+    await ensureSessionBufferLoaded(auxId);
+    return auxId;
+  }
+  async function auxChatSend(auxId, text) {
+    const sid = String(auxId || "").trim();
+    const message = String(text || "").trim();
+    if (!auxChatIsAuxSession(sid)) throw new Error(bt("targetSessionMissing"));
+    if (!message) throw new Error(bt("replyContentEmpty"));
+    await ensureSessionBufferLoaded(sid);
+    const buf = sessionStates.value[sid];
+    // Aux sessions never queue (queue is user-input semantics): reject
+    // outright when busy or queued messages exist; the caller retries.
+    if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
+      throw new Error(bt("turnAlreadyInProgress"));
+    }
+    // 发送命令是 lane 真实差异（desktop: chat + attachments;Web:
+    // web_access_chat + attachmentHandles),lane 以 auxChatDispatch 传入。
+    return auxChatDispatch(sid, message);
+  }
+  // Synchronous snapshot: when not loaded (no buffer) returns an empty
+  // structure — never throws and never triggers a load. Items are shallow-
+  // copied one by one: streaming deltas mutate buffer items in place (the
+  // item.text/html assignments in chat-events), so copying only the array
+  // would share object references and a caller comparing field by field
+  // could not detect changes; after copying, every poll gets fresh
+  // references, making field comparison a true content comparison.
+  function auxChatSnapshotItems(items) {
+    return (Array.isArray(items) ? items : []).map(function (item) {
+      return item && typeof item === "object" ? Object.assign({}, item) : item;
+    });
+  }
+  function auxChatSnapshot(auxId) {
+    const sid = String(auxId || "").trim();
+    if (!sid) return auxChatEmptySnapshot();
+    if (sid === state.activeSessionId) {
+      return {
+        chatItems: auxChatSnapshotItems(state.chatItems),
+        busy: !!state.busy,
+        queued: auxChatSnapshotItems(state.queued),
+      };
+    }
+    const buf = sessionStates.value[sid];
+    if (!buf) return auxChatEmptySnapshot();
+    // An always-open panel polling snapshot() counts as "reading": refresh
+    // LRU recency consistently with the getBuffer read paths, otherwise
+    // after 32+ session switches the buffer is evicted by capacity and the
+    // panel wrongly shows the empty state.
+    touchSessionBuffer(sid, buf, false);
+    return {
+      chatItems: auxChatSnapshotItems(buf.chatItems),
+      busy: !!buf.busy,
+      queued: auxChatSnapshotItems(buf.queued),
+    };
+  }
+  async function auxChatDiscard(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    await invoke("discard_aux_session", { sessionId: task });
+    // The aux id is a pure function of the task id (aux-<taskId>, round-30
+    // B8), so the buffer purge derives it — the old per-task id map was
+    // redundant state that was never pruned (M5). The session:deleted event
+    // fired by backend deletion is handled by the sessions domain as a
+    // fallback — belt and suspenders, and idempotent.
+    purgeSessionBuffer(`aux-${task}`);
+  }
+  // Atomic restart (M6): one backend command discards the old aux session
+  // (gated against its turns) and creates the fresh one — no two-invoke
+  // window for an orphaned discard to land in. The aux id is derived
+  // (aux-<taskId>, round-30 B8), so the stale buffer purge needs no
+  // per-task id map; the backend's session:deleted also purges through
+  // the sessions domain as a fallback.
+  async function auxChatReset(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    const metadata = await invoke("reset_aux_session", { sessionId: task });
+    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+    purgeSessionBuffer(auxId);
+    // Aux sessions never become active: they use the background-buffer
+    // load_session(setActive:false) path.
+    await ensureSessionBufferLoaded(auxId);
+    return auxId;
+  }
+
   // lane 转发优先：以下名字在部分 lane 会以 deps（lane 内转发函数）传入；
   // 有传入时保持合并前的解析路径（转发到原 cluster 实例），未传入时用上方共享实现。
   const FORWARDER_DEP_NAMES = [
@@ -3219,6 +3324,8 @@
     "runOnSession",
     "timeStr",
     "isDeliverable",
+    "touchSessionBuffer",
+    "isBusyFor",
   ];
   /* eslint-disable no-func-assign -- 转发函数优先：按 lane 传入值重新指向函数声明绑定，保持合并前解析路径 */
   const forwarderSetters = {
@@ -3237,13 +3344,15 @@
     runOnSession(v) { runOnSession = v; },
     timeStr(v) { timeStr = v; },
     isDeliverable(v) { isDeliverable = v; },
+    touchSessionBuffer(v) { touchSessionBuffer = v; },
+    isBusyFor(v) { isBusyFor = v; },
   };
   /* eslint-enable no-func-assign */
   for (const name of FORWARDER_DEP_NAMES) {
     if (deps[name] !== undefined) forwarderSetters[name](deps[name]);
   }
 
-    return { bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, dismissVllmSetup, getEffectiveModelConfig, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, compactNow, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, clearVoiceInput, appendVoiceText, interruptedDisplayRange, emitPersonaAt, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent };
+    return { bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, dismissVllmSetup, getEffectiveModelConfig, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, compactNow, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, clearVoiceInput, appendVoiceText, interruptedDisplayRange, emitPersonaAt, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent, auxChatIsAuxSession, auxChatEmptySnapshot, auxChatEnsure, auxChatSend, auxChatSnapshotItems, auxChatSnapshot, auxChatDiscard, auxChatReset };
   }
 
   // 嵌套 cluster（<base>:<offset>）：web/tauri 两侧正文逐字相同，每对共用一个工厂并注册在两个 key 下。
@@ -3340,6 +3449,10 @@
     "tauriKnowledgeModel": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
       return Object.freeze({ downloadKbModel: b.downloadKbModel });
+    },
+    "auxChat": function (deps) {
+      const b = sharedBridgeBase(ensureCells(deps));
+      return Object.freeze({ auxChatEnsure: b.auxChatEnsure, auxChatSend: b.auxChatSend, auxChatSnapshotItems: b.auxChatSnapshotItems, auxChatSnapshot: b.auxChatSnapshot, auxChatDiscard: b.auxChatDiscard, auxChatReset: b.auxChatReset });
     },
   };
 

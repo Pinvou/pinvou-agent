@@ -373,6 +373,18 @@ pub(super) enum WebSessionScope {
     Optional(&'static str),
 }
 
+/// Commands whose desktop lane succeeds without the named main session
+/// existing: the central validator below must not demand a `store.load` for
+/// them, or the Web lane diverges from desktop (round-24 minor-10 — an
+/// out-of-band deleted main made `discard_aux_session` fail Web admission
+/// with `web_session_unavailable` where the desktop lane returns its
+/// idempotent `Ok(())`). The command only ever acts on the derived aux
+/// mapping, so a nonexistent main id is a harmless no-op; the id shape and
+/// the multi-agent scope checks above are still enforced.
+pub(super) fn web_scope_admits_absent_session(command: &str) -> bool {
+    command == "discard_aux_session"
+}
+
 pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
     use WebSessionScope::{Optional, Required};
     let scope = match command {
@@ -402,11 +414,14 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         // `web_access_cancel_codex_acp`), so the RPC admission gate rejects the
         // bare command before this scope table is consulted.
         | "cancel_shell_task"
+        | "discard_aux_session"
         | "discard_plan"
         | "equip_persona"
         | "exit_plan_to_yolo"
         | "get_active_persona"
         | "get_mode_state"
+        | "get_or_create_aux_session"
+        | "reset_aux_session"
         | "get_session_model_id"
         | "get_session_persona_events"
         | "get_session_pinvou_reviews"
@@ -509,6 +524,9 @@ pub(super) fn validate_web_rpc_scope(
         // The opaque transfer token is already bound to the validated
         // Session id in RemoteControlManager; avoid re-reading a large Session
         // file for every 256 KiB chunk.
+        return Ok(());
+    }
+    if web_scope_admits_absent_session(command) {
         return Ok(());
     }
     let store = app

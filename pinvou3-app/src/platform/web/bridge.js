@@ -3519,6 +3519,37 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     return { accepted: true, queued: false, completion };
   }
 
+  // ── Aux chat ─────────────────────────────────────────────────────
+  // The domain bodies live in the shared lane (cluster "auxChat" in
+  // src/shared/bridge-shared-helpers.js, round-31 M7): aux sessions are
+  // filtered out of list_sessions by the backend (they never enter
+  // state.sessions), so sendMessageToSession cannot be reused; turn events
+  // are still routed into the per-session buffer by the existing chat:*
+  // listeners keyed on session_id. This lane keeps only its genuine
+  // difference — the send dispatch (command parity with doSendFor: Web goes
+  // through web_access_chat, the attachment-handle channel; a desktop host
+  // of this file goes through chat). The web-only session_turn_in_progress
+  // translation wrapper is gone (M7): both lanes hit the same backend turn
+  // gate, and the aux-chat controller only console.warns send errors while
+  // the panel renders the static localized sendFailed copy — the translated
+  // text never reached the user on either lane.
+  function auxChatSendDispatch(sid, message) {
+    return IS_WEB
+      ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
+      : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+  }
+  const auxChatShared = window.PinvouBridgeShared.create("auxChat", {
+    state, invoke, bt,
+    sessionStates: { get value() { return sessionStates; } },
+    ensureSessionBufferLoaded, purgeSessionBuffer, touchSessionBuffer, isBusyFor,
+    auxChatDispatch: auxChatSendDispatch,
+  });
+  const auxChatEnsure = auxChatShared.auxChatEnsure;
+  const auxChatSend = auxChatShared.auxChatSend;
+  const auxChatSnapshot = auxChatShared.auxChatSnapshot;
+  const auxChatDiscard = auxChatShared.auxChatDiscard;
+  const auxChatReset = auxChatShared.auxChatReset;
+
   function findFirstTurnItem(clientMessageId) {
     return state.chatItems.find(function (item) {
       return item && item.clientMessageId === clientMessageId;
@@ -7225,6 +7256,11 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     init,
     sendMessage,
     sendMessageToSession,
+    auxChatEnsure,
+    auxChatSend,
+    auxChatSnapshot,
+    auxChatDiscard,
+    auxChatReset,
     getComposerDraft,
     setComposerDraft,
     retryFirstTurn,

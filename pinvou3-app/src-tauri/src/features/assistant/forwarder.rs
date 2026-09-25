@@ -1358,47 +1358,51 @@ pub(crate) fn spawn_event_forwarder(
                         // 卡兜底,不值得用噪音判据再造一层。
                     }
                     if crate::features::memory::memory_enabled() {
-                        if let Some(capture) =
-                            crate::features::memory::take_turn_capture(&session_id)
-                        {
-                            let app_clone = app.clone();
-                            let bridge_clone = bridge.clone();
-                            let sid_clone = session_id.clone();
-                            tauri::async_runtime::spawn(async move {
-                                match crate::features::memory::review_turn_candidates_with_llm(
-                                    &bridge_clone,
-                                    &capture,
-                                    &sid_clone,
-                                )
-                                .await
-                                {
-                                    Ok(outcome) => {
-                                        let mut events = outcome.events;
-                                        events.extend(outcome.pending.into_iter().filter_map(
-                                            |item| {
-                                                (item.status == "pending_confirm").then(|| {
-                                                    crate::features::memory::MemoryWriteEvent {
-                                                        kind: item.kind,
-                                                        action: "pending".to_string(),
-                                                        id: item.id,
-                                                        text: item.content,
-                                                    }
-                                                })
-                                            },
-                                        ));
-                                        if !events.is_empty() {
-                                            let _ = app_clone.emit(
-                                                "chat:memory_write",
-                                                json!({
-                                                    "session_id": sid_clone,
-                                                    "events": events,
-                                                }),
-                                            );
-                                            match crate::features::memory::runtime_snapshot(
-                                                &sid_clone,
-                                            ) {
-                                                Ok(snapshot) => {
-                                                    let _ = app_clone.emit(
+                        // Round-15 MAJOR-4: the capture is still taken so it
+                        // does not accumulate in the process-level store, but
+                        // the review below is gated on memory_review_in_scope
+                        // — aux side-chat turns must never reach it.
+                        let capture = crate::features::memory::take_turn_capture(&session_id);
+                        if should_spawn_memory_review(true, &session_id, capture.is_some()) {
+                            if let Some(capture) = capture {
+                                let app_clone = app.clone();
+                                let bridge_clone = bridge.clone();
+                                let sid_clone = session_id.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    match crate::features::memory::review_turn_candidates_with_llm(
+                                        &bridge_clone,
+                                        &capture,
+                                        &sid_clone,
+                                    )
+                                    .await
+                                    {
+                                        Ok(outcome) => {
+                                            let mut events = outcome.events;
+                                            events.extend(outcome.pending.into_iter().filter_map(
+                                                |item| {
+                                                    (item.status == "pending_confirm").then(|| {
+                                                        crate::features::memory::MemoryWriteEvent {
+                                                            kind: item.kind,
+                                                            action: "pending".to_string(),
+                                                            id: item.id,
+                                                            text: item.content,
+                                                        }
+                                                    })
+                                                },
+                                            ));
+                                            if !events.is_empty() {
+                                                let _ = app_clone.emit(
+                                                    "chat:memory_write",
+                                                    json!({
+                                                        "session_id": sid_clone,
+                                                        "events": events,
+                                                    }),
+                                                );
+                                                match crate::features::memory::runtime_snapshot(
+                                                    &sid_clone,
+                                                ) {
+                                                    Ok(snapshot) => {
+                                                        let _ = app_clone.emit(
                                                         "chat:memory",
                                                         json!({
                                                             "session_id": sid_clone,
@@ -1406,20 +1410,21 @@ pub(crate) fn spawn_event_forwarder(
                                                             "runtime_path": snapshot.runtime_path,
                                                         }),
                                                     );
+                                                    }
+                                                    Err(err) => eprintln!(
+                                                        "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
+                                                    ),
                                                 }
-                                                Err(err) => eprintln!(
-                                                    "[pinvou3-app] refresh memory runtime after review failed for session {sid_clone}: {err}"
-                                                ),
                                             }
                                         }
+                                        Err(err) => {
+                                            eprintln!(
+                                                "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
+                                            );
+                                        }
                                     }
-                                    Err(err) => {
-                                        eprintln!(
-                                            "[pinvou3-app] memory llm review failed for session {sid_clone}: {err:#}"
-                                        );
-                                    }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                     if let Some(turn_id) = current_turn_id.as_deref() {
@@ -1761,6 +1766,89 @@ pub(crate) fn spawn_event_forwarder(
             "[pinvou3-app] event forwarder stopped for session {session_id} (engine shut down?)"
         );
     })
+}
+
+/// Whether a finished turn of this session may feed the global memory review
+/// pipeline. Aux side-chat turns are excluded (PR #433 round-15 MAJOR-4):
+/// auto-applied review candidates write into the global memory profile, and
+/// `render_memory_block()` injects that profile into *every* session's
+/// runtime prompt, main tasks included — so reviewing aux Q&A would
+/// re-route it (quoted main-task excerpts included) back into the main
+/// task's context, making the "answers never enter the main task's context"
+/// isolation promise only softly true. It would also cost a hidden extra LLM
+/// review call per aux turn and emit `chat:memory_write` / `chat:memory`
+/// events no first-party consumer handles for aux sessions. The turn capture
+/// itself is still taken at the call site so it does not accumulate in the
+/// process-level store.
+fn memory_review_in_scope(session_id: &str) -> bool {
+    !crate::features::sessions::is_aux_session_id(session_id)
+}
+
+/// The full "spawn the memory review for this turn" decision, centralized so
+/// it is unit-testable without an AppHandle (round-16 B6): memory must be
+/// enabled, the session must be in scope (never aux — round-15 MAJOR-4), and
+/// there must be a capture to review. The call site delegates to this so the
+/// wiring and the tested decision are the same expression.
+fn should_spawn_memory_review(enabled: bool, session_id: &str, capture_present: bool) -> bool {
+    enabled && memory_review_in_scope(session_id) && capture_present
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{memory_review_in_scope, should_spawn_memory_review};
+
+    /// Round-15 MAJOR-4: aux sessions are out of scope for the global memory
+    /// review; every other session class keeps the existing behavior.
+    #[test]
+    fn memory_review_skips_aux_sessions_only() {
+        assert!(!memory_review_in_scope(
+            "aux-019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a"
+        ));
+        assert!(!memory_review_in_scope(
+            "AUX-019F8E2A-7B1C-7D3E-8F4A-5B6C7D8E9F0A"
+        ));
+        assert!(memory_review_in_scope(
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a"
+        ));
+        assert!(memory_review_in_scope(
+            "sched-019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a"
+        ));
+    }
+
+    /// Round-16 B6: the spawn decision the call site delegates to, exercised
+    /// as one composition — an aux session must never reach the review even
+    /// with memory enabled and a capture present. Weakening any conjunct
+    /// (dropping the scope gate, the enabled gate, or the capture gate)
+    /// flips one of these assertions; the call site calls this exact
+    /// function, so the wiring and the tested decision cannot drift apart.
+    #[test]
+    fn memory_review_spawn_decision_keeps_aux_out_when_enabled_with_capture() {
+        assert!(!should_spawn_memory_review(
+            true,
+            "aux-019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            true,
+            "AUX-019F8E2A-7B1C-7D3E-8F4A-5B6C7D8E9F0A",
+            true
+        ));
+        assert!(should_spawn_memory_review(
+            true,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            false,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            true
+        ));
+        assert!(!should_spawn_memory_review(
+            true,
+            "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
+            false
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -62,6 +62,7 @@ function extractCalls(source, callee) {
 const protocolSources = {
   orchestration: ['bridge.js'],
   artifacts: ['bridge/artifact-tracker.js', 'bridge/artifacts.js'],
+  auxChat: ['bridge/aux-chat.js'],
   chat: ['bridge/chat.js', 'bridge/chat-events.js', 'bridge/terminal.js'],
   dependencies: ['bridge/dependencies.js'],
   interaction: ['bridge/interaction.js'],
@@ -81,6 +82,18 @@ const protocolSources = {
 };
 
 const expectedProtocolHashes = {
+  // Aux-chat domain debut: three commands — get_or_create_aux_session /
+  // discard_aux_session / chat(restrictTools:true); buffer loading reuses the
+  // ensureSessionBufferLoaded injected by the sessions domain (the
+  // load_session hash is accounted in the sessions domain).
+  // Recomputed for M6: the domain gains reset() invoking the atomic
+  // reset_aux_session command (one discard+recreate round trip instead of the
+  // two independent invokes the frontend used to sequence).
+  // Recomputed for M7: the lane-identical bodies (ensure/snapshot/discard/
+  // reset) moved into the shared lane's auxChat cluster; this file keeps only
+  // the desktop send dispatch (the chat invoke below), so the three aux
+  // management invokes now hash under the shared base.
+  auxChat: '559070c284d5738a8fb60664487eb1ce96e766b92fcd786e8baa9dc7a8d461a8',
   // Batch-A dead-code/dedup sweep: byte-identical helpers shared between the web and
   // tauri lanes moved verbatim into src/shared/bridge-shared-helpers.js (loaded by
   // index.html before both bridges). The moved bodies carry their invoke( calls with
@@ -254,7 +267,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // relocated out of the per-lane files, so the domain hashes above no longer
 // cover that text. Hash the shared file's surface with the same extractor to
 // pin payload edits inside the shared base the same way the lane files are.
-const expectedSharedBaseHash = '0f3ace8d7d7d0021a4cbaac894a228185e4af2e9e8bf09d2d9bfe50a9b5d41a1';
+// Recomputed for M7: the auxChat cluster joined the shared base (the
+// get_or_create_aux_session / discard_aux_session / reset_aux_session invokes
+// moved here from the per-lane aux bridge copies).
+const expectedSharedBaseHash = 'ceeb3d03d8c8713d65ec1dedb907849db410bd2d8802372332c361342ea07485';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

@@ -64,13 +64,16 @@ pub(super) fn ensure_chat_session(
     id: &str,
     action: &str,
 ) -> Result<(), String> {
+    // No raw session ids in these chains (round-28 N7): the rejections are
+    // console.warn-ed by the panel and cross the relay to browser consoles
+    // on the web lane; the action name identifies the failing step.
     match store
         .session_kind(id)
-        .map_err(|error| format!("{action}({id}): {error:#}"))?
+        .map_err(|error| format!("{action}: {error:#}"))?
     {
         SessionKind::Chat => Ok(()),
         SessionKind::ScheduledRun => Err(format!(
-            "{action}({id}): scheduled-run sessions are managed from Scheduled"
+            "{action}: scheduled-run sessions are managed from Scheduled"
         )),
     }
 }
@@ -508,6 +511,70 @@ pub async fn load_session(
     })
 }
 
+/// Testable body of the `delete_session` Chat branch: evict the ACP side
+/// first, then cascade-delete the aux session (gated delete -> forget ->
+/// `session:deleted` event), and finally delete the main session and clean up
+/// the Agent mapping.
+///
+/// The command body depends on `AppHandle` / `EnginePool` / `AcpPool` (Tauri
+/// State, not constructible in unit tests), so the ordering and cascade
+/// decisions are extracted here with side effects injected via closures — the
+/// same technique as `EnginePool::cancel` extracting `cancel_turn_with_gates`.
+/// Tests drive **this function** with fakes that record call order, so
+/// reordering any step below turns the ordering assertions red, instead of
+/// asserting against a copy of the command body (PR #433 review S2(a): the
+/// original "ordering test" merely replayed the command's order with the
+/// test's own callbacks; the real cascade body was never exercised).
+///
+/// Ordering constraint: the aux must be deleted strictly before the main
+/// session. `SessionStore::delete`'s on-disk cascade only removes the record,
+/// which would leave a still-running aux engine as a handle-less orphan; and
+/// deleting the main session first would strip the aux teardown of its
+/// session context.
+async fn delete_chat_session_cascade<Ev, EvFut, De, DeFut, F, Em, R>(
+    store: &SessionStore,
+    session_id: &str,
+    mut evict_acp: Ev,
+    mut delete_session: De,
+    mut forget_session: F,
+    mut emit_deleted: Em,
+    mut remove_acp_agent: R,
+) -> Result<(), String>
+where
+    Ev: FnMut(&str) -> EvFut,
+    EvFut: Future<Output = ()>,
+    De: FnMut(&str) -> DeFut,
+    DeFut: Future<Output = anyhow::Result<()>>,
+    F: FnMut(&str),
+    Em: FnMut(&str),
+    R: FnMut(&str) -> Result<(), String>,
+{
+    evict_acp(session_id).await;
+    // The aux session cascade must go through the gated delete first (turn
+    // gate + engine reclaim + late sweep, the same path as
+    // discard_aux_session): store.delete's cascade only removes the on-disk
+    // records and would leave a still-running aux engine as a handle-less
+    // orphan.
+    if let Some(aux_id) = store.aux_session_id(session_id) {
+        delete_session(&aux_id).await.map_err(|error| {
+            // No raw aux id in this chain (round-29 S1, same stance as the
+            // round-28 N7 fix): `delete_session` is on the web allowlist, so
+            // the rejection crosses the relay to browser consoles; the step
+            // name identifies the failing stage.
+            format!("delete_session({session_id}): cascade delete aux session: {error:#}")
+        })?;
+        forget_session(&aux_id);
+        emit_deleted(&aux_id);
+    }
+    let result = delete_session(session_id)
+        .await
+        .map_err(|error| format!("delete_session({session_id}): {error:#}"));
+    if result.is_ok() {
+        remove_acp_agent(session_id)?;
+    }
+    result
+}
+
 /// 删除 session（含 artifacts 目录）。按 SessionKind 分发：定时运行会话联动
 /// 删除该次 Session、Run 与底座 Task（任务定义、共享工作间和其他运行保留）。
 #[tauri::command]
@@ -523,18 +590,37 @@ pub async fn delete_session(
         .map_err(|e| format!("delete_session({id}): {e:#}"))?
     {
         SessionKind::Chat => {
-            acp_pool.evict(&id).await;
-            let result = pool
-                .delete_chat_session(&id)
-                .await
-                .map_err(|error| format!("delete_session({id}): {error:#}"));
-            if result.is_ok() {
-                acp_pool
-                    .agents()
-                    .remove(&id)
-                    .map_err(|error| format!("清理 Agent 会话映射失败: {error:#}"))?;
-            }
-            result
+            let emit_deleted = |session_id: &str| {
+                let payload = serde_json::json!({ "id": session_id });
+                let _ = app.emit("session:deleted", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "session:deleted",
+                    payload,
+                );
+            };
+            delete_chat_session_cascade(
+                &store,
+                &id,
+                |session_id| {
+                    let acp_pool = acp_pool.inner().clone();
+                    let session_id = session_id.to_string();
+                    async move { acp_pool.evict(&session_id).await }
+                },
+                |session_id| {
+                    let pool = pool.inner().clone();
+                    let session_id = session_id.to_string();
+                    async move { pool.delete_chat_session(&session_id).await }
+                },
+                |session_id| pool.forget_session(session_id),
+                emit_deleted,
+                |session_id| {
+                    acp_pool.agents().remove(session_id).map_err(|error| {
+                        format!("failed to clean up the Agent session mapping: {error:#}")
+                    })
+                },
+            )
+            .await
         }
         SessionKind::ScheduledRun => {
             let scheduled = app
@@ -555,6 +641,201 @@ pub async fn delete_session(
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
     result
+}
+
+#[cfg(test)]
+// The fixture holds the process-wide ENV_LOCK (std Mutex) across the awaits of
+// the cascade under test to keep PINVOU3_HOME stable; cargo test runs test
+// threads in parallel, and the lock is only contended by other env-writing
+// tests, so it cannot deadlock.
+#[allow(clippy::await_holding_lock)]
+mod delete_session_cascade_tests {
+    use super::delete_chat_session_cascade;
+    use crate::features::sessions::SessionStore;
+    use std::sync::{Arc, Mutex};
+
+    /// Isolated `PINVOU3_HOME` with a main chat session plus its aux session,
+    /// i.e. the store state `delete_session` sees when a task owns a side chat.
+    struct AuxFixture {
+        store: SessionStore,
+        root: std::path::PathBuf,
+        main_id: String,
+        aux_id: String,
+        previous_home: Option<std::ffi::OsString>,
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl AuxFixture {
+        fn boot(label: &str) -> Self {
+            let env_lock = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou3-delete-cascade-{label}-{}",
+                std::process::id()
+            ));
+            let previous_home = std::env::var_os("PINVOU3_HOME");
+            let _ = std::fs::remove_dir_all(&root);
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            let store = SessionStore::boot_with_scheduled_root(root.join("scheduled"))
+                .expect("session store");
+            let main_id = store
+                .create_new("model".to_string(), None, root.join("workspace"))
+                .expect("main chat session")
+                .metadata
+                .id;
+            let aux_id = store
+                .get_or_create_aux_session(&main_id)
+                .expect("aux session")
+                .id;
+            Self {
+                store,
+                root,
+                main_id,
+                aux_id,
+                previous_home,
+                _env_lock: env_lock,
+            }
+        }
+    }
+
+    impl Drop for AuxFixture {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                // SAFETY: the fixture holds platform::paths::tests::ENV_LOCK.
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                // SAFETY: the fixture holds platform::paths::tests::ENV_LOCK;
+                // env writes are serialized in-process.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// PR #433 review round-10 (S2(a)): the Chat branch of `delete_session` is
+    /// driven through the extracted body, so this test fails if the body is
+    /// reordered — the earlier "cascade order" test replayed the command's
+    /// order with its own callbacks and would have stayed green.
+    #[tokio::test]
+    async fn chat_delete_cascades_aux_before_main_and_emits_aux_event() {
+        let fixture = AuxFixture::boot("order");
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (evict, delete, forget, emit, remove_agent) = (
+            Arc::clone(&log),
+            Arc::clone(&log),
+            Arc::clone(&log),
+            Arc::clone(&log),
+            Arc::clone(&log),
+        );
+
+        delete_chat_session_cascade(
+            &fixture.store,
+            &fixture.main_id,
+            move |session_id| {
+                evict.lock().unwrap().push(format!("evict:{session_id}"));
+                async {}
+            },
+            move |session_id| {
+                delete.lock().unwrap().push(format!("delete:{session_id}"));
+                async { Ok(()) }
+            },
+            move |session_id| {
+                forget.lock().unwrap().push(format!("forget:{session_id}"));
+            },
+            move |session_id| emit.lock().unwrap().push(format!("emit:{session_id}")),
+            move |session_id| {
+                remove_agent
+                    .lock()
+                    .unwrap()
+                    .push(format!("remove-agent:{session_id}"));
+                Ok(())
+            },
+        )
+        .await
+        .expect("chat delete cascade");
+
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                format!("evict:{}", fixture.main_id),
+                format!("delete:{}", fixture.aux_id),
+                format!("forget:{}", fixture.aux_id),
+                format!("emit:{}", fixture.aux_id),
+                format!("delete:{}", fixture.main_id),
+                format!("remove-agent:{}", fixture.main_id),
+            ],
+            "the aux session's delete/forget/event must happen strictly before the main session \
+             delete (deleting the main session first would leave the aux engine as a handle-less \
+             orphan), and the ACP eviction must happen first"
+        );
+    }
+
+    /// A failing aux delete must abort the cascade: the main session is left
+    /// untouched and no aux `session:deleted` event is emitted (the command
+    /// returns the error and skips its post-success block).
+    #[tokio::test]
+    async fn chat_delete_aborts_before_main_when_aux_delete_fails() {
+        let fixture = AuxFixture::boot("aux-failure");
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (evict, delete, forget, remove_agent) = (
+            Arc::clone(&log),
+            Arc::clone(&log),
+            Arc::clone(&log),
+            Arc::clone(&log),
+        );
+
+        let error = delete_chat_session_cascade(
+            &fixture.store,
+            &fixture.main_id,
+            move |session_id| {
+                evict.lock().unwrap().push(format!("evict:{session_id}"));
+                async {}
+            },
+            move |session_id| {
+                delete.lock().unwrap().push(format!("delete:{session_id}"));
+                let session_id = session_id.to_string();
+                async move {
+                    if crate::features::sessions::is_aux_session_id(&session_id) {
+                        anyhow::bail!("aux engine still running");
+                    }
+                    Ok(())
+                }
+            },
+            move |session_id| {
+                forget.lock().unwrap().push(format!("forget:{session_id}"));
+            },
+            // No session id in the message: `panic!` is a CodeQL
+            // cleartext-logging sink, and the assertion is about the event
+            // being emitted at all, not about which id it carried.
+            |_session_id| {
+                panic!("no session:deleted event may be emitted when the aux delete fails")
+            },
+            move |session_id| {
+                remove_agent
+                    .lock()
+                    .unwrap()
+                    .push(format!("remove-agent:{session_id}"));
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("aux delete failure must abort the cascade");
+
+        assert!(
+            error.contains("cascade delete aux session"),
+            "the error must close with the aux cascade context, got: {error}"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                format!("evict:{}", fixture.main_id),
+                format!("delete:{}", fixture.aux_id),
+            ],
+            "the main session must not be touched after the aux delete fails"
+        );
+    }
 }
 
 /// Payload returned by `export_session`: the save path (the location the
@@ -653,6 +934,11 @@ pub async fn rename_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "rename_session({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:#}"))?;
@@ -668,6 +954,14 @@ pub async fn set_session_pinned(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Aux ids would land in the pinned table as ghost entries: aux sessions
+    // are invisible in every list, so the entry could never be cleared from
+    // the UI.
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "set_session_pinned({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
@@ -686,6 +980,12 @@ pub async fn set_session_archived(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Same ghost-entry argument as set_session_pinned.
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "set_session_archived({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)
@@ -694,6 +994,156 @@ pub async fn set_session_archived(
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
+}
+
+// ===================== Auxiliary conversation (aux session) =====================
+
+/// Minimal projection of an aux session binding. This command is on the Web
+/// RPC allowlist, so it must not return the full `SessionMetadata`: the
+/// inherited host `workspace` path would cross the Web/Relay boundary to the
+/// browser (the same redaction invariant behind
+/// `redact_session_metadata_for_web` and the `web_access_*` projections).
+/// Both bridges consume only `metadata.id`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuxSessionBinding {
+    pub id: String,
+}
+
+/// Get (creating if absent) the auxiliary conversation of a main session. Aux
+/// sessions are persisted with an `aux-` prefix and stay out of the ordinary
+/// session list, so creation does **not** emit `session:list_changed`; the
+/// frontend auxiliary conversation panel opens directly from the returned id.
+#[tauri::command]
+pub async fn get_or_create_aux_session(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<AuxSessionBinding, String> {
+    // Every error path folds into the stable web_session code (round-30 B7):
+    // the command is web-allowlisted and the native chains embed host paths
+    // (sessions-root EACCES/EIO), which must not cross the relay to browser
+    // consoles; the detail stays in the desktop log via web_session_result.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::GetOrCreateAuxSession,
+        get_or_create_aux_session_inner(session_id, store).await,
+    )
+}
+
+async fn get_or_create_aux_session_inner(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<AuxSessionBinding, String> {
+    // Auxiliary conversations may only hang off ordinary chat sessions:
+    // scheduled sessions go through their own delete path
+    // (delete_scheduled_run has no aux cascade), so attaching one would leak
+    // an orphan aux session.
+    ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session: main session not found: {e:#}"))?;
+    store
+        .get_or_create_aux_session(&session_id)
+        .map(|metadata| AuxSessionBinding { id: metadata.id })
+        .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
+}
+
+/// Discard a main session's auxiliary conversation: reclaim the engine,
+/// delete the aux session, and clear the mapping. Repeated calls are
+/// idempotent (no mapping counts as already discarded).
+#[tauri::command]
+pub async fn discard_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    // Same folding as get_or_create_aux_session (round-30 B7): the native
+    // chain (e.g. "remove stale session dir /Users/<name>/...") must not
+    // cross the relay.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::DiscardAuxSession,
+        discard_aux_session_inner(session_id, app, store, pool).await,
+    )
+}
+
+async fn discard_aux_session_inner(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    // The derived-id forward query (round-30 B8): None only when the aux
+    // record is genuinely absent (NotFound-only probe), so an absent aux is
+    // the idempotent already-discarded case, and a transient stat fault reads
+    // as "present" and flows into the gated delete, which surfaces the real
+    // error instead of treating "unknown" as "nothing to discard".
+    let Some(aux_id) = store.aux_session_id(&session_id) else {
+        return Ok(());
+    };
+    // Same path as delete_session's Chat branch: delete_chat_session reclaims
+    // the engine inside the turn gate and calls store.delete.
+    pool.delete_chat_session(&aux_id)
+        .await
+        .map_err(|error| format!("discard_aux_session: {error:#}"))?;
+    pool.forget_session(&aux_id);
+    let payload = serde_json::json!({ "id": &aux_id });
+    let _ = app.emit("session:deleted", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
+    Ok(())
+}
+
+/// Atomically restart a main session's auxiliary conversation (M6): if an
+/// aux session exists, delete it through the pool's turn gate, then create a
+/// fresh one, returning the new binding. This replaces the frontend's old
+/// two-invoke restart (`discard_aux_session` then
+/// `get_or_create_aux_session`), whose halves had no server-side ordering —
+/// under the web relay's non-FIFO premise an orphaned discard could execute
+/// after the recreate and destroy the fresh transcript. One command, one
+/// outcome: there is no second invoke to orphan. The lock-graph reasoning
+/// for the shared critical section lives on
+/// `EnginePool::reset_aux_chat_session`.
+#[tauri::command]
+pub async fn reset_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<AuxSessionBinding, String> {
+    // Same folding as the two sibling commands: the command is
+    // web-allowlisted and the native chains embed host paths, which must not
+    // cross the relay to browser consoles; the detail stays in the desktop
+    // log via web_session_result.
+    super::remote_control::web_session_result(
+        super::remote_control::WebSessionOperation::ResetAuxSession,
+        reset_aux_session_inner(session_id, app, store, pool).await,
+    )
+}
+
+async fn reset_aux_session_inner(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<AuxSessionBinding, String> {
+    // Reset CREATES, so its guards mirror get_or_create_aux_session, not the
+    // idempotent discard: chat kind only, and the main record must exist.
+    ensure_chat_session(&store, &session_id, "reset_aux_session")?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("reset_aux_session: main session not found: {e:#}"))?;
+    let (deleted_aux, metadata) = pool
+        .reset_aux_chat_session(&session_id)
+        .await
+        .map_err(|e| format!("reset_aux_session: {e:#}"))?;
+    // Same post-delete notification as discard_aux_session: the aux id is
+    // derived (`aux-{parent_id}`), so the fresh session reuses it and the
+    // deletion event is what tells every client to drop the old transcript's
+    // buffer before the next snapshot read.
+    if let Some(aux_id) = deleted_aux {
+        let payload = serde_json::json!({ "id": &aux_id });
+        let _ = app.emit("session:deleted", payload.clone());
+        crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
+    }
+    Ok(AuxSessionBinding { id: metadata.id })
 }
 
 /// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
@@ -708,7 +1158,7 @@ pub async fn save_session_artifacts(
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
     store
         .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts({id}): {e:#}"))
+        .map_err(|e| format!("save_session_artifacts: {e:#}"))
 }
 
 /// Shared skeleton for the two position-keyed sidecar normalizers
