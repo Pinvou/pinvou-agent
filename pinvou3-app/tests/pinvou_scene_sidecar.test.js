@@ -38,7 +38,7 @@ async function runSceneSync(block, { readFails = false, saveFails = false } = {}
   const sandbox = {
     console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
     window: { localStorage: { setItem() {}, getItem() { return null; } } },
-    loadPinvouSceneEventsForSession: () => CACHED_SCENE_EVENTS.slice(),
+    loadPinvouSceneEventsForSession: () => [...CACHED_SCENE_EVENTS],
     normalizePinvouSceneEvents: (events) => (Array.isArray(events) ? events : []),
     pinvouSceneStorageKey: (sid) => `pinvou_scene_events_v1:${sid}`,
     async invoke(command) {
