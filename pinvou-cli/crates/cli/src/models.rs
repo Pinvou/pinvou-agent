@@ -11,14 +11,29 @@
 //! memory-locale policy) and `pinvou3_lib::platform::credential_store` for
 //! API keys. No Tauri host is booted.
 //!
-//! The connection probes (`models test`, `models probe-local`,
-//! `settings search test`) mirror the standalone reqwest probes in
-//! app/commands/settings.rs (`probe_model_connection`, `probe_local_server_kind`,
-//! `test_search_provider`). Those functions live in the app-private `app` /
-//! `core` modules and are not exported through `pinvou3_lib`, so the exact
-//! semantics are reimplemented here on a blocking reqwest client (no async
-//! runtime). They are the only paths that touch the network and are covered
-//! by `#[ignore]` tests only.
+//! Two of the three network paths mirror a real GUI counterpart, and the
+//! third has none — the distinction matters because it decides what the
+//! command is allowed to claim:
+//!
+//! - `models test` mirrors `probe_model_connection`
+//!   (app/commands/settings.rs), a real `GET {base}/models`.
+//! - `models probe-local` mirrors `probe_local_server_kind`
+//!   (app/commands/settings.rs) over `core::model_endpoint`, a real set of
+//!   signature probes.
+//! - `settings search test` has NO GUI counterpart: the desktop app ships no
+//!   search-provider test at all. It is a CLI-only command, so its contract
+//!   is anchored on two in-repo facts instead of on a mirrored function —
+//!   the provider endpoints and auth schemes in
+//!   `CodeWhale/crates/tui/src/tools/web_search.rs` (what a real search
+//!   request actually sends), and the credential resolution order of
+//!   `features/assistant/platform/bridge.rs::search_api_key` (what a real
+//!   search request resolves its key from).
+//!
+//! Those app functions live in the app-private `app` / `core` modules and are
+//! not exported through `pinvou3_lib`, so the exact semantics are
+//! reimplemented here on a blocking reqwest client (no async runtime). They
+//! are the only paths that touch the network and are covered by `#[ignore]`
+//! tests only.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -28,11 +43,12 @@ use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialState, CredentialStore, SystemCredentialStore, redact_secret,
 };
 use pinvou3_lib::platform::prefs::{
-    ColorScheme, CredentialStateOps, Language, ModelPreset, SavedModel, SearchProvider, Theme,
-    UserPrefs,
+    ColorScheme, CredentialStateOps, Language, MODEL_PROVIDER_KIND_CODING_PLAN,
+    MODEL_PROVIDER_KIND_CUSTOM, MODEL_PROVIDER_KIND_OFFICIAL_API, ModelPreset, SavedModel,
+    SearchProvider, Theme, UserPrefs,
 };
 
-use crate::support::{render, require_yes, resolve_secret, success};
+use crate::support::{collapse_control_characters, render, require_yes, resolve_secret, success};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +64,15 @@ pub enum ModelsCommand {
         context_window: Option<u32>,
         max_output: Option<u32>,
         reasoning_effort: Option<String>,
+        metadata: ModelMetadata,
+        set_active: bool,
+    },
+    Edit {
+        id: String,
+        changes: Box<ModelEdit>,
+        api_key_env: Option<String>,
+        api_key_stdin: bool,
+        clear_api_key: bool,
         set_active: bool,
     },
     Remove {
@@ -67,6 +92,7 @@ pub enum ModelsCommand {
     ProbeLocal {
         url: Option<String>,
         api_key_env: Option<String>,
+        model_id: Option<String>,
     },
     SettingsGet {
         key: Option<SettingsKey>,
@@ -84,6 +110,54 @@ pub enum ModelsCommand {
     SearchTest {
         provider: SearchProvider,
     },
+}
+
+/// The optional model metadata the GUI's model form sends on every save
+/// (`pinvou3-app/src/features/settings/SettingsView.jsx` `onSave`: `alias`,
+/// `provider_kind`, `vendor`, `endpoint_mode`, `vision_model_id`) but that
+/// `models add` used to hardcode to `None`. `provider_kind` is repaired on
+/// save by `normalize_provider_metadata`, so leaving it out was survivable;
+/// `vendor` is NOT — it stays `None` and is read for reasoning-protocol
+/// routing (`features/assistant/platform/bridge.rs`), so a CLI-created model
+/// routed differently from the same model created in the GUI.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelMetadata {
+    pub alias: Option<String>,
+    pub provider_kind: Option<String>,
+    pub vendor: Option<String>,
+    pub endpoint_mode: Option<String>,
+    pub vision_model_id: Option<String>,
+}
+
+/// A `models edit` patch. The double `Option` is the whole point of the type:
+/// the outer layer is "was this flag given at all" (`None` = leave the stored
+/// value untouched) and the inner layer is the new value, where `None` means
+/// the caller asked to clear the field with the literal `none`. Collapsing
+/// the two would make `models edit` unable to express "clear the alias"
+/// without also being unable to express "leave the alias alone".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelEdit {
+    pub preset: Option<ModelPreset>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub context_window: Option<Option<u32>>,
+    pub max_output: Option<Option<u32>>,
+    pub reasoning_effort: Option<Option<String>>,
+    pub alias: Option<Option<String>>,
+    pub provider_kind: Option<Option<String>>,
+    pub vendor: Option<Option<String>>,
+    pub endpoint_mode: Option<Option<String>>,
+    pub vision_model_id: Option<Option<String>>,
+}
+
+impl ModelEdit {
+    /// True when no field flag was given. An edit that changes nothing is a
+    /// mistyped command, not a successful no-op write: reporting success for
+    /// it would tell a script the rotation it asked for had happened.
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A settings key accepted by `settings get` / `settings set`.
@@ -452,7 +526,7 @@ impl Options {
     }
 }
 
-const MODELS_USAGE: &str = "usage: pinvou models <list|add|remove|use|show|test|probe-local>";
+const MODELS_USAGE: &str = "usage: pinvou models <list|add|edit|remove|use|show|test|probe-local>";
 /// `settings get` without a key is documented as always-JSON right in the
 /// usage text. `--output` is a global flag, so it is accepted on every
 /// subcommand and a reader could reasonably expect `--output human` to change
@@ -479,6 +553,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
             Ok(ModelsCommand::List)
         }
         ("models", "add") => parse_add(rest),
+        ("models", "edit") => parse_edit(rest),
         ("models", "remove") => {
             let options = parse_options("models", "remove", rest, &[], &["yes"])?;
             Ok(ModelsCommand::Remove {
@@ -506,12 +581,34 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
             })
         }
         ("models", "probe-local") => {
-            let options =
-                parse_options("models", "probe-local", rest, &["url", "api-key-env"], &[])?;
+            let options = parse_options(
+                "models",
+                "probe-local",
+                rest,
+                &["url", "api-key-env", "model"],
+                &[],
+            )?;
             ensure_no_positionals(&options, "models probe-local")?;
+            let url = options.value("url").map(str::to_owned);
+            let model_id = options.value("model").map(str::to_owned);
+            if model_id.is_some() && options.value("api-key-env").is_some() {
+                return Err(CliError::usage("use only one of --model or --api-key-env"));
+            }
+            // Without `--url` the target IS the active model's own endpoint
+            // and its own stored credential is already used; naming a
+            // different model there would send that model's key to another
+            // model's endpoint — the leak the GUI's own `saved_model_for_probe`
+            // comment refuses to allow.
+            if model_id.is_some() && url.is_none() {
+                return Err(CliError::usage(
+                    "--model only applies with --url; without --url the active model's own \
+                     credential is used",
+                ));
+            }
             Ok(ModelsCommand::ProbeLocal {
-                url: options.value("url").map(str::to_owned),
+                url,
                 api_key_env: options.value("api-key-env").map(str::to_owned),
+                model_id,
             })
         }
         ("settings", "get") => {
@@ -551,21 +648,88 @@ fn ensure_no_positionals(options: &Options, what: &str) -> Result<(), CliError> 
     }
 }
 
+/// The metadata value flags shared by `models add` and `models edit`, so the
+/// two commands can never accept different spellings of the same field.
+const MODEL_METADATA_FLAGS: &[&str] = &[
+    "alias",
+    "provider-kind",
+    "vendor",
+    "endpoint-mode",
+    "vision-model-id",
+];
+
+/// `provider_kind` is not free-form: the prefs layer only recognizes these
+/// three (`MODEL_PROVIDER_KIND_*`), and `normalize_provider_metadata` rewrites
+/// anything else. Rejecting an unrecognized spelling at parse time reports the
+/// typo instead of silently storing a value the next save discards.
+fn parse_provider_kind(raw: &str) -> Result<String, CliError> {
+    let trimmed = raw.trim();
+    if trimmed == MODEL_PROVIDER_KIND_OFFICIAL_API
+        || trimmed == MODEL_PROVIDER_KIND_CUSTOM
+        || trimmed == MODEL_PROVIDER_KIND_CODING_PLAN
+    {
+        return Ok(trimmed.to_owned());
+    }
+    Err(CliError::usage(format!(
+        "invalid provider kind {raw:?}; valid values: {MODEL_PROVIDER_KIND_OFFICIAL_API}, \
+         {MODEL_PROVIDER_KIND_CUSTOM}, {MODEL_PROVIDER_KIND_CODING_PLAN}"
+    )))
+}
+
+/// A free-form metadata value that must not be stored as whitespace: the
+/// prefs normalizer maps a blank `vendor` / `endpoint_mode` back to `None`,
+/// so accepting one here would report a write that the next save undoes.
+fn parse_metadata_value(flag: &str, raw: &str) -> Result<String, CliError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::usage(format!("--{flag} must not be blank")));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Reads the five optional GUI-form metadata fields off a parsed option set.
+fn parse_metadata(options: &Options) -> Result<ModelMetadata, CliError> {
+    Ok(ModelMetadata {
+        alias: match options.value("alias") {
+            Some(raw) => Some(parse_metadata_value("alias", raw)?),
+            None => None,
+        },
+        provider_kind: match options.value("provider-kind") {
+            Some(raw) => Some(parse_provider_kind(raw)?),
+            None => None,
+        },
+        vendor: match options.value("vendor") {
+            Some(raw) => Some(parse_metadata_value("vendor", raw)?),
+            None => None,
+        },
+        endpoint_mode: match options.value("endpoint-mode") {
+            Some(raw) => Some(parse_metadata_value("endpoint-mode", raw)?),
+            None => None,
+        },
+        vision_model_id: match options.value("vision-model-id") {
+            Some(raw) => Some(parse_metadata_value("vision-model-id", raw)?),
+            None => None,
+        },
+    })
+}
+
 fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
+    let mut value_flags = vec![
+        "preset",
+        "name",
+        "model",
+        "base-url",
+        "api-key-env",
+        "context-window",
+        "max-output",
+        "reasoning-effort",
+    ];
+    value_flags.extend_from_slice(MODEL_METADATA_FLAGS);
     let options = parse_options(
         "models",
         "add",
         rest,
-        &[
-            "preset",
-            "name",
-            "model",
-            "base-url",
-            "api-key-env",
-            "context-window",
-            "max-output",
-            "reasoning-effort",
-        ],
+        &value_flags,
         &["api-key-stdin", "set-active"],
     )?;
     ensure_no_positionals(&options, "models add")?;
@@ -596,8 +760,155 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         context_window,
         max_output,
         reasoning_effort,
+        metadata: parse_metadata(&options)?,
         set_active: options.has("set-active"),
     })
+}
+
+/// The literal that clears an optional field on `models edit`. Reusing the
+/// spelling `settings set` already uses for its clearable keys
+/// (`mode_defaults.work none`, `advanced.allow_shell none`) keeps one word
+/// meaning one thing across the two families. The consequence is stated in
+/// the usage text: a field whose intended value is literally `none` cannot be
+/// set from `models edit` — none of these fields (a vendor id, an endpoint
+/// mode, an `m_`-prefixed model id) has such a value, and an alias that needs
+/// it can be written from the GUI form.
+const EDIT_CLEAR_LITERAL: &str = "none";
+
+/// Reads one clearable value flag into the [`ModelEdit`] double-`Option`:
+/// absent -> `None`, the clear literal -> `Some(None)`, otherwise
+/// `Some(Some(parsed))`.
+fn parse_clearable<T>(
+    options: &Options,
+    flag: &str,
+    parse: impl Fn(&str) -> Result<T, CliError>,
+) -> Result<Option<Option<T>>, CliError> {
+    match options.value(flag) {
+        None => Ok(None),
+        Some(raw) if raw.trim() == EDIT_CLEAR_LITERAL => Ok(Some(None)),
+        Some(raw) => parse(raw).map(|value| Some(Some(value))),
+    }
+}
+
+fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
+    let mut value_flags = vec![
+        "preset",
+        "name",
+        "model",
+        "base-url",
+        "api-key-env",
+        "context-window",
+        "max-output",
+        "reasoning-effort",
+    ];
+    value_flags.extend_from_slice(MODEL_METADATA_FLAGS);
+    let options = parse_options(
+        "models",
+        "edit",
+        rest,
+        &value_flags,
+        &["api-key-stdin", "clear-api-key", "set-active"],
+    )?;
+    let id = options.exactly_one_positional()?;
+    let api_key_env = options.value("api-key-env").map(str::to_owned);
+    let api_key_stdin = options.has("api-key-stdin");
+    let clear_api_key = options.has("clear-api-key");
+    // Three mutually exclusive credential intents; accepting two would leave
+    // the stored secret's fate decided by evaluation order.
+    if [api_key_env.is_some(), api_key_stdin, clear_api_key]
+        .iter()
+        .filter(|given| **given)
+        .count()
+        > 1
+    {
+        return Err(CliError::usage(
+            "use only one of --api-key-env, --api-key-stdin or --clear-api-key",
+        ));
+    }
+    let changes = ModelEdit {
+        preset: match options.value("preset") {
+            Some(raw) => Some(parse_preset(raw)?),
+            None => None,
+        },
+        // The three identity fields are not clearable: a model with no name,
+        // wire model or base_url is not a model. `--name none` therefore
+        // stores the literal, like `models add` would.
+        name: match options.value("name") {
+            Some(raw) => Some(parse_required_text("name", raw)?),
+            None => None,
+        },
+        model: match options.value("model") {
+            Some(raw) => Some(parse_required_text("model", raw)?),
+            None => None,
+        },
+        base_url: match options.value("base-url") {
+            Some(raw) => Some(parse_required_text("base-url", raw)?),
+            None => None,
+        },
+        context_window: parse_clearable(&options, "context-window", |raw: &str| {
+            parse_positive_u32("--context-window", raw)
+        })?,
+        max_output: parse_clearable(&options, "max-output", |raw: &str| {
+            parse_positive_u32("--max-output", raw)
+        })?,
+        reasoning_effort: parse_clearable(&options, "reasoning-effort", parse_reasoning_effort)?,
+        alias: parse_clearable(&options, "alias", |raw: &str| {
+            parse_metadata_value("alias", raw)
+        })?,
+        provider_kind: parse_clearable(&options, "provider-kind", parse_provider_kind)?,
+        vendor: parse_clearable(&options, "vendor", |raw: &str| {
+            parse_metadata_value("vendor", raw)
+        })?,
+        endpoint_mode: parse_clearable(&options, "endpoint-mode", |raw: &str| {
+            parse_metadata_value("endpoint-mode", raw)
+        })?,
+        vision_model_id: parse_clearable(&options, "vision-model-id", |raw: &str| {
+            parse_metadata_value("vision-model-id", raw)
+        })?,
+    };
+    if changes.is_empty()
+        && api_key_env.is_none()
+        && !api_key_stdin
+        && !clear_api_key
+        && !options.has("set-active")
+    {
+        return Err(CliError::usage(
+            "pinvou models edit <id> requires at least one of --preset, --name, --model, \
+             --base-url, --context-window, --max-output, --reasoning-effort, --alias, \
+             --provider-kind, --vendor, --endpoint-mode, --vision-model-id, --api-key-env, \
+             --api-key-stdin, --clear-api-key or --set-active",
+        ));
+    }
+    // A model cannot be its own vision fallback: the routing lookup would
+    // resolve straight back to the model that could not see the image. This is
+    // decidable from argv alone (both values are right here), so it is a usage
+    // error rather than the Failed-class check `require_known_vision_model`
+    // applies to an id that merely does not exist.
+    if changes.vision_model_id.as_ref().and_then(Option::as_ref) == Some(&id) {
+        return Err(CliError::usage(
+            "pinvou models edit: --vision-model-id must name a different model \
+             than the one being edited",
+        ));
+    }
+    Ok(ModelsCommand::Edit {
+        id,
+        changes: Box::new(changes),
+        api_key_env,
+        api_key_stdin,
+        clear_api_key,
+        set_active: options.has("set-active"),
+    })
+}
+
+/// Trims an identity field and refuses a whitespace-only value, matching what
+/// `models add` rejects in `add()` ("--name, --model and --base-url must not
+/// be empty") — reported at parse time so it exits 2 with the flag named.
+fn parse_required_text(flag: &str, raw: &str) -> Result<String, CliError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::usage(format!("--{flag} must not be empty")));
+    }
+    Ok(trimmed.to_owned())
 }
 
 fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
@@ -660,6 +971,7 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             context_window,
             max_output,
             reasoning_effort,
+            metadata,
             set_active,
         } => add(
             preset,
@@ -671,6 +983,23 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             context_window,
             max_output,
             reasoning_effort,
+            metadata,
+            set_active,
+            output,
+        ),
+        ModelsCommand::Edit {
+            id,
+            changes,
+            api_key_env,
+            api_key_stdin,
+            clear_api_key,
+            set_active,
+        } => edit(
+            &id,
+            &changes,
+            &api_key_env,
+            api_key_stdin,
+            clear_api_key,
             set_active,
             output,
         ),
@@ -678,9 +1007,16 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
         ModelsCommand::Use { id } => use_model(&id, output),
         ModelsCommand::Show { id, reveal_key } => show(&id, reveal_key, output),
         ModelsCommand::Test { id } => test_connection(&id, output),
-        ModelsCommand::ProbeLocal { url, api_key_env } => {
-            probe_local(url.as_deref(), api_key_env.as_deref(), output)
-        }
+        ModelsCommand::ProbeLocal {
+            url,
+            api_key_env,
+            model_id,
+        } => probe_local(
+            url.as_deref(),
+            api_key_env.as_deref(),
+            model_id.as_deref(),
+            output,
+        ),
         ModelsCommand::SettingsGet { key } => settings_get(key, output),
         ModelsCommand::SettingsSet { key, value } => settings_set(key, value, output),
         ModelsCommand::SearchList => search_list(output),
@@ -744,16 +1080,24 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
             } else {
                 "-"
             };
+            // Every untrusted cell goes through `collapse_control_characters`:
+            // `models add --name $'ok\n*m_fake\tEvil'` would otherwise inject
+            // a line indistinguishable from a real active-model row (the
+            // `.trim()` in `parse_add` only strips the edges). Same hygiene
+            // the `sessions`, `projects` and `code` rows apply; JSON output
+            // still carries the original untouched.
             format!(
                 "{marker}{}\t{}\t{}\t{}\t{}\tcontext_window={}\tmax_output={}\treasoning_effort={}\thas_secret={}\tcredential_state={}",
-                model.id,
-                model.name,
+                collapse_control_characters(&model.id),
+                collapse_control_characters(&model.name),
                 model.preset.as_str(),
-                model.model,
-                model.base_url,
+                collapse_control_characters(&model.model),
+                collapse_control_characters(&model.base_url),
                 optional_u32(model.context_window_tokens),
                 optional_u32(model.max_output_tokens),
-                model.reasoning_effort.as_deref().unwrap_or("default"),
+                collapse_control_characters(
+                    model.reasoning_effort.as_deref().unwrap_or("default")
+                ),
                 model.has_secret,
                 credential_state_str(model.credential_state),
             )
@@ -842,6 +1186,7 @@ fn add(
     context_window: Option<u32>,
     max_output: Option<u32>,
     reasoning_effort: Option<String>,
+    metadata: ModelMetadata,
     set_active: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
@@ -858,18 +1203,18 @@ fn add(
     let saved = SavedModel {
         id: id.clone(),
         name: name.to_owned(),
-        alias: None,
+        alias: metadata.alias,
         preset,
         context_window_tokens: context_window,
         max_output_tokens: max_output,
         reasoning_effort,
         model: model.to_owned(),
         base_url: base_url.to_owned(),
-        provider_kind: None,
-        vendor: None,
-        endpoint_mode: None,
+        provider_kind: metadata.provider_kind,
+        vendor: metadata.vendor,
+        endpoint_mode: metadata.endpoint_mode,
         image_capability_override: Default::default(),
-        vision_model_id: None,
+        vision_model_id: metadata.vision_model_id,
         api_key: secret.unwrap_or_default(),
         credential_ref: None,
         credential_state: CredentialState::Missing,
@@ -878,6 +1223,7 @@ fn add(
     };
     let active_id = id.clone();
     let transaction = UserPrefs::update_transaction(|prefs| {
+        require_known_vision_model(prefs, saved.vision_model_id.as_deref())?;
         let saved = apply_new_model_credential(saved.clone())
             .map_err(|error| format!("credential store unavailable: {error}"))?;
         prefs.upsert_model(saved);
@@ -899,6 +1245,201 @@ fn add(
         output,
         format!("id: {id}"),
         &serde_json::json!({ "id": id }),
+    );
+    Ok(success(text))
+}
+
+/// `vision_model_id` points at ANOTHER `SavedModel`'s id and its endpoint and
+/// credential are reused from there (`prefs::SavedModel::vision_model_id`).
+/// A dangling id is not a stored preference, it is a vision fallback that
+/// silently never fires, so the reference is resolved against the same
+/// in-transaction prefs snapshot the write lands in.
+fn require_known_vision_model(
+    prefs: &UserPrefs,
+    vision_model_id: Option<&str>,
+) -> Result<(), String> {
+    match vision_model_id {
+        Some(target) if prefs.model_by_id(target).is_none() => {
+            Err(format!("vision model not found: {target}"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Applies a [`ModelEdit`] patch onto the stored model. Only the fields whose
+/// flag was given are touched; the id is never among them, which is the whole
+/// reason `models edit` exists (a remove+add mints a NEW id and orphans every
+/// per-session model binding and scheduled-task model pin that referenced the
+/// old one).
+fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
+    if let Some(preset) = changes.preset {
+        model.preset = preset;
+    }
+    if let Some(name) = &changes.name {
+        model.name = name.clone();
+    }
+    if let Some(wire_model) = &changes.model {
+        model.model = wire_model.clone();
+    }
+    if let Some(base_url) = &changes.base_url {
+        model.base_url = base_url.clone();
+    }
+    if let Some(value) = changes.context_window {
+        model.context_window_tokens = value;
+    }
+    if let Some(value) = changes.max_output {
+        model.max_output_tokens = value;
+    }
+    if let Some(value) = &changes.reasoning_effort {
+        model.reasoning_effort = value.clone();
+    }
+    if let Some(value) = &changes.alias {
+        model.alias = value.clone();
+    }
+    if let Some(value) = &changes.provider_kind {
+        model.provider_kind = value.clone();
+    }
+    if let Some(value) = &changes.vendor {
+        model.vendor = value.clone();
+    }
+    if let Some(value) = &changes.endpoint_mode {
+        model.endpoint_mode = value.clone();
+    }
+    if let Some(value) = &changes.vision_model_id {
+        model.vision_model_id = value.clone();
+    }
+}
+
+/// `models edit <id>`: mutate an existing model IN PLACE. Rotating a key or
+/// fixing a `base_url` used to require `remove` + `add`, which mints a new id
+/// (`new_model_id`) and therefore orphans per-session model bindings and
+/// scheduled-task model pins — the edit that silently breaks other features.
+///
+/// The credential lanes mirror the GUI's `apply_model_credential`:
+/// - no credential flag  -> `KeepExisting`: `credential_ref`,
+///   `credential_state` and `has_secret` are carried over untouched;
+/// - `--api-key-env` / `--api-key-stdin` -> `Replace`: `.set()` runs INSIDE
+///   the transaction closure, so a save failure never leaves a model marked
+///   configured against a secret that was never written;
+/// - `--clear-api-key` -> `Delete`: the record is marked missing inside the
+///   closure and the keyring `.delete()` is DEFERRED to after the commit
+///   (`save_model_inner`/`delete_model_inner`'s ordering contract — deleting
+///   first would leave a configured-but-secretless model if the save failed;
+///   an orphaned entry is the benign direction).
+#[allow(clippy::too_many_arguments)]
+fn edit(
+    id: &str,
+    changes: &ModelEdit,
+    api_key_env: &Option<String>,
+    api_key_stdin: bool,
+    clear_api_key: bool,
+    set_active: bool,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    // A model cannot be its own vision fallback (the GUI form drops
+    // `visionModelId === id` before saving); saying so beats storing a
+    // self-reference the app then ignores.
+    if matches!(&changes.vision_model_id, Some(Some(target)) if target == id) {
+        return Err(CliError::usage(
+            "--vision-model-id must name a different model",
+        ));
+    }
+    // Resolved before any prefs mutation so a missing environment variable is
+    // reported without side effects (same ordering as `add`).
+    let secret = resolve_secret(api_key_env, api_key_stdin)?;
+    let replacement = secret.map(|raw| secret_for_storage(&raw).to_owned());
+    let mut reference_to_delete: Option<CredentialReference> = None;
+    // What the closure actually wrote, and what was under that reference
+    // before it did. Both are captured INSIDE the transaction rather than
+    // read up front: `credential_reference()` prefers the model's stored
+    // `credential_ref`, so only the in-transaction snapshot is guaranteed to
+    // name the reference the rotation overwrote. A rotation writes over the
+    // old secret under that same reference, so deleting on rollback would
+    // destroy a secret prefs still points at — a READ ERROR therefore stays
+    // distinct from "no previous secret", the same three-way rollback
+    // `search_set` documents.
+    let mut written: Option<(CredentialReference, Result<Option<String>, String>)> = None;
+    let transaction = UserPrefs::update_transaction(|prefs| {
+        let Some(existing) = prefs.model_by_id(id) else {
+            return Err(format!("model not found: {id}"));
+        };
+        let mut updated = existing.clone();
+        apply_model_edit(&mut updated, changes);
+        require_known_vision_model(prefs, updated.vision_model_id.as_deref())?;
+        match (&replacement, clear_api_key) {
+            // Replace: store first, then mark configured, all inside the
+            // closure so the save that follows either commits both or neither.
+            (Some(key), _) if !key.is_empty() => {
+                let reference = updated.credential_reference();
+                let store = SystemCredentialStore::new();
+                let previous = store.get(&reference).map_err(|error| error.user_message());
+                written = Some((reference.clone(), previous));
+                store
+                    .set(&reference, key)
+                    .map_err(|error| format!("credential store unavailable: {error}"))?;
+                updated.mark_configured(reference);
+            }
+            // Delete: the record is cleared now, the keyring entry after the
+            // commit.
+            (_, true) => {
+                reference_to_delete = updated
+                    .credential_ref
+                    .clone()
+                    .or_else(|| Some(updated.credential_reference()));
+                updated.mark_missing();
+            }
+            // KeepExisting: the clone already carries the stored credential
+            // bookkeeping, so there is nothing to do.
+            _ => {}
+        }
+        // The plaintext key never reaches settings.json.
+        updated.api_key = String::new();
+        prefs.upsert_model(updated);
+        if set_active {
+            prefs.advanced.active_model_id = Some(id.to_owned());
+        }
+        Ok(())
+    });
+    if let Err(error) = transaction {
+        if let Some((reference, previous)) = written {
+            let store = SystemCredentialStore::new();
+            match previous {
+                // The rotation destroyed the old secret: put it back.
+                Ok(Some(old)) => {
+                    let _ = store.set(&reference, old.as_str());
+                }
+                // Nothing was there before: remove what was just stored.
+                Ok(None) => {
+                    let _ = store.delete(&reference);
+                }
+                // Pre-transaction state unknown (keychain read failed): leave
+                // it alone rather than delete a secret prefs may still
+                // reference.
+                Err(_) => {}
+            }
+        }
+        return Err(prefs_error(error));
+    }
+    if let Some(reference) = reference_to_delete
+        && let Err(error) = SystemCredentialStore::new().delete(&reference)
+    {
+        note!(
+            "pinvou: warning: model {id} api key cleared from settings, but its keyring \
+             entry could not be deleted: {}",
+            error.user_message()
+        );
+    }
+    let credential = if replacement.as_ref().is_some_and(|key| !key.is_empty()) {
+        "replaced"
+    } else if clear_api_key {
+        "cleared"
+    } else {
+        "unchanged"
+    };
+    let text = render(
+        output,
+        format!("id: {id}\nupdated: true\ncredential: {credential}"),
+        &serde_json::json!({ "id": id, "updated": true, "credential": credential }),
     );
     Ok(success(text))
 }
@@ -1033,29 +1574,55 @@ fn show(id: &str, reveal_key: bool, output: OutputMode) -> Result<CliOutcome, Cl
         } else {
             None
         };
+    // Where the key the model actually signs with comes from. `(not stored)`
+    // used to be printed for an `EnvOverride` model too, which is simply
+    // false: that model HAS a key, supplied by the environment — the CLI just
+    // refuses to echo a value it does not own (mirroring
+    // `reveal_model_api_key`). Naming the source keeps the three outcomes
+    // distinguishable in both renderings instead of collapsing them to one
+    // `null` / one `(not stored)`.
+    let key_source = if model.credential_state == CredentialState::EnvOverride {
+        "environment"
+    } else if revealed.as_ref().is_some_and(|inner| inner.is_some()) {
+        "credential_store"
+    } else {
+        "none"
+    };
     let mut json = model_entry_json(&model, active_id);
     if reveal_key {
-        json["api_key"] = serde_json::json!(revealed);
+        json["api_key"] = serde_json::json!(revealed.clone().flatten());
+        json["api_key_source"] = serde_json::json!(key_source);
     }
+    // Every untrusted cell is collapsed for the same reason as the `models
+    // list` rows: a name carrying `\n` would forge extra `key: value` lines
+    // in this block.
     let mut human = format!(
         "id: {}\nname: {}\npreset: {}\nmodel: {}\nbase_url: {}\ncontext_window: {}\nmax_output: {}\nreasoning_effort: {}\nactive: {}\ncredential_state: {}\nhas_secret: {}",
-        model.id,
-        model.name,
+        collapse_control_characters(&model.id),
+        collapse_control_characters(&model.name),
         model.preset.as_str(),
-        model.model,
-        model.base_url,
+        collapse_control_characters(&model.model),
+        collapse_control_characters(&model.base_url),
         optional_u32(model.context_window_tokens),
         optional_u32(model.max_output_tokens),
-        model.reasoning_effort.as_deref().unwrap_or("default"),
+        collapse_control_characters(model.reasoning_effort.as_deref().unwrap_or("default")),
         active_id == Some(model.id.as_str()),
         credential_state_str(model.credential_state),
         model.has_secret,
     );
     if reveal_key {
-        let value = revealed
-            .flatten()
-            .unwrap_or_else(|| "(not stored)".to_owned());
-        human.push_str(&format!("\napi_key: {value}"));
+        let value = match revealed.flatten() {
+            Some(key) => key,
+            // Not collapsed: this is a literal placeholder, not stored data.
+            None if key_source == "environment" => {
+                "(supplied by the DEEPSEEK_API_KEY environment override; not echoed)".to_owned()
+            }
+            None => "(not stored)".to_owned(),
+        };
+        // `api_key_source` goes FIRST so the revealed secret — the one cell
+        // that must be rendered verbatim and therefore cannot be collapsed —
+        // stays the last line and cannot forge a field after itself.
+        human.push_str(&format!("\napi_key_source: {key_source}\napi_key: {value}"));
     }
     Ok(success(render(output, human, &json)))
 }
@@ -1299,15 +1866,32 @@ fn strip_v1_suffix(url: &str) -> String {
         .map_or_else(|| trimmed.to_owned(), str::to_owned)
 }
 
-fn probe_client() -> Option<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
-        // Local model servers have no business redirecting; following a 302
-        // would let a loopback service turn the probe into an arbitrary
-        // remote request.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .ok()
+/// The process-wide probe client, built once and reused — the CLI's
+/// equivalent of `core/model_endpoint.rs`'s `shared_probe_client`.
+///
+/// This is called from inside `get_json`, i.e. once per candidate request.
+/// Building a fresh `reqwest::blocking::Client` there threw away the
+/// connection pool AND spun up a new internal runtime thread for every one of
+/// the eight probe requests `probe-local` issues, so the mirror had strictly
+/// worse connection behaviour than the GUI it mirrors. A `OnceLock` keeps the
+/// same client (and therefore the same keep-alive pool) for the whole
+/// process; `reqwest::blocking::Client` is `Send + Sync`, so the parallel
+/// candidates in [`probe_candidates`] share it safely.
+fn probe_client() -> Option<&'static reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(3))
+                // Local model servers have no business redirecting; following
+                // a 302 would let a loopback service turn the probe into an
+                // arbitrary remote request.
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()
+        })
+        .as_ref()
 }
 
 fn apply_bearer(
@@ -1461,8 +2045,10 @@ fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool {
 /// helped by switching paths, and timeouts/connection refusals mean the
 /// host is unreachable — neither is retried, conservatively falling back
 /// to no facts. Mirrors the GUI's `fetch_v1_models` fallback exactly.
-fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> Option<serde_json::Value> {
-    let client = probe_client()?;
+fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> V1ModelsProbe {
+    let Some(client) = probe_client() else {
+        return V1ModelsProbe::Miss;
+    };
     let trimmed = base_url.trim_end_matches('/');
     let (primary, fallback) = if trimmed.ends_with("/v1") {
         (format!("{trimmed}/models"), None)
@@ -1472,7 +2058,9 @@ fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> Option<serde_json::V
             Some(format!("{trimmed}/models")),
         )
     };
-    let response = apply_bearer(client.get(&primary), bearer).send().ok()?;
+    let Ok(response) = apply_bearer(client.get(&primary), bearer).send() else {
+        return V1ModelsProbe::Miss;
+    };
     // Retry once only when the primary candidate clearly reports "path not
     // found" (404/405) and a fallback candidate exists; auth failures
     // (401/403) are not helped by switching paths, and timeouts/connection
@@ -1481,15 +2069,47 @@ fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> Option<serde_json::V
     let response = match (response.status().as_u16(), fallback) {
         (200..=299, _) => response,
         (404 | 405, Some(url)) => {
-            let response = apply_bearer(client.get(&url), bearer).send().ok()?;
-            if !response.status().is_success() {
-                return None;
+            let Ok(response) = apply_bearer(client.get(&url), bearer).send() else {
+                return V1ModelsProbe::Miss;
+            };
+            match response.status().as_u16() {
+                200..=299 => response,
+                401 | 403 => return V1ModelsProbe::AuthRequired,
+                _ => return V1ModelsProbe::Miss,
             }
-            response
         }
-        _ => return None,
+        (401 | 403, _) => return V1ModelsProbe::AuthRequired,
+        _ => return V1ModelsProbe::Miss,
     };
-    read_json_capped(response)
+    read_json_capped(response).map_or(V1ModelsProbe::Miss, V1ModelsProbe::Body)
+}
+
+/// What the OpenAI-compatible model list answered, kept as three cases rather
+/// than `Option` because "the endpoint refused to talk to me" is a DIFFERENT
+/// fact from "the endpoint had nothing to say", and `probe-local` must not
+/// report the first as the second. `/v1/models` is the one endpoint every
+/// OpenAI-compatible local server exposes, so its 401/403 is the reliable
+/// signal that the host is authenticated and every signature probe was
+/// answered with a challenge rather than a signature.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum V1ModelsProbe {
+    /// A parsed JSON body.
+    Body(serde_json::Value),
+    /// 401/403: the endpoint exists and is authenticated, but this probe was
+    /// not allowed to see its signature.
+    AuthRequired,
+    /// Unreachable, non-JSON, over the body cap, or any other status.
+    #[default]
+    Miss,
+}
+
+impl V1ModelsProbe {
+    fn body(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Body(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 fn v1_models_owned_by_matches(value: &serde_json::Value, expected: &str) -> bool {
@@ -1505,48 +2125,135 @@ fn v1_models_owned_by_matches(value: &serde_json::Value, expected: &str) -> bool
         })
 }
 
-/// Local server kind selection in the same signature-exclusivity priority as
-/// `select_local_server_kind`: DMR port gate > Ollama > LM Studio > KoboldCpp
-/// > llama.cpp > SGLang > LMDeploy > vLLM > generic. Sequential with early
-/// return instead of `tokio::join!` (the CLI has no async runtime); each
-/// candidate's hit is independent, so the selected kind is identical.
-fn select_local_server_kind(base_url: &str, bearer: Option<&str>) -> &'static str {
-    if probe_docker_model_runner(base_url, bearer) {
+/// The kind reported when every signature probe was answered with an
+/// authentication challenge. It is deliberately NOT one of the GUI's kind
+/// strings: those all assert something about the server's identity, and this
+/// case asserts the opposite — that the probe learned nothing. Reporting
+/// `generic` here (what the sequential mirror did) is the silently wrong
+/// answer the classification must never give.
+const LOCAL_KIND_UNKNOWN_AUTHENTICATED: &str = "unknown_authenticated";
+
+/// One round of candidate probes, as facts rather than as a decision.
+/// Mirrors `core/model_endpoint.rs`'s `ProbeCandidateHits` so the priority
+/// rule below can be exercised without a network.
+#[derive(Debug, Default)]
+struct ProbeCandidateHits {
+    docker_mgmt_shape: bool,
+    ollama: bool,
+    lmstudio_v0: bool,
+    koboldcpp: bool,
+    llamacpp: bool,
+    sglang: bool,
+    v1_models: V1ModelsProbe,
+}
+
+/// Issues all seven candidate probes CONCURRENTLY, the way the GUI issues
+/// them with `tokio::join!` (`core/model_endpoint.rs`).
+///
+/// The sequential mirror ran them one after another, so a hung loopback
+/// endpoint cost up to 8 x 3 s ~= 24 s instead of the GUI's ~3 s: every probe
+/// shares one client-level 3 s timeout, and run in parallel the whole round
+/// is bounded by the slowest single request (plus at most one extra window
+/// for `fetch_v1_models`'s 404/405 root fallback). `std::thread::scope`
+/// borrows `base_url` and `bearer` directly, so this needs no new dependency
+/// and no async runtime.
+///
+/// Running every candidate always — instead of returning early on the first
+/// hit — is exactly what the GUI does and cannot change the selected kind:
+/// each candidate probes a DIFFERENT endpoint and its hit is independent of
+/// the others. It does mean a matched server still receives the remaining
+/// probes, which is the price of the ~8x latency win.
+fn probe_candidates(base_url: &str, bearer: Option<&str>) -> ProbeCandidateHits {
+    std::thread::scope(|scope| {
+        let docker = scope.spawn(|| probe_docker_model_runner(base_url, bearer));
+        let ollama = scope.spawn(|| probe_ollama_tags(base_url, bearer));
+        let lmstudio = scope.spawn(|| probe_lmstudio_v0(base_url, bearer));
+        let koboldcpp = scope.spawn(|| probe_koboldcpp(base_url, bearer));
+        let llamacpp = scope.spawn(|| probe_llamacpp(base_url, bearer));
+        let sglang = scope.spawn(|| probe_sglang(base_url, bearer));
+        let v1_models = scope.spawn(|| fetch_v1_models(base_url, bearer));
+        // A panicking probe thread degrades to "no hit" rather than taking
+        // the command down: the probes are best-effort facts, and one
+        // candidate's failure must not lose the other six.
+        ProbeCandidateHits {
+            docker_mgmt_shape: docker.join().unwrap_or(false),
+            ollama: ollama.join().unwrap_or(false),
+            lmstudio_v0: lmstudio.join().unwrap_or(false),
+            koboldcpp: koboldcpp.join().unwrap_or(false),
+            llamacpp: llamacpp.join().unwrap_or(false),
+            sglang: sglang.join().unwrap_or(false),
+            v1_models: v1_models.join().unwrap_or_default(),
+        }
+    })
+}
+
+/// The signature-exclusivity priority of the GUI's `select_local_server_kind`:
+/// DMR port gate > Ollama > LM Studio > KoboldCpp > llama.cpp > SGLang >
+/// LMDeploy > vLLM > generic. Pure, so the order is pinned by a test instead
+/// of by a live server.
+fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str {
+    if hits.docker_mgmt_shape {
         return "dockermodelrunner";
     }
-    if probe_ollama_tags(base_url, bearer) {
+    if hits.ollama {
         return "ollama";
     }
-    if probe_lmstudio_v0(base_url, bearer) {
+    if hits.lmstudio_v0 {
         return "lmstudio";
     }
-    if probe_koboldcpp(base_url, bearer) {
+    if hits.koboldcpp {
         return "koboldcpp";
     }
-    if probe_llamacpp(base_url, bearer) {
+    if hits.llamacpp {
         return "llamacpp";
     }
-    if probe_sglang(base_url, bearer) {
+    if hits.sglang {
         return "sglang";
     }
-    if let Some(v1_models) = fetch_v1_models(base_url, bearer) {
-        if v1_models_owned_by_matches(&v1_models, "lmdeploy") {
+    if let Some(v1_models) = hits.v1_models.body() {
+        if v1_models_owned_by_matches(v1_models, "lmdeploy") {
             return "lmdeploy";
         }
-        if v1_models_owned_by_matches(&v1_models, "vllm") {
+        if v1_models_owned_by_matches(v1_models, "vllm") {
             return "vllm";
         }
+    }
+    // Only reached when nothing matched. An authenticated endpoint answers
+    // every signature probe with a challenge, so `generic` here would be a
+    // classification the probe never earned.
+    if hits.v1_models == V1ModelsProbe::AuthRequired {
+        return LOCAL_KIND_UNKNOWN_AUTHENTICATED;
     }
     "generic"
 }
 
-/// `models probe-local [--url URL]`: identify the local inference server
-/// kind. Defaults to the active model's base_url and reuses its stored
-/// credential (mirroring the GUI's credential resolution). Refuses
-/// non-loopback hosts with a usage error before any request is sent.
+fn select_local_server_kind(base_url: &str, bearer: Option<&str>) -> &'static str {
+    select_local_server_kind_from_hits(&probe_candidates(base_url, bearer))
+}
+
+/// `models probe-local [--url URL [--model ID]] [--api-key-env VAR]`:
+/// identify the local inference server kind. Without `--url` the target is
+/// the active model's base_url and its stored credential, mirroring the GUI's
+/// credential resolution. Refuses non-loopback hosts with a usage error
+/// before any request is sent.
+///
+/// `--model ID` is the CLI's spelling of the GUI command's `model_id`
+/// parameter (`probe_local_server_kind(base_url, api_key, model_id)`): it
+/// names WHICH saved model's stored key the probe should present to the
+/// `--url` endpoint. Without it, `--url` alone probes anonymously, an
+/// api-key-protected vLLM answers every signature probe with a 401, and the
+/// result used to come back as `{"kind":"generic"}` with exit 0 — a silently
+/// wrong answer rather than an error.
+///
+/// The GUI's implicit fallback is deliberately NOT mirrored: it resolves
+/// `model_id: None` to `prefs.active_model()`, and `saved_model_for_probe`'s
+/// own comment warns that resolving a credential the caller did not name
+/// sends one model's key to an arbitrary endpoint. Naming the model is
+/// therefore required, and no credential stays the default.
 fn probe_local(
     url: Option<&str>,
     api_key_env: Option<&str>,
+    model_id: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Phase 1 — resolve and validate the target endpoint, for BOTH branches,
@@ -1604,14 +2311,36 @@ fn probe_local(
         }
         None => None,
     };
+    // Phase 3 — the `--model ID` lane: the GUI's `model_id` parameter, read
+    // through the same `credential_ref` -> credential store resolution as
+    // `resolve_saved_model_key(Some(id))`. An unknown id FAILS here rather
+    // than degrading to an anonymous probe (which the GUI's `.ok().flatten()`
+    // would do): probing without the credential the caller named is how the
+    // misclassification this flag exists to prevent comes back.
+    let named_model_key = match model_id {
+        Some(id) => {
+            let prefs = safe_prefs();
+            let model = find_model(&prefs, id)?;
+            let key = resolve_saved_model_key(&model)
+                .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
+                .filter(|key| !key.trim().is_empty());
+            if key.is_none() {
+                return Err(CliError::failed(format!(
+                    "probe-local: model {id} has no stored api key to present"
+                )));
+            }
+            key
+        }
+        None => None,
+    };
     let (target, bearer) = match active {
         // An authenticated local endpoint 401s every signature probe and
-        // misclassifies as generic without the explicit key (the GUI form
-        // key lane).
+        // misclassifies as generic without an explicit credential (the GUI
+        // form-key lane, or `--model` for a saved one).
         None => (
             url.expect("the explicit-url branch sets active to None")
                 .to_owned(),
-            explicit_key,
+            explicit_key.or(named_model_key),
         ),
         Some(model) => {
             let bearer = match explicit_key {
@@ -1630,7 +2359,36 @@ fn probe_local(
             (model.base_url, bearer)
         }
     };
+    let authenticated = bearer.is_some();
     let kind = select_local_server_kind(&target, bearer.as_deref());
+    // `unknown_authenticated` is not a classification, it is the absence of
+    // one: the endpoint answered every signature probe with 401/403. Saying
+    // so with exit 1 keeps a script from reading a kind the probe never
+    // earned, and the detail names the flag that would let the next run
+    // actually classify it.
+    if kind == LOCAL_KIND_UNKNOWN_AUTHENTICATED {
+        let detail = if authenticated {
+            "the endpoint rejected the credential that was presented (401/403), so no server \
+             signature could be read"
+        } else {
+            "the endpoint requires authentication (401/403); rerun with --model <id> or \
+             --api-key-env <var> so the probe can present a credential"
+        };
+        let text = render(
+            output,
+            format!("url: {target}\nkind: {kind}\ndetail: {detail}"),
+            &serde_json::json!({
+                "url": target,
+                "kind": kind,
+                "authenticated": authenticated,
+                "detail": detail,
+            }),
+        );
+        return Ok(CliOutcome {
+            exit_code: ExitCode::Failed,
+            stdout: text,
+        });
+    }
     let text = render(
         output,
         format!("url: {target}\nkind: {kind}"),
@@ -1768,7 +2526,16 @@ fn settings_set(
     value: SettingsValue,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    UserPrefs::update_transaction(|prefs| {
+    // `update_transaction` already returns the re-parsed post-save prefs
+    // (`platform/prefs/mod.rs`: `Ok(Self::load_unlocked(false))`), so the note
+    // below reads THIS write's effective state. The discarded value plus a
+    // fresh `UserPrefs::load()` used to be a TOCTOU — a concurrent writer
+    // between the commit and the load produced a spurious or missing
+    // locale-policy note — and `load()` is additionally the PERSISTING
+    // variant (`load_unlocked(true)`), which re-runs `migrate_models` and
+    // `migrate_plaintext_api_keys_with_store` (a keyring write path) and can
+    // rewrite settings.json as a side effect of reporting one boolean.
+    let saved = UserPrefs::update_transaction(|prefs| {
         match (key, value.clone()) {
             (SettingsKey::Theme, SettingsValue::Theme(v)) => prefs.theme = v,
             (SettingsKey::ColorScheme, SettingsValue::ColorScheme(v)) => prefs.color_scheme = v,
@@ -1806,7 +2573,7 @@ fn settings_set(
     // instead of printing a plain success for a no-op.
     let note = if let (SettingsKey::MemoryEnabled, SettingsValue::Bool(requested)) = (&key, &value)
     {
-        let effective = UserPrefs::load().memory_enabled;
+        let effective = saved.memory_enabled;
         (effective != *requested).then(|| {
             format!(
                 "note: the memory locale policy kept memory_enabled = {effective} (memory \
@@ -1895,10 +2662,16 @@ fn search_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &json)))
 }
 
-/// `settings search set --provider P [--api-key-env V | --clear]`: switches
-/// the active search provider and stores/clears its credential with the same
-/// bookkeeping (`mark_configured` / `mark_missing`) as the GUI's search
-/// settings save path.
+/// `settings search set --provider P [--api-key-env V | --clear]`: stores or
+/// clears provider P's credential with the same bookkeeping
+/// (`mark_configured` / `mark_missing`) as the GUI's search settings save
+/// path.
+///
+/// P becomes the ACTIVE search provider only when the caller is selecting it
+/// — that is, on every form except `--clear`. Clearing is a credential
+/// operation on a named provider and must not move the user's search
+/// backend; `--provider tavily --clear` means "forget the tavily key", not
+/// "search with tavily from now on".
 fn search_set(
     provider: SearchProvider,
     api_key_env: &Option<String>,
@@ -1917,16 +2690,13 @@ fn search_set(
     // a credential reference: a never-configured provider has no keyring
     // entry, and deleting anyway errors on most keyrings — a spurious
     // warning for a no-op (the same gate `models remove` applies to its
-    // credential_ref).
-    let reference_to_delete = if clear {
-        UserPrefs::load()
-            .search
-            .credentials
-            .get(&provider)
-            .and_then(|credential| credential.credential_ref.clone())
-    } else {
-        None
-    };
+    // credential_ref). The lookup happens INSIDE the transaction closure
+    // below rather than through an extra `UserPrefs::load()` here: that load
+    // is the PERSISTING variant (it re-runs the migrations, including the
+    // keyring write path) and reading it before the critical section made the
+    // reference a TOCTOU snapshot of a different prefs state than the one the
+    // clear commits against. Captured by `&mut` exactly like `models remove`.
+    let mut reference_to_delete: Option<CredentialReference> = None;
     // Replacing an existing key OVERWRITES it in the keyring, so the
     // rollback below must restore the previous value — deleting would
     // destroy the old secret while prefs still references it (strictly
@@ -1938,7 +2708,14 @@ fn search_set(
         .as_ref()
         .map(|reference| SystemCredentialStore::new().get(reference));
     let transaction = UserPrefs::update_transaction(|prefs| {
-        prefs.search.provider = provider;
+        // Only a caller actually SELECTING a provider switches the active
+        // one. `--clear` is a credential operation: clearing a non-active
+        // provider's key used to activate that provider as a side effect, so
+        // `settings search set --provider tavily --clear` silently moved
+        // search off whatever the user had chosen.
+        if !clear {
+            prefs.search.provider = provider;
+        }
         if let Some(key) = &stored {
             let reference = provider.credential_reference();
             // Normalized exactly like `models add` and the GUI
@@ -1959,39 +2736,46 @@ fn search_set(
         }
         if clear {
             if let Some(credential) = prefs.search.credentials.get_mut(&provider) {
+                reference_to_delete = credential.credential_ref.clone();
                 credential.mark_missing();
             }
         }
         Ok(())
     });
-    if let Err(error) = transaction {
-        // The closure may have stored the keyring secret before the save
-        // failed; restore the pre-transaction state so no orphaned entry
-        // outlives the prefs record (same standard as models add). An
-        // overwrite restores the previous secret; a fresh store deletes.
-        if let Some(reference) = stored_reference.as_ref() {
-            let store = SystemCredentialStore::new();
-            match previous_secret {
-                // A previous secret existed: the overwrite destroyed it, so
-                // the rollback must put it back.
-                Some(Ok(Some(old))) => {
-                    let _ = store.set(reference, old.as_str());
+    // The transaction's own return value is the post-save prefs, so the
+    // active provider reported below is read from the state that committed
+    // rather than from a second `UserPrefs::load()`.
+    let saved = match transaction {
+        Ok(saved) => saved,
+        Err(error) => {
+            // The closure may have stored the keyring secret before the save
+            // failed; restore the pre-transaction state so no orphaned entry
+            // outlives the prefs record (same standard as models add). An
+            // overwrite restores the previous secret; a fresh store deletes.
+            if let Some(reference) = stored_reference.as_ref() {
+                let store = SystemCredentialStore::new();
+                match previous_secret {
+                    // A previous secret existed: the overwrite destroyed it,
+                    // so the rollback must put it back.
+                    Some(Ok(Some(old))) => {
+                        let _ = store.set(reference, old.as_str());
+                    }
+                    // No previous secret existed: remove the just-stored one.
+                    Some(Ok(None)) => {
+                        let _ = store.delete(reference);
+                    }
+                    // The pre-transaction state is unknown (keychain read
+                    // failed): leave the keyring untouched. Deleting could
+                    // destroy a secret prefs still references; a stale
+                    // orphaned entry is the benign direction.
+                    Some(Err(_)) => {}
+                    // No write happened (nothing to store), so no rollback.
+                    None => {}
                 }
-                // No previous secret existed: remove the just-stored one.
-                Some(Ok(None)) => {
-                    let _ = store.delete(reference);
-                }
-                // The pre-transaction state is unknown (keychain read
-                // failed): leave the keyring untouched. Deleting could
-                // destroy a secret prefs still references; a stale orphaned
-                // entry is the benign direction.
-                Some(Err(_)) => {}
-                // No write happened (nothing to store), so no rollback.
-                None => {}
             }
+            return Err(prefs_error(error));
         }
-        return Err(prefs_error(error));
-    }
+    };
     if clear {
         // Only after the prefs save succeeded — deleting first would leave
         // the prefs entry pointing at a credential that no longer exists if
@@ -2017,28 +2801,44 @@ fn search_set(
     } else {
         "unchanged"
     };
+    // `provider` names the credential that was touched; `active_provider`
+    // names what search actually runs on afterwards. They differ exactly when
+    // `--clear` targets a non-active provider, which is precisely the case a
+    // single `provider:` line used to render ambiguously.
+    let active = saved.search.provider.as_str();
     let text = render(
         output,
-        format!("provider: {}\ncredential: {action}", provider.as_str()),
-        &serde_json::json!({ "provider": provider.as_str(), "credential": action }),
+        format!(
+            "provider: {}\ncredential: {action}\nactive_provider: {active}",
+            provider.as_str()
+        ),
+        &serde_json::json!({
+            "provider": provider.as_str(),
+            "credential": action,
+            "active_provider": active,
+        }),
     );
     Ok(success(text))
 }
 
-/// `settings search test <provider>`: Bing runs a real HTTP probe (same
-/// request as the GUI); API-key providers resolve the credential from the
-/// environment names first, then the stored credential, and only report
-/// configuration status (no network call) — mirroring `test_search_provider`.
+/// `settings search test <provider>`: every provider now runs a REAL request.
+///
+/// It did not used to. Bing ran a live probe and the other four — 4 of the 5
+/// `SearchProvider` variants — returned `{"ok":true,"code":"configured"}` the
+/// moment a non-empty credential existed, without contacting anything, so a
+/// revoked, expired or garbage key passed a command called `test`. The
+/// contract now is: `ok: true` means the provider answered, and the
+/// `verified` field says which of the two was actually established.
+///
+/// The four API lanes are built from the request shapes the product's own
+/// search tool sends (`CodeWhale/crates/tui/src/tools/web_search.rs`), not
+/// from an invented API contract — see [`search_api_request`].
 fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcome, CliError> {
     let probe = if provider == SearchProvider::Bing {
         run_bing_probe()
     } else {
         match resolve_search_key(provider) {
-            Ok(Some(key)) if !key.trim().is_empty() => SearchProbe {
-                ok: true,
-                code: "configured",
-                detail: Some("credential configured".to_owned()),
-            },
+            Ok(Some(key)) if !key.trim().is_empty() => run_search_api_probe(provider, key.trim()),
             Ok(_) => SearchProbe {
                 ok: false,
                 code: "no_api_key",
@@ -2046,11 +2846,13 @@ fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcom
                     "no api key configured for provider {}; set one with settings search set",
                     provider.as_str()
                 )),
+                verified: VERIFIED_CREDENTIAL_PRESENCE,
             },
             Err(error) => SearchProbe {
                 ok: false,
                 code: "credential_unavailable",
                 detail: Some(error),
+                verified: VERIFIED_CREDENTIAL_PRESENCE,
             },
         }
     };
@@ -2058,13 +2860,15 @@ fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcom
         "provider": provider.as_str(),
         "ok": probe.ok,
         "code": probe.code,
+        "verified": probe.verified,
         "detail": probe.detail,
     });
     let mut human = format!(
-        "provider: {}\nok: {}\ncode: {}",
+        "provider: {}\nok: {}\ncode: {}\nverified: {}",
         provider.as_str(),
         probe.ok,
-        probe.code
+        probe.code,
+        probe.verified,
     );
     if let Some(detail) = &probe.detail {
         human.push_str(&format!("\ndetail: {detail}"));
@@ -2080,10 +2884,154 @@ fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcom
     Ok(outcome)
 }
 
+/// A request to the provider was attempted and its outcome — a classified
+/// response status, or the transport error that prevented one — is what the
+/// row reports.
+const VERIFIED_LIVE_PROBE: &str = "live_probe";
+/// NOTHING was sent. Only the configured credential was inspected, so the row
+/// says something about the CLI's own state and nothing about the provider.
+const VERIFIED_CREDENTIAL_PRESENCE: &str = "credential_presence";
+/// Neither: the probe could not run at all (the HTTP client would not build).
+const VERIFIED_NOTHING: &str = "nothing";
+
 struct SearchProbe {
     ok: bool,
     code: &'static str,
     detail: Option<String>,
+    /// What the row's `ok` is a statement ABOUT. Without it a caller reads
+    /// `ok: true` as "this key works", which is a claim only a live probe
+    /// earns — see [`VERIFIED_LIVE_PROBE`] and friends.
+    verified: &'static str,
+}
+
+/// The search endpoints the product actually calls, copied from
+/// `CodeWhale/crates/tui/src/tools/web_search.rs` (`TAVILY_ENDPOINT`,
+/// `BOCHA_ENDPOINT`, `METASO_ENDPOINT`, `BAIDU_ENDPOINT`). They are duplicated
+/// rather than imported because the CLI does not depend on the TUI crate;
+/// they must be changed together with that file.
+const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";
+const BOCHA_SEARCH_ENDPOINT: &str = "https://api.bochaai.com/v1/web-search";
+const METASO_SEARCH_ENDPOINT: &str = "https://metaso.cn/api/v1/search";
+const BAIDU_SEARCH_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
+
+/// The query a probe sends. A `test` that validates a key necessarily spends
+/// one search against the provider's quota — that is the cost of the command
+/// meaning what its name says — so it asks for the smallest possible result
+/// set.
+const SEARCH_PROBE_QUERY: &str = "pinvou";
+const SEARCH_PROBE_RESULTS: u32 = 1;
+
+/// The request timeout for a search probe, matching the product's own
+/// `DEFAULT_SEARCH_TIMEOUT_MS` (15 s, `CodeWhale/crates/tui/src/tools/web/
+/// contract.rs`). The 8 s used by the model-connection probe is too tight for
+/// these endpoints — Baidu's AI Search in particular is model-backed — and a
+/// premature `timeout` on a perfectly good key would be a false negative.
+const SEARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Builds one provider's real search request. Every shape here — endpoint,
+/// auth scheme and body — is transcribed from the corresponding builder in
+/// `CodeWhale/crates/tui/src/tools/web_search.rs`: Tavily carries the key in
+/// the JSON body (`api_key`), Bocha, Metaso and Baidu carry it as
+/// `Authorization: Bearer <key>`. Bing has no API-key form and never reaches
+/// this function.
+fn search_api_request(
+    client: &reqwest::blocking::Client,
+    provider: SearchProvider,
+    key: &str,
+) -> Option<reqwest::blocking::RequestBuilder> {
+    let request = match provider {
+        SearchProvider::Bing => return None,
+        SearchProvider::Tavily => client
+            .post(TAVILY_SEARCH_ENDPOINT)
+            .json(&serde_json::json!({
+                "api_key": key,
+                "query": SEARCH_PROBE_QUERY,
+                "search_depth": "basic",
+                "max_results": SEARCH_PROBE_RESULTS,
+            })),
+        SearchProvider::Bocha => {
+            client
+                .post(BOCHA_SEARCH_ENDPOINT)
+                .bearer_auth(key)
+                .json(&serde_json::json!({
+                    "query": SEARCH_PROBE_QUERY,
+                    "freshness": "noLimit",
+                    "count": SEARCH_PROBE_RESULTS,
+                }))
+        }
+        SearchProvider::Metaso => {
+            client
+                .post(METASO_SEARCH_ENDPOINT)
+                .bearer_auth(key)
+                .json(&serde_json::json!({
+                    "q": SEARCH_PROBE_QUERY,
+                    "scope": "webpage",
+                    "size": SEARCH_PROBE_RESULTS,
+                }))
+        }
+        SearchProvider::Baidu => {
+            client
+                .post(BAIDU_SEARCH_ENDPOINT)
+                .bearer_auth(key)
+                .json(&serde_json::json!({
+                    "messages": [{ "role": "user", "content": SEARCH_PROBE_QUERY }],
+                    "search_source": "baidu_search_v2",
+                    "resource_type_filter": [{ "type": "web", "top_k": SEARCH_PROBE_RESULTS }],
+                }))
+        }
+    };
+    Some(request)
+}
+
+/// Runs one API provider's live probe and classifies the answer with the
+/// SAME status vocabulary `models test` uses (`connection_http_result`:
+/// `auth_invalid` for 401, `auth_forbidden` for 403, `rate_limited` for 429,
+/// ...), so one exit contract covers both commands. Transport failures go
+/// through `connection_error_result`, which redacts the message.
+fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(SEARCH_PROBE_TIMEOUT)
+        .build()
+    else {
+        return SearchProbe {
+            ok: false,
+            code: "client_error",
+            detail: None,
+            verified: VERIFIED_NOTHING,
+        };
+    };
+    let Some(request) = search_api_request(&client, provider, key) else {
+        // Bing is routed to `run_bing_probe` before this function is reached.
+        return SearchProbe {
+            ok: false,
+            code: "unsupported_provider",
+            detail: Some(format!(
+                "provider {} has no api-key search request",
+                provider.as_str()
+            )),
+            verified: VERIFIED_NOTHING,
+        };
+    };
+    match request.send() {
+        Ok(response) => {
+            let probe = connection_http_result(response.status());
+            SearchProbe {
+                ok: probe.ok,
+                code: probe.code,
+                detail: probe.detail,
+                verified: VERIFIED_LIVE_PROBE,
+            }
+        }
+        Err(error) => {
+            let probe = connection_error_result(&error);
+            SearchProbe {
+                ok: false,
+                code: probe.code,
+                detail: probe.detail,
+                verified: VERIFIED_LIVE_PROBE,
+            }
+        }
+    }
 }
 
 fn run_bing_probe() -> SearchProbe {
@@ -2095,11 +3043,12 @@ fn run_bing_probe() -> SearchProbe {
             ok: false,
             code: "client_error",
             detail: None,
+            verified: VERIFIED_NOTHING,
         };
     };
     match client
         .get("https://www.bing.com/search")
-        .query(&[("q", "pinvou")])
+        .query(&[("q", SEARCH_PROBE_QUERY)])
         .send()
     {
         Ok(response) => {
@@ -2109,12 +3058,14 @@ fn run_bing_probe() -> SearchProbe {
                     ok: true,
                     code: "ok",
                     detail: Some(format!("HTTP {}", status.as_u16())),
+                    verified: VERIFIED_LIVE_PROBE,
                 }
             } else {
                 SearchProbe {
                     ok: false,
                     code: "http_error",
                     detail: Some(format!("HTTP {}", status.as_u16())),
+                    verified: VERIFIED_LIVE_PROBE,
                 }
             }
         }
@@ -2124,13 +3075,26 @@ fn run_bing_probe() -> SearchProbe {
                 ok: false,
                 code: probe.code,
                 detail: probe.detail,
+                verified: VERIFIED_LIVE_PROBE,
             }
         }
     }
 }
 
-/// Credential resolution order of the GUI's `resolve_saved_search_key`:
-/// provider-specific environment variables first, then the stored credential.
+/// Resolves the key a real search request would sign with, in the order
+/// `features/assistant/platform/bridge.rs::search_api_key` uses: the
+/// provider's environment variable names first (`env_key_names`), then the
+/// credential store entry behind `credentials[provider].credential_ref`.
+///
+/// `search_api_key` has a THIRD tier the CLI deliberately does not mirror:
+/// `self.prefs.search.normalized_api_key()`, the legacy plaintext
+/// `search.api_key` field. That field is `#[serde(default, skip_serializing)]`
+/// (`platform/prefs/search.rs`), `SearchPrefs::normalize` sets it to `None`
+/// on every save, and `UserPrefs::load` ends with
+/// `sanitize_plaintext_api_keys()`, which nulls it again — so on any prefs the
+/// CLI can load it is unconditionally `None`. Mirroring it would add a tier
+/// that can never fire and imply the CLI reads a plaintext key out of
+/// settings.json, which it must never do.
 fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
     for name in provider.env_key_names() {
         if let Ok(value) = std::env::var(name) {
@@ -2170,8 +3134,9 @@ mod tests {
     /// (`SystemCredentialStore` has no test backdoor — it only falls back to
     /// file storage when the OS keyring `probe()` fails), which no test in
     /// this crate is allowed to do. So the normalization is pinned here and
-    /// the wiring is enforced by there being exactly two `.set(` call sites,
-    /// both passing `secret_for_storage(...)`.
+    /// the wiring is enforced by every `.set(` call site in this module
+    /// (`models add`, `models edit`, `settings search set`) passing a value
+    /// that went through `secret_for_storage(...)`.
     ///
     /// The trailing newline is the case that mattered: `--api-key-env`
     /// values come back from `support::resolve_secret` verbatim (only its
@@ -2311,7 +3276,9 @@ mod tests {
             ("/v1/models", 404, "{}"),
             ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#),
         ]);
-        let value = fetch_v1_models(&mock.base_url, Some("route-key"))
+        let probe = fetch_v1_models(&mock.base_url, Some("route-key"));
+        let value = probe
+            .body()
             .expect("after 404 the fallback to {base}/models must happen");
         assert_eq!(value["data"][0]["id"], "glm-4.7");
         assert_eq!(mock.hits_for("/v1/models"), 1);
@@ -2329,12 +3296,33 @@ mod tests {
             ("/v1/models", 401, "{}"),
             ("/models", 200, r#"{"data":[{"id":"x"}]}"#),
         ]);
-        assert!(fetch_v1_models(&mock.base_url, None).is_none());
+        // A 401 is reported as `AuthRequired`, not as "no facts": it is the
+        // signal `probe-local` needs in order to refuse to answer `generic`.
+        assert_eq!(
+            fetch_v1_models(&mock.base_url, None),
+            V1ModelsProbe::AuthRequired
+        );
         assert_eq!(
             mock.hits_for("/models"),
             0,
             "401 is an auth problem; switching paths cannot help, no retry"
         );
+    }
+
+    /// The 401 carried by the FALLBACK candidate must classify the same way
+    /// as one carried by the primary: a non-`/v1` root (glm `/api/paas/v4`,
+    /// Ark `/api/v3`) reaches its real model list only on the second
+    /// candidate, so losing the signal there would put exactly those
+    /// endpoints back on the silent `generic` answer.
+    #[test]
+    fn fetch_v1_models_reports_auth_required_from_the_fallback_candidate() {
+        let mock = spawn_probe_mock(&[("/v1/models", 404, "{}"), ("/models", 403, "{}")]);
+        assert_eq!(
+            fetch_v1_models(&mock.base_url, None),
+            V1ModelsProbe::AuthRequired
+        );
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
     }
 
     #[test]
@@ -2344,13 +3332,263 @@ mod tests {
         // may ever appear (no fallback beyond /v1/models).
         let mock = spawn_probe_mock(&[("/v1/models", 404, "{}")]);
         let base = format!("{}/v1", mock.base_url);
-        assert!(fetch_v1_models(&base, None).is_none());
+        assert_eq!(fetch_v1_models(&base, None), V1ModelsProbe::Miss);
         assert_eq!(mock.hits_for("/v1/models"), 1);
         assert_eq!(
             mock.hits_for("/models"),
             0,
             "a /v1-shaped configured root has a single candidate, no fallback path"
         );
+    }
+
+    /// Pins the signature-exclusivity priority the GUI's
+    /// `select_local_server_kind` implements. Parallelizing the candidate
+    /// probes ([`probe_candidates`]) means every candidate now runs even when
+    /// an earlier one hit, so the ORDER is the only thing left deciding the
+    /// answer — if it drifts, a host that matches two signatures silently
+    /// changes kind. Each case below sets one hit plus every LOWER-priority
+    /// hit, so it fails if the entry is demoted below any of them.
+    #[test]
+    fn local_server_kind_priority_order_is_pinned() {
+        let vllm_body = || {
+            V1ModelsProbe::Body(serde_json::json!({
+                "data": [{ "id": "m", "owned_by": "vllm" }]
+            }))
+        };
+        let lmdeploy_body = || {
+            V1ModelsProbe::Body(serde_json::json!({
+                "data": [{ "id": "m", "owned_by": "lmdeploy" }]
+            }))
+        };
+        // Everything hits at once: the highest-priority candidate wins.
+        let all = ProbeCandidateHits {
+            docker_mgmt_shape: true,
+            ollama: true,
+            lmstudio_v0: true,
+            koboldcpp: true,
+            llamacpp: true,
+            sglang: true,
+            v1_models: vllm_body(),
+        };
+        assert_eq!(
+            select_local_server_kind_from_hits(&all),
+            "dockermodelrunner"
+        );
+        let cases: &[(&str, ProbeCandidateHits)] = &[
+            (
+                "ollama",
+                ProbeCandidateHits {
+                    ollama: true,
+                    lmstudio_v0: true,
+                    koboldcpp: true,
+                    llamacpp: true,
+                    sglang: true,
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "lmstudio",
+                ProbeCandidateHits {
+                    lmstudio_v0: true,
+                    koboldcpp: true,
+                    llamacpp: true,
+                    sglang: true,
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "koboldcpp",
+                ProbeCandidateHits {
+                    koboldcpp: true,
+                    llamacpp: true,
+                    sglang: true,
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "llamacpp",
+                ProbeCandidateHits {
+                    llamacpp: true,
+                    sglang: true,
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "sglang",
+                ProbeCandidateHits {
+                    sglang: true,
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            // LMDeploy outranks vLLM, and both are read off the SAME shared
+            // /v1/models body (fetched once, like the GUI).
+            (
+                "lmdeploy",
+                ProbeCandidateHits {
+                    v1_models: V1ModelsProbe::Body(serde_json::json!({
+                        "data": [
+                            { "id": "a", "owned_by": "lmdeploy" },
+                            { "id": "b", "owned_by": "vllm" },
+                        ]
+                    })),
+                    ..Default::default()
+                },
+            ),
+            (
+                "vllm",
+                ProbeCandidateHits {
+                    v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            ("generic", ProbeCandidateHits::default()),
+        ];
+        for (expected, hits) in cases {
+            assert_eq!(
+                select_local_server_kind_from_hits(hits),
+                *expected,
+                "priority order changed around {expected}"
+            );
+        }
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                v1_models: lmdeploy_body(),
+                ..Default::default()
+            }),
+            "lmdeploy"
+        );
+    }
+
+    /// The honesty rule behind the priority table: when no signature matched
+    /// AND the one universal endpoint answered with an auth challenge, the
+    /// probe learned nothing and must not report `generic`.
+    #[test]
+    fn local_server_kind_reports_unknown_authenticated_instead_of_generic() {
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                v1_models: V1ModelsProbe::AuthRequired,
+                ..Default::default()
+            }),
+            LOCAL_KIND_UNKNOWN_AUTHENTICATED,
+        );
+        // An auth challenge never overrides a signature that DID match: the
+        // server identified itself on its native endpoint, which is a fact
+        // the 401 does not take away.
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                ollama: true,
+                v1_models: V1ModelsProbe::AuthRequired,
+                ..Default::default()
+            }),
+            "ollama",
+        );
+    }
+
+    /// End to end for the misclassification in the finding: an
+    /// api-key-protected local server (every endpoint 401) probed with no
+    /// credential used to answer `{"kind":"generic"}` with exit 0 — a
+    /// silently wrong classification rather than an error. It must now report
+    /// that it could not classify, fail, and name the flags that would let
+    /// the next run succeed.
+    ///
+    /// Loopback-only and driven by the same std-only mock the other probe
+    /// tests use, so it needs no external network.
+    #[test]
+    fn probe_local_refuses_to_classify_an_endpoint_that_401s_everything() {
+        let mock = spawn_probe_mock(&[("/v1/models", 401, "{}")]);
+        let outcome = probe_local(Some(&mock.base_url), None, None, OutputMode::Json)
+            .expect("a completed probe is a result, not a command failure");
+        assert_eq!(
+            outcome.exit_code,
+            ExitCode::Failed,
+            "an unclassifiable endpoint must not exit 0: {}",
+            outcome.stdout
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(value["kind"], LOCAL_KIND_UNKNOWN_AUTHENTICATED);
+        assert_eq!(value["authenticated"], false);
+        assert!(
+            value["detail"].as_str().is_some_and(
+                |detail| detail.contains("--model") && detail.contains("--api-key-env")
+            ),
+            "the detail must name the flags that supply a credential: {}",
+            outcome.stdout
+        );
+    }
+
+    /// One client for the whole process: the GUI memoizes `shared_probe_client`
+    /// and the mirror rebuilt a `reqwest::blocking::Client` — pool, internal
+    /// runtime thread and all — inside `get_json`, i.e. once per candidate
+    /// request.
+    #[test]
+    fn probe_client_is_a_process_wide_singleton() {
+        let first = probe_client().expect("probe client builds");
+        let second = probe_client().expect("probe client builds");
+        assert!(
+            std::ptr::eq(first, second),
+            "every caller must share one client, not rebuild one per request"
+        );
+    }
+
+    /// The four API providers send a REAL request built from the product's
+    /// own search endpoints and auth schemes
+    /// (`CodeWhale/crates/tui/src/tools/web_search.rs`). Pinning the shapes
+    /// here is what stops the lane from quietly becoming presence-only again:
+    /// a probe that does not carry the key cannot validate it.
+    #[test]
+    fn search_api_requests_carry_the_key_for_every_api_provider() {
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .expect("client builds");
+        // Bing has no api-key form; it is routed to the scrape probe instead.
+        assert!(search_api_request(&client, SearchProvider::Bing, "k").is_none());
+        for (provider, host) in [
+            (SearchProvider::Tavily, "api.tavily.com"),
+            (SearchProvider::Bocha, "api.bochaai.com"),
+            (SearchProvider::Metaso, "metaso.cn"),
+            (SearchProvider::Baidu, "qianfan.baidubce.com"),
+        ] {
+            let request = search_api_request(&client, provider, "probe-key")
+                .unwrap_or_else(|| panic!("{} must build a request", provider.as_str()))
+                .build()
+                .unwrap_or_else(|_| panic!("{} request must build", provider.as_str()));
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(
+                request.url().host_str(),
+                Some(host),
+                "{} must probe its documented endpoint",
+                provider.as_str()
+            );
+            let body = request
+                .body()
+                .and_then(reqwest::blocking::Body::as_bytes)
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            let authorization = request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            assert!(
+                authorization.contains("probe-key") || body.contains("probe-key"),
+                "{} probe must present the key (Tavily in the body, the rest as a bearer)",
+                provider.as_str()
+            );
+            // Never both: duplicating a secret across header and body is how
+            // one of the two ends up in a log.
+            assert!(
+                !(authorization.contains("probe-key") && body.contains("probe-key")),
+                "{} must carry the key in exactly one place",
+                provider.as_str()
+            );
+        }
     }
 
     #[test]

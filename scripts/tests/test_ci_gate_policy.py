@@ -302,7 +302,27 @@ class CiGatePolicyTests(unittest.TestCase):
             "cli_rust must match the real crate directory (pinvou-cli)",
         )
         self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
+        self.assertIn(
+            "- 'pinvou-cli/**/Cargo.lock'",
+            cli_paths,
+            "every CLI leg builds --locked, so a lockfile-only change (a "
+            "dependency bump, a resolver rewrite) changes exactly what they "
+            "compile; without this entry such a PR skips cli-test, "
+            "windows-rust-test AND macos-cli-check and required-gate passes "
+            "on 'skipped'",
+        )
         self.assertIn("- 'CodeWhale'", cli_paths)
+        # The connector lock tables are compiled into the CLI with include_str!
+        # (connectors.rs), so editing or deleting one is a CLI source change in
+        # all but name — and macos-cli-check, the leg whose reason for existing
+        # is exactly those per-target files, is the first thing skipped without
+        # this entry.
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/resources/platforms/**'",
+            cli_paths,
+            "the connector lock tables are include_str!'d into the CLI; "
+            "without this entry a lock-table PR runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
@@ -483,6 +503,103 @@ class CiGatePolicyTests(unittest.TestCase):
             "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
             required_gate,
         )
+
+    def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
+        # The workflow header states this policy in prose ("三项均无
+        # continue-on-error") with nothing enforcing it, and it is the cheapest
+        # fail-open vector in the file: a job-level `continue-on-error: true`
+        # makes the job's own failure non-blocking AND makes
+        # `needs.<job>.result` report `success`, so required-gate's
+        # `success|skipped` loop accepts it. One line would silently disarm
+        # cli-test, windows-rust-test, macos-cli-check or rust-test while the
+        # required check stays green.
+        #
+        # Indentation is the discriminator: job keys sit at 4 spaces
+        # (`  <job>:` + `    runs-on:`), step keys at 8 (`      - name:` +
+        # `        continue-on-error:`). Comments are stripped first so the
+        # header's prose and the "no continue-on-error" annotations on the
+        # clippy gate do not count as settings.
+        body = _without_yaml_comments(self.pr_workflow)
+        job_level = []
+        step_level = []
+        for number, line in enumerate(body.splitlines(), start=1):
+            if not line.strip().startswith("continue-on-error"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            (job_level if indent <= 4 else step_level).append((number, line.strip()))
+        self.assertEqual(
+            job_level,
+            [],
+            "a job-level continue-on-error makes needs.<job>.result report "
+            "'success' to required-gate, so the whole compile/test leg becomes "
+            "advisory while the required check stays green",
+        )
+        # Exactly one legitimate use, and it is a STEP whose entire purpose is
+        # to print an analysis it must not be able to fail the job with.
+        self.assertEqual(
+            len(step_level),
+            1,
+            "only the Windows PE import diagnostic may opt out of blocking; "
+            f"found {len(step_level)} continue-on-error settings: {step_level}",
+        )
+        diagnostic_step = body.split(
+            "- name: Windows 测试二进制导入诊断", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "continue-on-error: true",
+            diagnostic_step,
+            "the single permitted continue-on-error must be the Windows PE "
+            "import diagnostic step, not some other step that moved under it",
+        )
+
+    def test_gate_jobs_do_not_swallow_their_exit_status(self):
+        # The companion fail-open vector to continue-on-error: appending
+        # `|| true` (or `|| :`) to a gate command leaves the step, the job and
+        # required-gate all green while the compiler or the test binary
+        # actually failed. The workflow uses `|| echo "::warning::..."` for its
+        # one genuinely best-effort step (ci-memory-setup), which is a
+        # different and deliberate shape, so scanning the gate jobs for the
+        # unconditional-success idioms has no false positives today.
+        gate_jobs = (
+            "rust-test",
+            "rust-lint",
+            "cli-test",
+            "windows-rust-test",
+            "macos-rust-check",
+            "macos-cli-check",
+            "knowledge-rust",
+        )
+        lines = self.pr_workflow.splitlines()
+        job_header = re.compile(r"^  (\S.*):\s*$")
+        for name in gate_jobs:
+            starts = [
+                number
+                for number, line in enumerate(lines)
+                if job_header.match(line) and job_header.match(line).group(1) == name
+            ]
+            self.assertEqual(
+                len(starts), 1, f"expected exactly one {name} job definition"
+            )
+            start = starts[0]
+            # The block runs to the next job header (2-space key), which is the
+            # only thing that can end a job in this file.
+            end = next(
+                (
+                    number
+                    for number in range(start + 1, len(lines))
+                    if job_header.match(lines[number])
+                ),
+                len(lines),
+            )
+            block = _without_yaml_comments("\n".join(lines[start:end]))
+            for idiom in ("|| true", "|| :", "|| exit 0"):
+                self.assertNotIn(
+                    idiom,
+                    block,
+                    f"{name} must not swallow a command's exit status with "
+                    f"'{idiom}': the leg would report success on a real "
+                    "compile or test failure and required-gate would accept it",
+                )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)

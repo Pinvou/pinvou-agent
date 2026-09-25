@@ -212,8 +212,10 @@ jobs:
               - 'CodeWhale'
               # This workflow file is deliberately excluded from cli_rust
               # (policy: workflow changes must not drag in the full app test
-              # suite; test_ci_gate_policy pins this). Changes to cli-test
-              # itself are validated by the next cli_rust PR / the merge queue.
+              # suite; test_ci_gate_policy pins this). A workflow-only change
+              # therefore reaches cli-test/macos-cli-check only on the main
+              # push after merge — the pre-merge legs stay skipped, including
+              # in the Merge Queue, which recomputes the same paths filter.
               # The CLI path-depends on the app crate: leaf features exempt
               # from the full app suite (feedback, personas, pet) still gate
               # through the CLI suite, so a consumer-breaking change cannot
@@ -221,6 +223,13 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/feedback/**'
               - 'pinvou3-app/src-tauri/src/features/personas/**'
               - 'pinvou3-app/src-tauri/src/features/pet/**'
+              # The CLI compiles the connector lock tables in with
+              # `include_str!` (connectors.rs), so editing or deleting one is
+              # a CLI source change in all but name. Without this entry such a
+              # PR skips cli-test, windows-rust-test AND macos-cli-check — the
+              # very leg whose reason for existing is those per-target files —
+              # and required-gate passes on `skipped`.
+              - 'pinvou3-app/src-tauri/resources/platforms/**'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'

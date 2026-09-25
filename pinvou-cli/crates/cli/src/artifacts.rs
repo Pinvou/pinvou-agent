@@ -11,26 +11,259 @@
 //!   extension whitelist, same category mapping, same newest-mtime-wins
 //!   dedupe and ordering. Session existence uses
 //!   `pinvou3_lib::features::sessions::SessionStore`.
-//! - read/write → mirror of `platform::path_policy::validate_user_path` +
-//!   the GUI `write_artifact_text` rules (absolute path, canonical path must
+//! - read/write → the GUI `write_artifact_text` rules (canonical path must
 //!   stay inside `sessions_root()/<session-id>/{artifacts,workspace}`,
 //!   session id must not start with `_`, markdown-only overwrite of an
-//!   existing file, 10 MiB cap). Relative paths resolve against the
+//!   existing file, 10 MiB cap) plus the credential-component half of
+//!   `platform::path_policy::validate_user_path` (see
+//!   [`crosses_sensitive_component`]). Relative paths resolve against the
 //!   session's ledger workspace, like the GUI `resolve_artifact_path`. The
 //!   overwrite deliberately takes no `--yes`: it is the GUI editor save
 //!   semantics (markdown-only, in-ledger, size-capped), not a destructive
 //!   whole-store operation.
+//!
+//! What is deliberately *not* mirrored from `validate_user_path` on this lane
+//! is its `BLOCKED_PREFIXES` half (`/etc/shadow`, `/proc/`, `/root/`, …). Those
+//! are system locations, and `resolve_session_artifact` has already proved the
+//! canonical target is inside this session's own storage — so every one of them
+//! is unreachable here by construction, except `/root/`, which is the ordinary
+//! home of a root-owned install and would therefore refuse *every* artifact
+//! rather than any sensitive one. The component blacklist is the half that
+//! still bites inside session storage (an agent can create a file named `.env`
+//! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::support::{read_text_file_capped, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::sessions::SessionStore;
 
+/// Whether the staged file is readable by anyone but its owner.
+///
+/// Only meaningful on unix; on other platforms both variants behave
+/// identically and inherit the default ACL, exactly like the app's own
+/// `atomic_write_private` (whose private mode is a POSIX-only `O_CREAT` mode
+/// argument).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteVisibility {
+    /// Default process umask. For content that is not more sensitive than the
+    /// directory it lives in (session deliverables the user asked to write).
+    Inherit,
+    /// `0600`. For files holding user-authored free text or an injected
+    /// persona body — content the user typed, which no other account on a
+    /// shared machine has any reason to read.
+    OwnerOnly,
+}
+
+/// Stage-then-rename write shared by every CLI lane that persists a file
+/// (`artifacts write`, `feedback submit`, `personas equip`).
+///
+/// **Why a local copy.** The app already owns a hardened version of this
+/// (`platform::filesystem::atomic_write` / `atomic_write_private`), but
+/// `platform::filesystem` is declared `pub(crate) mod` in `pinvou3-app`, so no
+/// item in it — public or not — is nameable from this crate. Exporting it is a
+/// `pinvou3-app` change and therefore outside this change's boundary, so the
+/// three hand-rolled writers that had each drifted from the app's semantics
+/// are collapsed into this single one instead. If the app ever makes that
+/// module public, this function is the only place to delete.
+///
+/// It reproduces the two guarantees the three copies had lost:
+///
+/// - **`create_new(true)`.** They staged with `std::fs::write`, i.e.
+///   `O_CREAT|O_TRUNC` with no `O_EXCL`: a leftover temp file from a crashed
+///   run was silently reused, and a symlink planted at the predictable temp
+///   path (`<pid>` and a timestamp are both guessable in a shared `/tmp`-like
+///   directory) was *followed*, redirecting the write to the link's target.
+///   `create_new` turns both into a plain error.
+/// - **A propagated `fsync`.** They ran
+///   `let _ = File::open(&tmp).and_then(|f| f.sync_all());` two lines under a
+///   comment explaining that the fsync is what makes the write crash-safe —
+///   discarding the one result that says whether it happened. A failing
+///   `sync_all` (ENOSPC, EIO) now fails the write instead of renaming
+///   possibly-unwritten pages over the target.
+///
+/// It also adds the parent-directory fsync the app does after the rename, so
+/// the *link* to the new file is durable and not just its contents.
+///
+/// Not reproduced: the app's Windows `ReplaceFileW` state machine with its
+/// backup/rollback path. `std::fs::rename` is atomic-enough for these three
+/// callers (all of which write a file the CLI itself owns, none under a
+/// concurrent GUI writer) and a partial reimplementation of that state machine
+/// would be worse than none.
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub(crate) fn atomic_write(
+    path: &Path,
+    content: &[u8],
+    visibility: WriteVisibility,
+) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} has no usable file name", path.display()),
+            )
+        })?;
+    // Hidden sibling in the target's own directory: same filesystem (so the
+    // rename is atomic) and never surfaced as a stray visible file.
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
+    atomic_write_staged(path, &tmp, content, visibility)
+}
+
+/// [`atomic_write`] with the staging path supplied by the caller.
+///
+/// Split out purely so the tests can plant something at a *known* temp path:
+/// the real one embeds a nanosecond timestamp, which makes the `create_new`
+/// guarantee — the one the three previous copies lacked — untestable through
+/// the public entry point.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn atomic_write_staged(
+    path: &Path,
+    tmp: &Path,
+    content: &[u8],
+    visibility: WriteVisibility,
+) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stage = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if visibility == WriteVisibility::OwnerOnly {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        }
+        let mut file = options.open(tmp)?;
+        file.write_all(content)?;
+        // Propagated, not discarded: this is the step that makes the rename
+        // safe to perform at all.
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = stage {
+        // Only clean up staging failures that are *not* "something was already
+        // there": removing a path we refused to open would delete exactly the
+        // file (or symlink) `create_new` protected.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(tmp);
+        }
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(tmp, path) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(error);
+    }
+    // Best-effort like the app's helper: the data is already durable, this
+    // only shortens the window in which the directory entry is not. Platforms
+    // that refuse to open or fsync a directory are not an error here.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+/// Forced mirror of `platform::path_policy::BLOCKED_COMPONENTS`
+/// (`pinvou3-app/src-tauri/src/platform/path_policy.rs`). That module is
+/// `pub(crate) mod` in `pinvou3-app`, so neither the constant nor
+/// `check_sensitive_components` is nameable from this crate and the list has to
+/// be copied. **The two must change together**: adding a credential name
+/// upstream without adding it here silently reopens it on the CLI surface.
+const SENSITIVE_PATH_COMPONENTS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".docker",
+    ".kube",
+    ".password-store",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "credentials.json",
+    ".env",
+];
+
+/// Forced mirror of `platform::path_policy::BLOCKED_PREFIXES` (same file, same
+/// "must change together" rule as [`SENSITIVE_PATH_COMPONENTS`]).
+///
+/// Only consulted for paths the user names freely — today that is
+/// `feedback submit --attach`. The artifact lanes skip it; see the module docs
+/// for why it cannot apply inside session storage.
+const SENSITIVE_PATH_PREFIXES: &[&str] = &[
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/sudoers",
+    "/etc/ssh/",
+    "/root/",
+    "/var/log/auth",
+    "/proc/",
+    "/sys/",
+];
+
+/// Mirror of the component half of `path_policy::check_sensitive_components`.
+///
+/// Takes an already-canonicalized path (the upstream contract) and answers with
+/// the blacklisted component it crosses, if any. The comparison reproduces
+/// `platform::os::path_component_eq`, which is byte-exact on unix and ASCII
+/// case-insensitive on Windows — a case-sensitive compare there would let
+/// `ID_RSA` through on a filesystem that treats it as the same file.
+pub(crate) fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
+    SENSITIVE_PATH_COMPONENTS.iter().copied().find(|blocked| {
+        canonical.components().any(|component| {
+            let value = component.as_os_str();
+            if cfg!(windows) {
+                value.to_string_lossy().eq_ignore_ascii_case(blocked)
+            } else {
+                value == std::ffi::OsStr::new(*blocked)
+            }
+        })
+    })
+}
+
+/// Mirror of the whole `path_policy::check_sensitive_components` predicate
+/// (components *and* system prefixes), for user-named paths that are not
+/// confined to session storage.
+pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
+    if let Some(blocked) = crosses_sensitive_component(canonical) {
+        return Err(format!(
+            "{} crosses the credential path component `{blocked}`",
+            canonical.display()
+        ));
+    }
+    let text = canonical.to_string_lossy();
+    if let Some(prefix) = SENSITIVE_PATH_PREFIXES
+        .iter()
+        .find(|prefix| text.starts_with(**prefix))
+    {
+        return Err(format!(
+            "{} is in the system-sensitive area {prefix}",
+            canonical.display()
+        ));
+    }
+    Ok(())
+}
+
+// Forced mirror of `features::deliverables::DELIVERABLE_EXTS` and
+// `features::deliverables::deliverable_category`
+// (`pinvou3-app/src-tauri/src/features/deliverables.rs`). Both are
+// `pub(crate)` upstream and therefore not nameable from this crate, so the
+// whitelist and the category mapping are copied byte-for-byte. **They must
+// change together with the upstream definitions**: a deliverable extension
+// added there but not here silently disappears from `artifacts list`, and a
+// category renamed there makes the two surfaces disagree about the same file.
 const DELIVERABLE_EXTS: &[&str] = &[
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
     "jpeg", "svg", "gif", "webp", "zip",
@@ -200,17 +433,42 @@ struct DeliverableRow {
     size: u64,
 }
 
+/// What one index scan produced: the deliverable rows, plus the session
+/// records the scan could not read.
+///
+/// The skipped list is not cosmetic. A session record over the scan cap is
+/// dropped from the index, so an incomplete listing is indistinguishable from
+/// an empty one — see [`list`], which puts the names into the JSON payload for
+/// exactly that reason.
+struct DeliverableIndex {
+    rows: Vec<DeliverableRow>,
+    skipped: Vec<String>,
+}
+
 /// Mirror of `features::deliverables::list_deliverable_index_impl`: scan
 /// `sessions_root()/*.json`, keep tracked artifacts that still exist on
 /// disk, whitelist deliverable extensions, dedupe by physical path keeping
 /// the newest mtime, sort by mtime descending then name.
-fn deliverable_index() -> Vec<DeliverableRow> {
+///
+/// `only_session` is applied to the FILE NAME, before the record is read.
+/// Sessions are stored as `<id>.json`, so a single-session listing has no
+/// reason to read — let alone `serde_json`-parse — every other record in the
+/// store, each of which may be up to `MAX_LIST_SCAN_BYTES`. The caller still
+/// re-checks the parsed `metadata/id`, so a record whose filename and id
+/// disagree behaves exactly as it did before this short-circuit.
+fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
     let sessions_dir = pinvou3_lib::platform::paths::sessions_root();
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return DeliverableIndex {
+                rows: Vec::new(),
+                skipped: Vec::new(),
+            };
+        }
     };
     let mut by_path: HashMap<String, DeliverableRow> = HashMap::new();
+    let mut skipped: Vec<String> = Vec::new();
     // `list` only reads the metadata header, but a session record is parsed
     // whole: cap the per-file read like every other family lane so a huge
     // transcript cannot dominate the listing (oversized files are skipped
@@ -219,6 +477,14 @@ fn deliverable_index() -> Vec<DeliverableRow> {
     for entry in entries.flatten() {
         let file = entry.path();
         if !file.is_file() || file.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let stem = file
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_owned();
+        if only_session.is_some_and(|session| session != stem.as_str()) {
             continue;
         }
         if std::fs::metadata(&file)
@@ -230,6 +496,10 @@ fn deliverable_index() -> Vec<DeliverableRow> {
                 "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
                 file.display()
             );
+            // Also reported in the JSON payload: stderr is invisible to a
+            // `--output json` consumer, which would otherwise read a truncated
+            // index as "this session has no deliverables".
+            skipped.push(stem);
             continue;
         }
         let Ok(raw) = std::fs::read_to_string(&file) else {
@@ -316,9 +586,10 @@ fn deliverable_index() -> Vec<DeliverableRow> {
                 .or_insert(row);
         }
     }
-    let mut out: Vec<DeliverableRow> = by_path.into_values().collect();
-    out.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
-    out
+    let mut rows: Vec<DeliverableRow> = by_path.into_values().collect();
+    rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
+    skipped.sort();
+    DeliverableIndex { rows, skipped }
 }
 
 /// Resolves `<session-id> <relative-path>` to a canonical artifact file,
@@ -364,6 +635,21 @@ fn resolve_session_artifact(
     if !canonical.is_file() {
         return Err(CliError::failed(format!(
             "artifact_not_found: {} is not a file",
+            canonical.display()
+        )));
+    }
+    // The credential-component half of the GUI path policy, applied to the
+    // canonical target (the upstream contract is "already canonicalized", so
+    // this must come after `canonicalize`, not before). The containment checks
+    // below keep the CLI inside session storage, which the GUI's read command
+    // does not even require — but an agent can create `.env` or `.ssh/id_rsa`
+    // inside its own workspace, and there the GUI refuses while the CLI did
+    // not. Same refusal on read and write: the risk is the content reaching a
+    // model context, which is the read direction.
+    if let Some(blocked) = crosses_sensitive_component(&canonical) {
+        return Err(CliError::failed(format!(
+            "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
+             never read or written through this command",
             canonical.display()
         )));
     }
@@ -445,8 +731,12 @@ pub fn execute(command: ArtifactsCommand, output: OutputMode) -> Result<CliOutco
 }
 
 fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let mut rows = deliverable_index();
+    let DeliverableIndex { mut rows, skipped } = deliverable_index(session.as_deref());
     if let Some(session) = session.as_deref() {
+        // Kept even though the scan already short-circuited on the filename:
+        // the reported `session_id` comes from the record's `metadata/id`, and
+        // this is what makes the two agree if a record is ever stored under a
+        // filename that does not match its own id.
         rows.retain(|row| row.session_id == session);
     }
     let human = rows
@@ -470,6 +760,10 @@ fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliEr
             "mtime": row.mtime,
             "size": row.size,
         })).collect::<Vec<_>>(),
+        // Always present, empty in the normal case: a consumer that has to
+        // tell "no deliverables" from "index incomplete" needs a key it can
+        // read unconditionally, not one that only appears on the bad day.
+        "skipped_sessions": skipped,
     });
     Ok(success(render(output, human, &value)))
 }
@@ -549,45 +843,17 @@ fn write(
     if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
         return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
     }
-    // Temp + rename (the GUI writes atomically under its lifecycle lock): a
-    // crash mid-write must not leave a truncated deliverable behind. The
-    // temp name is hidden (`.{name}.tmp-{pid}-{nonce}`, the GUI uses hidden
-    // `.{name}.tmp-{token}` siblings) so a crashed write never surfaces a
-    // visible `report.md.tmp…` file in the session directory; the rename
-    // target itself is unchanged.
-    {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let file_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| {
-                CliError::failed(format!(
-                    "artifact_write_failed({}): cannot name a temp file",
-                    path.display()
-                ))
-            })?;
-        let tmp = path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
-        std::fs::write(&tmp, &content).map_err(|error| {
-            let _ = std::fs::remove_file(&tmp);
-            CliError::failed(format!(
-                "artifact_write_failed({}): {error}",
-                path.display()
-            ))
-        })?;
-        // The GUI's atomic writes fsync before the rename; without it a
-        // power loss can rename through an empty/truncated page.
-        let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
-        if let Err(error) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(CliError::failed(format!(
-                "artifact_write_failed({}): {error}",
-                path.display()
-            )));
-        }
-    }
+    // Stage + rename (the GUI writes atomically under its lifecycle lock): a
+    // crash mid-write must not leave a truncated deliverable behind. A
+    // deliverable is no more sensitive than the session directory that holds
+    // it, so the mode stays at the process umask — unlike the feedback bundle
+    // and the persona sidecar, which carry user-authored text.
+    atomic_write(&path, content.as_bytes(), WriteVisibility::Inherit).map_err(|error| {
+        CliError::failed(format!(
+            "artifact_write_failed({}): {error}",
+            path.display()
+        ))
+    })?;
     let bytes = content.len();
     let value = serde_json::json!({
         "session_id": session_id,
@@ -709,5 +975,125 @@ mod tests {
             let error = parse(&arguments).expect_err(arguments.join(" ").as_str());
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{arguments:?}");
         }
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-atomic-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_target_with_the_new_content() {
+        let dir = scratch("happy");
+        let target = dir.join("report.md");
+        std::fs::write(&target, b"old").unwrap();
+        atomic_write(&target, b"new", WriteVisibility::Inherit).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        // Nothing staged is left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `std::fs::write` (`O_CREAT|O_TRUNC`, the three previous copies) happily
+    /// reuses a leftover temp file from a crashed run. `create_new` refuses,
+    /// and the refusal must not take the existing file with it.
+    #[test]
+    fn staging_refuses_an_occupied_temp_path() {
+        let dir = scratch("occupied");
+        let target = dir.join("report.md");
+        let tmp = dir.join(".report.md.tmp-fixed");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::write(&tmp, b"leftover").unwrap();
+        let error = atomic_write_staged(&target, &tmp, b"new", WriteVisibility::Inherit)
+            .expect_err("an occupied temp path must fail the write");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"leftover");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reason the above matters: without `O_EXCL` the staging write
+    /// *follows* a symlink planted at the predictable temp path, so an
+    /// attacker who can write to the directory redirects the content — and the
+    /// subsequent rename — wherever they point it.
+    #[cfg(unix)]
+    #[test]
+    fn staging_refuses_a_symlink_planted_at_the_temp_path() {
+        let dir = scratch("symlink");
+        let target = dir.join("report.md");
+        let victim = dir.join("victim.txt");
+        let tmp = dir.join(".report.md.tmp-fixed");
+        std::fs::write(&victim, b"do not clobber").unwrap();
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        let error = atomic_write_staged(&target, &tmp, b"attacker", WriteVisibility::Inherit)
+            .expect_err("a symlinked temp path must fail the write");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not clobber");
+        assert!(!target.exists(), "the write must not have landed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mirror of `platform::path_policy` must cover every entry of both
+    /// upstream lists, and must not fire on an ordinary deliverable — a
+    /// too-eager substring match here would make `artifacts read` refuse
+    /// normal files (`environment.md` is not `.env`).
+    #[test]
+    fn sensitive_path_mirror_matches_the_upstream_blacklists() {
+        for component in SENSITIVE_PATH_COMPONENTS {
+            let path = PathBuf::from("/home/u/.pinvou3/sessions/s-1/workspace").join(component);
+            assert_eq!(
+                crosses_sensitive_component(&path),
+                Some(*component),
+                "{component} must be refused"
+            );
+            assert!(check_sensitive_path(&path).is_err(), "{component}");
+        }
+        for prefix in SENSITIVE_PATH_PREFIXES {
+            let path = PathBuf::from(format!("{prefix}probe"));
+            assert!(
+                check_sensitive_path(&path).is_err(),
+                "{prefix} must be refused"
+            );
+        }
+        // Names that merely contain a blacklisted string are not components.
+        for benign in [
+            "/home/u/.pinvou3/sessions/s-1/workspace/environment.md",
+            "/home/u/.pinvou3/sessions/s-1/workspace/id_rsa_notes.md",
+            "/home/u/.pinvou3/sessions/s-1/artifacts/credentials.json.md",
+            "/home/u/.pinvou3/sessions/s-1/artifacts/sshkeys.md",
+        ] {
+            let path = PathBuf::from(benign);
+            assert_eq!(crosses_sensitive_component(&path), None, "{benign}");
+            assert!(check_sensitive_path(&path).is_ok(), "{benign}");
+        }
+    }
+
+    /// The feedback bundle and the persona sidecar hold user-authored text;
+    /// the default umask (~0644) publishes it to every account on the machine.
+    #[cfg(unix)]
+    #[test]
+    fn owner_only_writes_land_with_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch("mode");
+        let target = dir.join("secret.json");
+        atomic_write(&target, b"{}", WriteVisibility::OwnerOnly).unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "got {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

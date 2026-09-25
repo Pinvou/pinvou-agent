@@ -15,6 +15,23 @@ use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 /// (asserted equal by `agent_timeout_cap_matches_library_clamp`).
 const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
 
+/// Byte cap for `--prompt-file`. The read is bounded (`Read::take`) so an
+/// unbounded source cannot be pulled into memory before the engine ever sees
+/// it; 4 MiB is far above any real task prompt and far below an OOM.
+const PROMPT_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// The family's own usage text. It spells out the two input rules the parse
+/// layer cannot enforce from argv alone, because they are the only places
+/// where `agent run` refuses something a plain `read_to_string` accepted:
+/// the prompt file must be a REGULAR file (a symlink to one is fine; a FIFO,
+/// a character device, `/dev/stdin` or a `<(...)` process substitution is
+/// refused, because their read blocks before any cap or deadline could act),
+/// and it must fit in [`PROMPT_FILE_MAX_BYTES`].
+const RUN_USAGE: &str = "usage: pinvou agent run --prompt-file <FILE> [--workspace <DIR>] \
+     [--timeout-secs <SECONDS>] [--session <ID>] [--mode plan|agent] [--model <ID>] \
+     [--attach <PATH>]...\n  --prompt-file must be a regular file (symlinks are followed; \
+     FIFOs, character devices and /dev/stdin are refused) of at most 4 MiB";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentCommand {
     Run {
@@ -125,8 +142,9 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                 }
                 index += 2;
             }
-            let prompt_file =
-                prompt_file.ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
+            let prompt_file = prompt_file.ok_or_else(|| {
+                CliError::usage(format!("agent run requires --prompt-file\n{RUN_USAGE}"))
+            })?;
             Ok(AgentCommand::Run {
                 prompt_file,
                 workspace,
@@ -137,7 +155,7 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                 attachments,
             })
         }
-        _ => Err(CliError::usage("usage: pinvou agent run")),
+        _ => Err(CliError::usage(RUN_USAGE)),
     }
 }
 
@@ -198,8 +216,12 @@ fn run_agent(
     // Consistent with the other read failures in lib.rs (read_to_string ->
     // failed): an unreadable file is a host-level failure (exit 1), not an
     // argument usage error — the documented exit-code contract also lists
-    // read failures under host-level.
-    let prompt = crate::support::read_text_file_capped(prompt_file, 4 * 1024 * 1024, "agent run")?;
+    // read failures under host-level. The two extra refusals this helper adds
+    // over a plain `read_to_string` (over PROMPT_FILE_MAX_BYTES, and anything
+    // that is not a regular file) are stated in RUN_USAGE, because they are a
+    // narrowing of what `--prompt-file` used to accept.
+    let prompt =
+        crate::support::read_text_file_capped(prompt_file, PROMPT_FILE_MAX_BYTES, "agent run")?;
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
     // letting a typo'd path get silently created deeper in the stack.
@@ -268,24 +290,23 @@ fn run_agent(
     // does not add one of its own.
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    // A fresh run persists its session under the shared new-chat placeholder,
-    // which reads as a stray empty chat in the GUI's session list. Give
-    // CLI-created sessions an honest label; best-effort — a failed rename is
-    // cosmetic and must not fail the report. A caller-provided session keeps
-    // its own title. Success path only: the rename needs `report.session_id`,
-    // which a failed run never produces, and leaving the placeholder on a
-    // failed fresh session is what lets the runtime recognize it as unadopted
-    // and clean it up.
-    if session.is_none() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let store = pinvou3_lib::features::sessions::SessionStore::boot();
-        if let Ok(store) = store {
-            let _ = store.set_title(&report.session_id, format!("CLI agent run <{stamp}>"));
-        }
-    }
+    // A fresh run's session is deliberately left under the shared new-chat
+    // placeholder, and the CLI does NOT rename it. Two reasons, both from this
+    // PR's own contracts: the placeholder is the exact sentinel the GUI's
+    // auto-rename triggers on, so writing a literal label here would freeze
+    // the session name forever — and it would be untranslated English in the
+    // zh/en/ja UI, which `features/sessions/store.rs` refuses for headless
+    // sessions and AGENTS.md §4 forbids for UI-visible copy. Second, renaming
+    // from here meant a SECOND `SessionStore` instance whose write serializer
+    // is per-instance, so its load-modify-persist-whole-file raced the desktop
+    // app's. The session id below identifies the run; naming it is the GUI's
+    // job (or the caller's, via `pinvou sessions rename`).
+    //
+    // The reported id is resolvable: the engine only deletes a fresh session
+    // when the run returned no report at all (exit 1, nothing printed). The
+    // one exception is the caller's own `PINVOU3_AGENT_TASK_KEEP_SESSION=0`,
+    // whose entire purpose is to remove this run's session afterwards.
+    //
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
     // in-turn errors live in the report fields and are settled by the
     // harness grader); non-zero exit codes are reserved for host-level
@@ -488,6 +509,32 @@ mod tests {
     fn parse_args_rejects_unknown_agent_subcommand() {
         let error = parse_args(["pinvou", "agent", "status"]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    /// `--prompt-file` accepts strictly less than a plain `read_to_string`
+    /// did (a byte cap, and regular files only). A narrowing a user can hit
+    /// with `--prompt-file /dev/stdin` or `<(generate)` has to be readable
+    /// somewhere the user already looks, so the family usage text carries it
+    /// and this test keeps the two from drifting apart.
+    #[test]
+    fn agent_run_usage_states_the_prompt_file_input_rules() {
+        assert_eq!(PROMPT_FILE_MAX_BYTES, 4 * 1024 * 1024);
+        assert!(RUN_USAGE.contains("4 MiB"), "{RUN_USAGE}");
+        assert!(RUN_USAGE.contains("regular file"), "{RUN_USAGE}");
+        assert!(RUN_USAGE.contains("/dev/stdin"), "{RUN_USAGE}");
+        // Every flag the parser accepts is named in the usage text, so the
+        // text cannot silently fall behind RUN_OPTIONS.
+        for option in RUN_OPTIONS {
+            assert!(
+                RUN_USAGE.contains(option),
+                "{option} is accepted but missing from the usage text"
+            );
+        }
+        // Both usage errors route through it.
+        let error = parse_args(["pinvou", "agent", "status"]).unwrap_err();
+        assert!(error.to_string().contains("--prompt-file"), "{error}");
+        let error = parse_args(["pinvou", "agent", "run"]).unwrap_err();
+        assert!(error.to_string().contains("4 MiB"), "{error}");
     }
 
     #[test]

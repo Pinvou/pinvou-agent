@@ -84,6 +84,15 @@ fn run_err(args: &[&str]) -> (String, ExitCode) {
     (error.to_string(), error.exit_code())
 }
 
+/// A command that COMPLETES with a non-success exit code (the probe families:
+/// the result is a payload on stdout and the exit code is the verdict), as
+/// opposed to `run_err`'s commands that fail before producing one.
+fn run_outcome(args: &[&str]) -> (String, ExitCode) {
+    let parsed = parse_args(args.to_vec()).expect("valid command");
+    let outcome = execute(parsed).expect("a completed probe is an outcome, not an error");
+    (outcome.stdout, outcome.exit_code)
+}
+
 fn load_prefs() -> UserPrefs {
     UserPrefs::load()
 }
@@ -123,6 +132,35 @@ fn parses_every_models_subcommand() {
             "--base-url",
             "http://127.0.0.1:8000/v1",
         ],
+        // Every optional GUI-form field the model editor writes.
+        vec![
+            "pinvoy",
+            "models",
+            "add",
+            "--preset",
+            "openai_compatible",
+            "--name",
+            "Compatible",
+            "--model",
+            "glm-4.7",
+            "--base-url",
+            "https://example.invalid/api/paas/v4",
+            "--alias",
+            "GLM",
+            "--provider-kind",
+            "custom",
+            "--vendor",
+            "glm",
+            "--endpoint-mode",
+            "full_chat_completions",
+            "--vision-model-id",
+            "m_other",
+        ],
+        vec!["pinvoy", "models", "edit", "m1", "--name", "Renamed"],
+        vec!["pinvoy", "models", "edit", "m1", "--alias", "none"],
+        vec!["pinvoy", "models", "edit", "m1", "--clear-api-key"],
+        vec!["pinvoy", "models", "edit", "m1", "--api-key-stdin"],
+        vec!["pinvoy", "models", "edit", "m1", "--set-active"],
         vec!["pinvoy", "models", "remove", "m1", "--yes"],
         vec!["pinvoy", "models", "remove", "m1"],
         vec!["pinvoy", "models", "use", "m1"],
@@ -136,6 +174,15 @@ fn parses_every_models_subcommand() {
             "probe-local",
             "--url",
             "http://127.0.0.1:8000/v1",
+        ],
+        vec![
+            "pinvoy",
+            "models",
+            "probe-local",
+            "--url",
+            "http://127.0.0.1:8000/v1",
+            "--model",
+            "m1",
         ],
     ] {
         parse_args(args).unwrap_or_else(|error| panic!("valid command rejected: {error}"));
@@ -505,6 +552,10 @@ fn models_token_only_accepts_models_subcommands() {
     let message = usage_error(&["pinvoy", "models", "get"]);
     assert!(message.contains("models"), "{message}");
     assert!(message.contains("probe-local"), "{message}");
+    assert!(
+        message.contains("edit"),
+        "the usage must name the in-place edit subcommand: {message}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1199,491 @@ fn settings_search_list_reports_defaults() {
     assert_eq!(value["enabled_providers"][0], "bing");
 }
 
+/// The non-Bing `settings search test` lane had NO execution coverage at all,
+/// and under it the command reported `{"ok":true,"code":"configured"}` for
+/// four of the five providers as soon as a non-empty credential existed,
+/// without contacting anything — so a revoked, expired or garbage key passed
+/// a command called `test`.
+///
+/// This pins the half of the contract that can be asserted without a network:
+/// with no credential anywhere, the command must fail, must say it verified
+/// only credential presence, and must never emit the `configured` code that
+/// used to stand in for a successful test. The live-probe half is covered by
+/// the `#[ignore]` opt-in tests at the bottom of this file and by
+/// `search_api_requests_carry_the_key_for_every_api_provider` in
+/// `src/models.rs`, which pins the request shapes.
+#[test]
+fn settings_search_test_without_a_key_verifies_only_credential_presence() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("search-test-no-key");
+    // The env tier of the credential resolution must be empty for the
+    // providers that have env names, or the test would try to reach them.
+    let _restore_metaso = RestoreEnvVar("METASO_API_KEY", std::env::var_os("METASO_API_KEY"));
+    let _restore_baidu = RestoreEnvVar(
+        "BAIDU_SEARCH_API_KEY",
+        std::env::var_os("BAIDU_SEARCH_API_KEY"),
+    );
+    unsafe {
+        std::env::remove_var("METASO_API_KEY");
+        std::env::remove_var("BAIDU_SEARCH_API_KEY");
+    }
+
+    for provider in ["metaso", "bocha", "baidu", "tavily"] {
+        let (stdout, code) = run_outcome(&[
+            "pinvoy", "--output", "json", "settings", "search", "test", provider,
+        ]);
+        let value: serde_json::Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{provider}: {e}: {stdout}"));
+        assert_eq!(
+            code,
+            ExitCode::Failed,
+            "{provider}: an unconfigured provider must not pass its own test: {stdout}"
+        );
+        assert_eq!(value["provider"], provider);
+        assert_eq!(value["ok"], false, "{provider}: {stdout}");
+        assert_eq!(value["code"], "no_api_key", "{provider}: {stdout}");
+        assert_eq!(
+            value["verified"], "credential_presence",
+            "{provider}: the row must say nothing was contacted: {stdout}"
+        );
+
+        let (human, _) = run_outcome(&["pinvoy", "settings", "search", "test", provider]);
+        assert!(
+            human.contains("verified: credential_presence"),
+            "{provider}: the human line must carry the same disclosure: {human}"
+        );
+        // `configured` was the code that used to stand in for a passed test.
+        assert!(
+            !human.contains("code: configured") && !human.contains("ok: true"),
+            "{provider}: credential presence must never be rendered as a passed test: {human}"
+        );
+    }
+}
+
+/// `settings search set --provider P --clear` is a credential operation on P,
+/// not a selection of P. It used to run `prefs.search.provider = provider`
+/// unconditionally, so clearing a NON-active provider's key silently moved
+/// the user's search backend onto it.
+///
+/// Touches no keyring: the provider has never been configured, so there is no
+/// credential reference to delete.
+#[test]
+fn settings_search_set_clear_does_not_switch_the_active_provider() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("search-clear-active");
+    assert_eq!(
+        load_prefs().search.provider,
+        SearchProvider::Bing,
+        "a fresh home starts on the default provider"
+    );
+
+    let stdout = run_ok(&[
+        "pinvoy",
+        "--output",
+        "json",
+        "settings",
+        "search",
+        "set",
+        "--provider",
+        "tavily",
+        "--clear",
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
+    assert_eq!(
+        value["provider"], "tavily",
+        "the credential that was cleared"
+    );
+    assert_eq!(value["credential"], "cleared");
+    assert_eq!(
+        value["active_provider"], "bing",
+        "clearing a key must not select its provider: {stdout}"
+    );
+    assert_eq!(
+        load_prefs().search.provider,
+        SearchProvider::Bing,
+        "the persisted active provider must be untouched by a clear"
+    );
+
+    // Selecting is still selecting: the non-clear form does switch. Bing
+    // takes no api key, so this exercises the selection path without any
+    // credential-store write.
+    run_ok(&["pinvoy", "settings", "search", "set", "--provider", "bing"]);
+    assert_eq!(load_prefs().search.provider, SearchProvider::Bing);
+}
+
+/// Human rows must not be forgeable. `models.rs` was the last family still
+/// interpolating untrusted cells raw, and `parse_add`'s `.trim()` only strips
+/// the EDGES — so `--name $'ok\n*m_fake\tEvil'` injected a line
+/// indistinguishable from a real active-model row.
+#[test]
+fn models_list_and_show_collapse_control_characters_in_human_rows() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("models-row-hygiene");
+    let hostile = "ok\n*m_fake\tEvil";
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        hostile,
+        "--model",
+        "deepseek-v4-pro",
+        "--base-url",
+        "https://api.deepseek.com",
+    ]);
+    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+
+    let human = run_ok(&["pinvoy", "models", "list"]);
+    assert_eq!(
+        human.lines().count(),
+        2,
+        "one row per model, no forged line: {human:?}"
+    );
+    assert!(
+        human.lines().all(|line| !line.starts_with("*m_fake")),
+        "a name must not be able to forge an active-model row: {human:?}"
+    );
+    let row = human
+        .lines()
+        .find(|line| line.contains(&id))
+        .expect("the added model has a row");
+    assert!(
+        row.contains("ok *m_fake Evil"),
+        "the control characters must be collapsed to spaces, not dropped: {row:?}"
+    );
+
+    let shown = run_ok(&["pinvoy", "models", "show", &id]);
+    assert!(
+        shown.contains("name: ok *m_fake Evil"),
+        "models show must collapse the same cells: {shown:?}"
+    );
+
+    // JSON output still carries the original untouched — the hygiene is a
+    // rendering concern, not a storage one.
+    let json = run_ok(&["pinvoy", "--output", "json", "models", "show", &id]);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    assert_eq!(value["name"], hostile);
+}
+
+/// `--reveal-key` on an `EnvOverride` model printed `api_key: (not stored)`,
+/// which is false: that model HAS a key, supplied by the environment. The CLI
+/// refuses to echo a value it does not own (mirroring `reveal_model_api_key`),
+/// but it must say WHY rather than report the key as absent.
+#[test]
+fn models_show_reveal_key_names_the_credential_source() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("reveal-key-source");
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+
+    // No credential reference at all: genuinely nothing stored.
+    let human = run_ok(&["pinvoy", "models", "show", "default", "--reveal-key"]);
+    assert!(human.contains("api_key_source: none"), "{human}");
+    assert!(human.contains("api_key: (not stored)"), "{human}");
+
+    // The env override is what used to be misreported.
+    unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
+    let human = run_ok(&["pinvoy", "models", "show", "default", "--reveal-key"]);
+    assert!(
+        human.contains("api_key_source: environment"),
+        "an env-overridden model must name the environment as the source: {human}"
+    );
+    assert!(
+        !human.contains("api_key: (not stored)"),
+        "an env-overridden model has a key; reporting it as absent is false: {human}"
+    );
+    assert!(
+        human.contains("DEEPSEEK_API_KEY"),
+        "the line must name the variable that supplies it: {human}"
+    );
+    let json = run_ok(&[
+        "pinvoy",
+        "--output",
+        "json",
+        "models",
+        "show",
+        "default",
+        "--reveal-key",
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    assert_eq!(value["api_key_source"], "environment");
+    assert!(
+        value["api_key"].is_null(),
+        "the env-supplied value is still never echoed: {json}"
+    );
+}
+
+/// `models add` used to hardcode the five optional GUI-form fields to `None`,
+/// so a CLI-created model was not expressible: `vendor` in particular stays
+/// `None` and is read for reasoning-protocol routing
+/// (`features/assistant/platform/bridge.rs`).
+#[test]
+fn models_add_writes_the_gui_form_metadata() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("models-add-metadata");
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "openai_compatible",
+        "--name",
+        "Compatible",
+        "--model",
+        "glm-4.7",
+        "--base-url",
+        "https://example.invalid/api/paas/v4",
+        "--alias",
+        "GLM",
+        "--provider-kind",
+        "custom",
+        "--vendor",
+        "glm",
+        "--endpoint-mode",
+        "full_chat_completions",
+    ]);
+    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let prefs = load_prefs();
+    let model = prefs.model_by_id(&id).expect("added model");
+    assert_eq!(model.alias.as_deref(), Some("GLM"));
+    assert_eq!(model.provider_kind.as_deref(), Some("custom"));
+    assert_eq!(model.vendor.as_deref(), Some("glm"));
+    assert_eq!(
+        model.endpoint_mode.as_deref(),
+        Some("full_chat_completions")
+    );
+
+    // A vision fallback must name a model that exists, or it is a routing
+    // preference that silently never fires.
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Vision",
+        "--model",
+        "deepseek-v4-pro",
+        "--base-url",
+        "https://api.deepseek.com",
+        "--vision-model-id",
+        "m_does_not_exist",
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("vision model not found"), "{message}");
+
+    // An unrecognized provider_kind is a typo, not a value the prefs layer
+    // will keep.
+    let message = usage_error(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "N",
+        "--model",
+        "M",
+        "--base-url",
+        "https://api.deepseek.com",
+        "--provider-kind",
+        "nope",
+    ]);
+    assert!(
+        message.contains("official_api") && message.contains("custom"),
+        "{message}"
+    );
+}
+
+/// The gap that silently breaks other features: rotating a key or fixing a
+/// `base_url` used to require `remove` + `add`, which mints a NEW id and
+/// therefore orphans per-session model bindings and scheduled-task model
+/// pins. `models edit` must change everything EXCEPT the id.
+#[test]
+fn models_edit_mutates_in_place_and_preserves_the_id() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("models-edit");
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Before",
+        "--model",
+        "deepseek-v4-pro",
+        "--base-url",
+        "https://api.deepseek.com",
+        "--context-window",
+        "131072",
+        "--reasoning-effort",
+        "high",
+        "--alias",
+        "DS",
+    ]);
+    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+
+    let json = run_ok(&[
+        "pinvoy",
+        "--output",
+        "json",
+        "models",
+        "edit",
+        &id,
+        "--name",
+        "After",
+        "--base-url",
+        "https://api.deepseek.com/v1",
+        "--vendor",
+        "deepseek",
+        // `none` clears an optional field.
+        "--alias",
+        "none",
+        "--context-window",
+        "none",
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    assert_eq!(value["id"], id, "an edit must never mint a new id");
+    assert_eq!(value["updated"], true);
+    assert_eq!(
+        value["credential"], "unchanged",
+        "no credential flag means the stored secret bookkeeping is carried over"
+    );
+
+    let prefs = load_prefs();
+    assert_eq!(
+        prefs.advanced.saved_models.len(),
+        2,
+        "edit updates in place; it must not append a second record"
+    );
+    let model = prefs.model_by_id(&id).expect("the same id still resolves");
+    assert_eq!(model.name, "After");
+    assert_eq!(model.base_url, "https://api.deepseek.com/v1");
+    assert_eq!(model.vendor.as_deref(), Some("deepseek"));
+    assert_eq!(model.alias, None, "`none` clears an optional field");
+    assert_eq!(model.context_window_tokens, None);
+    assert_eq!(
+        model.reasoning_effort.as_deref(),
+        Some("high"),
+        "a field whose flag was not given must be left alone"
+    );
+
+    // --set-active works through edit too, still on the same id.
+    run_ok(&["pinvoy", "models", "edit", &id, "--set-active"]);
+    assert_eq!(load_prefs().advanced.active_model_id.as_deref(), Some(&*id));
+}
+
+#[test]
+fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("models-edit-guards");
+
+    // No field flag at all: a mistyped command, not a successful no-op write.
+    let message = usage_error(&["pinvoy", "models", "edit", "default"]);
+    assert!(message.contains("--base-url"), "{message}");
+
+    // Three mutually exclusive credential intents.
+    let message = usage_error(&[
+        "pinvoy",
+        "models",
+        "edit",
+        "default",
+        "--api-key-stdin",
+        "--clear-api-key",
+    ]);
+    assert!(message.contains("--clear-api-key"), "{message}");
+
+    // Identity fields are not clearable; the model would stop being a model.
+    let message = usage_error(&["pinvoy", "models", "edit", "default", "--name", "   "]);
+    assert!(message.contains("--name"), "{message}");
+
+    // A model cannot be its own vision fallback.
+    let message = usage_error(&[
+        "pinvoy",
+        "models",
+        "edit",
+        "default",
+        "--vision-model-id",
+        "default",
+    ]);
+    assert!(message.contains("different model"), "{message}");
+
+    // Unknown ids exit 1 like every other family.
+    let (message, code) = run_err(&["pinvoy", "models", "edit", "missing-id", "--name", "X"]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("model not found"), "{message}");
+}
+
+/// `probe-local --url` without a credential silently misclassified an
+/// authenticated local server: `--api-key-env` was the only way to name one,
+/// and the GUI's counterpart resolves a SAVED key through its `model_id`
+/// parameter. `--model ID` is that parameter.
+///
+/// Reaches no network: every case below is refused before the first request.
+#[test]
+fn probe_local_model_flag_names_a_saved_credential() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("probe-local-model");
+
+    // --model is about WHICH saved credential to present, so it needs the
+    // endpoint to present it to. Without --url the active model's own
+    // credential is already used, and naming another model there would send
+    // that model's key to a different model's endpoint.
+    let message = usage_error(&["pinvoy", "models", "probe-local", "--model", "default"]);
+    assert!(message.contains("--url"), "{message}");
+
+    // Two credential sources at once would leave the choice to evaluation
+    // order.
+    let message = usage_error(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        "http://127.0.0.1:8000/v1",
+        "--model",
+        "default",
+        "--api-key-env",
+        "SOME_VAR",
+    ]);
+    assert!(message.contains("--model"), "{message}");
+
+    // An unknown id FAILS instead of degrading to an anonymous probe, which
+    // is how the misclassification comes back.
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        "http://127.0.0.1:8000/v1",
+        "--model",
+        "missing-id",
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("model not found"), "{message}");
+
+    // A known model with no stored key cannot present one either: say so
+    // rather than probe anonymously and report a kind.
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--url",
+        "http://127.0.0.1:8000/v1",
+        "--model",
+        "default",
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("no stored api key"),
+        "the refusal must name the missing credential: {message}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Network paths: opt-in only, never run by default (AGENTS.md rule).
 // ---------------------------------------------------------------------------
@@ -1163,6 +1699,34 @@ fn bing_probe_hits_live_endpoint() {
     assert!(
         stdout.contains("ok: true"),
         "search test should report ok: true"
+    );
+}
+
+/// Opt-in: the API-provider lane now sends a REAL search request, so the key
+/// it reports on is actually exercised. Requires internet access AND a
+/// configured credential for the provider under test (environment variable or
+/// `settings search set`), and spends one search against that provider's
+/// quota — which is the cost of the command meaning what its name says.
+///
+/// `cargo test -p pinvoy-cli --test models_contract -- --ignored search_api_probe_validates_a_live_key`
+#[test]
+#[ignore = "network + quota: run with a real key, e.g. METASO_API_KEY=... pinvoy settings search test metaso"]
+fn search_api_probe_validates_a_live_key() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let provider =
+        std::env::var("PINVOU_CLI_SEARCH_TEST_PROVIDER").unwrap_or_else(|_| "metaso".to_owned());
+    let (stdout, code) = run_outcome(&[
+        "pinvoy", "--output", "json", "settings", "search", "test", &provider,
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
+    assert_eq!(
+        value["verified"], "live_probe",
+        "an API provider with a key must be contacted, never reported from presence alone: {stdout}"
+    );
+    assert_eq!(
+        code,
+        ExitCode::Success,
+        "a valid key must pass its own test: {stdout}"
     );
 }
 

@@ -1446,6 +1446,57 @@ fn once_at_rejects_past_times_like_the_gui() {
 }
 
 #[test]
+fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
+    // The refusal above is the *active* rule only. The foundation resolves the
+    // schedule solely for an active record (`create_automation` calls
+    // `next_after_with_anchor` inside `if matches!(status, Active)`), so the
+    // GUI creates a paused one-shot with an elapsed AT without complaint — a
+    // drafted task the user edits and resumes later. `--paused` must not be
+    // stricter in the CLI than on the surface it mirrors, while the very same
+    // rrule without `--paused` stays a usage error.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("paused-past-once");
+    let prompt = write_prompt_file(&home, "paused-past.md", "Summarize the reports.");
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    for past in ["FREQ=ONCE;AT=2020-01-01T00:00:00Z", naive_stamp.as_str()] {
+        let created = run_json(&[
+            "scheduled",
+            "create",
+            "--name",
+            "paused once",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            past,
+            "--paused",
+        ]);
+        assert_eq!(created["status"].as_str(), Some("paused"), "{past}");
+        assert_eq!(created["rrule"].as_str(), Some(past), "{past}");
+        // Persisted the same way, so the GUI reads back a paused record with
+        // no next_run_at — exactly what its own paused create writes.
+        let def: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.def_path(created["id"].as_str().unwrap())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(def["status"].as_str(), Some("paused"), "{past}");
+        assert!(def["next_run_at"].is_null(), "{past}");
+
+        let error = assert_validation_fail(&[
+            "scheduled",
+            "create",
+            "--name",
+            "active once",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            past,
+        ]);
+        assert!(error.contains("is in the past"), "{past}: {error}");
+    }
+}
+
+#[test]
 fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
     // The GUI's VersionedJsonStore quarantines a registry whose
     // schema_version is newer than supported; the CLI must refuse to

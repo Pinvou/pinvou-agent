@@ -6,14 +6,23 @@
 //! `pub(crate)`, so this module cannot call them directly. Every behavior
 //! below mirrors the exact GUI feature function over the public
 //! `pinvou3_lib` building blocks the feature itself uses:
-//! - enable/disable marker files (`<id>_disabled` in `PINVOU3_HOME`) and
-//!   skills-visibility reads → `pinvou3_lib::platform::connector_state`
-//!   (the same marker semantics as the `ConnectorSkillGate` default impls
-//!   and `set_<connector>_enabled` in feishu/wecom/dingtalk/tmeet.rs);
-//! - scope / disabled-set sync → `pinvou3_lib::features::marketplace::
+//! - the connector switch → `pinvou3_lib::features::marketplace::
 //!   sync_disabled_bundles_for_connector_switch` /
 //!   `sync_deny_all_scopes_after_install` (the calls the GUI command layer
-//!   makes around the feature calls);
+//!   makes around the feature calls). The unified scope state
+//!   (`disabled_bundles.json`) is the switch on BOTH surfaces: the GUI's
+//!   toggle is `set_disabled_connectors` → `apply_disabled_connectors_for`,
+//!   and `features/connectors/skill_gate.rs` records that the marker's
+//!   write side "was removed together with the retired `set_*_enabled`
+//!   commands … so the gate only reads the flag". The CLI therefore never
+//!   writes a `<id>_disabled` marker either — a marker no GUI surface can
+//!   clear would pin the app into deleting the skill dirs forever. The
+//!   marker survives only as a LEGACY READ: `status` reports the connector
+//!   off while one exists (the app's gate really does hide the skills
+//!   then), names it in the output, and `enable` removes it. That removal
+//!   is the CLI's only write to the marker path;
+//! - skills-visibility reads → `pinvou3_lib::platform::connector_state`
+//!   (the same marker read as `ConnectorGate::is_disabled`);
 //! - bundle-store mirror on connect/logout → `pinvou3_lib::features::
 //!   marketplace::store::{BundleStore, BundleRecord}` +
 //!   `platform::connector_lock` (mirror of `connector_cli::
@@ -26,10 +35,20 @@
 //!   (the exact pieces `features/connectors/ima.rs` is built on).
 //!
 //! Headless deviations (disclosed in command output, not silent):
-//! - `apply-skills` / enable-disable cannot materialize the bundled skill
-//!   directories: the unpack source is the desktop app's embedded bundle
-//!   (`features::runtime_bundle`, crate-private). The CLI recomputes
-//!   visibility + scope sync and reports `skills_refresh: "app-only"`.
+//! - Only the SHOW direction of the skill gate is app-only: materializing
+//!   the skill directories unpacks the desktop app's embedded bundle
+//!   (`features::runtime_bundle`, crate-private), so the CLI recomputes
+//!   visibility + scope sync and reports `skills_unpack: "app-only"`. The
+//!   HIDE direction needs no bundle at all — the app's own
+//!   `apply_connector_skills` hide branch (runtime_bundle/platform/
+//!   extraction.rs) is a bare `remove_dir_all` of each `*_SKILL_DIRS` entry
+//!   plus the connector's NOTICE file under `bundles/<id>/skills/`. The CLI
+//!   performs exactly that removal itself (`hide_connector_skills`), because
+//!   the GUI logout is two calls — `<id>_logout` then `<id>_apply_skills`,
+//!   whose `skills_should_show()` is false right after a logout — and a CLI
+//!   `logout` that skipped it would leave a fully connected-looking skill
+//!   tree on disk after the credentials are gone. Unlike the app's `let _ =`
+//!   the CLI reports removal failures instead of swallowing them.
 //! - The execpolicy ruleset hot-refresh after connect / apply runs on the
 //!   GUI's live `EnginePool`; the CLI has no engine pool and reports it.
 //! - `connect` prints the login / QR URL instead of rendering the QR image
@@ -39,7 +58,7 @@
 //!   crates); tmeet installs through npm like the GUI does.
 
 use std::io::{BufRead, BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -202,6 +221,25 @@ impl ConnectorKind {
             Self::Tmeet => &TMEET_SKILL_DIRS,
         }
     }
+
+    /// Provenance NOTICE file each connector's bundle unpack drops next to
+    /// its skill directories — the `notice_file` argument the app passes to
+    /// `Pinvou3Bundle::apply_connector_skills` (runtime_bundle/platform/
+    /// extraction.rs). feishu owns the bare `NOTICE.md`; the other three
+    /// carry an id suffix so four unpacks into sibling roots cannot
+    /// overwrite each other. The hide direction must remove it alongside
+    /// the directories or a logged-out connector keeps a stray attribution
+    /// file the app would never leave behind. There is no exported constant
+    /// for these on the app side (the strings are literals at the four call
+    /// sites), so this table is a mirror, not an import.
+    fn skills_notice_file(self) -> &'static str {
+        match self {
+            Self::Feishu => "NOTICE.md",
+            Self::Wecom => "NOTICE-wecom.md",
+            Self::Dingtalk => "NOTICE-dingtalk.md",
+            Self::Tmeet => "NOTICE-tmeet.md",
+        }
+    }
 }
 
 struct VendorSpec {
@@ -210,6 +248,9 @@ struct VendorSpec {
     cli_bin: &'static str,
     envs: &'static [(&'static str, &'static str)],
     auth_domains: &'static [&'static str],
+    /// Legacy `<id>_disabled` marker file name (`ConnectorGate::
+    /// disabled_filename`). Read-only on both surfaces now; the CLI's only
+    /// write is the removal `enable` performs to heal a stale one.
     disabled_filename: &'static str,
     /// `Some(min)` = installs below this version count as not-installed and
     /// `status` reports `upgrade_required` (wecom/tmeet version gates).
@@ -483,12 +524,28 @@ fn npm_prefix_candidates(program: &str) -> Vec<PathBuf> {
 /// explicit prefix writes into the global npm prefix (`/usr/local` on stock
 /// macOS), which fails without sudo. Default the prefix to the user-writable
 /// `~/.npm-global` (Unix) / `%APPDATA%\npm` (Windows, with a local npm cache)
-/// and prepend its bin directory to the child's PATH.
+/// and prepend the directory npm actually puts executables in to the child's
+/// PATH.
+///
+/// The two platform arms mirror two different GUI functions, and they differ
+/// on purpose:
+/// - unix (`platform/os/posix.rs::apply_user_npm_prefix`): when the caller
+///   already exported `NPM_CONFIG_PREFIX` / `npm_config_prefix` the GUI does
+///   nothing at all — the user picked that prefix, and rewriting PATH around
+///   it is not ours to do. The prefix's `bin` (not the prefix itself) is what
+///   holds the executables in npm's unix layout, so that is the entry
+///   prepended.
+/// - windows (`platform/os/windows/windows_path.rs::apply_user_npm_prefix`):
+///   npm shims live at the prefix root, so the prefix itself goes on PATH,
+///   and the env prefix only suppresses the env WRITE, not the PATH entry.
 fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
     let prefix_from_env = ["NPM_CONFIG_PREFIX", "npm_config_prefix"]
         .into_iter()
         .find_map(std::env::var_os)
         .filter(|value| !value.is_empty());
+    if !cfg!(windows) && prefix_from_env.is_some() {
+        return;
+    }
     let prefix = prefix_from_env.clone().map(PathBuf::from).or_else(|| {
         if cfg!(windows) {
             std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
@@ -499,7 +556,15 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
     let Some(prefix) = prefix else {
         return;
     };
-    let _ = std::fs::create_dir_all(&prefix);
+    // The GUI creates the exact directory it then puts on PATH (posix creates
+    // `<prefix>/bin`), so a first install does not hand the child a PATH entry
+    // that does not exist yet.
+    let path_entry = if cfg!(windows) {
+        prefix.clone()
+    } else {
+        prefix.join("bin")
+    };
+    let _ = std::fs::create_dir_all(&path_entry);
     if prefix_from_env.is_none() {
         cmd.env("NPM_CONFIG_PREFIX", &prefix)
             .env("npm_config_prefix", &prefix);
@@ -518,7 +583,7 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
             }
         }
     }
-    let mut paths = vec![prefix];
+    let mut paths = vec![path_entry];
     if let Some(current) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&current));
     }
@@ -890,47 +955,127 @@ fn authenticated_json(text: &str) -> bool {
 
 // ────────────────────────── marker / skills state ──────────────────────────
 
-/// Disabled marker read via the app's own platform helper (marker file
-/// `<id>_disabled` under `PINVOU3_HOME`), same as `ConnectorSkillGate::
-/// is_disabled` / `platform::connector_state`.
-fn is_disabled(kind: ConnectorKind) -> bool {
+/// Legacy disabled-marker read via the app's own platform helper (marker
+/// file `<id>_disabled` under `PINVOU3_HOME`), same as
+/// `ConnectorGate::is_disabled` / `platform::connector_state`.
+///
+/// "Legacy" because nothing writes this file any more: `skill_gate.rs`
+/// records that the write side was retired together with the
+/// `set_*_enabled` commands, and there is no GUI surface that can create OR
+/// clear it. A marker left behind by an older build still makes the app's
+/// gate hide the connector's skills forever, so the CLI must keep READING
+/// it (`status` would otherwise claim a connector is on while the app keeps
+/// deleting its skill dirs) and offers `enable` as the one way to clear it.
+fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
     !skills_visible_for(kind.as_str())
 }
 
-/// Enabled/disabled marker write, mirroring `ConnectorSkillGate::
-/// set_disabled_flag` (write-on-disable, remove-on-enable, idempotent,
-/// failures propagate).
-fn set_disabled_flag(spec: &VendorSpec, disabled: bool) -> Result<(), CliError> {
-    let path = pinvou3_home().join(spec.disabled_filename);
-    if disabled {
-        std::fs::write(&path, b"1").map_err(|error| {
-            CliError::failed(format!(
-                "cannot save {} skill disabled state: {error}",
-                spec.display_name
-            ))
-        })?;
-    } else if path.exists() {
-        std::fs::remove_file(&path).map_err(|error| {
-            CliError::failed(format!(
-                "cannot clear {} skill disabled state: {error}",
-                spec.display_name
-            ))
-        })?;
-    }
-    Ok(())
+/// The connector switch as the GUI persists it: the unified scope state
+/// (`disabled_bundles.json`, plain scope) the GUI's `set_disabled_connectors`
+/// → `apply_disabled_connectors_for` writes and
+/// `sync_disabled_bundles_for_connector_switch` mirrors for this CLI.
+///
+/// Read through the app's own `load_disabled_bundles` (plain scope) rather
+/// than off the raw file: it applies the same read-time package-id
+/// normalization the GUI sees, and it is deliberately the PLAIN scope only —
+/// `sync_deny_all_scopes_after_install` adds a freshly connected connector to
+/// the *code* scope by design ("code sessions default external capabilities
+/// off"), so an any-scope read would report a perfectly enabled connector as
+/// switched off right after `apply-skills`.
+fn scope_state_disabled(kind: ConnectorKind) -> bool {
+    let package_id = pinvou3_lib::features::marketplace::package_id_for(kind.as_str());
+    pinvou3_lib::features::marketplace::load_disabled_bundles()
+        .iter()
+        .any(|id| id == &package_id || id == kind.as_str())
 }
 
-/// Skills-applied state, mirroring `cached_*_skills_visible`: the enable
-/// marker is clear AND every bundle skill directory carries its SKILL.md
-/// under `~/.pinvou3/bundles/<id>/skills/`.
-fn skills_applied(kind: ConnectorKind) -> bool {
-    if is_disabled(kind) {
+/// Whether the connector's skills must stay hidden: the user's switch says so
+/// **or** a legacy marker is still on disk (in which case the app's gate
+/// really does keep deleting the skill directories, so reporting anything
+/// else would be a lie).
+fn is_disabled(kind: ConnectorKind) -> bool {
+    scope_state_disabled(kind) || legacy_disabled_marker(kind)
+}
+
+/// Removes a legacy `<id>_disabled` marker if one is present. This is the
+/// CLI's ONLY write to that path and it only ever removes: `enable` heals a
+/// marker an older CLI build (or a hand-edited home) left behind, which no
+/// GUI action can do. Idempotent; a failed removal propagates, because
+/// silently keeping the marker would leave `enable` reporting a switch the
+/// app will not honor.
+fn clear_legacy_disabled_marker(spec: &VendorSpec) -> Result<(), CliError> {
+    let path = pinvou3_home().join(spec.disabled_filename);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CliError::failed(format!(
+            "connectors {}: cannot clear the legacy disabled marker {}: {error}",
+            spec.id,
+            path.display()
+        ))),
+    }
+}
+
+/// Skills-applied state, mirroring `cached_*_skills_visible`: the connector
+/// is not switched off AND every bundle skill directory carries its SKILL.md
+/// under `~/.pinvou3/bundles/<id>/skills/`. `disabled` is threaded in by the
+/// caller because resolving the scope state touches the filesystem and the
+/// status path already knows the answer.
+fn skills_applied(kind: ConnectorKind, disabled: bool) -> bool {
+    if disabled {
         return false;
     }
-    let target = bundles_root().join(kind.as_str()).join("skills");
+    let target = connector_skills_dir(kind);
     kind.skill_dirs()
         .iter()
         .all(|dir| target.join(dir).join("SKILL.md").is_file())
+}
+
+/// `~/.pinvou3/bundles/<id>/skills` — the app's
+/// `Pinvou3Bundle::connector_package_skills_dir`, the single root both the
+/// show (app-only) and hide (CLI-capable) directions operate on.
+fn connector_skills_dir(kind: ConnectorKind) -> PathBuf {
+    bundles_root().join(kind.as_str()).join("skills")
+}
+
+/// The HIDE direction of the app's `apply_connector_skills`, performed
+/// headlessly: remove every `*_SKILL_DIRS` entry and the connector's NOTICE
+/// file under `bundles/<id>/skills/`. Idempotent (removing what is not there
+/// is not an error), exactly like the app's branch.
+///
+/// Deviation from the app, on purpose and for the same reason as the wecom
+/// credential-directory removal in `logout`: the app writes `let _ =` on
+/// every removal, but the CLI's caller reports a logout as complete, and a
+/// skill tree that survived the logout is precisely the state the user must
+/// be told about. Every failure is collected (one unremovable directory must
+/// not hide the next) and reported together.
+fn hide_connector_skills(kind: ConnectorKind) -> Result<(), CliError> {
+    let target = connector_skills_dir(kind);
+    let mut failures: Vec<String> = Vec::new();
+    for dir in kind.skill_dirs() {
+        let path = target.join(dir);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+    let notice = target.join(kind.skills_notice_file());
+    match std::fs::remove_file(&notice) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => failures.push(format!("{}: {error}", notice.display())),
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::failed(format!(
+            "connectors {}: the companion skill files could not be removed ({}); the skills \
+             stay visible to the engine until they are gone",
+            kind.as_str(),
+            failures.join("; ")
+        )))
+    }
 }
 
 /// Mirror of `connector_cli::bundle_store_on_disconnected`: logout marks the
@@ -991,22 +1136,47 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
             ConnectorKind::Tmeet,
         ],
     };
-    let mut entries = Vec::new();
-    for kind in kinds {
-        // One broken vendor CLI (a corrupt shim, a probe timeout) must not
-        // fail the whole overview and discard the other entries: degrade it
-        // to a note like the ima entry below.
-        match vendor_status_entry(kind) {
-            Ok(entry) => entries.push(entry),
-            Err(error) => entries.push(json!({
-                "id": kind.spec().id,
-                "ok": false,
-                "connected": false,
-                "installed": false,
-                "note": error.to_string(),
-            })),
-        }
-    }
+    // Each entry costs two vendor spawns (`--version` + the status probe),
+    // each with its own `PROBE_TIMEOUT_SECS` ceiling. Run sequentially, one
+    // hung npm shim stalls the whole overview for minutes while the other
+    // three connectors sit idle; the GUI avoids that by giving every
+    // connector its own `spawn_blocking`. Scoped threads give the same
+    // overlap without a new dependency and without moving `kind` into a
+    // 'static closure. Results are joined in the input order, so the output
+    // stays byte-for-byte deterministic regardless of which probe finishes
+    // first, and each entry keeps its own degrade-to-`note` behavior below.
+    let mut entries: Vec<Value> = std::thread::scope(|scope| {
+        let handles: Vec<_> = kinds
+            .iter()
+            .map(|kind| {
+                let kind = *kind;
+                scope.spawn(move || vendor_status_entry(kind))
+            })
+            .collect();
+        kinds
+            .iter()
+            .zip(handles)
+            .map(|(kind, handle)| {
+                // One broken vendor CLI (a corrupt shim, a probe timeout)
+                // must not fail the whole overview and discard the other
+                // entries: degrade it to a note like the ima entry below. A
+                // panicking probe thread degrades the same way instead of
+                // resuming the unwind through the whole command.
+                let note = match handle.join() {
+                    Ok(Ok(entry)) => return entry,
+                    Ok(Err(error)) => error.to_string(),
+                    Err(_) => "the status probe panicked".to_owned(),
+                };
+                json!({
+                    "id": kind.spec().id,
+                    "ok": false,
+                    "connected": false,
+                    "installed": false,
+                    "note": note,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
     // ima is part of the default overview only; a filtered `status <id>`
     // must not report unrelated connectors. A credential-store failure must
     // degrade the ima entry, not fail the whole overview — the four vendor
@@ -1041,7 +1211,16 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
             } else {
                 let installed = if bool_field(entry, "installed") {
                     match entry.get("version").and_then(Value::as_str) {
-                        Some(version) => format!("yes({version})"),
+                        // The version string comes straight from the vendor
+                        // CLI's `--version` output; a control character in it
+                        // would break the tab-separated column structure of
+                        // this row (same reason the sessions/projects
+                        // families collapse their vendor- and user-supplied
+                        // cells). JSON keeps the raw string.
+                        Some(version) => format!(
+                            "yes({})",
+                            crate::support::collapse_control_characters(version)
+                        ),
                         None => "yes".to_owned(),
                     }
                 } else {
@@ -1056,6 +1235,15 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                 ));
                 if bool_field(entry, "upgrade_required") {
                     line.push_str("\tupgrade_required=yes");
+                }
+                // A legacy marker is the one "disabled" reason no GUI surface
+                // can explain or undo, so it is named separately from the
+                // plain `enabled=no` and carries its own remedy.
+                if bool_field(entry, "legacy_disabled_marker") {
+                    let id = entry["id"].as_str().unwrap_or("-");
+                    line.push_str(&format!(
+                        "\tlegacy_disabled_marker=yes (run `pinvou connectors enable {id}` to clear it)"
+                    ));
                 }
             }
             line
@@ -1080,14 +1268,24 @@ fn bool_field(entry: &Value, key: &str) -> bool {
 
 /// One status object per connector, mirroring the GUI feature DTO fields
 /// (`feishu_status` / `wecom_status` / `dingtalk_status` / `tmeet_status`)
-/// plus the enable marker and skills-applied state the composer reads via
-/// `platform::connector_state` and the bundle skill directories.
+/// plus the switch and skills-applied state the composer reads via the
+/// unified scope state and the bundle skill directories.
+///
+/// `enabled` is the truthful answer, not just the marker read: a connector
+/// the user switched off in the GUI lives in `disabled_bundles.json` and
+/// never had a marker written for it, while a legacy marker left by an older
+/// build hides the skills just as effectively. Both are reported, and the
+/// marker additionally surfaces under its own key so the user can tell the
+/// two apart (only `pinvou connectors enable <id>` clears the marker).
 fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
     let spec = kind.spec();
+    let legacy_marker = legacy_disabled_marker(kind);
+    let disabled = scope_state_disabled(kind) || legacy_marker;
     let mut entry = json!({
         "id": spec.id,
-        "enabled": !is_disabled(kind),
-        "skills_applied": skills_applied(kind),
+        "enabled": !disabled,
+        "legacy_disabled_marker": legacy_marker,
+        "skills_applied": skills_applied(kind, disabled),
     });
     match version_gate(spec) {
         VersionGate::Missing => {
@@ -1145,10 +1343,21 @@ fn set_enabled(
 ) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
     sandbox_home()?;
-    set_disabled_flag(spec, !enabled)?;
-    // Mirror of the `set_<connector>_enabled` scope bridge: the marker file
-    // alone only gates skill directories inside the app; the execpolicy CLI
-    // hard-block and skill materialization read `disabled_bundles.json`.
+    // The switch itself is the unified scope state below — the CLI does NOT
+    // write a `<id>_disabled` marker. The app retired that writer together
+    // with the `set_*_enabled` commands (`skill_gate.rs`), so a marker
+    // written here would be unclearable from every GUI surface and would
+    // make the app delete the connector's skill directories forever.
+    //
+    // `enable` still removes a marker an older build may have left: it is
+    // the only path that can heal one, and it only ever removes.
+    if enabled {
+        clear_legacy_disabled_marker(spec)?;
+    }
+    // Mirror of the GUI switch (`set_disabled_connectors` →
+    // `apply_disabled_connectors_for`): the execpolicy CLI hard-block, the
+    // skill materialization exclusion and the app's own composer all read
+    // `disabled_bundles.json`, which is where a connector switch belongs.
     pinvou3_lib::features::marketplace::sync_disabled_bundles_for_connector_switch(
         spec.id, enabled,
     )
@@ -1206,9 +1415,30 @@ fn set_enabled(
     }
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
+    // The hide direction is the CLI's to perform (see `hide_connector_skills`)
+    // — a `disable` that left the skill tree on disk would keep the engine
+    // offering commands the switch just turned off, until the desktop app
+    // happens to run its gate refresh. The show direction still needs the
+    // app's embedded bundle.
+    let skills_removed = if skills_should_show {
+        false
+    } else {
+        hide_connector_skills(kind)?;
+        true
+    };
     let action = if enabled { "enabled" } else { "disabled" };
+    let skills_refresh = if skills_removed {
+        "removed"
+    } else {
+        "app-only"
+    };
+    let refresh_line = if skills_removed {
+        "skills refresh: companion skill files removed"
+    } else {
+        "skills refresh: deferred to the desktop app (embedded bundle unpack is app-only)"
+    };
     let human = format!(
-        "{action} {}\nconnected: {}\nskills should show: {}\nskills refresh: deferred to the desktop app (embedded bundle unpack is app-only)",
+        "{action} {}\nconnected: {}\nskills should show: {}\n{refresh_line}",
         spec.id,
         yes_no(connected),
         yes_no(skills_should_show),
@@ -1220,15 +1450,21 @@ fn set_enabled(
         "enabled": enabled,
         "connected": connected,
         "skills_should_show": skills_should_show,
-        "skills_refresh": "app-only",
+        "skills_removed": skills_removed,
+        "skills_refresh": skills_refresh,
     });
     Ok(success(render(output, human, &value)))
 }
 
-/// Mirror of `<connector>_apply_skills`: recompute `should_show = !disabled
-/// && connected`, sync the DenyAll scopes on newly-visible connectors, and
-/// disclose that the actual skill unpack (embedded bundle) and the execpolicy
-/// ruleset hot-refresh (live engine pool) are app-side.
+/// Mirror of `<connector>_apply_skills` (`ConnectorGate::apply_skills_command`
+/// → `skills_should_show() = !is_disabled && ready_probe()`): recompute
+/// `should_show = !disabled && connected`, then apply it.
+///
+/// The `false` half is applied for real here — it is the app's plain
+/// `remove_dir_all` of the skill dirs plus the NOTICE file, which needs no
+/// embedded bundle (see the module header). Only the `true` half stays
+/// app-side (the unpack source is the app's compiled-in bundle), along with
+/// the execpolicy ruleset hot-refresh (live engine pool).
 fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
     // Mirror the GUI: a vendor CLI that cannot even be probed counts as
@@ -1245,9 +1481,16 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
                 ))
             },
         )?;
+    } else {
+        hide_connector_skills(kind)?;
     }
+    let applied_line = if visible {
+        "skill unpack: requires the desktop app (embedded bundle)"
+    } else {
+        "skill removal: done (companion skill files removed)"
+    };
     let human = format!(
-        "{} skills should show: {}\nconnected: {}\nskill unpack: requires the desktop app (embedded bundle)\nruleset refresh: requires the GUI engine pool",
+        "{} skills should show: {}\nconnected: {}\n{applied_line}\nruleset refresh: requires the GUI engine pool",
         spec.id,
         yes_no(visible),
         yes_no(connected),
@@ -1257,7 +1500,9 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
         "id": spec.id,
         "visible": visible,
         "connected": connected,
+        // The show direction remains app-only; the hide direction ran here.
         "skills_unpack": "app-only",
+        "skills_removed": !visible,
         "ruleset_refresh": "gui-only",
     });
     Ok(success(render(output, human, &value)))
@@ -1267,7 +1512,7 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
     require_yes(yes)?;
     let spec = kind.spec();
     let logout_deadline = Instant::now() + Duration::from_secs(CONNECT_DEFAULT_TIMEOUT_SECS);
-    let value = match spec.id {
+    let mut value = match spec.id {
         // Mirror `feishu_logout`: `lark-cli auth logout` clears the token.
         "feishu" => {
             let (ok, _, _) = run_cli_bounded(spec, &["auth", "logout"], logout_deadline)?;
@@ -1340,9 +1585,32 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
             }
         }
     };
+    // The GUI logout is two invokes, not one: `ToolStoreView.jsx` calls
+    // `cfg.commands.logout` and then `cfg.commands.applySkills`, whose
+    // `skills_should_show()` is necessarily false right after the
+    // credentials are gone — so the desktop flow removes the companion skill
+    // trees as part of every logout. Doing the vendor logout without this
+    // leaves a fully connected-looking skill tree on disk, advertising
+    // commands that can no longer authenticate.
+    //
+    // Runs only after a successful vendor logout (every failure branch above
+    // returned already): skills must not be torn down while the credentials
+    // are still in place.
+    if let Err(error) = hide_connector_skills(kind) {
+        return Err(CliError::failed(format!(
+            "connectors logout: {} was logged out, but its companion skills are still on disk: \
+             {error}. Fix the permissions and run `pinvou connectors apply-skills {}`",
+            spec.id, spec.id
+        )));
+    }
+    value["skills_removed"] = json!(true);
     Ok(success(render(
         output,
-        format!("logged out {}", spec.id),
+        format!(
+            "logged out {}\ncompanion skills removed from {}",
+            spec.id,
+            connector_skills_dir(kind).display()
+        ),
         &value,
     )))
 }
@@ -1698,9 +1966,18 @@ fn find_file_by_name(dir: &Path, name: &str) -> Option<PathBuf> {
         return None;
     }
     for entry in std::fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
+        // Skip an unreadable entry instead of propagating `None` out of the
+        // whole walk: with `?` here a single EACCES on one sibling aborted
+        // the search and surfaced as "executable not found in the extracted
+        // archive", pointing the user at the archive instead of at the
+        // permission problem.
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
         if metadata.is_dir() {
             if let Some(found) = find_file_by_name(&path, name) {
                 return Some(found);
@@ -1783,6 +2060,28 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
 /// drift the vendor-spawn consolidation exists to prevent.)
 const TAR_TIMEOUT: Duration = Duration::from_secs(120);
 const TAR_LIST_CAP: u64 = 8 * 1024 * 1024;
+/// Hard bound on the UNCOMPRESSED member, mirroring
+/// `native_installer::MAX_BINARY_BYTES` (the GUI reads the member through
+/// `read_limited(&mut entry, MAX_BINARY_BYTES)`). `MAX_ARCHIVE_BYTES` bounds
+/// only the download, so without this a pinned-looking archive whose
+/// compressed size fits could still inflate without limit on extraction.
+/// Defence in depth: the archive's SHA-256 is verified against the
+/// compiled-in lock table before any of this runs.
+const MAX_MEMBER_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Mirror of the safety half of `native_installer::normalized_path_eq`: the
+/// GUI matches members by exact normalized path and maps anything that is
+/// not a plain name component (`..`, a root, a Windows drive prefix) to
+/// `<unsafe>`, which can never equal the expected name. The CLI matches by
+/// file name inside a nested layout, so the same rejection is applied
+/// explicitly — a member path that walks upwards must never be handed to
+/// `tar` as an extraction target.
+fn member_path_is_safe(entry: &str) -> bool {
+    !entry.is_empty()
+        && Path::new(entry)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
 
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
     let mut list = Command::new("tar");
@@ -1807,29 +2106,61 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     wait_or_kill(&mut child, "listing the connector archive")?;
     let entry = listing
         .lines()
+        .map(str::trim)
+        // A traversal-shaped member is skipped, not merely unselected: the
+        // wanted file name could otherwise be reached through `../../..`.
+        .filter(|entry| member_path_is_safe(entry))
         .find(|entry| {
-            Path::new(entry.trim())
+            Path::new(entry)
                 .file_name()
                 .map(|name| name.to_string_lossy() == member)
                 .unwrap_or(false)
         })
-        .map(str::trim)
         .ok_or_else(|| CliError::failed(format!("connector archive does not contain {member}")))?;
+    // `-O` streams the member to stdout instead of letting tar write it, so
+    // the uncompressed bytes pass through a hard cap on the way to disk —
+    // the CLI's equivalent of the GUI's `read_limited(&mut entry,
+    // MAX_BINARY_BYTES)`. It also means tar never creates paths itself, so
+    // the member name cannot steer where the file lands: the caller's
+    // `target` dir and the requested `member` name do.
     let mut extract = Command::new("tar");
     extract
-        .arg("-xf")
+        .arg("-xOf")
         .arg(archive)
-        .arg("-C")
-        .arg(target)
         .arg(entry)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     crate::support::set_process_group(&mut extract);
     let mut child = extract
         .spawn()
         .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
+    let bytes = {
+        let mut stdout = child.stdout.take().expect("tar stdout is piped");
+        let mut bytes = Vec::new();
+        // Read one byte past the cap so an over-size member is detectable
+        // rather than silently truncated into a hash mismatch.
+        let _ = (&mut stdout)
+            .take(MAX_MEMBER_BYTES + 1)
+            .read_to_end(&mut bytes);
+        bytes
+    };
+    if bytes.len() as u64 > MAX_MEMBER_BYTES {
+        // The writer is still blocked on the full pipe, so the group kill is
+        // safe here (the child is verifiably unreaped) and the specific
+        // reason is reported instead of tar's generic EPIPE failure.
+        crate::support::kill_process_tree(&mut child);
+        return Err(CliError::failed(format!(
+            "connector archive member {member} exceeds the {MAX_MEMBER_BYTES}-byte uncompressed \
+             size cap"
+        )));
+    }
     wait_or_kill(&mut child, "extracting the connector archive")?;
+    std::fs::write(target.join(member), &bytes).map_err(|error| {
+        CliError::failed(format!(
+            "cannot write the extracted connector binary: {error}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -1861,6 +2192,15 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     let spec = kind.spec();
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut notes: Vec<String> = Vec::new();
+    // Bounded, redacted tail of what the vendor CLI itself printed. Its
+    // stdout/stderr are piped (the drainer needs them to find the login
+    // link), so without this the user never sees the vendor's own failure
+    // reason — the commonest dingtalk onboarding blocker ("CLI data access
+    // is not enabled") arrives as one such line and is otherwise dropped on
+    // the floor. Deliberately NOT streamed live: the link and the QR path
+    // are the only things worth interrupting the terminal for, and a chatty
+    // vendor CLI would bury them. It is attached to failure messages only.
+    let mut tail: Vec<String> = Vec::new();
     match spec.id {
         "feishu" => {
             // Phase 1 (register app): `config init --new` until exit. The
@@ -1870,13 +2210,15 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 spec,
                 &["config", "init", "--new"],
                 &mut notes,
+                &mut tail,
                 deadline,
                 None,
             )?;
             if !status_ok {
                 return Err(CliError::failed(format!(
-                    "feishu app registration did not complete (cancelled or timed out){}",
-                    captured_notes(&notes)
+                    "feishu app registration did not complete (cancelled or timed out){}{}",
+                    captured_notes(&notes),
+                    vendor_output_tail(spec, &tail)
                 )));
             }
             let _ = url;
@@ -1922,8 +2264,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             loop {
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
-                        "feishu authorization timed out before the scan completed{}",
-                        captured_notes(&notes)
+                        "feishu authorization timed out before the scan completed{}{}",
+                        captured_notes(&notes),
+                        vendor_output_tail(spec, &tail)
                     )));
                 }
                 std::thread::sleep(Duration::from_secs(3));
@@ -1975,6 +2318,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     "qr.png",
                 ],
                 &mut notes,
+                &mut tail,
                 deadline,
                 Some(&qr_dir),
             );
@@ -1992,8 +2336,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // the GUI and must not fail here.
                 if !cli_connected(spec)? {
                     return Err(CliError::failed(format!(
-                        "wecom authorization did not complete (cancelled or timed out){}",
-                        captured_notes(&notes)
+                        "wecom authorization did not complete (cancelled or timed out){}{}",
+                        captured_notes(&notes),
+                        vendor_output_tail(spec, &tail)
                     )));
                 }
                 Ok(())
@@ -2018,7 +2363,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 &["auth", "login", "--no-browser"]
             };
             let (url, user_code, _status_ok) =
-                spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
+                spawn_and_capture_url(spec, args, &mut notes, &mut tail, deadline, None)?;
             if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
                 notes.push(format!("authorize-url: {url}"));
             }
@@ -2044,9 +2389,10 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             }
             if !connected {
                 return Err(CliError::failed(format!(
-                    "{} login exited before authorization completed{}",
+                    "{} login exited before authorization completed{}{}",
                     spec.display_name,
-                    captured_notes(&notes)
+                    captured_notes(&notes),
+                    vendor_output_tail(spec, &tail)
                 )));
             }
             bundle_store_on_connected(spec.id);
@@ -2072,6 +2418,7 @@ fn spawn_and_capture_url(
     spec: &VendorSpec,
     args: &[&str],
     notes: &mut Vec<String>,
+    tail: &mut Vec<String>,
     deadline: Instant,
     work_dir: Option<&Path>,
 ) -> Result<(Option<String>, Option<String>, bool), CliError> {
@@ -2095,13 +2442,18 @@ fn spawn_and_capture_url(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::support::set_process_group(&mut cmd);
-    let mut child = cmd.spawn().map_err(|error| {
+    // RAII around the login child: see [`LoginChildGuard`]. `connect` blocks
+    // for up to five minutes here waiting for a human to scan, and every
+    // error path below (plus a panic unwind) would otherwise leave the
+    // vendor CLI and its node/shell descendants running unreaped in their
+    // own process group.
+    let mut guard = LoginChildGuard::new(cmd.spawn().map_err(|error| {
         CliError::failed(format!(
             "{} failed to start: {error} (install the connector CLI first: pinvou connectors \
              ensure-cli {})",
             spec.cli_bin, spec.id
         ))
-    })?;
+    })?);
     // Two rendezvous slots: first auth-domain URL and first user code.
     // Vendor CLIs that never print a separate code line (feishu phase 1,
     // wecom, tmeet, dws) must not burn the whole `login_url_wait_secs`
@@ -2120,13 +2472,22 @@ fn spawn_and_capture_url(
     // (`compose_user_code`) because the login page asks for a code the
     // raw URL does not carry.
     let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = guard.child_mut().stdout.take() {
         drain_for_url(spec, stdout, tx.clone());
     }
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = guard.child_mut().stderr.take() {
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
+    // Bounded tail of the vendor's own output, mirroring the GUI's 32-entry
+    // ring buffer (`tmeet.rs::remember_auth_line`). Dropping the oldest line
+    // keeps the newest ones — the failure reason is at the end.
+    let mut remember = |line: String| {
+        if tail.len() >= VENDOR_LOG_TAIL_LINES {
+            tail.remove(0);
+        }
+        tail.push(line);
+    };
     // The 1 s floor applies only while budget remains: a spent deadline must
     // not buy an extra second past it.
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2188,6 +2549,10 @@ fn spawn_and_capture_url(
                 notes.push(format!("user code: {code}"));
                 user_code = Some(code);
             }
+            Ok(LoginStreamEvent::Log(line)) => {
+                remember(line);
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -2229,40 +2594,138 @@ fn spawn_and_capture_url(
         );
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let status = match child.wait_timeout(remaining) {
-        Ok(Some(status)) => status,
+    let wait = guard.child_mut().wait_timeout(remaining);
+    // Whatever the drain threads produced after the loop above stopped
+    // reading (it breaks at the first URL) is still queued; absorb it
+    // non-blockingly before the verdict is formatted, so the failure message
+    // carries the vendor's last words and not just its first. The drains are
+    // byte-capped (`LOGIN_DRAIN_CAP_BYTES`), so the queue is bounded too.
+    for event in rx.try_iter() {
+        if let LoginStreamEvent::Log(line) = event {
+            remember(line);
+        }
+    }
+    let status = match wait {
+        Ok(Some(status)) => {
+            // `wait_timeout` reaped the child; killing its process group now
+            // could hit a reused pid, so the guard is disarmed without a
+            // kill (the same hazard `run_cli_bounded` documents).
+            guard.disarm();
+            status
+        }
         Ok(None) => {
-            crate::support::kill_process_tree(&mut child);
+            // Still alive and verifiably unreaped: kill the group, then
+            // disarm so Drop does not repeat it.
+            guard.kill_and_disarm();
             return Err(CliError::failed(format!(
-                "{} login timed out (connect budget exhausted; retry with a larger --timeout){}",
+                "{} login timed out (connect budget exhausted; retry with a larger --timeout){}{}",
                 spec.cli_bin,
                 captured_notes(notes),
+                vendor_output_tail(spec, tail.as_slice()),
             )));
         }
         Err(error) => {
+            // The child's fate is unknown, so the guard stays armed and kills
+            // the group on the way out.
             return Err(CliError::failed(format!(
-                "waiting for {} failed: {error}",
-                spec.cli_bin
+                "waiting for {} failed: {error}{}",
+                spec.cli_bin,
+                vendor_output_tail(spec, tail.as_slice())
             )));
         }
     };
     Ok((url, user_code, status.success()))
 }
 
+/// Bounded tail of the vendor CLI's own output kept for failure messages,
+/// mirroring the 32-entry ring buffer the GUI keeps per login
+/// (`tmeet.rs::remember_auth_line`, `dingtalk.rs`).
+const VENDOR_LOG_TAIL_LINES: usize = 32;
+
+/// RAII around a spawned vendor login child. `connect` can sit in
+/// `wait_timeout` for the full `--timeout` budget (5 minutes by default)
+/// while a human scans a QR code, and the child was put in its own process
+/// group by `set_process_group` — so nothing else reaps it. Before this
+/// guard, `kill_process_tree` was reached only on the deadline branch, and
+/// every other early return (a wait error, `?` on a helper, a panic unwind)
+/// orphaned `lark-cli` / `dws` and their node descendants.
+///
+/// Scope, stated plainly: Drop covers the RETURN and UNWIND paths only. A
+/// bare terminal SIGINT reaches only the CLI's foreground process group, and
+/// the default handler terminates the process without unwinding, so no Drop
+/// runs and the login child survives that case. Closing that hole needs a
+/// signal handler, which needs a dependency the CLI's deliberately
+/// constrained set does not carry; the GUI's equivalent is
+/// `ConnectorConn::kill_all_pids()` on `RunEvent::Exit`, which is a process
+/// teardown hook rather than a signal handler either.
+struct LoginChildGuard {
+    child: std::process::Child,
+    /// Set once the child's fate is settled; Drop then does nothing.
+    disarmed: bool,
+}
+
+impl LoginChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            disarmed: false,
+        }
+    }
+
+    fn child_mut(&mut self) -> &mut std::process::Child {
+        &mut self.child
+    }
+
+    /// The child was reaped: killing its group afterwards could race a reused
+    /// pid, so stand down without killing.
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+
+    /// Kill the group now (the caller has verified the child is still alive)
+    /// and stand down so Drop does not repeat it.
+    fn kill_and_disarm(&mut self) {
+        crate::support::kill_process_tree(&mut self.child);
+        self.disarmed = true;
+    }
+}
+
+impl Drop for LoginChildGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        crate::support::kill_process_tree(&mut self.child);
+    }
+}
+
 /// Announce the wecom one-scan `qr.png` once (stderr + the notes a failure
 /// carries), mirroring the GUI's `wecom:qr` emit. Returns whether the file
 /// was there to announce.
+///
+/// The announcement states the file's lifetime, because the CLI's differs
+/// from the GUI's on purpose. The GUI renders the QR into the window and
+/// always `remove_dir_all`s the temp dir; a headless user needs the PNG to
+/// survive so they can open it, so the failure path deliberately keeps it
+/// (`connect`'s wecom arm). Deleting it there is not an option — it is the
+/// only artifact that can still finish the login — so the honest fix is to
+/// tell the user what it is and that its removal is theirs: the image
+/// encodes a one-scan login grant, i.e. credential-equivalent material, and
+/// on non-unix hosts it is not even behind the `0o700` directory mode.
 fn announce_wecom_qr(qr: &Path, notes: &mut Vec<String>) -> bool {
     if !qr.is_file() {
         return false;
     }
     note!(
-        "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
+        "wecom scan-qr-file: {} (scan this PNG to authorize in one step; it holds a one-scan \
+         login grant — delete it once you are done, it is only removed automatically when the \
+         login succeeds)",
         qr.display()
     );
     notes.push(format!(
         "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
-         authorize in one step)",
+         authorize in one step; it holds a one-scan login grant — delete it once you are done, \
+         it is only removed automatically when the login succeeds)",
         qr.display()
     ));
     true
@@ -2279,11 +2742,73 @@ fn captured_notes(notes: &[String]) -> String {
     }
 }
 
+/// Suffix carrying the vendor CLI's own last words, already redacted by
+/// [`safe_auth_log_line`]. The vendor's stdout/stderr are piped so the
+/// drainer can find the login link, which means the terminal never shows
+/// them: without this a headless user hitting the commonest dingtalk
+/// onboarding blocker ("CLI data access is not enabled", which needs an
+/// admin to flip a switch in the DingTalk developer console) gets a bare
+/// "login exited before authorization completed" and no reason at all. The
+/// GUI turns the same lines into actionable guidance
+/// (`dingtalk.rs::dingtalk_auth_error_hint`, `tmeet.rs::auth_failure_message`).
+/// Failure path only — see `connect`'s `tail`.
+fn vendor_output_tail(spec: &VendorSpec, tail: &[String]) -> String {
+    if tail.is_empty() {
+        return String::new();
+    }
+    format!(
+        "; last {} line(s) of {} output (redacted): {}",
+        tail.len(),
+        spec.cli_bin,
+        tail.join(" | ")
+    )
+}
+
+/// Mirror of `features/connectors/connector_cli.rs::safe_auth_log_line`
+/// (crate-private to the app, so it cannot be imported — that function is
+/// the source of truth and this copy must follow it): drop blank lines,
+/// replace a line carrying credential material wholesale, and truncate the
+/// rest to 320 characters.
+///
+/// `redact_bare_token` follows the GUI's per-connector choice: tmeet passes
+/// `true` because its output says "token" without an underscore, dingtalk
+/// passes `false` because its ordinary JSON lines contain camelCase token
+/// FIELD NAMES and the fallback would swallow every non-sensitive line.
+fn safe_auth_log_line(line: &str, redact_bare_token: bool) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let mut sensitive = lower.contains("access_token")
+        || lower.contains("refresh_token")
+        || lower.contains("authorization:")
+        || lower.contains("bearer ");
+    if redact_bare_token {
+        sensitive = sensitive || lower.contains("token");
+    }
+    if sensitive {
+        return Some("[redacted credential line]".to_string());
+    }
+    // Truncate by chars, not bytes: a byte slice could split a multi-byte
+    // character and the vendor CLIs emit Chinese diagnostics.
+    Some(trimmed.chars().take(320).collect())
+}
+
+/// Per-connector `redact_bare_token` setting for [`safe_auth_log_line`].
+/// dingtalk is the GUI's documented exception (`dingtalk.rs` passes `false`);
+/// every other connector takes the conservative tmeet setting.
+fn redact_bare_token_for(spec: &VendorSpec) -> bool {
+    spec.id != "dingtalk"
+}
+
 /// Stream event collected while a login command runs.
 #[derive(Debug)]
 enum LoginStreamEvent {
     Url(String),
     Code(String),
+    /// One redacted output line, kept only for the bounded failure tail.
+    Log(String),
 }
 
 /// Mirror of dingtalk `with_user_code_param`: attach the drained user code to
@@ -2313,12 +2838,22 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
     tx: mpsc::Sender<LoginStreamEvent>,
 ) -> std::thread::JoinHandle<()> {
     let domains = spec.auth_domains;
+    let redact_bare_token = redact_bare_token_for(spec);
     std::thread::spawn(move || {
         for line in BufReader::new(reader.take(LOGIN_DRAIN_CAP_BYTES)).lines() {
             let line = match line {
                 Ok(line) => line,
                 Err(_) => break,
             };
+            // Every line also goes out as a redacted `Log` event so the
+            // caller can keep a bounded tail for failure diagnostics; the
+            // vendor's reason for failing is otherwise dropped on the floor
+            // here. Receiver-gone ends the drain as with the other events.
+            if let Some(safe) = safe_auth_log_line(&line, redact_bare_token)
+                && tx.send(LoginStreamEvent::Log(safe)).is_err()
+            {
+                break;
+            }
             if let Some(code) = extract_user_code(&line) {
                 if tx.send(LoginStreamEvent::Code(code)).is_err() {
                     break;
@@ -2649,20 +3184,71 @@ mod tests {
     }
 
     #[test]
-    fn drain_for_url_forwards_code_and_url_and_ignores_other_lines() {
+    fn drain_for_url_forwards_code_and_url_and_mirrors_every_line_as_a_log() {
         let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
         let input: &[u8] = b"noise\nUser Code: ZXCV1234\nvisit https://login.dingtalk.com/oauth/authorize?x=1 now\n";
         let drain = drain_for_url(ConnectorKind::Dingtalk.spec(), input, tx);
-        let code = match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(LoginStreamEvent::Code(code)) => code,
-            other => panic!("expected the user code first, got {other:?}"),
-        };
-        assert_eq!(code, "ZXCV1234");
-        let url = match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(LoginStreamEvent::Url(url)) => url,
-            other => panic!("expected the auth URL, got {other:?}"),
-        };
-        assert_eq!(url, "https://login.dingtalk.com/oauth/authorize?x=1");
+        let mut logs = Vec::new();
+        let mut code = None;
+        let mut url = None;
+        while let Ok(event) = rx.recv_timeout(Duration::from_secs(5)) {
+            match event {
+                LoginStreamEvent::Log(line) => logs.push(line),
+                LoginStreamEvent::Code(found) => code = Some(found),
+                LoginStreamEvent::Url(found) => url = Some(found),
+            }
+        }
+        assert_eq!(code.as_deref(), Some("ZXCV1234"));
+        assert_eq!(
+            url.as_deref(),
+            Some("https://login.dingtalk.com/oauth/authorize?x=1")
+        );
+        // Every non-blank line is also mirrored as a `Log` so the caller can
+        // keep a bounded tail for the failure message; a line that matches
+        // nothing (`noise`) is exactly the kind the vendor puts its failure
+        // reason on, so it may not be dropped.
+        assert_eq!(logs.len(), 3, "{logs:?}");
+        assert_eq!(logs[0], "noise");
         drain.join().expect("drainer thread must not panic");
+    }
+
+    /// The tail must never carry credential material: the redaction mirrors
+    /// `connector_cli::safe_auth_log_line`, including its per-connector
+    /// `redact_bare_token` split (dingtalk `false`, everyone else `true`).
+    #[test]
+    fn safe_auth_log_line_mirrors_the_gui_redaction() {
+        assert_eq!(
+            safe_auth_log_line("access_token=secret", false).as_deref(),
+            Some("[redacted credential line]")
+        );
+        assert_eq!(
+            safe_auth_log_line("Authorization: Bearer secret", false).as_deref(),
+            Some("[redacted credential line]")
+        );
+        assert_eq!(
+            safe_auth_log_line("  hello  ", false).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(safe_auth_log_line("   ", false), None);
+        // A bare `token` word: kept for dingtalk (its ordinary JSON lines
+        // carry camelCase token FIELD names and the fallback would swallow
+        // every one of them), redacted everywhere else.
+        assert_eq!(
+            safe_auth_log_line("refreshing the token now", false).as_deref(),
+            Some("refreshing the token now")
+        );
+        assert_eq!(
+            safe_auth_log_line("refreshing the token now", true).as_deref(),
+            Some("[redacted credential line]")
+        );
+        assert!(!redact_bare_token_for(ConnectorKind::Dingtalk.spec()));
+        assert!(redact_bare_token_for(ConnectorKind::Tmeet.spec()));
+        // Truncation is by chars, not bytes: the vendor CLIs emit Chinese
+        // diagnostics and a byte slice would split a code point.
+        let long: String = "字".repeat(400);
+        assert_eq!(
+            safe_auth_log_line(&long, false).map(|line| line.chars().count()),
+            Some(320)
+        );
     }
 }

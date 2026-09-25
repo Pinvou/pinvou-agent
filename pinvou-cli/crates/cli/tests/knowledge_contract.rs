@@ -453,13 +453,45 @@ fn destructive_subcommands_require_yes_before_anything_else() {
     }
 }
 
+/// The mount surface refuses before opening the session store. The refusal
+/// cannot depend on the session (mounts are app-process memory), and
+/// `SessionStore::boot()` is not a read: it enforces the 50-sessions-per-kind
+/// retention policy and irreversibly evicts the user's oldest non-pinned
+/// sessions. A command that can only refuse must not destroy chat history on
+/// the way to saying so.
+///
+/// Proof that no store is opened: the sessions root is occupied by a regular
+/// file, so `SessionStore::boot()` would fail loudly with "session store
+/// unavailable" — the product-host refusal comes back instead, for a session
+/// id that does not exist either.
 #[test]
-fn mounts_reject_unknown_sessions() {
+fn mount_surface_refuses_without_booting_the_session_store() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("mounts-unknown");
-    let error = execute_error(&["pinvou", "knowledge", "mounts", "missing-session"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("session not found"), "{error}");
+    let home = TempHome::new("mounts-no-boot");
+    std::fs::write(home.path().join("sessions"), b"not a directory").unwrap();
+
+    for arguments in [
+        vec!["pinvou", "knowledge", "mounts", "missing-session"],
+        vec!["pinvou", "knowledge", "mount", "missing-session", "7"],
+        vec!["pinvou", "knowledge", "unmount", "missing-session", "7"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("_requires_product_host"),
+            "{arguments:?}: {message}"
+        );
+        assert!(
+            !message.contains("session store unavailable")
+                && !message.contains("session not found"),
+            "the refusal must be returned before any store boot: {message}"
+        );
+    }
+
+    // The charset gate still runs first (exit 2), so a traversal-shaped id
+    // never reaches the refusal.
+    assert_usage(&["pinvou", "knowledge", "mounts", "../escape"]);
 }
 
 #[test]
@@ -707,11 +739,21 @@ fn add_sources_indexes_a_text_file_end_to_end() {
         "index failed should report no failed files"
     );
 
-    // Per-job live state is not addressable headlessly: an unknown/latest
-    // mismatch names the boundary instead of silently returning another job.
+    // A named job is read per-job, not through the latest-job ordering: the
+    // finished job answers under its own id, and an id that does not exist
+    // gets the family's stable not-found code instead of another job's state.
+    let named = run_json(&["pinvou", "knowledge", "index", "status", &job_id]);
+    assert_eq!(named["jobId"], serde_json::json!(job_id));
     let error = execute_error(&["pinvou", "knowledge", "index", "status", "other-job"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("per-job state"), "{error}");
+    assert!(
+        error.to_string().contains("knowledge_index_job_not_found"),
+        "{error}"
+    );
+    assert!(
+        !error.to_string().contains("Query returned no rows"),
+        "{error}"
+    );
 
     // Cancel targets the active/latest job; on a finished job it is a
     // signal-only no-op that still succeeds.
@@ -1556,6 +1598,12 @@ fn model_status_reports_disk_state_and_model_cancel_succeeds() {
     assert_eq!(status["version"], serde_json::json!("bge-m3"));
     assert_eq!(status["installed"], serde_json::json!(false));
     assert_eq!(status["ready"], serde_json::json!(false));
+    // `ready` is `semantic_ready()` — "is the ~570MB model loaded in THIS
+    // process" — and a one-shot CLI never loads it, so it reads false even
+    // when the desktop app has it resident. JSON must carry the same
+    // process-local marker the other process-local surfaces do, otherwise a
+    // script gating on `.ready` can never proceed and cannot tell why.
+    assert_eq!(status["scope"], serde_json::json!("process-local"));
     let model_dir = status["model_dir"].as_str().expect("model dir");
     // Compare on separators-normalized text: the assertion must hold on
     // Windows too (this suite only runs on ubuntu in CI, but the CLI itself
@@ -1725,6 +1773,26 @@ fn index_cancel_reports_a_signalled_resumable_job() {
         "the cancel must report the signal it landed"
     );
     assert!(!stdout.contains("nothing was signalled"));
+
+    // The reported state must belong to the job that was cancelled. The
+    // latest-job ordering ranks `cancelled` in its last bucket, so reading
+    // the state back through it hands the answer to any older
+    // `done_with_errors`/`interrupted` job (regression asserted exactly in
+    // features/knowledge/mod.rs::
+    // index_job_state_reports_the_named_job_not_the_outranking_latest_one,
+    // where such a two-job state can be built deterministically).
+    let cancelled = run(&["knowledge", "index", "cancel", &job_id, "--output", "json"]);
+    let state: serde_json::Value = serde_json::from_slice(&cancelled.stdout).unwrap();
+    assert_eq!(
+        state["jobId"],
+        serde_json::json!(job_id),
+        "the reported job must be the cancelled one"
+    );
+    assert_eq!(
+        state["phase"],
+        serde_json::json!("cancelled"),
+        "the reported phase must be the cancelled job's own"
+    );
 
     // The cancelled job is finished, so a second cancel honestly reports
     // there was nothing left to signal.

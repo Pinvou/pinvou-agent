@@ -38,6 +38,7 @@ use std::path::PathBuf;
 
 use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
+use pinvou3_lib::features::codex_acp::SessionAgentStore;
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 
 const SHOW_PREVIEW_CHARS: usize = 200;
@@ -171,7 +172,9 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             let id = require_id(rest.first())?;
             let title = rest.get(1..).unwrap_or_default().join(" ");
             if title.trim().is_empty() {
-                return Err(CliError::usage("sessions rename requires a title"));
+                return Err(CliError::usage(format!(
+                    "sessions rename requires a title\n{RENAME_OUTPUT_NOTE}"
+                )));
             }
             // A flag-shaped title ("--limit") would be swallowed as a flag
             // by every other subcommand, so reject titles that LOOK like
@@ -182,7 +185,7 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
                 return Err(CliError::usage(format!(
                     "sessions rename takes a plain title and cannot accept one that looks \
                      like a flag; rename the session from the desktop app instead (got \
-                     '{title}')"
+                     '{title}')\n{RENAME_OUTPUT_NOTE}"
                 )));
             }
             Ok(SessionsCommand::Rename { id, title })
@@ -260,6 +263,19 @@ const EXPORT_USAGE: &str = "usage: pinvou sessions export <id> [--format markdow
 note: the global --output flag claims the values 'json' and 'human' anywhere in argv, so \
 `--output json` prints JSON stdout instead of writing a file named 'json'; spell such a \
 destination as --output ./json (or use any other path)";
+
+/// Rename's share of the same disclosure. `export` loses a FILE NAME to the
+/// global scan; `rename` loses two WORDS out of the middle of a title and
+/// still exits 0, because the title is every remaining argv token joined with
+/// spaces: by the time this family runs, `parse_args` has already removed
+/// `--output json` from wherever it appeared, so
+/// `sessions rename s-1 see --output json now` stores "see now". There is no
+/// error to attach this to at the moment it happens (the rename succeeds), so
+/// it rides on the usage errors a caller fighting the collision does reach.
+const RENAME_OUTPUT_NOTE: &str = "note: the global --output flag claims the values 'json' and \
+'human' anywhere in argv, so a title containing `--output json` (or `--output human`) silently \
+loses both tokens — `sessions rename s-1 see --output json now` renames to 'see now'; rename \
+such a title from the desktop app instead";
 
 fn require_id(value: Option<&String>) -> Result<String, CliError> {
     let id = value
@@ -436,20 +452,27 @@ fn list(archived: bool, limit: Option<usize>, output: OutputMode) -> Result<CliO
         .map(|row| {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                row.id,
+                // The id is NOT machine-made here: `store.list()` reports the
+                // ids it scanned off `sessions/*.json` filenames, and a POSIX
+                // filename may contain `\t` or `\n` (only ids arriving via
+                // argv pass `require_valid_session_id`). A hand-placed or
+                // restored-from-backup file is enough to break the row, so the
+                // id gets the same collapse as the title rather than a comment
+                // claiming it cannot.
+                crate::support::collapse_control_characters(&row.id),
                 if row.pinned { "pinned" } else { "-" },
                 if row.archived { "archived" } else { "-" },
                 row.kind,
                 row.updated_at,
-                // Last column only, and only in human mode: titles are stored
-                // verbatim and legitimately contain newlines (the GUI's
-                // attachment marker embeds "\n\n") or a tab, either of which
-                // would split this row into two lines or invent a seventh
-                // column for whoever is cutting on \t. The full collapse
-                // (tab and newline included, unlike the transcript-body
-                // sanitizer above) is what keeps the row contract; JSON keeps
-                // the real title. Every other column here is machine-made
-                // (id, fixed markers, RFC3339 timestamp).
+                // Titles are stored verbatim and legitimately contain newlines
+                // (the GUI's attachment marker embeds "\n\n") or a tab, either
+                // of which would split this row into two lines or invent a
+                // seventh column for whoever is cutting on \t. The full
+                // collapse (tab and newline included, unlike the
+                // transcript-body sanitizer above) is what keeps the row
+                // contract; JSON keeps the real title. The remaining columns
+                // are genuinely machine-made (fixed markers, a fixed kind
+                // label, an RFC3339 timestamp).
                 crate::support::collapse_control_characters(&row.title),
             )
         })
@@ -494,24 +517,37 @@ fn show(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let session = store
+    let mut session = store
         .load(id)
         .map_err(|error| store_error("show", id, error))?;
-    let value = serde_json::to_value(&session)
-        .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
     let kind = kind_label(&store, id);
-    let mut messages = value
-        .get("messages")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
     // The session log is the source of truth for the total (the metadata
     // counter can lag behind hand-seeded or replayed transcripts).
-    let total_messages = messages.len();
+    let total_messages = session.messages.len();
+    // Window FIRST, on the owned transcript, and serialize only what survives.
+    // Serializing the whole `SavedSession` up front (and then cloning its
+    // `messages` array out of the result) materialized two more full copies of
+    // a transcript that `--last 1` is about to throw away — plus the journal,
+    // which this command never renders. Draining first makes the peak scale
+    // with the WINDOW instead of with the transcript. The two `to_value` calls
+    // below produce exactly the bytes the single whole-session call produced
+    // for these two subtrees, so the output shape is unchanged (in particular
+    // the timestamps keep serde's spelling, not `to_rfc3339`'s).
     if let Some(last) = last {
-        let start = messages.len().saturating_sub(last);
-        messages.drain(..start);
+        let start = session.messages.len().saturating_sub(last);
+        session.messages.drain(..start);
     }
+    let metadata = serde_json::to_value(&session.metadata)
+        .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
+    let messages = serde_json::to_value(&session.messages)
+        .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
+    drop(session);
+    // Take the array by value; `as_array().cloned()` would reintroduce a copy
+    // of the very window this function just narrowed.
+    let messages = match messages {
+        serde_json::Value::Array(messages) => messages,
+        _other => Vec::new(),
+    };
     let rendered = messages
         .iter()
         .map(|message| {
@@ -531,14 +567,14 @@ fn show(
         "id: {}\ntitle: {}\nkind: {}\nupdated: {}\nmessages: {} (showing {})",
         id,
         crate::support::collapse_control_characters(
-            value
-                .pointer("/metadata/title")
+            metadata
+                .get("title")
                 .and_then(|value| value.as_str())
                 .unwrap_or(""),
         ),
         kind,
-        value
-            .pointer("/metadata/updated_at")
+        metadata
+            .get("updated_at")
             .and_then(|value| value.as_str())
             .unwrap_or(""),
         total_messages,
@@ -554,16 +590,25 @@ fn show(
         human.push_str(&format!(
             "\n\n[{}] {}\n{}",
             index + 1,
-            message["role"].as_str().unwrap_or("unknown"),
+            // `role` is a plain `String` on the deserialized message, not an
+            // enum: a transcript can carry `assistant\x1b]0;pwned\x07` and the
+            // header would hand the terminal the exact OSC sequence the body
+            // sanitizer on the next line exists to stop. It is a one-line
+            // header cell, so it takes the COLUMN collapse (newline and tab
+            // included) rather than the block one — a role that spans lines
+            // would push the body out of its own header.
+            crate::support::collapse_control_characters(
+                message["role"].as_str().unwrap_or("unknown")
+            ),
             collapse_display_control_characters(message["text"].as_str().unwrap_or("")),
         ));
     }
     let json = serde_json::json!({
         "id": id,
-        "title": value.pointer("/metadata/title"),
+        "title": metadata.get("title"),
         "kind": kind,
-        "updated_at": value.pointer("/metadata/updated_at"),
-        "created_at": value.pointer("/metadata/created_at"),
+        "updated_at": metadata.get("updated_at"),
+        "created_at": metadata.get("created_at"),
         // Session total (GUI `message_count` semantics) — `--last` only
         // windows the rendered messages below.
         "message_count": total_messages,
@@ -597,8 +642,13 @@ fn rename(id: &str, title: &str, output: OutputMode) -> Result<CliOutcome, CliEr
 /// reached the durable registry. Same shape as the connectors disabled-mirror
 /// verification: name the sidecar, state what the durable file still says,
 /// and tell the caller what to do about it.
+///
+/// `verb` is the SUBCOMMAND the caller typed (`pin`/`unpin`/`archive`/
+/// `restore`), because that is what `sessions <verb>(<id>)` must name; handing
+/// it the past participle rendered `sessions unpinned(s-1): ...`, a command
+/// spelling that does not exist.
 fn sidecar_not_persisted(
-    action: &str,
+    verb: &str,
     id: &str,
     sidecar: &str,
     still: &str,
@@ -609,7 +659,7 @@ fn sidecar_not_persisted(
         .map(|home| home.join("sessions").display().to_string())
         .unwrap_or_else(|_| "the sessions directory".to_owned());
     Err(CliError::failed(format!(
-        "sessions {action}({id}): the {sidecar} sidecar did not persist the change (the session \
+        "sessions {verb}({id}): the {sidecar} sidecar did not persist the change (the session \
          is still {still}); check that {location} is writable and retry the command"
     )))
 }
@@ -618,9 +668,17 @@ fn sidecar_not_persisted(
 /// session must exist first so the sidecar tables never keep a stale id.
 fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    require_existing(&store, id, "pin")?;
+    // Two labels on purpose: `verb` is the subcommand the caller typed and is
+    // what every `sessions <verb>(<id>)` error prefix must carry (an `unpin`
+    // failure reported itself as `sessions pin(...)` before), while `action`
+    // is the past participle the success line and the JSON `action` field use.
+    let (verb, action) = if pinned {
+        ("pin", "pinned")
+    } else {
+        ("unpin", "unpinned")
+    };
+    require_existing(&store, id, verb)?;
     store.set_pinned(id, pinned);
-    let action = if pinned { "pinned" } else { "unpinned" };
     // `set_pinned` returns `()`: the sidecar layer swallows a failed persist,
     // rolls its in-memory cache back to the durable state and only reports
     // the failure on stderr. Without this check a read-only or full
@@ -632,7 +690,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // durable write did not land.
     if store.is_pinned(id) != pinned {
         return sidecar_not_persisted(
-            action,
+            verb,
             id,
             "pinned-sessions",
             if pinned { "unpinned" } else { "pinned" },
@@ -644,9 +702,15 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
 
 fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    require_existing(&store, id, "archive")?;
+    // Same verb/participle split as `set_pinned`: a `restore` failure reported
+    // itself as `sessions archive(...)` before.
+    let (verb, action) = if hidden {
+        ("archive", "archived")
+    } else {
+        ("restore", "restored")
+    };
+    require_existing(&store, id, verb)?;
     store.set_hidden(id, hidden);
-    let action = if hidden { "archived" } else { "restored" };
     // Same swallowed-persist contract as `set_pinned` above: the hidden
     // registry rolls back to the durable state and only logs, so the flag
     // read back is the honest answer about what reached the disk. An
@@ -654,11 +718,21 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     // visible in every later `sessions list` the caller runs.
     if store.is_hidden(id) != hidden {
         return sidecar_not_persisted(
-            action,
+            verb,
             id,
             "hidden-sessions",
             if hidden { "visible" } else { "archived" },
         );
+    }
+    // `set_hidden(id, true)` is TWO durable writes: it clears the pin first
+    // (`features/sessions/sidecars.rs`, so an archived session cannot keep a
+    // pinned slot) and the pin registry is a different file with its own
+    // failure mode. Verifying only the hidden flag let a half-landed archive —
+    // hidden on disk, still pinned on disk — exit 0, and the stale pin then
+    // keeps the session exempt from retention forever. `restore` has no such
+    // side effect, so only the archive direction is re-checked.
+    if hidden && store.is_pinned(id) {
+        return sidecar_not_persisted(verb, id, "pinned-sessions", "pinned");
     }
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(output, format!("{action} {id}"), &value)))
@@ -678,6 +752,35 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     store
         .delete(id)
         .map_err(|error| store_error("delete", id, error))?;
+    // Second half of the GUI cascade (`app/commands/sessions.rs` calls
+    // `acp_pool.agents().remove(&id)` after a successful chat delete): drop the
+    // session's record from `~/.pinvou3/session-agents.json`. `store.delete`
+    // only sweeps `sessions/<id>/` (the per-session `code-session.json` sidecar
+    // included) — the INDEX record survives it, and the app's boot-time
+    // `backfill_missing_code_session_sidecars` runs over exactly
+    // "record says code-session, sidecar missing" and re-creates
+    // `sessions/<deleted-id>/code-session.json`, resurrecting a directory for a
+    // session that no longer exists. `SessionAgentStore::remove` also re-sweeps
+    // that sidecar, which is idempotent here.
+    //
+    // The index file is only consulted when it exists: `remove` persists
+    // unconditionally, and a `sessions delete` in a home that never ran an ACP
+    // session must not be the thing that creates `session-agents.json`.
+    let agents = SessionAgentStore::load_or_empty();
+    if agents.path().exists() {
+        agents.remove(id).map_err(|error| {
+            // The transcript is already gone, so this cannot roll back — but it
+            // must not be silent either (the next app boot would rebuild the
+            // ghost directory). Mirrors the GUI, which also propagates this
+            // failure after the delete has committed.
+            CliError::failed(format!(
+                "sessions delete({id}): the session was deleted but its record in {} could not \
+                 be removed ({error:#}); the desktop app will re-create \
+                 sessions/{id}/code-session.json on its next start until that record is gone",
+                agents.path().display()
+            ))
+        })?;
+    }
     let value = serde_json::json!({ "id": id, "action": "deleted" });
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }
@@ -692,7 +795,12 @@ fn export(
     let session = store
         .load(id)
         .map_err(|error| store_error("export", id, error))?;
-    let value = serde_json::to_value(&session)
+    // Consumed, not borrowed: an export renders the WHOLE transcript, so the
+    // `Value` cannot be narrowed the way `show` narrows its window — but
+    // moving the session in lets it be freed as soon as the `Value` exists,
+    // instead of being held alive alongside both the `Value` and the rendered
+    // `content` string until the end of this function.
+    let value = serde_json::to_value(session)
         .map_err(|error| CliError::failed(format!("sessions export({id}): {error}")))?;
     let content = match format {
         ExportFormat::Json => serde_json::to_string_pretty(&value)
@@ -726,29 +834,48 @@ fn export(
             }
             // Non-unix: no POSIX mode bits; ACL tightening is out of scope
             // here exactly as it is for `code providers export`.
-            let write_result = options
-                .open(&path)
-                .and_then(|mut file| file.write_all(content.as_bytes()));
-            match write_result {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(CliError::failed(format!(
-                        "sessions export({id}): refusing to overwrite {}; choose a destination \
-                         that does not exist yet",
-                        path.display()
-                    )));
-                }
+            //
+            // The create and the body write are kept as SEPARATE failures.
+            // Fused through `and_then`, the error handler could not tell which
+            // of the two failed and still deleted the destination — while only
+            // a create this call actually made may be deleted. The
+            // classification needed splitting too: `AlreadyExists` is the
+            // exclusive-create refusal on unix, but Windows `CREATE_NEW`
+            // against an existing DIRECTORY reports ERROR_ACCESS_DENIED
+            // (`PermissionDenied`), so the refusal is decided by "the path is
+            // already there", with the raw error only as the fallback message.
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
                 Err(error) => {
-                    // The exclusive create succeeded but the body failed
-                    // (ENOSPC, quota): drop the truncated destination so a
-                    // retry is possible and no half-written transcript
-                    // masquerades as an export.
-                    let _ = std::fs::remove_file(&path);
-                    return Err(CliError::failed(format!(
-                        "sessions export({id}): cannot write {}: {error}",
-                        path.display()
-                    )));
+                    let already_there =
+                        error.kind() == std::io::ErrorKind::AlreadyExists || path.exists();
+                    return Err(CliError::failed(if already_there {
+                        format!(
+                            "sessions export({id}): refusing to overwrite {}; choose a \
+                             destination that does not exist yet",
+                            path.display()
+                        )
+                    } else {
+                        // Nothing was created, so nothing is removed here.
+                        format!(
+                            "sessions export({id}): cannot create {}: {error}",
+                            path.display()
+                        )
+                    }));
                 }
+            };
+            if let Err(error) = file.write_all(content.as_bytes()) {
+                // The exclusive create DID succeed and the body failed
+                // (ENOSPC, quota): this call owns the destination, so drop the
+                // truncated file — a retry becomes possible and no half-written
+                // transcript masquerades as an export. Close the handle first
+                // so Windows can unlink it.
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+                return Err(CliError::failed(format!(
+                    "sessions export({id}): cannot write {}: {error}",
+                    path.display()
+                )));
             }
             let value = serde_json::json!({
                 "id": id,
@@ -982,13 +1109,18 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         .map(|summary| {
             let state = if !summary.has_transcript {
                 "queued"
-            } else if summary.done && summary.failed {
-                // Interrupted projection (both flags set so JSON consumers
-                // see a terminal run); the human column keeps the precise
-                // state instead of overstating every interruption as failed.
-                summary.status.as_deref().unwrap_or("interrupted")
             } else if summary.failed {
-                "failed"
+                // Every terminal non-success lands here — failed, cancelled and
+                // interrupted alike — because the foundation defines
+                // `failed = done && status != Completed`
+                // (`features/multiagent/transcripts.rs`), so `failed` already
+                // implies `done` and there is no second `failed` arm to reach.
+                // The human column prints the foundation's own status name
+                // rather than flattening all three into "failed"; the fallback
+                // is the interrupted projection, which is what a listing with
+                // no live engine (this CLI) reports for a worker that never
+                // reached a terminal status.
+                summary.status.as_deref().unwrap_or("interrupted")
             } else if summary.blocked {
                 "blocked"
             } else if summary.done {
@@ -1099,6 +1231,32 @@ mod tests {
         let error = parse(&["export"]).unwrap_err();
         assert_eq!(error.exit_code(), crate::ExitCode::Usage);
         assert!(error.to_string().contains("--output ./json"), "{error}");
+    }
+
+    #[test]
+    fn rename_usage_discloses_the_global_output_collision() {
+        // `sessions rename s-1 see --output json now` stores "see now" and
+        // exits 0: `parse_args` strips `--output json` from anywhere in argv
+        // before rename joins the remaining tokens into the title. That
+        // silent edit has no error of its own to ride on, so — like
+        // EXPORT_USAGE does for the file-name collision — the rename usage
+        // errors carry the disclosure.
+        assert_eq!(
+            parse(&["rename", "s-1", "see", "--output", "json", "now"]).unwrap(),
+            SessionsCommand::Rename {
+                id: "s-1".into(),
+                title: "see now".into(),
+            },
+            "the collision itself is the thing being disclosed; pin it too"
+        );
+        for arguments in [vec!["rename", "s-1"], vec!["rename", "s-1", "--limit"]] {
+            let error = parse(&arguments).expect_err("a usage error");
+            assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{arguments:?}");
+            assert!(
+                error.to_string().contains("renames to 'see now'"),
+                "{arguments:?} must disclose the --output collision: {error}"
+            );
+        }
     }
 
     #[test]

@@ -50,15 +50,26 @@ impl HomeGuard {
         Self { previous, root }
     }
 
-    /// The `<id>_disabled` marker file `platform::connector_state` reads.
+    /// The LEGACY `<id>_disabled` marker file `platform::connector_state`
+    /// reads. Nothing writes it any more — the app retired that writer
+    /// together with the `set_*_enabled` commands — so tests plant it by
+    /// hand to pin the read-and-heal contract.
     fn disabled_marker(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}_disabled"))
     }
 
-    /// The scope bridge file the enable/disable switch syncs through
-    /// `marketplace::sync_disabled_bundles_for_connector_switch`.
+    /// The unified scope state that IS the connector switch on both
+    /// surfaces (`set_disabled_connectors` in the GUI,
+    /// `marketplace::sync_disabled_bundles_for_connector_switch` here).
     fn disabled_bundles_file(&self) -> PathBuf {
         self.root.join("disabled_bundles.json")
+    }
+
+    /// `~/.pinvou3/bundles/<id>/skills` — the root the app's
+    /// `apply_connector_skills` unpacks into and deletes from, and the one
+    /// the CLI's hide direction must clear.
+    fn connector_skills_dir(&self, id: &str) -> PathBuf {
+        self.root.join("bundles").join(id).join("skills")
     }
 }
 
@@ -485,15 +496,20 @@ fn connectors_status_zero_state_reports_every_connector_uninstalled_and_enabled(
 }
 
 #[test]
-fn connectors_enable_disable_round_trip_persists_the_marker_and_scope_bridge() {
+fn connectors_enable_disable_switch_through_scope_state_only() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("enable-disable");
     let _path = VendorCliGuard::new();
 
     assert!(!home.disabled_marker("feishu").exists());
 
-    // disable writes the marker the GUI gate reads and mirrors the switch
-    // into disabled_bundles.json (execpolicy CLI hard-block / materialization).
+    // The switch persists through the unified scope state — the same
+    // `disabled_bundles.json` the GUI's `set_disabled_connectors` writes and
+    // the execpolicy CLI hard-block / skill materialization read. It must
+    // NOT create a `<id>_disabled` marker: the app retired that writer with
+    // the `set_*_enabled` commands, so a marker written here could never be
+    // cleared from any GUI surface and would pin the app into deleting the
+    // connector's skill directories forever.
     let value = run_json(&["pinvou", "connectors", "disable", "feishu"]);
     assert_eq!(value["ok"], true);
     assert_eq!(value["id"], "feishu");
@@ -501,25 +517,33 @@ fn connectors_enable_disable_round_trip_persists_the_marker_and_scope_bridge() {
     assert_eq!(value["enabled"], false);
     assert_eq!(value["connected"], false);
     assert_eq!(value["skills_should_show"], false);
-    assert_eq!(value["skills_refresh"], "app-only");
-    assert!(home.disabled_marker("feishu").is_file());
+    // The hide direction needs no embedded bundle, so the CLI performs it.
+    assert_eq!(value["skills_removed"], true);
+    assert_eq!(value["skills_refresh"], "removed");
+    assert!(
+        !home.disabled_marker("feishu").exists(),
+        "disable must not write a marker no GUI surface can clear"
+    );
     assert!(
         std::fs::read_to_string(home.disabled_bundles_file())
             .unwrap()
             .contains("feishu")
     );
 
-    // status reflects the persisted marker.
+    // status reads the switch, not the marker: a connector switched off in
+    // the scope state must report enabled=false (before this contract it
+    // read only the marker and reported a GUI-disabled connector as on).
     let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
     assert_eq!(value["connectors"][0]["enabled"], false);
+    assert_eq!(value["connectors"][0]["legacy_disabled_marker"], false);
     let outcome = run(&["pinvou", "connectors", "status", "feishu"]).expect("human status");
     assert!(outcome.stdout.contains("enabled=no"));
+    assert!(!outcome.stdout.contains("legacy_disabled_marker"));
 
-    // enable clears the marker and removes the bridge entry again.
+    // enable removes the bridge entry again.
     let value = run_json(&["pinvou", "connectors", "enable", "feishu"]);
     assert_eq!(value["action"], "enabled");
     assert_eq!(value["enabled"], true);
-    assert!(!home.disabled_marker("feishu").exists());
     assert!(
         !std::fs::read_to_string(home.disabled_bundles_file())
             .unwrap()
@@ -528,17 +552,58 @@ fn connectors_enable_disable_round_trip_persists_the_marker_and_scope_bridge() {
     let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
     assert_eq!(value["connectors"][0]["enabled"], true);
 
-    // enable is idempotent (the marker removal is a no-op when absent).
+    // Both directions are idempotent.
     let value = run_json(&["pinvou", "connectors", "enable", "feishu"]);
     assert_eq!(value["enabled"], true);
+    let value = run_json(&["pinvou", "connectors", "disable", "feishu"]);
+    assert_eq!(value["enabled"], false);
+    let value = run_json(&["pinvou", "connectors", "disable", "feishu"]);
+    assert_eq!(value["enabled"], false);
     assert!(!home.disabled_marker("feishu").exists());
+}
 
-    // disable is idempotent too (the marker write is an overwrite).
-    let value = run_json(&["pinvou", "connectors", "disable", "feishu"]);
-    assert_eq!(value["enabled"], false);
-    let value = run_json(&["pinvou", "connectors", "disable", "feishu"]);
-    assert_eq!(value["enabled"], false);
-    assert!(home.disabled_marker("feishu").is_file());
+#[test]
+fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("legacy-marker");
+    let _path = VendorCliGuard::new();
+
+    // A marker left by an older CLI build (or by a hand-edited home). The
+    // app's gate really does keep deleting the connector's skill dirs while
+    // this file exists, and no GUI action can remove it.
+    std::fs::write(home.disabled_marker("wecom"), b"1").unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
+    assert_eq!(
+        value["connectors"][0]["enabled"], false,
+        "a legacy marker really hides the skills, so enabled must report false"
+    );
+    assert_eq!(
+        value["connectors"][0]["legacy_disabled_marker"], true,
+        "the marker must be surfaced distinctly from the scope switch"
+    );
+    let outcome = run(&["pinvou", "connectors", "status", "wecom"]).expect("human status");
+    assert!(
+        outcome.stdout.contains("legacy_disabled_marker=yes"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("pinvou connectors enable wecom"),
+        "the human row must name the one command that clears it: {}",
+        outcome.stdout
+    );
+
+    // enable is the only writer left and it only ever removes.
+    let value = run_json(&["pinvou", "connectors", "enable", "wecom"]);
+    assert_eq!(value["enabled"], true);
+    assert!(
+        !home.disabled_marker("wecom").exists(),
+        "enable must heal a stale legacy marker"
+    );
+    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
+    assert_eq!(value["connectors"][0]["enabled"], true);
+    assert_eq!(value["connectors"][0]["legacy_disabled_marker"], false);
 }
 
 #[test]
@@ -935,6 +1000,136 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
         message.contains("https://work.weixin.qq.com/landing?x=1"),
         "the failure must surface the captured login link: {message}"
     );
+    // The PNG is a one-scan login grant that the failure path deliberately
+    // keeps (the user still needs it), so the note must say so and say that
+    // deleting it is theirs to do.
+    assert!(
+        message.contains("one-scan login grant") && message.contains("delete it"),
+        "the QR note must disclose the credential-equivalent leftover: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("connect-vendor-tail");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // The single commonest dingtalk onboarding blocker: the organization has
+    // not enabled CLI data access, `dws auth login` says so on its own
+    // output and exits. That output is piped (the drainer needs it to find
+    // the login link), so before the bounded tail the headless user got
+    // "login exited before authorization completed" and nothing else. The
+    // credential line in front of it pins the redaction: the tail passes
+    // through the CLI's mirror of the GUI's `safe_auth_log_line`.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"access_token=SUPERSECRETVALUE\"; echo \"Error: CLI data access is not enabled\"; exit 1; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let error = run(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "5",
+    ])
+    .expect_err("the fake login refuses to authorize");
+    let message = error.to_string();
+    assert!(
+        message.contains("CLI data access is not enabled"),
+        "the failure must carry the vendor's own reason: {message}"
+    );
+    assert!(
+        !message.contains("SUPERSECRETVALUE"),
+        "credential material must never reach the error text: {message}"
+    );
+    assert!(
+        message.contains("[redacted credential line]"),
+        "the credential line must be replaced, not silently dropped: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn logout_and_apply_skills_remove_the_companion_skill_directories() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("logout-skill-hide");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // `auth logout` succeeds; every other subcommand (notably `auth status`)
+    // falls through to exit 1, so the connector reads as not connected.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // Plant the skill tree exactly as the app's bundle unpack leaves it:
+    // one directory per `DINGTALK_SKILL_DIRS` entry plus the connector's
+    // NOTICE file. The unrelated sibling pins that the hide direction is
+    // table-driven (the app's `apply_connector_skills` removes the listed
+    // dirs, not the whole skills root).
+    let skills = home.connector_skills_dir("dingtalk");
+    std::fs::create_dir_all(skills.join("dws").join("references")).unwrap();
+    std::fs::write(skills.join("dws").join("SKILL.md"), "# dws").unwrap();
+    std::fs::write(skills.join("NOTICE-dingtalk.md"), "notice").unwrap();
+    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "logout", "dingtalk", "--yes"]);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["installed"], true);
+    assert_eq!(
+        value["skills_removed"], true,
+        "the GUI logout is logout + apply_skills; the CLI must do the hide half too"
+    );
+    assert!(
+        !skills.join("dws").exists(),
+        "logout must remove the companion skill directories"
+    );
+    assert!(
+        !skills.join("NOTICE-dingtalk.md").exists(),
+        "logout must remove the connector NOTICE file the unpack dropped"
+    );
+    assert!(
+        skills.join("unrelated").is_dir(),
+        "the hide direction must not wipe unlisted entries in the skills root"
+    );
+
+    // `apply-skills` on a disconnected connector resolves to the same hide
+    // direction and is idempotent on an already-clean tree.
+    std::fs::create_dir_all(skills.join("dws")).unwrap();
+    std::fs::write(skills.join("dws").join("SKILL.md"), "# dws").unwrap();
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+    assert_eq!(value["visible"], false);
+    assert_eq!(value["skills_removed"], true);
+    assert!(!skills.join("dws").exists());
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+    assert_eq!(value["skills_removed"], true);
+
     let _ = std::fs::remove_dir_all(&bin);
 }
 

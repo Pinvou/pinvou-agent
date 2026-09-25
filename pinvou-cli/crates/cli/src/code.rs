@@ -80,7 +80,9 @@ const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|ad
      (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] [--model-slot SLOT=M]... [--context-window N] \
      (--api-key-env V|--api-key-stdin|--delete-key)|remove <id> --agent A --yes \
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
-     |import --agent A <PATH>|probe <provider-id> --agent A>";
+     |import --agent A <PATH>|probe <provider-id> --agent A>  \
+     (claude --model-slot SLOT: opus|sonnet|haiku|fable|subagent; add requires all five, \
+     a missing slot falls back to official traffic)";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
 const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M] --yes>";
 const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session> --yes>";
@@ -91,8 +93,40 @@ const RESPOND_USAGE: &str = "usage: pinvou code respond <session> <request-id> <
 /// Minimum agent CLI versions enforced by the GUI runtime probes
 /// (`features::codex_acp`): codex via `MIN_CODEX_VERSION`, claude/kimi via
 /// `MIN_CLAUDE_VERSION` / `MIN_KIMI_VERSION`.
+///
+/// MIRROR, not a reference — the three app constants are unreachable from
+/// this crate, so these values are a hand-kept copy that must be bumped in
+/// the same change as the originals:
+/// - `MIN_CODEX_VERSION` is `pub` but lives in the private module
+///   `pinvou3-app/src-tauri/src/features/codex_acp/runtime.rs`, and
+///   `codex_acp/mod.rs` re-imports it with a private `use`, so it does not
+///   leave the app crate;
+/// - `MIN_CLAUDE_VERSION` / `MIN_KIMI_VERSION` are private consts in
+///   `pinvou3-app/src-tauri/src/features/codex_acp/mod.rs`.
+///
+/// Unlike `workspace::{SEARCH_LIMIT, PREVIEW_LIMIT, DIFF_LIMIT}` — which this
+/// file references directly (see the `use` above `WORKSPACE_DIFF_FILE_CAP`)
+/// precisely so drift breaks the build — a bump on the app side here fails
+/// nothing: the CLI would silently keep gating installs and login on a stale
+/// minimum. Making the app constants `pub` and importing them is the real
+/// fix; until then, treat an app-side bump as requiring this table to change
+/// with it.
 const MIN_VERSIONS: [(&str, &str); 3] =
     [("codex", "0.144.6"), ("claude", "2.0.0"), ("kimi", "0.9.0")];
+
+/// Mirror of `providers::CLAUDE_MODEL_SLOTS`
+/// (`pinvou3-app/src-tauri/src/features/codex_acp/providers/mod.rs`), slot ids
+/// only. `ProviderManager::save` requires a non-empty model for every one of
+/// them when it stores a claude provider; a missing slot makes Claude Code's
+/// sub-agent and helper calls fall back to official models (official
+/// traffic), which is why the store treats them as mandatory rather than
+/// optional. The app constant is `pub(crate)` and unreachable from this
+/// crate, so the ids are mirrored here and must be kept in step with it: a
+/// slot added there without a matching entry here would slip past this
+/// family's English pre-check and surface the store's untranslated
+/// "<slot> is a required field" message through `store_error` — the same
+/// translation-boundary rule the marketplace importer follows.
+const CLAUDE_MODEL_SLOTS: [&str; 5] = ["opus", "sonnet", "haiku", "fable", "subagent"];
 
 /// Hard deadline for the vendor logout subcommand (login uses 600/1800s
 /// because it waits for the user; logout is a fast local call).
@@ -858,6 +892,16 @@ fn parse_flags<'a>(
                 "code {label} option {token} requires a value"
             )));
         }
+        // `--message` is the one flag allowed a `--`-prefixed value, because a
+        // commit message may legitimately start with `--`. That exemption also
+        // makes `--message --yes` swallow the confirmation flag, and the
+        // failure then surfaces much later as the generic "pass --yes to
+        // confirm this destructive action" — which names neither `--message`
+        // nor the flag it ate. Rejecting only the exact case where the value
+        // IS one of this command's own boolean flags is the smaller fix than
+        // dropping the exemption: every legitimate `--`-prefixed message keeps
+        // working, and the one ambiguous spelling gets told what happened.
+        reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
         if token == "--model-slot" {
             repeated.push((token, value.as_str()));
         } else {
@@ -870,6 +914,26 @@ fn parse_flags<'a>(
         index += 2;
     }
     Ok((options, flags, repeated))
+}
+
+/// Guard for the `--message` value exemption shared by the two splitters: a
+/// `--`-prefixed message is legal, but when the value is verbatim one of this
+/// command's own boolean flags the user almost certainly meant to pass the
+/// flag, not to name their commit after it. Say so instead of consuming it.
+fn reject_swallowed_boolean_flag(
+    token: &str,
+    value: &str,
+    boolean_flags: &[&str],
+    label: &str,
+) -> Result<(), CliError> {
+    if token == "--message" && boolean_flags.contains(&value) {
+        return Err(CliError::usage(format!(
+            "code {label} option --message consumed {value} as its message text, so {value} \
+             was never applied; move {value} before --message (a message that must read \
+             exactly \"{value}\" is not expressible here)"
+        )));
+    }
+    Ok(())
 }
 
 fn option<'a>(options: &'a Flags, name: &str) -> Option<&'a str> {
@@ -920,6 +984,11 @@ fn split_positional_flags<'a>(
                     "code {label} option {token} requires a value"
                 )));
             }
+            // Same `--message` exemption, same swallowed-flag hazard as
+            // `parse_flags` above; kept in step so a future subcommand that
+            // routes `--message` through the positional splitter inherits the
+            // guard instead of the confusing late failure.
+            reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
             if token == "--model-slot" {
                 repeated.push((token, value.as_str()));
             } else if options.insert(token, value.as_str()).is_some() {
@@ -1969,6 +2038,184 @@ fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> 
         })
 }
 
+/// Which login pipe a drain event came from; the two transcripts are
+/// concatenated in a fixed order, so they cannot be pooled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoginStream {
+    Stdout,
+    Stderr,
+}
+
+/// The two things a user must act on while the vendor CLI is still running.
+#[derive(Debug)]
+enum LoginArtifact {
+    Url(String),
+    Code(String),
+}
+
+/// What a login drain thread reports: artefacts the moment they appear in the
+/// pipe, then the full captured transcript once that pipe reaches EOF.
+#[derive(Debug)]
+enum LoginDrainEvent {
+    Artifact(LoginArtifact),
+    Finished(LoginStream, String),
+}
+
+/// Incremental drain for the login pipes. It keeps everything `drain_stream`
+/// guarantees for the transcript — a bounded 64 KiB tail with UTF-8-safe
+/// eviction, decoded once at the end so no multi-byte character split across
+/// a read boundary becomes U+FFFD — and adds a scan of each newly completed
+/// line for the agent's login URL and device code, pushed onto `tx` at once.
+/// Without this the whole point of `code login` was unreachable: the vendor
+/// CLI holds the flow open until the user opens the link, but the link sat
+/// unread in this buffer for the entire 600 s (kimi 1800 s) wait.
+///
+/// Structural mirror of `connectors::drain_for_url` (detached reader thread,
+/// artefacts on an mpsc channel, each emitted at most once, the consumer
+/// announcing them on stderr so `--output json` keeps stdout a single line).
+/// The two cannot share one helper: that family matches a per-connector auth
+/// domain allow-list line by line, while this family's extractors are
+/// agent-aware whole-text scans (`extract_login_url` / `extract_device_code`)
+/// that must run over a text slice, not a line.
+///
+/// Nothing else from the stream is streamed live — only the URL and the code
+/// — and the authorization code this process wrote to the child's stdin is
+/// stripped from every scanned slice before matching, so a vendor CLI that
+/// echoes it back cannot get it re-emitted as a "device code".
+fn spawn_login_drain<R: Read + Send + 'static>(
+    agent: String,
+    stream: LoginStream,
+    pipe: Option<R>,
+    code: Option<String>,
+    tx: std::sync::mpsc::Sender<LoginDrainEvent>,
+) {
+    std::thread::spawn(move || {
+        let Some(mut pipe) = pipe else {
+            let _ = tx.send(LoginDrainEvent::Finished(stream, String::new()));
+            return;
+        };
+        let mut bytes: Vec<u8> = Vec::new();
+        // Line-assembly buffer for the live scan, separate from the capped
+        // transcript tail above: a URL or a code prompt can straddle a 2 KiB
+        // read boundary, so only whole lines are ever scanned — emitting a
+        // truncated authorize link would be worse than emitting none. A
+        // newline can never fall inside a multi-byte character, so the lossy
+        // decode of a completed-lines slice is exact.
+        let mut scan: Vec<u8> = Vec::new();
+        let mut url_sent = false;
+        let mut code_sent = false;
+        let mut chunk = [0u8; 2048];
+        loop {
+            let read = match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            bytes.extend_from_slice(&chunk[..read]);
+            if bytes.len() > 65_536 {
+                // Byte-count eviction can land inside a multi-byte character;
+                // advance to the next UTF-8 boundary (any non-continuation
+                // byte starts a character) so the buffer never starts
+                // mid-character.
+                let mut cut = bytes.len() - 65_536;
+                while cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
+                    cut += 1;
+                }
+                bytes.drain(..cut);
+            }
+            if url_sent && code_sent {
+                // Both artefacts are out; the rest of this pipe is transcript
+                // only, so skip the scan entirely.
+                continue;
+            }
+            scan.extend_from_slice(&chunk[..read]);
+            let Some(end) = scan.iter().rposition(|byte| *byte == b'\n') else {
+                if scan.len() > 65_536 {
+                    // A newline-free flood must not grow this buffer without
+                    // limit. The transcript tail above still carries the
+                    // bytes, so the post-exit extraction can still find an
+                    // artefact this live scan gave up on.
+                    scan.clear();
+                }
+                continue;
+            };
+            let completed: Vec<u8> = scan.drain(..=end).collect();
+            let text = String::from_utf8_lossy(&completed);
+            let text = strip_login_code(&text, code.as_deref());
+            let mut artifacts: Vec<LoginArtifact> = Vec::new();
+            if !url_sent && let Some(found) = extract_login_url(&agent, &text) {
+                url_sent = true;
+                // The device code frequently rides in the link itself
+                // (`...authorize_device?user_code=...`); take it from
+                // there rather than waiting for a separate prompt line
+                // the vendor may never print.
+                let from_url = extract_device_code("", Some(found.as_str()));
+                artifacts.push(LoginArtifact::Url(found));
+                if let Some(device) = from_url {
+                    code_sent = true;
+                    artifacts.push(LoginArtifact::Code(device));
+                }
+            }
+            if !code_sent && let Some(device) = extract_device_code(&text, None) {
+                code_sent = true;
+                artifacts.push(LoginArtifact::Code(device));
+            }
+            // A closed channel means the wait loop is already gone, so there
+            // is nobody left to report to — stop reading rather than keep
+            // filling a buffer nothing will read.
+            let mut consumer_gone = false;
+            for artifact in artifacts {
+                if tx.send(LoginDrainEvent::Artifact(artifact)).is_err() {
+                    consumer_gone = true;
+                    break;
+                }
+            }
+            if consumer_gone {
+                break;
+            }
+        }
+        let _ = tx.send(LoginDrainEvent::Finished(
+            stream,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ));
+    });
+}
+
+/// Folds one drain event into the login wait state. Artefacts are announced
+/// on stderr the first time they are seen — stdout and stderr can both carry
+/// the link, and vendor CLIs repeat it, so the `is_none()` guards are what
+/// make "emit each artefact once" hold across both pipes and both channels.
+fn apply_login_event(
+    event: LoginDrainEvent,
+    streamed_url: &mut Option<String>,
+    streamed_code: &mut Option<String>,
+    transcripts: (&mut String, &mut String),
+    finished: &mut usize,
+) {
+    let (out_text, err_text) = transcripts;
+    match event {
+        LoginDrainEvent::Artifact(LoginArtifact::Url(found)) => {
+            if streamed_url.is_none() {
+                note!("login link: {found}");
+                *streamed_url = Some(found);
+            }
+        }
+        LoginDrainEvent::Artifact(LoginArtifact::Code(found)) => {
+            if streamed_code.is_none() {
+                note!("device code: {found}");
+                *streamed_code = Some(found);
+            }
+        }
+        LoginDrainEvent::Finished(LoginStream::Stdout, text) => {
+            *out_text = text;
+            *finished += 1;
+        }
+        LoginDrainEvent::Finished(LoginStream::Stderr, text) => {
+            *err_text = text;
+            *finished += 1;
+        }
+    }
+}
+
 fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
     resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
         CliError::failed(format!(
@@ -1989,9 +2236,16 @@ fn login_args(agent: &str) -> &'static [&'static str] {
 /// `code login <agent>`: spawns the same login command the GUI's
 /// `login_acp_agent` runs, buffers its output, extracts the allow-listed
 /// authorization URL / device code, and waits for the flow to finish
-/// (bounded like the GUI: 600s, kimi 1800s). A timeout still surfaces the
-/// login link captured so far — the URL is the only actionable part of the
-/// transcript. The claude authorization
+/// (bounded like the GUI: 600s, kimi 1800s).
+///
+/// The URL and the device code are announced on stderr the moment the vendor
+/// CLI prints them, not when it exits: the child stays alive precisely until
+/// the user opens the link (kimi's device-code flow cannot be completed
+/// otherwise), so a link published only at exit is published too late. Only
+/// those two artefacts stream live; the rest of the transcript is still
+/// echoed once, redacted, at the end. A timeout still surfaces the login link
+/// captured so far — the URL is the only actionable part of the transcript.
+/// The claude authorization
 /// code is accepted via `--code-env VAR` / `--code-stdin` (plaintext argv is
 /// deliberately not offered — argv leaks through shell history and process
 /// listings; `--code C` remains for callers that already hold it in argv) and
@@ -2061,19 +2315,32 @@ fn login(
     })?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    // The drains report through channels instead of join handles: a
+    // The drains report through a channel instead of join handles: a
     // grandchild (a browser or helper the vendor CLI spawned) can inherit
     // the pipes and outlive the reaped child, and an unbounded `join()`
     // here would hang the CLI after login finished — the same hazard the
-    // auth probe bounds one room over.
-    let (out_tx, out_rx) = std::sync::mpsc::channel();
-    let (err_tx, err_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = out_tx.send(drain_stream(stdout));
-    });
-    std::thread::spawn(move || {
-        let _ = err_tx.send(drain_stream(stderr));
-    });
+    // auth probe bounds one room over. The threads stay unjoined for exactly
+    // that reason; the channel is what bounds the wait.
+    //
+    // The channel carries artefacts as well as the two final transcripts, so
+    // the deadline loop below can surface the authorize link and the device
+    // code while the child is still waiting on the user (see
+    // `spawn_login_drain`).
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<LoginDrainEvent>();
+    spawn_login_drain(
+        agent.to_owned(),
+        LoginStream::Stdout,
+        stdout,
+        code.clone(),
+        events_tx.clone(),
+    );
+    spawn_login_drain(
+        agent.to_owned(),
+        LoginStream::Stderr,
+        stderr,
+        code.clone(),
+        events_tx,
+    );
     // The stdin write runs on its own thread so it can never park the
     // deadline loop below: the code is up to the GUI's 4096-char max, which
     // exceeds the 4 KiB Windows pipe buffer, so a child that never reads
@@ -2099,6 +2366,13 @@ fn login(
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
     let mut timed_out = false;
+    // Artefacts already announced on stderr, so the exit paths below do not
+    // print the same link twice.
+    let mut streamed_url: Option<String> = None;
+    let mut streamed_code: Option<String> = None;
+    let mut out_text = String::new();
+    let mut err_text = String::new();
+    let mut finished_streams = 0usize;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -2111,22 +2385,58 @@ fn login(
             }
         }
         if started.elapsed() > deadline {
+            // `kill_process_tree` signals the group and then reaps the child
+            // itself, so no zombie survives this path.
             crate::support::kill_process_tree(&mut child);
             timed_out = true;
             break None;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        // The 100 ms poll tick is spent waiting on the drains instead of
+        // sleeping, so an artefact reaches the terminal within a tick of the
+        // vendor CLI printing it. That is the whole point of this flow: the
+        // child deliberately stays alive until the user opens the link, so
+        // anything published only after it exits is published too late.
+        match events_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => apply_login_event(
+                event,
+                &mut streamed_url,
+                &mut streamed_code,
+                (&mut out_text, &mut err_text),
+                &mut finished_streams,
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // Both drains are gone (pipes closed early, or a reader died).
+            // Keep the poll cadence so the deadline and `try_wait` above
+            // still run; a `recv` on a dead channel returns instantly and
+            // would otherwise spin this loop.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
     };
-    // One short grace per stream for the drains; in the timeout case the
-    // killed child's pipes close so the readers finish promptly. When a
-    // straggler still holds a pipe, proceed with whatever was captured —
-    // the readers die with this process and cannot reach the transcript.
-    let out_text = out_rx
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap_or_default();
-    let err_text = err_rx
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap_or_default();
+    // One short grace for the drains once the child is gone; in the timeout
+    // case the killed child's pipes close so the readers finish promptly.
+    // When a straggler still holds a pipe, proceed with whatever was
+    // captured — the readers die with this process and cannot reach the
+    // transcript. Both streams share the one budget (it used to be 5 s each,
+    // sequentially) because they now report on one channel.
+    let grace = Instant::now() + Duration::from_secs(5);
+    while finished_streams < 2 {
+        let remaining = grace.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match events_rx.recv_timeout(remaining) {
+            Ok(event) => apply_login_event(
+                event,
+                &mut streamed_url,
+                &mut streamed_code,
+                (&mut out_text, &mut err_text),
+                &mut finished_streams,
+            ),
+            Err(_) => break,
+        }
+    }
     let combined = format!("{out_text}\n{err_text}");
     // Exact-value strip of the authorization code this process wrote to the
     // child's stdin before the heuristic pass: a short, non-secret-shaped
@@ -2135,8 +2445,14 @@ fn login(
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
+        // The full-transcript scan stays the source of truth for the error
+        // hint below; the note only fires for a link the live drain never
+        // published — one that arrived without a trailing newline, or after
+        // the transcript tail evicted the line the drain would have scanned.
         let login_url = extract_login_url(agent, &combined);
-        if let Some(url) = &login_url {
+        if let Some(url) = &login_url
+            && streamed_url.as_deref() != Some(url.as_str())
+        {
             note!("login link: {url}");
         }
         // Unlike the unconditionally-printed single-line link above, the
@@ -2155,10 +2471,14 @@ fn login(
         )));
     }
     let status = status.expect("loop only breaks with a status or returns");
-    // The vendor login output is echoed once, redacted: live streaming would
-    // bypass redaction, and login transcripts are exactly what users paste
-    // into issues. It goes to stderr and only in human mode, so `--output
-    // json` stdout stays a single serde_json line.
+    // The vendor login output is echoed once, redacted: login transcripts are
+    // exactly what users paste into issues, so the bulk of the stream must
+    // never reach the terminal unredacted. (The login URL and the device code
+    // are the two exceptions, already streamed live by the drains above —
+    // they are what the user must act on, and they are extracted through the
+    // agent allow-list rather than passed through verbatim.) It goes to
+    // stderr and only in human mode, so `--output json` stdout stays a single
+    // serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
     if output == OutputMode::Human && !echoed.trim().is_empty() {
         note!("{echoed}");
@@ -2406,11 +2726,33 @@ fn providers_save(
             "the kimi wire protocol only applies to the kimi agent",
         ));
     }
-    if provider_id.is_none() && agent == "claude" && model_slots.is_empty() {
-        return Err(CliError::failed(
-            "code providers add: claude requires --model-slot SLOT=MODEL for every Claude \
-             model slot (a missing slot falls back to official traffic)",
-        ));
+    if provider_id.is_none() && agent == "claude" {
+        // The store does not merely reject an EMPTY slot set: it requires a
+        // non-empty model for every id in `CLAUDE_MODEL_SLOTS` and fails the
+        // first missing one with a Chinese message. Checking only
+        // `is_empty()` here let `--model-slot sonnet=x` through the English
+        // gate and surfaced that Chinese text via `store_error`, so the
+        // pre-check validates the full required set and names what is
+        // missing. Empty models cannot reach here (`parse_model_slot_pairs`
+        // rejects `SLOT=`), but the trim mirrors the store's own filter so a
+        // future caller of `providers_save` cannot slip one past.
+        let missing: Vec<&str> = CLAUDE_MODEL_SLOTS
+            .into_iter()
+            .filter(|slot| {
+                !model_slots
+                    .iter()
+                    .any(|(name, model)| name.as_str() == *slot && !model.trim().is_empty())
+            })
+            .collect();
+        if !missing.is_empty() {
+            return Err(CliError::failed(format!(
+                "code providers add: claude requires --model-slot SLOT=MODEL for every Claude \
+                 model slot (a missing slot falls back to official traffic); missing: {} \
+                 (valid slots: {})",
+                missing.join(", "),
+                CLAUDE_MODEL_SLOTS.join(", "),
+            )));
+        }
     }
     let manager = open_providers()?;
     // Update must refuse an unknown provider before any secret resolution:
@@ -3004,8 +3346,11 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 // breaks this build instead of silently diverging. (`SEARCH_LIMIT` is
 // referenced through the module path where it is compared.)
 use pinvou3_lib::features::codex_acp::workspace::{DIFF_LIMIT, PREVIEW_LIMIT};
-/// Upper bound on per-file diffs composed into one whole-workspace diff; each
-/// file costs two git spawns, so this bounds the subprocess fan-out.
+/// Upper bound on per-file diffs composed into one whole-workspace diff. Each
+/// file costs exactly two `git diff` spawns (unstaged + staged); the
+/// canonicalization and the `git rev-parse --show-toplevel` root resolution
+/// are hoisted out of the loop and paid once per command, not per file. So
+/// this bounds the subprocess fan-out at 2N + 1 git spawns.
 const WORKSPACE_DIFF_FILE_CAP: usize = 500;
 
 /// `String::truncate` panics on a non-char-boundary index; a multi-byte diff
@@ -3976,9 +4321,15 @@ fn workspace_diff(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
+    // Resolved once per command rather than per file: `git rev-parse
+    // --show-toplevel` is a process spawn, and the whole-workspace lane below
+    // calls the per-file diff up to WORKSPACE_DIFF_FILE_CAP times. The root is
+    // already canonical here, so the per-file helper no longer re-canonicalizes
+    // it either.
+    let at_git_root = git_root(&root).is_some_and(|git_root| git_root == root);
     match file {
         Some(file) => {
-            let diff = workspace_diff_one(&root, file)?;
+            let diff = workspace_diff_one(&root, at_git_root, file)?;
             let value = serde_json::json!({
                 "relativePath": diff.0,
                 "text": diff.1,
@@ -4024,7 +4375,7 @@ fn workspace_diff(
                 // in the JSON envelope (machine-readable, keyed by path), and a
                 // stderr note.
                 let relative = row["relativePath"].as_str().unwrap_or_default().to_owned();
-                match workspace_diff_one(&root, &relative) {
+                match workspace_diff_one(&root, at_git_root, &relative) {
                     Ok((_, text, _)) => {
                         if !combined.is_empty() {
                             combined.push('\n');
@@ -4075,30 +4426,36 @@ fn workspace_changes_value(session_id: &str, root: &Path) -> Result<serde_json::
 /// One-file diff with the same composition rules as
 /// `workspace::workspace_diff`: staged + unstaged sections, synthetic diff for
 /// untracked text files, preview fallback outside git.
+///
+/// `root` must already be canonical and `at_git_root` must already say whether
+/// it is the top level of a git work tree: both are resolved once by
+/// `workspace_diff` (the latter costs a `git rev-parse` spawn) because the
+/// whole-workspace lane calls this up to `WORKSPACE_DIFF_FILE_CAP` times, and
+/// repeating them per file tripled the subprocess fan-out of the command.
 fn workspace_diff_one(
     root: &Path,
+    at_git_root: bool,
     relative_path: &str,
 ) -> Result<(String, String, bool), CliError> {
-    let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
     let path = root.join(&relative);
-    if !path.starts_with(&root) {
+    if !path.starts_with(root) {
         return Err(CliError::failed(
             "code workspace diff: path escapes the workspace",
         ));
     }
     let mut captured_over_cap = false;
-    let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
+    let mut text = if at_git_root {
         // Capped like the untracked lane below: a modified multi-gigabyte
         // file must not buffer whole just to be truncated at DIFF_LIMIT.
         const GIT_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
         let (unstaged, unstaged_cut) = git_output_capped(
-            &root,
+            root,
             &["diff", "--no-ext-diff", "--no-color", "--", &relative],
             GIT_READ_CAP,
         )?;
         let (staged, staged_cut) = git_output_capped(
-            &root,
+            root,
             &[
                 "diff",
                 "--cached",

@@ -115,6 +115,18 @@ fn seed_transcript(id: &str, user_text: &str, assistant_text: &str) {
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
+/// Rewrites one seeded message's `role` in place. `role` is a plain `String`
+/// on `SavedSession`, so a transcript can carry anything there — including the
+/// terminal escapes the body sanitizer exists to stop.
+fn set_message_role(id: &str, index: usize, role: &str) {
+    let home = PathBuf::from(std::env::var_os("PINVOU3_HOME").unwrap());
+    let path = home.join("sessions").join(format!("{id}.json"));
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    value["messages"][index]["role"] = serde_json::json!(role);
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+}
+
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
@@ -569,6 +581,13 @@ fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {
 /// redraws the current line over earlier output. The transcript's own
 /// newlines and tabs must survive, because they ARE the output the caller
 /// asked for. JSON mode keeps the verbatim bytes.
+///
+/// The message ROLE is the same surface: it is a plain `String` on the
+/// deserialized session, not an enum, so a transcript can put an OSC sequence
+/// in the `[n] <role>` header of `sessions show` just as easily as in the body
+/// below it. Unlike the body it is a single-line header cell, so it also loses
+/// its newlines and tabs — a role that spans lines would push the body out of
+/// its own header.
 #[test]
 fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -576,6 +595,8 @@ fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() 
     let id = create_session_fixture();
     let hostile = "line1\n\tindented\x1b[2J\x1b]0;pwned\x07 tail\roverwrite";
     seed_transcript(&id, "hello", hostile);
+    let hostile_role = "assistant\x1b]0;pwned\x07\tspoof\nsecond";
+    set_message_role(&id, 1, hostile_role);
 
     for arguments in [
         vec!["pinvou", "sessions", "show", &id],
@@ -599,10 +620,27 @@ fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() 
         );
     }
 
+    // The role header is collapsed as a COLUMN, not as a block: the escape is
+    // gone and so are the tab and the newline, so the header stays one line.
+    // Each control character becomes its own space (the collapse substitutes
+    // one-for-one, it does not squeeze runs), so BEL and TAB leave two.
+    let outcome = run(&["pinvou", "sessions", "show", &id]).expect("show must succeed");
+    assert!(
+        outcome
+            .stdout
+            .contains("[2] assistant ]0;pwned  spoof second\n"),
+        "the role header must be collapsed onto one line: {:?}",
+        outcome.stdout
+    );
+
     // JSON mode was never the problem (serde_json escapes everything below
     // 0x20) and must keep reporting the stored bytes.
     let value = run_json(&["pinvou", "--output", "json", "sessions", "show", &id]);
     assert_eq!(value["messages"][1]["text"], serde_json::json!(hostile));
+    assert_eq!(
+        value["messages"][1]["role"],
+        serde_json::json!(hostile_role)
+    );
 }
 
 /// `sessions export --output` writes the whole conversation — system prompt,
@@ -652,6 +690,12 @@ fn sessions_export_output_file_is_owner_readable_only() {
 /// `agent` tool call and `error` is whatever the failing worker reported. A
 /// tab would invent a fifth column and a newline would turn one subagent
 /// into two rows, silently breaking every consumer that cuts on `\t`.
+///
+/// The state cell (column 1) is pinned here too. The foundation defines
+/// `failed = done && status != Completed`, so one arm covers every terminal
+/// non-success and prints the foundation's own status name — this fixture is
+/// a `failed` worker WITH a transcript, which is the only shape that reaches
+/// that arm (no transcript short-circuits to "queued" first).
 #[test]
 fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -692,6 +736,20 @@ fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
         .to_string(),
     )
     .unwrap();
+    // The transcript half of the listing: `list` keys the side table off the
+    // header line, not off the file name, so a readable header is enough to
+    // make `has_transcript` true — which is what lets the row reach the
+    // terminal-status arm instead of short-circuiting to "queued".
+    let transcripts_dir = state_dir.join("subagent-transcripts");
+    std::fs::create_dir_all(&transcripts_dir).unwrap();
+    std::fs::write(
+        transcripts_dir.join("w-1.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({ "kind": "subagent_transcript_header", "agent_id": "w-1" })
+        ),
+    )
+    .unwrap();
 
     let outcome = run(&["pinvou", "sessions", "subagents", &id]).expect("subagents must succeed");
     assert_eq!(
@@ -708,6 +766,10 @@ fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
         outcome.stdout
     );
     assert_eq!(columns[0], "w-1");
+    assert_eq!(
+        columns[1], "failed",
+        "a terminal non-success prints the foundation's own status name"
+    );
     assert_eq!(columns[2], "audit the repo [31m");
     assert_eq!(columns[3], "boom detail second line");
     assert!(
@@ -782,6 +844,9 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     assert_eq!(value["artifacts"].as_array().unwrap().len(), 1);
     let value = run_json(&["pinvou", "artifacts", "list", "--session", "other"]);
     assert_eq!(value["artifacts"].as_array().unwrap().len(), 0);
+    // Always present, so a JSON consumer can tell an empty index apart from
+    // one truncated by the per-record scan cap.
+    assert_eq!(value["skipped_sessions"], serde_json::json!([]));
 
     // read returns the validated text content
     let value = run_json(&["pinvou", "artifacts", "read", &id, "report.md"]);
@@ -862,6 +927,52 @@ fn artifacts_read_rejects_escape_outside_the_session() {
     let error = run(&["pinvou", "artifacts", "read", "../escape", "a.md"])
         .expect_err("invalid session id must be a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage);
+}
+
+/// The session-storage containment is stricter than the GUI's read command,
+/// but it says nothing about *what* the file is. An agent can create `.env` or
+/// `.ssh/id_rsa` inside its own workspace, and the GUI path policy
+/// (`platform::path_policy::check_sensitive_components`) refuses exactly those
+/// names — the CLI must too, in both directions, or it becomes the way to lift
+/// a credential the other surface will not touch.
+#[test]
+fn artifacts_refuses_credential_components_inside_the_session_workspace() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("artifacts-sensitive");
+    let id = create_session_fixture();
+
+    let workspace_dir = home.sessions_root().join(&id).join("workspace");
+    std::fs::create_dir_all(workspace_dir.join(".ssh")).unwrap();
+    std::fs::write(workspace_dir.join(".ssh").join("id_rsa"), "PRIVATE KEY").unwrap();
+    std::fs::write(workspace_dir.join(".env"), "TOKEN=secret\n").unwrap();
+    // An ordinary deliverable whose name merely contains a blacklisted string
+    // must keep working: the policy is about path components, not substrings.
+    std::fs::write(workspace_dir.join("environment.md"), "# notes\n").unwrap();
+
+    for relative in [".ssh/id_rsa", ".env"] {
+        let error = run(&["pinvou", "artifacts", "read", &id, relative])
+            .expect_err("a credential component must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{relative}: {error}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("artifact_crosses_sensitive_component"),
+            "{relative}: {error}"
+        );
+    }
+    // Writes take the same refusal, and before the markdown-suffix check: the
+    // file is untouched.
+    let error = run(&["pinvou", "artifacts", "write", &id, ".env", "--stdin"])
+        .expect_err("writing a credential component must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert_eq!(
+        std::fs::read_to_string(workspace_dir.join(".env")).unwrap(),
+        "TOKEN=secret\n"
+    );
+
+    let outcome =
+        run(&["pinvou", "artifacts", "read", &id, "environment.md"]).expect("benign name reads");
+    assert_eq!(outcome.stdout, "# notes\n");
 }
 
 /// Scheduled-run sessions ledger OUTSIDE `sessions_root()` — their

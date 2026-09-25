@@ -222,6 +222,101 @@ fn files_ingest_missing_file_fails_at_execute_with_exit_one() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
+/// `validate_path` requires an absolute path — free for the GUI's file dialog,
+/// fatal for `pinvou files ingest report.md`. The positional resolves against
+/// the cwd first, like every other path input in the crate.
+#[test]
+fn files_ingest_resolves_a_relative_path_against_the_current_directory() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("files-relative");
+    let scoped = ScopedHomeDir::new("files-relative");
+    std::fs::write(scoped.dir.join("notes.md"), "# Relative\n").unwrap();
+
+    // The cwd is process-global; ENV_LOCK (held for this whole test) is the
+    // same gate every execute-level test in this file uses, and the parse-only
+    // tests that may run concurrently name absolute paths.
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&scoped.dir).unwrap();
+    let outcome = run(&["pinvou", "files", "ingest", "notes.md"]);
+    std::env::set_current_dir(&previous).unwrap();
+
+    let outcome = outcome.expect("a relative path must resolve against the cwd");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome.stdout.contains("File: notes.md"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(outcome.stdout.contains("# Relative"), "{}", outcome.stdout);
+}
+
+/// Resolving relatives must not weaken the rest of the upload policy: the
+/// `$HOME` confinement is GUI parity and stays, and the refusal has to explain
+/// itself in English rather than echoing the feature's `not under $HOME`.
+#[test]
+fn files_ingest_refuses_a_file_outside_the_home_directory() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("files-outside-home");
+    // `HomeGuard` roots live under the system temp dir, which is outside the
+    // real `$HOME` on every platform this crate builds for.
+    let outside = home.root.join("outside.md");
+    std::fs::write(&outside, "# Outside\n").unwrap();
+
+    let error = run(&["pinvou", "files", "ingest", outside.to_str().unwrap()])
+        .expect_err("a file outside $HOME must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("must live under your home directory"),
+        "the refusal must explain the constraint: {message}"
+    );
+    assert!(
+        !message.contains("not under $HOME"),
+        "the raw feature wording must not reach CLI output: {message}"
+    );
+}
+
+/// The `warning` chip is GUI i18n copy. Printing it verbatim put Chinese into
+/// an English tool; the boundary translator turns the known cases into English
+/// in both output modes.
+#[test]
+fn files_ingest_translates_the_warning_chip_to_english() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("files-warning");
+    let scoped = ScopedHomeDir::new("files-warning");
+    // Unknown extension + a NUL byte: the feature's content sniffer classifies
+    // this as binary and returns a warning placeholder. No external tool is
+    // involved, so the assertion is hermetic on every platform. The length is
+    // odd on purpose — the sniffer checks for BOM-less UTF-16 first, and that
+    // detector only considers even-length buffers, so an odd one cannot be
+    // mistaken for wide text.
+    let blob = scoped.dir.join("opaque.bin");
+    std::fs::write(&blob, [0x89u8, 0x50, 0x4e, 0x47, 0x00, 0x1a, 0x0a]).unwrap();
+
+    let outcome = run(&["pinvou", "files", "ingest", blob.to_str().unwrap()])
+        .expect("a binary placeholder is still a successful ingest");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome.stdout.contains("Warning: unsupported file type"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome
+            .stdout
+            .chars()
+            .any(|value| ('\u{4e00}'..='\u{9fff}').contains(&value)),
+        "no CJK GUI copy may reach CLI output: {}",
+        outcome.stdout
+    );
+
+    let value = run_json(&["pinvou", "files", "ingest", blob.to_str().unwrap()]);
+    assert_eq!(
+        value["warning"],
+        serde_json::json!("unsupported file type (binary)")
+    );
+}
+
 // ── voice ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -239,16 +334,47 @@ fn voice_subcommands_parse() {
         ])
         .is_ok()
     );
-    for mode in ["task", "edit"] {
+    assert!(
+        parse_args([
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "task",
+            "--text-file",
+            "/tmp/t.txt"
+        ])
+        .is_ok()
+    );
+    // The draft is what the edit prompt rewrites (the GUI's `draft_text`), so
+    // `--mode edit` only parses with one; both spellings are accepted, and
+    // the other modes may carry one too (the GUI sends it on every lane).
+    for draft in [["--draft", "existing body"], ["--draft-file", "/tmp/d.txt"]] {
         assert!(
             parse_args([
                 "pinvou",
                 "voice",
                 "postprocess",
                 "--mode",
-                mode,
+                "edit",
                 "--text-file",
-                "/tmp/t.txt"
+                "/tmp/t.txt",
+                draft[0],
+                draft[1]
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_args([
+                "pinvou",
+                "voice",
+                "postprocess",
+                "--mode",
+                "dictation",
+                "--text",
+                "hello",
+                draft[0],
+                draft[1]
             ])
             .is_ok()
         );
@@ -291,6 +417,51 @@ fn voice_rejects_invalid_usage_with_exit_two() {
             "/tmp/t",
         ],
         vec!["pinvou", "voice", "postprocess", "--mode", "task", "--text"],
+        // `edit` rewrites the input-box draft; without one the shipped prompt
+        // would describe a DRAFT_TEXT section that is never transmitted.
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "make it three bullets",
+        ],
+        // At most one draft source, and each needs a value.
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "a",
+            "--draft",
+            "body",
+            "--draft-file",
+            "/tmp/d",
+        ],
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "a",
+            "--draft",
+        ],
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "a",
+            "--draft-file",
+        ],
         vec!["pinvou", "voice", "asr-status", "--extra"],
         vec!["pinvou", "voice", "asr-install", "--extra"],
         // The install consent flag is accepted at most once.
@@ -637,6 +808,95 @@ fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
     );
 }
 
+/// The edit prompt rewrites the input-box draft, so a draft that resolves to
+/// nothing is refused before the windowless host is booted — the parser only
+/// sees that an option was passed, not that its file was blank. Hermetic:
+/// the refusal precedes every host/model step.
+#[test]
+fn voice_postprocess_edit_refuses_a_blank_draft_before_booting_the_host() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("voice-postprocess-blank-draft");
+    let blank = home.root.join("draft.txt");
+    std::fs::write(&blank, "  \n\t\n").unwrap();
+    for draft in [
+        vec!["--draft", "   "],
+        vec!["--draft-file", blank.to_str().unwrap()],
+    ] {
+        let mut arguments = vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "把它改成三条要点",
+        ];
+        arguments.extend(draft.iter().copied());
+        let error = run(&arguments).expect_err("a blank draft must be refused");
+        assert_usage(&error, &arguments.join(" "));
+        assert!(
+            error.to_string().contains("draft"),
+            "the refusal must name the draft: {error}"
+        );
+    }
+}
+
+/// `--draft-file` gets the same input hygiene as `--text-file`: regular files
+/// only, so a character device or FIFO cannot stream into the prompt. Unix
+/// only because of the `/dev` path.
+#[cfg(unix)]
+#[test]
+fn voice_postprocess_draft_file_refuses_a_special_file() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("voice-postprocess-draft-special");
+    let error = run(&[
+        "pinvou",
+        "voice",
+        "postprocess",
+        "--mode",
+        "edit",
+        "--text",
+        "把它改成三条要点",
+        "--draft-file",
+        "/dev/zero",
+    ])
+    .expect_err("a character device must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "the refusal must name the regular-file rule: {error}"
+    );
+}
+
+/// Pure-noise input short-circuits without touching the model (GUI parity),
+/// and every postprocess result names the GUI pipeline stages the CLI does
+/// NOT run — the deterministic rule corrections and the shrink/protected-term
+/// validator — so the difference is disclosed instead of silent. Hermetic:
+/// the empty short-circuit precedes the host boot.
+#[test]
+fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("voice-postprocess-empty");
+    let value = run_json(&[
+        "pinvou",
+        "voice",
+        "postprocess",
+        "--mode",
+        "edit",
+        "--text",
+        "   ",
+        "--draft",
+        "整理会议纪要。",
+    ]);
+    assert_eq!(value["source"], "empty");
+    assert_eq!(value["text"], "");
+    let omitted = value["omitted_stages"]
+        .as_array()
+        .expect("every postprocess result discloses the omitted GUI stages");
+    assert!(omitted.contains(&serde_json::json!("deterministic-rule-corrections")));
+    assert!(omitted.contains(&serde_json::json!("shrink-and-protected-term-validation")));
+}
+
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)
 /// and calls the configured model endpoint. Run with: cargo test -p
 /// pinvou-cli --test misc_contract -- --ignored voice_postprocess
@@ -667,8 +927,15 @@ fn voice_postprocess_calls_the_active_model() {
 /// OpenAI wire), which triggers the retry, and the retry call with HTTP 500.
 /// GUI parity (`app/commands/voice.rs`): the failed retry must fail the
 /// command (exit 1, `voice postprocess failed: …`) — the known-bad first
-/// output must never be returned as the result. Run with: cargo test -p
-/// pinvou-cli --test misc_contract -- --ignored voice_postprocess_retry
+/// output must never be returned as the result.
+///
+/// The mock records both request bodies, because the failure prefix alone
+/// proves nothing: `voice postprocess failed: timeout budget exhausted before
+/// retry` matches it just as well, and that is exactly what a budget measured
+/// across the windowless-host boot produced — a structurally dead retry that
+/// this test could not see. Asserting that a SECOND request arrived, and that
+/// it carried the retry system prompt, is what pins the fix. Run with: cargo
+/// test -p pinvou-cli --test misc_contract -- --ignored voice_postprocess_retry
 #[test]
 #[ignore = "needs display host: cargo test --test misc_contract -- --ignored voice_postprocess_retry"]
 fn voice_postprocess_retry_failure_is_an_error() {
@@ -680,6 +947,9 @@ fn voice_postprocess_retry_failure_is_an_error() {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("bind the loopback mock endpoint");
     let address = listener.local_addr().unwrap();
+    let bodies: std::sync::Arc<Mutex<Vec<String>>> =
+        std::sync::Arc::new(Mutex::new(Vec::with_capacity(2)));
+    let recorded = std::sync::Arc::clone(&bodies);
     let server = std::thread::spawn(move || {
         for round in 0..2 {
             let (mut stream, _) = listener.accept().expect("mock accepts a request");
@@ -691,12 +961,34 @@ fn voice_postprocess_retry_failure_is_an_error() {
                 }
                 head.push(byte[0]);
             }
-            let head = String::from_utf8_lossy(&head);
+            let head = String::from_utf8_lossy(&head).into_owned();
             let path = head
                 .split_whitespace()
                 .nth(1)
                 .unwrap_or_default()
                 .to_owned();
+            // Read the JSON body too: which prompt each attempt carried is
+            // the observable difference between a real retry and a first
+            // attempt that merely failed twice as loudly.
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            if length > 0 && stream.read_exact(&mut body).is_err() {
+                body.clear();
+            }
+            recorded
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(String::from_utf8_lossy(&body).into_owned());
             let response = if round == 0 {
                 let body = if path.contains("/v1/messages") {
                     // Anthropic wire: empty content is the retry trigger.
@@ -746,17 +1038,42 @@ fn voice_postprocess_retry_failure_is_an_error() {
         !message.contains("partial first output"),
         "the known-bad first output must not leak into the result: {message}"
     );
+    // The failure must be the retry's HTTP 500, not a starved budget: a clock
+    // started before `run_windowless_host` spends the whole 8 s task budget on
+    // the boot and reports this instead, with no second request ever issued.
+    assert!(
+        !message.contains("budget exhausted"),
+        "the model-call clock must start after the host is up: {message}"
+    );
     // The server exits after its two rounds; if the host failed before even
     // the first request, the accept loop would block the join forever —
     // give the thread a bounded window and detach it (the test process is
     // short-lived; a leaked listener thread dies with it).
     for _ in 0..100 {
         if server.is_finished() {
-            server.join().expect("the mock endpoint thread finishes");
-            return;
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the retry must actually be issued; the endpoint saw {} request(s)",
+        bodies.len()
+    );
+    assert!(
+        bodies[0].contains("你是 Pinvou 的语音任务纠错器"),
+        "the first attempt must carry the task system prompt: {}",
+        bodies[0]
+    );
+    // "禁止空输出" appears only in `postprocess_retry_prompt`, never in the
+    // first-attempt system prompt.
+    assert!(
+        bodies[1].contains("禁止空输出"),
+        "the second attempt must carry the retry prompt: {}",
+        bodies[1]
+    );
 }
 
 /// `voice asr-install` mutates the system (pkexec/apt ffmpeg install), so
@@ -775,6 +1092,40 @@ fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
     assert!(
         error.to_string().contains("--yes"),
         "the refusal must name the --yes flag: {error}"
+    );
+}
+
+/// Two concurrent `voice asr-install --yes` processes would both
+/// `File::create` the same `.part` file and interleave their writes; the
+/// GUI's equivalent guard (`voice_asr::begin_asr_install` swapping
+/// `ASR_INSTALLING`) is process-local and cannot see a second CLI. The
+/// cross-process fd-lock must refuse the later entrant with a stable busy
+/// code, before any ffmpeg probe, pkexec install or model download runs — so
+/// this test is hermetic even though the command it drives is not. Linux-only
+/// because elsewhere the platform gate fails the command first.
+#[cfg(target_os = "linux")]
+#[test]
+fn voice_asr_install_refuses_while_another_process_holds_the_install_lock() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("voice-install-lock");
+    // Hold the advisory lock a second CLI process would hold.
+    let lock_path = home.root.join("locks").join("voice-asr-install.lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.try_write().expect("test acquires the contended lock");
+
+    let error = run(&["pinvou", "voice", "asr-install", "--yes"])
+        .expect_err("a contended install lock must refuse the second entrant");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().starts_with("asr_install_busy"),
+        "expected the stable busy code, got: {error}"
     );
 }
 
@@ -1038,10 +1389,17 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     let feedback_id = value["feedback_id"].as_str().expect("feedback id");
     assert!(!feedback_id.is_empty());
     assert_eq!(value["status"], "failed_validation");
+    // `status` is human copy and is always `failed_validation` on this
+    // (successful, exit-0) path, so it can carry no script signal at all.
+    // `uploaded` is the field a guard can branch on.
+    assert_eq!(value["uploaded"], serde_json::json!(false));
     assert_eq!(
         value["issue_url"],
         "https://github.com/Pinvou/pinvou-agent/issues"
     );
+    // No `--attach`: the key is still present, so a consumer never has to
+    // distinguish "absent" from "none".
+    assert_eq!(value["attachments"], serde_json::json!([]));
 
     // Nothing is left staged: the run concluded, so no package is pending.
     let pending_dir = home.root.join("feedback").join("pending");
@@ -1111,6 +1469,7 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     ])
     .unwrap();
     assert!(outcome.stdout.contains("Status: failed_validation"));
+    assert!(outcome.stdout.contains("Uploaded: false"));
     assert!(
         outcome
             .stdout
@@ -1154,6 +1513,113 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
         receipt["request"]["attachments"][0]["media_type"],
         "text/plain"
     );
+    // …and echoed back, so `--attach` is visibly not a no-op.
+    assert_eq!(value["attachments"][0]["name"], "trace.log");
+    assert_eq!(value["attachments"][0]["media_type"], "text/plain");
+    assert_eq!(value["attachments"][0]["size_bytes"], "log line\n".len());
+    assert_eq!(
+        value["attachments"][0]["path"],
+        attachment.display().to_string()
+    );
+    let outcome = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "attach human",
+        "--body-file",
+        body.to_str().unwrap(),
+        "--attach",
+        attachment.to_str().unwrap(),
+    ])
+    .unwrap();
+    assert!(
+        outcome
+            .stdout
+            .contains("Attachment: trace.log (text/plain,"),
+        "{}",
+        outcome.stdout
+    );
+}
+
+/// Nothing is read or uploaded from an attachment, but its path is written
+/// into a receipt that lives forever — and the GUI picker refuses credential
+/// locations outright. The CLI must not be the way around that rule.
+#[test]
+fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("feedback-attach-secret");
+    let body = home.root.join("body.md");
+    std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
+    let ssh = home.root.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "secret",
+        "--body-file",
+        body.to_str().unwrap(),
+        "--attach",
+        key.to_str().unwrap(),
+    ])
+    .expect_err("a credential attachment must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("refusing attachment"), "{error}");
+    // The refusal happens before anything is staged.
+    let pending_dir = home.root.join("feedback").join("pending");
+    assert!(!pending_dir.exists(), "nothing may be staged: {error}");
+}
+
+/// The receipt write used to `?` out before the cleanup below it, leaving the
+/// staged bundle under `feedback/pending/` forever — the exact state the
+/// module docs argue must never exist, since nothing retries it.
+#[test]
+fn feedback_submit_drops_the_staged_bundle_when_the_receipt_cannot_be_written() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("feedback-receipt-fail");
+    let body = home.root.join("body.md");
+    std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
+    // A regular file where the receipts directory belongs: `create_dir_all`
+    // fails, so the receipt cannot land.
+    let feedback_dir = home.root.join("feedback");
+    std::fs::create_dir_all(&feedback_dir).unwrap();
+    std::fs::write(feedback_dir.join("receipts"), "not a directory").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "receipt failure",
+        "--body-file",
+        body.to_str().unwrap(),
+    ])
+    .expect_err("an unwritable receipt must fail the command");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+
+    let pending_dir = feedback_dir.join("pending");
+    if pending_dir.exists() {
+        let left: Vec<_> = std::fs::read_dir(&pending_dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "a failed receipt write must not leave a permanent pending bundle: {left:?}"
+        );
+    }
 }
 
 #[test]

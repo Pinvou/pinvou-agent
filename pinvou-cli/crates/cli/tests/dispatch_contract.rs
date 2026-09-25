@@ -1,4 +1,7 @@
 use pinvou_cli::{CliCommand, ExitCode, OutputMode, parse_args};
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 fn usage_error(args: [&str; 2]) -> String {
     let error = parse_args(args).unwrap_err();
@@ -151,4 +154,136 @@ fn version_is_a_usable_subcommand_with_json_output() {
     let value: serde_json::Value =
         serde_json::from_str(&outcome.stdout).expect("json output is a single line");
     assert!(value["version"].is_string());
+}
+
+// ── product data root (support::sandbox_home) ───────────────────────────────
+//
+// These live in an integration test, not in the lib's unit tests, on purpose:
+// the lib test binary already contains tests that overwrite `PINVOU3_HOME`
+// without taking any lock, and an integration test runs in its own process
+// where this file's ENV_LOCK is the only writer.
+
+/// Serialises the tests below, which mutate the process-global `PINVOU3_HOME`
+/// / `HOME` / `USERPROFILE` variables (same pattern as the other contract
+/// test files in this directory).
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Panic-safe restore for the variables a test overwrites: the previous
+/// value is captured before the write and `Drop` puts back exactly that
+/// state (re-set, or removed when it was absent) on every exit path,
+/// including a failing assertion. Must be constructed while ENV_LOCK is
+/// held. `var_os`, not `var`: a host may legitimately hold a non-UTF-8
+/// value, and `var` would lose it.
+struct EnvGuard(Vec<(&'static str, Option<OsString>)>);
+
+impl EnvGuard {
+    fn set(entries: &[(&'static str, Option<&str>)]) -> Self {
+        let saved = entries
+            .iter()
+            .map(|(n, _)| (*n, std::env::var_os(n)))
+            .collect();
+        for (name, value) in entries {
+            match value {
+                // SAFETY: the caller holds ENV_LOCK for the whole test, so
+                // env writes are serialized in-process.
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                // SAFETY: as above.
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+        Self(saved)
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.0 {
+            match value {
+                // SAFETY: ENV_LOCK is held by the owning test.
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                // SAFETY: ENV_LOCK is held by the owning test.
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+    }
+}
+
+/// The CLI and the application must resolve one store root, never two. The
+/// CLI used to consult `USERPROFILE` before `HOME`, so a unix host with
+/// `USERPROFILE` exported (cross-platform CI images do that) sent the CLI to
+/// a different root than the app, which reads `HOME` only on unix.
+#[cfg(unix)]
+#[test]
+fn sandbox_home_ignores_userprofile_on_unix_like_the_application() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = std::env::temp_dir().join(format!("pinvou-cli-home-{}", std::process::id()));
+    let profile = std::env::temp_dir().join(format!("pinvou-cli-profile-{}", std::process::id()));
+    let _guard = EnvGuard::set(&[
+        ("PINVOU3_HOME", None),
+        ("HOME", home.to_str()),
+        ("USERPROFILE", profile.to_str()),
+    ]);
+
+    let resolved = pinvou_cli::support::sandbox_home().expect("an absolute $HOME resolves");
+    assert_eq!(
+        resolved,
+        home.join(".pinvou3"),
+        "the store root must follow $HOME, the only variable the app reads on unix"
+    );
+}
+
+/// A store root that is not absolute must fail before any family touches
+/// the store: a relative root silently follows the working directory, so the
+/// same command run from two directories would half-apply state to two
+/// stores. `var_os`/`var` both report a set-but-empty variable as *present*,
+/// so neither the `PINVOU3_HOME` nor the `$HOME` branch can rely on the
+/// unset fallback to catch it.
+#[test]
+fn sandbox_home_refuses_every_non_absolute_store_root() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+
+    {
+        let _guard = EnvGuard::set(&[("PINVOU3_HOME", Some(""))]);
+        let error = pinvou_cli::support::sandbox_home()
+            .expect_err("an empty PINVOU3_HOME must not resolve to the relative .pinvou3");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(error.to_string().contains("set but empty"), "{error}");
+    }
+
+    {
+        let _guard = EnvGuard::set(&[("PINVOU3_HOME", Some("pinvou-cli-relative-root"))]);
+        let error = pinvou_cli::support::sandbox_home()
+            .expect_err("a relative PINVOU3_HOME must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(error.to_string().contains("absolute"), "{error}");
+    }
+
+    // The $HOME branch: unix-only, because the app resolves the home
+    // directory from USERPROFILE/HOMEDRIVE on Windows.
+    #[cfg(unix)]
+    {
+        let _guard = EnvGuard::set(&[("PINVOU3_HOME", None), ("HOME", Some(""))]);
+        let error = pinvou_cli::support::sandbox_home()
+            .expect_err("an empty $HOME must not resolve to the relative .pinvou3");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("cannot resolve home directory"),
+            "{error}"
+        );
+    }
+}
+
+/// An absolute `PINVOU3_HOME` is returned exactly as the application's own
+/// resolver produced it — the CLI validates, it does not re-derive.
+#[test]
+fn sandbox_home_returns_an_absolute_override_unchanged() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let root: PathBuf =
+        std::env::temp_dir().join(format!("pinvou-cli-store-{}", std::process::id()));
+    let _guard = EnvGuard::set(&[("PINVOU3_HOME", root.to_str())]);
+
+    assert_eq!(
+        pinvou_cli::support::sandbox_home().expect("an absolute override resolves"),
+        root
+    );
 }

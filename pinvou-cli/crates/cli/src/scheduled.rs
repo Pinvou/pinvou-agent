@@ -326,7 +326,10 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
             )
         })?
         .to_owned();
-    validate_rrule(&rrule)?;
+    // Read `--paused` before validating: a past `FREQ=ONCE;AT=` is only a
+    // usage error for a task that starts active (see `validate_rrule`).
+    let paused = flags.contains(&"--paused");
+    validate_rrule(&rrule, !paused)?;
     let kind = match option(&options, "--kind") {
         Some(value) => TaskKind::parse_value(value)?,
         None => TaskKind::Chat,
@@ -343,7 +346,7 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         kind,
         model_id,
         mode,
-        paused: flags.contains(&"--paused"),
+        paused,
     })
 }
 
@@ -371,7 +374,11 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     let prompt_file = option(&options, "--prompt-file").map(PathBuf::from);
     let rrule = match option(&options, "--rrule") {
         Some(value) => {
-            validate_rrule(value)?;
+            // Unconditionally future-checked: `update` cannot see the stored
+            // status from the parser, and the strict reading is the safe
+            // default here — `resume` on an active-again task would otherwise
+            // meet a one-shot the sweep can never schedule.
+            validate_rrule(value, true)?;
             Some(value.to_owned())
         }
         None => None,
@@ -455,7 +462,17 @@ const MAX_HOURLY_INTERVAL: u32 = 1_000_000;
 /// timezone so a DST gap is rejected here (the foundation sweep would fail
 /// on the record every tick); the remaining next-run evaluation stays with
 /// the foundation's scheduler sweep.
-fn validate_rrule(rrule: &str) -> Result<(), CliError> {
+///
+/// `active` says whether the record will be created in the active state, and
+/// gates exactly one rule: the past-ONCE refusal. The foundation resolves the
+/// schedule only for an active record (`create_automation`:
+/// `if matches!(status, Active) { schedule.next_after_with_anchor(now, now)? }`),
+/// so a paused one-shot with an elapsed AT is a record the GUI creates without
+/// complaint — refusing it here would make `--paused` stricter than the
+/// surface it mirrors. Every other rule stays unconditional: a grammar error,
+/// an unknown field, a calendar overflow or a DST gap is a record the GUI can
+/// never write and that stalls its whole sweep once present, paused or not.
+fn validate_rrule(rrule: &str, active: bool) -> Result<(), CliError> {
     let mut parts: Vec<(String, String)> = Vec::new();
     for raw in rrule.split(';') {
         let item = raw.trim();
@@ -506,7 +523,7 @@ fn validate_rrule(rrule: &str) -> Result<(), CliError> {
 YYYY-MM-DDTHH:MM[:SS] or RFC3339)",
                 )
             })?;
-            validate_once_at(&at)
+            validate_once_at(&at, active)
         }
         Some("HOURLY") => {
             const ALLOWED: &str = "FREQ,INTERVAL,BYDAY,BYHOUR,BYMINUTE";
@@ -625,8 +642,9 @@ fn parse_byday(value: &str) -> Result<Vec<&'static str>, CliError> {
 /// local `YYYY-MM-DDTHH:MM[:SS]` stamp. Day-in-month is validated here too:
 /// the foundation parser rejects calendar-overflow stamps, and the GUI
 /// scheduler's whole sweep fails while even one unparseable record exists —
-/// the CLI must not be able to create such a record.
-fn validate_once_at(at: &str) -> Result<(), CliError> {
+/// the CLI must not be able to create such a record. `active` gates only the
+/// past-stamp refusal; see [`validate_rrule`].
+fn validate_once_at(at: &str, active: bool) -> Result<(), CliError> {
     let bytes = at.as_bytes();
     let digits = |range: std::ops::Range<usize>| {
         bytes
@@ -653,9 +671,10 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
         // The GUI resolves ONCE through `next_after_with_anchor(now, now)`
         // and refuses a stamp with no future run; mirror that so a
         // CLI-created task does not linger until the first sweep tick pauses
-        // it instead.
+        // it instead. Only for an active record: the GUI skips that
+        // resolution entirely when the task is created paused.
         let (secs, nanos) = parse_rfc3339(at).expect("parse_rfc3339 checked above");
-        if (secs, nanos) <= now_epoch() {
+        if active && (secs, nanos) <= now_epoch() {
             return Err(CliError::usage(format!(
                 "ONCE AT '{at}' is in the past; a one-shot needs a future run"
             )));
@@ -727,7 +746,8 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
             )));
         }
     };
-    if (resolved.timestamp(), resolved.timestamp_subsec_nanos()) <= now_epoch() {
+    // Same active-only gate as the RFC3339 channel above.
+    if active && (resolved.timestamp(), resolved.timestamp_subsec_nanos()) <= now_epoch() {
         return Err(CliError::usage(format!(
             "ONCE AT '{at}' is in the past; a one-shot needs a future run"
         )));
@@ -1634,8 +1654,9 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// malformed file's own content, as before). The file is renamed aside
 /// (not copied, the GUI's `handle_invalid` semantics): a copy would leave
 /// the malformed bytes at the canonical path and pile up a fresh quarantine
-/// copy on every subsequent read. The degradation is announced on stderr —
-/// silently resetting e.g. the user's viewed-run state looks like success.
+/// copy on every subsequent read. The degradation is announced on stderr
+/// whether or not the file could be moved aside — silently resetting e.g. the
+/// user's viewed-run state looks like success.
 fn quarantine_unreadable(path: &Path) {
     let (secs, nanos) = now_epoch();
     let stamp = format_rfc3339_millis(secs, nanos).replace([':', '.'], "-");
@@ -1648,14 +1669,33 @@ fn quarantine_unreadable(path: &Path) {
     // Same-directory rename; fall back to copy+remove for exotic mounts
     // where rename cannot serve.
     let moved = std::fs::rename(path, &target).or_else(|_| {
-        std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path).map(|_| ()))
+        let copied = std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path));
+        if copied.is_err() {
+            // A half-done fallback is worse than none: the malformed bytes
+            // stay at the canonical path *and* a `.invalid-<stamp>` copy is
+            // left behind, so every later read quarantines again under a fresh
+            // stamp and grows the directory without bound — the unbounded
+            // pile-up this rename-first policy exists to prevent. Drop the
+            // useless copy (a partial one when the copy itself failed) and
+            // leave the original alone for the user to fix.
+            let _ = std::fs::remove_file(&target);
+        }
+        copied
     });
-    if moved.is_ok() {
-        note!(
+    // Announced either way: a failed quarantine still degrades the registry to
+    // its default for this invocation, and silently resetting e.g. the user's
+    // viewed-run state looks like success.
+    match moved {
+        Ok(()) => note!(
             "pinvou: warning: quarantined malformed registry {} to {}",
             path.display(),
             target.display()
-        );
+        ),
+        Err(error) => note!(
+            "pinvou: warning: malformed registry {} could not be quarantined ({error}); it is \
+             ignored for this command — fix or remove the file manually",
+            path.display()
+        ),
     }
 }
 
@@ -1933,22 +1973,32 @@ fn session_titles(store: &SessionStore) -> std::collections::HashMap<String, Str
         .unwrap_or_default()
 }
 
+/// `store` is optional for the same reason `map_task` takes an
+/// `Option<&SessionStore>`: a command that already committed its write
+/// enriches best-effort (`open_sessions_for_enrichment`), and without the
+/// store there is simply no session to attribute — every session-derived
+/// field degrades to its absent value rather than failing the command.
 fn map_run(
     run: &serde_json::Value,
-    store: &SessionStore,
+    store: Option<&SessionStore>,
     titles: &std::collections::HashMap<String, String>,
     read_state: &serde_json::Value,
     task_name: Option<&str>,
     task_model: Option<&str>,
 ) -> serde_json::Value {
     let task_id = str_field(run, "automation_id").unwrap_or("").to_owned();
-    let session_id = owned_session_id_from_snapshot(run, &task_id, store, titles);
+    let session_id =
+        store.and_then(|store| owned_session_id_from_snapshot(run, &task_id, store, titles));
     let session_title = session_id
         .as_deref()
         .and_then(|id| titles.get(id))
         .filter(|title| *title != "Scheduled run")
         .cloned();
-    let archived = session_id.as_deref().is_some_and(|id| store.is_hidden(id));
+    // The owned session paired with the store that vouched for it. Without a
+    // store there is no session id either, so every session-derived field
+    // below reads as absent instead of guessing.
+    let session = session_id.as_deref().zip(store);
+    let archived = session.is_some_and(|(id, store)| store.is_hidden(id));
     let unread = str_field(run, "status") == Some("completed")
         && session_id.is_some()
         && !archived
@@ -1968,8 +2018,8 @@ fn map_run(
         "error": run.get("error").cloned().unwrap_or(serde_json::Value::Null),
         "unread": unread,
         "sessionTitle": session_title,
-        "pinned": session_id.as_deref().is_some_and(|id| store.is_pinned(id)),
-        "pinnedAt": session_id.as_deref().and_then(|id| store.pinned_at(id)),
+        "pinned": session.is_some_and(|(id, store)| store.is_pinned(id)),
+        "pinnedAt": session.and_then(|(id, store)| store.pinned_at(id)),
         "archived": archived,
         "taskName": task_name.map(str::to_owned),
         "taskModel": task_model.map(str::to_owned),
@@ -2008,7 +2058,7 @@ fn render_runs(
                 .get(automation_id)
                 .map(|(name, model)| (Some(name.as_str()), model.as_deref()))
                 .unwrap_or((None, None));
-            let value = map_run(run, store, &titles, read_state, task_name, task_model);
+            let value = map_run(run, Some(store), &titles, read_state, task_name, task_model);
             lines.push(format!(
                 "{}\t{}\t{}\t{}\t{}",
                 value["id"].as_str().unwrap_or(""),
@@ -2263,7 +2313,12 @@ enabled in settings",
     // The workspace is allocated from the automation id exactly like the GUI
     // (`ensure_automation_workspace`); clients cannot provide a path.
     let id = new_storage_id();
-    let now = now_string();
+    // One clock reading for both stamps: two separate reads straddle the
+    // workspace creation below, so a slow mkdir could publish a task whose
+    // created_at is *after* its updated_at — an ordering the GUI (a single
+    // `Utc::now()` in `create_automation`) can never produce.
+    let (secs, nanos) = now_epoch();
+    let now = format_rfc3339_millis(secs, nanos);
     let workspace = store_holder.workspace_dir(&id);
     std::fs::create_dir_all(&workspace).map_err(|error| {
         CliError::failed(format!(
@@ -2271,8 +2326,6 @@ enabled in settings",
             workspace.display()
         ))
     })?;
-    let (secs, nanos) = now_epoch();
-    let created_at = format_rfc3339_millis(secs, nanos);
     // The foundation's scheduler sweep fills next_run_at on its next tick;
     // see the module docs for the deferred-schedule deviation.
     let def = serde_json::json!({
@@ -2288,7 +2341,7 @@ enabled in settings",
         "trust_mode": true,
         "auto_approve": true,
         "status": if paused { "paused" } else { "active" },
-        "created_at": created_at,
+        "created_at": now,
         "updated_at": now,
         "next_run_at": serde_json::Value::Null,
         "last_run_at": serde_json::Value::Null,
@@ -2864,11 +2917,15 @@ enabled in settings",
             let _ = store_holder.write_def(&latest);
         }
     }
-    let sessions = open_sessions()?;
+    // Enrichment is best-effort: the organize pass already ran and its run
+    // record is committed above, so a sessions store boot failure must not
+    // report a finished, irreversible run as failed.
+    let sessions = open_sessions_for_enrichment();
+    let titles = sessions.as_ref().map(session_titles).unwrap_or_default();
     let value = map_run(
         &record,
-        &sessions,
-        &session_titles(&sessions),
+        sessions.as_ref(),
+        &titles,
         &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
         str_field(&def, "name"),
         str_field(&def, "model"),
@@ -2938,7 +2995,8 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     }
     // Archived tasks (deleted through the GUI or this CLI) keep their run
     // history visible in runs-all, exactly like the GUI sidebar feed.
-    let archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
+    let archive_path = store_holder.history_archive_path();
+    let archive = read_registry(&archive_path, &["tasks"]);
     if let Some(tasks) = archive.get("tasks").and_then(|value| value.as_object()) {
         for (task_id, archived) in tasks {
             names.entry(task_id.clone()).or_insert_with(|| {
@@ -2951,6 +3009,22 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
             });
             if let Some(runs) = archived.get("runs").and_then(|value| value.as_array()) {
                 for run in runs {
+                    // Archived runs get the same shape gate as the active lane
+                    // (`require_object_run_record`), but a failure skips the
+                    // record instead of failing the command: that is what the
+                    // GUI does with the same bytes
+                    // (`deserialize_archived_runs_lossy` warns and drops), and
+                    // one hand-edited entry in the shared archive must not be
+                    // able to hide every healthy task's runs. Pushing it
+                    // unchecked is the option that is not available — `map_run`
+                    // renders it as a phantom row of empty fields.
+                    if require_object_run_record(run, &archive_path).is_err() {
+                        note!(
+                            "pinvou: warning: ignoring invalid run in the scheduled history \
+                             archive for task {task_id}"
+                        );
+                        continue;
+                    }
                     let run_id = str_field(run, "id").unwrap_or("");
                     if !active_keys.contains(&(task_id.clone(), run_id.to_owned())) {
                         records.push(run.clone());
@@ -3283,7 +3357,7 @@ mod tests {
             "FREQ=CRON;EXPR=30 8 * * MON-FRI",
             "FREQ=CRON;EXPR=*/15 0 * JAN,DEC SUN",
         ] {
-            if let Err(error) = validate_rrule(valid) {
+            if let Err(error) = validate_rrule(valid, true) {
                 panic!("rejected valid rrule '{valid}': {error}");
             }
         }
@@ -3312,8 +3386,20 @@ mod tests {
             "FREQ=CRON;EXPR=* * * * * /5",
             "NOT-A-PAIR",
         ] {
-            let error = validate_rrule(invalid).expect_err(invalid);
+            let error = validate_rrule(invalid, true).expect_err(invalid);
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{invalid}");
+        }
+        // The paused channel relaxes exactly one rule — an elapsed ONCE AT,
+        // which the GUI also accepts for a paused record — and nothing else.
+        assert!(validate_rrule("FREQ=ONCE;AT=2020-01-01T00:00:00Z", false).is_ok());
+        for still_invalid in [
+            "FREQ=ONCE;AT=never",
+            "FREQ=ONCE;AT=2026-13-01T08:30",
+            "FREQ=MINUTELY;INTERVAL=5",
+            "FREQ=HOURLY;INTERVAL=0",
+        ] {
+            let error = validate_rrule(still_invalid, false).expect_err(still_invalid);
+            assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{still_invalid}");
         }
     }
 

@@ -46,7 +46,9 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done / cancelled
+    /// idle / scanning / done / cancelled / interrupted（扫描线程 panic 被兜底，
+    /// 见 `finish_scan_after_panic`）。前端只在 `done` 时刷新 L0，所以
+    /// `interrupted` 不会被误当成「扫完了」。
     pub phase: String,
     pub roots: Vec<String>,
     pub scanned: u64,
@@ -333,6 +335,24 @@ impl KnowledgeService {
             .unwrap_or_default()
     }
 
+    /// **指定任务**的导入状态（不是「最新任务」）。
+    ///
+    /// [`Self::index_status`] 走 `ImportJobStore::latest_state` 的优先级排序
+    /// （preparing/running → interrupted → done_with_errors → 其余，再按
+    /// updated_at 倒序）：`cancelled` 落在最后一档，任何更早的
+    /// done_with_errors / interrupted 任务都会反超它。GUI 不受影响——它只轮询
+    /// 「当前最该给用户看的任务」，这正是该排序的设计意图；但无头 CLI 的
+    /// `index cancel <job-id>` / `index status <job-id>` 报的是**点名的那个
+    /// 任务**，取消之后再读 latest 会串到另一个任务的状态上（人类行说取消了
+    /// B，JSON 体却是 A）。与 `resume_index`/`retry_index_item` 收尾时的
+    /// `imports.state(&job_id)` 同一入口、同一语义。
+    ///
+    /// 任务不存在按错误上报（底层是 `QueryReturnedNoRows`），调用方据此区分
+    /// 「任务没了」与「任务在但状态是空」。
+    pub fn index_job_state(&self, job_id: &str) -> Result<IndexState, String> {
+        self.imports.state(job_id).map_err(|e| e.to_string())
+    }
+
     pub fn cancel_index(&self) -> Result<(), String> {
         let job_id = self
             .active_import
@@ -542,44 +562,68 @@ impl KnowledgeService {
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
         let cancel = self.cancel.clone();
+        // panic 兜底需要一份不被闭包 move 走的状态句柄，否则 panic 后无法收口。
+        let panic_scan_state = self.scan_state.clone();
 
         thread::spawn(move || {
-            let ex = Excluder::default();
-            // 增量：载入现有快照，scanner 只写 mtime/size 变化的文件，未变的跳过。
-            let existing = store.load_index().unwrap_or_default();
-            let mut visited = std::collections::HashSet::new();
-            let mut scanned_total = 0u64;
-            for root in &roots {
-                let base = scanned_total;
-                let walked =
-                    scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
-                        scan_state.lock().scanned = base + n;
-                    });
-                scanned_total = base + walked;
-                scan_state.lock().scanned = scanned_total;
-                if cancel.load(Ordering::Relaxed) {
-                    break;
+            // 扫描线程 panic 兜底（与 `launch_import` 的导入线程同语义）：running
+            // 只在下面的正常收尾处清零，而 `scan_state` 是 parking_lot::Mutex——
+            // 不会中毒，panic 之后锁照常可取，状态却永远停在 running:true。GUI 只是
+            // 进度条不再前进（懒触发，下次进页重扫），但 `pinvou knowledge scan
+            // start` 是唯一**阻塞等待**该标志的调用方，会无输出、无退出码地挂死。
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let ex = Excluder::default();
+                // 增量：载入现有快照，scanner 只写 mtime/size 变化的文件，未变的跳过。
+                let existing = store.load_index().unwrap_or_default();
+                let mut visited = std::collections::HashSet::new();
+                let mut scanned_total = 0u64;
+                // 删除授权只按**真正遍历过**的根给，不按**请求**的根给（见
+                // `root_authorizes_deletion`）：scanner::scan 对走不动的根静默返回 0，
+                // 而清理阶段照跑，会把该根下整片索引当作「已消失」删光。
+                let mut swept_roots: Vec<PathBuf> = Vec::with_capacity(roots.len());
+                for root in &roots {
+                    let base = scanned_total;
+                    let walked =
+                        scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
+                            scan_state.lock().scanned = base + n;
+                        });
+                    scanned_total = base + walked;
+                    scan_state.lock().scanned = scanned_total;
+                    if root_authorizes_deletion(root, walked) {
+                        swept_roots.push(root.clone());
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
                 }
-            }
 
-            // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
-            if !cancel.load(Ordering::Relaxed) {
-                let stale = stale_entries(&existing, &visited, &roots);
-                if !stale.is_empty() {
-                    let _ = store.delete_many(&stale);
+                // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
+                if !cancel.load(Ordering::Relaxed) {
+                    let stale = stale_entries(&existing, &visited, &swept_roots);
+                    if !stale.is_empty() {
+                        let _ = store.delete_many(&stale);
+                    }
                 }
-            }
 
-            // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
-            let cancelled = cancel.load(Ordering::Relaxed);
-            let finished_at = now();
-            if !cancelled {
-                let _ = store.set_last_scan_finished_at(finished_at);
+                // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
+                let cancelled = cancel.load(Ordering::Relaxed);
+                let finished_at = now();
+                if !cancelled {
+                    let _ = store.set_last_scan_finished_at(finished_at);
+                }
+                let mut st = scan_state.lock();
+                st.running = false;
+                st.finished_at = finished_at;
+                st.phase = if cancelled { "cancelled" } else { "done" }.into();
+            }));
+            if let Err(panic) = outcome {
+                // 与空闲巡检的单轮兜底同样「停摆不静默」：不打印的话，扫描线程
+                // 死掉只表现为「进度条停了」，无从定位。
+                eprintln!(
+                    "[knowledge] 扫描线程 panic（已兜底收口，本轮不做已消失清理）: {panic:?}"
+                );
+                finish_scan_after_panic(&panic_scan_state);
             }
-            let mut st = scan_state.lock();
-            st.running = false;
-            st.finished_at = finished_at;
-            st.phase = if cancelled { "cancelled" } else { "done" }.into();
         });
 
         self.scan_state.lock().clone()
@@ -672,6 +716,42 @@ pub fn model_dir() -> PathBuf {
         .join("bge-m3")
 }
 
+/// 扫描线程 panic 后的状态收口：把 running 放掉，相位落到 `interrupted`。
+///
+/// 独立相位而不是复用 done/cancelled：既没扫完（`last_scan_finished_at` 不落库，下次
+/// 进页仍按「没扫过」重扫；内存里的 finished_at 只记中止时刻），也不是用户取消。前端
+/// 只在 `done` 时刷新 L0，`interrupted` 因此不会被误当成成功；阻塞等待的 CLI 则据此
+/// 报错而不是宣布扫描完成。
+fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
+    let mut st = scan_state.lock();
+    st.running = false;
+    st.finished_at = now();
+    st.phase = "interrupted".into();
+}
+
+/// 本轮扫描是否有资格在 `root` 之内执行「已消失」删除。
+///
+/// `scanner::scan` 对**走不动**的根静默返回 0（遍历错误在 `walk_pruned` 里被跳过）：
+/// 挂载点掉了、权限没了、根在预检之后被删掉，都只表现为「遍历到 0 个条目」。此时把该根
+/// 交给 [`stale_entries`] 当作删除边界，等于把它下面的整片索引判成已消失——`scan start
+/// --root /mnt/usb` 在掉盘后会删光 `/mnt/usb` 下的每一条，还报 `phase: done`、
+/// `scanned: 0`。
+///
+/// 两种「遍历到 0」必须分开：
+/// - **走到了、里面是空的**（根仍是可读目录）：用户确实把里面删光了，这一片就该扫掉，
+///   否则库里的幽灵条目永远清不掉——这是删除功能存在的理由，不能为了安全把它关掉。
+/// - **走不动**（根不存在 / 不是目录 / 读不动）：库里该根下条目的存亡无从判断，本轮就
+///   不该替它做决定，跳过即可（下一轮根恢复了自然会清）。
+///
+/// 残留的模糊地带只有一种：根是静态挂载点，卸载后仍留下一个可读的空目录——它与「用户
+/// 把目录删空」在文件系统层面完全同形，任何纯路径探测都分不开。这种情况按「空目录」
+/// 处理（即照旧清理），与掉盘会连挂载点一起消失/读不动的常见形态（udisks 自动挂载、
+/// 设备拔出后的 ESTALE/EIO、权限回收）相比是少数，且它至少不会静默：删除只发生在
+/// 用户点名的那个根之内。
+fn root_authorizes_deletion(root: &Path, walked: u64) -> bool {
+    walked > 0 || std::fs::read_dir(root).is_ok()
+}
+
 /// 计算本轮该删除的「已消失」条目：**只在本次真正遍历过的根之内**判定。
 ///
 /// 旧逻辑把「库里有、本次没遍历到」一律当作已消失删掉。GUI 下这没问题——它永远只扫用户
@@ -680,6 +760,9 @@ pub fn model_dir() -> PathBuf {
 /// 但 CLI 的 `knowledge scan start --root <DIR>` 允许扫任意目录：扫 B 目录时，从 A 目录
 /// 索引进来的条目会被整片误判为 stale，于是静默清库还报 `done`。删除的前提因此是该条目
 /// 落在本次扫过的某个根之内——根外条目从来不在本轮扫描的职责范围里，无从判断其存亡。
+///
+/// `roots` 是**真正遍历过**的根（[`root_authorizes_deletion`] 过滤后的），不是调用方
+/// 请求的根：请求与遍历之间隔着一次 TOCTOU，请求的根走不动时把它当边界就会删光整片。
 ///
 /// 包含关系用 [`Path::starts_with`] 按**路径分量**比较，不能用字符串前缀：`/home/a` 不得
 /// 匹配 `/home/abc`。
@@ -707,17 +790,24 @@ fn stale_entries(
 
 /// 路径是否落在本次扫过的某个根之内（含根自身）。
 ///
-/// 库里的路径多半已经不在盘上（这正是 stale 的常态），`fs::canonicalize` 对它会失败，
-/// 所以原样路径必须先直接参与比较；只有 canonicalize 成功（被扫的根是软链、或库里的键
-/// 本身是相对/软链形态）时才额外拿规范化结果再比一次。
+/// 先做**纯内存**的原样比较并短路：GUI 只有家目录一个根，库里每一条都在这一步命中，
+/// 整个清理阶段因此退回旧版 HashSet 差集的开销。反过来若每条都先 canonicalize，一次
+/// 大目录删除后的几万条已消失条目会各打一次注定失败的系统调用，全压在扫描线程上。
+///
+/// canonicalize 只作兜底：被扫的根是软链、或库里的键本身是相对/软链形态时，只有规范化
+/// 之后才判得出包含关系。库里的路径多半已经不在盘上（这正是 stale 的常态），对它
+/// canonicalize 必然失败，此时按「不在边界内」处理——不授权删除，语义与旧版一致。
 fn within_scanned_roots(path: &Path, bounds: &[(PathBuf, PathBuf)]) -> bool {
-    let canonical = std::fs::canonicalize(path).ok();
+    if bounds.iter().any(|(raw_root, canonical_root)| {
+        path.starts_with(raw_root) || path.starts_with(canonical_root)
+    }) {
+        return true;
+    }
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return false;
+    };
     bounds.iter().any(|(raw_root, canonical_root)| {
-        path.starts_with(raw_root)
-            || path.starts_with(canonical_root)
-            || canonical
-                .as_ref()
-                .is_some_and(|c| c.starts_with(raw_root) || c.starts_with(canonical_root))
+        canonical.starts_with(raw_root) || canonical.starts_with(canonical_root)
     })
 }
 
@@ -1009,6 +1099,140 @@ mod tests {
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
+
+    /// 点名任务的状态必须来自**那个任务**，不能退回 `latest_state` 的优先级
+    /// 排序。回归场景：老任务 A 以 done_with_errors 收尾（排序第 2 档），新任务
+    /// B 被取消后落到最后一档，A 于是反超 B——CLI 的 `index cancel B` 人类行说
+    /// 「取消了 B」，JSON 体却是 A 的状态、jobId 也是 A。
+    #[test]
+    fn index_job_state_reports_the_named_job_not_the_outranking_latest_one() {
+        let svc = service();
+        let older = svc
+            .l1
+            .create_collection("older", None, None)
+            .expect("older collection");
+        let newer = svc
+            .l1
+            .create_collection("newer", None, None)
+            .expect("newer collection");
+
+        // 老任务：一个失败项后收尾 → done_with_errors（排序第 2 档）。
+        let old_job = svc.imports.create(older, &[]).expect("older job");
+        svc.imports
+            .prepare_items(&old_job, &[PathBuf::from("/nonexistent/older.txt")])
+            .expect("prepare older item");
+        let item = svc
+            .imports
+            .claim_next(&old_job)
+            .expect("claim older item")
+            .expect("one pending item");
+        svc.imports
+            .mark_failed(&old_job, item.id, "fixture failure");
+        svc.imports.finish(&old_job).expect("finish older job");
+
+        // 新任务：刚创建时是 preparing（排序第 0 档），所以它才是 latest。
+        let new_job = svc.imports.create(newer, &[]).expect("newer job");
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(new_job.as_str()),
+            "running/preparing 的新任务必须压过老的 done_with_errors"
+        );
+
+        svc.imports.cancel(&new_job).expect("cancel newer job");
+        // 取消后 latest 串到老任务上——这正是被修复的错报来源，锚定住它，
+        // 免得将来有人以为 index_status() 在这里也够用。
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(old_job.as_str()),
+            "cancelled 落到最后一档，latest_state 会被老的 done_with_errors 反超"
+        );
+
+        let named = svc
+            .index_job_state(&new_job)
+            .expect("被取消的任务必须仍可按 id 读到");
+        assert_eq!(named.job_id.as_deref(), Some(new_job.as_str()));
+        assert_eq!(named.collection_id, newer);
+        assert!(named.cancelled, "点名读到的必须是取消后的状态");
+        assert!(!named.running && !named.resumable);
+        assert!(
+            svc.index_job_state("kb-import-does-not-exist").is_err(),
+            "不存在的任务必须报错，不能退化成另一个任务的状态"
+        );
+    }
+
+    /// 清理「已消失」条目的删除边界只能是**真正遍历过**的根。
+    ///
+    /// `scanner::scan` 对走不动的根静默返回 0（挂载掉了/权限没了/根被删），若仍
+    /// 把它当边界，该根下的整片索引会被当作已消失删光，还报 `done/scanned:0`。
+    /// 同时必须保住「用户真把目录删空了」这条合法路径：根还在、是空的，照删。
+    #[test]
+    fn stale_sweep_bounds_exclude_a_root_that_could_not_be_walked() {
+        let unique = format!("{}_{}", std::process::id(), now());
+        let walkable = std::env::temp_dir().join(format!("pinvou3_kb_stale_bounds_{unique}"));
+        std::fs::create_dir_all(&walkable).expect("create walkable root");
+        // 兄弟目录而非子目录：子目录会被 `starts_with(walkable)` 顺带命中，
+        // 测不出「走不动的根不进边界」。该路径从不创建 = 走不动的根。
+        let vanished = std::env::temp_dir().join(format!("pinvou3_kb_stale_gone_{unique}"));
+
+        // 走到了（walked>0）→ 授权；走到 0 但根仍是可读目录（用户删空了）→ 授权；
+        // 走到 0 且根读不动（掉盘/被删/没权限）→ 不授权。
+        assert!(root_authorizes_deletion(&walkable, 12));
+        assert!(
+            root_authorizes_deletion(&walkable, 0),
+            "空目录是「真的空了」，这一片该清"
+        );
+        assert!(
+            !root_authorizes_deletion(&vanished, 0),
+            "走不动的根不得授权删除"
+        );
+
+        // 端到端：库里两片条目，只有走得动的那个根进入边界。
+        let existing = std::collections::HashMap::from([
+            (
+                walkable.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+            (
+                vanished.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+        ]);
+        let visited = std::collections::HashSet::new();
+        let stale = stale_entries(&existing, &visited, std::slice::from_ref(&walkable));
+        assert_eq!(
+            stale,
+            vec![walkable.join("kept.txt").to_string_lossy().into_owned()],
+            "只有走过的根之内可以删；走不动的根之下必须原样留着"
+        );
+
+        // 对照：把请求的根（含走不动的那个）整片交进来，正是修复前的行为。
+        let unscoped = stale_entries(&existing, &visited, &[walkable.clone(), vanished.clone()]);
+        assert_eq!(unscoped.len(), 2, "未过滤的边界会连走不动的根一起删");
+
+        let _ = std::fs::remove_dir_all(&walkable);
+    }
+
+    /// 扫描线程 panic 的兜底收口：running 必须落回 false。`scan_state` 是
+    /// parking_lot::Mutex（不中毒），没有兜底就永远停在 running:true，而
+    /// `pinvou knowledge scan start` 是唯一阻塞等待该标志的调用方，会挂死。
+    #[test]
+    fn scan_panic_guard_always_clears_the_running_flag() {
+        let state = Mutex::new(ScanState {
+            running: true,
+            phase: "scanning".into(),
+            roots: vec!["/tmp".into()],
+            scanned: 7,
+            finished_at: 0,
+        });
+        finish_scan_after_panic(&state);
+        let st = state.lock();
+        assert!(!st.running, "panic 之后必须放掉 running，否则阻塞方挂死");
+        assert_eq!(
+            st.phase, "interrupted",
+            "既不是 done（前端只在 done 刷 L0）也不是 cancelled（不是用户取消）"
+        );
+        assert!(st.finished_at > 0);
     }
 
     /// Headless read contract (stats / type_counts / search): zero-state

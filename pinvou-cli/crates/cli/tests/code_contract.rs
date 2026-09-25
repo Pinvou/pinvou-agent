@@ -2546,3 +2546,219 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
         ),
     }
 }
+
+/// The authorize link and the device code must reach the terminal WHILE the
+/// vendor CLI is still running. kimi's flow is the motivating case: the child
+/// deliberately stays alive until the user opens
+/// `https://www.kimi.com/code/authorize_device?user_code=...`, and the wait is
+/// bounded at 1800 s, so artefacts published only at child exit are published
+/// far too late to act on.
+///
+/// Driven through the real binary because `note!` writes to the process's own
+/// stderr, which the in-process helpers cannot capture: the test reads the
+/// spawned CLI's stderr incrementally and then asserts the CLI is STILL
+/// RUNNING — the fake vendor CLI prints both artefacts and sleeps for 30 s, so
+/// "seen while alive" is exactly the property that used to fail.
+#[test]
+#[cfg(unix)]
+fn login_streams_the_link_and_device_code_before_the_child_exits() {
+    use std::io::BufRead as _;
+
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-login-stream-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // kimi resolves its override (`PINVOU3_KIMI_ACP_BIN`) without a version
+    // gate, so the fake only has to answer `login`. It prints the authorize
+    // link (which carries `user_code=`) and a separate code prompt, then
+    // sleeps — standing in for a vendor CLI waiting on the user.
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = root.join("kimi");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788 to authorize\"\n  echo \"then enter code: WXYZ-7788\"\n  sleep 30\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = std::process::Command::new(bin)
+        .args(["code", "login", "kimi", "--output", "json"])
+        .env("PINVOU3_HOME", &root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU3_KIMI_ACP_BIN", &script)
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the pinvou binary must spawn");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Well inside the fake's 30 s sleep: if this budget is spent the child has
+    // not exited either, so a failure here is a genuine "nothing streamed".
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut seen: Vec<String> = Vec::new();
+    let mut saw_url = false;
+    let mut saw_code = false;
+    while (!saw_url || !saw_code) && std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                saw_url |=
+                    line.contains("https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788");
+                saw_code |= line.contains("device code") && line.contains("WXYZ-7788");
+                seen.push(line);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    // Sampled before the kill: the CLI must still be inside its wait loop,
+    // which is what makes the artefacts above actionable rather than a
+    // post-mortem transcript dump.
+    let still_waiting = child
+        .try_wait()
+        .expect("try_wait on the spawned CLI")
+        .is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        saw_url,
+        "the authorize link must be streamed to stderr while the vendor CLI runs; saw: {seen:?}"
+    );
+    assert!(
+        saw_code,
+        "the device code must be streamed to stderr while the vendor CLI runs; saw: {seen:?}"
+    );
+    assert!(
+        still_waiting,
+        "the artefacts must arrive BEFORE the child exits — the CLI had already finished, so \
+         this proves nothing about live streaming; saw: {seen:?}"
+    );
+    // Each artefact exactly once, even though the link reaches the extractor
+    // twice (the URL line and the code line both match) and both pipes are
+    // scanned.
+    let link_notes = seen
+        .iter()
+        .filter(|line| line.starts_with("login link: "))
+        .count();
+    let code_notes = seen
+        .iter()
+        .filter(|line| line.starts_with("device code: "))
+        .count();
+    assert_eq!(
+        link_notes, 1,
+        "the login link must be announced once: {seen:?}"
+    );
+    assert_eq!(
+        code_notes, 1,
+        "the device code must be announced once: {seen:?}"
+    );
+}
+
+/// `providers add --agent claude` requires EVERY slot in the app's
+/// `CLAUDE_MODEL_SLOTS`, not merely a non-empty set: a partial set used to
+/// pass the CLI's English gate and then surface the store's Chinese
+/// "required field" message through `store_error`.
+#[test]
+fn providers_add_claude_rejects_a_partial_model_slot_set() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("claude-partial-slots");
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "claude",
+        "--name",
+        "Relay",
+        "--base-url",
+        "https://api.example.com",
+        "--model-slot",
+        "sonnet=claude-sonnet-4",
+        "--api-key-env",
+        "PINVOU_TEST_KEY_THAT_IS_NEVER_SET",
+    ])
+    .expect_err("a partial claude slot set must be refused before the store is reached");
+    let message = error.to_string();
+    assert!(
+        message.contains("missing: opus, haiku, fable, subagent"),
+        "the error must name every missing slot: {message}"
+    );
+    assert!(
+        message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
+        "the error must make the slot set discoverable: {message}"
+    );
+    // The whole point of the pre-check is that the store's non-English message
+    // never reaches the user; ASCII-only is the language-agnostic proof.
+    assert!(
+        message.is_ascii(),
+        "the claude slot error must stay English: {message}"
+    );
+}
+
+/// `--message` is the one flag allowed a `--`-prefixed value, which let
+/// `--message --yes` swallow the confirmation flag and fail much later with
+/// the generic "pass --yes to confirm". The swallowed-flag spelling is now
+/// named at parse time; every other `--`-prefixed message keeps working.
+#[test]
+fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
+    let error = usage_error(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        "s-1",
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "--yes",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = error.to_string();
+    assert!(
+        message.contains("--message consumed --yes"),
+        "the error must name the flag --message ate: {message}"
+    );
+
+    // Regression guard for the exemption itself: a message that merely starts
+    // with `--` (and is not one of this command's boolean flags) still parses.
+    parse_args([
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        "s-1",
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "--wip: dashes are legal in a commit message",
+        "--yes",
+    ])
+    .expect("a --prefixed commit message that is not a boolean flag must still parse");
+}

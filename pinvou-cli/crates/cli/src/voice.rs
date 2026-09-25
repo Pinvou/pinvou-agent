@@ -26,15 +26,20 @@
 //!   crate-private adapter; the CLI cannot reach it, so on macOS it reports
 //!   the Speech runtime as ready (same as the GUI status) but performs
 //!   transcription through the external-CLI lane only.
+//! - the bundled engine and model the Windows MSI installs beside
+//!   `pinvou.exe` are resolved app-side through `pub(crate)`
+//!   `platform::os::windows` helpers, so the CLI cannot see them at all: it
+//!   looks only under `$PINVOU3_HOME/asr`, and `asr-status` says so and
+//!   points at the `PINVOU3_ASR_CMD` escape hatch (which now also resolves
+//!   the managed `pinvou-asr.exe`, the same external `asr --model --lang
+//!   --input` protocol the app drives that runtime with). Making the CLI
+//!   find the MSI copy by itself needs an app-side visibility change.
 //!
-//! Two small, deliberate deviations from the GUI's retry/fallback contract,
-//! forced by the headless surface: (1) the unchanged-answer postprocess
-//! retry also fires when the model legitimately echoes the text back (the
-//! GUI exempts an empty draft, a case the CLI has no equivalent for), and
-//! (2) after a native engine failure the external-CLI fallback resolves any
-//! candidate command — configured override, managed dir, or a `pinvou-asr`
-//! on PATH — while the GUI falls back only on an explicitly configured
-//! override and otherwise reports `asr_engine_error`.
+//! One deliberate deviation from the GUI's fallback contract, forced by the
+//! headless surface: after a native engine failure the external-CLI fallback
+//! resolves any candidate command — configured override, managed dir, or a
+//! `pinvou-asr` on PATH — while the GUI falls back only on an explicitly
+//! configured override and otherwise reports `asr_engine_error`.
 //!
 //! `voice postprocess` needs the GUI's `EnginePool` state to resolve the
 //! active model credentials, so it runs through the windowless product host
@@ -42,7 +47,32 @@
 //! then issues the same OpenAI-compatible (or Anthropic Messages) HTTP
 //! request with the mirrored prompt constants. The prompts are private to
 //! `app/commands/voice.rs` and are duplicated here verbatim; if they drift
-//! upstream this module must be updated in the same pull request.
+//! upstream this module must be updated in the same pull request. The user
+//! message is assembled section for section like
+//! `voice_postprocess_user_content`, including the `DRAFT_TEXT` block the
+//! edit prompt's rule 10 promises — `--draft` / `--draft-file` carry what the
+//! GUI sends as `draft_text`, and `--mode edit` (whose whole job is rewriting
+//! that draft) refuses without one. Only the `ASR_RAW` section has no CLI
+//! equivalent: `--text` is already the corrected ASR text and the CLI applies
+//! no rule corrections of its own, so there is no before/after pair to send.
+//! The per-attempt timeout budget is measured from *after* the host is up, so it
+//! bounds the model round-trip like the GUI's does rather than the tokio /
+//! Tauri / `SessionStore` boot; `POSTPROCESS_TOTAL_BUDGET` is the separate
+//! overall bound on the command.
+//!
+//! What `voice postprocess` deliberately does NOT mirror is the GUI's
+//! *client-side* voice pipeline in `platform/tauri/bridge/voice.js`: the
+//! deterministic rule corrections applied before the model call
+//! (`applyVoiceDeterministicCorrections`) and the output validator after it
+//! (`validateVoicePostprocessOutput`, which discards a candidate that shrank
+//! below 55 % of the rule-corrected text or dropped a protected term and
+//! falls back to that rule text). Both exist because the GUI writes the
+//! result straight into the user's input box unseen; the CLI prints it for a
+//! human to read and pipe on, where a silent substitution of different text
+//! is the worse failure. Mirroring them would also mean copying several
+//! hundred lines of JS correction tables with no drift guard. The omission is
+//! reported in every postprocess result (`omitted_stages` in JSON, the
+//! trailing `Note:` line in human output) instead of being silent.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -60,6 +90,11 @@ pub enum VoiceCommand {
         mode: PostprocessMode,
         text: Option<String>,
         text_file: Option<PathBuf>,
+        /// The input-box body the GUI sends as `draft_text`
+        /// (`platform/tauri/bridge/voice.js` → `postprocess_voice_text`). The
+        /// edit prompt rewrites it, so `--mode edit` requires it.
+        draft: Option<String>,
+        draft_file: Option<PathBuf>,
     },
     AsrStatus,
     AsrInstall {
@@ -85,7 +120,7 @@ impl PostprocessMode {
 }
 
 const USAGE: &str = "usage: pinvou voice <transcribe <PATH>|postprocess --mode dictation|task|edit \
-     (--text S|--text-file F)|asr-status|asr-install [--yes]>";
+     (--text S|--text-file F) [--draft S|--draft-file F]|asr-status|asr-install [--yes]>";
 
 pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
@@ -105,6 +140,8 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
             let mut mode: Option<PostprocessMode> = None;
             let mut text: Option<String> = None;
             let mut text_file: Option<PathBuf> = None;
+            let mut draft: Option<String> = None;
+            let mut draft_file: Option<PathBuf> = None;
             let mut index = 0;
             while index < rest.len() {
                 let token = rest[index].as_str();
@@ -157,6 +194,39 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
                         text_file = Some(PathBuf::from(value));
                         index += 2;
                     }
+                    // The draft is the input-box body the GUI always sends
+                    // (`draft_text`); the edit prompt rewrites it and its
+                    // rule 10 promises a DRAFT_TEXT section, so without it
+                    // the edit mode instructs the model about text that was
+                    // never transmitted.
+                    "--draft" => {
+                        if draft.is_some() || draft_file.is_some() {
+                            return Err(CliError::usage("use only one of --draft or --draft-file"));
+                        }
+                        let value = rest.get(index + 1).ok_or_else(|| {
+                            CliError::usage("voice option --draft requires a value")
+                        })?;
+                        if value.is_empty() || value.starts_with("--") {
+                            return Err(CliError::usage("voice option --draft requires a value"));
+                        }
+                        draft = Some(value.clone());
+                        index += 2;
+                    }
+                    "--draft-file" => {
+                        if draft.is_some() || draft_file.is_some() {
+                            return Err(CliError::usage("use only one of --draft or --draft-file"));
+                        }
+                        let value = rest.get(index + 1).ok_or_else(|| {
+                            CliError::usage("voice option --draft-file requires a value")
+                        })?;
+                        if value.is_empty() || value.starts_with("--") {
+                            return Err(CliError::usage(
+                                "voice option --draft-file requires a value",
+                            ));
+                        }
+                        draft_file = Some(PathBuf::from(value));
+                        index += 2;
+                    }
                     other => {
                         return Err(CliError::usage(format!(
                             "unsupported voice option: {other}"
@@ -172,10 +242,23 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
                     "voice postprocess requires exactly one of --text or --text-file",
                 ));
             }
+            // `edit` is meaningless without a draft: its whole job is to
+            // rewrite the existing input-box text, and the ASR section alone
+            // carries only the modification instruction. Refusing at parse
+            // time is cheaper and clearer than shipping a prompt that
+            // describes an absent section.
+            if matches!(mode, PostprocessMode::Edit) && draft.is_none() && draft_file.is_none() {
+                return Err(CliError::usage(
+                    "voice postprocess --mode edit requires --draft or --draft-file (the input-box \
+                     text to rewrite)",
+                ));
+            }
             Ok(VoiceCommand::Postprocess {
                 mode,
                 text,
                 text_file,
+                draft,
+                draft_file,
             })
         }
         "asr-status" => {
@@ -220,7 +303,9 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
             mode,
             text,
             text_file,
-        } => postprocess(mode, text, text_file, output),
+            draft,
+            draft_file,
+        } => postprocess(mode, text, text_file, draft, draft_file, output),
         VoiceCommand::AsrStatus => asr_status(output),
         VoiceCommand::AsrInstall { yes } => asr_install(yes, output),
     }
@@ -229,7 +314,21 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
 // ─────────────────────────── ASR platform mirror ───────────────────────────
 
 /// Same fields as `features::voice::voice_asr::AsrModelSpec` (the struct is
-/// pub but its module is `pub(crate)`).
+/// `pub` but its module is `pub(crate)` and `features::voice::platform` is a
+/// private module, so neither the type nor the per-platform specs can be
+/// imported from here — verified, not assumed).
+///
+/// DRIFT GUARD — the constants below are a hand copy of, and must be bumped
+/// in the same pull request as:
+/// * `pinvou3-app/src-tauri/src/features/voice/platform/mod.rs`
+///   (`ASR_MODEL_URL` / `ASR_MODEL_MIRROR_URL` / `ASR_MODEL_SIZE` /
+///   `ASR_MODEL_SHA256`, the Linux/macOS `sense-voice-small-q4_k.gguf`), and
+/// * `pinvou3-app/src-tauri/src/features/voice/platform/windows.rs`
+///   (the same four names, the `sensevoice-small-q8.gguf` build).
+///
+/// A model bump that touches only the app leaves the CLI pinning a stale
+/// sha256, and `model_available` would then reject the model the desktop app
+/// just installed — silently, as "model: false".
 struct AsrModelSpec {
     filename: &'static str,
     expected_size: u64,
@@ -309,20 +408,29 @@ fn model_path() -> PathBuf {
 /// by mtime the same way — so one transcribe hashes the 182–254 MiB model
 /// once instead of at every gate (availability probe, native lane,
 /// external-CLI lane all ask).
+///
+/// The key carries the PATH as well as size and mtime, exactly like the app's
+/// `ModelVerificationCache` (`features/voice/voice_asr.rs`): `PINVOU3_HOME`
+/// is per-test and per-invocation, and two sandboxes whose model files happen
+/// to share size and mtime would otherwise read each other's verdict out of
+/// this process-global memo.
 fn model_available() -> bool {
     let spec = model_spec();
     let path = model_path();
     let Ok(meta) = std::fs::metadata(&path) else {
         return false;
     };
-    type CacheKey = (u64, Option<std::time::SystemTime>);
+    type CacheKey = (PathBuf, u64, Option<std::time::SystemTime>);
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(CacheKey, bool)>>> =
         std::sync::OnceLock::new();
+    // A panic while this memo is held leaves nothing inconsistent behind (the
+    // entry is overwritten wholesale below), so the crate's convention of
+    // taking the inner value beats poisoning every later probe.
     let mut entry = CACHE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .expect("model availability cache lock");
-    let key: CacheKey = (meta.len(), meta.modified().ok());
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key: CacheKey = (path.clone(), meta.len(), meta.modified().ok());
     if let Some((cached_key, available)) = entry.as_ref() {
         if *cached_key == key {
             return *available;
@@ -402,6 +510,19 @@ fn asr_components() -> (bool, bool, bool, bool) {
     (engine, ffmpeg, model, installable)
 }
 
+/// Whether `run_recognition` will attempt the bundled engine at all. Only
+/// Linux has a native lane in this process: macOS recognition goes through
+/// the system Speech framework (a crate-private adapter the CLI cannot
+/// reach) and Windows' bundled runtime is a CLI that speaks the external
+/// protocol, not the SenseVoice.cpp argument protocol the native lane emits.
+/// The pre-flight gate and the `cli_transcribe_ready` status flag both ask
+/// this question, so they agree with the dispatcher by construction — a
+/// Windows user who drops an engine plus model into the managed dir must not
+/// pass a gate that then dies with `asr_engine_missing`.
+fn native_lane_supported() -> bool {
+    cfg!(target_os = "linux")
+}
+
 /// External ASR CLI resolution (`platform/*/asr_tool_path`): explicit env
 /// configuration wins, then the conventional binary. Availability mirrors
 /// `asr_tool_exists`: configured path or `pinvou-asr` on PATH.
@@ -423,9 +544,16 @@ fn external_asr_command() -> Option<PathBuf> {
             }
         }
     }
-    // Mirror the app's macOS `asr_tool_path`: the managed ASR dir counts as
-    // a fallback before the bare PATH name.
-    if cfg!(target_os = "macos") {
+    // Mirror the app's `asr_tool_path` fallback (macOS `platform/macos.rs`,
+    // Windows `platform/windows.rs` → `bundled_asr_tool_path`): the managed
+    // ASR dir counts before the bare PATH name. Windows is included because
+    // its engine (`pinvou-asr.exe`) speaks exactly this `asr --model --lang
+    // --input` protocol — the app's `recognize_native` returns `None` there
+    // on purpose and drives it through this same external lane. Linux is
+    // excluded: its managed binary is `sense-voice-main`, a SenseVoice.cpp
+    // build with the incompatible `-m MODEL INPUT -t -l -itn` protocol that
+    // the native lane (and only the native lane) knows how to call.
+    if !cfg!(target_os = "linux") {
         let managed = asr_dir().join(engine_binary_name());
         if managed.is_file() {
             return Some(managed);
@@ -479,8 +607,8 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // through ffmpeg when present and falls back to the raw wav file
     // otherwise — or the external ASR CLI; the gate keeps the practical
     // engine+ffmpeg+model requirement).
-    let cli_transcribe_ready = (cfg!(target_os = "linux") && engine && ffmpeg && model)
-        || external_asr_command().is_some();
+    let cli_transcribe_ready =
+        (native_lane_supported() && engine && ffmpeg && model) || external_asr_command().is_some();
     let mut missing = Vec::new();
     if !model {
         missing.push("model");
@@ -503,8 +631,10 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     });
     if cfg!(target_os = "windows") {
         // `installable` is false on Windows because the CLI has no install
-        // route there: the engine ships inside the desktop app's MSI and is
-        // reachable only through its repair/reinstall flow.
+        // route there: the engine ships inside the desktop app's MSI. The
+        // human note below names the reachable workaround (PINVOU3_ASR_CMD /
+        // the managed dir), which does NOT flip these flags — they describe
+        // what lives under AsrDir.
         value["gui_install_only"] = serde_json::json!(true);
     }
     let mut human = format!(
@@ -531,8 +661,17 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         );
     }
     if cfg!(target_os = "windows") {
+        // The old note said "repair or reinstall pinvou", which can never flip
+        // these flags: the MSI installs the engine and model next to the
+        // desktop executable, and `engine_path`/`model_path` only look under
+        // `asr_dir` (the app resolves the bundled copy through a `pub(crate)`
+        // helper the CLI cannot call). Name the remediation that is actually
+        // reachable from this process instead.
         human.push_str(
-            "\nNote: on Windows the ASR engine ships with the desktop app; repair or reinstall pinvou to install it.",
+            "\nNote: the CLI only looks for the ASR engine and model under AsrDir; it cannot see \
+             the copies the desktop app's MSI installs beside pinvou.exe. Point PINVOU3_ASR_CMD \
+             at that bundled `pinvou-asr.exe` (or copy the engine and model into AsrDir) to make \
+             `voice transcribe` work.",
         );
     }
     Ok(success(render(output, human, &value)))
@@ -556,6 +695,29 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         ));
     }
     crate::support::require_yes(yes)?;
+    // Mutual exclusion across processes. The GUI has the same guard as a
+    // process-local flag (`features/voice/voice_asr.rs::begin_asr_install`
+    // swapping `ASR_INSTALLING`, documented as "避免两个入口并发写同一个
+    // `.part` 文件"), which is invisible to a second CLI process: two
+    // `asr-install --yes` runs would both `File::create` the same `.part`
+    // inode and interleave their writes. The pre-rename checksum keeps the
+    // corrupt result off the canonical path, but both runs then fail for a
+    // reason neither user can act on. `try_write` rather than a blocking
+    // wait, mirroring the GUI's immediate "already installing" refusal and
+    // `code.rs`'s `*_busy` convention.
+    let mut install_lock = asr_install_lock()?;
+    let _install_guard = install_lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            CliError::failed(
+                "asr_install_busy: another pinvou process is installing the ASR model; retry \
+                 after it finishes",
+            )
+        } else {
+            CliError::failed(format!(
+                "voice asr-install: cannot acquire the install lock: {error}"
+            ))
+        }
+    })?;
     let mut steps: Vec<String> = Vec::new();
     if !ffmpeg_available() {
         pinvou3_lib::features::dependencies::install_dependencies(vec!["ffmpeg".to_owned()], None)
@@ -588,6 +750,35 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         )
     };
     Ok(success(render(output, human, &value)))
+}
+
+/// Opens the cross-process ASR install lock (same `$PINVOU3_HOME/locks`
+/// directory and same fd-lock primitive as `code.rs`'s session/root locks and
+/// `connectors.rs`'s install lock). The caller must keep the returned lock
+/// alive alongside its write guard.
+fn asr_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    // `sandbox_home` already ran in `execute`, so the lock cannot land in a
+    // cwd-relative directory.
+    let dir = pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "voice asr-install: cannot create {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join("voice-asr-install.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "voice asr-install: cannot open {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
 }
 
 fn download_asr_model() -> Result<PathBuf, CliError> {
@@ -633,6 +824,14 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// DRIFT GUARD — this reproduces the staged-download contract of
+/// `pinvou3-app/src-tauri/src/platform/download.rs::download_to_part_with_verify`
+/// (`.part` sibling, `max_bytes` cap, sha256 verified before the rename, part
+/// removed on every failure). That module is `pub(crate) mod download` inside
+/// the app crate, so the CLI cannot call it — verified, not assumed. Any
+/// change to that helper's ordering or cleanup guarantees must be reflected
+/// here in the same pull request; the async/cancel/progress/idle-timeout
+/// machinery it carries has no CLI equivalent and is deliberately not copied.
 fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliError> {
     // Staged through a .part sibling and size-capped: a crashed or hostile
     // download must never leave a truncated/garbage file at the real path.
@@ -727,20 +926,27 @@ struct AsrLanes {
     /// An external ASR CLI is configured and present (`PINVOU3_ASR_CMD` and
     /// friends), which is a complete lane on its own.
     external: bool,
+    /// [`native_lane_supported`] for this target: whether engine + ffmpeg +
+    /// model actually buy a recognition lane in *this* process.
+    native: bool,
 }
 
 /// Probes the installed lanes. The external-CLI lookup stays behind the short
-/// circuit so a complete native install never pays for a PATH walk — on macOS
-/// that also means the system Speech runtime (which `asr_components` reports
-/// as engine + ffmpeg + model) short-circuits the probe entirely.
+/// circuit so a complete native install never pays for a PATH walk. The short
+/// circuit is keyed on the *native* lane, not on the component triple: on
+/// macOS `asr_components` reports the system Speech runtime as engine +
+/// ffmpeg + model, and skipping the external probe there would hide the only
+/// lane the CLI actually has.
 fn installed_lanes() -> AsrLanes {
     let (engine, ffmpeg, model, _) = asr_components();
-    let external = !(engine && ffmpeg && model) && external_asr_command().is_some();
+    let native = native_lane_supported();
+    let external = !(native && engine && ffmpeg && model) && external_asr_command().is_some();
     AsrLanes {
         engine,
         ffmpeg,
         model,
         external,
+        native,
     }
 }
 
@@ -766,7 +972,12 @@ enum AsrPreflight {
 /// ffmpeg missing" — the one case that must keep going instead of failing —
 /// is unreachable through the CLI harness.
 fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
-    if (lanes.engine && lanes.ffmpeg && lanes.model) || lanes.external {
+    // `lanes.native` is what makes the component triple a lane: `run_recognition`
+    // only ever spawns the bundled engine where [`native_lane_supported`] holds.
+    // Without that conjunct the gate and the dispatcher disagree — a Windows or
+    // macOS host with engine + model present passes here and then fails with
+    // `asr_engine_missing` after the audio has already been staged.
+    if (lanes.native && lanes.engine && lanes.ffmpeg && lanes.model) || lanes.external {
         return AsrPreflight::Run;
     }
     // Everything but ffmpeg is installed. The native lane feeds the engine
@@ -776,7 +987,7 @@ fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
     // verified.
     // Other extensions keep the hard error: the engine cannot decode them
     // without the converter.
-    if lanes.engine && lanes.model {
+    if lanes.native && lanes.engine && lanes.model {
         if ffmpeg_missing_is_fatal_for(extension) {
             return AsrPreflight::Reject(
                 "ffmpeg_missing: ffmpeg is required for local speech recognition; \
@@ -828,9 +1039,10 @@ fn transcribe_with(
         ));
     }
     // Then fail fast on missing ASR before loading the file into memory. The
-    // gate needs no macOS special case of its own: `asr_components` reports
-    // the system Speech runtime as a complete install there, so the preflight
-    // resolves to `Run` without any component being probed.
+    // gate needs no per-platform special case of its own: `AsrLanes::native`
+    // already carries whether the component triple buys a lane here, so on
+    // macOS/Windows — where `run_recognition` has only the external lane — the
+    // preflight rejects for exactly the reason the dispatcher would.
     match asr_preflight(lanes(), path.extension().and_then(|ext| ext.to_str())) {
         AsrPreflight::Run => {}
         // A warning, not an error: execution continues into the raw-wav lane
@@ -923,13 +1135,17 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
 /// reachable from the CLI), then the external ASR CLI. Without either lane
 /// the error names `pinvou voice asr-status` as the hint.
 fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
-    let native_attempted =
-        cfg!(target_os = "linux") && engine_path().is_some() && model_available();
+    let native_attempted = native_lane_supported() && engine_path().is_some() && model_available();
     if native_attempted {
         // GUI parity: a failing native lane falls back to the env-configured
         // external ASR CLI before giving up.
         if let Ok(text) = native_engine_transcribe(wav) {
-            return Ok((text, "sensevoice-local"));
+            // The same token the GUI reports for this lane
+            // (`features/voice/platform/linux.rs::native_recognition_source`).
+            // The `pinvou-webview-` prefix names the shipped engine build, not
+            // the host process, so a consumer reading `source` across both
+            // surfaces sees one vocabulary instead of two.
+            return Ok((text, "pinvou-webview-sensevoice-local"));
         }
     }
     match external_asr_command() {
@@ -1151,18 +1367,34 @@ fn asr_timeout_secs() -> u64 {
 /// (every other capture in the CLI is size-capped too).
 const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Drains one child output pipe, capped at [`MAX_ENGINE_OUTPUT_BYTES`] and
-/// decoded lossily, so a chatty engine neither buffers without bound nor
+/// Drains one child output pipe, KEEPING at most [`MAX_ENGINE_OUTPUT_BYTES`]
+/// and decoding lossily, so a chatty engine neither buffers without bound nor
 /// fails the whole transcription over an invalid byte.
+///
+/// The bytes past the cap are read and discarded rather than left in the
+/// pipe. A `take(cap)` that simply stops reading leaves the write end full,
+/// so the engine blocks in `write()` until `asr_timeout` fires — turning a
+/// merely verbose engine into a 60 s stall reported as a timeout. Same
+/// discard loop as `code.rs`'s `read_capped_to_eof`; the GUI's equivalent
+/// (`app/commands/voice.rs`) reads to EOF for the same reason.
 fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
-    let mut bytes = Vec::new();
-    if let Some(pipe) = pipe {
-        let _ = std::io::Read::read_to_end(
-            &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
-            &mut bytes,
-        );
+    let mut kept: Vec<u8> = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(&mut pipe, &mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    let room = MAX_ENGINE_OUTPUT_BYTES.saturating_sub(kept.len() as u64) as usize;
+                    if room > 0 {
+                        kept.extend_from_slice(&chunk[..read.min(room)]);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    String::from_utf8_lossy(&kept).into_owned()
 }
 
 /// Collects one capped pipe drain through a bounded grace instead of an
@@ -1481,10 +1713,23 @@ fn truncate_postprocess_input(text: &str) -> String {
     text.chars().take(POSTPROCESS_MAX_INPUT_CHARS).collect()
 }
 
-/// Mirror of `voice_postprocess_user_content` (no draft / raw text from the
-/// CLI surface: `--text`/`--text-file` is the corrected ASR text).
-fn postprocess_user_content(corrected_text: &str) -> String {
+/// Mirror of `voice_postprocess_user_content`, section for section and
+/// delimiter for delimiter. The CLI surface has no raw-ASR section
+/// (`--text`/`--text-file` is the corrected ASR text and the CLI applies no
+/// deterministic rule corrections of its own, so there is no "before/after"
+/// pair to send), but the draft IS transmitted: `--draft`/`--draft-file`
+/// feeds the same `DRAFT_TEXT` block the GUI builds from `draft_text`, which
+/// the edit prompt's rule 10 promises.
+fn postprocess_user_content(corrected_text: &str, draft_text: Option<&str>) -> String {
     let mut sections = Vec::new();
+    // Ordered exactly like the app: draft first, then the ASR instruction —
+    // the prompts' examples read in that order.
+    let draft = draft_text.unwrap_or("").trim();
+    if !draft.is_empty() {
+        sections.push(format!(
+            "当前输入框已有文本：\n<<<DRAFT_TEXT>>>\n{draft}\n<<<END>>>"
+        ));
+    }
     sections.push(format!(
         "ASR 文本（规则纠错后）：\n<<<ASR_TEXT>>>\n{}\n<<<END>>>",
         corrected_text.trim()
@@ -1603,10 +1848,29 @@ fn postprocess_retry_result(
     }
 }
 
+/// Stages of the GUI's JS voice pipeline (`platform/tauri/bridge/voice.js`)
+/// that the CLI deliberately does NOT run, reported on every postprocess
+/// result so the difference is visible instead of silent (see the module
+/// header for the reasoning).
+const POSTPROCESS_OMITTED_STAGES: [&str; 2] = [
+    "deterministic-rule-corrections",
+    "shrink-and-protected-term-validation",
+];
+
+/// Wall-clock bound for everything the command does after the windowless host
+/// is up. The per-attempt `budget` measures only the model round-trip (GUI
+/// parity), so this is the separate guarantee that a wedged bridge/probe
+/// cannot make the one-shot CLI run forever. It cannot bound the host boot
+/// itself — `run_windowless_host` owns that — but it stops the command before
+/// the model phase when boot already blew past it.
+const POSTPROCESS_TOTAL_BUDGET: Duration = Duration::from_secs(60);
+
 fn postprocess(
     mode: PostprocessMode,
     text: Option<String>,
     text_file: Option<PathBuf>,
+    draft: Option<String>,
+    draft_file: Option<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
@@ -1617,6 +1881,31 @@ fn postprocess(
         }
         (None, None) => unreachable!("parse enforces exactly one text source"),
     };
+    // Same input hygiene as the ASR text: regular files only, 64 KiB cap,
+    // then the app's 4000-character model-input truncation
+    // (`truncate_voice_postprocess_input` is applied to the draft there too).
+    let draft_input = match (draft, draft_file) {
+        (Some(draft), _) => Some(draft),
+        (None, Some(file)) => Some(crate::support::read_text_file_capped(
+            &file,
+            64 * 1024,
+            "voice postprocess",
+        )?),
+        (None, None) => None,
+    };
+    let draft_text = draft_input
+        .map(|draft| truncate_postprocess_input(draft.trim()))
+        .filter(|draft| !draft.is_empty());
+    // The parser guarantees an edit call carries a draft option, but a file
+    // whose whole content is whitespace resolves to nothing — and an edit
+    // prompt that promises a DRAFT_TEXT section must never be sent without
+    // one.
+    if matches!(mode, PostprocessMode::Edit) && draft_text.is_none() {
+        return Err(CliError::usage(
+            "voice postprocess --mode edit requires a non-empty draft (the input-box text to \
+             rewrite)",
+        ));
+    }
     let raw_text = truncate_postprocess_input(raw_input.trim());
     if raw_text.is_empty() {
         // Mirror of the GUI early return: pure-noise input short-circuits to
@@ -1626,6 +1915,7 @@ fn postprocess(
             "mode": mode.as_str(),
             "source": "empty",
             "truncated": false,
+            "omitted_stages": POSTPROCESS_OMITTED_STAGES,
         });
         return Ok(success(render(
             output,
@@ -1633,7 +1923,9 @@ fn postprocess(
             &value,
         )));
     }
-    let started = Instant::now();
+    // Overall bound, taken before the host boot; the model-call budget below
+    // is taken after it (see `POSTPROCESS_TOTAL_BUDGET`).
+    let boot_started = Instant::now();
     let budget = postprocess_timeout(mode, &raw_text);
     let mode_str = mode.as_str();
     // The host's work closure must resolve to `anyhow::Result`; the CLI-side
@@ -1641,6 +1933,19 @@ fn postprocess(
     // the host's error type.
     let host_result = pinvou3_lib::headless_bridge::run_windowless_host(move |pool, _store| {
         let work = async move {
+            if boot_started.elapsed() >= POSTPROCESS_TOTAL_BUDGET {
+                return Err(CliError::failed(format!(
+                    "the windowless host took longer than the {} s command budget",
+                    POSTPROCESS_TOTAL_BUDGET.as_secs()
+                )));
+            }
+            // The model-call clock starts HERE, not before `run_windowless_host`:
+            // the GUI's `started_at` (`app/commands/voice.rs`) only precedes an
+            // in-memory bridge lookup and the vllm probe, so its 3–12 s budget
+            // measures the model round-trip. Timing the tokio/Tauri/SessionStore
+            // boot against the same number would spend the whole budget before
+            // the first request and leave the retry structurally dead.
+            let started = Instant::now();
             // Same shared-bridge fallback as the GUI `voice_postprocess_bridge`
             // with no session: global prefs + the active model.
             let mut bridge = pool.bridge.clone();
@@ -1658,23 +1963,33 @@ fn postprocess(
             } else {
                 bridge.model()
             };
-            // A floor keeps the first call meaningful when host boot already
-            // consumed most of the budget: a zero timeout would fail
-            // instantly ("model endpoint timeout") instead of trying.
-            const MIN_FIRST_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+            // GUI parity: the bridge resolution and the vllm probe share the
+            // budget, so a zero remainder before the first request is the same
+            // error the app raises instead of a guaranteed instant timeout.
+            if started.elapsed() >= budget {
+                return Err(CliError::failed(
+                    "timeout budget exhausted before first request",
+                ));
+            }
             let (text, truncated) = call_postprocess_model(
                 &bridge,
                 mode,
                 &raw_text,
+                draft_text.as_deref(),
                 false,
                 &model_name,
-                budget
-                    .saturating_sub(started.elapsed())
-                    .max(MIN_FIRST_CALL_TIMEOUT),
+                budget.saturating_sub(started.elapsed()),
             )?;
-            let needs_retry = text.trim().is_empty()
-                || truncated
-                || (matches!(mode, PostprocessMode::Edit) && text.trim() == raw_text.trim());
+            // Mirror of `voice_postprocess_changed`: only the edit mode has an
+            // "unchanged" notion, and it compares against the DRAFT, not the
+            // ASR instruction. The draft is guaranteed non-empty above, so the
+            // app's empty-draft exemption cannot be reached here.
+            let unchanged = matches!(mode, PostprocessMode::Edit)
+                && draft_text
+                    .as_deref()
+                    .map(|draft| text.trim() == draft.trim())
+                    .unwrap_or(false);
+            let needs_retry = text.trim().is_empty() || truncated || unchanged;
             if !needs_retry {
                 return Ok::<PostprocessOutcome, CliError>(PostprocessOutcome {
                     text,
@@ -1697,6 +2012,7 @@ fn postprocess(
                 &bridge,
                 mode,
                 &raw_text,
+                draft_text.as_deref(),
                 true,
                 &model_name,
                 remaining,
@@ -1711,9 +2027,12 @@ fn postprocess(
         "mode": mode_str,
         "source": outcome.source,
         "truncated": outcome.truncated,
+        "omitted_stages": POSTPROCESS_OMITTED_STAGES,
     });
     let human = format!(
-        "Mode: {}\nSource: {}\nTruncated: {}\nText: {}",
+        "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\nNote: the model output is returned as \
+         written; the CLI applies neither the desktop app's deterministic rule corrections nor \
+         its shrink/protected-term validator, so it never silently falls back to the ASR text.",
         mode_str, outcome.source, outcome.truncated, outcome.text
     );
     Ok(success(render(output, human, &value)))
@@ -1732,6 +2051,7 @@ fn call_postprocess_model(
     bridge: &pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge,
     mode: PostprocessMode,
     raw_text: &str,
+    draft_text: Option<&str>,
     retry: bool,
     model_name: &str,
     timeout: Duration,
@@ -1748,7 +2068,7 @@ fn call_postprocess_model(
     } else {
         postprocess_prompt(mode)
     };
-    let user = postprocess_user_content(raw_text);
+    let user = postprocess_user_content(raw_text, draft_text);
     let model_name = model_name.to_owned();
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2026,6 +2346,135 @@ mod review_fix_tests {
         assert!(!outcome.truncated);
     }
 
+    /// The edit prompt (rule 10) and the edit retry prompt both talk about a
+    /// `DRAFT_TEXT` section and about "当前输入框已有文本". Before `--draft`
+    /// existed the CLI shipped those prompts with the ASR section only, so
+    /// the model was told to rewrite text it had never been given. The user
+    /// message must carry the draft in the app's exact section shape and
+    /// order (`voice_postprocess_user_content`).
+    #[test]
+    fn postprocess_user_content_emits_the_draft_section_the_prompt_promises() {
+        let with_draft = postprocess_user_content("把它改成三条要点。", Some("  整理会议纪要。 "));
+        let draft_at = with_draft
+            .find("<<<DRAFT_TEXT>>>")
+            .expect("the draft section must be present");
+        let asr_at = with_draft
+            .find("<<<ASR_TEXT>>>")
+            .expect("the ASR section must be present");
+        assert!(draft_at < asr_at, "draft first, like the app: {with_draft}");
+        // Trimmed, delimited, and not concatenated into the ASR body.
+        assert!(with_draft.contains("<<<DRAFT_TEXT>>>\n整理会议纪要。\n<<<END>>>"));
+        assert!(with_draft.contains("<<<ASR_TEXT>>>\n把它改成三条要点。\n<<<END>>>"));
+
+        // No draft (dictation/task) keeps the previous single-section shape:
+        // an empty DRAFT_TEXT block would be a section the model must reason
+        // about for nothing.
+        for absent in [None, Some(""), Some("   \n ")] {
+            let without = postprocess_user_content("查一下今日金价", absent);
+            assert!(
+                !without.contains("DRAFT_TEXT"),
+                "an empty draft must emit no section: {without}"
+            );
+            assert!(without.contains("<<<ASR_TEXT>>>\n查一下今日金价\n<<<END>>>"));
+        }
+    }
+
+    /// `--mode edit` exists only to rewrite the input-box draft, so the
+    /// parser refuses without one instead of sending a prompt that describes
+    /// an absent section. The other modes accept a draft (the GUI sends
+    /// `draft_text` on every lane) but never require it.
+    #[test]
+    fn postprocess_edit_requires_a_draft_and_the_other_modes_do_not() {
+        let strings = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        let error = parse(&strings(&[
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "把它改成三条要点",
+        ]))
+        .expect_err("edit without a draft must be a usage error");
+        assert_eq!(error.exit_code(), crate::ExitCode::Usage);
+        assert!(
+            error.to_string().contains("--draft"),
+            "the refusal must name the missing option: {error}"
+        );
+
+        let parsed = parse(&strings(&[
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "把它改成三条要点",
+            "--draft",
+            "整理会议纪要",
+        ]))
+        .expect("edit with a draft parses");
+        assert!(matches!(
+            parsed,
+            VoiceCommand::Postprocess {
+                mode: PostprocessMode::Edit,
+                draft: Some(_),
+                ..
+            }
+        ));
+        for mode in ["dictation", "task"] {
+            parse(&strings(&[
+                "voice",
+                "postprocess",
+                "--mode",
+                mode,
+                "--text",
+                "x",
+            ]))
+            .expect("a draft is optional outside edit mode");
+        }
+    }
+
+    /// Stopping the drain at the cap leaves the write end full, so a merely
+    /// verbose engine blocks in `write()` until `asr_timeout` fires and the
+    /// user gets a 60 s stall reported as a timeout instead of a bounded
+    /// read. The bytes past the cap must be consumed and discarded (the same
+    /// contract as `code.rs`'s `read_capped_to_eof`).
+    #[test]
+    fn drain_capped_keeps_the_cap_but_still_reads_to_eof() {
+        struct Chatty {
+            remaining: u64,
+            consumed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        }
+        impl std::io::Read for Chatty {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Ok(0);
+                }
+                let take = (buf.len() as u64).min(self.remaining) as usize;
+                buf[..take].fill(b'a');
+                self.remaining -= take as u64;
+                self.consumed
+                    .fetch_add(take as u64, std::sync::atomic::Ordering::Relaxed);
+                Ok(take)
+            }
+        }
+        let consumed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let total = MAX_ENGINE_OUTPUT_BYTES + 3 * 1024 * 1024;
+        let drained = drain_capped(Some(Chatty {
+            remaining: total,
+            consumed: std::sync::Arc::clone(&consumed),
+        }));
+        assert_eq!(
+            drained.len() as u64,
+            MAX_ENGINE_OUTPUT_BYTES,
+            "the retained output must stay capped"
+        );
+        assert_eq!(
+            consumed.load(std::sync::atomic::Ordering::Relaxed),
+            total,
+            "everything past the cap must be read and discarded so the child never blocks"
+        );
+    }
+
     #[test]
     fn summarize_request_error_keeps_only_the_error_class() {
         // A refused loopback connect yields a connect-class reqwest error
@@ -2117,12 +2566,32 @@ mod tests {
         assert!(ffmpeg_missing_is_fatal_for(None));
     }
 
+    /// Lanes with a *supported* native engine (the Linux shape). Every gate
+    /// case below that talks about engine/ffmpeg/model presupposes it.
     fn lanes(engine: bool, ffmpeg: bool, model: bool, external: bool) -> AsrLanes {
         AsrLanes {
             engine,
             ffmpeg,
             model,
             external,
+            native: true,
+        }
+    }
+
+    /// Lanes on a target whose `run_recognition` has no native lane (macOS,
+    /// Windows): the component triple buys nothing there.
+    fn lanes_without_native_support(
+        engine: bool,
+        ffmpeg: bool,
+        model: bool,
+        external: bool,
+    ) -> AsrLanes {
+        AsrLanes {
+            engine,
+            ffmpeg,
+            model,
+            external,
+            native: false,
         }
     }
 
@@ -2176,6 +2645,53 @@ mod tests {
         }
     }
 
+    /// The gate and the dispatcher must agree about which components matter.
+    /// `run_recognition` only spawns the bundled engine where
+    /// [`super::native_lane_supported`] holds, so on macOS/Windows a hand
+    /// installed engine + model + ffmpeg under `$PINVOU3_HOME/asr` is NOT a
+    /// lane: the gate has to reject up front instead of letting the call
+    /// stage its audio and then die with `asr_engine_missing`.
+    #[test]
+    fn asr_preflight_rejects_the_native_triple_where_no_native_lane_exists() {
+        for extension in [Some("wav"), Some("mp3"), None] {
+            let decision = asr_preflight(
+                lanes_without_native_support(true, true, true, false),
+                extension,
+            );
+            assert!(
+                matches!(decision, AsrPreflight::Reject(message) if message.starts_with("asr_engine_missing")),
+                "a complete component triple without a native lane must not pass the gate, got: \
+                 {decision:?}"
+            );
+            // The ffmpeg-gap downgrade is a native-lane concept too: without
+            // that lane there is nothing to feed the raw wav to.
+            let decision = asr_preflight(
+                lanes_without_native_support(true, false, true, false),
+                extension,
+            );
+            assert!(
+                matches!(decision, AsrPreflight::Reject(message) if message.starts_with("asr_engine_missing")),
+                "the raw-wav downgrade needs a native lane, got: {decision:?}"
+            );
+            // The external CLI stays a complete lane on every target — that
+            // is the one lane such a host actually has.
+            assert_eq!(
+                asr_preflight(
+                    lanes_without_native_support(true, true, true, true),
+                    extension
+                ),
+                AsrPreflight::Run
+            );
+            assert_eq!(
+                asr_preflight(
+                    lanes_without_native_support(false, false, false, true),
+                    extension
+                ),
+                AsrPreflight::Run
+            );
+        }
+    }
+
     /// Caller-level guard for the same fact, because the gate once printed the
     /// raw-wav warning and then returned `asr_engine_missing` anyway: with
     /// engine and model installed and ffmpeg absent, a `.wav` input must reach
@@ -2199,7 +2715,12 @@ mod tests {
             &wav,
             OutputMode::Human,
             || lanes(true, false, true, false),
-            |_| Ok(("stub transcript".to_owned(), "sensevoice-local")),
+            |_| {
+                Ok((
+                    "stub transcript".to_owned(),
+                    "pinvou-webview-sensevoice-local",
+                ))
+            },
         )
         .expect("the raw-wav lane must run instead of reporting a missing install");
         assert_eq!(outcome.exit_code, crate::ExitCode::Success);

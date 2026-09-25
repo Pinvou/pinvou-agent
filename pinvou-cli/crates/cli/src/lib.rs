@@ -202,6 +202,8 @@ pub enum BenchmarkCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
     Version,
+    /// `pinvou --help` / `-h`: the top-level surface, as a successful answer.
+    Help,
     Benchmark(BenchmarkCommand),
     Agent(AgentCommand),
     Sessions(sessions::SessionsCommand),
@@ -339,6 +341,22 @@ where
         let command = models::parse(&values)?;
         return Ok(ParsedCli {
             command: CliCommand::Models(command),
+            output,
+        });
+    }
+    // `pinvou --help` / `-h`: asking for the usage text is not a usage error.
+    // It used to fall through to the unknown-command arm, which prints the
+    // same text on STDERR and exits 2 — so `pinvou --help > surface.txt` wrote
+    // an empty file, `pinvou --help && ...` never ran, and the packaging tools
+    // that shell out to it (help2man, the Homebrew audit) recorded a failure.
+    // The unknown-command path keeps exactly that behavior: there the text is
+    // a diagnostic about a mistake, here it is the requested output.
+    if matches!(values.first().map(String::as_str), Some("--help" | "-h")) {
+        if values.len() > 1 {
+            return Err(CliError::usage("pinvou --help accepts no arguments"));
+        }
+        return Ok(ParsedCli {
+            command: CliCommand::Help,
             output,
         });
     }
@@ -581,6 +599,13 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
+        // Success, on stdout: the caller asked for this text.
+        CliCommand::Help => Ok(success(match output {
+            OutputMode::Human => support::TOP_LEVEL_USAGE.to_owned(),
+            OutputMode::Json => {
+                serde_json::json!({ "usage": support::TOP_LEVEL_USAGE }).to_string()
+            }
+        })),
         CliCommand::Version => Ok(success(match output {
             OutputMode::Human => format!("pinvou {}", env!("CARGO_PKG_VERSION")),
             OutputMode::Json => {
@@ -766,22 +791,21 @@ fn report(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(text))
 }
 
+/// The product data root the benchmark run store lives under.
+///
+/// This used to resolve `PINVOU3_HOME`/`USERPROFILE`/`HOME` itself, which made
+/// it a THIRD home resolver in one binary, carrying the exact hazards
+/// [`support::sandbox_home`] documents: `var_os` reports a set-but-empty
+/// variable as `Some("")`, so an empty `PINVOU3_HOME` produced the *relative*
+/// path `""` (and an empty `$HOME` the relative `.pinvou3`) — a benchmark run
+/// store materialized under the current working directory; a non-UTF-8
+/// override was accepted here while the app silently ignores it; and
+/// `USERPROFILE` was preferred over `HOME` even on unix, where the app never
+/// reads it. Every one of those splits the store between two roots for the
+/// same invocation. There is nothing benchmark-specific about the answer, so
+/// the one resolver the families already share answers it.
 fn benchmark_base() -> Result<PathBuf, CliError> {
-    if let Some(value) = std::env::var_os("PINVOU3_HOME") {
-        return absolute_path(PathBuf::from(value));
-    }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| CliError::failed("home_directory_not_available"))?;
-    absolute_path(PathBuf::from(home).join(".pinvou3"))
-}
-
-fn absolute_path(path: PathBuf) -> Result<PathBuf, CliError> {
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err(CliError::failed("benchmark base must be absolute"))
-    }
+    support::sandbox_home()
 }
 
 fn core_error(error: benchmark_core::BenchmarkError) -> CliError {
@@ -843,7 +867,7 @@ fn fetch_gaia(
         OutputMode::Human => format!("GAIA snapshot ready\nRevision: {}", acquisition.revision()),
         OutputMode::Json => format!(
             "{{\"status\":\"ready\",\"dataset_revision\":\"{}\"}}",
-            acquisition.revision()
+            json_escape(acquisition.revision())
         ),
     };
     Ok(success(text))
@@ -1778,6 +1802,59 @@ mod tests {
     fn parse_args_still_rejects_bare_pinvou_invocation() {
         let error = parse_args(["pinvou"]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    /// `--help` is an answer (stdout, exit 0), an unknown command is a
+    /// mistake (stderr, exit 2) — and both render the same surface text, so
+    /// the only thing that distinguishes them is the channel and the code.
+    #[test]
+    fn help_succeeds_on_stdout_while_an_unknown_command_stays_a_usage_error() {
+        for flag in ["--help", "-h"] {
+            let parsed = parse_args(["pinvou", flag]).expect("--help is not an error");
+            assert_eq!(parsed.command(), &CliCommand::Help);
+            let outcome = execute(parsed).expect("--help always renders");
+            assert_eq!(outcome.exit_code, ExitCode::Success);
+            assert_eq!(outcome.stdout, support::TOP_LEVEL_USAGE);
+        }
+        let parsed = parse_args(["pinvou", "--output", "json", "--help"]).unwrap();
+        let outcome = execute(parsed).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        assert_eq!(value["usage"], serde_json::json!(support::TOP_LEVEL_USAGE));
+
+        // Unchanged: an unknown command keeps stderr + exit 2.
+        let error = parse_args(["pinvou", "nope"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert_eq!(error.to_string(), support::TOP_LEVEL_USAGE);
+        // Arguments after --help are still a usage error, like --version.
+        let error = parse_args(["pinvou", "--help", "benchmark"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    /// The benchmark run store and the families must resolve one product data
+    /// root. The private `USERPROFILE`-then-`HOME` copy that used to live here
+    /// accepted roots `sandbox_home` refuses (set-but-empty, relative,
+    /// non-UTF-8), so `pinvou benchmark` could write under a root `pinvou
+    /// sessions` would never read in the same invocation.
+    ///
+    /// Deliberately env-free: the assertion is the agreement between the two
+    /// resolvers under whatever ambient home the test process has, which is
+    /// exactly the invariant, and it cannot race the sibling tests that swap
+    /// `PINVOU3_HOME` for their own fixtures.
+    #[test]
+    fn benchmark_base_is_the_shared_sandbox_home_resolver() {
+        let base = benchmark_base();
+        assert_eq!(
+            base.is_ok(),
+            support::sandbox_home().is_ok(),
+            "the benchmark base must accept exactly the roots the families accept"
+        );
+        if let Ok(base) = base {
+            assert!(
+                base.is_absolute(),
+                "a cwd-relative benchmark store is the failure this resolver exists to prevent: {}",
+                base.display()
+            );
+        }
     }
 
     fn temp_base(name: &str) -> PathBuf {

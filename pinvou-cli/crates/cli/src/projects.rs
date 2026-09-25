@@ -13,10 +13,21 @@
 //! every GUI field name is preserved. Pure storage: no Tauri host, no
 //! engine.
 //!
+//! The per-root `available` field the CLI adds back costs one `stat(2)` per
+//! root per list row — the cost the GUI dropped the field to avoid. See
+//! [`project_item`] for why that is kept and why it is not memoized.
+//!
 //! Headless deviations, disclosed:
 //! - `move` always passes `add_workspace_root = None`: folding the session's
 //!   bound workspace folder into the target roots resolves through the
 //!   desktop app's ACP pool, which a one-shot CLI does not boot.
+//! - `move` without a project id writes the store's explicit-ungroup entry,
+//!   which is irreversible to "auto-grouped" on either surface, so it is
+//!   gated the way the GUI gates it: the session must currently RESOLVE to a
+//!   project. Tier 1 of that resolution is the store's own assignments map;
+//!   tier 2 (auto-grouping by the session's bound workspace directory) lives
+//!   only in the frontend and is reproduced in [`resolved_project_id`], with
+//!   its one deviation documented on [`path_is_under_root`].
 //! - The GUI can set a project's roots back to the empty list through
 //!   `update_project`; the CLI treats `--root` absence as "keep the current
 //!   roots" and offers no clear-roots flag.
@@ -32,14 +43,28 @@
 //! `--yes` before any store access (deleting a project never deletes
 //! sessions — affected sessions are only unassigned).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
+use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::projects::{Project, ProjectStore};
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 
 const USAGE: &str = "usage: pinvou projects <list|create|update|delete|move>";
+
+/// Disclosure carried by every `projects move` usage error, because the
+/// asymmetry is not guessable from the command shape: omitting the project id
+/// does not "clear" the assignment back to its default, it writes an EXPLICIT
+/// ungroup entry (`store.rs`: "null = 显式移出，阻止自动归组复活") whose whole
+/// purpose is to stop auto-grouping from putting the session back. Nothing in
+/// either surface turns that entry back into "no entry": `delete_project`
+/// only filters assignments that name a project, and `forget_session` /
+/// `retain_sessions` only fire when the session itself is deleted. The only
+/// way out is another `move <session> <project>`.
+const MOVE_UNGROUP_NOTE: &str = "note: `projects move <session>` without a project id writes an \
+EXPLICIT ungroup that permanently opts the session out of auto-grouping; it cannot be reverted \
+to \"grouped automatically\" — only another `projects move <session> <project>` overwrites it";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectsCommand {
@@ -118,16 +143,21 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             // Omitting the project id moves the session out of its project —
             // the store's None arm, the same entry the GUI's move picker
             // offers as ungrouped. An explicit empty or flag-shaped token
-            // stays a usage error.
+            // stays a usage error. What that arm WRITES is irreversible, so
+            // every usage error on this lane carries the disclosure.
             let project_id = match rest.get(1) {
                 None => None,
                 Some(id) if id.is_empty() || id.starts_with("--") => {
-                    return Err(CliError::usage("projects move: invalid project id"));
+                    return Err(CliError::usage(format!(
+                        "projects move: invalid project id\n{MOVE_UNGROUP_NOTE}"
+                    )));
                 }
                 Some(id) => Some(id.clone()),
             };
             if rest.len() > 2 {
-                return Err(CliError::usage("projects move accepts no options"));
+                return Err(CliError::usage(format!(
+                    "projects move accepts no options\n{MOVE_UNGROUP_NOTE}"
+                )));
             }
             Ok(ProjectsCommand::Move {
                 session_id,
@@ -224,7 +254,28 @@ fn open_session_store() -> Result<SessionStore, CliError> {
 
 /// One list row in the GUI `ProjectListItem` shape: the stored project with
 /// per-root availability and the explicit member count (`from_project`).
-fn project_item(project: &Project, assigned_session_count: usize) -> serde_json::Value {
+///
+/// Cost of the `available` field, at the point of action: `is_dir()` is one
+/// `stat(2)` per root per row, and the GUI deliberately dropped the field from
+/// its wire DTO to avoid exactly that ("连带省去列表路径的逐个 is_dir() stat",
+/// `app/commands/projects.rs`). On a network mount each of those stats can
+/// block for as long as the mount takes to answer, so a `projects list` over
+/// an unreachable NFS/SMB root is as slow as the mount, not as slow as the
+/// store. The CLI keeps the field anyway — a headless caller has no other way
+/// to learn a root went missing — and it is NOT memoized across rows on
+/// purpose: `validate_roots` rejects a root that is the same as, or nested
+/// under, a root of any other project, so no two rows in one listing can ever
+/// stat the same path and a cache would only add bookkeeping.
+///
+/// A serialization failure is propagated rather than degraded to
+/// `json!({})`/`json!([])`: that placeholder answers a caller's `.id` with
+/// `null` under exit 0, which is a successful WRONG answer — the same rule
+/// `personas::summary_value` spells out, applied here so the PR has one rule.
+fn project_item(
+    project: &Project,
+    assigned_session_count: usize,
+    context: &str,
+) -> Result<serde_json::Value, CliError> {
     let roots = project
         .roots
         .iter()
@@ -235,10 +286,13 @@ fn project_item(project: &Project, assigned_session_count: usize) -> serde_json:
             })
         })
         .collect::<Vec<_>>();
-    let mut item = serde_json::to_value(project).unwrap_or_else(|_| serde_json::json!({}));
-    item["roots"] = serde_json::to_value(roots).unwrap_or_else(|_| serde_json::json!([]));
+    let mut item = serde_json::to_value(project)
+        .map_err(|error| CliError::failed(format!("projects {context}: {error}")))?;
+    // Already `Vec<Value>`: wrapping it directly skips a `to_value` round-trip
+    // that could only ever succeed.
+    item["roots"] = serde_json::Value::Array(roots);
     item["assigned_session_count"] = serde_json::json!(assigned_session_count);
-    item
+    Ok(item)
 }
 
 fn roots_human(project: &Project) -> String {
@@ -286,7 +340,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     for project in &projects {
         let count = store.assigned_session_ids(&project.id).len();
         rows.push(project_row(project, count));
-        items.push(project_item(project, count));
+        items.push(project_item(project, count, "list")?);
     }
     let value = serde_json::json!({
         "projects": items,
@@ -303,7 +357,7 @@ fn create(name: &str, roots: Vec<PathBuf>, output: OutputMode) -> Result<CliOutc
     let project = store
         .create_project(name.to_owned(), roots)
         .map_err(|error| project_error("create", error))?;
-    let value = project_item(&project, 0);
+    let value = project_item(&project, 0, "create")?;
     Ok(success(render(
         output,
         format!("created {}", project.id),
@@ -324,7 +378,7 @@ fn update(
         .update_project(id, name, roots)
         .map_err(|error| project_error("update", error))?;
     let count = store.assigned_session_ids(&project.id).len();
-    let value = project_item(&project, count);
+    let value = project_item(&project, count, "update")?;
     Ok(success(render(
         output,
         format!("updated {}", project.id),
@@ -347,6 +401,96 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         "affected_session_ids": report.affected_session_ids,
     });
     Ok(success(render(output, format!("deleted {id}"), &value)))
+}
+
+/// The directory a session is bound to, for tier-2 auto-grouping.
+///
+/// Same union the app's own execution-root resolver builds (`lib.rs`) and the
+/// same two sources the frontend's session items carry: an ACP/code session's
+/// project workspace comes from the agent index (`session-agents.json`), a
+/// bound plain work session's comes from its `workspace-binding.json`
+/// sidecar. A session with neither has no project directory at all, which is
+/// the frontend's `hasProjectWorkspace(item) === false` — it cannot be
+/// auto-grouped.
+///
+/// The agent record is read directly rather than through
+/// `code_project_workspace`, which additionally requires code MODE: an ACP
+/// session in plain mode still carries a project workspace, and the frontend
+/// lists it.
+fn session_workspace_path(sessions: &SessionStore, session_id: &str) -> Option<PathBuf> {
+    let record = SessionAgentStore::load_or_empty().get(session_id);
+    if record.workspace_kind == CodexWorkspaceKind::Project
+        && let Some(path) = record.workspace_path
+    {
+        return Some(path);
+    }
+    sessions.session_workspace_binding(session_id)
+}
+
+/// Containment rule behind tier-2 grouping.
+///
+/// The frontend compares strings and guards the boundary by hand
+/// (`a.startsWith(b) && a[b.length] === '/'`, after stripping trailing
+/// separators). `Path::starts_with` is the same rule expressed in components:
+/// it matches whole components only, so `/srv/appdata` is not under `/srv/app`,
+/// and trailing separators stop mattering. An empty root is excluded — for the
+/// frontend that case degenerates to "any absolute path", which would make one
+/// hand-edited blank root swallow every session.
+///
+/// Known limit: the frontend also case-folds when BOTH sides look like Windows
+/// paths. This comparison does not, so on Windows a root and a workspace that
+/// differ only in case resolve as unrelated. That can only make the gate below
+/// more permissive (it never refuses a move the GUI would allow), which is the
+/// safe direction for an irreversible write.
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    !root.as_os_str().is_empty() && path.starts_with(root)
+}
+
+/// The project a session currently resolves to, mirroring the frontend's
+/// `resolveSessionProjectId` (`features/projects/projectGrouping.js`): tier 1
+/// is the explicit assignment, tier 2 is auto-grouping by the session's bound
+/// workspace directory, longest root winning so a nested project root cannot
+/// be stolen by a shallower one.
+///
+/// The Rust store exposes tier 1 only, and only as the whole map: the
+/// per-session `assignment_of` is `#[cfg(test)]`, so the production reader is
+/// `assignments_snapshot` — the same call the command layer ships to the
+/// frontend alongside `list_projects`. Tier 2 lives in the frontend, so it is
+/// reproduced here from the store's own data rather than left unchecked. The
+/// one deviation is the case folding documented on [`path_is_under_root`].
+fn resolved_project_id(
+    store: &ProjectStore,
+    sessions: &SessionStore,
+    session_id: &str,
+) -> Option<String> {
+    let projects = store.list();
+    match store.assignments_snapshot().get(session_id).cloned() {
+        // Assigned to a project that still exists: that is the answer.
+        Some(Some(project_id)) if projects.iter().any(|project| project.id == project_id) => {
+            return Some(project_id);
+        }
+        // An explicit ungroup entry resolves to "no project", full stop — it
+        // exists precisely to stop tier 2 from answering.
+        Some(None) => return None,
+        // A dangling id (its project was deleted out from under the entry) and
+        // "no entry at all" both fall through to tier 2, exactly as the
+        // frontend does.
+        Some(Some(_)) | None => {}
+    }
+    let workspace = session_workspace_path(sessions, session_id)?;
+    let mut best: Option<(&str, usize)> = None;
+    for project in &projects {
+        for root in &project.roots {
+            if !path_is_under_root(&workspace, root) {
+                continue;
+            }
+            let depth = root.as_os_str().len();
+            if best.is_none_or(|(_, best_depth)| depth > best_depth) {
+                best = Some((project.id.as_str(), depth));
+            }
+        }
+    }
+    best.map(|(project_id, _)| project_id.to_owned())
 }
 
 /// Mirror of `move_session_to_project` (storage-only subset): the assignment
@@ -381,13 +525,29 @@ fn move_session(
         ))
     })?;
     let store = open_store()?;
+    // Ungrouping is gated the way the GUI gates it. `MoveToProjectDialog.jsx`
+    // renders its "remove from project" entry `aria-disabled` unless the
+    // session RESOLVES to a project, and the store's `None` arm is not a
+    // "clear" but an explicit, irreversible opt-out of auto-grouping — so
+    // running it on a session that is already ungrouped pins a state the user
+    // never chose and neither surface can undo. The CLI had no such gate.
+    if project_id.is_none() && resolved_project_id(&store, &sessions, session_id).is_none() {
+        return Err(CliError::failed(format!(
+            "projects move: session {session_id} is not in a project, so there is nothing to \
+             move it out of; the desktop app disables this action for the same reason\n\
+             {MOVE_UNGROUP_NOTE}"
+        )));
+    }
     // The GUI's add_workspace_root lane needs the ACP pool to resolve the
     // session's workspace record; see the module header for the disclosed
     // headless deviation.
     let outcome = store
         .move_session_to_project(session_id, project_id, None)
         .map_err(|error| project_error("move", error))?;
-    let mut value = serde_json::to_value(&outcome).unwrap_or_else(|_| serde_json::json!({}));
+    // Same no-placeholder rule as `project_item`: a degraded `json!({})` would
+    // answer `project_id`/`added_root` with `null` under exit 0.
+    let mut value = serde_json::to_value(&outcome)
+        .map_err(|error| CliError::failed(format!("projects move: {error}")))?;
     value["session_id"] = serde_json::json!(session_id);
     let human = match project_id {
         Some(project_id) => format!("moved {session_id} into {project_id}"),
@@ -451,5 +611,30 @@ mod tests {
     fn list_row_leaves_ordinary_names_and_empty_roots_untouched() {
         let row = project_row(&project_fixture("Alpha", Vec::new()), 0);
         assert_eq!(row, "prj-fixture\tAlpha\t0\t-");
+    }
+
+    /// Tier-2 containment must match on whole components, the way the
+    /// frontend's hand-written boundary check does. A shallower root that is
+    /// only a string prefix of the workspace ("/srv/app" vs "/srv/appdata")
+    /// must NOT capture it, or the ungroup gate would believe a session is
+    /// grouped when the GUI shows it ungrouped.
+    #[test]
+    fn tier_two_containment_matches_components_not_string_prefixes() {
+        let workspace = PathBuf::from("/srv/appdata/repo");
+        assert!(path_is_under_root(&workspace, Path::new("/srv/appdata")));
+        assert!(path_is_under_root(
+            &workspace,
+            Path::new("/srv/appdata/repo")
+        ));
+        assert!(path_is_under_root(&workspace, Path::new("/srv/appdata/")));
+        assert!(!path_is_under_root(&workspace, Path::new("/srv/app")));
+        assert!(!path_is_under_root(
+            &workspace,
+            Path::new("/srv/appdata/repo/sub")
+        ));
+        // A blank root degenerates to "every absolute path" in the frontend's
+        // string comparison; one hand-edited empty root must not swallow every
+        // session here.
+        assert!(!path_is_under_root(&workspace, Path::new("")));
     }
 }

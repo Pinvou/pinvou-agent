@@ -712,3 +712,213 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
 
     std::fs::remove_file(&body_path).unwrap();
 }
+
+/// The human `personas list` and `personas active` rows are tab-separated
+/// records (five and three columns) and the card text in them is untrusted:
+/// the feature layer only rejects an empty trimmed name, the CLI takes
+/// `--name`/`--description` verbatim from argv, and the user pool is parsed
+/// from arbitrary `~/.pinvou3/user/personas/*.json`. A tab would invent a
+/// column, a newline would split one card across two rows, and an ESC would
+/// reach the terminal. JSON keeps the verbatim strings.
+#[test]
+fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("row-control-chars");
+    let session_id = create_session_fixture();
+    let body_path = write_body_file("rows", "# Rows Expert\n\nbody\n");
+    let hostile_name = "Alpha\tBeta\nGamma\x1b[31m";
+    let hostile_description = "does\tthings\nand more\x07";
+
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        hostile_name,
+        "--description",
+        hostile_description,
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let persona_id = value["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        value["name"],
+        serde_json::json!(hostile_name),
+        "the collapse is a rendering choice; JSON keeps the stored name"
+    );
+
+    let outcome = run(&["pinvou", "personas", "list"]).expect("list must succeed");
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+    let row = outcome
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&persona_id))
+        .unwrap_or_else(|| panic!("the created card must be listed: {:?}", outcome.stdout));
+    assert_eq!(
+        row,
+        format!("{persona_id}\tuser\tAlpha Beta Gamma [31m\tspecialized\tdoes things and more "),
+        "the list row must stay one line of five collapsed columns"
+    );
+
+    // `active` renders the same untrusted cells one command away.
+    run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
+    let outcome = run(&["pinvou", "personas", "active", &session_id]).expect("active must succeed");
+    assert_eq!(
+        outcome.stdout,
+        format!("{persona_id}\tAlpha Beta Gamma [31m\tuser"),
+        "the active row must stay one line of three collapsed columns"
+    );
+
+    std::fs::remove_file(&body_path).unwrap();
+}
+
+/// The desktop app's persona delete never touches `persona_equipped.json`
+/// (the filename appears nowhere in `pinvou3-app`), and the CLI's own sweep
+/// cannot run afterwards because `personas delete` gates on the card
+/// existing. So a sidecar can outlive its card while still holding that
+/// card's full injection body. Reporting it as "no persona equipped" hid the
+/// only remaining evidence; `active` names it and `unequip` clears it without
+/// consulting the card pool, so the state is visible AND clearable from the
+/// CLI alone.
+#[test]
+fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("orphan-sidecar");
+    let session_id = create_session_fixture();
+    let body_path = write_body_file("orphan", "# Orphan Expert\n\nbody\n");
+
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Orphan Expert",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let persona_id = value["id"].as_str().unwrap().to_owned();
+    run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
+    let sidecar = home
+        .sessions_root()
+        .join(&session_id)
+        .join("persona_equipped.json");
+    assert!(sidecar.is_file());
+
+    // Exactly what the desktop app's delete does: remove the card file and
+    // nothing else. The user pool is cached process-globally and only
+    // reloaded on a create/update/delete, so a second create is what makes
+    // this process observe the removal — the same reload the app performs.
+    std::fs::remove_file(home.user_personas_dir().join(format!("{persona_id}.json")))
+        .expect("the card file must exist");
+    run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Reload Trigger",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+
+    let error = run(&["pinvou", "personas", "active", &session_id])
+        .expect_err("an orphaned sidecar must not report as 'none'");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains(&persona_id), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("personas unequip {session_id}")),
+        "the error must name the command that clears it: {error}"
+    );
+    assert!(
+        sidecar.is_file(),
+        "reporting must not delete anything by itself"
+    );
+
+    // The remedy works without the card: `unequip` never consults the pool.
+    run(&["pinvou", "personas", "unequip", &session_id]).expect("unequip must clear the orphan");
+    assert!(!sidecar.exists());
+    let value = run_json(&["pinvou", "personas", "active", &session_id]);
+    assert!(value.is_null(), "cleared state is the honest 'none'");
+
+    std::fs::remove_file(&body_path).unwrap();
+}
+
+/// `personas delete` deliberately reports sweep failures on a `sidecar_errors`
+/// channel while still exiting 0: the card itself is gone by then, and a
+/// failure verdict would claim nothing was deleted. That channel had no test
+/// with a NON-EMPTY list, so nothing pinned either half of the contract.
+#[test]
+fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-sidecar-errors");
+    let session_id = create_session_fixture();
+    let body_path = write_body_file("sweep-errors", "# Stuck Expert\n\nbody\n");
+
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Stuck Expert",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let persona_id = value["id"].as_str().unwrap().to_owned();
+    run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
+
+    // A session directory whose sidecar cannot be inspected at all: a
+    // DIRECTORY where the sweep expects a file. The sweep cannot tell whether
+    // it references the deleted card, so it must be named rather than skipped.
+    let blocked = home
+        .sessions_root()
+        .join("ghost-session")
+        .join("persona_equipped.json");
+    std::fs::create_dir_all(&blocked).unwrap();
+
+    let outcome = run(&[
+        "pinvou",
+        "personas",
+        "delete",
+        &persona_id,
+        "--yes",
+        "--output",
+        "json",
+    ])
+    .expect("a stuck sidecar must not fail the delete");
+    assert_eq!(
+        outcome.exit_code,
+        ExitCode::Success,
+        "the card is already deleted; a failure verdict would claim otherwise"
+    );
+    let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+    assert_eq!(value["action"], "deleted");
+    let errors = value["sidecar_errors"]
+        .as_array()
+        .expect("sidecar_errors list");
+    assert_eq!(errors.len(), 1, "the stuck sidecar must be named: {value}");
+    assert!(
+        errors[0]
+            .as_str()
+            .unwrap()
+            .starts_with("ghost-session: personas delete:"),
+        "the entry must name the session it is stuck on: {}",
+        errors[0]
+    );
+    // The reachable sidecar was still swept, and the stuck one is untouched.
+    let cleared = value["cleared_sessions"]
+        .as_array()
+        .expect("cleared_sessions list");
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0], session_id);
+    assert!(
+        blocked.is_dir(),
+        "the sweep must not delete what it cannot read"
+    );
+
+    std::fs::remove_file(&body_path).unwrap();
+}

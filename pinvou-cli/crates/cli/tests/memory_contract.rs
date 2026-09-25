@@ -275,6 +275,42 @@ fn memory_rejects_invalid_usage_with_exit_code_two() {
     // unknown options and unexpected trailing arguments
     assert_usage(&["pinvou", "memory", "overview", "--json"]);
     assert_usage(&["pinvou", "memory", "organize", "extra"]);
+    // Stray positionals on the option-only commands: each of these used to
+    // parse and run with the extra token silently dropped, answering a
+    // different command than the one typed — `list preferences` dumped all six
+    // stores, `pending confirm ID oops` ignored `oops`, `profile set
+    // --call-name X junk` wrote only X, and `add --file P extra words` stored
+    // the file and discarded the words.
+    for arguments in [
+        &["pinvou", "memory", "list", "preferences"][..],
+        &["pinvou", "memory", "pending", "confirm", "id-1", "oops"][..],
+        &[
+            "pinvou",
+            "memory",
+            "profile",
+            "set",
+            "--call-name",
+            "Alice",
+            "junk",
+        ][..],
+        &[
+            "pinvou",
+            "memory",
+            "add",
+            "preference",
+            "--file",
+            "p.txt",
+            "extra",
+            "words",
+        ][..],
+    ] {
+        let error = expect_usage_error(arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
+        assert!(
+            error.to_string().contains("no positional arguments"),
+            "{arguments:?}: {error}"
+        );
+    }
 
     // organize without --yes is rejected at execute time, like delete: the
     // LLM-driven store rewrite is destructive
@@ -792,9 +828,47 @@ fn memory_pending_confirm_reports_a_profile_shaped_no_op_honestly() {
 
     let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    // The message states the observable fact first — the confirm produced no
+    // visible store row — and then lists the causes, because
+    // `confirmed_pending_memory_is_materialized` returns false for several
+    // (TTL archival, a re-confirm that rewrites nothing, an unverifiable
+    // profile topic) and cannot say which applies. The profile-shaped skip
+    // exercised here must still be named among them.
     assert!(
-        error.to_string().contains("deliberately not materialized"),
-        "the no-op must be reported, not success: {error}"
+        message.contains("no matching item is visible in its target store"),
+        "the no-op must be reported, not success: {message}"
+    );
+    assert!(
+        message.contains("profile-shaped preference text"),
+        "the applicable cause must still be named: {message}"
+    );
+}
+
+/// `memory pending confirm` must not report an unverified write as materialized
+/// when the id it was handed does not round-trip.
+///
+/// `confirm_pending_memory` resolves `clean_id(id)` while the CLI's read-back
+/// matched the RAW argv string: an id with characters `clean_id` rewrites
+/// confirms a real row, then finds nothing to check, and the old
+/// `unwrap_or(true)` fallback declared the write materialized — skipping the
+/// honesty check exactly when the input was off. The safe direction is to fail.
+#[test]
+fn memory_pending_confirm_fails_when_the_id_does_not_round_trip() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("confirm-id-roundtrip");
+
+    let item = enqueue_fixture("preference", "Prefer concise answers");
+    // `clean_id` maps every character outside [A-Za-z0-9-_] to '_' and trims
+    // the result, so this spelling confirms the same row but never equals the
+    // stored id on read-back.
+    let raw_id = format!("{}.", item.id);
+
+    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &raw_id]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("cannot be verified"),
+        "an unverifiable confirm must not be reported as materialized: {error}"
     );
 }
 
@@ -829,6 +903,53 @@ fn memory_update_rejects_empty_content_as_a_usage_error() {
             "content={content:?}: {error}"
         );
     }
+}
+
+/// `memory update` classifies content that normalizes away exactly like
+/// `memory add` does, up front, instead of letting the store reject it.
+///
+/// Every editable store's writer runs the patch text through
+/// `clean_candidate_sentence` and refuses an empty result, so punctuation-only
+/// text came back as a store-flavoured `memory_update_failed: ...` io error
+/// while `add` — which pre-checks the same predicate — refused the identical
+/// input with a message naming the real reason. Both spellings stay exit 1;
+/// what this pins is that the two commands answer the same input the same way.
+#[test]
+fn memory_update_refuses_content_that_normalizes_away_like_add_does() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("update-normalizes-away");
+
+    // Punctuation-only: `clean_candidate_sentence` strips it to nothing.
+    let update = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        "some-id",
+        "--content",
+        "...",
+    ]);
+    assert_eq!(update.exit_code(), ExitCode::Failed, "{update}");
+    assert!(
+        update.to_string().contains("memory_update_not_applied")
+            && update.to_string().contains("empty after normalization"),
+        "update must name the normalization, not the store: {update}"
+    );
+
+    // The add-side classification of the very same input, for comparison.
+    let add = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        "...",
+    ]);
+    assert_eq!(add.exit_code(), ExitCode::Failed, "{add}");
+    assert!(
+        add.to_string().contains("empty after normalization"),
+        "{add}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,5 +1143,87 @@ fn memory_add_fails_when_the_pipeline_stores_different_text() {
     assert!(
         message.contains("We Deploy On Fridays") && message.contains("WE DEPLOY ON FRIDAYS"),
         "the message must name both the stored and the submitted text: {message}"
+    );
+    // The divergence is detected BEFORE the confirm, so the reused candidate
+    // is still awaiting review and nothing reached the work-context store.
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "no second candidate was queued: {pending:?}"
+    );
+    // `PENDING_STATUS_PENDING` (features/memory/types.rs) — the awaiting-review
+    // status is spelled "pending_confirm"; it is not re-exported, so the
+    // literal is pinned here rather than widening the app surface for a test.
+    assert_eq!(pending[0].status, "pending_confirm", "{pending:?}");
+    assert!(
+        pinvou3_lib::features::memory::load_work_context()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A failed `memory add` must not confirm or materialize an UNRELATED pending
+/// candidate.
+///
+/// `enqueue_memory_candidate`'s second dedupe branch matches an existing
+/// *pending* row on a lowercased content key and returns that row with its own
+/// `content` intact. The CLI then confirmed the id it was handed, which really
+/// approved a candidate the user had not reviewed and wrote the earlier row's
+/// text into the topic bucket; only afterwards did the verification lookup
+/// fail and the command exit 1. So the failure path had two silent side
+/// effects and its remediation ("resolve it with `pinvou memory pending`")
+/// pointed at a row that was already resolved and already written.
+///
+/// This pins the state the bug corrupts: exit 1, the seeded candidate still
+/// `pending`, and the authoritative store still empty. Before the fix the
+/// candidate reads `confirmed` and the preference store holds its text.
+#[test]
+fn memory_add_case_dedupe_failure_leaves_the_pending_queue_and_store_untouched() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-case-dedupe-no-side-effects");
+
+    // A candidate the user queued but never reviewed.
+    let seeded = enqueue_fixture("preference", "Prefer Concise Answers");
+
+    // Same text, different casing: the dedupe key is lowercased, so the
+    // enqueue hands back the seeded row instead of queueing this one.
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "PREFER CONCISE ANSWERS",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("memory_add_not_materialized"),
+        "{error}"
+    );
+    // The remediation must describe what actually happened: nothing written.
+    assert!(
+        error.to_string().contains("nothing was confirmed"),
+        "the remediation must not claim a write happened: {error}"
+    );
+
+    // The seeded candidate is untouched — still awaiting the user's review.
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].id, seeded.id, "{pending:?}");
+    // `PENDING_STATUS_PENDING` (features/memory/types.rs) == "pending_confirm";
+    // "confirmed" here would mean the add wrote the reused row before failing.
+    assert_eq!(
+        pending[0].status, "pending_confirm",
+        "a failed add must not confirm a candidate the user has not reviewed: {pending:?}"
+    );
+    assert_eq!(pending[0].content, "Prefer Concise Answers", "{pending:?}");
+
+    // And the authoritative store never received the other row's text.
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty(),
+        "a failed add must not materialize the reused candidate"
     );
 }

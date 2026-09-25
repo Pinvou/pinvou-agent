@@ -25,9 +25,13 @@
 //! - index status/cancel/resume/retry/failed → `KnowledgeService::
 //!   {index_status, cancel_index, resume_index, retry_index_item,
 //!   failed_index_files}`; `--limit` for failed files defaults to the GUI
-//!   page size 50. Per-job live state is not addressable headlessly (the job
-//!   store is `pub(super)`), so `index status <job-id>` reports only the
-//!   latest job. `index cancel/resume/retry <job-id>` validate the named id
+//!   page size 50. `index status` without an id reports the GUI's latest job
+//!   (`kb_index_status` semantics); with an id it reports THAT job through
+//!   `KnowledgeService::index_job_state`, because the latest-job ordering
+//!   ranks `cancelled` last and would answer with an older `done_with_errors`
+//!   job instead. `index cancel` reports the cancelled job through the same
+//!   per-job read for exactly that reason.
+//!   `index cancel/resume/retry <job-id>` validate the named id
 //!   against that latest job BEFORE the recovering open: boot recovery would
 //!   flip every preparing/running job to interrupted — including one a live
 //!   desktop-app process is still importing — so a mistyped id must fail
@@ -45,7 +49,10 @@
 //! - mounts/mount/unmount → honest refusal (`knowledge_*_requires_product_host`):
 //!   mounted collections live in the desktop app's per-process memory
 //!   (`features::sessions::mode_state`, deliberately not persisted), so a
-//!   one-shot CLI process can neither observe nor durably mutate them.
+//!   one-shot CLI process can neither observe nor durably mutate them. The
+//!   refusal is returned before any `SessionStore::boot()`, which enforces
+//!   the 50-sessions-per-kind retention and would evict the user's oldest
+//!   sessions on the way to an answer that can never be anything else.
 //! - remote connections/collections/search → `RemoteKnowledgeService` over
 //!   `~/.pinvou3/knowledge/remote-connections.json`. These are async network
 //!   client calls, so they run through the windowless product host
@@ -86,9 +93,13 @@
 //! DB-persisted and come back as interrupted/resumable (`index resume`).
 //! `scan start` is the exception: it waits for the scan to finish inside
 //! the invocation (a fire-and-forget scan would be killed by process exit
-//! before doing any work) and pre-flights the root, because a root that
-//! walks to nothing would make the incremental sweep delete the whole
-//! index as "stale". Every CLI invocation constructs the service fresh; read-only
+//! before doing any work), under a no-progress liveness bound, and
+//! pre-flights the root so a typo fails loudly instead of reporting a
+//! cheerful `done` over zero files. The pre-flight is usability only: index
+//! safety is the sweep's own (a root the walk could not reach never
+//! authorizes deletion — `features::knowledge::root_authorizes_deletion`),
+//! because the pre-flight is inherently TOCTOU.
+//! Every CLI invocation constructs the service fresh; read-only
 //! commands open it WITHOUT the GUI's startup recovery, so inspecting the
 //! store cannot degrade an import a live desktop-app process is still
 //! running. The remaining recovery openers are the commands that act on the
@@ -769,10 +780,13 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // The root is pre-flighted BEFORE the scan starts so a typo'd path or a
     // plain file fails loudly here instead of walking to nothing and
     // reporting a `done` scan that indexed zero files; it mirrors the
-    // add-sources path pre-flight. It guards usability, NOT the index: the
-    // stale sweep only deletes entries that live under a root it actually
-    // walked (`features::knowledge`), so files indexed from other
-    // directories survive a scan of an unrelated root on their own.
+    // add-sources path pre-flight. It guards usability, NOT the index, and it
+    // cannot guard the index: the root can still vanish between this check
+    // and the walk (an unmount, a revoked permission). Index safety is the
+    // sweep's own — it authorizes deletion only inside roots the walk
+    // actually reached (`features::knowledge::root_authorizes_deletion`), so
+    // both an unrelated root and a root lost mid-flight leave the rest of the
+    // index alone.
     let root = root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir);
     match std::fs::metadata(&root) {
         Ok(meta) if meta.is_dir() => {}
@@ -810,14 +824,58 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // immediately would kill it before it did any work (nothing would be
     // indexed and no completion marker persisted), so the invocation waits
     // for the scan to finish and reports the final state.
+    //
+    // This is the ONLY caller that blocks on `running`, so it also owns the
+    // liveness bound. The scan thread now clears the flag even when it panics
+    // (`features::knowledge::start_scan`), but a wait with no bound at all
+    // turns any future way of losing that thread into a terminal that hangs
+    // with no output and no exit code. The bound is no-progress, not
+    // wall-clock: a full home scan legitimately runs for many minutes while
+    // `scanned` keeps advancing (the walker reports every 5000 entries and
+    // once per root), so "still running and not counting" is the honest
+    // signature of a lost thread.
+    let mut last_scanned = service.status().scanned;
+    let mut last_progress = std::time::Instant::now();
     loop {
         let state = service.status();
         if !state.running {
+            // The panic guard's own phase: the walk aborted mid-way, so the
+            // completion marker was deliberately not persisted and the stale
+            // sweep never ran. Reporting "scan completed" would be a lie and
+            // exit 0 would hide it from a script.
+            if state.phase == "interrupted" {
+                return Err(CliError::failed(format!(
+                    "knowledge scan start: the scan thread aborted before finishing \
+                     (phase: interrupted, scanned: {}); partial results may be indexed, \
+                     the completion marker was not persisted and no stale entries were \
+                     removed — re-run the command",
+                    state.scanned
+                )));
+            }
             return scan_out("scan completed (process-local)", state, output);
+        }
+        if state.scanned != last_scanned {
+            last_scanned = state.scanned;
+            last_progress = std::time::Instant::now();
+        } else if last_progress.elapsed() >= SCAN_NO_PROGRESS_TIMEOUT {
+            return Err(CliError::failed(format!(
+                "knowledge scan start: the scan is still flagged running but reported no \
+                 progress for {}s (scanned: {}); the scan thread is gone or wedged — \
+                 partial results may be indexed and the completion marker was not \
+                 persisted",
+                SCAN_NO_PROGRESS_TIMEOUT.as_secs(),
+                state.scanned
+            )));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+/// How long `scan start` keeps waiting on a scan that is flagged running but
+/// has stopped counting. Generous on purpose: the walker only reports every
+/// 5000 entries, and a cold spinning disk or a slow network mount can spend
+/// minutes between two reports without being stuck.
+const SCAN_NO_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
@@ -1262,10 +1320,6 @@ fn collections_add_sources(
 
 /// GUI `kb_documents`: `limit` omitted maps to the GUI's 0 = default page of
 /// 500 (`L1Store::list_documents`).
-/// Page-size cap for `documents list`: matches the store's own search cap
-/// order of magnitude and keeps the i64 cast below safe.
-const DOCUMENTS_LIMIT_CAP: usize = 1000;
-
 fn documents(
     collection_id: i64,
     limit: Option<usize>,
@@ -1274,10 +1328,14 @@ fn documents(
     let service = open_service()?;
     let documents = service
         .l1()
-        // Clamp the page size: the caller's usize is cast to i64 downstream,
-        // so usize::MAX would wrap to SQLite's LIMIT -1 (unlimited) and
-        // materialize the whole documents table.
-        .list_documents(collection_id, limit.unwrap_or(0).min(DOCUMENTS_LIMIT_CAP))
+        // No CLI-side page cap: `L1Store::list_documents` already clamps to
+        // `store::SEARCH_LIMIT_CAP` for exactly this reason (a raw `as i64`
+        // would wrap usize::MAX into SQLite's LIMIT -1 = unlimited and
+        // materialize the whole table). That constant is `pub(crate)` in the
+        // app crate, so the CLI cannot import it; a second local copy of the
+        // same number would silently desync the day upstream changes it, and
+        // the guarantee is upstream's to keep.
+        .list_documents(collection_id, limit.unwrap_or(0))
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")
@@ -1335,22 +1393,43 @@ fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliEr
 
 // ───────────────────────── index jobs ─────────────────────────
 
-/// GUI `kb_index_status` polls the latest job; the CLI's optional job id is
-/// verified against it because per-job live state is not addressable
-/// headlessly (the import job store is `pub(super)` upstream).
+/// GUI `kb_index_status` polls the latest job; the CLI reports that same
+/// latest job when no id is given, and the NAMED job when one is.
+///
+/// The named job must not be answered from the latest-job read: upstream's
+/// ordering ranks `preparing|running` first, then `interrupted`, then
+/// `done_with_errors`, and everything else (including `cancelled`) last, so a
+/// job the caller just cancelled is routinely outranked by an older terminal
+/// one. Reporting that other job's state under the requested id — or refusing
+/// because "only the latest job is reachable" — were both wrong answers to a
+/// question the store can answer exactly ([`KnowledgeService::index_job_state`]).
 fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
-    let state = service.index_status();
-    if let Some(job_id) = job_id
-        && state.job_id.as_deref() != Some(job_id)
-    {
-        return Err(CliError::failed(format!(
-            "knowledge index status({job_id}): per-job state is not reachable \
-             headlessly (only the latest job is); latest job is {}",
-            state.job_id.as_deref().unwrap_or("none")
-        )));
-    }
+    let state = match job_id {
+        None => service.index_status(),
+        Some(job_id) => named_job_state(&service, job_id, "status")?,
+    };
     index_out("index status", state, output)
+}
+
+/// Reads one named job's state, mapping the store's "unknown id" answer
+/// (rusqlite's `QueryReturnedNoRows`) onto the family's stable
+/// `knowledge_index_job_not_found` code instead of leaking the driver
+/// message (the same mapping `index failed`/`index resume` use).
+fn named_job_state(
+    service: &KnowledgeService,
+    job_id: &str,
+    operation: &str,
+) -> Result<IndexState, CliError> {
+    service.index_job_state(job_id).map_err(|error| {
+        if error.contains("Query returned no rows") {
+            CliError::failed(format!(
+                "knowledge_index_job_not_found: no index job {job_id} exists"
+            ))
+        } else {
+            feature_error(&format!("index {operation}({job_id})"), error)
+        }
+    })
 }
 
 /// GUI `kb_index_cancel` targets the active/latest job; refuse when the
@@ -1415,7 +1494,13 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
-    let state = service.index_status();
+    // Report the job that was actually cancelled, NOT `index_status()`. The
+    // latest-job read ranks `cancelled` in its last bucket, so the successful
+    // cancel hands the "latest" crown to any older `done_with_errors` /
+    // `interrupted` job: the human line said "cancel signalled for job B"
+    // while the JSON body carried A's state under A's jobId. `resume`/`retry`
+    // already report the named job; this is the same read.
+    let state = named_job_state(&service, job_id, "cancel")?;
     let header = if was_active {
         format!("index cancel signalled for job {job_id}")
     } else {
@@ -1643,8 +1728,21 @@ fn index_failed(
 
 /// The GUI's `kb_model_status` needs `tauri::State`, so the CLI reports what
 /// a one-shot process can know: the on-disk completeness mirror, the
-/// service's real readiness (a CLI process never loads the ~570MB model, so
-/// this is `false` unless a future headless loader exists), and the version.
+/// service's real readiness, and the version.
+///
+/// The whole payload is process-local and JSON says so with the same
+/// `"scope": "process-local"` marker `scan cancel` and `model cancel` carry.
+/// `ready` is the reason the marker is not optional: it is
+/// `semantic_ready()`, i.e. "is the ~570 MB ONNX model loaded IN THIS
+/// PROCESS", and a one-shot CLI never loads it — so it reads `false` even
+/// when the model is fully deployed and resident in the desktop app. Without
+/// the marker a script gating on `.ready` would never proceed and could not
+/// tell why; `.installed` is the field to gate deployment on. The field is
+/// kept rather than dropped because it is the honest answer for this process
+/// (and becomes meaningful the day a headless loader exists), and dropping a
+/// published field would break consumers for no gain. `model_dir`/`installed`
+/// are process-local too: `configured_model_dir` reads this process's
+/// `PINVOU3_KB_EMBED_MODEL_DIR`.
 fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let dir = configured_model_dir();
@@ -1652,6 +1750,8 @@ fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let ready = service.semantic_ready();
     let human = format!(
         "version: {MODEL_VERSION}\nmodel_dir: {}\ninstalled: {installed}\nready: {ready}\n\
+         note: ready is process-local (a one-shot CLI never loads the model, so it reads \
+         false even when the app has it resident); gate on installed\n\
          note: model download and load run in the desktop app process",
         dir.display()
     );
@@ -1663,16 +1763,29 @@ fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "model_dir": dir.display().to_string(),
             "installed": installed,
             "ready": ready,
+            "scope": "process-local",
         }),
     )))
 }
 
 /// CLI-side mirror of `pinvou_knowledge::model_download::
-/// model_directory_is_complete` (pinvou-knowledge/src/model_download.rs):
-/// one of the ONNX variants plus the four tokenizer/config files. The
-/// upstream helper is not nameable from the CLI crate; keep this list in
-/// sync when the model manifest changes.
+/// model_directory_is_complete` (pinvou-knowledge/src/model_download.rs, the
+/// single source of truth): the directory is canonicalized first, then one of
+/// the ONNX variants plus the four tokenizer/config files must be present.
+///
+/// The upstream helper is `pub`, but `pinvou-knowledge` is only a TRANSITIVE
+/// dependency here (it enters the graph through `pinvou3-tauri`), and
+/// `pinvou3_lib` does not re-export it — a Rust crate cannot name a
+/// transitive dependency, so calling it would mean adding a direct
+/// `pinvou-knowledge` path dependency to this crate's Cargo.toml. Until that
+/// happens this copy must stay behaviourally identical, canonicalization
+/// included: without it a symlinked model directory (`current -> models/v3`,
+/// a supported override shape) answers differently here than in the app.
+/// Keep both halves in sync when the model manifest changes.
 fn model_directory_complete(dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
     let onnx = dir.join("model.onnx").is_file()
         || dir.join("onnx").join("model_int8.onnx").is_file()
         || dir.join("onnx").join("model.onnx").is_file();
@@ -2015,17 +2128,6 @@ fn open_store() -> Result<SessionStore, CliError> {
     })
 }
 
-/// The GUI mount commands operate on an open session, which by definition
-/// exists; the CLI mirror requires the same so sidecar state is never written
-/// for a stale id (same convention as the `sessions` family).
-fn require_session(store: &SessionStore, session_id: &str, action: &str) -> Result<(), CliError> {
-    store.load(session_id).map(|_| ()).map_err(|error| {
-        CliError::failed(format!(
-            "knowledge {action}({session_id}): session not found: {error:#}"
-        ))
-    })
-}
-
 /// The mount surface refuses honestly, same pattern as `model download`:
 /// mounted collections live in the desktop app's per-process memory
 /// (`features::sessions::mode_state` — deliberately not persisted), so a
@@ -2041,35 +2143,40 @@ fn mount_requires_product_host(action: &str, session_id: &str) -> CliError {
 }
 
 /// GUI `session_mounted_collections_snapshot`: the revisioned source of truth
-/// for one session's mounts. Unknown sessions are rejected first (CLI
-/// convention); every existing session is then refused honestly — mounts
+/// for one session's mounts. Every invocation is refused honestly — mounts
 /// live in the desktop app's process memory and are deliberately not
 /// persisted, so the CLI can neither read nor change them.
+///
+/// The refusal is returned BEFORE any store is opened. It does not depend on
+/// the session at all, and `SessionStore::boot()` is not a read: it enforces
+/// the 50-sessions-per-kind retention policy, which irreversibly deletes the
+/// user's oldest non-pinned sessions. Booting it to decorate an unavoidable
+/// refusal with "session not found" would destroy chat history as a side
+/// effect of a command that cannot succeed. The session-id charset gate still
+/// runs first, in [`require_session_id`] at parse time (exit 2), so a
+/// traversal-shaped id never reaches here.
 fn mounts(session_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    let store = open_store()?;
-    require_session(&store, session_id, "mounts")?;
     Err(mount_requires_product_host("mounts", session_id))
 }
 
+/// Same pre-boot refusal as [`mounts`]: a mutation the CLI cannot perform
+/// must not evict sessions on its way to saying so.
 fn mount(
     session_id: &str,
     _collection_id: i64,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    let store = open_store()?;
-    require_session(&store, session_id, "mount")?;
     Err(mount_requires_product_host("mount", session_id))
 }
 
+/// Same pre-boot refusal as [`mounts`].
 fn unmount(
     session_id: &str,
     _collection_id: i64,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    let store = open_store()?;
-    require_session(&store, session_id, "unmount")?;
     Err(mount_requires_product_host("unmount", session_id))
 }

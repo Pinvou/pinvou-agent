@@ -14,7 +14,10 @@
 //!   whitelist + `pkexec apt-get install`; macOS: Homebrew; Windows: bundled
 //!   repair). The GUI gates this behind its settings dialog; the CLI gates
 //!   it behind `--yes` (exit 2 without it). Requires root authorization
-//!   through the OS policy agent at run time.
+//!   through the OS policy agent at run time. The installer's progress hook —
+//!   the one the GUI turns into `deps:install_progress` events — is wired to
+//!   stderr `note!` lines so a multi-minute `brew`/`pkexec` run is not
+//!   indistinguishable from a hang; stdout stays a single JSON line.
 
 use crate::support::{render, require_yes, success};
 use crate::{CliError, CliOutcome, OutputMode};
@@ -76,6 +79,12 @@ pub fn execute(command: DepsCommand, output: OutputMode) -> Result<CliOutcome, C
     }
 }
 
+/// Progress sink `install_dependencies` calls for each adapter line:
+/// `(package, index, total, line)`. Named because the bare trait-object type is
+/// unreadable at the call site and appears in both the closure's annotation and
+/// the adapter's own signature.
+type InstallProgress = dyn Fn(&str, usize, usize, Option<&str>) + Sync;
+
 fn check(output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut items = file_ingest::check_dependencies();
     // The GUI localizes dependency `hint` strings through its i18n table;
@@ -114,18 +123,58 @@ fn check(output: OutputMode) -> Result<CliOutcome, CliError> {
 
 fn install(packages: &[String], yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
-    pinvou3_lib::features::dependencies::install_dependencies(packages.to_vec(), None).map_err(
-        |error| {
+    // The installer's second argument is the progress hook the GUI wires to
+    // `app.emit("deps:install_progress", …)`. Passing `None` made the whole
+    // install silent: on macOS the Homebrew adapter streams every brew
+    // stdout/stderr line through this hook, and a `libreoffice` cask can run
+    // for tens of minutes; on Linux `pkexec` can block indefinitely waiting on
+    // a polkit agent that is not running. With no output at all the two are
+    // indistinguishable from a hang, so the hook is wired to stderr here.
+    //
+    // stderr, not stdout: `--output json` must stay a single serde_json line,
+    // and progress is not part of the result (same split as every other lane
+    // that narrates with `note!`).
+    let progress = |package: &str, current: usize, total: usize, detail: Option<&str>| {
+        match detail {
+            // Vendor lines are third-party process output the CLI did not
+            // compose. `brew`/`apt-get` echo URLs and occasionally tokens
+            // embedded in them, so they get the same heuristic scrub every
+            // other lane applies to external command output before showing it
+            // (see `code.rs`'s vendor-CLI transcript handling).
+            Some(line) => note!(
+                "[deps] ({current}/{total}) {package}: {}",
+                pinvou3_lib::platform::credential_store::redact_secret(line)
+            ),
+            None => note!("[deps] ({current}/{total}) installing {package}"),
+        }
+    };
+    // Spelled out rather than inferred: the adapter takes a trait object with a
+    // `Sync` bound (macOS drains stdout and stderr from two scoped threads that
+    // both call it), and the annotation makes the unsize coercion explicit
+    // instead of leaving it to expected-type inference. The closure captures
+    // nothing, so `Sync` holds trivially.
+    let progress: &InstallProgress = &progress;
+    pinvou3_lib::features::dependencies::install_dependencies(packages.to_vec(), Some(progress))
+        .map_err(|error| {
             CliError::failed(format!(
                 "deps install failed: {}",
                 translate_deps_error(&error)
             ))
-        },
-    )?;
-    let value = serde_json::json!({ "installed": packages });
+        })?;
+    // Not `installed`: this is the caller's argv, and the adapters do not
+    // report back which packages the package manager actually placed on disk
+    // (Homebrew installs per package and joins the failures; apt installs the
+    // batch in one `pkexec` call). Naming the field `requested` keeps it from
+    // being read as a verified outcome, and `deps check` is the lane that
+    // answers "what is installed now".
+    let value = serde_json::json!({ "requested": packages });
     Ok(success(render(
         output,
-        format!("Installed: {}", packages.join(", ")),
+        format!(
+            "Requested: {}\nThe installer reported success; run `pinvou deps check` to confirm \
+             which capabilities are now available.",
+            packages.join(", ")
+        ),
         &value,
     )))
 }

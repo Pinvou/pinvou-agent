@@ -7,11 +7,26 @@
 //! tracker. The CLI calls exactly that function and discloses two surface
 //! deviations:
 //! - the GUI opens the issues URL in a browser; the CLI prints it;
-//! - the GUI keeps the receipt in-app; the CLI additionally persists the
-//!   request bundle under `$PINVOU3_HOME/feedback/pending/` and the returned
-//!   receipt under `$PINVOU3_HOME/feedback/receipts/` — the same directory
-//!   contract `platform::paths` defines for feedback artifacts. Nothing
-//!   leaves the machine.
+//! - the GUI keeps the receipt in-app; the CLI persists one file per
+//!   submission under `$PINVOU3_HOME/feedback/receipts/<id>.json`, holding the
+//!   returned receipt plus the request it answers. Nothing leaves the machine.
+//!
+//! Retention: the request is staged under `$PINVOU3_HOME/feedback/pending/`
+//! only for the duration of the (consuming) feature call, so the user's text
+//! survives a crash in between, and is removed once the receipt lands.
+//! `platform::paths` documents that directory as "packages that failed to
+//! upload or are still being prepared"; because the community
+//! `submit_feedback` never uploads and no retry lane exists, a bundle left
+//! there after a concluded run would be permanent and would claim an in-flight
+//! upload that will never happen. Both files are written `0600` on unix: they
+//! contain free text the user wrote, and the default umask would publish it to
+//! every account on the machine.
+//!
+//! `--attach` registers a path only — nothing is read and nothing is uploaded —
+//! but the path lands in that permanent receipt, so attachments are held to the
+//! same credential-path policy the GUI's picker enforces
+//! (`artifacts::check_sensitive_path`), and the registered set is echoed back
+//! in both output modes so `--attach` is not silently a no-op.
 //!
 //! The CLI fixes the request `entry_point` to `"settings"` (the only two
 //! values the feature accepts are the GUI's settings page and error banner)
@@ -127,6 +142,10 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     let description =
         crate::support::read_text_file_capped(&submit.body_file, 64 * 1024, "feedback submit")?;
     let mut attachments = Vec::new();
+    // Rendered back to the user below. The request itself is consumed by the
+    // feature call, so the summary is built here while the data is still
+    // owned locally.
+    let mut attachment_rows = Vec::new();
     for path in &submit.attachments {
         let size = std::fs::metadata(path)
             .map_err(|error| {
@@ -136,14 +155,40 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
                 ))
             })?
             .len();
+        // Nothing is read or uploaded here — only the path is recorded — but
+        // it is recorded into a receipt that stays on disk forever, and the
+        // GUI's attachment picker refuses these locations outright. A CLI that
+        // happily writes `/home/u/.ssh/id_rsa` into a persisted file is a way
+        // around a rule the other surface enforces, so the same path policy
+        // applies (`artifacts::check_sensitive_path`, the mirror of
+        // `platform::path_policy::check_sensitive_components`). The canonical
+        // form is what the policy is defined over, so resolve first.
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            CliError::failed(format!(
+                "feedback submit: cannot resolve attachment {}: {error}",
+                path.display()
+            ))
+        })?;
+        crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
+            CliError::failed(format!("feedback submit: refusing attachment: {reason}"))
+        })?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("attachment")
+            .to_owned();
+        let media_type = media_type(path).to_owned();
+        let display_path = path.display().to_string();
+        attachment_rows.push(serde_json::json!({
+            "path": display_path,
+            "name": name,
+            "media_type": media_type,
+            "size_bytes": size,
+        }));
         attachments.push(FeedbackAttachmentRequest {
-            path: path.display().to_string(),
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("attachment")
-                .to_owned(),
-            media_type: media_type(path).to_owned(),
+            path: display_path,
+            name,
+            media_type,
             mime: None,
             size_bytes: Some(size),
         });
@@ -169,19 +214,31 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     let receipts_dir = pinvou3_lib::platform::paths::feedback_receipts_dir();
     let pending_path = pending_dir.join(format!("{feedback_id}.json"));
     let receipt_path = receipts_dir.join(format!("{feedback_id}.json"));
-    // Persist the request bundle before the (consuming) feature call so the
-    // submitted content survives even on the failure paths.
-    write_json(
-        &pending_path,
-        serde_json::to_value(&request)
-            .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?,
-    )?;
+    let request_value = serde_json::to_value(&request)
+        .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?;
+    // Stage the request under `feedback/pending/` before the (consuming)
+    // feature call, so the submitted content survives a crash or an error
+    // between here and the receipt. That directory means "packages that failed
+    // to upload or are still being prepared" (`platform::paths`), which is
+    // exactly what this file is *while the call is in flight* — and nothing
+    // more. It is removed again below once the run concludes.
+    write_json(&pending_path, &request_value)?;
     // The community `submit_feedback` body is validation + a fixed receipt
     // (no awaits); poll the real future once on this thread. If a future
     // version ever awaits (e.g. an upload path), this fails cleanly instead
     // of hanging or guessing at the receipt. A feature-level `Err` is a real
     // failure (validation) and must surface its message instead of being
     // collapsed into the generic not-synchronous error.
+    //
+    // Kept deliberately, and kept *in addition to* the explicit
+    // `validate_feedback_request` above even though `submit_feedback` runs the
+    // same validation internally. The two are not redundant: the explicit call
+    // rejects a bad request before anything is staged on disk (so an invalid
+    // submission leaves no file under `feedback/pending/` at all), while this
+    // call is the real feature entry point — the receipt message, including
+    // the community no-upload notice, belongs to `features/feedback` and is
+    // not reconstructed here. Inlining a `FeedbackReceipt` literal instead
+    // would make the CLI the second place that owns that copy.
     let receipt = match poll_once(pinvou3_lib::features::feedback::submit_feedback(request)) {
         Some(Ok(receipt)) => receipt,
         Some(Err(error)) => {
@@ -203,29 +260,87 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // owns no id generation), while the receipt file is named after the
     // CLI-generated id — persist that id in the payload so scripts reading
     // the file see the same id the filename and stdout carry.
-    if let Some(object) = receipt_value.as_object_mut() {
-        object.insert(
-            "feedback_id".to_owned(),
-            serde_json::Value::String(feedback_id.clone()),
-        );
+    let object = receipt_value
+        .as_object_mut()
+        .ok_or_else(|| CliError::failed("feedback submit: the receipt is not a JSON object"))?;
+    object.insert(
+        "feedback_id".to_owned(),
+        serde_json::Value::String(feedback_id.clone()),
+    );
+    // The receipt carries the request it is a receipt for. Once the staged
+    // copy is dropped (below) this is the only record of what the user wrote,
+    // and they need that text to paste into the issue tracker.
+    object.insert("request".to_owned(), request_value);
+    // A failed receipt write used to `?` straight out of here, leaving the
+    // staged bundle behind — precisely the permanent, never-retried file under
+    // `feedback/pending/` that the module docs argue against, and the error
+    // named only the receipt path so nothing pointed at it. The run has
+    // concluded either way, so the stage is dropped on both arms. Nothing the
+    // user wrote is lost with it: the description came from `--body-file`,
+    // which is still on disk, and the attachments were only ever referenced by
+    // path.
+    let write_result = write_json(&receipt_path, &receipt_value);
+    // The run concluded, so nothing is pending: the community `submit_feedback`
+    // never uploads and there is no retry lane that would ever pick this file
+    // up. Leaving it under `feedback/pending/` claimed an in-flight upload that
+    // does not exist and made the user's free text permanent in a directory
+    // documented for transient packages. A removal failure is only a note: on
+    // the success arm the submission itself succeeded, and failing it here
+    // would tell the user their feedback was not recorded when the receipt is
+    // on disk.
+    if let Err(error) = std::fs::remove_file(&pending_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            note!(
+                "warning: feedback submit: the staged bundle {} could not be removed \
+                 after the submission concluded ({error}); delete it manually — \
+                 nothing will retry it",
+                pending_path.display()
+            );
+        }
     }
-    write_json(&receipt_path, receipt_value)?;
+    write_result?;
 
     let status = status_label(receipt.status);
     let message = translate_feedback_text(&receipt.message);
+    // `status` is for humans. Scripts branch on `uploaded`: the community
+    // receipt is always `failed_validation` *on the success path* (see below),
+    // so `.status == "submitted"` never holds and `.status` cannot be used to
+    // detect a real failure either. `uploaded` answers the one question a
+    // caller actually has — did this leave the machine — and stays correct if
+    // an edition ever does upload.
+    let uploaded = receipt.status == FeedbackStatus::Submitted;
+    // Built before the payload takes ownership of the rows.
+    let attachment_lines = attachment_rows
+        .iter()
+        .map(|row| {
+            format!(
+                "\nAttachment: {} ({}, {} bytes) {}",
+                row["name"].as_str().unwrap_or_default(),
+                row["media_type"].as_str().unwrap_or_default(),
+                row["size_bytes"].as_u64().unwrap_or_default(),
+                row["path"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect::<String>();
+    // No `pending_path`: the staged file is gone by now, and a key naming a
+    // path that does not exist is worse than no key.
     let value = serde_json::json!({
         "feedback_id": feedback_id,
         "status": status,
-        "pending_path": pending_path.display().to_string(),
+        "uploaded": uploaded,
         "receipt_path": receipt_path.display().to_string(),
         "issue_url": COMMUNITY_ISSUES_URL,
         "message": message,
+        // Registered attachments, echoed back: the command stats each one and
+        // records it into the persisted request, and without this the user has
+        // no evidence that `--attach` did anything at all.
+        "attachments": attachment_rows,
     });
     let mut human = format!(
-        "Feedback: {feedback_id}\nStatus: {status}\nPending: {}\nReceipt: {}\nCommunity edition does not upload feedback. Submit at: {COMMUNITY_ISSUES_URL}",
-        pending_path.display(),
+        "Feedback: {feedback_id}\nStatus: {status}\nUploaded: {uploaded}\nReceipt: {}\nCommunity edition does not upload feedback. Submit at: {COMMUNITY_ISSUES_URL}",
         receipt_path.display(),
     );
+    human.push_str(&attachment_lines);
     // The community build's only receipt is `failed_validation` carrying the
     // no-upload notice — that is the designed success path here (validate
     // locally, persist the bundle, point at the tracker), not a caller
@@ -291,7 +406,15 @@ fn media_type(path: &Path) -> &'static str {
     }
 }
 
-fn write_json(path: &Path, value: serde_json::Value) -> Result<(), CliError> {
+/// Writes one feedback file atomically, owner-readable only.
+///
+/// Both files this command produces carry the user's free-text feedback (the
+/// staged request holds it directly; the receipt embeds it). On a shared
+/// machine the default umask leaves that world-readable for as long as the
+/// file exists — which, since nothing ever uploads or prunes it, is forever.
+/// `0600` matches how the app stores user-authored content it does not intend
+/// to publish.
+fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), CliError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             CliError::failed(format!(
@@ -300,35 +423,19 @@ fn write_json(path: &Path, value: serde_json::Value) -> Result<(), CliError> {
             ))
         })?;
     }
-    let mut bytes = serde_json::to_vec_pretty(&value)
+    let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?;
     bytes.push(b'\n');
-    // Same tmp+rename discipline as the scheduled registry writer: a crash
-    // mid-write must not leave a truncated pending/receipt file that a later
-    // submit would read as garbage.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
-    std::fs::write(&tmp, bytes).map_err(|error| {
-        // Same cleanup guarantee as the rename-failure path below: a staged
-        // file that never lands must not accumulate in the feedback dir.
-        let _ = std::fs::remove_file(&tmp);
-        CliError::failed(format!(
-            "feedback submit: cannot write {}: {error}",
-            tmp.display()
-        ))
-    })?;
-    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
-    std::fs::rename(&tmp, path).map_err(|error| {
-        let _ = std::fs::remove_file(&tmp);
-        CliError::failed(format!(
-            "feedback submit: cannot move {} to {}: {error}",
-            tmp.display(),
-            path.display()
-        ))
-    })
+    // Shared stage+rename helper: a crash mid-write must not leave a truncated
+    // feedback file behind, and the staging step must not follow a planted
+    // symlink or swallow a failing fsync (see `artifacts::atomic_write`).
+    crate::artifacts::atomic_write(path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "feedback submit: cannot write {}: {error}",
+                path.display()
+            ))
+        })
 }
 
 fn new_feedback_id() -> String {

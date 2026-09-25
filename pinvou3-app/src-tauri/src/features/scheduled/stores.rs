@@ -5,6 +5,7 @@
 //! 从 tasks.rs 抽离,通过 `use super::*` 复用 facade 的导入。
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use parking_lot::RwLock;
 
@@ -265,12 +266,47 @@ pub(crate) trait VersionedRegistry:
 pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
     pub(crate) path: Arc<PathBuf>,
     pub(crate) registry: Arc<RwLock<T>>,
+    /// Identity of the file contents this handle last read or wrote, used by
+    /// [`Self::reload_if_changed`] to skip a re-read that cannot teach it
+    /// anything. `None` means "unknown", which always forces a read.
+    seen: Arc<RwLock<Option<FileStamp>>>,
+}
+
+/// Cheap change detector for the registry file: a `stat` is orders of
+/// magnitude cheaper than read + parse + lock swap, and every writer of these
+/// files (this handle and the `pinvou` CLI) goes through an atomic
+/// write-and-rename, so a new payload always lands as a new inode with a fresh
+/// mtime and length.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileStamp {
+    /// `None` when the file cannot be stat'ed at all (missing, or a metadata
+    /// error) — treated as "unknown", never as "unchanged".
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
 }
 
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
-    pub(crate) fn open(path: PathBuf) -> Result<Self> {
+    /// Read, parse and migrate the payload at `path`, applying this store's
+    /// quarantine policy to an unusable one. Returns the registry plus whether
+    /// it was migrated (the caller owns writing the migrated form back).
+    ///
+    /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
+    /// reload path exists precisely because a foreign process may have
+    /// rewritten the file, so it must honour the same version, migration and
+    /// quarantine rules the initial read applies.
+    fn read_from_disk(path: &Path) -> (T, bool) {
         let mut migrated = false;
-        let registry = match std::fs::read_to_string(&path) {
+        let registry = match std::fs::read_to_string(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
                 Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => registry,
                 Ok(registry) if registry.schema_version() < T::SUPPORTED_VERSION => {
@@ -279,7 +315,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 }
                 Ok(registry) => {
                     Self::handle_invalid(
-                        &path,
+                        path,
                         &format!(
                             "schema v{} is newer than supported v{}",
                             registry.schema_version(),
@@ -289,7 +325,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     T::default()
                 }
                 Err(error) => {
-                    Self::handle_invalid(&path, &format!("invalid JSON: {error}"));
+                    Self::handle_invalid(path, &format!("invalid JSON: {error}"));
                     T::default()
                 }
             },
@@ -304,20 +340,84 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 T::default()
             }
         };
+        (registry, migrated)
+    }
+
+    pub(crate) fn open(path: PathBuf) -> Result<Self> {
+        let (registry, migrated) = Self::read_from_disk(&path);
+        let seen = FileStamp::of(&path);
         let store = Self {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
+            seen: Arc::new(RwLock::new(seen)),
         };
         if migrated {
-            if let Err(error) = store.persist(&store.registry.read()) {
-                log::warn!(
-                    "Unable to persist migrated {} {}: {error:#}",
-                    T::LABEL,
-                    store.path.display()
-                );
-            }
+            store.persist_migrated();
         }
         Ok(store)
+    }
+
+    /// Handle over an in-memory registry that was never read from `path`, for
+    /// tests that plant a deliberately unwritable path. `seen` stays unknown so
+    /// any later read is forced rather than skipped as unchanged.
+    #[cfg(test)]
+    pub(crate) fn from_registry(path: PathBuf, registry: T) -> Self {
+        Self {
+            path: Arc::new(path),
+            registry: Arc::new(RwLock::new(registry)),
+            seen: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Re-read the on-disk registry and swap it into the in-memory copy.
+    ///
+    /// Disk — not memory — is the authority: every mutation here persists while
+    /// holding the write lock (and rolls back when the write fails), so the
+    /// file is never behind this handle, while a *foreign* process (the
+    /// `pinvou` CLI writes the same sidecars) can put it ahead.
+    pub(crate) fn reload(&self) {
+        let (registry, migrated) = Self::read_from_disk(self.path.as_ref());
+        let stamp = FileStamp::of(self.path.as_ref());
+        {
+            // Scoped: persist_migrated() takes a read lock, and parking_lot
+            // locks are not reentrant.
+            *self.registry.write() = registry;
+            *self.seen.write() = stamp;
+        }
+        if migrated {
+            self.persist_migrated();
+        }
+    }
+
+    /// [`Self::reload`], but only when the file looks different from the one
+    /// this handle last saw.
+    ///
+    /// Lookup misses are the common case, not the rare one — every ordinary
+    /// chat task misses the kind registry — so an unconditional reload would
+    /// turn a task listing into one read-and-parse per row. A `stat` per miss
+    /// keeps the foreign-writer guarantee at a fraction of the cost. The
+    /// comparison fails open: an unreadable stamp on either side forces the
+    /// read, so the worst case is the behaviour we would have had anyway.
+    pub(crate) fn reload_if_changed(&self) {
+        let current = FileStamp::of(self.path.as_ref());
+        if let (Some(current), Some(seen)) = (current, *self.seen.read())
+            && current == seen
+        {
+            return;
+        }
+        self.reload();
+    }
+
+    /// Best-effort write-back of a registry that was migrated on read; a
+    /// failure only means the migration is redone next time, so it warns.
+    fn persist_migrated(&self) {
+        if let Err(error) = self.persist(&self.registry.read()) {
+            log::warn!(
+                "Unable to persist migrated {} {}: {error:#}",
+                T::LABEL,
+                self.path.display()
+            );
+        }
     }
 
     pub(crate) fn persist(&self, registry: &T) -> Result<()> {
@@ -328,7 +428,11 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
         deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
-            .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))
+            .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))?;
+        // Record what we just wrote so `reload_if_changed` does not mistake
+        // this handle's own write for a foreign one and re-read it.
+        *self.seen.write() = FileStamp::of(self.path.as_ref());
+        Ok(())
     }
 
     /// Apply this store's quarantine policy to an invalid payload at `path`.
@@ -776,14 +880,38 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
     }
 
     /// Executor-facing tri-state lookup; see [`ScheduledTaskKindLookup`].
+    ///
+    /// A miss consults the disk before it answers `Chat`. This registry is read
+    /// once at `open()`, but the same file is co-owned by a foreign process:
+    /// `pinvou scheduled create --kind memory-organize` writes a kind record
+    /// while the app is running, and the foundation's sweep re-reads task
+    /// *definitions* from disk on every tick — so the scheduler will happily
+    /// fire a task whose kind this handle has never seen. Answering `Chat`
+    /// there is the unsafe direction (the executor would run the
+    /// kind-specific prompt as an unattended full-permission Yolo
+    /// conversation), so a miss pays a `stat` and re-reads only when the file
+    /// actually changed; a hit stays lock-only with no IO, which is the hot
+    /// path for every already-known task.
     pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
-        match self.registry.read().tasks.get(automation_id) {
-            None => ScheduledTaskKindLookup::Chat,
-            Some(entry) => match entry.kind.as_str() {
+        if let Some(lookup) = self.stored_kind(automation_id) {
+            return lookup;
+        }
+        self.reload_if_changed();
+        self.stored_kind(automation_id)
+            .unwrap_or(ScheduledTaskKindLookup::Chat)
+    }
+
+    /// Classify the in-memory entry, or None when this handle has no record
+    /// for the id at all (the only case the disk can still contradict).
+    fn stored_kind(&self, automation_id: &str) -> Option<ScheduledTaskKindLookup> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|entry| match entry.kind.as_str() {
                 SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
                 other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
-            },
-        }
+            })
     }
 
     /// None removes the task's kind record (back to an ordinary chat task).
@@ -826,7 +954,21 @@ pub(crate) type ScheduledTaskModelBindingStore =
     VersionedJsonStore<ScheduledTaskModelBindingRegistry>;
 
 impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
+    /// Same foreign-writer miss path as the task-kind store's
+    /// `kind_lookup_for`: `pinvou scheduled create/update --model-id` rebinds
+    /// this sidecar while the app is running, and a handle opened before that
+    /// would silently drop the binding and run the task on the bare wire model
+    /// name. That is a correctness bug rather than a safety one, so the fix
+    /// stays the same size: a miss re-reads once, a hit never touches the disk.
     pub(crate) fn model_id_for(&self, automation_id: &str, model: &str) -> Option<String> {
+        if let Some(model_id) = self.bound_model_id(automation_id, model) {
+            return Some(model_id);
+        }
+        self.reload_if_changed();
+        self.bound_model_id(automation_id, model)
+    }
+
+    fn bound_model_id(&self, automation_id: &str, model: &str) -> Option<String> {
         self.registry
             .read()
             .tasks

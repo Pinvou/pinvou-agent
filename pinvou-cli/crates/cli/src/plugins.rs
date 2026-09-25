@@ -12,13 +12,23 @@
 //!   The GUI's post-install `validate_remote_connection` handshake and the
 //!   OAuth token deletion on uninstall run inside the Tauri host on the
 //!   foundation's async MCP stack, which the CLI does not link; the CLI prints
-//!   an explicit warning (validation) instead of silently skipping.
+//!   an explicit warning (validation) instead of silently skipping. Two
+//!   consequences are behavioural, not cosmetic, and are printed at the point
+//!   of action: `install` skips not only the handshake but the ROLLBACK it
+//!   guards (the GUI uninstalls a tool whose handshake fails, so the CLI can
+//!   leave installed a tool the GUI would have removed), and `uninstall`
+//!   leaves any stored remote OAuth tokens behind, so a reinstall of that tool
+//!   is still authorized.
 //! - tools auth → `get_marketplace_tool_auth_status` fields computed from
-//!   `installed_ids` / `oauth_remote_server_name` / a generic parse of
-//!   `mcp.json`. The OAuth token presence probe lives in the foundation's
-//!   token store (not reachable headless), so `oauth_token_present` is
-//!   reported conservatively as `false` with `token_check:
-//!   "unavailable_in_cli"`.
+//!   `installed_ids` / `oauth_remote_server_name` / `mcp.json`. The OAuth
+//!   token presence probe lives in the foundation's token store (not reachable
+//!   headless), so `oauth_token_present` is reported conservatively as `false`
+//!   with `token_check: "unavailable_in_cli"`. A damaged `mcp.json` degrades
+//!   rather than failing the status read (the GUI logs and continues with
+//!   `mcp_configured = false`), and the `mcp.json` shape is validated against
+//!   the same field types the GUI's typed `McpConfig` deserialization enforces
+//!   — an untyped presence check reported `mcp_configured: true` for files the
+//!   GUI rejects.
 //! - tools oauth-login / oauth-cancel → same guards as
 //!   `start_marketplace_tool_oauth_login` (tool must declare a remote OAuth
 //!   server present in `mcp.json`). The login flow itself
@@ -37,11 +47,15 @@
 //!   way; the GUI has no directory input). Single-file fallback id derivation
 //!   mirrors the GUI's `sanitize_skill_name` + FNV-1a `stable_stem_hash`.
 //!   The pre-pipeline wrap reads are bounded per file and cumulatively by the
-//!   pipeline's own package limit, and the `.zip` channel pre-flights the
-//!   same limit before handoff (the importer bounds only what it extracts,
-//!   after the fact); non-regular inputs (FIFOs, devices) are rejected
-//!   before any open (opening a FIFO would block until an unrelated writer
-//!   appears).
+//!   pipeline's own package limit (including the frontmatter the wrapper
+//!   prepends, which is charged in place of the raw SKILL.md it replaces), and
+//!   the `.zip` channel pre-flights the same limit before handoff (the
+//!   importer bounds only what it extracts, after the fact); non-regular
+//!   inputs (FIFOs, devices) are rejected before any open (opening a FIFO
+//!   would block until an unrelated writer appears). The stored display name
+//!   goes through the GUI's `sanitize_display_name` rules (drop `/` and `\`,
+//!   cap at 128 chars) plus this crate's stricter zero-width/bidi hygiene, so
+//!   both surfaces store the same name for the same file.
 //! - export → `package_export::export_installed_plugin`; recycle →
 //!   `recycle_bin::{RecycleBin, restore_plugin}`; meta →
 //!   `SkillMarketplaceManager::update_display_meta`.
@@ -57,15 +71,26 @@
 //!   claiming a readiness no probe established — the same disclosure shape as
 //!   `oauth_token_present` / `token_check` above. Every row carries `probe`,
 //!   so `registry` rows are equally self-describing and the JSON shape does
-//!   not vary by kind. Credential presence is consulted in the system
+//!   not vary by kind. In short: `readiness` NEVER reports a `cli`-kind bundle
+//!   as ready, whatever its real state — use `pinvou connectors ... status`
+//!   for that verdict. Credential presence is consulted in the system
 //!   credential store for every installed bundle, so a read-only CLI run CAN
 //!   touch the OS keyring (macOS may prompt) — only a run with nothing
-//!   installed never does.
-//! - enable/disable/project-skills → `scope::load_disabled_bundles_for` /
-//!   `update_disabled_bundles_for` (single-critical-section RMW) /
-//!   `set_project_skills_enabled` (the storage behind `set_disabled_skills` /
-//!   `set_project_skills_enabled`), with `package_id_for` normalizing ids for
-//!   the persistence read-back.
+//!   installed never does. The `assets_missing` demotion of a `degraded`
+//!   non-CLI package is derived in this module rather than in `readiness_for`,
+//!   so the desktop readiness card keeps its existing verdict.
+//! - enable/disable/project-skills → `scope::update_disabled_bundles_for`
+//!   (single-critical-section RMW, with the requested state verified inside
+//!   that same critical section) / `set_project_skills_enabled` (the storage
+//!   behind `set_disabled_skills` / `set_project_skills_enabled`), with
+//!   `package_id_for` normalizing ids for the verification. Two caveats are
+//!   printed at the point of action: the toggle performs no hot-refresh
+//!   broadcast (the GUI's `hot_refresh` needs the engine pool this crate does
+//!   not host), so a running desktop app's live engines keep the stale
+//!   whitelist until they respawn; and `--scope both` is two single-scope
+//!   writes with no two-scope transaction available, so a failure on the
+//!   second scope reports exactly which scopes already landed instead of
+//!   implying an all-or-nothing apply.
 //!
 //! Pure storage only: no Tauri host, no engine, no async runtime.
 
@@ -547,6 +572,47 @@ fn is_display_unsafe_char(c: char) -> bool {
         )
 }
 
+/// Longest display name the GUI stores for an imported package
+/// (`app/commands/marketplace.rs::sanitize_display_name` takes 128 chars).
+const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
+
+/// Display name for an imported package, kept identical to the GUI's stored
+/// value for the same file. The value lands verbatim in `bundles.json` and
+/// nothing downstream bounds it, so the same file imported from the two
+/// surfaces must not produce two different stored names.
+///
+/// Composition of the two rules:
+/// - the GUI's `sanitize_display_name`: drop path separators (`/`, `\`) and
+///   control characters, then cap at 128 CHARS (not bytes — a char cap cannot
+///   split a multi-byte scalar);
+/// - this crate's stricter invisible-character hygiene
+///   ([`is_display_unsafe_char`]): zero-width, bidi-override and BOM code
+///   points are dropped too. That part is an improvement the GUI lacks and is
+///   kept: it only ever removes characters the GUI would have stored, so the
+///   surfaces stay convergent on every name that does not contain them.
+///
+/// Trimming and the truncation run in that order so the cap is applied to what
+/// is actually stored; a name that sanitizes away entirely falls back to the
+/// same generic label the caller uses for a missing file name.
+fn sanitize_import_display_name(raw_name: &str) -> String {
+    let cleaned: String = raw_name
+        .chars()
+        .filter(|c| !is_display_unsafe_char(*c) && *c != '/' && *c != '\\')
+        .collect();
+    let trimmed: String = cleaned
+        .trim()
+        .chars()
+        .take(MAX_IMPORT_DISPLAY_NAME_CHARS)
+        .collect();
+    // The cap can expose trailing whitespace that was interior before the cut.
+    let trimmed = trimmed.trim_end();
+    if trimmed.is_empty() {
+        "plugin.zip".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Every store path this family touches resolves through the lib's
     // `pinvou3_home`, which accepts a relative `PINVOU3_HOME` verbatim;
@@ -643,13 +709,24 @@ fn tools_install(
     mgr.install(id, &config)
         .map_err(|error| feature_error("tools install", id, error))?;
     // Companion skills follow the package (GUI `install_marketplace_tool`):
-    // a companion failure is logged and does not roll back the MCP install.
+    // a companion INSTALL failure is logged and does not roll back the MCP
+    // install (a skill is an enhancement), but a companion SCOPE SYNC failure
+    // is a consent gap and is collected, not swallowed. The GUI makes exactly
+    // that split: it pushes sync failures into `sync_errors` and returns them
+    // from the command once the loop is done. Collect-then-raise rather than
+    // `?` per iteration for the same reason it gives: an early return would
+    // skip the remaining companions and the package-level sync below, leaving
+    // "package installed but its consent set did not follow" — a fail-open
+    // half state.
     let mut companion_note = Vec::new();
+    let mut sync_errors: Vec<String> = Vec::new();
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
                 if let Err(error) = skill_scope::sync_deny_all_scopes_after_skill_install(&sid) {
-                    note!("[plugins] companion skill '{sid}' scope sync failed: {error}");
+                    sync_errors.push(format!(
+                        "companion skill '{sid}' scope sync failed: {error}"
+                    ));
                 }
                 companion_note.push(sid);
             }
@@ -659,12 +736,21 @@ fn tools_install(
         }
     }
     // DenyAll scopes (e.g. code) keep newly installed packages off by default.
-    sync_deny_all_scopes_after_install(id)
-        .map_err(|error| feature_error("tools install", id, error))?;
+    if let Err(error) = sync_deny_all_scopes_after_install(id) {
+        sync_errors.push(format!("package '{id}' scope sync failed: {error}"));
+    }
+    if !sync_errors.is_empty() {
+        return Err(CliError::failed(format!(
+            "plugins tools install({id}): {}",
+            sync_errors.join("; ")
+        )));
+    }
     // The GUI validates remote MCP connections right after install
-    // (validate_on_install manifests). The handshake runs on the foundation's
-    // async MCP stack, unavailable headless: surface an explicit warning
-    // instead of pretending the connection was verified.
+    // (validate_on_install manifests) and, on a failed handshake, UNINSTALLS
+    // the tool again. The handshake runs on the foundation's async MCP stack,
+    // unavailable headless, so neither the check nor its rollback happens
+    // here: surface an explicit warning naming both halves instead of
+    // pretending the connection was verified.
     let validation_skipped = mgr.requires_remote_connection_validation(id);
     let mut value = serde_json::json!({
         "id": id,
@@ -682,8 +768,11 @@ fn tools_install(
     }
     if validation_skipped {
         human.push_str(&format!(
-            "\nwarning: remote connection validation skipped (headless CLI); check 'pinvou plugins tools auth {id}'"
+            "\nwarning: remote connection validation skipped (headless CLI), and so was the \
+             rollback it guards: the desktop uninstalls a tool whose handshake fails, this \
+             install is left in place either way; check 'pinvou plugins tools auth {id}'"
         ));
+        value["validation_rollback"] = serde_json::json!("skipped");
     }
     Ok(success(render(output, human, &value)))
 }
@@ -748,7 +837,20 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     )))
 }
 
-fn mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError> {
+/// Reads the `servers` map out of `mcp.json` the way the desktop does.
+///
+/// The desktop deserializes the whole file into `deepseek_tui::mcp::McpConfig`
+/// (`marketplace_oauth_server_from_mcp_config`), so a file that merely *looks*
+/// right is not enough there: any entry whose known field carries the wrong
+/// JSON type fails the parse and the server counts as absent. This crate does
+/// not depend on the foundation crate (and has no `serde` derive in its
+/// dependency graph), so the same decision is re-applied by hand below —
+/// an untyped `get("servers").get(name)` reported `mcp_configured: true` for
+/// configurations the GUI rejects.
+///
+/// Returns `Err` only for a read/parse/shape failure; `Ok(None)` means the
+/// file (or the map) is simply absent.
+fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError> {
     let path = pinvou3_lib::platform::paths::mcp_config_path();
     if !path.is_file() {
         return Ok(None);
@@ -763,7 +865,112 @@ fn mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError
             "plugins tools {context}: cannot parse mcp.json: {error}"
         ))
     })?;
-    Ok(value.get("servers").cloned())
+    let Some(root) = value.as_object() else {
+        return Err(CliError::failed(format!(
+            "plugins tools {context}: mcp.json is not a JSON object"
+        )));
+    };
+    // `McpConfig::servers` carries `#[serde(alias = "mcpServers")]`; serde
+    // rejects a file that spells both (duplicate field), so this does too.
+    let servers = match (root.get("servers"), root.get("mcpServers")) {
+        (Some(_), Some(_)) => {
+            return Err(CliError::failed(format!(
+                "plugins tools {context}: mcp.json declares both 'servers' and its \
+                 'mcpServers' alias"
+            )));
+        }
+        (Some(servers), None) | (None, Some(servers)) => servers,
+        (None, None) => return Ok(None),
+    };
+    let Some(entries) = servers.as_object() else {
+        return Err(CliError::failed(format!(
+            "plugins tools {context}: mcp.json 'servers' is not a JSON object"
+        )));
+    };
+    // Whole-map validation, not just the queried entry: the desktop parses the
+    // file in one shot, so ONE malformed neighbour makes every server read as
+    // unconfigured there. Checking only the queried name would re-open the
+    // divergence from the other side.
+    for (name, entry) in entries {
+        if !mcp_server_entry_matches_typed_shape(entry) {
+            return Err(CliError::failed(format!(
+                "plugins tools {context}: mcp.json server '{name}' does not match the \
+                 MCP server config shape"
+            )));
+        }
+    }
+    Ok(Some(servers.clone()))
+}
+
+/// Whether one `mcp.json` server entry would deserialize into the foundation's
+/// `McpServerConfig`. Mirrors that struct's field declarations:
+/// - `Option<T>` fields accept an explicit `null`;
+/// - `#[serde(default)]` fields that are NOT `Option` do not — serde's default
+///   only fills a *missing* key, so `"args": null` fails the desktop's parse;
+/// - unknown keys pass, because `McpServerConfig` is not
+///   `deny_unknown_fields` and rejecting them would be stricter than the
+///   surface being mirrored.
+///
+/// Residual, deliberate: the nested `oauth` object's own fields are checked
+/// only as "object or null", and the root `timeouts` block is not inspected at
+/// all. Both are configuration the marketplace flow never writes, so a
+/// divergence there is bounded to hand-edited files.
+fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
+    let Some(fields) = entry.as_object() else {
+        return false;
+    };
+    const OPTIONAL_STRING: &[&str] = &[
+        "command",
+        "cwd",
+        "url",
+        "transport",
+        "bearer_token_env_var",
+        "oauth_resource",
+    ];
+    const OPTIONAL_U64: &[&str] = &["connect_timeout", "execute_timeout", "read_timeout"];
+    const PLAIN_BOOL: &[&str] = &["disabled", "enabled", "required"];
+    const STRING_LIST: &[&str] = &["args", "enabled_tools", "disabled_tools", "scopes"];
+    // `env_http_headers` is the declared alias of `env_headers`.
+    const STRING_MAP: &[&str] = &["env", "headers", "env_headers", "env_http_headers"];
+    fields.iter().all(|(key, value)| {
+        let key = key.as_str();
+        if OPTIONAL_STRING.contains(&key) {
+            value.is_null() || value.is_string()
+        } else if OPTIONAL_U64.contains(&key) {
+            value.is_null() || value.as_u64().is_some()
+        } else if PLAIN_BOOL.contains(&key) {
+            value.is_boolean()
+        } else if STRING_LIST.contains(&key) {
+            value
+                .as_array()
+                .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+        } else if STRING_MAP.contains(&key) {
+            value
+                .as_object()
+                .is_some_and(|items| items.values().all(serde_json::Value::is_string))
+        } else if key == "oauth" {
+            value.is_null() || value.is_object()
+        } else {
+            true
+        }
+    })
+}
+
+/// Degrading variant for `tools auth`: a status READ must not turn a damaged
+/// `mcp.json` into exit 1. The GUI's `get_marketplace_tool_auth_status` logs
+/// the failure and continues with `mcp_configured = false` (which yields
+/// `auth_pending`), so the CLI does the same and writes the reason to stderr
+/// instead of dropping it. `oauth-login` deliberately keeps the strict reader:
+/// its GUI counterpart (`start_marketplace_tool_oauth_login`) propagates the
+/// parse error too, because it is about to ACT on that config.
+fn mcp_json_servers_lenient(context: &str) -> Option<serde_json::Value> {
+    match read_mcp_json_servers(context) {
+        Ok(servers) => servers,
+        Err(error) => {
+            note!("[plugins] {error}; reporting the MCP config as not installed");
+            None
+        }
+    }
 }
 
 fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -773,7 +980,7 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let oauth_required = server_name.is_some();
     let mut mcp_configured = false;
     if let Some(name) = server_name.as_deref() {
-        if let Some(servers) = mcp_json_servers("auth")? {
+        if let Some(servers) = mcp_json_servers_lenient("auth") {
             mcp_configured = servers.get(name).is_some();
         }
     }
@@ -827,7 +1034,7 @@ fn tools_oauth_login(
             "plugins tools oauth-login({id}): tool does not declare a remote MCP OAuth login"
         ))
     })?;
-    let configured = mcp_json_servers("oauth-login")?
+    let configured = read_mcp_json_servers("oauth-login")?
         .and_then(|servers| servers.get(&server_name).cloned())
         .ok_or_else(|| {
             CliError::failed(format!(
@@ -963,18 +1170,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "plugin.zip".to_owned());
-    let display = {
-        let cleaned: String = raw_name
-            .chars()
-            .filter(|c| !is_display_unsafe_char(*c))
-            .collect();
-        let trimmed = cleaned.trim();
-        if trimmed.is_empty() {
-            "plugin.zip".to_owned()
-        } else {
-            trimmed.to_owned()
-        }
-    };
+    let display = sanitize_import_display_name(&raw_name);
     // The unified pipeline accepts zip packages; .md files and SKILL.md
     // directories are wrapped into a root-SKILL.md zip first (replacing the
     // GUI's native file dialog).
@@ -1028,9 +1224,10 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             // names sanitize to the same generic "skill" (any pure non-ASCII
             // name) still get distinct `skill-<hash>` ids (GUI FNV collision
             // defense) instead of collapsing onto one constant id.
-            let wrapped = wrap_markdown_skill(&skill_md, &raw_name);
+            let wrapped = wrap_markdown_skill(&skill_md, &raw_name).into_bytes();
+            charge_wrapped_skill_md(&mut cumulative, skill_md.len(), &wrapped, &display, path)?;
             entries.retain(|(name, _)| name != "SKILL.md");
-            entries.push(("SKILL.md".to_owned(), wrapped.into_bytes()));
+            entries.push(("SKILL.md".to_owned(), wrapped));
         }
         Some((
             temp_zip_path("pinvou-cli-import-dir"),
@@ -1045,10 +1242,11 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                 path.display()
             ))
         })?;
-        let wrapped = wrap_markdown_skill(&content, &raw_name);
+        let wrapped = wrap_markdown_skill(&content, &raw_name).into_bytes();
+        charge_wrapped_skill_md(&mut cumulative, content.len(), &wrapped, &display, path)?;
         Some((
             temp_zip_path("pinvou-cli-import-md"),
-            build_stored_zip(&[("SKILL.md".to_owned(), wrapped.into_bytes())])?,
+            build_stored_zip(&[("SKILL.md".to_owned(), wrapped)])?,
         ))
     } else if extension.as_deref() == Some("zip") {
         // The importer streams zip entries and bounds decompressed content
@@ -1361,6 +1559,19 @@ const PROBE_UNAVAILABLE_IN_CLI: &str = "unavailable_in_cli";
 /// reader is not sent chasing a fault that was never observed.
 const REASON_CONNECTION_UNKNOWN: &str = "connection_unknown_in_cli";
 
+/// Reason for a non-CLI package the store flags `degraded` — "registered, but
+/// its assets are missing" (`store::BundleRecord::installed`). The verdict is
+/// derived HERE rather than inside `readiness_for` on purpose: the desktop
+/// readiness card consumes `readiness_for` verbatim through `bundle_readiness`'s
+/// `_` arm, so demoting a degraded package there would flip a GUI card that
+/// nobody asked to change. The CLI needs the signal (a package whose resources
+/// are gone cannot serve a request, and `actions_for` already offers `repair`
+/// for it regardless of kind), and `degraded` is on `BundleInfo`, so the row
+/// builder derives it itself. Credentials keep precedence: a missing required
+/// credential is the cause the operator can fix unaided, and `readiness_for`
+/// already reports it.
+const REASON_ASSETS_MISSING: &str = "assets_missing";
+
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let registry = BundleRegistry::new();
     let rows = registry
@@ -1407,12 +1618,23 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // reason and a probe marker naming the limitation, the same
             // disclosure shape `tools auth` uses for `oauth_token_present` /
             // `token_check`. Registry-visible negatives (`cli_not_installed`,
-            // `cli_assets_mismatch`) are facts the CLI really did observe and
-            // pass through unchanged — only their probe marker records that a
-            // connection check was still not performed.
+            // `cli_disconnected`, `cli_assets_mismatch`) are facts the CLI
+            // really did observe and pass through unchanged — only their probe
+            // marker records that a connection check was still not performed.
             let (ready, reason, probe) = if bundle.kind == BundleKind::Cli {
                 let reason = registry_reason.or_else(|| Some(REASON_CONNECTION_UNKNOWN.to_owned()));
                 (false, reason, PROBE_UNAVAILABLE_IN_CLI)
+            } else if registry_ready && bundle.degraded.is_some() {
+                // Headless-only demotion (see REASON_ASSETS_MISSING): the
+                // registry has nothing else against the package, but the store
+                // says its assets are gone. Still `probe: "registry"` — the
+                // verdict is fully decided from registry state, no live probe
+                // was skipped.
+                (
+                    false,
+                    Some(REASON_ASSETS_MISSING.to_owned()),
+                    PROBE_REGISTRY,
+                )
             } else {
                 (registry_ready, registry_reason, PROBE_REGISTRY)
             };
@@ -1474,17 +1696,32 @@ fn set_enabled(
     // raw id reported false `persistence_verified` for enables (nothing was
     // removed) and could never verify disables of remapped ids.
     let packages = pinvou3_lib::features::marketplace::package_id_for(id);
+    // `--scope both` is two independent single-scope writes: the storage layer
+    // exposes one scope per critical section and no two-scope transaction, so
+    // a failure on the second scope cannot roll the first one back. Rather
+    // than let the caller believe an all-or-nothing apply, every scope that
+    // landed is recorded and reported — in the error when a later scope fails,
+    // and in the success payload otherwise.
+    let mut applied: Vec<&'static str> = Vec::new();
     for connector_scope in scope.scopes() {
         // Single-critical-section read-modify-write: loading and saving in
         // two separate lock acquisitions let a concurrent GUI toggle between
         // them be silently dropped (the same lost-update window the app
-        // layer documented and fixed for its own RMW). Write failures are
-        // swallowed by the storage layer, so persistence is verified by
-        // reading the scope back: an enable must have removed the id, and a
-        // disable must have recorded it.
-        // The RMW is fail-closed: an unavailable bundle lock (or a failing
-        // write) surfaces here instead of falling through to the read-back
-        // verification below, which could otherwise bless a stale state.
+        // layer documented and fixed for its own RMW).
+        // The RMW is fail-closed: an unavailable bundle lock, a corrupt
+        // consent file, or a failing write all surface through this `?`.
+        //
+        // The requested state is verified INSIDE the closure, i.e. under the
+        // same flock the write holds and against the exact list the writer is
+        // about to persist (it maps every entry through the same
+        // `package_id_for` normalization, which is idempotent on an already
+        // normalized id). The previous shape re-read the scope with
+        // `load_disabled_bundles_for` AFTER the lock was released: a GUI
+        // toggle of the same package in that window was reported as "the
+        // storage write failed or was dropped" for a write that had in fact
+        // succeeded, i.e. a hard failure invented by an unrelated concurrent
+        // writer.
+        let recorded = std::cell::Cell::new(false);
         pinvou3_lib::features::marketplace::update_disabled_bundles_for(
             connector_scope,
             |ids: &mut Vec<String>| {
@@ -1493,36 +1730,49 @@ fn set_enabled(
                 } else if !ids.iter().any(|existing| existing == &packages) {
                     ids.push(packages.clone());
                 }
+                // Verified on the NORMALIZED projection, which is what the
+                // writer persists and what every later read resolves: an
+                // entry whose ownership flipped (a companion skill id still
+                // spelled raw) normalizes onto `packages` too, and an enable
+                // that only dropped the exact spelling would otherwise report
+                // success while the package stayed disabled. The per-entry
+                // `package_id_for` is the same walk the writer already runs
+                // inside this critical section, so it adds no new scan class.
+                recorded.set(ids.iter().any(|existing| {
+                    pinvou3_lib::features::marketplace::package_id_for(existing) == packages
+                }));
             },
         )
         .map_err(|error| {
             CliError::failed(format!(
                 "plugins {action}: could not update disabled bundles for {id} in \
-                 scope {} : {error}",
-                connector_scope.as_str()
+                 scope {} : {error}{}",
+                connector_scope.as_str(),
+                applied_scopes_suffix(&applied)
             ))
         })?;
-        let reloaded =
-            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
-        let present = reloaded.iter().any(|existing| existing == &packages);
-        // A lost write is risky in both directions: an enable that did not
-        // stick re-activates the package, and a lost disable leaves it
-        // ACTIVE while the caller sees success. Both fail hard instead of
-        // reporting an unverified success.
-        if present == enabled {
+        // Only reachable if the mutation above did not leave the list in the
+        // requested state — storage errors already surfaced through the `?`.
+        // Fail closed in both directions: an enable that did not stick
+        // re-activates the package, and a lost disable leaves it ACTIVE while
+        // the caller sees success.
+        if recorded.get() == enabled {
             return Err(CliError::failed(format!(
-                "plugins {action}: could not persist {id} for scope {} (the storage \
-                 write failed or was dropped; the id is still active)",
-                connector_scope.as_str()
+                "plugins {action}: could not persist {id} for scope {} (the resolved \
+                 disabled set did not take the requested state){}",
+                connector_scope.as_str(),
+                applied_scopes_suffix(&applied)
             )));
         }
+        applied.push(connector_scope.as_str());
     }
-    // Reaching this point means every scope's read-back matched the requested
-    // state; a mismatch hard-failed above.
+    // Reaching this point means every scope's under-lock verification matched
+    // the requested state; a mismatch hard-failed above.
     let value = serde_json::json!({
         "id": id,
         "action": action,
         "scope": scope.label(),
+        "scopes_applied": applied,
         "known_id": known,
         "persistence_verified": true,
     });
@@ -1532,7 +1782,31 @@ fn set_enabled(
             "\nwarning: id not found in the installed catalog; the toggle was recorded anyway",
         );
     }
+    // Caveat at the point of action: the GUI runs `hot_refresh` after a scope
+    // change (`refresh_live_sessions_skills` + `refresh_permission_rulesets`),
+    // which needs the engine pool the CLI does not host. A desktop app running
+    // alongside keeps its live engines on the whitelist they started with.
+    human.push_str(
+        "\nnote: no hot-refresh broadcast was sent; a running desktop app's live \
+         engines keep the previous whitelist until they are restarted",
+    );
     Ok(success(render(output, human, &value)))
+}
+
+/// Suffix naming the scopes a `--scope both` run already persisted when a
+/// later scope fails. The scopes are written one critical section at a time
+/// and the storage layer offers no two-scope transaction, so the earlier write
+/// stands; saying which ones landed is the difference between a recoverable
+/// message and a caller who assumes nothing changed.
+fn applied_scopes_suffix(applied: &[&str]) -> String {
+    if applied.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (partially applied: scope {} already persisted and was NOT rolled back)",
+            applied.join(", ")
+        )
+    }
 }
 
 /// The installed ids the CLI can see: tool packages plus installed skills.
@@ -1663,6 +1937,29 @@ fn read_import_file_capped(
     }
     *cumulative += bytes.len() as u64;
     Ok(bytes)
+}
+
+/// Re-charges the import budget when a SKILL.md is replaced by its wrapped
+/// form: `wrap_markdown_skill` PREPENDS a frontmatter block, so the bytes that
+/// actually go into the package are larger than the ones
+/// [`read_import_file_capped`] charged. The raw length is given back and the
+/// wrapped one taken, then the budget is re-checked — pushing the wrapper in
+/// without any charge let an import sitting just under
+/// `MAX_PLUGIN_SIZE_BYTES` ship a package over it by the frontmatter's size.
+fn charge_wrapped_skill_md(
+    cumulative: &mut u64,
+    raw_len: usize,
+    wrapped: &[u8],
+    display: &str,
+    path: &Path,
+) -> Result<(), CliError> {
+    // saturating: the raw read is always part of `cumulative`, but a future
+    // caller that charges differently must not wrap around into a huge budget.
+    *cumulative = cumulative.saturating_sub(raw_len as u64) + wrapped.len() as u64;
+    if *cumulative > plugin_import::MAX_PLUGIN_SIZE_BYTES {
+        return Err(import_over_limit(display, path));
+    }
+    Ok(())
 }
 
 /// Recursively collects regular, non-hidden files under `root` as

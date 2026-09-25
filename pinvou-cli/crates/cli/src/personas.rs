@@ -27,6 +27,15 @@
 //! equivalent of the GUI's `remove_persona_from_all` cascade) and reports
 //! the cleared session ids as `cleared_sessions`.
 //!
+//! One-sided sweep, disclosed: the GUI's own persona delete never touches
+//! `persona_equipped.json` (the file is a CLI concept and the name appears
+//! nowhere in `pinvou3-app`), so a card deleted in the desktop app leaves the
+//! CLI's sidecars behind, and the CLI cannot sweep them afterwards either —
+//! `delete` gates on the card existing. The CLI therefore makes that state
+//! reachable from its own side: `active` reports the orphaned sidecar instead
+//! of degrading to "none", and `unequip` clears it without consulting the card
+//! pool.
+//!
 //! Field note (headless deviation): `create`/`update` expose only the GUI
 //! dialog's name/description/body fields — the department is fixed to
 //! "specialized" and the emoji/color take the card defaults.
@@ -51,6 +60,14 @@ pub enum SourceFilter {
 }
 
 impl SourceFilter {
+    /// The canonical spelling, used both to filter `PersonaSummary::source`
+    /// and to echo the applied filter back in the JSON `source` field.
+    ///
+    /// `Builtin` renders as `builtin`, never as its deprecated `embedded`
+    /// input alias (see `parse`): the value has to match what the cards
+    /// themselves carry, or `--source embedded` would answer
+    /// `{"source": "embedded", "personas": [{"source": "builtin"}, ...]}` and
+    /// contradict itself.
     fn as_str(self) -> &'static str {
         match self {
             Self::Builtin => "builtin",
@@ -121,12 +138,24 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
             let (options, _) = parse_flags(rest, LIST_OPTIONS, &[])?;
             let source = match option(&options, "--source") {
                 None => SourceFilter::All,
-                Some("builtin") => SourceFilter::Builtin,
+                // `embedded` is a deprecated INPUT alias for `builtin`, kept
+                // for compatibility only. The published CLI reference used to
+                // advertise `--source embedded|user`; it now reads
+                // `builtin|user|all` (`docs/pinvou-cli.md`), which is the
+                // value the feature layer stamps on a card and the one this
+                // command echoes back in `source`. The alias stays anyway:
+                // scripts written against the older reference are already out
+                // there, breaking them buys nothing, it costs one match arm,
+                // and it cannot collide because `embedded` is not a card
+                // source. It is deliberately not re-documented — the only
+                // spelling the reference teaches is `builtin`.
+                Some("builtin" | "embedded") => SourceFilter::Builtin,
                 Some("user") => SourceFilter::User,
                 Some("all") => SourceFilter::All,
                 Some(other) => {
                     return Err(CliError::usage(format!(
-                        "personas list --source must be builtin, user, or all (got {other})"
+                        "personas list --source must be builtin (alias: embedded), user, \
+                         or all (got {other})"
                     )));
                 }
             };
@@ -329,6 +358,51 @@ fn translate_persona_error(message: &str) -> String {
     }
 }
 
+/// One human-mode `personas list` row: five tab-separated columns
+/// (id, source, name, dept, description).
+///
+/// Every cell here is attacker-reachable text, which is why the whole row goes
+/// through the column collapse rather than a chosen subset (same rule as the
+/// `sessions subagents` row: the row contract must not depend on which cell
+/// happened to look machine-made). `create_user_persona` only rejects an empty
+/// trimmed name, the CLI takes `--name`/`--description` verbatim from argv,
+/// and `load_user_cards` deserializes whatever `~/.pinvou3/user/personas/*.json`
+/// contains — id, dept and source included. A tab would invent a sixth column
+/// and a newline would split one card across two rows for whoever is cutting
+/// the output on `\t`, and an ESC would reach the terminal. Human mode only:
+/// the JSON payload keeps the real strings (`serde_json` escapes everything
+/// below 0x20, so it is already safe to read back). Sibling rule and sibling
+/// test in `projects.rs`.
+fn persona_row(summary: &PersonaSummary) -> String {
+    let cell = crate::support::collapse_control_characters;
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        cell(&summary.id),
+        cell(&summary.source),
+        cell(&summary.name),
+        cell(&summary.dept),
+        cell(if summary.description.is_empty() {
+            "-"
+        } else {
+            &summary.description
+        }),
+    )
+}
+
+/// One human-mode `personas active` row: three tab-separated columns
+/// (id, name, source). Same cells, same untrusted sources, same rule as
+/// [`persona_row`] — a name safe in `list` and raw in `active` would be the
+/// CLI contradicting itself one command apart.
+fn active_row(summary: &PersonaSummary) -> String {
+    let cell = crate::support::collapse_control_characters;
+    format!(
+        "{}\t{}\t{}",
+        cell(&summary.id),
+        cell(&summary.name),
+        cell(&summary.source),
+    )
+}
+
 fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let mut summaries: Vec<PersonaSummary> = all_summaries();
@@ -338,25 +412,16 @@ fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError
     }
     let human = summaries
         .iter()
-        .map(|summary| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                summary.id,
-                summary.source,
-                summary.name,
-                summary.dept,
-                if summary.description.is_empty() {
-                    "-"
-                } else {
-                    &summary.description
-                },
-            )
-        })
+        .map(persona_row)
         .collect::<Vec<_>>()
         .join("\n");
+    // A serialization failure is a failure, not an empty deck. The previous
+    // fallback answered `{"personas": []}` with exit 0 — a caller scripting
+    // "the pool is empty, seed it" cannot tell that apart from a genuinely
+    // empty pool, and acts on a deck it was never shown.
     let value = serde_json::to_value(&summaries)
         .map(|personas| json_entries(personas, source))
-        .unwrap_or_else(|_| json_entries(serde_json::Value::Array(Vec::new()), source));
+        .map_err(|error| CliError::failed(format!("personas list: {error}")))?;
     Ok(success(render(output, human, &value)))
 }
 
@@ -403,7 +468,9 @@ fn create(
         conversational_only: false,
     };
     let summary = create_user_persona(card).map_err(|error| persona_error("create", error))?;
-    let value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+    // See `summary_value`: an empty object with exit 0 would hand the caller a
+    // null `.id` for a card that was really created.
+    let value = summary_value(&summary, "create")?;
     Ok(success(render(
         output,
         format!("created {}", summary.id),
@@ -433,7 +500,7 @@ fn update(
         card.body = read_body(&body, "update")?;
     }
     let summary = update_user_persona(card).map_err(|error| persona_error("update", error))?;
-    let value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+    let value = summary_value(&summary, "update")?;
     Ok(success(render(
         output,
         format!("updated {}", summary.id),
@@ -526,7 +593,23 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
     };
     let mut cleared = Vec::new();
     let mut sweep_errors = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                // A per-entry failure is a listing failure, and the block
+                // above already argues what that means here: the sweep cannot
+                // say whether the session behind this entry held a sidecar for
+                // the deleted card, so dropping it (`entries.flatten()`) would
+                // report success while a ghost survives. Name it instead —
+                // there is no id to attach it to, which is exactly the point.
+                sweep_errors.push(format!(
+                    "<unreadable entry under {}>: {error}",
+                    sessions_dir.display()
+                ));
+                continue;
+            }
+        };
         let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
@@ -611,22 +694,42 @@ const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
 /// CLI's own persona write paths enforce.
 const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-/// Persists the equip state for the next CLI invocation.
+/// Refuses a card whose RAW body is over the budget the sidecar cap is
+/// computed from.
+///
+/// The delete sweep's capped read only covers bodies up to this budget; a
+/// larger one (possible on a persona the desktop app wrote, whose writer has
+/// no cap) would equip fine and then survive the delete as a ghost. Refuse at
+/// equip time instead.
+///
+/// The cap is charged to `card.body`, not to `equip_body_injection(card)`.
+/// `MAX_EQUIP_BODY_BYTES` is the same 4 MiB `read_body` enforces on the raw
+/// body at `personas create`/`update`, and `MAX_SIDECAR_BYTES` is documented
+/// as "body cap 4 MiB plus a few hundred bytes of wrapper text" — so charging
+/// the wrapper (several hundred fixed bytes plus the card name) against the
+/// body's own number made a card accepted at exactly the documented maximum
+/// impossible to equip, with a message blaming the body for exceeding a limit
+/// it does not exceed. The wrapper is still bounded: the serialized-sidecar
+/// check in [`persist_equipped_persona`] covers the whole envelope, and that
+/// is the one the sweep's read bound actually depends on.
+fn require_equippable_body(card: &PersonaCard) -> Result<(), CliError> {
+    if card.body.len() > MAX_EQUIP_BODY_BYTES {
+        return Err(CliError::failed(format!(
+            "personas equip: the persona body is {} bytes and exceeds the 4 MiB body budget the \
+             session sidecar is sized for; shrink the body before equipping",
+            card.body.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Persists the equip state for the next CLI invocation. The raw-body budget
+/// is checked by [`require_equippable_body`] before the body is wrapped.
 fn persist_equipped_persona(
     session_id: &str,
     persona_id: &str,
     pending_body: &str,
 ) -> Result<(), CliError> {
-    // The delete sweep's capped read only covers bodies up to this budget;
-    // a larger one (possible on a persona the desktop app wrote, whose
-    // writer has no cap) would equip fine and then survive the delete as a
-    // ghost. Refuse at equip time instead.
-    if pending_body.len() > MAX_EQUIP_BODY_BYTES {
-        return Err(CliError::failed(
-            "personas equip: the persona body exceeds the 4 MiB sidecar budget; \
-             shrink the body before equipping",
-        ));
-    }
     let path = equip_state_path(session_id)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| {
@@ -640,33 +743,23 @@ fn persist_equipped_persona(
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
     // The sweep cap covers the whole serialized sidecar, not just the body:
-    // an uncapped persona id (the app's slugifier imposes no length limit)
-    // could otherwise push a legal body's sidecar past the delete sweep's
-    // read bound and recreate the ghost the checks above prevent.
+    // the injection wrapper, an uncapped persona id and an uncapped card name
+    // (the app's slugifier imposes no length limit on either) could otherwise
+    // push a legal body's sidecar past the delete sweep's read bound and
+    // recreate the ghost `require_equippable_body` prevents.
     if bytes.len() > MAX_SIDECAR_BYTES {
         return Err(CliError::failed(
             "personas equip: the serialized equip state exceeds the sidecar budget; \
              shrink the persona body or use a shorter persona",
         ));
     }
-    // Temp + rename (same discipline as the app's atomic writes): a
-    // concurrent `active` read must never observe a torn sidecar.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
-    std::fs::write(&tmp, &bytes).map_err(|error| {
-        CliError::failed(format!("cannot save session persona sidecar: {error}"))
-    })?;
-    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
-    if let Err(error) = std::fs::rename(&tmp, &path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(CliError::failed(format!(
-            "cannot save session persona sidecar: {error}"
-        )));
-    }
-    Ok(())
+    // Stage + rename (same discipline as the app's atomic writes): a
+    // concurrent `active` read must never observe a torn sidecar. Owner-only:
+    // the sidecar embeds the card's full injection body, which for a
+    // user-authored persona is text the user wrote and no other account on the
+    // machine has a reason to read.
+    crate::artifacts::atomic_write(&path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
+        .map_err(|error| CliError::failed(format!("cannot save session persona sidecar: {error}")))
 }
 
 /// Mirror of `equip_persona`: resolve the card, persist the equipped state on
@@ -677,7 +770,6 @@ fn persist_equipped_persona(
 /// command. Revealed in the output below so the command cannot be mistaken
 /// for live persona injection.
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store = open_store()?;
     // Usage before Failed: character validation first (a traversal id is a
     // usage error, via the sidecar-path check below), then session
     // existence, then the persona lookup — so a malformed session id reports
@@ -685,7 +777,14 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     // an unknown but well-formed session id fails instead of materializing a
     // stray `sessions/<bogus-id>/` directory for a session that does not
     // exist.
+    //
+    // That order includes `open_store()`, which runs `sandbox_home()` and
+    // `SessionStore::boot()` — both Failed-class. Booting it first made the
+    // exit-2 contract above depend on the store happening to boot cleanly;
+    // `unequip` and `active` already validate before booting, and this lane
+    // now matches them.
     equip_state_path(session_id)?;
+    let store = open_store()?;
     store.load(session_id).map_err(|error| {
         CliError::failed(format!(
             "personas equip: session {session_id} does not exist ({error})"
@@ -693,12 +792,13 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     })?;
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
+    require_equippable_body(&card)?;
     let summary = card.summary();
     let injection = equip_body_injection(&card);
     store.set_pending_persona_body(session_id, Some(injection.clone()));
     store.set_active_persona(session_id, Some(persona_id.to_owned()));
     persist_equipped_persona(session_id, persona_id, &injection)?;
-    let mut value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+    let mut value = summary_value(&summary, "equip")?;
     value["session_id"] = serde_json::json!(session_id);
     value["applies_to_next_turn"] = serde_json::json!(false);
     value["note"] = serde_json::json!(
@@ -750,6 +850,17 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
 /// Mirror of `get_active_persona`: the equipped card's summary, or null. The
 /// persisted sidecar is the source of truth across CLI invocations; the
 /// in-memory store stays as the fallback for state set in this process.
+///
+/// Orphan reporting: the sidecar can outlive its card. The CLI's delete-time
+/// sweep only runs on a CLI `personas delete`, and the desktop app's own
+/// delete never touches `persona_equipped.json` (the filename appears nowhere
+/// in `pinvou3-app`), so deleting a card in the app leaves every CLI sidecar
+/// on disk carrying that card's full injection body — and a later
+/// `personas delete <id> --yes` exits 1 on the existence gate before the sweep
+/// can run. Degrading that state to `null` made the only remaining evidence
+/// invisible. It is reported instead; `personas unequip <session-id>` clears
+/// it without consulting the card pool, so the state is both visible and
+/// clearable from the CLI alone.
 fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Same gates as equip/unequip: reject ids that cannot name a session
     // directory before any path use, and fail an unknown but well-formed id
@@ -762,18 +873,49 @@ fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
             "personas active: session {session_id} does not exist ({error})"
         ))
     })?;
-    let summary = equipped_persona_id(session_id)
-        .or_else(|| store.active_persona_id(session_id))
-        .and_then(|persona_id| get(&persona_id).map(|card| card.summary()));
+    let equipped = equipped_persona_id(session_id).or_else(|| store.active_persona_id(session_id));
+    let summary = equipped
+        .as_deref()
+        .and_then(|persona_id| get(persona_id).map(|card| card.summary()));
+    if let (Some(persona_id), None) = (equipped.as_deref(), summary.as_ref()) {
+        // Equipped but unresolvable: the card was deleted from the desktop
+        // app (or the pool file was removed by hand) while the sidecar stayed.
+        // "none" would be a lie — the sidecar is there, it still holds the
+        // deleted card's whole injection body at 0600, and nothing else in the
+        // CLI reports it.
+        return Err(CliError::failed(format!(
+            "personas active: session {session_id} has persona {persona_id} equipped but that \
+             card no longer exists; its sidecar still holds the card's full injection body — \
+             clear it with `pinvou personas unequip {session_id}`"
+        )));
+    }
     let human = match &summary {
-        Some(summary) => format!("{}\t{}\t{}", summary.id, summary.name, summary.source),
+        Some(summary) => active_row(summary),
         None => "none".to_owned(),
     };
-    let value = match serde_json::to_value(&summary) {
-        Ok(value) => value,
-        Err(_) => serde_json::Value::Null,
+    // `null` is this command's answer for "no persona equipped", so it cannot
+    // double as the answer for "the equipped persona could not be rendered":
+    // a caller branching on `value === null` would unequip, or skip a setup
+    // step, for a session that does have a card. Fail instead.
+    let value = match &summary {
+        Some(summary) => summary_value(summary, "active")?,
+        None => serde_json::Value::Null,
     };
     Ok(success(render(output, human, &value)))
+}
+
+/// Serializes a `PersonaSummary` for the JSON lane, propagating a failure.
+///
+/// Every call site previously degraded to `json!({})` (or, in `active`, to
+/// `null`) and still exited 0. That turns a serializer failure into a
+/// successful *wrong* answer: `.id` reads back as `null`, and a script that
+/// keys on the id silently operates on nothing. `monitor snapshot` already
+/// treats the identical operation as fallible; this is the same rule for the
+/// persona lanes. There is no useful partial answer here — the summary either
+/// renders or the command failed.
+fn summary_value(summary: &PersonaSummary, context: &str) -> Result<serde_json::Value, CliError> {
+    serde_json::to_value(summary)
+        .map_err(|error| CliError::failed(format!("personas {context}: {error}")))
 }
 
 fn open_store() -> Result<SessionStore, CliError> {
@@ -827,4 +969,194 @@ fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> 
         )));
     }
     Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_list(arguments: &[&str]) -> Result<PersonasCommand, CliError> {
+        let owned: Vec<String> = arguments.iter().map(|value| (*value).to_owned()).collect();
+        parse(&owned)
+    }
+
+    /// The CLI reference used to advertise `list [--source embedded|user]`
+    /// while the parser only ever accepted `builtin|user|all`, so a script
+    /// written against that documentation exited 2. The reference now teaches
+    /// `builtin|user|all`; the alias stays as a compatibility input spelling
+    /// for the scripts already written, and resolves to the same filter as
+    /// `builtin`.
+    #[test]
+    fn list_source_accepts_the_documented_embedded_alias() {
+        assert_eq!(
+            parse_list(&["personas", "list", "--source", "embedded"]).unwrap(),
+            PersonasCommand::List {
+                source: SourceFilter::Builtin,
+            }
+        );
+        assert_eq!(
+            parse_list(&["personas", "list", "--source", "builtin"]).unwrap(),
+            PersonasCommand::List {
+                source: SourceFilter::Builtin,
+            }
+        );
+    }
+
+    /// The alias is an input spelling only: the echoed `source` field has to
+    /// keep matching the value the cards themselves carry.
+    #[test]
+    fn the_embedded_alias_still_reports_the_canonical_source() {
+        assert_eq!(SourceFilter::Builtin.as_str(), "builtin");
+    }
+
+    /// Unknown values stay a usage error, and the message names the alias so
+    /// the accepted set is discoverable from the CLI itself.
+    #[test]
+    fn list_source_still_rejects_unknown_values() {
+        let error = parse_list(&["personas", "list", "--source", "venv"])
+            .expect_err("an unknown source must be a usage error");
+        assert_eq!(error.exit_code(), crate::ExitCode::Usage);
+        assert!(error.to_string().contains("embedded"), "{error}");
+    }
+
+    fn summary_fixture(id: &str, name: &str, dept: &str, description: &str) -> PersonaSummary {
+        PersonaCard {
+            id: id.to_owned(),
+            dept: dept.to_owned(),
+            name: name.to_owned(),
+            description: description.to_owned(),
+            emoji: "🃏".to_owned(),
+            color: "#7C3AED".to_owned(),
+            body: "body".to_owned(),
+            source: "user".to_owned(),
+            conversational_only: false,
+        }
+        .summary()
+    }
+
+    /// The human `personas list` row is a five-column tab-separated record and
+    /// `personas_contract.rs` asserts that shape. Persona names, departments
+    /// and descriptions are untrusted — `create_user_persona` only rejects an
+    /// empty trimmed name, the CLI takes `--name`/`--description` verbatim
+    /// from argv, and `load_user_cards` deserializes arbitrary
+    /// `~/.pinvou3/user/personas/*.json` — so without the column collapse one
+    /// card would render as two rows with six columns between them and the
+    /// ESC would reach the terminal. Sibling rule and sibling test in
+    /// `projects.rs`.
+    #[test]
+    fn list_row_keeps_five_columns_when_the_card_text_carries_control_characters() {
+        let row = persona_row(&summary_fixture(
+            "user-a\tb",
+            "Alpha\tBeta\nGamma\x1b[31m",
+            "special\nized",
+            "does\tthings\x07",
+        ));
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "the row must stay one line: {row:?}"
+        );
+        let columns: Vec<&str> = row.split('\t').collect();
+        assert_eq!(columns.len(), 5, "the row must keep five columns: {row:?}");
+        assert_eq!(columns[0], "user-a b");
+        assert_eq!(columns[1], "user");
+        assert_eq!(columns[2], "Alpha Beta Gamma [31m");
+        assert_eq!(columns[3], "special ized");
+        assert_eq!(columns[4], "does things ");
+        assert!(
+            !row.contains('\x1b'),
+            "ESC must not reach the terminal: {row:?}"
+        );
+    }
+
+    /// `personas active` renders the same untrusted cells one command away
+    /// from `list`; a name that is safe in one and raw in the other would be
+    /// the CLI contradicting itself.
+    #[test]
+    fn active_row_keeps_three_columns_when_the_card_text_carries_control_characters() {
+        let row = active_row(&summary_fixture(
+            "user-a",
+            "Alpha\tBeta\nGamma\x1b[31m",
+            "specialized",
+            "-",
+        ));
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "the row must stay one line: {row:?}"
+        );
+        let columns: Vec<&str> = row.split('\t').collect();
+        assert_eq!(columns.len(), 3, "the row must keep three columns: {row:?}");
+        assert_eq!(columns[0], "user-a");
+        assert_eq!(columns[1], "Alpha Beta Gamma [31m");
+        assert_eq!(columns[2], "user");
+    }
+
+    /// The collapse is a rendering choice, not a data change: ordinary text
+    /// must render byte-for-byte, and an empty description must keep the "-"
+    /// placeholder rather than an empty cell.
+    #[test]
+    fn list_row_leaves_ordinary_text_and_empty_descriptions_untouched() {
+        let row = persona_row(&summary_fixture("user-a", "Alpha", "specialized", ""));
+        assert_eq!(row, "user-a\tuser\tAlpha\tspecialized\t-");
+    }
+
+    /// The equip budget is charged to the RAW body, which is the number
+    /// `personas create`/`update` enforce. Charging the injection wrapper
+    /// against the same 4 MiB made a card accepted at exactly the documented
+    /// maximum impossible to equip — the two commands must agree on what
+    /// "4 MiB" means.
+    #[test]
+    fn a_body_at_exactly_the_documented_cap_is_still_equippable() {
+        let mut card = PersonaCard {
+            id: "user-cap".to_owned(),
+            dept: "specialized".to_owned(),
+            name: "Cap".to_owned(),
+            description: String::new(),
+            emoji: "🃏".to_owned(),
+            color: "#7C3AED".to_owned(),
+            body: "x".repeat(MAX_EQUIP_BODY_BYTES),
+            source: "user".to_owned(),
+            conversational_only: false,
+        };
+        // The wrapper really does push the injection past the raw cap — that
+        // is the whole bug, so pin it rather than assuming it.
+        assert!(
+            equip_body_injection(&card).len() > MAX_EQUIP_BODY_BYTES,
+            "the injection wrapper must be what the old check charged for"
+        );
+        require_equippable_body(&card).expect("a body at exactly the cap must be equippable");
+        // One byte over the raw cap is still refused, and the message names
+        // the body rather than the sidecar envelope.
+        card.body.push('x');
+        let error = require_equippable_body(&card).expect_err("over the cap must be refused");
+        assert_eq!(error.exit_code(), crate::ExitCode::Failed);
+        assert!(error.to_string().contains("4 MiB body budget"), "{error}");
+    }
+
+    /// Bug-3 guard: the persona lanes must never publish a placeholder value
+    /// on a serialization failure. `PersonaSummary` always renders, so the
+    /// assertion is that the helper is `Result`-typed and yields the real
+    /// object — the call sites can no longer reach for `json!({})`/`null`
+    /// without a compile error.
+    #[test]
+    fn summary_value_returns_the_real_object_rather_than_a_placeholder() {
+        let card = PersonaCard {
+            id: "user-test".to_owned(),
+            dept: "specialized".to_owned(),
+            name: "Test".to_owned(),
+            description: "d".to_owned(),
+            emoji: "🃏".to_owned(),
+            color: "#7C3AED".to_owned(),
+            body: "body".to_owned(),
+            source: "user".to_owned(),
+            conversational_only: false,
+        };
+        let value = summary_value(&card.summary(), "create").expect("a summary must render");
+        assert_eq!(value["id"], "user-test");
+        assert!(
+            !value.as_object().expect("an object").is_empty(),
+            "an empty object would be the old silent-failure answer"
+        );
+    }
 }

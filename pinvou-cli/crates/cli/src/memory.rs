@@ -31,7 +31,11 @@
 //! either command concurrently while the desktop app has an active session
 //! temporarily drops that section from `snapshot.md` until the app next
 //! refreshes it; avoid `overview`/`organize` while the app is displaying
-//! memory for a live session.
+//! memory for a live session. Because `overview` otherwise reads like a
+//! read-only command, it discloses the rewrite at the point of action — on
+//! stderr and on its own output (`snapshot_rewritten_without_runtime` in
+//! JSON) — so a caller polling it in a loop cannot degrade the app's snapshot
+//! silently.
 //!
 //! Replace-per-topic note: `memory add preference` and `memory add
 //! work-context` do not append. Both stores are organized into topic buckets
@@ -53,6 +57,16 @@ use crate::{CliError, CliOutcome, OutputMode};
 const MEMORY_USAGE: &str = "usage: pinvou memory <overview|profile|list|add|update|delete|\
 archive|pending|organize|organize-history>\n\
 note: adding to preferences/work-context replaces the previous item in that topic bucket";
+
+/// Disclosure for the one mutation `memory overview` performs. The command
+/// reads like a read-only summary but rewrites the shared `snapshot.md`, and
+/// with `runtime: None` it drops the runtime section the desktop app wrote for
+/// its active session (see the module header). A caller polling `overview` in
+/// a loop must not degrade the app's snapshot silently, so the rewrite is
+/// reported on the command's own output as well as on stderr.
+const OVERVIEW_SNAPSHOT_REWRITE_NOTE: &str = "Note: this overview rewrote snapshot.md without \
+its runtime section (a one-shot CLI owns no active session); the desktop app restores that \
+section on its next refresh";
 
 /// Stores addressable by `memory list|update|delete`. Hyphenated values are
 /// canonical, the GUI's underscore spellings are accepted as aliases.
@@ -237,6 +251,11 @@ fn parse_profile(values: &[String]) -> Result<MemoryCommand, CliError> {
         }
         "set" => {
             let options = parse_options(&values[1..], &["--call-name", "--assistant-alias"], &[])?;
+            // `profile set --call-name X junk` must not write X and drop
+            // `junk`: the stray token is almost always a name the caller
+            // forgot to quote, so writing the truncated half silently is the
+            // worst outcome available.
+            options.ensure_no_positionals("memory profile set")?;
             let call_name = options.value("--call-name");
             let assistant_alias = options.value("--assistant-alias");
             if call_name.is_none() && assistant_alias.is_none() {
@@ -257,6 +276,11 @@ fn parse_profile(values: &[String]) -> Result<MemoryCommand, CliError> {
 
 fn parse_list(values: &[String]) -> Result<MemoryCommand, CliError> {
     let options = parse_options(values, &["--store"], &[])?;
+    // `memory list preferences` is the spelling a user reaches for before
+    // discovering `--store`; dropping the token made it print all six stores
+    // and exit 0, so the command answered a question nobody asked instead of
+    // naming the option.
+    options.ensure_no_positionals("memory list")?;
     let store = match options.value("--store") {
         Some(value) => Some(MemoryStore::parse_value(value)?),
         None => None,
@@ -286,7 +310,14 @@ fn parse_add(values: &[String]) -> Result<MemoryCommand, CliError> {
             }
             AddSource::Inline(content.to_owned())
         }
-        (None, Some(path)) => AddSource::File(PathBuf::from(path)),
+        (None, Some(path)) => {
+            // Same guard as the `--content` branch above: with `--file` the
+            // trailing words are not the content, so storing the file and
+            // discarding `extra words` would silently answer a different
+            // command than the one that was typed.
+            options.ensure_no_positionals("memory add --file")?;
+            AddSource::File(PathBuf::from(path))
+        }
         (None, None) => {
             if options.positional.is_empty() {
                 return Err(CliError::usage(
@@ -354,6 +385,11 @@ fn parse_pending(values: &[String]) -> Result<MemoryCommand, CliError> {
         .cloned()
         .ok_or_else(|| CliError::usage("memory pending requires <id>"))?;
     let options = parse_options(&values[2..], &["--reason"], &[])?;
+    // `pending never ID my reason` (the `--reason` flag forgotten) used to
+    // resolve the candidate with an EMPTY reason and drop the words — a
+    // destructive decision recorded without the justification the caller
+    // typed, so the stray tokens are a usage error here too.
+    options.ensure_no_positionals("memory pending")?;
     Ok(MemoryCommand::Pending {
         action,
         id,
@@ -652,6 +688,21 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         ) {
             Ok(path) => {
                 mark_source(&mut sources, "snapshot", true, None);
+                // Disclosure at the point of action: `overview` reads like a
+                // read-only command but rewrites the shared snapshot.md, and
+                // with `runtime: None` it drops the runtime section the
+                // desktop app wrote for its active session. The behaviour is
+                // deliberate (see the module header), yet a caller polling
+                // `overview` in a loop would otherwise keep degrading the
+                // app's snapshot with nothing anywhere saying so. Also
+                // reported on stdout/JSON below, because stderr is exactly
+                // what such a loop discards.
+                note!(
+                    "[memory] snapshot_rewritten_without_runtime snapshot: {} was rewritten \
+without the runtime section (a one-shot CLI owns no active session); the desktop app restores \
+it on its next refresh",
+                    path.display()
+                );
                 path.display().to_string()
             }
             Err(error) => {
@@ -713,6 +764,14 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
             "(deferred)"
         }
     ));
+    // Only when the document was really rewritten (a deferred or failed
+    // refresh changed nothing). Deliberately not a `warnings` entry: nothing
+    // failed and nothing was deferred, and that array feeds the
+    // source-availability diagnostics a consumer branches on.
+    let snapshot_rewritten = !snapshot_path.is_empty();
+    if snapshot_rewritten {
+        lines.push(OVERVIEW_SNAPSHOT_REWRITE_NOTE.to_owned());
+    }
     append_warning_lines(&mut lines, &warnings);
     let value = serde_json::json!({
         "profile": serde_json::to_value(&profile).unwrap_or_default(),
@@ -728,6 +787,9 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         // runtime source note above).
         "runtime": serde_json::Value::Null,
         "snapshot_path": snapshot_path,
+        // True whenever this run really rewrote the document: the same
+        // disclosure as the human note above, in the shape a script can test.
+        "snapshot_rewritten_without_runtime": snapshot_rewritten,
         "warnings": warnings,
         "sources": sources,
     });
@@ -1029,27 +1091,36 @@ fn expected_stored_text(kind: AddKind, content: &str) -> String {
     }
 }
 
-/// Error for an add whose store write used text OTHER than the caller's,
-/// or `None` when the enqueue echoed the caller's own text back (in which
-/// case the store simply holds nothing and the caller's own "not stored"
-/// message is the accurate one).
+/// Error for an enqueue that handed back a pending row carrying text this
+/// invocation did not submit, or `None` when the row holds this caller's own
+/// text — including the legitimately truncated form, which
+/// `expected_stored_text` predicts exactly, so a merely-shortened add is not
+/// refused here.
 ///
 /// `enqueue_memory_candidate` does not always queue what it was handed: its
 /// second dedupe branch matches an existing *pending* row on a LOWERCASED
-/// content key and returns that row untouched, so re-adding text that differs
-/// only in case makes the confirm write the EARLIER row's wording. Reporting
-/// that as a flat "was not stored" would send the user looking for a failed
-/// write that never happened; naming the text that actually landed makes it
-/// immediately recoverable (resolve or ignore the pending row, then re-add).
-fn diverged_text(kind: AddKind, enqueued: &str, expected: &str) -> Option<CliError> {
+/// content key and returns that row with its own `content` intact (only
+/// topic/source/updated_at are touched). Confirming the id it returns would
+/// approve a candidate the user has not reviewed yet AND write that row's
+/// wording into the topic bucket, so this is checked BEFORE the confirm: the
+/// add fails with the pending queue and every store untouched, which is what
+/// the remediation below can then honestly promise.
+fn diverged_text(
+    kind: AddKind,
+    pending_id: &str,
+    enqueued: &str,
+    expected: &str,
+) -> Option<CliError> {
     let actually_stored = expected_stored_text(kind, enqueued);
     if actually_stored == *expected {
         return None;
     }
     Some(CliError::failed(format!(
-        "memory_add_not_materialized: the pipeline stored {actually_stored:?} instead of the \
-         submitted {expected:?} (an existing pending candidate matching this text \
-         case-insensitively was reused); resolve it with `pinvou memory pending` and retry"
+        "memory_add_not_materialized: the candidate pipeline reused the existing pending entry \
+         {pending_id}, whose content {actually_stored:?} would be stored instead of the \
+         submitted {expected:?} (the two match case-insensitively); nothing was confirmed and \
+         no store was written — resolve that entry first (`pinvou memory pending \
+         confirm|ignore|never {pending_id}`), then retry this add"
     )))
 }
 
@@ -1138,6 +1209,22 @@ normalization (task-like or punctuation-only text is not stored)",
     };
     let pending = feature::enqueue_memory_candidate(suggestion)
         .map_err(|error| feature_error("add", error))?;
+    // The enqueue can hand back a row this invocation did not create: its
+    // second dedupe branch matches an EXISTING pending row on a lowercased
+    // content key and returns that row with its own text intact. Confirming
+    // that id has two real side effects behind what ends up being a FAILED
+    // command — it approves a candidate the user never reviewed and writes
+    // the other row's wording into the topic bucket — so the divergence is
+    // caught here, before `confirm_pending_memory` runs, leaving the pending
+    // queue and both stores exactly as they were.
+    //
+    // The comparison replays the pipeline over the returned content, so a row
+    // that IS derivable from this caller's input still passes: an add whose
+    // text was merely truncated at ADD_PIPELINE_TEXT_MAX_CHARS predicts the
+    // same `expected` and proceeds to report its truncation below.
+    if let Some(error) = diverged_text(kind, &pending.id, &pending.content, &expected) {
+        return Err(error);
+    }
     feature::confirm_pending_memory(&pending.id)
         .map_err(|error| feature_error("add", error))?
         .ok_or_else(|| {
@@ -1157,13 +1244,16 @@ normalization (task-like or punctuation-only text is not stored)",
                 .iter()
                 .rev()
                 .find(|item| item.text == expected)
+                // A pipeline that queued someone else's text is already
+                // refused above, so the only remaining way to miss here is a
+                // confirm that wrote nothing: the profile-shaped preference
+                // skip (whose Chinese-only heuristic the pre-flight probe
+                // shares) or a concurrent writer clearing the bucket.
                 .ok_or_else(|| {
-                    diverged_text(kind, &pending.content, &expected).unwrap_or_else(|| {
-                        CliError::failed(
-                            "memory_add_not_materialized: preference content belongs to the \
+                    CliError::failed(
+                        "memory_add_not_materialized: preference content belongs to the \
 memory profile instead",
-                        )
-                    })
+                    )
                 })?;
             let after = items
                 .iter()
@@ -1186,10 +1276,11 @@ memory profile instead",
                 .iter()
                 .rev()
                 .find(|item| item.text == expected)
+                // Divergent pipeline text is refused before the confirm, so
+                // reaching here means the confirm ran and the work-context
+                // bucket still does not hold the predicted text.
                 .ok_or_else(|| {
-                    diverged_text(kind, &pending.content, &expected).unwrap_or_else(|| {
-                        CliError::failed("memory_add_not_materialized: work context was not stored")
-                    })
+                    CliError::failed("memory_add_not_materialized: work context was not stored")
                 })?;
             let after = items
                 .iter()
@@ -1278,6 +1369,29 @@ fn update(
     if content.trim().is_empty() {
         return Err(CliError::usage("memory update requires non-empty content"));
     }
+    // Same fail-before-the-write classification as `add`: every editable
+    // store's writer normalizes the patch text with `clean_candidate_sentence`
+    // (preferences, work context and both timed stores all do) and rejects the
+    // result when it is empty, so text like "记住。" — a 请记住-style prefix
+    // plus punctuation — reached the store and came back as a
+    // `memory_update_failed: ...` io error, while the identical input is
+    // classified up front by `add`. Predict it here instead so the two
+    // commands answer the same input the same way.
+    //
+    // Which cap is passed cannot change the outcome: `clean_candidate_sentence`
+    // truncates AFTER stripping, so a non-empty stripped text stays non-empty
+    // for every cap, and only the exported work-context constant is reachable
+    // from the CLI (`PREFERENCE_TEXT_MAX_CHARS` and the timed cap are
+    // `pub(super)`).
+    let normalized =
+        feature::clean_candidate_sentence(content, feature::WORK_CONTEXT_TEXT_MAX_CHARS);
+    if normalized.is_empty() {
+        return Err(CliError::failed(format!(
+            "memory_update_not_applied: {} content is empty after normalization \
+(prefix-only or punctuation-only text is not stored)",
+            store.as_str()
+        )));
+    }
     support::sandbox_home()?;
     let patch = MemoryTextPatch {
         topic: None,
@@ -1317,6 +1431,14 @@ fn update(
                 None,
             )
         }
+        // Kept as defence in depth, not as a reachable path: `parse_update`
+        // already refuses both stores through `parse_editable_store`, so the
+        // CLI argv route never lands here. The match still has to be
+        // exhaustive, and the choice is between this usage error and an
+        // `unreachable!` panic — an in-process caller that builds
+        // `MemoryCommand::Update` directly (a test, a future embedding of
+        // `execute`) deserves a refusal it can handle rather than a crash
+        // that also loses the report.
         MemoryStore::RecentWork | MemoryStore::Pending => {
             return Err(CliError::usage(format!(
                 "memory update does not support store '{}' (valid: preferences, \
@@ -1365,6 +1487,10 @@ fn delete(
             feature::delete_timed_memory(store.as_str(), id)
                 .map_err(|error| feature_error("delete", error))?
         }
+        // Defence in depth for the same reason as the `update` arm above:
+        // `parse_delete` rejects both stores at parse time, but the match must
+        // be exhaustive and a handled refusal beats a panic for any in-process
+        // caller that constructs the command directly.
         MemoryStore::RecentWork | MemoryStore::Pending => {
             return Err(CliError::usage(format!(
                 "memory delete does not support store '{}' (valid: preferences, \
@@ -1405,26 +1531,51 @@ fn pending(
             let event = feature::confirm_pending_memory(id)
                 .map_err(|error| feature_error("pending", error))?
                 .ok_or_else(|| not_found(MemoryStore::Pending, id))?;
-            // The confirm path marks profile-shaped preference text
-            // confirmed while `write_preference_unlocked` deliberately skips
-            // the write (the same candidate `memory add` refuses up front).
-            // Reporting success would strand the item confirmed-but-never
-            // -materialized, so surface the no-op like the add-path
-            // rejection does.
+            // The confirm path can mark a candidate confirmed while the
+            // target store is never written (profile-shaped preference text
+            // is the best-known case). Reporting success would strand the
+            // item confirmed-but-never-materialized, so read the row back and
+            // ask the feature layer whether the write is visible.
+            //
+            // The read-back matches the RAW argv id, while
+            // `confirm_pending_memory` resolves `clean_id(id)` and
+            // `load_pending_memory` normalizes stored ids the same way: an id
+            // whose cleaned form differs (quoted, punctuated, padded) confirms
+            // a real row and then matches nothing here. Defaulting that to
+            // "materialized" skipped the honesty check exactly when the input
+            // was off, so a row we cannot read back is its own failure rather
+            // than a silent success.
             let confirmed = feature::load_pending_memory()
                 .map_err(|error| feature_error("pending", error))?
                 .into_iter()
                 .find(|item| item.id == id);
-            let materialized = confirmed
-                .as_ref()
-                .map(feature::confirmed_pending_memory_is_materialized)
-                .unwrap_or(true);
-            if !materialized {
+            let Some(confirmed) = confirmed else {
                 return Err(CliError::failed(format!(
-                    "memory pending confirm({id}): the candidate is confirmed, but its content \
-                     is profile-shaped preference text that is deliberately not materialized; \
-                     the target store was not written (a concurrent removal could also have \
-                     cleared a just-written item)"
+                    "memory pending confirm({id}): the confirm was accepted, but no pending \
+                     entry with this id can be read back, so whether the target store was \
+                     written cannot be verified; the id given probably differs from its stored \
+                     spelling (ids normalize to letters, digits, '-' and '_'), or the entry was \
+                     removed concurrently — check `pinvou memory list --store pending`"
+                )));
+            };
+            // The observable fact is only that the confirm produced no store
+            // row we can see; `confirmed_pending_memory_is_materialized`
+            // returns false for several distinct causes and does not say
+            // which, so the message lists them instead of asserting one. In
+            // particular its catch-all arm reports false for a `profile`
+            // candidate with any topic other than call_name/assistant_alias,
+            // where a write may well have happened.
+            if !feature::confirmed_pending_memory_is_materialized(&confirmed) {
+                return Err(CliError::failed(format!(
+                    "memory pending confirm({id}): the candidate is marked confirmed, but no \
+                     matching item is visible in its target store. Known causes: the content is \
+                     profile-shaped preference text the write deliberately skips (never \
+                     materialized); a current-focus/recent-activity item whose store row is no \
+                     longer active (TTL archival); an item deleted after an earlier confirm (a \
+                     re-confirm short-circuits and rewrites nothing); a concurrent removal of a \
+                     just-written item; or a profile candidate whose topic is neither call_name \
+                     nor assistant_alias, which this check cannot verify at all. Inspect the \
+                     target store with `pinvou memory list` before retrying"
                 )));
             }
             (

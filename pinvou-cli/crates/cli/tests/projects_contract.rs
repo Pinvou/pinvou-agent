@@ -503,7 +503,32 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     );
 
     // Omitting the project id moves a session out of its project — the
-    // store's ungroup arm, matching the GUI picker's ungrouped entry.
+    // store's ungroup arm, matching the GUI picker's ungrouped entry. That
+    // entry is an EXPLICIT, irreversible opt-out of auto-grouping, not a
+    // "clear", so it is only reachable for a session that currently resolves
+    // to a project — the same condition the GUI's disabled button applies.
+    //
+    // The session created by the fixture has no workspace binding and no
+    // assignment, so it resolves to nothing: ungrouping it is refused BEFORE
+    // it is put into a project.
+    let error = run(&["pinvou", "projects", "move", &session_id])
+        .expect_err("an already-ungrouped session must not be pinned as explicitly ungrouped");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("nothing to move it out of"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("cannot be reverted"),
+        "the refusal must disclose that the write it refused is irreversible: {error}"
+    );
+    let value = run_json(&["pinvou", "projects", "list"]);
+    assert!(
+        value["assignments"].get(session_id.as_str()).is_none(),
+        "a refused ungroup must not write an assignment entry"
+    );
+
+    // Inside a project it resolves, so the ungroup is allowed exactly once.
     let value = run_json(&["pinvou", "projects", "create", "--name", "Temp"]);
     let project_id = value["id"].as_str().unwrap().to_owned();
     let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
@@ -513,26 +538,38 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         outcome.stdout.contains("out of its project"),
         "the human ungroup must report the session leaving its project"
     );
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "move",
-        &session_id,
-        "--output",
-        "json",
-    ]);
-    assert_eq!(value["session_id"], session_id);
-    assert!(
-        value["project_id"].is_null(),
-        "a repeat ungroup stays idempotent"
-    );
     let value = run_json(&["pinvou", "projects", "list"]);
     let assignment = value["assignments"].get(session_id.as_str());
     assert!(
-        assignment.is_none() || assignment == Some(&serde_json::Value::Null),
-        "the ungroup must clear the assignment"
+        assignment == Some(&serde_json::Value::Null),
+        "the ungroup writes the explicit entry, not an absence: {assignment:?}"
     );
+
+    // The repeat is now refused rather than silently re-pinning: the session
+    // no longer resolves to a project, which is the state the explicit entry
+    // itself created.
+    let error = run(&["pinvou", "projects", "move", &session_id])
+        .expect_err("a repeat ungroup must be refused, not reported as idempotent");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("nothing to move it out of"),
+        "{error}"
+    );
+
+    // The only documented way back is naming a project again.
+    let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
+    assert_eq!(value["project_id"], project_id);
+
+    // The session gate still runs before the ungroup gate, so an unknown
+    // session is reported as unknown rather than as "not in a project".
     let error = run(&["pinvou", "projects", "move", "no-such-session"])
         .expect_err("an unknown session is still a failure without a project id");
     assert!(error.to_string().contains("does not exist"), "{}", error);
+
+    // The ungroup asymmetry is disclosed on the move usage errors too. This one
+    // is rejected at PARSE time, so it never reaches `run`'s execute step.
+    let error = parse_args(&["pinvou", "projects", "move", &session_id, &project_id, "x"])
+        .expect_err("a trailing token is a usage error");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("cannot be reverted"), "{error}");
 }

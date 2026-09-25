@@ -1493,35 +1493,67 @@ fn seed_bundle_record(home: &std::path::Path, record_json: &str) {
 }
 
 /// Execution-level readiness for a degraded CLI record. `degraded` is the
-/// store's "registered but its assets are missing" flag (set for CLI records
-/// only when the binary fails its SHA-256 check against the lock table) — it
-/// says nothing about the login state, so the reason must name the asset
-/// damage. Reporting `not_connected` here would send an operator to re-scan a
-/// QR code when the fix is re-downloading the binary.
+/// store's "registered but its assets are missing" flag, and CLI records reach
+/// it two ways whose fixes are OPPOSITE:
+/// - a routine disconnect — both `bundle_store_on_disconnected` implementations
+///   (desktop `connectors::connector_cli`, and `connectors logout` in this
+///   binary) call `mark_degraded` with the "已断开授权…" reason on every logout,
+///   which makes it by far the common cause; the fix is re-authorizing;
+/// - a legacy binary that fails its SHA-256 check against the lock table
+///   (`store::legacy_cli_records`, a one-off first-boot import path); the fix
+///   is re-downloading.
+/// Collapsing both onto `cli_assets_mismatch` sent an operator who had merely
+/// logged out off to re-download a binary — the exact misdirection the reason
+/// code exists to prevent.
 #[test]
-fn readiness_reports_a_degraded_cli_record_as_asset_damage() {
+fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("readiness-degraded");
-    seed_bundle_record(
-        home.path(),
-        r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"binary sha mismatch"}"#,
-    );
 
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let feishu = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "feishu")
-        .expect("feishu row");
-    assert_eq!(feishu["installed"], serde_json::json!(true));
-    assert_eq!(feishu["ready"], serde_json::json!(false));
-    assert_eq!(feishu["reason"], serde_json::json!("cli_assets_mismatch"));
-    assert_ne!(
-        feishu["reason"],
-        serde_json::json!("not_connected"),
-        "asset damage must not be reported as a login problem"
-    );
-    assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+    // Cause 1: the routine disconnect reason both writers store verbatim.
+    {
+        let home = SandboxHome::new("readiness-disconnected");
+        seed_bundle_record(
+            home.path(),
+            r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"已断开授权：配套技能已随断开移除，重新连接即可恢复"}"#,
+        );
+        let value = run_json(&["pinvoy", "plugins", "readiness"]);
+        let rows = value["bundles"].as_array().expect("bundles array");
+        let feishu = rows
+            .iter()
+            .find(|row| row["bundle_id"] == "feishu")
+            .expect("feishu row");
+        assert_eq!(feishu["installed"], serde_json::json!(true));
+        assert_eq!(feishu["ready"], serde_json::json!(false));
+        assert_eq!(
+            feishu["reason"],
+            serde_json::json!("cli_disconnected"),
+            "a logged-out connector must not be reported as a damaged binary"
+        );
+        assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+    }
+
+    // Cause 2: the legacy asset check.
+    {
+        let home = SandboxHome::new("readiness-degraded");
+        seed_bundle_record(
+            home.path(),
+            r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"CLI 二进制 SHA-256 与 lock 表不符，待重新下载"}"#,
+        );
+        let value = run_json(&["pinvoy", "plugins", "readiness"]);
+        let rows = value["bundles"].as_array().expect("bundles array");
+        let feishu = rows
+            .iter()
+            .find(|row| row["bundle_id"] == "feishu")
+            .expect("feishu row");
+        assert_eq!(feishu["ready"], serde_json::json!(false));
+        assert_eq!(feishu["reason"], serde_json::json!("cli_assets_mismatch"));
+        assert_ne!(
+            feishu["reason"],
+            serde_json::json!("not_connected"),
+            "asset damage must not borrow the desktop's live-probe verdict either"
+        );
+        assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+    }
 }
 
 /// Execution-level readiness for a healthy, installed CLI record — the case
@@ -1561,13 +1593,15 @@ fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
 
 /// Execution-level readiness for a degraded NON-CLI package. `degraded` means
 /// the package is registered but its resources are missing, which is true
-/// regardless of kind — so an MCP package gets the same verdict a skill
-/// package does (the earlier implementation only demoted skills and left a
-/// degraded MCP `ready: true`). This verdict is shared with the desktop's
-/// `bundle_readiness`, so it is a GUI-visible change; see the rationale in
-/// `features/marketplace/bundle.rs::readiness_for`.
+/// regardless of kind, so every non-CLI kind is demoted the same way.
+///
+/// The demotion is derived in the CLI's own row builder, NOT in
+/// `readiness_for`: the desktop readiness card consumes that function verbatim
+/// through `bundle_readiness`'s `_` arm, so demoting there would have flipped a
+/// GUI card nobody asked to change. `bundle.rs`'s unit test pins the app-side
+/// verdict as unchanged (`Ready`); this one pins the headless verdict.
 #[test]
-fn readiness_reports_a_degraded_package_as_assets_missing() {
+fn readiness_derives_assets_missing_for_a_degraded_package() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("readiness-degraded-pkg");
     seed_bundle_record(
@@ -1591,4 +1625,179 @@ fn readiness_reports_a_degraded_package_as_assets_missing() {
     assert_eq!(canva["reason"], serde_json::json!("assets_missing"));
     // Fully decided from registry state: no live probe is involved.
     assert_eq!(canva["probe"], serde_json::json!("registry"));
+}
+
+/// `tools auth` is a status READ: a damaged `mcp.json` must not turn it into
+/// exit 1. The GUI's `get_marketplace_tool_auth_status` logs the read/parse
+/// failure and continues with `mcp_configured = false`, which lands on
+/// `auth_pending` for an installed OAuth tool; the CLI used to propagate the
+/// parse error and exit 1 instead.
+///
+/// The second half pins the typing decision: the GUI deserializes the file
+/// into a typed `McpConfig`, so a server entry that is structurally present
+/// but carries a wrong field type makes the whole parse fail there. An untyped
+/// `servers[name]` presence check reported `mcp_configured: true` for exactly
+/// those files.
+#[test]
+fn tools_auth_degrades_on_a_damaged_mcp_json() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("tools-auth-corrupt-mcp");
+    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    let mcp = home.path().join("bundle").join("mcp.json");
+    assert!(mcp.is_file(), "installing qcc should write mcp.json");
+
+    // Unparseable bytes: degrade, do not fail.
+    std::fs::write(&mcp, "{ this is not json").unwrap();
+    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    assert_eq!(value["installed"], serde_json::json!(true));
+    assert_eq!(
+        value["mcp_configured"],
+        serde_json::json!(false),
+        "an unreadable MCP config must read as not configured, like the GUI"
+    );
+    assert_eq!(value["status"], serde_json::json!("auth_pending"));
+
+    // Structurally present, type-invalid entry: `args` must be a string list.
+    std::fs::write(
+        &mcp,
+        r#"{"servers":{"qcc-company":{"url":"https://example.invalid","args":"not-a-list"}}}"#,
+    )
+    .unwrap();
+    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    assert_eq!(
+        value["mcp_configured"],
+        serde_json::json!(false),
+        "a server entry the GUI's typed parse rejects must not read as configured"
+    );
+    assert_eq!(value["status"], serde_json::json!("auth_pending"));
+
+    // The same entry with the declared types parses on both surfaces.
+    std::fs::write(
+        &mcp,
+        r#"{"servers":{"qcc-company":{"url":"https://example.invalid","args":[]}}}"#,
+    )
+    .unwrap();
+    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    assert_eq!(value["mcp_configured"], serde_json::json!(true));
+    assert_eq!(
+        value["status"],
+        serde_json::json!("config_installed_auth_pending")
+    );
+}
+
+/// The degradation above is scoped to the status read. `oauth-login` is about
+/// to ACT on the config, and its GUI counterpart
+/// (`start_marketplace_tool_oauth_login`) propagates the parse failure, so the
+/// CLI keeps the strict reader there.
+#[test]
+fn oauth_login_propagates_a_damaged_mcp_json() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("oauth-login-corrupt-mcp");
+    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    std::fs::write(home.path().join("bundle").join("mcp.json"), "{ nope").unwrap();
+
+    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "oauth-login", "qcc"]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("mcp.json"),
+        "the acting command must name the unusable config: {message}"
+    );
+}
+
+/// The stored display name must be the one the GUI would store for the same
+/// file: `sanitize_display_name` drops `/` and `\` and caps at 128 CHARS. The
+/// CLI additionally drops zero-width/bidi code points, which only ever removes
+/// characters, so the two surfaces stay convergent. Without the cap the same
+/// file imported from the two surfaces got two different names in
+/// `bundles.json` (the CLI's was unbounded).
+#[test]
+fn import_display_name_matches_the_gui_sanitizer() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-display-name");
+
+    // 60 + 80 significant chars once the ZWSP and the backslash are dropped,
+    // i.e. 140 > 128: the cap has to bite. A backslash is a legal file-name
+    // character on unix, so both filter rules are exercised from one name.
+    let raw = format!("{}\u{200B}\\{}.md", "a".repeat(60), "b".repeat(80));
+    let file = home.path().join(&raw);
+    std::fs::write(&file, "---\nname: long-name-skill\n---\nbody").unwrap();
+    run_ok(&["pinvoy", "plugins", "import", file.to_str().unwrap()]);
+
+    let bundles: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
+    )
+    .unwrap();
+    let record = bundles["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == "long-name-skill")
+        .expect("bundle record for the imported skill");
+    let expected = format!("upload:{}{}", "a".repeat(60), "b".repeat(68));
+    assert_eq!(
+        record["source"],
+        serde_json::json!(expected),
+        "the stored display name must be sanitized and capped at 128 chars"
+    );
+}
+
+/// `wrap_markdown_skill` PREPENDS a frontmatter block, so the bytes that go
+/// into the package are larger than the SKILL.md the walk charged. Pushing the
+/// wrapper in without re-charging let a directory sitting exactly on
+/// `MAX_PLUGIN_SIZE_BYTES` ship a package over it by the frontmatter's size.
+/// The fixture lands exactly on the limit before wrapping (the walk's own
+/// check is `>`), so only the re-charge can reject it.
+#[test]
+fn import_charges_the_wrapped_skill_md_against_the_limit() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-wrapped-charge");
+    let dir = home.path().join("wrapped-charge");
+    std::fs::create_dir_all(&dir).unwrap();
+    // No frontmatter name, so the wrapper runs.
+    let body = "body without a frontmatter name";
+    std::fs::write(dir.join("SKILL.md"), body).unwrap();
+    write_sparse(
+        &dir.join("a.bin"),
+        import_package_limit() - body.len() as u64,
+    );
+
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("exceeds the 200 MiB import limit"),
+        "the injected frontmatter must be charged against the budget: {message}"
+    );
+}
+
+/// `--scope both` is two single-scope writes and the storage layer offers no
+/// two-scope transaction, so the payload names the scopes that actually
+/// landed instead of implying an all-or-nothing apply. The human line also
+/// carries the hot-refresh caveat: the GUI runs `hot_refresh` after a scope
+/// change, the CLI hosts no engine pool, so a desktop app running alongside
+/// keeps its live engines on the previous whitelist.
+#[test]
+fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("scope-reporting");
+
+    let value = run_json(&["pinvoy", "plugins", "disable", "weather", "--scope", "both"]);
+    assert_eq!(
+        value["scopes_applied"],
+        serde_json::json!(["plain", "code"]),
+        "both scopes landed, in write order"
+    );
+    assert_eq!(value["persistence_verified"], serde_json::json!(true));
+
+    let value = run_json(&["pinvoy", "plugins", "enable", "weather", "--scope", "code"]);
+    assert_eq!(
+        value["scopes_applied"],
+        serde_json::json!(["code"]),
+        "a single-scope run reports only that scope"
+    );
+
+    let stdout = run_ok(&["pinvoy", "plugins", "enable", "weather", "--scope", "plain"]);
+    assert!(
+        stdout.contains("no hot-refresh broadcast"),
+        "the toggle must disclose that live engines keep the stale whitelist: {stdout}"
+    );
 }
