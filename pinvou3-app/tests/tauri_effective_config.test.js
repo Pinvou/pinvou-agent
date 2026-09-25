@@ -393,7 +393,19 @@ assert.doesNotMatch(
   "release build must not rely on a globally installed Vite binary",
 );
 assert.match(linux.build.beforeBundleCommand, /require-wrapper\.js bundle/);
-assert.equal(linux.bundle.resources["resources/platforms/linux/asr/"], "runtime/asr");
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/asr/pinvou3-asr-shim.py"],
+  "runtime/asr/pinvou3-asr-shim.py",
+);
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/asr/LICENSE-SenseVoice.cpp"],
+  "runtime/asr/LICENSE-SenseVoice.cpp",
+);
+assert.equal(
+  linux.bundle.resources["resources/platforms/linux/asr/"],
+  undefined,
+  "the shared Linux overlay must not package the whole asr/ directory",
+);
 assert.equal(
   linux.bundle.resources["resources/platforms/linux/knowledge-host/"],
   "runtime/knowledge-host",
