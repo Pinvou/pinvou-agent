@@ -673,6 +673,26 @@ function tick() {
   return new Promise(function (resolve) { setImmediate(resolve); });
 }
 
+function createAnimationFrameClock() {
+  let nextId = 0;
+  const callbacks = new Map();
+  return {
+    request: function (callback) {
+      nextId += 1;
+      callbacks.set(nextId, callback);
+      return nextId;
+    },
+    cancel: function (id) { callbacks.delete(id); },
+    pending: function () { return callbacks.size; },
+    flush: function () {
+      const batch = [...callbacks.values()];
+      callbacks.clear();
+      batch.forEach(function (callback) { callback(Date.now()); });
+    },
+  };
+}
+
+
 // Stalled-promise guard (self-review P1-5 / re-review #5): event-driven tests
 // that await a guarded race (pre-registered chat:done listener / generation
 // matching) hang forever once that regression fires — the harness's fake
@@ -827,6 +847,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     location: { search: "" },
     atob: function (value) { return Buffer.from(String(value), "base64").toString("binary"); },
     btoa: function (value) { return Buffer.from(String(value), "binary").toString("base64"); },
+    requestAnimationFrame: runtimeOptions.requestAnimationFrame,
+    cancelAnimationFrame: runtimeOptions.cancelAnimationFrame,
   };
   if (bridgeKind === "web") {
     window.PinvouPlatform = {
@@ -897,6 +919,8 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
     state: {
       get: function () { return rawBridge.getState(); },
       getMany: function () { return rawBridge.getState(); },
+      subscribe: function (_domain, callback) { return rawBridge.subscribe(callback); },
+      subscribeMany: function (_domains, callback) { return rawBridge.subscribe(callback); },
     },
   } : {
     // Flat facade plus the feature methods that are no longer assembled onto
@@ -1300,10 +1324,15 @@ async function persistentSubscriptionSnapshotsRejectUnsupportedValues() {
   await rejects(cyclic, /must not contain cycles/);
 }
 
-async function longSessionStreamingAvoidsPerDeltaDeepClone() {
-  const harness = createBridgeHarness();
+async function longSessionStreamingCoalescesNotifications(bridgeKind) {
+  const frameClock = createAnimationFrameClock();
+  const harness = createBridgeHarness(null, {
+    bridgeKind,
+    requestAnimationFrame: frameClock.request,
+    cancelAnimationFrame: frameClock.cancel,
+  });
   const bridge = harness.bridge;
-  const sessionId = "chat-long-stream";
+  const sessionId = "chat-long-stream-" + bridgeKind;
   const messages = [
     {
       role: "assistant",
@@ -1334,16 +1363,12 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   };
   assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
 
-  let updates = 0;
-  let secondSubscriberUpdates = 0;
   const snapshots = [];
   const secondSubscriberSnapshots = [];
   const unsubscribe = bridge.state.subscribeMany(["sessions", "chat"], function (snapshot) {
-    updates += 1;
     snapshots.push(snapshot);
   });
   const unsubscribeSecond = bridge.state.subscribe("chat", function (snapshot) {
-    secondSubscriberUpdates += 1;
     secondSubscriberSnapshots.push(snapshot);
   });
   const cloneCallsBeforeStream = harness.getStructuredCloneCalls();
@@ -1354,51 +1379,56 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   const firstDeltaItem = firstDeltaSnapshot.chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
   }).pop();
-  assert.strictEqual(firstDeltaItem.text, "abcd", "the first delta snapshot should capture its own text");
-  assert.ok(Object.isFrozen(firstDeltaItem), "nested subscription items should be immutable");
+  assert.strictEqual(firstDeltaItem.text, "abcd", bridgeKind + ": first delta must publish synchronously");
+  assert.ok(Object.isFrozen(firstDeltaItem), bridgeKind + ": nested subscription items should be immutable");
   assert.strictEqual(Reflect.set(firstDeltaItem, "text", "subscriber-only"), false,
-    "a subscriber must not mutate a nested item");
+    bridgeKind + ": a subscriber must not mutate a nested item");
   assert.strictEqual(secondSubscriberSnapshots[1].chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
-  }).pop().text, "abcd", "one subscriber must not affect a second subscriber");
+  }).pop().text, "abcd", bridgeKind + ": subscribers must share immutable content");
   assert.strictEqual(bridge.state.get("chat").chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
-  }).pop().text, "abcd", "one subscriber must not affect bridge state");
+  }).pop().text, "abcd", bridgeKind + ": subscription mutation must not affect bridge state");
   assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsBeforeStream + 1,
-    "the explicit state.get isolation check should retain its defensive deep copy");
+    bridgeKind + ": explicit state.get must retain its defensive deep copy");
   const cloneCallsAfterDefensiveRead = harness.getStructuredCloneCalls();
 
   harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
-  assert.strictEqual(firstDeltaItem.text, "abcd", "an older subscription snapshot must remain stable");
+  assert.strictEqual(firstDeltaItem.text, "abcd", bridgeKind + ": an older snapshot must remain stable");
+  assert.strictEqual(snapshots.length, 2, bridgeKind + ": a second delta in the frame must be coalesced");
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": one paint callback should be pending");
+  frameClock.flush();
+  assert.strictEqual(snapshots.length, 3, bridgeKind + ": the frame must publish one accumulated snapshot");
   assert.strictEqual(snapshots[2].chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
-  }).pop().text, "abcdabcd", "the next snapshot should observe the next delta");
+  }).pop().text, "abcdabcd", bridgeKind + ": the frame snapshot must contain every character");
 
+  const loopStarted = process.hrtime.bigint();
   for (let delta = 2; delta < 1000; delta++) {
     harness.emit("chat:delta", { session_id: sessionId, text: "abcd" });
   }
-  await tick();
+  const loopElapsedMs = Number(process.hrtime.bigint() - loopStarted) / 1e6;
+  assert.strictEqual(snapshots.length, 3, bridgeKind + ": one frame must not publish intermediate deltas");
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": a burst must keep one frame callback");
+  frameClock.flush();
 
-  // Throttle contract (perf/memory-footprint-optimization): every delta
-  // still notifies immediately (the floor of 1001 preserves the original
-  // regression direction "streaming boundaries and deltas are immediately
-  // observable"); on top of that, the chat:delta streaming markdown
-  // trailing-edge throttle timer (~180ms) may insert a few extra render
-  // snapshots during a long stream (≤ duration/180ms) — expected, not
-  // dropped coalescing.
-  assert.ok(updates >= 1001, "stream boundaries and deltas should remain immediately observable");
-  assert.ok(secondSubscriberUpdates >= 1001,
-    "all subscribers should receive one immediate update per stream boundary and delta");
-  assert.ok(snapshots.length >= 1001, "the regression must retain every persistent snapshot");
-  assert.ok(secondSubscriberSnapshots.length >= 1001,
-    "the second subscriber must retain every same-round snapshot for identity checks");
-  assert.strictEqual(
-    harness.getStructuredCloneCalls(),
-    cloneCallsAfterDefensiveRead,
-    "a long transcript must not be deep-cloned for each streamed delta"
-  );
+  assert.strictEqual(snapshots.length, 4, bridgeKind + ": 998 deltas must collapse into one frame snapshot");
+  assert.strictEqual(secondSubscriberSnapshots.length, 4,
+    bridgeKind + ": subscribers must observe identical publication rounds");
+  assert.ok(loopElapsedMs < 500,
+    bridgeKind + ": the 998-delta notification loop should stay below the acceptance ceiling, got " + loopElapsedMs.toFixed(1) + "ms");
+  if (process.env.PINVOU_STREAM_PERF_REPORT === "1") {
+    console.log(JSON.stringify({
+      bridge: bridgeKind,
+      measuredDeltas: 998,
+      subscribers: 2,
+      notificationRounds: snapshots.length - 1,
+      deltaLoopMs: loopElapsedMs,
+    }));
+  }
+  assert.strictEqual(harness.getStructuredCloneCalls(), cloneCallsAfterDefensiveRead,
+    bridgeKind + ": streaming subscriptions must not defensively deep-clone history");
 
-  const representativeFrames = [0, 1, 499, 500, 999, 1000];
   const stableMessages = snapshots[0].messages;
   const stableHistoryMessage = stableMessages[0];
   const stableHistoryContent = stableHistoryMessage.content;
@@ -1406,32 +1436,21 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   const stableToolItem = snapshots[0].chatItems.find(function (item) {
     return item.type === "tool" && item.toolId === "tool-stable-history";
   });
-  assert.ok(stableToolItem, "the fixture should expose a historical tool chat item");
-  assert.strictEqual(stableToolItem.args.options.environment.MODE, "test");
-  representativeFrames.forEach(function (frame) {
-    const snapshot = snapshots[frame];
+  assert.ok(stableToolItem, bridgeKind + ": fixture should expose a historical tool item");
+  snapshots.forEach(function (snapshot, frame) {
     const secondSnapshot = secondSubscriberSnapshots[frame];
     const toolItem = snapshot.chatItems.find(function (item) {
       return item.type === "tool" && item.toolId === "tool-stable-history";
     });
-    assert.strictEqual(snapshot.messages, stableMessages,
-      "unchanged history messages arrays must be shared across first/middle/last and adjacent frames");
-    assert.strictEqual(snapshot.messages[0], stableHistoryMessage,
-      "unchanged history message objects must be structurally shared");
-    assert.strictEqual(snapshot.messages[0].content, stableHistoryContent,
-      "unchanged history content arrays must be structurally shared");
-    assert.strictEqual(snapshot.messages[0].content[0], stableHistoryBlock,
-      "unchanged history content blocks must be structurally shared");
-    assert.strictEqual(toolItem, stableToolItem,
-      "unchanged historical tool chat items must be structurally shared");
-    assert.strictEqual(toolItem.args, stableToolItem.args,
-      "unchanged historical tool args must be structurally shared");
-    assert.strictEqual(toolItem.args.options.environment, stableToolItem.args.options.environment,
-      "unchanged historical tool deep subtrees must be structurally shared");
+    assert.strictEqual(snapshot.messages, stableMessages, bridgeKind + ": unchanged message arrays must be shared");
+    assert.strictEqual(snapshot.messages[0], stableHistoryMessage, bridgeKind + ": unchanged messages must be shared");
+    assert.strictEqual(snapshot.messages[0].content, stableHistoryContent, bridgeKind + ": content arrays must be shared");
+    assert.strictEqual(snapshot.messages[0].content[0], stableHistoryBlock, bridgeKind + ": blocks must be shared");
+    assert.strictEqual(toolItem, stableToolItem, bridgeKind + ": unchanged tool items must be shared");
     assert.strictEqual(secondSnapshot.messages, snapshot.messages,
-      "two subscribers in the same revision must share the messages domain subtree");
+      bridgeKind + ": same-round subscribers must share the messages subtree");
     assert.strictEqual(secondSnapshot.chatItems, snapshot.chatItems,
-      "two subscribers in the same revision must share the chatItems domain subtree");
+      bridgeKind + ": same-round subscribers must share the chatItems subtree");
   });
 
   function streamingItemAt(frame) {
@@ -1439,19 +1458,187 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
       return item.type === "assistant" && item.streaming;
     }).pop();
   }
-  for (let frame = 1; frame < snapshots.length; frame++) {
-    assert.notStrictEqual(streamingItemAt(frame - 1), streamingItemAt(frame),
-      "the changed streaming item must receive a new reference in every adjacent revision");
-  }
-  assert.strictEqual(streamingItemAt(1).text, "abcd", "the first retained delta must remain stable");
-  assert.strictEqual(streamingItemAt(500).text.length, 2000, "the middle retained delta must remain stable");
-  assert.strictEqual(streamingItemAt(1000).text.length, 4000, "the final retained delta must be complete");
-  const finalAssistant = bridge.state.get("chat").chatItems.filter(function (item) {
+  assert.strictEqual(streamingItemAt(1).text, "abcd", bridgeKind + ": first frame must remain stable");
+  assert.strictEqual(streamingItemAt(2).text, "abcdabcd", bridgeKind + ": second frame must remain stable");
+  assert.strictEqual(streamingItemAt(3).text.length, 4000, bridgeKind + ": final frame must be complete");
+  assert.strictEqual(bridge.state.get("chat").chatItems.filter(function (item) {
     return item.type === "assistant" && item.streaming;
-  }).pop();
-  assert.strictEqual(finalAssistant.text.length, 4000, "subscription snapshot optimization must not lose text");
+  }).pop().text.length, 4000, bridgeKind + ": live state must retain all text");
+
+  // A semantic boundary publishes accumulated text immediately and cancels the
+  // scheduled frame, so a later paint cannot duplicate or reorder the update.
+  harness.emit("chat:delta", { session_id: sessionId, text: "tail" });
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": tail delta should schedule a frame");
+  harness.emit("chat:reasoning_start", { session_id: sessionId, index: 0 });
+  const boundaryCount = snapshots.length;
+  assert.strictEqual(frameClock.pending(), 0, bridgeKind + ": reasoning boundary must cancel the pending frame");
+  assert.ok(snapshots.at(-1).chatItems.some(function (item) {
+    return item.type === "assistant" && item.text.length === 4004 && item.streaming === false;
+  }), bridgeKind + ": boundary snapshot must include the complete assistant tail");
+  frameClock.flush();
+  assert.strictEqual(snapshots.length, boundaryCount, bridgeKind + ": cancelled frame must not publish later");
+
+  // Tool transitions, input cards, and cancellation are user-visible semantic
+  // boundaries. Each must publish the accumulated stream synchronously and
+  // leave no delayed frame that can replay stale state.
+  harness.emit("chat:delta", { session_id: sessionId, text: "after" });
+  harness.emit("chat:delta", { session_id: sessionId, text: "-tool" });
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": pre-tool tail should be pending");
+  harness.emit("chat:tool_start", {
+    session_id: sessionId,
+    id: "stream-boundary-tool",
+    name: "read_file",
+    args: { path: "README.md" },
+  });
+  assert.strictEqual(frameClock.pending(), 0, bridgeKind + ": tool start must flush the pending stream frame");
+  assert.ok(snapshots.at(-1).chatItems.some(function (item) {
+    return item.type === "tool" && item.toolId === "stream-boundary-tool" && item.state === "running";
+  }), bridgeKind + ": tool boundary snapshot must contain the running tool card");
+  assert.ok(snapshots.at(-1).chatItems.some(function (item) {
+    return item.type === "assistant" && item.text === "after-tool" &&
+      String(item.html || "").includes("after-tool") && item.streaming === false;
+  }), bridgeKind + ": tool boundary must synchronously render the complete assistant tail");
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "after-tool" });
+  harness.emit("chat:delta", { session_id: sessionId, text: "-input" });
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": pre-input tail should be pending");
+  harness.emit("chat:user_input_required", {
+    session_id: sessionId,
+    id: "stream-boundary-input",
+    questions: [{
+      header: "Choice",
+      id: "choice",
+      question: "Continue?",
+      options: [{ label: "Yes", description: "Continue" }],
+    }],
+  });
+  assert.strictEqual(frameClock.pending(), 0, bridgeKind + ": user input must flush the pending stream frame");
+  assert.ok(snapshots.at(-1).chatItems.some(function (item) {
+    return item.type === "user_input" && item.toolCallId === "stream-boundary-input";
+  }), bridgeKind + ": input boundary snapshot must contain the active question card");
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "-cancel-tail" });
+  assert.strictEqual(frameClock.pending(), 1, bridgeKind + ": pre-cancel tail should be pending");
+  harness.emit("chat:done", { session_id: sessionId, status: "Cancelled" });
+  assert.strictEqual(frameClock.pending(), 0, bridgeKind + ": cancellation must flush the pending stream frame");
+  assert.strictEqual(bridge.state.get("chat").busy, false, bridgeKind + ": cancellation must settle busy state");
+  assert.ok(bridge.state.get("chat").chatItems.some(function (item) {
+    return item.type === "assistant" && String(item.html || "").includes("cancel-tail");
+  }), bridgeKind + ": cancellation must synchronously render the final text");
+  const cancelledBoundaryCount = snapshots.length;
+  frameClock.flush();
+  assert.strictEqual(snapshots.length, cancelledBoundaryCount,
+    bridgeKind + ": cancellation must not leave a delayed duplicate publication");
+
   unsubscribe();
   unsubscribeSecond();
+}
+
+async function streamNotificationTimerFallback(bridgeKind) {
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const bridge = harness.bridge;
+  const sessionId = "chat-stream-timer-" + bridgeKind;
+  harness.handlers.load_session = function () {
+    return { metadata: { id: sessionId, title: "Timer fallback" }, messages: [], artifacts: [] };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+  const snapshots = [];
+  const unsubscribe = bridge.state.subscribe("chat", function (snapshot) { snapshots.push(snapshot); });
+  harness.emit("chat:turn_started", { session_id: sessionId });
+  harness.emit("chat:delta", { session_id: sessionId, text: "first" });
+  harness.emit("chat:delta", { session_id: sessionId, text: "-second" });
+  assert.strictEqual(snapshots.length, 2, bridgeKind + ": second delta should wait for the fallback timer");
+  await new Promise(function (resolve) { setTimeout(resolve, 100); });
+  assert.strictEqual(snapshots.length, 3, bridgeKind + ": hidden/throttled fallback must publish once within 32ms");
+  assert.strictEqual(snapshots.at(-1).chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop().text, "first-second", bridgeKind + ": timer fallback must publish the complete text");
+  unsubscribe();
+}
+
+// Regression anchor (stream coalescing review): a background session's first stream
+// delta hit scheduleStreamNotify's immediate branch while the background
+// working set was still suppressing notifications — the delta was swallowed
+// and no fallback frame was scheduled, so a single-delta background stream
+// (worst case: reasoning_delta, which has no 180ms render trailing edge)
+// never published at all. The fix routes a suppressed first delta into the
+// coalesced frame, whose publish runs after the working set is restored.
+async function backgroundSessionFirstDeltaPublishesViaFrame(bridgeKind) {
+  const frameClock = createAnimationFrameClock();
+  const harness = createBridgeHarness(null, {
+    bridgeKind,
+    requestAnimationFrame: frameClock.request,
+    cancelAnimationFrame: frameClock.cancel,
+  });
+  const bridge = harness.bridge;
+  const activeId = "chat-bg-active-" + bridgeKind;
+  const backgroundId = "chat-bg-stream-" + bridgeKind;
+  harness.handlers.load_session = function (args) {
+    return { metadata: { id: args.id, title: "BG " + args.id }, messages: [], artifacts: [] };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(activeId), true);
+  const snapshots = [];
+  const unsubscribe = bridge.state.subscribe("chat", function (snapshot) { snapshots.push(snapshot); });
+
+  // A turn starts in a background session while another session stays visible.
+  harness.emit("chat:turn_started", { session_id: backgroundId });
+  assert.strictEqual(snapshots.length, 1,
+    bridgeKind + ": the background turn start should publish its session-list round");
+
+  // The first background delta must not publish synchronously (suppressed
+  // working set), but it must schedule the bounded frame.
+  harness.emit("chat:delta", { session_id: backgroundId, text: "bg-first-delta" });
+  assert.strictEqual(snapshots.length, 1,
+    bridgeKind + ": the first background delta must stay inside its coalescing frame");
+  await new Promise(function (resolve) { setTimeout(resolve, 100); });
+  assert.strictEqual(snapshots.length, 2,
+    bridgeKind + ": the first background delta must publish exactly once within the 32ms frame budget");
+  unsubscribe();
+
+  // The delayed publication must not lose the text: switching to the
+  // background session reveals the accumulated streaming bubble.
+  assert.strictEqual(await bridge.sessions.switchToSession(backgroundId), true);
+  const chatItems = (bridgeKind === "tauri" ? bridge.state.get("chat") : bridge.state.get()).chatItems;
+  const streamedItem = chatItems.filter(function (item) {
+    return item.type === "assistant" && item.streaming;
+  }).pop();
+  assert.ok(streamedItem, bridgeKind + ": the background stream bubble must exist after switching");
+  assert.strictEqual(streamedItem.text, "bg-first-delta",
+    bridgeKind + ": the background first delta text must survive the coalesced publication");
+}
+
+// Regression anchor (stream coalescing review): the web bridge's chat:tool_end reset
+// branches cleared currentStreamText/currentStreamId without the desktop
+// invariant "the flush must precede the stream state reset", so item.html
+// stayed at the first-delta markdown while item.text already held the whole
+// turn until (or unless) the 180ms trailing-edge render fired.
+async function webToolEndFlushesStreamHtmlBeforeReset() {
+  const harness = createBridgeHarness(null, { bridgeKind: "web" });
+  const bridge = harness.bridge;
+  const sessionId = "chat-web-tool-end-flush";
+  harness.handlers.load_session = function () {
+    return { metadata: { id: sessionId, title: "Tool end flush" }, messages: [], artifacts: [] };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+
+  harness.emit("chat:delta", { session_id: sessionId, text: "before " });
+  harness.emit("chat:delta", { session_id: sessionId, text: "tool-end-tail" });
+  // Deliberately synchronous: no awaited timer between the deltas and
+  // tool_end, so the 180ms trailing-edge render cannot preempt the flush.
+  harness.emit("chat:tool_end", {
+    session_id: sessionId,
+    id: "web-flush-tool",
+    name: "read_file",
+    output: "ok",
+    success: true,
+  });
+
+  const streamedItem = bridge.state.get().chatItems.filter(function (item) {
+    return item.type === "assistant" && item.text === "before tool-end-tail";
+  }).pop();
+  assert.ok(streamedItem, "web: the accumulated stream bubble must survive tool_end");
+  assert.ok(String(streamedItem.html || "").includes("before tool-end-tail"),
+    "web: tool_end must synchronously flush the full markdown html before the stream state reset");
 }
 
 async function olderDesktopUsesServerGeneratedSessionDownloadId() {
@@ -8653,7 +8840,13 @@ Promise.resolve()
   .then(reentrantSubscriptionNotificationsStayOrdered)
   .then(persistentSubscriptionSnapshotsPreserveJsonEdges)
   .then(persistentSubscriptionSnapshotsRejectUnsupportedValues)
-  .then(longSessionStreamingAvoidsPerDeltaDeepClone)
+  .then(function () { return longSessionStreamingCoalescesNotifications("tauri"); })
+  .then(function () { return longSessionStreamingCoalescesNotifications("web"); })
+  .then(function () { return streamNotificationTimerFallback("tauri"); })
+  .then(function () { return streamNotificationTimerFallback("web"); })
+  .then(function () { return backgroundSessionFirstDeltaPublishesViaFrame("tauri"); })
+  .then(function () { return backgroundSessionFirstDeltaPublishesViaFrame("web"); })
+  .then(function () { return webToolEndFlushesStreamHtmlBeforeReset(); })
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)

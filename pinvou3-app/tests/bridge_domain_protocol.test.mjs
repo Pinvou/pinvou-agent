@@ -180,7 +180,9 @@ const expectedProtocolHashes = {
   // Retired with the behavior telemetry client: the trackSceneBehavior helper
   // (scene_triggered track_behavior_event invoke) was removed, so the chat
   // surface is one invoke smaller.
-  chat: '9ab23d7af0a04de15a622f4efa5e544f5ce4ef7306862b7ec777189220a57ef3',
+  // Recomputed for per-frame stream notification coalescing; event names and
+  // invoke shapes remain unchanged.
+  chat: '6aedde69396efcf75942985b4bb3ad00ea726b1267df4b9d3d1953e8239f8aa0',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
