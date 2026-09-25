@@ -111,25 +111,74 @@ pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
 /// （`skill_marketplace::legacy_companion_owners`）按同一条件口径推导，
 /// 两侧不得分叉（四轮评审 M-7）。
 pub(crate) fn skill_owner_package(skill_name: &str) -> String {
-    if skill_name == "ima-skills" {
-        return "ima".to_string();
+    SkillOwnerResolver::new().owner_of(skill_name)
+}
+
+/// Batch form of [`skill_owner_package`]: reads the package manifests and the
+/// install state **once**, then answers any number of ids from that snapshot.
+///
+/// Resolving ids one at a time costs a full `available_tools()` walk
+/// (`read_dir(bundles_root)` plus a parse per manifest) and a bundle-store
+/// read **per id**, because an id that owns nothing still falls through the
+/// whole loop. The consent layer normalizes a whole stored list on every
+/// gating read, and gating reads run per turn, so the per-id form turned one
+/// small file read into O(ids x packages) filesystem work. Precedence is
+/// identical to the single-id form, including "the first manifest that claims
+/// the skill wins, and an uninstalled claimant yields the standalone form".
+pub(crate) struct SkillOwnerResolver {
+    /// Skill dir name → id of the FIRST manifest (in the sorted order
+    /// `available_tools` returns) that lists it as a companion. Whether the
+    /// claim is honored still depends on that package being installed.
+    first_claimant: std::collections::HashMap<String, String>,
+    installed: std::collections::HashSet<String>,
+}
+
+impl SkillOwnerResolver {
+    pub(crate) fn new() -> Self {
+        let manager = MarketplaceManager::new();
+        let mut first_claimant: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for tool in manager.available_tools() {
+            for skill in &tool.companion_skills {
+                first_claimant
+                    .entry(skill.clone())
+                    .or_insert_with(|| tool.id.clone());
+            }
+        }
+        // Same precedence as `bundle_installed`: the bundle store is
+        // authoritative and installed.json is the transitional fallback.
+        let installed = match super::store::BundleStore::new().records() {
+            Ok(records) => records
+                .iter()
+                .filter(|record| record.installed)
+                .map(|record| record.id.clone())
+                .collect(),
+            Err(_) => manager.installed_ids().into_iter().collect(),
+        };
+        Self {
+            first_claimant,
+            installed,
+        }
     }
-    if let Some(cli) = cli_bundle_of_skill(skill_name) {
-        return cli.to_string();
-    }
-    for tool in MarketplaceManager::new().available_tools() {
-        if tool.companion_skills.iter().any(|s| s == skill_name) {
+
+    pub(crate) fn owner_of(&self, skill_name: &str) -> String {
+        if skill_name == "ima-skills" {
+            return "ima".to_string();
+        }
+        if let Some(cli) = cli_bundle_of_skill(skill_name) {
+            return cli.to_string();
+        }
+        if let Some(claimant) = self.first_claimant.get(skill_name) {
             // V5「随包」认领：包本体已装才把技能归属到包（与 list_bundles 的认领
             // 条件一致）；未装时技能保留独立纯技能包形态（owner = 技能名自身）。
             // 保证 save 归一与物化排除跟 UI 展示的包形态对齐（二轮评审：scope
             // save 归一与 V5 条件认领冲突）。
-            if bundle_installed(&tool.id) {
-                return tool.id;
+            if self.installed.contains(claimant) {
+                return claimant.clone();
             }
-            break;
         }
+        skill_name.to_string()
     }
-    skill_name.to_string()
 }
 
 /// 包是否已安装：BundleStore 记录优先；store 不可读时回退 installed.json——
