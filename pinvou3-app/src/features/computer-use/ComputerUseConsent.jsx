@@ -231,7 +231,7 @@ export function ComputerUseDialogs({ slice, copy }) {
           aria-modal="true"
           aria-labelledby="computer-use-grant-title"
           ref={grantDialogRef}
-          className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
+          className="w-full max-w-[440px] max-h-[85vh] overflow-y-auto rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
         >
           <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
           <p className="text-[13px] leading-relaxed opacity-80 mb-4">{copy.grantDesc}</p>
@@ -282,7 +282,7 @@ export function ComputerUseDialogs({ slice, copy }) {
         aria-modal="true"
         aria-labelledby="computer-use-confirm-title"
         ref={confirmDialogRef}
-        className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
+        className="w-full max-w-[440px] max-h-[85vh] overflow-y-auto rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
       >
         <h3 id="computer-use-confirm-title" className="text-[16px] font-semibold mb-2">{copy.confirmTitle}</h3>
         <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">

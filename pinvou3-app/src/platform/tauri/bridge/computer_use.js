@@ -207,6 +207,11 @@
         if (raw) {
           state.computerUse = Object.assign({}, state.computerUse, {
             enabled: !!raw.enabled,
+            // `stopped` is a process-global flag the backend reports for an
+            // empty session id too. Dropping it here left the settings page
+            // showing the "turn it off and back on" hint on the draft screen
+            // long after a successful resume.
+            stopped: !!raw.stopped,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           });
           notify();
@@ -404,7 +409,11 @@
         await refreshStatus(state.activeSessionId);
       } else {
         // Disable wipes the backend state globally, so the pending map must
-        // go too — same phantom-dialog hazard as stop().
+        // go too — same phantom-dialog hazard as stop(). The latched stop goes
+        // with it: `set_enabled(false)` revokes everything, and leaving
+        // `stopped` set made the settings page tell a user who had just turned
+        // the toggle OFF to "turn it off and back on".
+        state.computerUse = Object.assign({}, state.computerUse, { stopped: false });
         clearAllPending();
         notify();
       }

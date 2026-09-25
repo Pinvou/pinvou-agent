@@ -1567,7 +1567,12 @@ function hasStoredCredential(record) {
       // user toggles off and back on (set_enabled's re-enable is the only
       // resume path). Without this hint the stop state is invisible in
       // settings — the safety loop's exit must be discoverable.
-      const stopped = !!computerUse.stopped;
+      //
+      // Gated on the toggle still reading ON: the hint tells the user to turn
+      // the feature off and back on, so showing it next to a switch they have
+      // already turned off asked them to redo the step they had just taken —
+      // halfway through the only recovery path the feature offers.
+      const stopped = !!computerUse.stopped && !!computerUse.enabled;
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
           <IOSRow

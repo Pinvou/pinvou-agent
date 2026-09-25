@@ -1547,15 +1547,43 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
     subscriptionSliceCache[domain] = { revision: subscriptionSliceRevision, snapshot };
     return snapshot;
   }
+  function sameSubscriptionSnapshot(previous, next) {
+    if (!previous) return false;
+    const previousKeys = Object.keys(previous);
+    const nextKeys = Object.keys(next);
+    if (previousKeys.length !== nextKeys.length) return false;
+    for (let i = 0; i < nextKeys.length; i++) {
+      const key = nextKeys[i];
+      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
+      if (!Object.prototype.hasOwnProperty.call(previous, key)) return false;
+      if (!Object.is(previous[key], next[key])) return false;
+    }
+    return true;
+  }
+  const subscriptionSlicesCache = Object.create(null);
+  // Multi-domain snapshots are revision-cached and identity-stable, exactly
+  // like the single-domain ones. Without this, a fresh frozen object was built
+  // on every call, so every `useBridgeState([...])` subscriber got a new
+  // identity on every notify() even when no watched field had changed:
+  // React's useState bail-out never fired and the subscriber re-rendered on
+  // every streaming delta. The cost scales with the number of subscribers,
+  // which turned into a per-tool-card cost once tool-renderers.jsx started
+  // subscribing for the computer-use screenshot card.
   function subscriptionStateSlices(domains) {
     if (!Array.isArray(domains) || domains.length === 0) {
       throw new Error("Tauri bridge state.subscribeMany requires at least one domain");
     }
+    const key = domains.join("\u0000");
+    const cached = subscriptionSlicesCache[key];
+    if (cached && cached.revision === subscriptionSliceRevision) return cached.snapshot;
     const result = {};
     for (let i = 0; i < domains.length; i++) {
       Object.assign(result, subscriptionStateSlice(domains[i]));
     }
-    return Object.freeze(result);
+    const previous = cached && cached.snapshot;
+    const snapshot = sameSubscriptionSnapshot(previous, result) ? previous : Object.freeze(result);
+    subscriptionSlicesCache[key] = { revision: subscriptionSliceRevision, snapshot };
+    return snapshot;
   }
   // 远端实时快照已由 transcript 事件流(chat:transcript_committed 等)承载:
   // 旧 publishRemoteLiveSnapshot 调用的 remote_control_publish_event 命令名
