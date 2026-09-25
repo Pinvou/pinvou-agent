@@ -11,6 +11,7 @@ const {
   mergeConfig,
 } = require("../scripts/tauri/effective-config.js");
 const {
+  TARGET_MACHINE_ARCHITECTURES,
   chromeDevtoolsMcpEnvironment,
   configSpecs,
   prepareCodexBridge,
@@ -181,6 +182,184 @@ assert.equal(
   "Linux 不应准备 Windows Codex Bridge",
 );
 
+// ---- Cross builds: targetArch -> PINVOU3_BRIDGE_TARGET_ARCH mapping and injection ----
+//
+// This chain is how cross builds prepare the bridge: build.js parses the Node
+// notation targetArch from `--target`, codex-bridge.js maps it to a machine
+// name in the environment, and the bridge script picks the Node distribution by
+// that word. A reversed or missing mapping never fails the build; it silently
+// prepares the wrong architecture, so every entry is pinned here.
+function capturedBridgeSpawn(options) {
+  let captured = null;
+  prepareCodexBridge({
+    ...options,
+    spawn: (command, args, spawnOptions) => {
+      captured = { command, args, options: spawnOptions };
+      return { status: 0 };
+    },
+  });
+  return captured;
+}
+
+const bridgeEnvFixture = { PINVOU_TEST_ENV: "kept" };
+const hostBridgeSpawn = capturedBridgeSpawn({
+  platform: "linux",
+  env: bridgeEnvFixture,
+});
+// Non-cross builds fall back to uname -m: the rest of the environment passes
+// through unchanged (deepEqual) but as a copy, because this path must drop a
+// leftover PINVOU3_BRIDGE_TARGET_ARCH without touching the caller's object.
+assert.deepEqual(
+  hostBridgeSpawn.options.env,
+  bridgeEnvFixture,
+  "a non-cross build must pass the environment through so the script falls back to uname -m",
+);
+assert.notEqual(
+  hostBridgeSpawn.options.env,
+  bridgeEnvFixture,
+  "the environment must be passed as a copy, never the caller's object",
+);
+assert.equal(
+  hostBridgeSpawn.options.env.PINVOU3_BRIDGE_TARGET_ARCH,
+  undefined,
+  "without targetArch no target architecture may be injected",
+);
+
+const injectedBridgeMachines = new Set();
+for (const [targetArch, machine] of [
+  ["arm64", "aarch64"],
+  ["x64", "x86_64"],
+]) {
+  for (const platform of ["linux", "darwin"]) {
+    const crossBridgeSpawn = capturedBridgeSpawn({
+      platform,
+      targetArch,
+      env: bridgeEnvFixture,
+    });
+    assert.equal(
+      crossBridgeSpawn.options.env.PINVOU3_BRIDGE_TARGET_ARCH,
+      machine,
+      `cross building to ${targetArch} on ${platform} must inject ${machine}`,
+    );
+    assert.equal(
+      crossBridgeSpawn.options.env.PINVOU_TEST_ENV,
+      "kept",
+      "injecting the target architecture must keep the rest of the environment",
+    );
+    injectedBridgeMachines.add(crossBridgeSpawn.options.env.PINVOU3_BRIDGE_TARGET_ARCH);
+  }
+}
+assert.equal(
+  bridgeEnvFixture.PINVOU3_BRIDGE_TARGET_ARCH,
+  undefined,
+  "injection must copy the environment, never mutate the caller's env",
+);
+// An arch the machine map does not know falls back to host behavior: the rest
+// of the environment passes through (as a copy), and a leftover
+// PINVOU3_BRIDGE_TARGET_ARCH from the caller's shell must be dropped. That
+// variable is the script's manual switch; passing a leftover value through
+// would prepare another architecture's Node for a non-cross build while the
+// overlay still follows process.arch. The counter-example is loongarch64, a
+// segment unlikely to ever be supported (riscv64 might, and would break this).
+const leftoverBridgeEnv = { ...bridgeEnvFixture, PINVOU3_BRIDGE_TARGET_ARCH: "x86_64" };
+const fallbackBridgeEnv = capturedBridgeSpawn({
+  platform: "linux",
+  targetArch: "loongarch64",
+  env: leftoverBridgeEnv,
+}).options.env;
+assert.deepEqual(
+  fallbackBridgeEnv,
+  bridgeEnvFixture,
+  "the fallback passes the rest through and must drop a leftover PINVOU3_BRIDGE_TARGET_ARCH",
+);
+assert.notEqual(
+  fallbackBridgeEnv,
+  leftoverBridgeEnv,
+  "the fallback must also copy the environment",
+);
+assert.equal(
+  leftoverBridgeEnv.PINVOU3_BRIDGE_TARGET_ARCH,
+  "x86_64",
+  "the leftover belongs to the caller: only the copy may be cleaned",
+);
+
+// Every injected word must be in the bridge script's target list, on both OSes.
+//
+// This pins the Darwin alias: triples spell macOS arm64 as aarch64
+// (aarch64-apple-darwin) while macOS `uname -m` reports arm64. A script that
+// only accepted `Darwin-arm64` would fail a manual single-architecture build on
+// a darwin host; CI only uses universal-apple-darwin (nothing injected), so no
+// other test would notice.
+const bridgeScriptSource = fs.readFileSync(
+  path.join(__dirname, "..", "scripts", "prepare-codex-bridge-runtime.sh"),
+  "utf8",
+);
+const bridgeTargetDispatch = bridgeScriptSource.match(
+  /case "\$OS_NAME-\$TARGET_MACHINE" in([\s\S]*?)\nesac/u,
+)?.[1];
+assert.ok(
+  bridgeTargetDispatch,
+  "the bridge script must keep its $OS_NAME-$TARGET_MACHINE target dispatch",
+);
+const acceptedBridgeTargets = new Set(
+  (bridgeTargetDispatch.match(/^[ \t]*[A-Za-z0-9_|-]+\)/gmu) ?? []).flatMap((label) =>
+    label.trim().slice(0, -1).split("|"),
+  ),
+);
+for (const machine of injectedBridgeMachines) {
+  for (const osName of ["Linux", "Darwin"]) {
+    assert.ok(
+      acceptedBridgeTargets.has(`${osName}-${machine}`),
+      `the bridge script must accept ${osName}-${machine}, or cross builds fall into *)`,
+    );
+  }
+}
+
+// Adding an architecture must extend build.js's table and codex-bridge.js's
+// machine map together.
+//
+// The loop above hard-codes arm64->aarch64 / x64->x86_64 and pins the values;
+// adding loongarch64 to TARGET_MACHINE_ARCHITECTURES without touching the
+// machine map would keep it green. That is the hole: machine becomes
+// undefined, nothing is injected, the script falls back to `uname -m` and the
+// package ships a host-architecture bridge Node with no error. So both sides
+// are derived from the sources here: every Node arch the table can produce,
+// whether prepareCodexBridge really injects something for it, and whether the
+// injected word is in the script's target list.
+for (const targetArch of new Set(Object.values(TARGET_MACHINE_ARCHITECTURES))) {
+  const injected = capturedBridgeSpawn({
+    platform: "linux",
+    targetArch,
+    env: bridgeEnvFixture,
+  }).options.env.PINVOU3_BRIDGE_TARGET_ARCH;
+  assert.ok(
+    injected,
+    `build.js TARGET_MACHINE_ARCHITECTURES can produce ${targetArch}, but the machine map in`
+      + " codex-bridge.js lacks it: cross builds would silently prepare a host-architecture"
+      + " Node. Both tables must change together.",
+  );
+  for (const osName of ["Linux", "Darwin"]) {
+    assert.ok(
+      acceptedBridgeTargets.has(`${osName}-${injected}`),
+      `${targetArch} injects ${injected}, which the bridge script does not accept on ${osName};`
+        + " cross builds would fall into *)",
+    );
+  }
+}
+
+// One more derived link: every target architecture build.js can produce must
+// have a Linux architecture overlay in platform-config.js. Otherwise
+// platformArchitectureConfigPath returns null and prepareTauriArgs silently
+// skips the whole architecture overlay - only this assertion would notice.
+for (const targetArch of new Set(Object.values(TARGET_MACHINE_ARCHITECTURES))) {
+  assert.ok(
+    platformArchitectureConfigPath("linux", targetArch) !== null,
+    `build.js TARGET_MACHINE_ARCHITECTURES can produce ${targetArch}, but platform-config.js`
+      + " has no Linux architecture overlay for it: the overlay would be skipped silently."
+      + " Both tables must change together.",
+  );
+}
+
 assert.throws(() => requireWrapper({}), /禁止绕过平台 overlay/);
 assert.doesNotThrow(() => requireWrapper({ [WRAPPER_ENV]: "1" }));
 
@@ -300,6 +479,27 @@ assert.match(
   buildSource,
   /if \(isDev\)[\s\S]*?prepareWindowsCodexBridge\(\)/,
   "Windows dev must prepare the ACP Bridge without packaging overlays",
+);
+// Pin the order, not the exact line: preparation must happen before the
+// resource manifest is written, or the bundle fails with a missing resource.
+assert.ok(
+  buildSource.includes("prepareLinuxAsrRuntime()"),
+  "Linux packaging must still prepare the SenseVoice runtime",
+);
+assert.ok(
+  buildSource.indexOf("prepareLinuxAsrRuntime()") < buildSource.indexOf("writeEffectiveArtifacts("),
+  "Linux packaging must prepare the architecture-specific SenseVoice runtime before manifest generation",
+);
+// Cross builds must be able to skip ASR (SenseVoice only builds natively).
+assert.match(buildSource, /skipLinuxAsr/u, "the ASR step must stay skippable for cross builds");
+// The mapping tests above prove that a given targetArch injects the right
+// word; this pins the other end of the wiring: the parsed target architecture
+// is handed to the bridge preparation. Loose on purpose (targetArch anywhere in
+// the call) so equivalent refactors pass while a broken chain fails.
+assert.match(
+  buildSource,
+  /prepareCodexBridge\([^)]*targetArch/u,
+  "the bridge must be prepared for the parsed target architecture, or cross builds silently package a host-architecture Node",
 );
 const preparedBrowserPlatforms = [];
 for (const platform of ["win32", "darwin", "linux"]) {

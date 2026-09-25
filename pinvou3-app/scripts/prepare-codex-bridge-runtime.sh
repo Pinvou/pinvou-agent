@@ -35,6 +35,27 @@ CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
 CLAUDE_SDK_VERSION="0.3.232"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
+# Print one string field of manifest.json on stdout.
+#
+# The exit status only distinguishes "file missing or empty" (returns 1, prints
+# nothing). A present file without the key still returns 0 with empty output,
+# because sed simply finds no match, so callers always compare the output
+# (`[ "$(manifest_field ...)" = "$X" ]`) instead of relying on the status.
+#
+# Two passes and no back-reference: strip everything up to `"<key>": "`, then
+# everything from the closing quote. Back-references through nested quotes are
+# easy to get wrong, and a wrong one silently yields an empty string - every
+# comparison would then fail and the bridge would be rebuilt on every run
+# without anyone noticing.
+manifest_field() {
+  local manifest="$1"
+  local key="$2"
+  [ -s "$manifest" ] || return 1
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"//p" "$manifest" \
+    | head -n 1 \
+    | sed 's/".*//'
+}
+
 bridge_runtime_valid() {
   local root="$1"
   local node
@@ -50,6 +71,22 @@ bridge_runtime_valid() {
   local claude_package_json="$root/acp/node_modules/@agentclientprotocol/claude-agent-acp/package.json"
   local npm_cli="$root/node/lib/node_modules/npm/bin/npm-cli.js"
   local version_output
+
+  # An existing runtime must match the target architecture.
+  #
+  # Without this, a host build (x64 node in staging) followed by a cross build
+  # passes the execution checks below (x64 node runs on an x64 host), prints
+  # "already ready" and ships an x64 node inside the arm64 package - the same
+  # bug through another path.
+  #
+  # The manifest already records the arch (see the manifest generation at the
+  # end of this file), so no separate marker file is added. Darwin packages a
+  # universal runtime (both architectures) and is not compared. An unreadable
+  # manifest or mismatching field counts as invalid: rebuilding once more beats
+  # trusting a runtime of unknown origin.
+  if [ -n "${NODE_CPU:-}" ] && [ "$OS_NAME" != "Darwin" ]; then
+    [ "$(manifest_field "$root/manifest.json" arch)" = "$NODE_CPU" ] || return 1
+  fi
   case "$OS_NAME-$(uname -m)" in
     Linux-x86_64|Linux-aarch64|Linux-arm64)
       node="$root/node/bin/node"
@@ -70,26 +107,110 @@ bridge_runtime_valid() {
       return 1
       ;;
   esac
+
   [ -x "$node" ] && [ -s "$npm_cli" ] && [ -s "$entry" ] && [ -s "$package_json" ] \
     && [ -s "$claude_entry" ] && [ -s "$claude_package_json" ] || return 1
+
+  # The two checks below run plain JavaScript (the ACP package's --version and
+  # reading package.json), so any interpreter works, but it must execute on
+  # this machine:
+  # - the host Node is already unpacked (the two calls after the download):
+  #   use it;
+  # - not unpacked yet but not a cross build: the packaged Node is the host
+  #   architecture and runs (on macOS the universal case above already picked
+  #   the host slice);
+  # - not unpacked yet and cross (the fast-path call at the start): the
+  #   packaged Node targets another architecture and would fail with ENOEXEC,
+  #   so leave the runner empty and take the non-executing path below.
+  local runner=""
+  if [ -n "${NPM_NODE_ROOT:-}" ] && [ -x "$NPM_NODE_ROOT/bin/node" ]; then
+    runner="$NPM_NODE_ROOT/bin/node"
+  elif [ "$OS_NAME" = "Darwin" ] || [ "${NODE_TARGET:-}" = "${HOST_NODE_TARGET:-}" ]; then
+    runner="$node"
+  fi
+
+  if [ -z "$runner" ]; then
+    # Cross-build fast path: compare the versions recorded in the manifest with
+    # the script constants instead of executing anything. Previously this fell
+    # back to the target-architecture node, `--version` failed with ENOEXEC,
+    # and "already ready" was dead code for cross builds, so every repeated
+    # local cross build paid for two tarballs, sha256 checks and `npm ci`.
+    #
+    # This cannot mistake a broken runtime for a ready one: manifest.json is
+    # written last - after `npm ci` and pruning, then a full executing
+    # validation, then node / acp / manifest are moved into OUT_DIR, with the
+    # manifest as the last of the three moves. A manifest with matching
+    # versions in OUT_DIR therefore proves that the runtime passed the
+    # executing validation and that all three moves completed.
+    #
+    # All three versions (Node and both ACP packages) are compared, so bumping
+    # any single one invalidates the old staging. The proof only covers the
+    # build sequence: files changed in OUT_DIR between two builds (corrupt but
+    # still non-empty) are not detected; the executing validation runs fully
+    # only right after preparation.
+    [ "$(manifest_field "$root/manifest.json" node_version)" = "$NODE_VERSION" ] \
+      || return 1
+    [ "$(manifest_field "$root/manifest.json" codex_acp_version)" = "$CODEX_ACP_VERSION" ] \
+      || return 1
+    [ "$(manifest_field "$root/manifest.json" claude_acp_version)" = "$CLAUDE_ACP_VERSION" ] \
+      || return 1
+    return 0
+  fi
+
   version_output="$(
     env CODEX_PATH="$(command -v codex || true)" \
-      "$node" "$entry" --version 2>/dev/null
+      "$runner" "$entry" --version 2>/dev/null
   )" || return 1
   [ "$version_output" = "$CODEX_ACP_PACKAGE $CODEX_ACP_VERSION" ] || return 1
   local claude_version
   claude_version="$(
-    "$node" -e 'process.stdout.write(require(process.argv[1]).version)' "$claude_package_json"
+    "$runner" -e 'process.stdout.write(require(process.argv[1]).version)' "$claude_package_json"
   )" || return 1
   [ "$claude_version" = "$CLAUDE_ACP_VERSION" ]
 }
 
-if bridge_runtime_valid "$OUT_DIR"; then
-  echo "Codex ACP Bridge already ready: $OUT_DIR"
-  exit 0
-fi
+# ---- Target architecture vs host architecture ----
+#
+# They differ in cross builds, and the bridge must package the target
+# architecture's Node. The script used to look only at `uname -m`, so an arm64
+# package cross-built on an x64 host carried an x86_64 node that failed with
+# ENOEXEC on first use, with no warning during the build.
+#
+# Unlike SenseVoice, the bridge can be prepared for another architecture: it
+# compiles nothing, it only downloads, verifies and unpacks an official Node
+# tarball. The one obstacle is that `npm ci` must run on a Node that executes
+# on the host, so cross builds download two: the host one runs npm, the target
+# one is packaged. npm already receives `--os/--cpu/--libc` (npm_ci_for_target
+# below), so resolving dependencies for the target platform is built in.
+#
+# The macOS branch already downloads two Node builds (darwin-arm64 and
+# darwin-x64) and packages both, so "download several, run one" is an existing
+# pattern in this script.
+HOST_MACHINE="$(uname -m)"
+TARGET_MACHINE="${PINVOU3_BRIDGE_TARGET_ARCH:-$HOST_MACHINE}"
 
-case "$OS_NAME-$(uname -m)" in
+# Machine name -> official Node distribution target name.
+node_target_for() {
+  case "$OS_NAME-$1" in
+    Linux-x86_64) echo "linux-x64" ;;
+    Linux-aarch64|Linux-arm64) echo "linux-arm64" ;;
+    Darwin-x86_64) echo "darwin-x64" ;;
+    Darwin-arm64) echo "darwin-arm64" ;;
+    *) return 1 ;;
+  esac
+}
+
+HOST_NODE_TARGET="$(node_target_for "$HOST_MACHINE")" || {
+  echo "Unsupported Codex ACP Bridge host: $OS_NAME-$HOST_MACHINE (only x86_64 and aarch64/arm64)" >&2
+  exit 1
+}
+
+# The target vocabulary is wider than `uname -m`: PINVOU3_BRIDGE_TARGET_ARCH is
+# injected from the Rust target triple on the JS side, where macOS arm64 is
+# spelled aarch64 (aarch64-apple-darwin), while macOS `uname -m` reports arm64.
+# Both words must be accepted, or a manual single-architecture build on a darwin
+# host falls into `*)` - the same reason the Linux entry lists both.
+case "$OS_NAME-$TARGET_MACHINE" in
   Linux-x86_64)
     NODE_OS="linux"
     NODE_CPU="x64"
@@ -108,17 +229,31 @@ case "$OS_NAME-$(uname -m)" in
     NODE_TARGET="darwin-x64"
     NODE_TARGETS=("darwin-arm64" "darwin-x64")
     ;;
-  Darwin-arm64)
+  Darwin-aarch64|Darwin-arm64)
     NODE_OS="darwin"
     NODE_CPU="arm64"
     NODE_TARGET="darwin-arm64"
     NODE_TARGETS=("darwin-arm64" "darwin-x64")
     ;;
   *)
-    echo "当前 Bridge 构建脚本仅支持 Linux/macOS x64/arm64" >&2
+    echo "Unsupported Codex ACP Bridge target: $OS_NAME-$TARGET_MACHINE (only x86_64 and aarch64/arm64)" >&2
     exit 1
     ;;
 esac
+
+# Cross builds also download the host Node; it only runs npm and is not packaged.
+if [ "$HOST_NODE_TARGET" != "$NODE_TARGET" ]; then
+  case " ${NODE_TARGETS[*]} " in
+    *" $HOST_NODE_TARGET "*) ;;
+    *) NODE_TARGETS+=("$HOST_NODE_TARGET") ;;
+  esac
+  echo "[codex-bridge] cross build: target $NODE_TARGET, running npm with the host $HOST_NODE_TARGET node"
+fi
+
+if bridge_runtime_valid "$OUT_DIR"; then
+  echo "Codex ACP Bridge already ready: $OUT_DIR"
+  exit 0
+fi
 
 node_archive_ext() {
   case "$1" in
@@ -162,7 +297,10 @@ mkdir -p "$RESOURCE_PARENT"
 BUILD_DIR="$(mktemp -d "$RESOURCE_PARENT/.codex-bridge-build.XXXXXX")"
 trap 'rm -rf $DD "$BUILD_DIR"' EXIT
 
+# The Node that is packaged (target architecture).
 NODE_DIST_ROOT="$BUILD_DIR/node-v${NODE_VERSION}-${NODE_TARGET}"
+# The Node that runs npm (host architecture); the same directory unless cross building.
+NPM_NODE_ROOT="$BUILD_DIR/node-v${NODE_VERSION}-${HOST_NODE_TARGET}"
 for node_target in "${NODE_TARGETS[@]}"; do
   node_archive_ext="$(node_archive_ext "$node_target")"
   node_archive="node-v${NODE_VERSION}-${node_target}.${node_archive_ext}"
@@ -207,7 +345,11 @@ npm_ci_for_target() {
   if [ "$target_os" = "linux" ]; then
     npm_args+=(--libc=glibc)
   fi
-  PATH="$NODE_DIST_ROOT/bin:$PATH" "$NODE_DIST_ROOT/bin/npm" "${npm_args[@]}"
+  # Run npm with the host-architecture Node: the target one cannot execute
+  # here during a cross build (ENOEXEC). Dependency resolution is governed by
+  # --os/--cpu/--libc above, not by the interpreter. Outside cross builds
+  # NPM_NODE_ROOT equals NODE_DIST_ROOT, so nothing changes.
+  PATH="$NPM_NODE_ROOT/bin:$PATH" "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
 }
 
 npm_ci_for_target "$ACP_ROOT" "$NODE_OS" "$NODE_CPU"
@@ -238,12 +380,10 @@ if [ "$OS_NAME" = "Darwin" ]; then
       "$READY_DIR/node/$node_target/bin/node"
   done
   install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$READY_DIR/node/LICENSE"
-  READY_NODE="$READY_DIR/node/$NODE_TARGET/bin/node"
 else
   mkdir -p "$READY_DIR/node/bin"
   install -m 0755 "$NODE_DIST_ROOT/bin/node" "$READY_DIR/node/bin/node"
   install -m 0644 "$NODE_DIST_ROOT/LICENSE" "$READY_DIR/node/LICENSE"
-  READY_NODE="$READY_DIR/node/bin/node"
 fi
 # 连接器首次使用时由随包 Node 运行 npm；保留 Node 官方发行包自带的纯 JS npm，
 # Linux/macOS 均不再依赖用户机器预装 npm。
@@ -251,7 +391,10 @@ mkdir -p "$READY_DIR/node/lib/node_modules"
 cp -R $DD "$NODE_DIST_ROOT/lib/node_modules/npm" "$READY_DIR/node/lib/node_modules/npm"
 mv $DD "$ACP_ROOT/node_modules" "$READY_DIR/acp/node_modules"
 
-"$READY_NODE" -e '
+# Generate the manifest with the host Node (`$NPM_NODE_ROOT`), not the one just
+# installed into `$READY_DIR/node`: that is the packaged target binary and
+# cannot execute here during a cross build. The generator is plain JavaScript.
+"${NPM_NODE_ROOT}/bin/node" -e '
 const fs = require("fs");
 const path = require("path");
 const out = process.argv[1];
