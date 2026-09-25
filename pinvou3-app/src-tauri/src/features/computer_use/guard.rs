@@ -94,10 +94,12 @@ pub const T3_DENYLIST: &[&str] = &[
     "支付",
     "付款",
     "转账",
+    "转帐",
     "结算",
     "轉賬",
     "轉帳",
     "結算",
+    "购入",
     "購入",
     // Stem, not 支払い: `"支払う".contains("支払い")` is false, so the
     // inflected form on a real 支払う button used to screen Clear. 決済 is
@@ -118,11 +120,15 @@ pub const T3_DENYLIST: &[&str] = &[
     "汇款",
     "匯款",
     "捐款",
+    "捐赠",
     "捐贈",
     "投资",
     "投資",
+    "订阅",
     "訂閱",
     "subscribe",
+    "withdraw",
+    "remit",
     "donate",
     // Both spellings: the fold strips whitespace but keeps the hyphen, so
     // "Top up" folds to "topup" while "Top-up" keeps its hyphen.
@@ -131,6 +137,7 @@ pub const T3_DENYLIST: &[&str] = &[
     // Sends.
     "send",
     "发送",
+    "發送",
     "傳送",
     "送出",
     "送信",
@@ -155,6 +162,9 @@ pub const T3_DENYLIST: &[&str] = &[
     "削除",
     "格式化",
     "フォーマット",
+    // The standard Japanese "initialize / factory reset" button label; the
+    // 格式化/フォーマット pair does not cover it.
+    "初期化",
     // Form/order submission.
     "submit",
     "提交",
@@ -164,6 +174,7 @@ pub const T3_DENYLIST: &[&str] = &[
     "agree",
     "同意",
     "接受",
+    "承诺",
     "承諾",
 ];
 
@@ -177,39 +188,63 @@ pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 /// Whether `c` is invisible to the user and therefore must not separate two
 /// halves of a denylist term.
 ///
-/// Covers C0/C1 controls plus the format and default-ignorable characters a
-/// hostile label can splice into a word while rendering identically: soft
-/// hyphen, the zero-width space/joiner family, the bidi overrides and
-/// isolates, the invisible-operator block, and the byte-order mark.
+/// Covers C0/C1 controls and whitespace plus the format and default-ignorable
+/// characters a hostile label can splice into a word while rendering
+/// identically: soft hyphen, the zero-width space/joiner family, the bidi
+/// overrides and isolates, the invisible-operator block, the byte-order mark,
+/// the combining grapheme joiner, the Hangul fillers, the variation selectors
+/// (both planes), the interlinear annotation controls, the invisible musical
+/// beam controls, and the Tag block.
+///
+/// This is an enumeration of `Default_Ignorable_Code_Point` rather than a
+/// property lookup: the ranges are stable, and pulling a full property table
+/// in for one predicate is not worth the dependency. `zero_width_evasions`
+/// pins the list against the demonstrated families.
 fn is_invisible_for_matching(c: char) -> bool {
     c.is_control()
         || c.is_whitespace()
         || matches!(c,
             '\u{00AD}'
+            | '\u{034F}'
             | '\u{061C}'
-            | '\u{180E}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
+            | '\u{2065}'
             | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}')
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// Maps a character to the Latin letter it is visually indistinguishable
-/// from, so a single substituted code point cannot hide a denylist term.
+/// from.
 ///
-/// Two families, both demonstrated as evasions: fullwidth ASCII
-/// (`Ｄｅｌｅｔｅ`, which `to_lowercase` leaves as fullwidth) and the Cyrillic
-/// and Greek letters that share a glyph with Latin (`Pаy` with a Cyrillic
-/// `а`). Halfwidth katakana (U+FF61..) is deliberately outside the fullwidth
-/// range mapped here, and no CJK ideograph is touched.
+/// This covers only the **cross-script** homoglyphs, which have no Unicode
+/// compatibility decomposition and therefore survive the NFKC pass in
+/// [`fold_for_matching`]: the Cyrillic and Greek letters that share a glyph
+/// with Latin (`Pаy` with a Cyrillic `а`, `ԁelete` with a Komi de). The
+/// compatibility families — fullwidth ASCII, the Math Alphanumeric block,
+/// circled and parenthesized letters, halfwidth katakana — are NFKC's job and
+/// are deliberately absent here.
+///
+/// It is a best-effort subset, not a complete confusable table: the full
+/// relation is UTS#39's, and a determined attacker can still find a glyph pair
+/// this misses. It raises the cost of the demonstrated single-substitution
+/// evasions; it does not make them impossible.
 fn fold_confusable(c: char) -> char {
     match c {
-        // Fullwidth ASCII variants.
-        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
         // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
         // Latin; the caller lowercases afterwards either way).
         'а' | 'А' => 'a',
+        'ԁ' => 'd',
         'в' | 'В' => 'b',
         'с' | 'С' => 'c',
         'е' | 'Е' | 'ё' | 'Ё' => 'e',
@@ -227,7 +262,7 @@ fn fold_confusable(c: char) -> char {
         // Greek look-alikes.
         'α' | 'Α' => 'a',
         'Β' => 'b',
-        'Ε' => 'e',
+        'ε' | 'Ε' => 'e',
         'Η' => 'h',
         'ι' | 'Ι' => 'i',
         'κ' | 'Κ' => 'k',
@@ -235,28 +270,49 @@ fn fold_confusable(c: char) -> char {
         'Ν' => 'n',
         'ο' | 'Ο' => 'o',
         'ρ' | 'Ρ' => 'p',
-        'Τ' => 't',
+        'τ' | 'Τ' => 't',
         'υ' | 'Υ' => 'y',
         'χ' | 'Χ' => 'x',
         'Ζ' => 'z',
+        // Other single-script look-alikes with no compatibility mapping.
+        'ɑ' => 'a',
+        'օ' => 'o',
         other => other,
     }
 }
 
 /// Folds text for denylist matching: drops everything invisible (controls,
-/// whitespace, zero-width and bidi formatting), maps confusables to Latin,
-/// then lowercases.
+/// whitespace, zero-width, bidi and default-ignorable formatting), applies
+/// NFKC, maps the remaining cross-script confusables to Latin, then
+/// lowercases.
 ///
-/// Each step closes a demonstrated evasion of the plain `to_lowercase()`
-/// match this replaces. A hostile `aria-label` only had to carry a zero-width
-/// space (`De<U+200B>lete`), a soft hyphen, fullwidth letters, a single
-/// Cyrillic `а` (`Pаy`) or an inserted space (`支 付`) to screen Clear while
-/// rendering identically to the user. Dropping the invisible characters
-/// rather than folding them to a space also closes the inverse hole, where
-/// space-folding a C0 character split a term the matcher would have found.
+/// Each step closes a demonstrated evasion of the plain `to_lowercase()` match
+/// this replaces. A hostile `aria-label` only had to carry a zero-width space
+/// (`De<U+200B>lete`), a soft hyphen, fullwidth letters, a single Cyrillic `а`
+/// (`Pаy`) or an inserted space (`支 付`) to screen Clear while rendering
+/// identically to the user. Dropping the invisible characters rather than
+/// folding them to a space also closes the inverse hole, where space-folding a
+/// C0 character split a term the matcher would have found.
+///
+/// NFKC runs **after** the invisible filter so a spliced default-ignorable
+/// cannot block a compatibility composition, and it is what collapses the
+/// whole-block substitutions a per-character table would have to enumerate
+/// one family at a time: `𝐃𝐞𝐥𝐞𝐭𝐞` (Math Alphanumeric), `Ｄｅｌｅｔｅ`
+/// (fullwidth), `Ⓓⓔⓛⓔⓣⓔ` (circled), `ﾌｫｰﾏｯﾄ` (halfwidth katakana) and the
+/// CJK compatibility ideographs all fold to their ordinary forms.
+///
+/// This is not a complete confusable defence and is not meant to be read as
+/// one: combining marks are left in place (they are *visible*, so they change
+/// what the user sees rather than hiding from them), and the cross-script
+/// table in [`fold_confusable`] is a subset of UTS#39's relation. The
+/// guarantee is that the demonstrated evasion families cost more than one
+/// code point, not that no glyph substitution can succeed.
 pub fn fold_for_matching(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
+
     text.chars()
         .filter(|c| !is_invisible_for_matching(*c))
+        .nfkc()
         .map(fold_confusable)
         .flat_map(char::to_lowercase)
         .collect()
@@ -502,6 +558,16 @@ impl ComputerUseShared {
             self.reset_stop();
         } else {
             self.revoke_all_sessions();
+            // Turning the master switch off is not an emergency stop, and it
+            // leaves nothing for a stop to protect: the sweep above already
+            // dropped every grant, pending and token. Leaving the latch raised
+            // made `computer_use_get_status` keep reporting `stopped: true`
+            // for a feature that is simply off, which is what drove the
+            // settings row to tell a user who had just switched the toggle OFF
+            // to "turn it off and back on". The flag is cleared here, in the
+            // one place that owns it, so the backend answer and the UI agree
+            // without the frontend having to guess.
+            self.stop.store(false, Ordering::SeqCst);
         }
     }
 
@@ -588,14 +654,14 @@ impl ComputerUseShared {
     }
 
     /// Revokes all session grants and clears all consent state (pending
-    /// confirmations, minted tokens) but does **not** raise the stop flag —
+    /// confirmations, minted tokens) but does not touch the stop flag —
     /// distinct from [`Self::stop_all`]'s emergency-stop semantics: turning
-    /// the master switch off is not an emergency stop, and no stop state
-    /// should remain after re-enabling (the `computer_use_set_enabled(false)`
-    /// call). Consent state from the off period must not survive a re-enable:
-    /// the old grant and old approval tokens would otherwise remain valid.
-    /// Also invoked by [`Self::set_enabled`] on disable, so the sweep cannot
-    /// be skipped by a flag-only caller.
+    /// the master switch off is not an emergency stop. Consent state from the
+    /// off period must not survive a re-enable: the old grant and old approval
+    /// tokens would otherwise remain valid. Also invoked by
+    /// [`Self::set_enabled`] on disable, so the sweep cannot be skipped by a
+    /// flag-only caller; [`Self::set_enabled`] additionally lowers the stop
+    /// latch there, so no stop state remains for a feature that is off.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         self.grant_requests.lock().clear();
@@ -949,8 +1015,15 @@ impl ComputerUseShared {
     }
 
     /// Consumes a token previously validated by [`Self::peek_confirmation`],
-    /// making it single-use. Called immediately before the injection request,
-    /// so an approval is not burned by a run that never reaches the backend.
+    /// making it single-use.
+    ///
+    /// Called once the re-screen has agreed the target is still the one the
+    /// user approved, so a spend refused for naming a **different** target
+    /// does not burn the approval and a corrected retry can still use it.
+    /// Later refusals still consume it — a stop or revoke landing during
+    /// screening, a missing input capability, the backend itself failing. The
+    /// split exists to make the target check non-destructive, not to defer the
+    /// spend all the way to the injection call.
     pub fn consume_confirmation(&self, confirm_id: &str) {
         self.consent.lock().approved_tokens.remove(confirm_id);
     }
@@ -1231,6 +1304,31 @@ mod tests {
         ] {
             assert!(!matches_t3_denylist(label), "should not match: {label}");
         }
+        // The terms this PR added, each with the inflected/variant spelling
+        // that motivated it: an entry that only matches its own dictionary
+        // form buys nothing on a real button.
+        for label in [
+            "支払う",
+            "お支払いへ進む",
+            "決済する",
+            "振込を実行",
+            "口座振替",
+            "初期化する",
+            "提现到银行卡",
+            "提現",
+            "汇款",
+            "匯款",
+            "订阅方案",
+            "捐赠",
+            "承诺并继续",
+            "转帐",
+            "购入",
+            "發送訊息",
+            "Withdraw funds",
+            "Remit payment",
+        ] {
+            assert!(matches_t3_denylist(label), "should match: {label}");
+        }
         assert!(is_secure_role("Password Text"));
         assert!(is_secure_role("AXSecureTextField"));
         assert!(!is_secure_role("button"));
@@ -1238,6 +1336,93 @@ mod tests {
         // signal — it must not trip the secure-role screen.
         assert!(!is_secure_role("AXInsecureTextField"));
         assert!(!is_secure_role("insecure text field"));
+    }
+
+    /// Every [`T3_DENYLIST`] entry must survive [`fold_for_matching`]
+    /// unchanged, and must fit inside the streaming matcher's carry window.
+    ///
+    /// Both invariants are silent when broken, which is why they are pinned
+    /// rather than reasoned about. Matching runs `folded.contains(term)`
+    /// against folded text, so a term carrying a space, an uppercase letter,
+    /// a fullwidth or compatibility form — anything the fold would rewrite —
+    /// is not merely weaker, it is **unmatchable forever**: the fold has
+    /// already removed from the haystack the very bytes the needle still
+    /// carries. `"place order"` was exactly that bug before this list moved to
+    /// folded matching. Likewise a term longer than
+    /// [`T3_MATCH_WINDOW_CHARS`] would be missed whenever it straddles two
+    /// streaming windows — an intermittent failure keyed on the label's
+    /// length, which is the hardest possible shape to notice in the field.
+    #[test]
+    fn t3_denylist_terms_are_prefolded() {
+        for term in T3_DENYLIST {
+            assert_eq!(
+                &fold_for_matching(term),
+                term,
+                "denylist term is not in folded form, so it can never match: {term:?}"
+            );
+            let folded_len = term.chars().count();
+            assert!(
+                folded_len <= T3_MATCH_WINDOW_CHARS,
+                "denylist term is longer than the {T3_MATCH_WINDOW_CHARS}-char match \
+                 window and would be missed across a chunk boundary: {term:?} ({folded_len})"
+            );
+            // `screen_element` also matches the *display* name as a fallback
+            // for a backend that forgot the raw verdict, and `sanitize_name`
+            // rewrites `"` to `'` on its way to the display copy. Folding does
+            // not, so a term containing either quote would match the raw name
+            // but not the display one — the fallback would silently stop being
+            // a subset of the real verdict.
+            assert!(
+                !term.contains('"') && !term.contains('\''),
+                "a denylist term must not contain a quote: sanitize_name rewrites \
+                 them, so the display-name fallback would disagree: {term:?}"
+            );
+        }
+    }
+
+    /// The fold must see through the substitution families that were
+    /// demonstrated as evasions, including the whole-block compatibility
+    /// forms NFKC collapses.
+    ///
+    /// This pins the *families*, not a closed set: the doc on
+    /// [`fold_for_matching`] is explicit that a complete confusable defence
+    /// is not claimed. What must not regress is that each of these costs an
+    /// attacker more than swapping one code point.
+    #[test]
+    fn zero_width_evasions() {
+        for label in [
+            // Invisible splices: each renders as plain "Delete".
+            "De\u{200B}lete",
+            "D\u{00AD}elete",
+            "De\u{FE0F}lete",
+            "De\u{FE00}lete",
+            "De\u{034F}lete",
+            "De\u{3164}lete",
+            "De\u{115F}lete",
+            "De\u{2065}lete",
+            "De\u{E0041}lete",
+            "De\u{1D173}lete",
+            // Whole-block compatibility substitutions (NFKC).
+            "\u{1D403}\u{1D41E}\u{1D425}\u{1D41E}\u{1D42D}\u{1D41E}", // math bold
+            "\u{1D673}\u{1D68E}\u{1D695}\u{1D68E}\u{1D69D}\u{1D68E}", // math monospace
+            "Ⓓⓔⓛⓔⓣⓔ",                                                 // circled
+            "Ｄｅｌｅｔｅ",                                           // fullwidth
+            "ﾌｫｰﾏｯﾄ",                                                 // halfwidth katakana
+            // Cross-script homoglyphs.
+            "Pаy",      // Cyrillic а
+            "ԁelete",   // Cyrillic Komi de
+            "Pɑy",      // Latin alpha
+            "dօnate",   // Armenian o
+            "τransfer", // Greek tau
+            // Splitting and padding.
+            "支 付",
+            "D\u{0001}elete",
+        ] {
+            assert!(
+                matches_t3_denylist(label),
+                "fold must see through this evasion: {label:?}"
+            );
+        }
     }
 
     #[test]
@@ -1719,6 +1904,39 @@ mod tests {
             "a pending from before the stop must not mint after resume"
         );
         assert!(shared.pending_confirmation(&raced).is_none());
+    }
+
+    /// Disabling the master switch lowers the emergency-stop latch.
+    ///
+    /// `computer_use_get_status` reports `is_stopped()` verbatim, and the
+    /// settings row renders its "stopped — turn it off and back on to resume"
+    /// hint from that flag. Leaving the latch raised for a feature that is
+    /// simply off therefore produced a status the UI cannot render sensibly —
+    /// the recovery hint next to an already-off toggle — and no amount of
+    /// frontend-local patching survives the next status read. The flag is
+    /// owned here, so it is cleared here.
+    #[test]
+    fn disabling_lowers_the_stop_latch() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.stop_all();
+        assert!(shared.is_stopped(), "stop_all raises the latch");
+
+        shared.set_enabled(false);
+        assert!(
+            !shared.is_stopped(),
+            "a disabled feature must not keep reporting an emergency stop"
+        );
+        assert!(!shared.is_enabled());
+        assert!(
+            !shared.has_active_grant("s1"),
+            "disable still revokes grants"
+        );
+
+        // Re-enabling is unchanged: no stop, and no consent state carried over.
+        shared.set_enabled(true);
+        assert!(!shared.is_stopped());
+        assert!(!shared.has_active_grant("s1"));
     }
 
     /// Stop race, mint side: a token minted before the stop is wiped by
