@@ -257,7 +257,7 @@ function rec(name, pass, detail = '') {
   // 锚定到函数体内再断言：不加界的 [\s\S]* 会跨过函数边界命中幸存的
   // localStorage try/catch 与正常的 return cached，使断言恒假。
   const sceneSyncBody = (source) => {
-    const match = source.match(/async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n  \}\n/);
+    const match = source.match(/async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n {2}\}\n/);
     return match ? match[0] : '';
   };
   const tauriSceneSync = sceneSyncBody(tauriBridgeSource);
