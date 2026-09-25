@@ -890,7 +890,16 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
 { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
 { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
-  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
+  // Connector flow-card failures, keyed by the error code the backend attaches (or the failed step's fallback code).
+  connectorErrors:{
+    runtime_prepare_failed:'コネクターの実行環境を準備できませんでした。再試行してください。',
+    cli_install_failed:'コネクターをインストールできませんでした。ネットワークを確認して再試行してください。',
+    auth_start_failed:'ログインを開始できませんでした。再試行してください。',
+    registration_failed:'アプリの登録が完了していません。再接続してください。',
+    auth_failed:'ログイン認証が完了していません。再接続してください。',
+    skills_enable_failed:'認証は完了しましたが、スキルを有効化できませんでした。再試行してください。',
+    unknown:'接続に失敗しました。後で再試行してください。',
+  },
   emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
   emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',

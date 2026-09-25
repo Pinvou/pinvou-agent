@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // full three-language dict: browser entry lazy-loads via i18n.js, tests use the aggregate shim
+import { errorCode, localizedErrorMessage } from '../src/shared/user-facing-error.js';
+import {
+  applyConnectorFailure,
+  connectorErrorCodeForStep,
+  connectorErrorDetail,
+  connectorFailure,
+  connectorUiStep,
+} from '../src/features/tools/connector-ui-state.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
@@ -292,6 +300,78 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const id of workbenchTemplateIds) {
     assert.ok(dict[language].uiChatScenes.workbenchTemplates[id], `${language}.uiChatScenes.workbenchTemplates.${id} must exist`);
   }
+}
+
+// Connector flow-card failures: stored as error codes and localized at render
+// time, so en/ja users never see raw (often Chinese) backend text as the
+// headline. The raw diagnostic survives only as an opt-in detail block.
+const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'unknown'];
+for (const language of ['zh', 'en', 'ja']) {
+  for (const code of connectorErrorCodes) {
+    assert.equal(typeof dict[language].uiToolStore.connectorErrors[code], 'string', `${language}.uiToolStore.connectorErrors.${code} must exist`);
+  }
+  for (const retired of ['connFailed', 'dingtalkSkillsFailed', 'tmeetAuthIncomplete']) {
+    assert.equal(dict[language].uiToolStore[retired], undefined, `${language}.uiToolStore.${retired} is replaced by connectorErrors`);
+  }
+}
+assert.equal(errorCode({ code: 'auth_failed', message: 'raw diagnostic' }), 'auth_failed');
+assert.equal(errorCode(new Error('cli_install_failed: raw backend detail')), 'cli_install_failed');
+assert.equal(errorCode(new Error('raw backend detail')), '');
+assert.equal(errorCode({ code: 'Not A Code' }), '');
+assert.equal(
+  localizedErrorMessage({ code: 'auth_failed' }, dict.ja.uiToolStore.connectorErrors, dict.ja.uiToolStore.connectorErrors.unknown),
+  dict.ja.uiToolStore.connectorErrors.auth_failed,
+);
+assert.equal(
+  localizedErrorMessage(new Error('未知的底层诊断'), dict.en.uiToolStore.connectorErrors, dict.en.uiToolStore.connectorErrors.unknown),
+  dict.en.uiToolStore.connectorErrors.unknown,
+);
+assert.equal(connectorErrorCodeForStep('runtime'), 'runtime_prepare_failed');
+assert.equal(connectorErrorCodeForStep('cli'), 'cli_install_failed');
+assert.equal(connectorErrorCodeForStep('register'), 'registration_failed');
+assert.equal(connectorErrorCodeForStep('qr'), 'auth_failed');
+assert.equal(connectorErrorCodeForStep('bogus'), 'unknown');
+assert.deepEqual(connectorFailure({ code: 'auth_failed', message: 'raw backend diagnostic' }, 'qr'), { errorCode: 'auth_failed' });
+assert.deepEqual(connectorFailure(new Error('raw install diagnostic'), 'cli'), { errorCode: 'cli_install_failed' });
+assert.equal(connectorErrorDetail(new Error('raw install diagnostic')), 'raw install diagnostic');
+assert.equal(connectorErrorDetail('x'.repeat(400)).length, 300);
+assert.equal(connectorErrorDetail(null), '');
+assert.equal(connectorUiStep({ active: 'cli' }, 'authorize'), 'qr');
+assert.equal(connectorUiStep({ active: 'connect' }, 'register'), 'connect');
+assert.equal(connectorUiStep({ active: 'qr' }, 'register'), 'qr');
+assert.equal(connectorUiStep(null, 'register'), 'connect');
+assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
+{
+  const failed = applyConnectorFailure(
+    { active: 'cli', steps: { runtime: 'done', cli: 'done' } },
+    { code: 'auth_failed', message: 'raw backend diagnostic' },
+    'authorize',
+  );
+  assert.equal(failed.phase, 'error');
+  assert.equal(failed.errorCode, 'auth_failed');
+  assert.equal(failed.detail, 'raw backend diagnostic');
+  assert.equal(failed.errStep, 'qr');
+  assert.equal(failed.steps.cli, 'done');
+  assert.equal(failed.steps.qr, 'error');
+  assert.equal(Object.hasOwn(failed.steps, 'authorize'), false);
+  assert.equal(Object.hasOwn(failed, 'err'), false);
+}
+{
+  const toolStore = source('features/tools/ToolStoreView.jsx');
+  assert.match(toolStore, /errors=\{storeCopy\.connectorErrors\}/);
+  assert.match(toolStore, /localizedErrorMessage\(\{ code: flow\.errorCode \}, errors/);
+  assert.match(toolStore, /applyConnectorFailure\(f, p, p\.phase\)/);
+  assert.doesNotMatch(toolStore, /\berr:\s*String\(/);
+  assert.doesNotMatch(toolStore, /flow\.err\b/);
+  assert.doesNotMatch(toolStore, /console\.error\([^\n]*connect failed:[^\n]*,\s*e\)/);
+  const tauriSource = relative => readFileSync(new URL(`../src-tauri/src/${relative}`, import.meta.url), 'utf8');
+  const feishu = tauriSource('features/connectors/feishu.rs');
+  assert.match(feishu, /"phase": "register", "code": "registration_failed"/);
+  assert.match(feishu, /"phase": "authorize", "code": "auth_failed"/);
+  for (const connector of ['wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
+    assert.match(tauriSource(`features/connectors/${connector}`), /"phase": "authorize", "code": "auth_failed"/, `${connector} error events must carry an error code`);
+  }
+  assert.match(source('features/settings/SettingsView.jsx'), /item\.title \|\| presetProviderLabel\(p, t\)/);
 }
 
 console.log('UI language coverage tests passed');

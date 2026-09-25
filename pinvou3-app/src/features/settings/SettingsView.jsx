@@ -462,7 +462,7 @@ function hasStoredCredential(record) {
         setModel(nextModel);
         // 目录项切换是显式换模型:未手动改过档位时按新条目的视觉能力标注预填。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
-        if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
+        if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : (item.title || presetProviderLabel(p, t))));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         // The output cap is no longer prefilled with 24K: left empty like
         // cloud/custom, declared uniformly by the runtime window tiers.

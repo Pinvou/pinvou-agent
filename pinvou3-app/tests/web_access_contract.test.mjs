@@ -818,6 +818,10 @@ assert.match(settingsView, /const canPickHostFiles = can\('hostFilePicker'\);/);
 assert.match(toolCommon, /const canOpenArtifact = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(connectionStatus, /incompatible_desktop/);
 assert.match(connectionStatus, /BLOCKING[\s\S]*incompatible_desktop/);
+assert.match(connectionStatus, /copy\[connection\.status\] \? fallback : \(connection\.message \|\| fallback\)/,
+  'known connection states must use localized copy while unknown states retain diagnostics');
+assert.doesNotMatch(connectionStatus, /connection\.status === 'error'.*connection\.message/s,
+  'known error states must not expose unlocalized backend diagnostics');
 assert.match(settingsView, /remoteCopy = t\.uiRemote/);
 assert.match(settingsView, /\{remoteCopy\.title\}/);
 assert.match(settingsView, /\{remoteCopy\.link\}/);

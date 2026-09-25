@@ -278,6 +278,9 @@ async function visibilityBox(page, cardText, modeLabel, click) {
 }
 
 (async () => {
+  // The tmeet readiness failure renders the localized auth_failed connector error; read it from the dictionary so the copy can change freely.
+  const { dict } = await import('./helpers/i18n-all.js');
+  const tmeetAuthFailedCopy = dict.zh.uiToolStore.connectorErrors.auth_failed;
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({executablePath:CHROME,headless:'new',args:['--no-sandbox','--disable-gpu','--no-first-run'],userDataDir:PROFILE});
   const page = await browser.newPage();
@@ -558,13 +561,13 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         .filter(x => x.cmd === 'tmeet_apply_skills').length);
       await page.evaluate(() => window.__emitTauri('tmeet:connected', {}));
       await sleep(180);
-      rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate((beforeApply) => {
+      rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate(({ beforeApply, authFailedCopy }) => {
         const afterApply = window.__TOOL_STORE_TEST__.calls
           .filter(x => x.cmd === 'tmeet_apply_skills').length;
         return afterApply === beforeApply
           && !document.body.innerText.includes('已连接腾讯会议')
-          && document.body.innerText.includes('腾讯会议授权未完成');
-      }, beforeApply));
+          && document.body.innerText.includes(authFailedCopy);
+      }, { beforeApply, authFailedCopy: tmeetAuthFailedCopy }));
     }
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
     await sleep(180); await dismiss(page);

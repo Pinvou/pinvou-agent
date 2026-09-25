@@ -889,7 +889,16 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
 { key:'cli', label:'Install connector', sub:'dws · about 40 seconds on first use' },
 { key:'qr', label:'Scan to sign in', sub:'Scan with the DingTalk app' },
   ],
-  connFailed:'Connection failed', dingtalkSkillsFailed:err=>`DingTalk authorized, but enabling the skill failed: ${err}`, tmeetAuthIncomplete:'Tencent Meeting authorization is incomplete—finish the browser sign-in and retry',
+  // Connector flow-card failures, keyed by the error code the backend attaches (or the failed step's fallback code).
+  connectorErrors:{
+    runtime_prepare_failed:'Failed to prepare the connector runtime. Try again.',
+    cli_install_failed:'Failed to install the connector. Check your network and try again.',
+    auth_start_failed:'Unable to start sign-in. Try again.',
+    registration_failed:'App registration was not completed. Reconnect and try again.',
+    auth_failed:'Sign-in authorization was not completed. Reconnect and try again.',
+    skills_enable_failed:'Authorization completed, but enabling the skill failed. Try again.',
+    unknown:'Connection failed. Try again later.',
+  },
   emptyNoMatch:'No matching tools found', emptyNoInstalled:'No tools installed yet', emptyNoTools:'No tools found',
   emptyNoMatchHint:'Try a different keyword, or check the spelling.', emptyNoInstalledHint:'Install connectors or skills from the store and they will appear here.', emptyNoInstalledHintReadonly:'No tools or skills installed on the desktop yet.',
   emptyNoToolsHint:'Try another search term or check the API documentation.',
