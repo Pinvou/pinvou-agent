@@ -1408,11 +1408,8 @@ impl EnginePool {
         };
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
-                // No session id in the log: even a digested rendering trips
-                // the cleartext-logging scanner (its source is tainted and
-                // sanitizer-less, same as checkpoints.rs:556/564 on main).
                 eprintln!(
-                    "[engine_pool] a session idle for over {IDLE_EVICT_AFTER_SECS}s had its engine reclaimed (lazily respawned on the next message)"
+                    "[engine_pool] 会话 {session_id} 空闲超过 {IDLE_EVICT_AFTER_SECS} 秒，回收 engine（下次发消息时 lazy 重建）"
                 );
             }
         }
