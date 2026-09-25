@@ -80,13 +80,15 @@ const installerHook = readApp(
   "nsis",
   "installer-hooks.nsh",
 );
-const vcRedistTempPreflight = readApp(
+const vcRedistTempPreflightPath = path.join(
+  appRoot,
   "src-tauri",
   "packaging",
   "windows",
   "nsis",
   "vcredist-temp-preflight.ps1",
 );
+const vcRedistTempPreflight = fs.readFileSync(vcRedistTempPreflightPath, "utf8");
 const runtimeWrapper = readApp("scripts", "tauri", "windows-runtime.js");
 const installerAdapter = readApp("scripts", "tauri", "windows-installer.js");
 const buildScript = readApp("scripts", "tauri", "build.js");
@@ -298,6 +300,7 @@ for (const recoveryHint of [
   "释放系统盘空间",
   "检查系统临时目录权限",
   "重启 Windows 后重试",
+  "日志：$WINDIR\\Temp\\Pinvou3-vcredist.log",
 ]) {
   assert.ok(
     installerHook.includes(recoveryHint),
@@ -319,6 +322,83 @@ assert.match(
   /Join-Path \$windowsRootPath "Installer"/,
   "preflight must target the Windows Installer directory",
 );
+assert.match(
+  vcRedistTempPreflight,
+  /S-1-5-18/,
+  "SYSTEM must keep access to the repaired directories",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /S-1-5-32-544/,
+  "Administrators must keep access to the repaired directories",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /SetEnvironmentVariable\(\$Name, \$FallbackPath, "Machine"\)/,
+  "machine TEMP/TMP repair must persist the resolved absolute fallback path",
+);
+assert.doesNotMatch(
+  vcRedistTempPreflight,
+  /FallbackValue|%SystemRoot%\\Temp/u,
+  "machine TEMP/TMP repair must not persist an unexpanded REG_SZ value",
+);
+assert.doesNotMatch(
+  vcRedistTempPreflight,
+  /Remove-Item|RemoveAccessRule|PurgeAccessRules/u,
+  "VC++ temp repair must not delete installer cache or existing ACL entries",
+);
+// PowerShell returns every uncaptured pipeline value from a function, so
+// diagnostics written with Write-Output would be concatenated into the repaired
+// path. The repaired paths travel through [ref] parameters instead.
+assert.match(
+  vcRedistTempPreflight,
+  /-ResolvedPath \(\[ref\]\$machineTemp\)/u,
+  "TEMP repair must return its path separately from diagnostic output",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /-ResolvedPath \(\[ref\]\$machineTmp\)/u,
+  "TMP repair must return its path separately from diagnostic output",
+);
+assert.doesNotMatch(
+  vcRedistTempPreflight,
+  /Write-Output "(?:Repaired|required|Created|Machine|\$Target)/iu,
+  "preflight diagnostics must not contaminate PowerShell function return values",
+);
+if (process.platform === "win32") {
+  // Run the real script twice against a fake Windows root: the first run
+  // creates the directories, the second must be idempotent. Machine-level
+  // TEMP/TMP changes are skipped so the smoke never needs elevation.
+  const smokeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-vcredist-preflight-"));
+  const fakeWindowsRoot = path.join(smokeRoot, "Windows");
+  try {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          vcRedistTempPreflightPath,
+          "-WindowsRoot",
+          fakeWindowsRoot,
+          "-SkipMachineEnvironment",
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        result.status,
+        0,
+        `VC++ temp preflight attempt ${attempt} failed: ${result.stderr || result.stdout}`,
+      );
+    }
+    assert.ok(fs.statSync(path.join(fakeWindowsRoot, "Temp")).isDirectory());
+    assert.ok(fs.statSync(path.join(fakeWindowsRoot, "Installer")).isDirectory());
+  } finally {
+    fs.rmSync(smokeRoot, { recursive: true, force: true });
+  }
+}
 for (const [name, version] of [
   ["MAJOR", vcMajor],
   ["MINOR", vcMinor],
