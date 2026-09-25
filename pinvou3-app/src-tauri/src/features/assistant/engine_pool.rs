@@ -1315,7 +1315,16 @@ impl EnginePool {
         }
     }
 
-    pub async fn refresh_disallowed_tools(&self) -> Vec<String> {
+    /// Recomputes the disallowed-tool set and broadcasts it to every live
+    /// session. `None` = the compute task died (join failure): nothing was
+    /// broadcast and the sessions keep their current sets.
+    ///
+    /// The return type is `Option`, like [`Self::compute_disallowed_tools`],
+    /// precisely because the fail-closed value is not representable as a
+    /// list: an empty `Vec` is indistinguishable from "nothing is
+    /// disallowed", so a caller that read the old return value would invert
+    /// the failure direction it is documented to have.
+    pub async fn refresh_disallowed_tools(&self) -> Option<Vec<String>> {
         // The policy closure does blocking disk I/O via the marketplace
         // readers; keep it off the async worker.
         let app = self.app.clone();
@@ -1329,11 +1338,11 @@ impl EnginePool {
                     "[engine_pool] tool policy task failed, keeping the current \
                      disallowed sets: {error}"
                 );
-                return Vec::new();
+                return None;
             }
         };
         self.set_disallowed_all(tools.clone()).await;
-        tools
+        Some(tools)
     }
 
     /// Project-skills source root for the session: returns the bound real
@@ -1374,7 +1383,14 @@ impl EnginePool {
                 // dirs stale until the next materialization, but the join
                 // failure itself must not vanish silently — every other
                 // spawn_blocking join in the engine fails closed or logs.
-                log::warn!("session {sid_for_log} skills rewrite join failed: {join_error}");
+                // eprintln, not log: the headless host installs no logger
+                // (`run_windowless_host` builds a bare Tauri app), so a
+                // `log::warn!` here is dropped in exactly the process this
+                // path was hardened for. Every other diagnostic in this file
+                // uses eprintln for the same reason.
+                eprintln!(
+                    "[engine_pool] session {sid_for_log} skills rewrite join failed: {join_error}"
+                );
             }
         }
     }
