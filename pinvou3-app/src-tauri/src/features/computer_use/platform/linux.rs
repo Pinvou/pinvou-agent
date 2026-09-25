@@ -2956,10 +2956,18 @@ mod x11_live_tests {
 
     use super::*;
     use crate::features::computer_use::backend::BackendHandle;
-    use crate::features::computer_use::guard::{ComputerUseShared, ConfirmationCheck};
+    use crate::features::computer_use::guard::ComputerUseShared;
     use crate::features::computer_use::tool::{ComputerUseEventSink, ComputerUseTool};
     use crate::features::computer_use::types::{EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED};
     use deepseek_tui::tools::spec::{ToolContext, ToolSpec};
+
+    /// Validate-then-consume, mirroring what the tool does around its
+    /// target re-screen. Returns the approved element label on success.
+    fn spend(shared: &ComputerUseShared, confirm_id: &str, summary: &str) -> Option<String> {
+        let label = shared.peek_confirmation(confirm_id, SESSION, summary, 0)?;
+        shared.consume_confirmation(confirm_id);
+        Some(label)
+    }
     use serde_json::{Value, json};
     use std::process::Command;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -3387,10 +3395,8 @@ mod x11_live_tests {
             .new_pending_confirmation(SESSION, summary, "Live", 0)
             .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
-        assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Unknown,
+        assert!(
+            spend(&fx.shared, &confirm_id, summary).is_none(),
             "an un-minted token must not be spendable"
         );
         assert!(
@@ -3398,15 +3404,12 @@ mod x11_live_tests {
             "minting must succeed while the pending exists"
         );
         assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Granted,
-            "the minted token must be spendable"
+            spend(&fx.shared, &confirm_id, summary).as_deref(),
+            Some("Live"),
+            "the minted token must be spendable and carry the approved target"
         );
-        assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Unknown,
+        assert!(
+            spend(&fx.shared, &confirm_id, summary).is_none(),
             "the token is single-use"
         );
         // The bookkeeping performs no injection: the pointer must still be
