@@ -268,12 +268,14 @@ fn run_agent(
     // does not add one of its own.
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    // A fresh run persists its session under the eval-session factory title
-    // (EVAL_SESSION_FACTORY_TITLE), which then reads as a stray user chat in
-    // the GUI's session list. Give CLI-created sessions an honest label; best-effort —
-    // a failed rename is cosmetic and must not fail the report. A
-    // caller-provided session keeps its own title. Success path only: the
-    // rename needs `report.session_id`, which a failed run never produces.
+    // A fresh run persists its session under the shared new-chat placeholder,
+    // which reads as a stray empty chat in the GUI's session list. Give
+    // CLI-created sessions an honest label; best-effort — a failed rename is
+    // cosmetic and must not fail the report. A caller-provided session keeps
+    // its own title. Success path only: the rename needs `report.session_id`,
+    // which a failed run never produces, and leaving the placeholder on a
+    // failed fresh session is what lets the runtime recognize it as unadopted
+    // and clean it up.
     if session.is_none() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1166,6 +1166,14 @@ fn set_enabled(
     // package in at least one persisted scope list (uninitialized DenyAll
     // scopes deny by policy and store no entry); the enable direction must
     // remove it from every list.
+    //
+    // The writer normalizes through `to_package_id` before persisting, so the
+    // read-back has to look for that package id, not the raw connector id: a
+    // raw id that is re-claimed to an owner package is stored under the owner
+    // and would make a disable look unpersisted, while an enable would look
+    // verified because the raw id was never there to begin with. `plugins.rs`
+    // verifies through the same public helper for the same reason.
+    let mirrored_id = pinvou3_lib::features::marketplace::package_id_for(spec.id);
     let mirror_path = pinvou3_home().join("disabled_bundles.json");
     let mirror: Value = std::fs::read_to_string(&mirror_path)
         .ok()
@@ -1177,7 +1185,10 @@ fn set_enabled(
             .map(|scopes| {
                 scopes.values().any(|ids| {
                     ids.as_array()
-                        .map(|ids| ids.iter().any(|id| id == spec.id))
+                        .map(|ids| {
+                            ids.iter()
+                                .any(|id| id.as_str() == Some(mirrored_id.as_str()))
+                        })
                         .unwrap_or(false)
                 })
             })

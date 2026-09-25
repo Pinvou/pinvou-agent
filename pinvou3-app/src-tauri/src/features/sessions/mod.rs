@@ -75,22 +75,12 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
-// Only the benchmark-gated headless runner (agentic_task) consumes the
-// factory-title guard, so the re-export follows the same feature gate.
-/// Re-exported for the agentic-run cleanup guard (kept stable alongside the
-/// other historical `crate::features::sessions::X` paths).
 #[cfg(feature = "benchmark-hooks")]
-pub(crate) use self::store::EVAL_SESSION_FACTORY_TITLE;
-#[cfg(feature = "benchmark-hooks")]
-pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
-/// Re-export the headless retention cap: it is the number the runner's
-/// eviction warning quotes, and quoting the chat cap there would name a budget
-/// headless runs no longer touch.
-#[cfg(feature = "benchmark-hooks")]
-pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
-/// Re-export the new-chat placeholder sentinel: the auto-rename trigger in
-/// the command layer must compare against the same value GUI-created and kept
-/// headless sessions carry, or a renamed constant silently breaks auto-rename.
+pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
+/// Re-export the new-chat placeholder sentinel: the auto-rename trigger in the
+/// command layer and the agentic runner's adoption guard must both compare
+/// against the same value GUI-created and kept headless sessions carry, or a
+/// renamed constant silently breaks auto-rename and the adoption exception.
 pub(crate) use self::store::NEW_CHAT_TITLE;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;

@@ -639,20 +639,33 @@ fn dedup_credential_declarations<T>(
 ///   的保守回退
 /// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
 /// - 本地免凭据：恒 Ready
+/// - degraded（`store::BundleRecord::installed` 注释的存储二态异常侧：
+///   「登记在、资源缺」）：任何 kind 都判 NotReady。资源缺的包跑不起来，
+///   报 Ready 是假阳性；同一条命令的动作推导（`actions::actions_for`）本来就
+///   对任意 kind 的 degraded 包置前下发 `repair`，ready=true 与那套动作自相
+///   矛盾。reason 按 degraded 的来源分两码，见各臂注释。
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
         // The desktop command layer overrides this arm with its `*_status`
         // dispatch; headless callers (pinvou-cli has no command layer) get
-        // the conservative installed-based verdict instead of a panic.
+        // the conservative installed-based verdict instead of a panic. That
+        // fallback is strictly weaker than the desktop's live probe: it sees
+        // registry facts only, never the connection state. The headless
+        // surface must disclose that gap itself rather than let a registry
+        // `Ready` pass for a probed one —— see pinvou-cli `plugins.rs`
+        // readiness (`probe: "unavailable_in_cli"`).
         BundleKind::Cli => {
             if !bundle.installed {
                 Readiness::NotReady("cli_not_installed")
             } else if bundle.degraded.is_some() {
-                // A degraded CLI record is the logged-out / assets-mismatch
-                // state; the desktop answers `not_connected` for it via the
-                // live status probe, and the registry-visible state answers
-                // the same reason headlessly (no live probe needed).
-                Readiness::NotReady("not_connected")
+                // degraded 与登录态无关。`store::BundleRecord::installed` 把它
+                // 定义为「登记在、资源缺」，CLI 记录只在二进制对照 lock 表
+                // 校验 SHA-256 不匹配/无法校验时置位（`store::legacy_cli_records`
+                // 的 `CliAssetState::Mismatch`，修复动作 = 重新下载）。所以这里
+                // 诚实的回答是资产损坏，不是 `not_connected`：把资产问题报成
+                // 未连接，会把运维引到「重新扫码登录」而不是「重下二进制」。
+                // 真正的未连接态只有桌面端的实时 status 探测能给。
+                Readiness::NotReady("cli_assets_mismatch")
             } else {
                 Readiness::Ready
             }
@@ -668,12 +681,28 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 .map(|c| c.key.as_str())
                 .collect();
             if !missing.is_empty() {
+                // 凭据优先于 degraded：缺必填凭据是用户可自助补齐的主因，
+                // `actions_for` 据 `missing_credentials` 下发 `configure`；
+                // degraded 的 `repair` 无论如何都已置前下发，不会因此丢失。
                 Readiness::NotReady("missing_credentials")
-            } else if bundle.kind == BundleKind::Skill && bundle.degraded.is_some() {
-                // Mirror of the desktop's ima companion-skill requirement: a
-                // degraded skill record means the companion skill/resources
-                // are incomplete even though the credentials are present.
-                Readiness::NotReady("skill_not_installed")
+            } else if bundle.degraded.is_some() {
+                // GUI 可见变更：桌面 `bundle_readiness` 的 `_` 臂（ima 之外的
+                // MCP/组合/技能包）走这里，本判定把「已登记但资源缺」的包从
+                // Ready 翻成 NotReady，就绪卡会随之显示未就绪。这是有意的——
+                // 资源缺的包无法服务请求，旧的 Ready 是假阳性。
+                //
+                // 三点约束：
+                // 1) reason 说清事实本身（资源缺），不复用 `skill_not_installed`
+                //    ——那个码是 ima 伴随技能未安装的专用语义（见
+                //    `app/commands/marketplace.rs` 的 ima 臂），两种情况混码会
+                //    让排障读错方向；
+                // 2) 不按 kind 区别对待：degraded 的定义与 kind 无关，只对
+                //    Skill 判 NotReady、让 degraded 的 Mcp/Bundle 继续 Ready 是
+                //    没有依据的不对称；
+                // 3) 下游动作不受影响：已装包的动作集只看
+                //    `missing_credentials` / `update_available` / `user_uploaded`，
+                //    `repair` 由 degraded 自身驱动（`actions.rs`）。
+                Readiness::NotReady("assets_missing")
             } else {
                 Readiness::Ready
             }
@@ -826,17 +855,22 @@ mod tests {
             readiness_for(&uninstalled_cli, |_| false),
             Readiness::NotReady("cli_not_installed")
         );
-        // A degraded CLI record is the logged-out / assets-mismatch state;
-        // headless answers the desktop's `not_connected` reason for it.
+        // degraded 的 CLI 记录 = 二进制对照 lock 表校验失败（`CliAssetState::
+        // Mismatch`），与登录态无关，reason 必须说资产而不是 `not_connected`：
+        // 后者会把运维引到重新扫码。连接态在 headless 不可知，由 CLI 层披露。
         let mut degraded_cli = b(BundleKind::Cli, vec![]);
         degraded_cli.degraded = Some("assets mismatch".into());
         assert_eq!(
             readiness_for(&degraded_cli, |_| false),
-            Readiness::NotReady("not_connected")
+            Readiness::NotReady("cli_assets_mismatch")
         );
-        // Skill arm mirrors the desktop's ima companion-skill requirement:
-        // credentials present but the skill record degraded is
-        // skill_not_installed, not Ready.
+        assert_ne!(
+            readiness_for(&degraded_cli, |_| false),
+            Readiness::NotReady("not_connected"),
+            "资产损坏不得伪装成未连接：桌面端的 not_connected 来自实时 status 探测"
+        );
+        // degraded（登记在、资源缺）跨 kind 一律 NotReady，且 reason 说事实本身，
+        // 不复用 ima 专用的 skill_not_installed。
         assert_eq!(
             readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
             Readiness::Ready
@@ -845,7 +879,33 @@ mod tests {
         degraded_skill.degraded = Some("companion skill missing".into());
         assert_eq!(
             readiness_for(&degraded_skill, |_| true),
-            Readiness::NotReady("skill_not_installed")
+            Readiness::NotReady("assets_missing")
+        );
+        // 对称性钉死：degraded 的 Mcp / Bundle 与 Skill 同判（旧实现只判 Skill，
+        // 让同样缺资源的 MCP/组合包留在 Ready）。
+        for kind in [BundleKind::Mcp, BundleKind::Bundle] {
+            let mut degraded = b(kind, vec![]);
+            degraded.degraded = Some("resources missing".into());
+            assert_eq!(
+                readiness_for(&degraded, |_| true),
+                Readiness::NotReady("assets_missing"),
+                "{kind:?} 的 degraded 必须与 Skill 同判"
+            );
+        }
+        // 缺必填凭据优先于 degraded：`actions_for` 靠 missing_credentials 下发
+        // configure，repair 由 degraded 自身驱动，两者不互斥。
+        let mut degraded_and_uncredentialed = b(
+            BundleKind::Mcp,
+            vec![CredentialSpec {
+                key: "AMAP_KEY".into(),
+                target: CredentialTarget::Env,
+                required: true,
+            }],
+        );
+        degraded_and_uncredentialed.degraded = Some("resources missing".into());
+        assert_eq!(
+            readiness_for(&degraded_and_uncredentialed, |_| false),
+            Readiness::NotReady("missing_credentials")
         );
     }
 

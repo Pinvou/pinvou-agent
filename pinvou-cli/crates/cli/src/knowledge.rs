@@ -766,11 +766,13 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
 /// thread) and waits for it to finish inside this invocation; `--root`
 /// omitted defaults to the user home like the GUI.
 fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // The root is pre-flighted BEFORE the scan starts: downstream, a root
-    // that yields nothing (a typo'd path, a directory that vanished) makes
-    // the incremental sweep classify EVERY indexed file as stale and delete
-    // it — a silent whole-index wipe reported as `done`. A missing root is
-    // refused here instead, mirroring the add-sources path pre-flight.
+    // The root is pre-flighted BEFORE the scan starts so a typo'd path or a
+    // plain file fails loudly here instead of walking to nothing and
+    // reporting a `done` scan that indexed zero files; it mirrors the
+    // add-sources path pre-flight. It guards usability, NOT the index: the
+    // stale sweep only deletes entries that live under a root it actually
+    // walked (`features::knowledge`), so files indexed from other
+    // directories survive a scan of an unrelated root on their own.
     let root = root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir);
     match std::fs::metadata(&root) {
         Ok(meta) if meta.is_dir() => {}
@@ -787,6 +789,17 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
             )));
         }
     }
+    // Index keys are the paths the walker emits, i.e. they inherit the exact
+    // form of the root it was handed, and the walker does not follow links.
+    // Canonicalizing here means a relative path or a symlink to an already
+    // indexed directory re-visits the keys the index already holds instead of
+    // minting a second set of keys for the same files beside them.
+    let root = std::fs::canonicalize(&root).map_err(|error| {
+        CliError::failed(format!(
+            "knowledge scan start: root {} cannot be resolved: {error}",
+            root.display()
+        ))
+    })?;
     // Scan never touches the import-job store, so like the other pure L1
     // CRUD lanes it must not run the boot recovery: that would flip a job a
     // live desktop process is still importing to interrupted.
@@ -794,9 +807,9 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     let roots = vec![root];
     service.start_scan(roots);
     // The scan runs on a service thread; a one-shot process that returned
-    // immediately would kill it before it did any work (a root that walks
-    // to nothing must still reach the sweep to be safe), so the invocation
-    // waits for the scan to finish and reports the final state.
+    // immediately would kill it before it did any work (nothing would be
+    // indexed and no completion marker persisted), so the invocation waits
+    // for the scan to finish and reports the final state.
     loop {
         let state = service.status();
         if !state.running {

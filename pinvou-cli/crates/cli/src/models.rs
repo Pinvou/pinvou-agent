@@ -362,6 +362,18 @@ fn parse_options(
                         "--{name} requires a value (got the flag {value})"
                     )));
                 }
+                // An empty value is a missing value, not a value that happens
+                // to be empty: `--name "$UNSET"` is how the shell spells
+                // "this argument was never computed". `support::parse_family_flags`
+                // has always refused it; `models` did not, so `--name ""`
+                // reached the store and `--api-key-env ""` reached
+                // `std::env::var("")` — each failing later with a message
+                // about the store or the environment rather than about the
+                // command line. Refusing here keeps all three parsers
+                // (support.rs, models.rs, memory.rs) on one contract.
+                if value.is_empty() {
+                    return Err(CliError::usage(format!("--{name} requires a value")));
+                }
                 if values.insert(name.to_owned(), value.clone()).is_some() {
                     return Err(CliError::usage(format!(
                         "--{name} was given more than once"
@@ -441,8 +453,14 @@ impl Options {
 }
 
 const MODELS_USAGE: &str = "usage: pinvou models <list|add|remove|use|show|test|probe-local>";
-const SETTINGS_USAGE: &str =
-    "usage: pinvou settings <get|set|search>; search subcommands: list|set|test";
+/// `settings get` without a key is documented as always-JSON right in the
+/// usage text. `--output` is a global flag, so it is accepted on every
+/// subcommand and a reader could reasonably expect `--output human` to change
+/// the whole-settings dump; it does not, because that payload is the nested
+/// `UserPrefs` document and there is no meaningful `key = value` rendering of
+/// it. Saying so here turns a flag that looks ignored into a stated contract.
+const SETTINGS_USAGE: &str = "usage: pinvou settings <get|set|search>; search subcommands: \
+list|set|test; note: `settings get` without a key always prints JSON regardless of --output";
 
 pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     let family = values[0].as_str();
@@ -775,18 +793,38 @@ fn to_base36(mut value: u64) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// The exact bytes a secret is written to the credential store under — the
+/// single normalization every credential write in this module goes through.
+///
+/// `support::resolve_secret` returns an `--api-key-env` value VERBATIM; only
+/// its stdin lane trims. Environment secrets routinely carry a trailing
+/// newline (a file mounted by a CI secret store, `read KEY < key.txt`, most
+/// `.env` loaders — `$(cat key.txt)` is the exception, not the rule), and
+/// storing that newline makes every signed request 401.
+///
+/// The failure is self-masking, which is why it must be fixed on the WRITE
+/// side: every read path trims (`settings search test`, `apply_bearer`), so
+/// the CLI keeps reporting the provider as `configured` while the stored
+/// value is unusable. Routing both lanes through one function is the point —
+/// they had already drifted, `models add` trimming and `settings search set`
+/// not, which is exactly the shape of bug a shared helper prevents.
+fn secret_for_storage(raw: &str) -> &str {
+    raw.trim()
+}
+
 /// Credential bookkeeping identical to the GUI's `apply_model_credential`
 /// with `old = None` (a fresh model): an empty key means "no secret"
 /// (`mark_missing`), a non-empty key is stored under the model's credential
 /// reference in the platform credential store and marked configured. The
 /// plaintext key never reaches settings.json (`clear_plaintext_key`).
 fn apply_new_model_credential(mut model: SavedModel) -> Result<SavedModel, String> {
-    if model.api_key.trim().is_empty() {
+    let key = secret_for_storage(&model.api_key).to_owned();
+    if key.is_empty() {
         model.mark_missing();
     } else {
         let reference = model.credential_reference();
         SystemCredentialStore::new()
-            .set(&reference, model.api_key.trim())
+            .set(&reference, &key)
             .map_err(|error| error.user_message())?;
         model.mark_configured(reference);
     }
@@ -1198,14 +1236,47 @@ fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
 
 // --- local server kind probe (models probe-local) ---
 
+/// Where a URL handed to [`is_loopback_url`] came from, which decides how a
+/// malformed one is classified.
+///
+/// A URL typed on the command line is the caller's mistake: usage, exit 2,
+/// and re-running with a corrected argument fixes it. A `base_url` read back
+/// out of `settings.json` is not something argv can be blamed for — the
+/// invocation was well-formed and the host's own state is broken — so it is a
+/// host failure, exit 1. `models test` already classifies exactly this
+/// condition that way (`{"code":"invalid_url"}`, exit 1, `run_connection_probe`),
+/// and probe-local reporting the same corrupt stored value as a usage error
+/// made the two commands disagree about the same fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UrlOrigin {
+    /// Supplied by the user as `--url`.
+    Argument,
+    /// Read out of the persisted model configuration.
+    StoredConfig,
+}
+
+impl UrlOrigin {
+    /// Malformed-URL error carrying this origin's exit-code classification.
+    fn malformed(self, detail: impl std::fmt::Display) -> CliError {
+        match self {
+            Self::Argument => CliError::usage(format!("probe-local url {detail}")),
+            Self::StoredConfig => {
+                CliError::failed(format!("invalid_url: the active model base_url {detail}"))
+            }
+        }
+    }
+}
+
 /// Loopback-only guard for `probe-local`: the CLI refuses non-loopback hosts
 /// with a usage error instead of the GUI's silent "generic" fallback, so a
-/// typo can never send a probe request to a remote endpoint.
-fn is_loopback_url(raw: &str) -> Result<bool, CliError> {
+/// typo can never send a probe request to a remote endpoint. `origin` decides
+/// only how a MALFORMED url is classified (see [`UrlOrigin`]); a well-formed
+/// non-loopback url returns `Ok(false)` for the caller to refuse.
+fn is_loopback_url(raw: &str, origin: UrlOrigin) -> Result<bool, CliError> {
     let url = reqwest::Url::parse(raw.trim())
-        .map_err(|error| CliError::usage(format!("probe-local url is not a valid url: {error}")))?;
+        .map_err(|error| origin.malformed(format!("is not a valid url: {error}")))?;
     let Some(host) = url.host_str() else {
-        return Err(CliError::usage("probe-local url has no host"));
+        return Err(origin.malformed("has no host"));
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if host.eq_ignore_ascii_case("localhost") {
@@ -1478,16 +1549,41 @@ fn probe_local(
     api_key_env: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    // Usage validation precedes env resolution: a non-loopback --url is a
-    // usage error (exit 2) even when the --api-key-env override is also
-    // broken, so scripts keying on the exit-code contract see usage first.
-    if let Some(url) = url {
-        if !is_loopback_url(url)? {
-            return Err(CliError::usage(
-                "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
-            ));
+    // Phase 1 — resolve and validate the target endpoint, for BOTH branches,
+    // before anything else. Usage validation must precede env resolution so
+    // scripts keying on the exit-code contract see the usage error (2) rather
+    // than the --api-key-env failure (1) when both are wrong. The `--url`
+    // branch already did this; the stored-base_url branch resolved
+    // `--api-key-env` first and only checked loopback afterwards, so
+    // `probe-local --api-key-env MISSING` exited 1 where the contract says 2.
+    // Resolving the target first for both branches makes the ordering a
+    // property of the function rather than of one branch.
+    let active = match url {
+        Some(url) => {
+            if !is_loopback_url(url, UrlOrigin::Argument)? {
+                return Err(CliError::usage(
+                    "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
+                ));
+            }
+            None
         }
-    }
+        None => {
+            let prefs = safe_prefs();
+            let model = prefs
+                .active_model()
+                .cloned()
+                .ok_or_else(|| CliError::failed("no active model to probe"))?;
+            if !is_loopback_url(&model.base_url, UrlOrigin::StoredConfig)? {
+                return Err(CliError::usage(format!(
+                    "the active model base_url {} is not a loopback endpoint; pass --url",
+                    model.base_url
+                )));
+            }
+            Some(model)
+        }
+    };
+    // Phase 2 — only now resolve the explicit key override, whose failures
+    // are host failures (exit 1).
     let explicit_key = match api_key_env {
         Some(var) => {
             let value = std::env::var(var).map_err(|_| {
@@ -1508,24 +1604,16 @@ fn probe_local(
         }
         None => None,
     };
-    let (target, bearer) = match url {
-        Some(url) => {
-            // An authenticated local endpoint 401s every signature probe and
-            // misclassifies as generic without this (the GUI form key lane).
-            (url.to_owned(), explicit_key)
-        }
-        None => {
-            let prefs = safe_prefs();
-            let model = prefs
-                .active_model()
-                .cloned()
-                .ok_or_else(|| CliError::failed("no active model to probe"))?;
-            if !is_loopback_url(&model.base_url)? {
-                return Err(CliError::usage(format!(
-                    "the active model base_url {} is not a loopback endpoint; pass --url",
-                    model.base_url
-                )));
-            }
+    let (target, bearer) = match active {
+        // An authenticated local endpoint 401s every signature probe and
+        // misclassifies as generic without the explicit key (the GUI form
+        // key lane).
+        None => (
+            url.expect("the explicit-url branch sets active to None")
+                .to_owned(),
+            explicit_key,
+        ),
+        Some(model) => {
             let bearer = match explicit_key {
                 Some(key) => Some(key),
                 None => {
@@ -1588,12 +1676,24 @@ fn optional_bool_str(value: Option<bool>) -> String {
 /// `settings get [key]`: with a key prints `key = value` (human) or a single
 /// JSON object; without a key prints all settings as JSON (the same payload
 /// the GUI `get_settings` command returns, minus plaintext keys).
+///
+/// The keyless dump deliberately ignores `--output`: its payload is the whole
+/// nested `UserPrefs` document, which has no `key = value` rendering, so it is
+/// always JSON. That is stated in `SETTINGS_USAGE` rather than left for a
+/// caller to discover from output that did not change.
 fn settings_get(key: Option<SettingsKey>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let Some(key) = key else {
         let prefs = safe_prefs();
-        let value = serde_json::to_value(&prefs)
+        // Serialized straight to the output string. The previous shape went
+        // through `to_value` and then `to_string(...).unwrap_or_default()`,
+        // which converted a serialization failure into an EMPTY stdout with
+        // exit 0 — a caller piping this into `jq` saw a successful run that
+        // produced no settings, indistinguishable from a successful run of a
+        // command that has no output. A failure to serialize the settings is
+        // a host failure and must exit 1 saying so.
+        let text = serde_json::to_string(&prefs)
             .map_err(|error| CliError::failed(format!("settings serialization failed: {error}")))?;
-        return Ok(success(serde_json::to_string(&value).unwrap_or_default()));
+        return Ok(success(text));
     };
     let prefs = safe_prefs();
     let (human_value, json_value) = match key {
@@ -1841,8 +1941,14 @@ fn search_set(
         prefs.search.provider = provider;
         if let Some(key) = &stored {
             let reference = provider.credential_reference();
+            // Normalized exactly like `models add` and the GUI
+            // (`platform/prefs` `apply_model_credential`). This call site
+            // used to pass `key` verbatim, so a `--api-key-env` secret with
+            // a trailing newline was stored with it and every search request
+            // 401'd while `settings search test` still reported
+            // `configured` — see `secret_for_storage`.
             SystemCredentialStore::new()
-                .set(&reference, key)
+                .set(&reference, secret_for_storage(key))
                 .map_err(|error| error.user_message())?;
             prefs
                 .search
@@ -2057,6 +2163,35 @@ fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String
 mod tests {
     use super::*;
 
+    /// The single normalization both credential lanes write through.
+    ///
+    /// This is a unit test rather than a contract test on purpose: observing
+    /// the stored bytes end to end would mean writing to the real OS keychain
+    /// (`SystemCredentialStore` has no test backdoor — it only falls back to
+    /// file storage when the OS keyring `probe()` fails), which no test in
+    /// this crate is allowed to do. So the normalization is pinned here and
+    /// the wiring is enforced by there being exactly two `.set(` call sites,
+    /// both passing `secret_for_storage(...)`.
+    ///
+    /// The trailing newline is the case that mattered: `--api-key-env`
+    /// values come back from `support::resolve_secret` verbatim (only its
+    /// stdin lane trims), a CI secret file carries a newline, and storing it
+    /// 401s every request while `settings search test` — which trims on read
+    /// — still reports the provider as `configured`.
+    #[test]
+    fn secret_for_storage_strips_the_whitespace_ci_secrets_carry() {
+        assert_eq!(secret_for_storage("sk-abc123\n"), "sk-abc123");
+        assert_eq!(secret_for_storage("sk-abc123\r\n"), "sk-abc123");
+        assert_eq!(secret_for_storage("  sk-abc123  "), "sk-abc123");
+        // Interior characters are never touched: only the edges are noise.
+        assert_eq!(secret_for_storage("sk-a b\tc"), "sk-a b\tc");
+        assert_eq!(secret_for_storage("sk-abc123"), "sk-abc123");
+        // A whitespace-only value normalizes to empty, which is what makes
+        // `apply_new_model_credential` mark the model `missing` instead of
+        // storing a blank secret and reporting it as configured.
+        assert_eq!(secret_for_storage(" \n\t "), "");
+    }
+
     /// Minimal loopback HTTP mock (std-only, same idea as the GUI's
     /// `models_mock`): each route is `(path, status, body)`; hit counts and
     /// the last Authorization header per path are recorded for assertions.
@@ -2226,7 +2361,10 @@ mod tests {
             "http://[::1]:11434",
             "http://127.0.0.2:8000",
         ] {
-            assert!(is_loopback_url(url).unwrap_or(false), "{url} is loopback");
+            assert!(
+                is_loopback_url(url, UrlOrigin::Argument).unwrap_or(false),
+                "{url} is loopback"
+            );
         }
         // A hostname starting with "127." resolves remotely and must be
         // refused — the guard exists so a typo can never probe off-host.
@@ -2237,7 +2375,7 @@ mod tests {
             "not a url",
         ] {
             assert!(
-                !is_loopback_url(url).unwrap_or(false),
+                !is_loopback_url(url, UrlOrigin::Argument).unwrap_or(false),
                 "{url} is not loopback"
             );
         }

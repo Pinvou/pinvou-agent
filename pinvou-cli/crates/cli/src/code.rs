@@ -19,8 +19,12 @@
 //!   per-file/whole-workspace diff mirror (bounded untracked reads, English
 //!   copy, whole-workspace composition — differentially pinned against the
 //!   app module by a contract test) and `workspace checkout` (cross-process
-//!   locks + git identity hardening are CLI-specific value). Path validation
-//!   stays a CLI pre-check so escapes remain usage errors (exit 2).
+//!   locks, an explicit `--yes` gate, and commit-identity hardening are
+//!   CLI-specific value). Every git call of these lanes runs with the GUI's
+//!   environment handling — ambient redirection variables stripped, the
+//!   user's `~/.gitconfig`/`/etc/gitconfig` honoured — because they act on
+//!   the user's real working tree. Path validation stays a CLI pre-check so
+//!   escapes remain usage errors (exit 2).
 //! - checkpoints → `features::code_checkpoints` public functions plus the
 //!   `SessionStore` rewind sidecar methods, mirroring the
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
@@ -78,7 +82,7 @@ const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|ad
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
-const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M]>";
+const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M] --yes>";
 const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session> --yes>";
 const RUN_USAGE: &str = "usage: pinvou code run <agent> --workspace DIR (--prompt-file F|--prompt S) [--timeout-secs N]";
 const PERMISSIONS_USAGE: &str = "usage: pinvou code permissions <session>";
@@ -208,6 +212,7 @@ pub enum CodeCommand {
         branch: String,
         mode: BranchSwitchMode,
         message: Option<String>,
+        yes: bool,
     },
     CheckpointsList {
         session: String,
@@ -678,10 +683,10 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
         "checkout" => {
             let session = positional(1, "a session id")?;
             let branch = positional(2, "a branch name")?;
-            let (options, _, _) = parse_flags(
+            let (options, flags, _) = parse_flags(
                 &rest[3..],
                 &["--mode", "--message"],
-                &[],
+                &["--yes"],
                 "workspace checkout",
             )?;
             let mode = match option(&options, "--mode") {
@@ -704,11 +709,16 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "code workspace checkout --mode commit requires --message",
                 ));
             }
+            // `--yes` parses here but is enforced at execute level (exit 2 via
+            // `require_yes`), like `checkpoints rewind`/`undo`: a caller that
+            // forgot it gets the same "pass --yes to confirm" message for every
+            // destructive command instead of a per-command usage string.
             Ok(CodeCommand::WorkspaceCheckout {
                 session,
                 branch,
                 mode,
                 message,
+                yes: flags.contains(&"--yes"),
             })
         }
         _ => Err(CliError::usage(WORKSPACE_USAGE)),
@@ -1113,7 +1123,14 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             branch,
             mode,
             message,
+            yes,
         } => {
+            // The confirmation gate runs before the advisory locks, exactly
+            // like `checkpoints_rewind`/`checkpoints_undo` run it before
+            // theirs: an unconfirmed invocation must not create lock files,
+            // and must not be able to answer `checkout_busy` (exit 1) when
+            // another process holds the lock instead of the usage error.
+            require_yes(yes)?;
             let mut mutation_lock = session_mutation_lock(&session)?;
             let _mutation_guard =
                 lock_session_for_mutation(&mut mutation_lock, &session, "checkout")?;
@@ -2977,9 +2994,10 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 // diff lane (the app's per-file diff reads untracked files unbounded, uses
 // Chinese section copy, and has no whole-workspace composition — the mirror
 // is differentially pinned against the app module by a contract test) and
-// `workspace checkout` (cross-process locks + git identity hardening are
-// CLI-specific value). Path validation stays a CLI pre-check so escapes
-// remain usage errors (exit 2).
+// `workspace checkout` (cross-process locks, the `--yes` gate, and
+// commit-identity hardening are CLI-specific value). Path validation stays a
+// CLI pre-check so escapes remain usage errors (exit 2). `git_command` below
+// owns the shared environment contract for both.
 
 // Direct references to the app's workspace limits (not local copies): the
 // CLI's diff/preview paths share the GUI's caps, so a change on either side
@@ -3393,12 +3411,12 @@ fn workspace_preview(
 }
 
 /// `git commit` arguments for the user-visible `workspace checkout --mode
-/// commit`. `git_command` pins the ambient gitconfig away (checkpoint-grade
-/// isolation against hooks, aliases, and credential helpers), which would
-/// otherwise let git fabricate a `user@hostname` identity; the user's real
-/// identity is passed explicitly instead, and with none configured the
-/// commit fails honestly (`user.useConfigOnly`) rather than committing a
-/// fabricated one.
+/// commit`. The commit lane strips the ambient `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+/// variables (see [`git_commit_output`]) so the identity cannot be decided by
+/// whatever the invoking shell happened to export; the identity the user's own
+/// git would use is read back by [`ambient_git_identity`] and passed explicitly
+/// with `-c`. With none configured anywhere, `user.useConfigOnly=true` makes the
+/// commit fail honestly instead of recording a fabricated `user@hostname`.
 fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliError> {
     let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
     match ambient_git_identity(root) {
@@ -3421,23 +3439,20 @@ fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliErr
 
 /// The ambient `user.name`/`user.email` the GUI's workspace lane would commit
 /// with (repo-local first, then global/system). A read-only `git config`
-/// probe: it runs no hooks, so the checkpoint-grade isolation does not apply.
+/// probe: it runs no hooks, so it needs no isolation beyond the redirection
+/// strip every lane shares.
 fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
-    // The commit this identity feeds runs with checkpoint-grade isolation
-    // (every ambient GIT_* variable stripped), so the probe must see the
-    // same effective repository: an ambient GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_*
-    // would otherwise read a different repo's (or no) identity and fail an
-    // otherwise-valid commit with user.useConfigOnly. The user's real global
-    // config is deliberately NOT pinned away here — reading it is the point.
+    // Uses the same redirection strip as the commit it feeds, so both see the
+    // same effective repository and the same configuration files: an ambient
+    // GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_* would otherwise read a different
+    // repo's (or no) identity and fail an otherwise-valid commit with
+    // user.useConfigOnly. The user's global config is deliberately visible
+    // here — reading the identity they actually commit with is the point.
     let mut command = std::process::Command::new("git");
     command
         .current_dir(root)
         .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"]);
-    for (name, _) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"GIT_") {
-            command.env_remove(name);
-        }
-    }
+    strip_git_redirection_env(&mut command);
     let output = command.output().ok()?;
     if !output.status.success() {
         return None;
@@ -3458,33 +3473,125 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
     Some((name?, email?))
 }
 
+/// Ambient `GIT_*` variables that *redirect* git at another repository or at
+/// another set of configuration files. Local mirror of the app's
+/// `platform::process::GIT_OVERRIDE_KEYS` (that module is `pub(crate)` inside
+/// the app crate and cannot be reached from this crate); keep the two in step.
+///
+/// Removing `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` is
+/// what makes the *user's own* `~/.gitconfig` and `/etc/gitconfig` apply, and
+/// removing `GIT_CONFIG_COUNT` disables the whole `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` group, so the numbered pairs need no enumeration (key
+/// and value 0 are still removed to guard against injections that bypass
+/// `COUNT`).
+///
+/// A fixed list — deliberately not a `GIT_` prefix scan over `env::vars_os()`:
+/// iterating `environ` while another thread runs `setenv`/`remove_var` can
+/// silently miss entries (glibc environ mutation is not thread-safe), which is
+/// exactly how the app lost test isolation before it moved to a fixed list.
+const GIT_REDIRECTION_KEYS: [&str; 22] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_TEMPLATE_DIR",
+    // Without GIT_LITERAL_PATHSPECS stripped, an ambient `1` would make the
+    // `--` pathspecs below match literally, so a path containing git's magic
+    // `:(...)` prefix would silently select nothing.
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+];
+
+/// Identity/date variables. They outrank `-c user.name=` / `-c user.email=` on
+/// the command line, so only the commit lane removes them — see
+/// [`git_commit_output`].
+const GIT_IDENTITY_KEYS: [&str; 6] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
+
+/// Mirror of the app's `strip_git_override_env`.
+fn strip_git_redirection_env(command: &mut std::process::Command) {
+    for key in GIT_REDIRECTION_KEYS {
+        command.env_remove(key);
+    }
+}
+
+/// Every git call of the workspace read and mutate lanes (`rev-parse`,
+/// `status`, `diff`, `branch`, `checkout`, `stash`, `add`).
+///
+/// These commands operate on the user's *real* working tree, so they must
+/// behave exactly like the git the user would run there — which is why this
+/// mirrors the GUI workspace lane (`codex_acp::workspace::git_output` →
+/// `platform::process::strip_git_override_env`) rather than the checkpoint
+/// lane's shadow-repository hardening. Only the ambient redirection variables
+/// are removed; `~/.gitconfig` and `/etc/gitconfig` are left to apply.
+///
+/// Pinning the global config away here (an earlier attempt at "stronger than
+/// the GUI" isolation) is not a safe strengthening of a working-tree lane, it
+/// is a different repository state: `core.excludesFile` stops being honoured,
+/// so globally ignored files show up as `??` and enter the stash/commit path
+/// (`--mode commit` would then `git add -A` them into a commit), and
+/// `filter.<driver>.clean`/`.smudge` drivers named by `.gitattributes` (what
+/// `git lfs install` writes) stop resolving, so `diff` reports unmodified
+/// files as changed and `checkout` writes the unsmudged clean-side content
+/// back into the user's tree.
+///
+/// Hooks, aliases, and credential helpers are consequently the user's own.
+/// That is the intended contract for a lane that mutates their checkout;
+/// commands are always spelled out in full (never through an alias) and
+/// stdin is `/dev/null` so nothing here can turn interactive.
 fn git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
     command
         .current_dir(root)
         .args(arguments)
         .stdin(std::process::Stdio::null());
-    // Checkpoint-grade git isolation — stronger than the GUI's workspace lane
-    // (which inherits ambient GIT_*) and misattributed before: raw-byte prefix
-    // matching (like the app's checkpoint lane) strips every ambient GIT_*
-    // variable without tripping on non-UTF-8 names, and user/system gitconfig
-    // is pinned away so hooks, aliases, and credential helpers cannot inject
-    // themselves into these calls.
-    for (name, _) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"GIT_") {
-            command.env_remove(name);
-        }
-    }
-    command.env("GIT_CONFIG_NOSYSTEM", "1");
-    #[cfg(unix)]
-    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
-    #[cfg(target_os = "windows")]
-    command.env("GIT_CONFIG_GLOBAL", "NUL");
+    strip_git_redirection_env(&mut command);
     command
 }
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
-    let output = git_command(root, arguments).output().map_err(|error| {
+    run_git_output(git_command(root, arguments), arguments)
+}
+
+/// `workspace checkout --mode commit`'s own `git commit`: identical to
+/// [`git_command`] except that the ambient identity variables are dropped, so
+/// the `-c user.name=` / `-c user.email=` pair [`commit_command_args`] derives
+/// from the user's configuration actually decides the commit instead of being
+/// overridden by whatever the invoking shell exported.
+fn git_commit_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
+    let mut command = git_command(root, arguments);
+    for key in GIT_IDENTITY_KEYS {
+        command.env_remove(key);
+    }
+    run_git_output(command, arguments)
+}
+
+fn run_git_output(
+    mut command: std::process::Command,
+    arguments: &[&str],
+) -> Result<String, CliError> {
+    let output = command.output().map_err(|error| {
         CliError::failed(format!(
             "code workspace: git {}: {error}",
             arguments.join(" ")
@@ -3725,6 +3832,26 @@ fn stash_head(root: &Path) -> Result<Option<String>, CliError> {
     )
 }
 
+/// `code workspace checkout <session> <branch> --mode carry|stash|commit --yes`:
+/// the headless mirror of the GUI's branch switcher. Destructive in all three
+/// modes — it moves the user's working tree — so `execute` runs `require_yes`
+/// before it is ever reached, mirroring the GUI's confirmation dialog.
+///
+/// The gate is deliberately flat rather than dirty-tree-conditional. The GUI
+/// can afford a conditional prompt because it already renders `dirty_count`
+/// next to the branch list and the user is looking at it; a CLI caller sees
+/// nothing before the tree moves, and the clean-tree path still rewrites every
+/// file that differs between the two branches. Making the gate depend on
+/// dirtiness would also make the same command line succeed or fail depending on
+/// state a script cannot see, which is worse for automation than one constant
+/// rule. The dirty count remains observable beforehand via
+/// `code workspace branches` and afterwards in this command's own result.
+///
+/// Guard the CLI cannot reproduce: the GUI additionally refuses to switch while
+/// a code session is running in that workspace (`code_sessions_in_workspace`
+/// lives in the desktop process's `AcpPool` and is unreachable headlessly). The
+/// cross-process locks below close the CLI×CLI race only — the same disclosure
+/// the module header makes for `checkpoints rewind`/`undo`.
 fn workspace_checkout(
     session: &str,
     root: &Path,
@@ -3822,7 +3949,7 @@ fn workspace_checkout(
             git_output(&root, &["add", "-A"])?;
             let commit_args = commit_command_args(&root, message)?;
             let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
-            git_output(&root, &commit_refs)?;
+            git_commit_output(&root, &commit_refs)?;
             git_output(&root, &["checkout", branch])?;
         }
     }
@@ -3868,6 +3995,7 @@ fn workspace_diff(
             let mut combined = String::new();
             let mut diffed_files = 0usize;
             let mut hit_diff_limit = false;
+            let mut failures: Vec<serde_json::Value> = Vec::new();
             for row in changes["changes"].as_array().cloned().unwrap_or_default() {
                 if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
                     break;
@@ -3880,12 +4008,41 @@ fn workspace_diff(
                     hit_diff_limit = true;
                     break;
                 }
+                // A file listed by `changes` that cannot be diffed is reported,
+                // never dropped: silently omitting it would render exactly like
+                // "this file has no changes", and the cases that get here are
+                // the ones a caller most needs to know about — a file removed
+                // between the status scan and its diff, an unreadable file, a
+                // git invocation that failed, or a change row without a usable
+                // `relativePath` (which reaches git as an empty pathspec and
+                // fails there). The command still exits 0: this lane is a
+                // best-effort aggregate over up to 500 files, and failing the
+                // whole diff because one of them vanished mid-scan would lose
+                // the other 499 diffs the caller asked for. The failure is
+                // visible in three places instead — a marker inside `text`
+                // (the only thing a human-mode caller sees), a `failures` array
+                // in the JSON envelope (machine-readable, keyed by path), and a
+                // stderr note.
                 let relative = row["relativePath"].as_str().unwrap_or_default().to_owned();
-                if let Ok((_, text, _)) = workspace_diff_one(&root, &relative) {
-                    if !combined.is_empty() {
-                        combined.push('\n');
+                match workspace_diff_one(&root, &relative) {
+                    Ok((_, text, _)) => {
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&text);
                     }
-                    combined.push_str(&text);
+                    Err(error) => {
+                        let message = error.to_string();
+                        note!("code workspace diff: {relative}: {message}");
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&format!("# diff failed: {relative}: {message}\n"));
+                        failures.push(serde_json::json!({
+                            "relativePath": relative,
+                            "error": message,
+                        }));
+                    }
                 }
             }
             // Actually cut the payload when reporting truncation — the
@@ -3899,6 +4056,10 @@ fn workspace_diff(
                 "text": combined,
                 "truncated": truncated,
                 "changes": changes["changes"],
+                // Always present (empty on the happy path) so a consumer can
+                // test `failures.length` without distinguishing "no failures"
+                // from "an older build that never reported them".
+                "failures": failures,
             });
             Ok(success(render(output, combined, &value)))
         }

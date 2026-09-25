@@ -42,6 +42,38 @@ use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 
 const SHOW_PREVIEW_CHARS: usize = 200;
 
+/// Human-mode sanitizer for MODEL-authored text rendered as a BLOCK
+/// (transcript bodies, the markdown export on stdout) rather than as one
+/// cell of a tab-separated row.
+///
+/// Why not `support::collapse_control_characters` here: that one flattens
+/// every control character including `\n` and `\t`, which is right for a
+/// single-line column but would destroy the layout of the very transcript
+/// the caller asked to read — a full dump legitimately spans many lines and
+/// indents code blocks. So newline and tab survive, and everything else in
+/// the C0/C1 control range collapses to a space. The characters that matter
+/// are the ones this keeps out: ESC (terminal escape sequences — cursor
+/// moves, colour, window-title rewrites, and on some terminals clipboard or
+/// response injection), CR (redraws the current line, so earlier output can
+/// be silently overwritten), BEL, and the remaining C0/DEL noise. Those are
+/// attacker-controlled in a way the layout is not: the text comes from the
+/// model and from tool results the model saw.
+///
+/// JSON mode needs no equivalent — `serde_json` escapes everything below
+/// 0x20 — so this stays strictly a human-rendering choice and the stored
+/// transcript, the `--output PATH` file, and the JSON payload keep the
+/// verbatim bytes.
+fn collapse_display_control_characters(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\n' | '\t' => ch,
+            _ if ch.is_control() => ' ',
+            _ => ch,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionsCommand {
     List {
@@ -409,11 +441,15 @@ fn list(archived: bool, limit: Option<usize>, output: OutputMode) -> Result<CliO
                 if row.archived { "archived" } else { "-" },
                 row.kind,
                 row.updated_at,
-                // Titles are stored verbatim and legitimately contain newlines
-                // (the GUI's attachment marker embeds "\n\n"), which would
-                // garble the tab-separated row; control characters collapse to
-                // spaces in the human column only — JSON keeps the real
-                // title.
+                // Last column only, and only in human mode: titles are stored
+                // verbatim and legitimately contain newlines (the GUI's
+                // attachment marker embeds "\n\n") or a tab, either of which
+                // would split this row into two lines or invent a seventh
+                // column for whoever is cutting on \t. The full collapse
+                // (tab and newline included, unlike the transcript-body
+                // sanitizer above) is what keeps the row contract; JSON keeps
+                // the real title. Every other column here is machine-made
+                // (id, fixed markers, RFC3339 timestamp).
                 crate::support::collapse_control_characters(&row.title),
             )
         })
@@ -508,12 +544,18 @@ fn show(
         total_messages,
         rendered.len(),
     );
+    // The transcript body is the real injection surface of this family: every
+    // byte is model-authored (or tool output the model echoed back) and it is
+    // printed straight to a terminal. Block sanitizer, not the column one —
+    // a transcript is meant to keep its lines and indentation; see
+    // [`collapse_display_control_characters`]. The JSON payload below is
+    // untouched, so a consumer that wants the verbatim bytes asks for JSON.
     for (index, message) in rendered.iter().enumerate() {
         human.push_str(&format!(
             "\n\n[{}] {}\n{}",
             index + 1,
             message["role"].as_str().unwrap_or("unknown"),
-            message["text"].as_str().unwrap_or(""),
+            collapse_display_control_characters(message["text"].as_str().unwrap_or("")),
         ));
     }
     let json = serde_json::json!({
@@ -537,10 +579,38 @@ fn rename(id: &str, title: &str, output: OutputMode) -> Result<CliOutcome, CliEr
         .set_title(id, title.to_owned())
         .map_err(|error| store_error("rename", id, error))?;
     let value = serde_json::json!({ "id": id, "action": "renamed", "title": title });
+    // The echo goes through the same collapse as the list/show title columns:
+    // a title is argv here, but it is rendered back on one line and the CLI
+    // must not be the place where the same string is safe in one command and
+    // raw in another.
     Ok(success(render(
         output,
-        format!("renamed {id}: {title}"),
+        format!(
+            "renamed {id}: {}",
+            crate::support::collapse_control_characters(title)
+        ),
         &value,
+    )))
+}
+
+/// Error for a sidecar toggle that reported success in memory but never
+/// reached the durable registry. Same shape as the connectors disabled-mirror
+/// verification: name the sidecar, state what the durable file still says,
+/// and tell the caller what to do about it.
+fn sidecar_not_persisted(
+    action: &str,
+    id: &str,
+    sidecar: &str,
+    still: &str,
+) -> Result<CliOutcome, CliError> {
+    // The sidecar registries live next to the transcripts, so a read-only or
+    // full sessions directory is the failure a caller can actually act on.
+    let location = crate::support::sandbox_home()
+        .map(|home| home.join("sessions").display().to_string())
+        .unwrap_or_else(|_| "the sessions directory".to_owned());
+    Err(CliError::failed(format!(
+        "sessions {action}({id}): the {sidecar} sidecar did not persist the change (the session \
+         is still {still}); check that {location} is writable and retry the command"
     )))
 }
 
@@ -551,6 +621,23 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     require_existing(&store, id, "pin")?;
     store.set_pinned(id, pinned);
     let action = if pinned { "pinned" } else { "unpinned" };
+    // `set_pinned` returns `()`: the sidecar layer swallows a failed persist,
+    // rolls its in-memory cache back to the durable state and only reports
+    // the failure on stderr. Without this check a read-only or full
+    // `~/.pinvou3` would still print "pinned <id>" and exit 0 with nothing
+    // written, so a script would record a pin that no later run can see.
+    // Because the cache is rolled back to the FILE's content on failure,
+    // reading the flag straight back is a reliable post-write verification:
+    // the value can only still disagree with the requested one when the
+    // durable write did not land.
+    if store.is_pinned(id) != pinned {
+        return sidecar_not_persisted(
+            action,
+            id,
+            "pinned-sessions",
+            if pinned { "unpinned" } else { "pinned" },
+        );
+    }
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(output, format!("{action} {id}"), &value)))
 }
@@ -560,6 +647,19 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     require_existing(&store, id, "archive")?;
     store.set_hidden(id, hidden);
     let action = if hidden { "archived" } else { "restored" };
+    // Same swallowed-persist contract as `set_pinned` above: the hidden
+    // registry rolls back to the durable state and only logs, so the flag
+    // read back is the honest answer about what reached the disk. An
+    // unverified "archived" is worse here than for pins — the session stays
+    // visible in every later `sessions list` the caller runs.
+    if store.is_hidden(id) != hidden {
+        return sidecar_not_persisted(
+            action,
+            id,
+            "hidden-sessions",
+            if hidden { "visible" } else { "archived" },
+        );
+    }
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(output, format!("{action} {id}"), &value)))
 }
@@ -609,9 +709,24 @@ fn export(
             // destination created (or swapped onto a symlink) after a
             // plain exists() probe can no longer be truncated.
             let bytes = content.len();
-            let write_result = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                // A transcript is the whole conversation — system prompt,
+                // every turn, tool calls and their results — so a default
+                // umask file (~0644) would publish it to every local user.
+                // Same 0600 contract as `code providers export`. Unlike that
+                // path no follow-up `set_permissions` is needed: `mode` only
+                // applies at create time, and `create_new` guarantees this
+                // call is the create (a pre-existing destination is refused
+                // below instead of being reused).
+                options.mode(0o600);
+            }
+            // Non-unix: no POSIX mode bits; ACL tightening is out of scope
+            // here exactly as it is for `code providers export`.
+            let write_result = options
                 .open(&path)
                 .and_then(|mut file| file.write_all(content.as_bytes()));
             match write_result {
@@ -653,7 +768,19 @@ fn export(
                 "format": format.as_str(),
                 "content": content,
             });
-            Ok(success(render(output, content, &value)))
+            // Stdout is a terminal here, and the markdown body is the model's
+            // own text (`render_markdown` interleaves role headers with raw
+            // message text). Sanitizing at this one boundary covers both
+            // formats and leaves `render_markdown` itself verbatim, which is
+            // what the `--output PATH` arm and the JSON `content` field above
+            // must keep: a file and a JSON string are not a terminal, and an
+            // export that silently differs from the stored transcript would
+            // be a worse bug than the one being fixed.
+            Ok(success(render(
+                output,
+                collapse_display_control_characters(&content),
+                &value,
+            )))
         }
     }
 }
@@ -806,27 +933,27 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             )));
         }
     }
+    // Every cell comes out of the JSONL sidecar, which is only as trustworthy
+    // as whatever wrote it: `event` is whitelisted above but `ts`, `turn_id`
+    // and `status` are free strings. One embedded tab or newline would add a
+    // column or split a row, so each cell goes through the column collapse.
+    let cell = |event: &serde_json::Value, key: &str, fallback: &str| {
+        crate::support::collapse_control_characters(
+            event
+                .get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or(fallback),
+        )
+    };
     let human = events
         .iter()
         .map(|event| {
             format!(
                 "{}\t{}\t{}\t{}",
-                event
-                    .get("ts")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-                event
-                    .get("event")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-                event
-                    .get("turn_id")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-                event
-                    .get("status")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("-"),
+                cell(event, "ts", ""),
+                cell(event, "event", ""),
+                cell(event, "turn_id", ""),
+                cell(event, "status", "-"),
             )
         })
         .collect::<Vec<_>>()
@@ -869,19 +996,32 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             } else {
                 "running"
             };
+            // `objective` is verbatim from the model's own `agent` tool call
+            // and `error` carries whatever the failing worker reported, so
+            // both are untrusted here. They are also the two rightmost cells
+            // of a tab-separated row: an embedded tab would invent a fifth
+            // column and a newline would turn one subagent into two rows, so
+            // the whole row goes through the column collapse (agent_id and
+            // state included — the row contract must not depend on which
+            // cell happened to be machine-made).
+            let cell = crate::support::collapse_control_characters;
             format!(
                 "{}\t{}\t{}\t{}",
-                summary.agent_id,
-                state,
-                summary.objective.as_deref().unwrap_or("-"),
-                summary.error.as_deref().unwrap_or("-"),
+                cell(&summary.agent_id),
+                cell(state),
+                cell(summary.objective.as_deref().unwrap_or("-")),
+                cell(summary.error.as_deref().unwrap_or("-")),
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let value = serde_json::to_value(&summaries)
-        .map(|summaries| serde_json::json!({ "id": id, "subagents": summaries }))
-        .unwrap_or_else(|_| serde_json::json!({ "id": id, "subagents": [] }));
+    // A failed serialization is a host failure, not an empty roster: telling
+    // a script "no subagents dispatched" when the listing could not be
+    // rendered turns a reportable error into a wrong answer (same propagation
+    // as `show` and `export` above).
+    let serialized = serde_json::to_value(&summaries)
+        .map_err(|error| CliError::failed(format!("sessions subagents({id}): {error}")))?;
+    let value = serde_json::json!({ "id": id, "subagents": serialized });
     Ok(success(render(output, human, &value)))
 }
 
@@ -1054,33 +1194,106 @@ mod tests {
         );
     }
 
+    /// Usage rejections, each pinned to the reason it is rejected FOR.
+    ///
+    /// The fixtures start at the SUBCOMMAND token: `parse` prepends
+    /// "pinvou" and "sessions" itself. Spelling the family again here would
+    /// double-prefix every argv into `pinvou sessions sessions …`, which
+    /// dies on the unknown-subcommand arm before reaching the shape under
+    /// test — twenty cases passing for one wrong reason. The expected
+    /// message fragment is what keeps that from silently happening again:
+    /// exit code 2 alone cannot tell the two failures apart.
     #[test]
     fn rejects_invalid_usage_with_exit_code_two() {
-        let invalid = [
-            vec!["sessions"],
-            vec!["sessions", "bogus"],
-            vec!["sessions", "list", "--bogus"],
-            vec!["sessions", "list", "--limit", "0"],
-            vec!["sessions", "list", "--limit", "x"],
-            vec!["sessions", "list", "--limit"],
-            vec!["sessions", "list", "--archived", "--archived"],
-            vec!["sessions", "show"],
-            vec!["sessions", "show", "s-1", "--nope"],
-            vec!["sessions", "show", "s-1", "--last"],
-            vec!["sessions", "rename"],
-            vec!["sessions", "rename", "s-1"],
-            vec!["sessions", "rename", "s-1", "   "],
-            vec!["sessions", "pin"],
-            vec!["sessions", "pin", "s-1", "--extra"],
-            vec!["sessions", "delete", "s-1", "--nope"],
-            vec!["sessions", "export", "s-1", "--format", "html"],
-            vec!["sessions", "export", "s-1", "--format"],
-            vec!["sessions", "timeline"],
-            vec!["sessions", "timeline", "s-1", "--full"],
+        let invalid: [(Vec<&str>, &str); 20] = [
+            (vec![], "usage: pinvou sessions"),
+            (vec!["bogus"], "usage: pinvou sessions"),
+            (vec!["list", "--bogus"], "unsupported sessions option"),
+            (
+                vec!["list", "--limit", "0"],
+                "sessions --limit must be a positive integer",
+            ),
+            (
+                vec!["list", "--limit", "x"],
+                "sessions --limit must be a positive integer",
+            ),
+            (
+                vec!["list", "--limit"],
+                "sessions option --limit requires a value",
+            ),
+            (
+                vec!["list", "--archived", "--archived"],
+                "duplicate sessions option --archived",
+            ),
+            (vec!["show"], "requires a session id"),
+            (vec!["show", "s-1", "--nope"], "unsupported sessions option"),
+            (
+                vec!["show", "s-1", "--last"],
+                "sessions option --last requires a value",
+            ),
+            (vec!["rename"], "requires a session id"),
+            (vec!["rename", "s-1"], "sessions rename requires a title"),
+            (
+                vec!["rename", "s-1", "   "],
+                "sessions rename requires a title",
+            ),
+            (vec!["pin"], "requires a session id"),
+            (
+                vec!["pin", "s-1", "--extra"],
+                "sessions pin accepts no options",
+            ),
+            (
+                vec!["delete", "s-1", "--nope"],
+                "unsupported sessions option",
+            ),
+            (
+                vec!["export", "s-1", "--format", "html"],
+                "sessions export --format must be markdown or json",
+            ),
+            (
+                vec!["export", "s-1", "--format"],
+                "sessions option --format requires a value",
+            ),
+            (vec!["timeline"], "requires a session id"),
+            (
+                vec!["timeline", "s-1", "--full"],
+                "sessions timeline accepts no options",
+            ),
         ];
-        for arguments in invalid {
+        for (arguments, expected) in invalid {
             let error = parse(&arguments).expect_err(arguments.join(" ").as_str());
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{arguments:?}");
+            assert!(
+                error.to_string().contains(expected),
+                "{arguments:?} was rejected for the wrong reason: {error}"
+            );
         }
+    }
+
+    /// The transcript sanitizer must keep the layout of the output it
+    /// protects: a transcript dump is meant to span lines and to indent, so
+    /// collapsing `\n`/`\t` the way the column sanitizer does would destroy
+    /// the very thing the caller asked to read. Everything else in the
+    /// control range — ESC above all, plus CR, which redraws the current
+    /// line and can hide earlier output — must not reach the terminal.
+    #[test]
+    fn transcript_sanitizer_keeps_layout_and_drops_escapes() {
+        assert_eq!(
+            collapse_display_control_characters("line1\n\tindented\n"),
+            "line1\n\tindented\n"
+        );
+        assert_eq!(
+            collapse_display_control_characters("safe\x1b[2J\x1b]0;pwned\x07done"),
+            "safe [2J ]0;pwned done"
+        );
+        assert_eq!(
+            collapse_display_control_characters("visible\rhidden"),
+            "visible hidden"
+        );
+        // Non-control text, including multi-byte characters, is untouched.
+        assert_eq!(
+            collapse_display_control_characters("已完成 — ok"),
+            "已完成 — ok"
+        );
     }
 }

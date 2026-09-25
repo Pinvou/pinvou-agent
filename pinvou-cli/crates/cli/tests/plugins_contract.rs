@@ -1397,8 +1397,32 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
                 "not-ready bundles carry a reason"
             );
         }
-        for field in ["bundle_id", "kind", "installed", "ready", "reason"] {
+        for field in ["bundle_id", "kind", "installed", "ready", "reason", "probe"] {
             assert!(bundle.get(field).is_some(), "missing {field}");
+        }
+        // The probe marker is what makes a row self-describing: `registry`
+        // rows are the same verdict the GUI computes, `unavailable_in_cli`
+        // rows are the ones the CLI could not settle. A `cli`-kind row is
+        // always the latter — the GUI decides it from a live `*_status`
+        // probe, so the headless surface must never claim `ready: true` for
+        // one (a logged-out connector would look ready).
+        if bundle["kind"] == serde_json::json!("cli") {
+            assert_eq!(
+                bundle["probe"],
+                serde_json::json!("unavailable_in_cli"),
+                "cli readiness is not decidable headlessly"
+            );
+            assert_eq!(
+                bundle["ready"],
+                serde_json::json!(false),
+                "a cli bundle is never reported ready without a live probe"
+            );
+        } else {
+            assert_eq!(
+                bundle["probe"],
+                serde_json::json!("registry"),
+                "non-cli readiness is fully computed from the registry"
+            );
         }
     }
     let weather = bundles
@@ -1417,6 +1441,31 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
         .find(|bundle| bundle["bundle_id"] == "canva-mcp")
         .expect("canva-mcp listed");
     assert_eq!(canva["ready"], serde_json::json!(true));
+    assert_eq!(canva["probe"], serde_json::json!("registry"));
+    // A cli-kind row in the zero state: "not installed" IS a registry-visible
+    // fact, so the reason names it rather than the headless limitation — the
+    // probe marker still records that no connection check was performed.
+    let feishu = bundles
+        .iter()
+        .find(|bundle| bundle["bundle_id"] == "feishu")
+        .expect("feishu listed");
+    assert_eq!(feishu["kind"], serde_json::json!("cli"));
+    assert_eq!(feishu["reason"], serde_json::json!("cli_not_installed"));
+    assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+    // The human table carries the probe column too (6 tab-separated fields).
+    let feishu_line = human
+        .lines()
+        .find(|line| line.starts_with("feishu\t"))
+        .expect("feishu human row");
+    assert_eq!(
+        feishu_line.split('\t').count(),
+        6,
+        "human row: id, kind, installed, ready, reason, probe"
+    );
+    assert!(
+        feishu_line.ends_with("\tunavailable_in_cli"),
+        "human row discloses the probe: {feishu_line}"
+    );
 }
 
 #[test]
@@ -1430,21 +1479,33 @@ fn plugins_reject_a_flag_looking_id() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
-/// Execution-level readiness against a seeded store record: a degraded CLI
-/// record (logged-out / assets mismatch) must answer the desktop's
-/// `not_connected` reason instead of Ready — the registry-only zero state
-/// cannot exercise this arm because no record is installed.
-#[test]
-fn readiness_reports_a_degraded_cli_record_as_not_connected() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("readiness-degraded");
-    let marketplace = home.path().join("marketplace");
+/// Seeds `marketplace/bundles.json` with one hand-written record so the
+/// execution-level readiness arms (which need an *installed* record) can be
+/// exercised; the registry-only zero state never reaches them.
+fn seed_bundle_record(home: &std::path::Path, record_json: &str) {
+    let marketplace = home.join("marketplace");
     std::fs::create_dir_all(&marketplace).unwrap();
     std::fs::write(
         marketplace.join("bundles.json"),
-        r#"{"schema_version":1,"records":[{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"logged out"}]}"#,
+        format!(r#"{{"schema_version":1,"records":[{record_json}]}}"#),
     )
     .unwrap();
+}
+
+/// Execution-level readiness for a degraded CLI record. `degraded` is the
+/// store's "registered but its assets are missing" flag (set for CLI records
+/// only when the binary fails its SHA-256 check against the lock table) — it
+/// says nothing about the login state, so the reason must name the asset
+/// damage. Reporting `not_connected` here would send an operator to re-scan a
+/// QR code when the fix is re-downloading the binary.
+#[test]
+fn readiness_reports_a_degraded_cli_record_as_asset_damage() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("readiness-degraded");
+    seed_bundle_record(
+        home.path(),
+        r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"binary sha mismatch"}"#,
+    );
 
     let value = run_json(&["pinvoy", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
@@ -1454,5 +1515,80 @@ fn readiness_reports_a_degraded_cli_record_as_not_connected() {
         .expect("feishu row");
     assert_eq!(feishu["installed"], serde_json::json!(true));
     assert_eq!(feishu["ready"], serde_json::json!(false));
-    assert_eq!(feishu["reason"], serde_json::json!("not_connected"));
+    assert_eq!(feishu["reason"], serde_json::json!("cli_assets_mismatch"));
+    assert_ne!(
+        feishu["reason"],
+        serde_json::json!("not_connected"),
+        "asset damage must not be reported as a login problem"
+    );
+    assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+}
+
+/// Execution-level readiness for a healthy, installed CLI record — the case
+/// the registry cannot decide. Everything headless can check passes, but
+/// "ready" for a connector means "logged in", and only the desktop's live
+/// `*_status` probe knows that. The row must therefore NOT claim `ready:
+/// true` (a logged-out feishu is indistinguishable here); it discloses the
+/// limitation in `reason` + `probe` instead.
+#[test]
+fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("readiness-cli-healthy");
+    seed_bundle_record(
+        home.path(),
+        r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z"}"#,
+    );
+
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let feishu = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "feishu")
+        .expect("feishu row");
+    assert_eq!(feishu["installed"], serde_json::json!(true));
+    assert_eq!(
+        feishu["ready"],
+        serde_json::json!(false),
+        "no live probe ran, so readiness must not be asserted"
+    );
+    assert_eq!(
+        feishu["reason"],
+        serde_json::json!("connection_unknown_in_cli"),
+        "the reason names the limitation, not an observed fault"
+    );
+    assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
+}
+
+/// Execution-level readiness for a degraded NON-CLI package. `degraded` means
+/// the package is registered but its resources are missing, which is true
+/// regardless of kind — so an MCP package gets the same verdict a skill
+/// package does (the earlier implementation only demoted skills and left a
+/// degraded MCP `ready: true`). This verdict is shared with the desktop's
+/// `bundle_readiness`, so it is a GUI-visible change; see the rationale in
+/// `features/marketplace/bundle.rs::readiness_for`.
+#[test]
+fn readiness_reports_a_degraded_package_as_assets_missing() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("readiness-degraded-pkg");
+    seed_bundle_record(
+        home.path(),
+        r#"{"id":"canva-mcp","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"resources missing"}"#,
+    );
+
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let canva = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "canva-mcp")
+        .expect("canva-mcp row");
+    assert_eq!(canva["kind"], serde_json::json!("mcp"));
+    assert_eq!(canva["installed"], serde_json::json!(true));
+    assert_eq!(
+        canva["ready"],
+        serde_json::json!(false),
+        "a package whose resources are missing cannot serve requests"
+    );
+    assert_eq!(canva["reason"], serde_json::json!("assets_missing"));
+    // Fully decided from registry state: no live probe is involved.
+    assert_eq!(canva["probe"], serde_json::json!("registry"));
 }

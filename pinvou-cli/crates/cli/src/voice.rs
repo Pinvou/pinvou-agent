@@ -718,7 +718,93 @@ fn ffmpeg_missing_is_fatal_for(extension: Option<&str>) -> bool {
 /// Mirror of the GUI's decoded-audio cap (`recording_too_long`).
 const MAX_TRANSCRIBE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The recognition lanes one `transcribe` invocation can reach.
+#[derive(Clone, Copy, Debug)]
+struct AsrLanes {
+    engine: bool,
+    ffmpeg: bool,
+    model: bool,
+    /// An external ASR CLI is configured and present (`PINVOU3_ASR_CMD` and
+    /// friends), which is a complete lane on its own.
+    external: bool,
+}
+
+/// Probes the installed lanes. The external-CLI lookup stays behind the short
+/// circuit so a complete native install never pays for a PATH walk — on macOS
+/// that also means the system Speech runtime (which `asr_components` reports
+/// as engine + ffmpeg + model) short-circuits the probe entirely.
+fn installed_lanes() -> AsrLanes {
+    let (engine, ffmpeg, model, _) = asr_components();
+    let external = !(engine && ffmpeg && model) && external_asr_command().is_some();
+    AsrLanes {
+        engine,
+        ffmpeg,
+        model,
+        external,
+    }
+}
+
+/// What the pre-flight component gate decided for one `transcribe` call.
+#[derive(Debug, PartialEq, Eq)]
+enum AsrPreflight {
+    /// A lane exists; hand the audio to `run_recognition`.
+    Run,
+    /// Engine and model are installed and only ffmpeg is missing, but this
+    /// input needs no conversion: recognition runs on the raw wav and the
+    /// user is warned that other formats will not work until ffmpeg is there.
+    RunOnRawWav,
+    /// No lane can run; the payload is the user-facing message.
+    Reject(&'static str),
+}
+
+/// Decides whether the installed components give `transcribe` a lane at all.
+///
+/// Kept pure and out of [`transcribe`] because the decisive combination
+/// cannot be staged by any hermetic test that drives the real probes:
+/// `model_available` insists on a model file of exactly the shipped size
+/// (hundreds of MiB) matching a pinned sha256, so "engine + model installed,
+/// ffmpeg missing" — the one case that must keep going instead of failing —
+/// is unreachable through the CLI harness.
+fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
+    if (lanes.engine && lanes.ffmpeg && lanes.model) || lanes.external {
+        return AsrPreflight::Run;
+    }
+    // Everything but ffmpeg is installed. The native lane feeds the engine
+    // the raw wav in that case (GUI parity), so an input that needs no
+    // conversion is not a failure at all — reporting "not installed" here
+    // would send the user reinstalling a model that is present and already
+    // verified.
+    // Other extensions keep the hard error: the engine cannot decode them
+    // without the converter.
+    if lanes.engine && lanes.model {
+        if ffmpeg_missing_is_fatal_for(extension) {
+            return AsrPreflight::Reject(
+                "ffmpeg_missing: ffmpeg is required for local speech recognition; \
+                 install it manually or run pinvou voice asr-install",
+            );
+        }
+        return AsrPreflight::RunOnRawWav;
+    }
+    AsrPreflight::Reject(
+        "asr_engine_missing: local speech recognition is not installed \
+         (hint: run `pinvou voice asr-status`)",
+    )
+}
+
 fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
+    transcribe_with(path, output, installed_lanes, run_recognition)
+}
+
+/// `transcribe` with its two environment-dependent steps injected — the
+/// component probe and the recognition dispatch — so a test can pin what the
+/// gate does for an install the test host cannot produce. Both are taken lazily
+/// so the input validation below still runs before anything is probed or spawned.
+fn transcribe_with(
+    path: &Path,
+    output: OutputMode,
+    lanes: impl FnOnce() -> AsrLanes,
+    recognize: impl FnOnce(&Path) -> Result<(String, &'static str), CliError>,
+) -> Result<CliOutcome, CliError> {
     // Validate the input BEFORE anything else: a FIFO or character device
     // reports len 0, so a size gate alone would let `/dev/zero` stream
     // unbounded into memory — that must fail fast without requiring an ASR
@@ -741,35 +827,19 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             "recording_too_long: recording exceeds the 4 MiB transcription cap",
         ));
     }
-    // Then fail fast on missing ASR before loading the file into memory.
-    let (engine, ffmpeg, model, _) = asr_components();
-    if !cfg!(target_os = "macos")
-        && !(engine && ffmpeg && model)
-        && external_asr_command().is_none()
-    {
-        // The native lane itself falls back to the raw wav when ffmpeg is
-        // missing (GUI parity), so ffmpeg-only gaps are a distinct, fixable
-        // condition from a missing engine/model install. A .wav input needs
-        // no conversion at all — the GUI feeds it straight to the engine —
-        // so for .wav the hard gate downgrades to a warning and the raw-wav
-        // lane runs; other extensions keep the hard error (the engine
-        // cannot decode them without ffmpeg).
-        if engine && model && !ffmpeg {
-            if ffmpeg_missing_is_fatal_for(path.extension().and_then(|ext| ext.to_str())) {
-                return Err(CliError::failed(
-                    "ffmpeg_missing: ffmpeg is required for local speech recognition; \
-                     install it manually or run pinvou voice asr-install",
-                ));
-            }
-            crate::note!(
-                "voice transcribe: ffmpeg is missing; feeding the raw wav to the engine \
-                 (install ffmpeg or run `pinvou voice asr-install` for non-wav audio)"
-            );
-        }
-        return Err(CliError::failed(
-            "asr_engine_missing: local speech recognition is not installed \
-             (hint: run `pinvou voice asr-status`)",
-        ));
+    // Then fail fast on missing ASR before loading the file into memory. The
+    // gate needs no macOS special case of its own: `asr_components` reports
+    // the system Speech runtime as a complete install there, so the preflight
+    // resolves to `Run` without any component being probed.
+    match asr_preflight(lanes(), path.extension().and_then(|ext| ext.to_str())) {
+        AsrPreflight::Run => {}
+        // A warning, not an error: execution continues into the raw-wav lane
+        // that `native_engine_transcribe` already implements.
+        AsrPreflight::RunOnRawWav => crate::note!(
+            "voice transcribe: ffmpeg is missing; feeding the raw wav to the engine \
+             (install ffmpeg or run `pinvou voice asr-install` for non-wav audio)"
+        ),
+        AsrPreflight::Reject(message) => return Err(CliError::failed(message)),
     }
     let audio = {
         use std::io::Read as _;
@@ -801,7 +871,7 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         ));
     }
     let wav = write_temp_wav(&audio)?;
-    let result = run_recognition(&wav);
+    let result = recognize(&wav);
     let _ = std::fs::remove_file(&wav);
     let (text, source) = result?;
     let value = serde_json::json!({ "text": text, "source": source });
@@ -997,11 +1067,19 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
 
     let timeout = asr_timeout_secs();
     let started = Instant::now();
+    // The group kill lives on the two branches that leave the engine
+    // unreaped — a timeout and a broken wait — where the leader is
+    // verifiably still alive and its descendants must not be orphaned. Once
+    // `try_wait` has reaped the child, whatever its exit status, the pid is
+    // free for reuse and `kill(-pgid)` could hit an unrelated process group
+    // with this user's privileges, so no kill happens there (the same rule
+    // every `connectors` call site follows).
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 if started.elapsed() >= Duration::from_secs(timeout) {
+                    crate::support::kill_process_tree(&mut child);
                     break Err(CliError::failed(format!(
                         "voice transcribe: local ASR engine timed out after {timeout}s"
                     )));
@@ -1009,23 +1087,19 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(error) => {
+                crate::support::kill_process_tree(&mut child);
                 break Err(CliError::failed(format!(
                     "voice transcribe: local ASR engine failed unexpectedly: {error}"
                 )));
             }
         }
     };
-    // Off the success path the group kill reaps timed-out engines and any
-    // descendants that inherited their pipes. On a clean success the leader
-    // is gone, but a descendant that inherited the pipes can keep them open
-    // past EOF, so an unbounded join here would hang this one-shot process
-    // forever; collect through the bounded grace instead (the same hazard
-    // the probe and login lanes bound; killing a reaped leader's group is
-    // avoided for the pid-reuse race, so the drains may come back empty and
-    // surface as the usual parse failure instead of a hang).
-    if !matches!(&status, Ok(status) if status.success()) {
-        crate::support::kill_process_tree(&mut child);
-    }
+    // A descendant that inherited the engine's pipes can keep them open past
+    // the engine's own exit, so an unbounded join here would hang this
+    // one-shot process forever; collect through the bounded grace instead
+    // (the same hazard the probe and login lanes bound). A straggler is left
+    // alone for the reaped-pid reason above, so the drains may come back
+    // short and surface as the usual parse failure instead of a hang.
     let stdout = drain_with_grace(stdout_rx);
     let stderr = drain_with_grace(stderr_rx);
     let _ = std::fs::remove_file(&normalized);
@@ -1172,11 +1246,17 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
     });
 
     let started = Instant::now();
+    // Same rule as the local-engine lane: the group kill belongs only to the
+    // branches that leave the CLI unreaped. A non-success exit is ordinary
+    // here — exit code 6 is the documented "no speech" answer — and the child
+    // is already reaped by then, so killing its group would race a reused pid
+    // and SIGKILL an unrelated process group.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 if started.elapsed() >= Duration::from_secs(timeout) {
+                    crate::support::kill_process_tree(&mut child);
                     break Err(CliError::failed(format!(
                         "asr_timeout: local speech recognition timed out ({timeout} s)"
                     )));
@@ -1184,20 +1264,16 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(error) => {
+                crate::support::kill_process_tree(&mut child);
                 break Err(CliError::failed(format!(
                     "asr_runtime_error: local speech recognition failed unexpectedly: {error}"
                 )));
             }
         }
     };
-    // Off the success path the group kill reaps a timed-out CLI together
-    // with any descendants that inherited its pipes. On a clean success the
-    // leader is gone, but a pipe-inheriting descendant can hold EOF open, so
-    // collect through the bounded grace instead of an unbounded join (see
-    // the local-engine lane).
-    if !matches!(&status, Ok(status) if status.success()) {
-        crate::support::kill_process_tree(&mut child);
-    }
+    // A pipe-inheriting descendant can hold EOF open past the CLI's exit, so
+    // collect through the bounded grace instead of an unbounded join (see the
+    // local-engine lane).
     let stdout = drain_with_grace(stdout_rx);
     let stderr = drain_with_grace(stderr_rx);
     let status = status?;
@@ -2026,7 +2102,10 @@ mod review_fix_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::ffmpeg_missing_is_fatal_for;
+    use super::{
+        AsrLanes, AsrPreflight, OutputMode, asr_preflight, ffmpeg_missing_is_fatal_for,
+        transcribe_with,
+    };
 
     #[test]
     fn ffmpeg_missing_is_fatal_except_for_wav_inputs() {
@@ -2036,5 +2115,99 @@ mod tests {
         assert!(!ffmpeg_missing_is_fatal_for(Some("WAV")));
         assert!(!ffmpeg_missing_is_fatal_for(Some("Wav")));
         assert!(ffmpeg_missing_is_fatal_for(None));
+    }
+
+    fn lanes(engine: bool, ffmpeg: bool, model: bool, external: bool) -> AsrLanes {
+        AsrLanes {
+            engine,
+            ffmpeg,
+            model,
+            external,
+        }
+    }
+
+    /// The full component table for the pre-flight gate. Only one combination
+    /// continues on a warning — engine + model installed, ffmpeg missing, an
+    /// input that needs no conversion — and every other one keeps the error it
+    /// has always produced.
+    #[test]
+    fn asr_preflight_downgrades_only_the_ffmpeg_gap_on_wav_inputs() {
+        assert_eq!(
+            asr_preflight(lanes(true, false, true, false), Some("wav")),
+            AsrPreflight::RunOnRawWav
+        );
+        assert_eq!(
+            asr_preflight(lanes(true, false, true, false), Some("WAV")),
+            AsrPreflight::RunOnRawWav
+        );
+        // Anything the engine cannot decode on its own still needs ffmpeg.
+        for extension in [Some("mp3"), Some("m4a"), None] {
+            let decision = asr_preflight(lanes(true, false, true, false), extension);
+            assert!(
+                matches!(decision, AsrPreflight::Reject(message) if message.starts_with("ffmpeg_missing")),
+                "{extension:?} must stay a hard ffmpeg error, got: {decision:?}"
+            );
+        }
+        for extension in [Some("wav"), Some("mp3"), None] {
+            // A missing engine or a missing model is the "not installed"
+            // condition, wav or not.
+            for missing in [
+                lanes(false, false, false, false),
+                lanes(false, true, true, false),
+                lanes(true, true, false, false),
+                lanes(false, false, true, false),
+            ] {
+                let decision = asr_preflight(missing, extension);
+                assert!(
+                    matches!(decision, AsrPreflight::Reject(message) if message.starts_with("asr_engine_missing")),
+                    "{missing:?} with {extension:?} must report a missing install, got: {decision:?}"
+                );
+            }
+            // A configured external ASR CLI is a complete lane by itself, and
+            // a complete native install never reaches the gate's error arms.
+            assert_eq!(
+                asr_preflight(lanes(false, false, false, true), extension),
+                AsrPreflight::Run
+            );
+            assert_eq!(
+                asr_preflight(lanes(true, true, true, false), extension),
+                AsrPreflight::Run
+            );
+        }
+    }
+
+    /// Caller-level guard for the same fact, because the gate once printed the
+    /// raw-wav warning and then returned `asr_engine_missing` anyway: with
+    /// engine and model installed and ffmpeg absent, a `.wav` input must reach
+    /// recognition. Restoring that return makes this fail.
+    #[test]
+    fn transcribe_reaches_recognition_for_a_wav_input_without_ffmpeg() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-voice-gate-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("capture.wav");
+        // 44-byte header-only WAV: large enough to pass the empty-audio gate.
+        std::fs::write(&wav, vec![0u8; 44]).unwrap();
+
+        let outcome = transcribe_with(
+            &wav,
+            OutputMode::Human,
+            || lanes(true, false, true, false),
+            |_| Ok(("stub transcript".to_owned(), "sensevoice-local")),
+        )
+        .expect("the raw-wav lane must run instead of reporting a missing install");
+        assert_eq!(outcome.exit_code, crate::ExitCode::Success);
+        assert!(
+            outcome.stdout.contains("stub transcript"),
+            "the recognized text must be reported: {}",
+            outcome.stdout
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

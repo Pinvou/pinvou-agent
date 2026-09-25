@@ -322,6 +322,34 @@ fn rejects_invalid_usage_with_exit_code_two() {
             "--mode",
             "bogus",
         ],
+        // `agent`/`plan` are refused like any other non-yolo value: the mode
+        // is forced to yolo downstream, so accepting them would discard the
+        // caller's choice. `scheduled update` already classifies the same
+        // refusal as a usage error.
+        vec![
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            "agent",
+        ],
+        vec![
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            "plan",
+        ],
         vec![
             "scheduled",
             "create",
@@ -390,8 +418,10 @@ fn every_subcommand_shape_parses() {
             "memory-organize",
             "--model-id",
             "m-1",
+            // `yolo` is the only mode a scheduled task can have; `agent`/
+            // `plan` are refused (see create_refuses_non_yolo_modes).
             "--mode",
-            "plan",
+            "yolo",
             "--paused",
         ],
         vec!["scheduled", "update", "t-1", "--name", "New"],
@@ -612,6 +642,188 @@ fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
         error.starts_with("scheduled_memory_organize_disabled"),
         "{error}"
     );
+    let _ = home;
+}
+
+#[test]
+fn create_refuses_non_yolo_modes_like_the_app() {
+    // `build_create_request` runs every scheduled task through
+    // `canonical_scheduled_mode`, which refuses anything but `yolo` because
+    // the request overwrites `mode` downstream regardless: an accepted
+    // `agent`/`plan` becomes a full-YOLO task (`trust_mode` and
+    // `auto_approve` on) with the caller's choice discarded in silence. The
+    // CLI used to accept both and throw them away, so pin the refusal, its
+    // exit-code class, and the absence of a persisted task.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("mode-refusal");
+    let prompt = write_prompt_file(&home, "mode.md", "Summarize the reports.");
+    for refused in ["agent", "plan"] {
+        let error = assert_validation_fail(&[
+            "scheduled",
+            "create",
+            "--name",
+            "Moded",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            refused,
+        ]);
+        assert!(error.contains(refused), "{refused}: {error}");
+        assert!(error.contains("yolo"), "{refused}: {error}");
+        let listed = run_json(&["scheduled", "list"]);
+        assert_eq!(
+            listed["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "{refused}: a refused mode must not persist a task"
+        );
+    }
+
+    // The one accepted value still creates, and persists the yolo shape.
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Yolo task",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+        "--mode",
+        "yolo",
+    ]);
+    assert_eq!(created["mode"].as_str(), Some("yolo"));
+    assert_eq!(created["trustMode"].as_bool(), Some(true));
+    assert_eq!(created["autoApprove"].as_bool(), Some(true));
+    let _ = home;
+}
+
+/// A run record that is valid JSON but wrong-shaped (a required field
+/// missing, typed wrong, or carrying a value the foundation's typed fields
+/// cannot decode) must fail the listing with the malformed-record error
+/// instead of rendering a phantom run — the gate implemented by
+/// `require_object_run_record`.
+#[test]
+fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-record-type");
+    let created = create_task(&home, "Typechecked task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    // Missing `status` entirely.
+    let runs = home.runs_dir(&task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    let missing = runs.join("20260923T000000-1.json");
+    std::fs::write(
+        &missing,
+        r#"{"id":"run-1","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","created_at":"2026-09-23T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let error = expect_failed(&["scheduled", "runs", &task_id]);
+    assert!(error.contains("is not a well-formed run record"), "{error}");
+    std::fs::remove_file(&missing).unwrap();
+
+    // Wrong-typed `status` (number instead of string) is refused too.
+    let wrong_type = runs.join("20260923T000000-2.json");
+    std::fs::write(
+        &wrong_type,
+        r#"{"id":"run-2","automation_id":"t","scheduled_for":"x","status":3,"created_at":"y"}"#,
+    )
+    .unwrap();
+    let error = expect_failed(&["scheduled", "runs", &task_id]);
+    assert!(error.contains("is not a well-formed run record"), "{error}");
+    std::fs::remove_file(&wrong_type).unwrap();
+
+    // A *string* status that is not an `AutomationRunStatus` variant, and a
+    // string timestamp that is not an RFC3339 instant, both used to pass the
+    // string-only gate and render as a run with a garbage status, sorted last
+    // by `record_time`'s epoch-floor fallback. They are the records that
+    // hard-stop the GUI: `read_run_file` cannot deserialize them and
+    // `collect_due_runs` aborts the sweep for every automation.
+    let undecodable = runs.join("20260923T000000-3.json");
+    for (label, payload) in [
+        (
+            "bogus status",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"bogus","created_at":"2026-09-23T00:00:00Z"}"#,
+        ),
+        (
+            "unparseable scheduled_for",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"x","status":"completed","created_at":"2026-09-23T00:00:00Z"}"#,
+        ),
+        (
+            "unparseable created_at",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"y"}"#,
+        ),
+        (
+            // Offset-less: chrono's `DateTime<Utc>` deserializer requires one,
+            // so this is undecodable for the GUI exactly like the above.
+            "offset-less created_at",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"2026-09-23T00:00:00"}"#,
+        ),
+    ] {
+        std::fs::write(&undecodable, payload).unwrap();
+        let error = expect_failed(&["scheduled", "runs", &task_id]);
+        assert!(
+            error.contains("is not a well-formed run record"),
+            "{label}: {error}"
+        );
+    }
+    std::fs::remove_file(&undecodable).unwrap();
+
+    // The same record with every field decodable lists cleanly, so the gate
+    // rejects on the value and not merely on the shape.
+    std::fs::write(
+        runs.join("20260923T000000-4.json"),
+        r#"{"id":"run-4","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"2026-09-23T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let listed = run_json(&["scheduled", "runs", &task_id]);
+    assert_eq!(listed["runs"][0]["id"].as_str(), Some("run-4"));
+    let _ = home;
+}
+
+/// The definition twin of the run-record gate: `status` is an
+/// `AutomationStatus` enum and the two stamps are `DateTime<Utc>`, so a
+/// hand-edited def carrying a well-typed but undecodable value must be
+/// refused as malformed rather than listed with a status the GUI will never
+/// agree with.
+#[test]
+fn read_commands_refuse_undecodable_definition_values_as_malformed() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("def-undecodable-values");
+    let created = create_task(&home, "Decodable task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let pristine: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+
+    for (label, field, value) in [
+        ("bogus status", "status", serde_json::json!("archived")),
+        ("empty status", "status", serde_json::json!("")),
+        (
+            "unparseable created_at",
+            "created_at",
+            serde_json::json!("not-a-date"),
+        ),
+        (
+            "offset-less updated_at",
+            "updated_at",
+            serde_json::json!("2026-09-23T00:00:00"),
+        ),
+    ] {
+        let mut def = pristine.clone();
+        def[field] = value;
+        std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+        let shown = expect_failed(&["scheduled", "show", &task_id]);
+        assert!(shown.contains("is malformed"), "{label}: {shown}");
+        let listed = expect_failed(&["scheduled", "list"]);
+        assert!(listed.contains("is malformed"), "{label}: {listed}");
+    }
+
+    // The untouched definition still reads, so the gate is value-specific.
+    std::fs::write(home.def_path(&task_id), pristine.to_string()).unwrap();
+    let shown = run_json(&["scheduled", "show", &task_id]);
+    assert_eq!(shown["id"].as_str(), Some(task_id.as_str()));
     let _ = home;
 }
 

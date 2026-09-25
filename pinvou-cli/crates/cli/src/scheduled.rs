@@ -87,30 +87,48 @@ kind can only be set at create time"
     }
 }
 
-/// Approval mode. The GUI validates these three values and then always
-/// persists `yolo` (scheduled execution cannot show an approval prompt), so
-/// the CLI mirrors the validation and the fixed persisted value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Approval mode. A scheduled run has no operator in front of it, so no
+/// approval prompt can ever be answered: the app overwrites `mode` with
+/// `yolo` unconditionally on both the create and the update request
+/// (`features::scheduled::tasks::SCHEDULED_EXECUTION_MODE`), which turns any
+/// other accepted value into a silently discarded user choice — the caller
+/// asks for `plan` and is handed a full-YOLO task with `trust_mode` and
+/// `auto_approve` on. The app therefore refuses `agent`/`plan` outright in
+/// `canonical_scheduled_mode`, and this enum mirrors that decision by having
+/// no variant to represent them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TaskMode {
-    Agent,
-    Plan,
+    #[default]
     Yolo,
 }
 
 impl TaskMode {
+    /// Mirrors the app's `canonical_scheduled_mode`: absent, empty (the flag
+    /// carries no opinion) or an exact `yolo` passes; everything else is
+    /// refused by name. The refusal is a usage error (exit 2) because the
+    /// value is invalid at parse time — the same class `scheduled update`
+    /// already uses for its blanket `--mode` rejection, so both subcommands
+    /// classify the identical refusal identically.
     fn parse_value(value: &str) -> Result<Self, CliError> {
-        match value {
-            "agent" => Ok(Self::Agent),
-            "plan" => Ok(Self::Plan),
-            "yolo" => Ok(Self::Yolo),
+        match value.trim() {
+            "" | Self::PERSISTED => Ok(Self::Yolo),
             other => Err(CliError::usage(format!(
-                "scheduled task mode must be exactly one of agent|plan|yolo, got '{other}'"
+                "scheduled tasks always run in '{}' mode, got '{other}': a scheduled run \
+cannot answer an approval prompt, so the mode is forced to yolo (trust mode and auto-approve \
+on) and an 'agent'/'plan' request would be discarded without notice",
+                Self::PERSISTED
             ))),
         }
     }
 
-    /// The GUI always persists this mode for scheduled execution.
+    /// The mode persisted for every scheduled task.
     const PERSISTED: &'static str = "yolo";
+
+    fn persisted(self) -> &'static str {
+        match self {
+            Self::Yolo => Self::PERSISTED,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1362,15 +1380,15 @@ fn ensure_supported_schema(
     Ok(())
 }
 
-/// A definition file that is valid JSON but not an object (hand-edited
-/// store) must fail honestly: `read_def` and `list_defs` apply this check so
-/// every command refuses uniformly, with the same stable message — read-only
-/// `show`/`list` would otherwise render a phantom empty task, and the
-/// `IndexMut` writes in the mutating commands would panic (exit 101, outside
-/// the CLI's exit-code contract). The required-field check mirrors the
-/// GUI's typed `AutomationRecord` (serde fails the whole store there):
-/// a def missing one of its required fields must not render as a phantom
-/// task either.
+/// The `AutomationRunStatus` variants as the foundation serializes them
+/// (`#[serde(rename_all = "snake_case")]` in
+/// `codewhale-tui::automation_manager`). The field is an enum there, not a
+/// free string, so any other value fails its typed read.
+const RUN_STATUS_VALUES: [&str; 5] = ["queued", "running", "completed", "failed", "canceled"];
+
+/// The `AutomationStatus` variants, same source and same snake_case rule.
+const TASK_STATUS_VALUES: [&str; 2] = ["active", "paused"];
+
 /// The run-record twin of [`require_object_definition`]: type-checks the
 /// fields `AutomationRunRecord` deserializes without defaults, so a
 /// valid-JSON-but-wrong-shaped run file fails honestly instead of
@@ -1400,9 +1418,34 @@ fn require_object_run_record(
             return Err(malformed());
         }
     }
+    // Being a string is not enough for the three fields the foundation does
+    // not type as one: `status` is an `AutomationRunStatus` enum and both
+    // stamps are `DateTime<Utc>`. A record that is well-typed-but-undecodable
+    // here is precisely the class that hard-stops the GUI — `read_run_file`
+    // fails to deserialize it and `collect_due_runs` propagates that failure,
+    // aborting the due-run sweep for *every* automation — while this listing
+    // would otherwise print a garbage status and, through `record_time`'s
+    // `i64::MIN` fallback, silently sort the unreadable stamp last.
+    if !RUN_STATUS_VALUES.contains(&str_field(run, "status").unwrap_or_default()) {
+        return Err(malformed());
+    }
+    for stamp in ["scheduled_for", "created_at"] {
+        if str_field(run, stamp).and_then(parse_rfc3339).is_none() {
+            return Err(malformed());
+        }
+    }
     Ok(())
 }
 
+/// A definition file that is valid JSON but not an object (hand-edited
+/// store) must fail honestly: `read_def` and `list_defs` apply this check so
+/// every command refuses uniformly, with the same stable message — read-only
+/// `show`/`list` would otherwise render a phantom empty task, and the
+/// `IndexMut` writes in the mutating commands would panic (exit 101, outside
+/// the CLI's exit-code contract). The required-field check mirrors the
+/// GUI's typed `AutomationRecord` (serde fails the whole store there):
+/// a def missing one of its required fields must not render as a phantom
+/// task either.
 fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
     let malformed = || {
         CliError::failed(format!(
@@ -1427,6 +1470,20 @@ fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), Cl
         "updated_at",
     ] {
         if def.get(field).map(serde_json::Value::is_string) != Some(true) {
+            return Err(malformed());
+        }
+    }
+    // Same value-level gate as `require_object_run_record`, for the fields
+    // `AutomationRecord` does not type as strings either: `status` is an
+    // `AutomationStatus` enum and both stamps are `DateTime<Utc>`. A def the
+    // foundation cannot decode must not reach a listing — `list` would render
+    // a task whose status the GUI will never agree with, and every mutating
+    // command would happily write the record back.
+    if !TASK_STATUS_VALUES.contains(&str_field(def, "status").unwrap_or_default()) {
+        return Err(malformed());
+    }
+    for stamp in ["created_at", "updated_at"] {
+        if str_field(def, stamp).and_then(parse_rfc3339).is_none() {
             return Err(malformed());
         }
     }
@@ -2203,7 +2260,6 @@ fn create(
 enabled in settings",
         ));
     }
-    let _ = mode;
     // The workspace is allocated from the automation id exactly like the GUI
     // (`ensure_automation_workspace`); clients cannot provide a path.
     let id = new_storage_id();
@@ -2227,7 +2283,7 @@ enabled in settings",
         "rrule": rrule.trim().to_ascii_uppercase(),
         "cwds": [workspace.display().to_string()],
         "model": default_automation_model(),
-        "mode": TaskMode::PERSISTED,
+        "mode": mode.unwrap_or_default().persisted(),
         "allow_shell": current_allow_shell(),
         "trust_mode": true,
         "auto_approve": true,
@@ -3098,7 +3154,7 @@ mod tests {
                 "--model-id",
                 "m-1",
                 "--mode",
-                "plan",
+                "yolo",
                 "--paused",
             ])
             .unwrap(),
@@ -3108,7 +3164,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30".into(),
                 kind: TaskKind::MemoryOrganize,
                 model_id: Some("m-1".into()),
-                mode: Some(TaskMode::Plan),
+                mode: Some(TaskMode::Yolo),
                 paused: true,
             }
         );
@@ -3194,6 +3250,24 @@ mod tests {
             parse(&["chat-prompt"]).unwrap(),
             ScheduledCommand::ChatPrompt
         );
+    }
+
+    /// `--mode` is validated, never discarded: the app's
+    /// `canonical_scheduled_mode` refuses anything but `yolo` because the
+    /// downstream request overwrites the field unconditionally, so accepting
+    /// `agent`/`plan` would hand the caller a full-YOLO task under another
+    /// name. The typed parse assertion lives here; the exit-code class is
+    /// pinned in the contract tests.
+    #[test]
+    fn mode_accepts_only_the_yolo_scheduled_execution_mode() {
+        for accepted in ["yolo", " yolo ", ""] {
+            assert_eq!(TaskMode::parse_value(accepted).unwrap(), TaskMode::Yolo);
+        }
+        for refused in ["agent", "plan", "bogus"] {
+            let error = TaskMode::parse_value(refused).expect_err(refused);
+            assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{refused}");
+            assert!(error.to_string().contains(refused), "{refused}: {error}");
+        }
     }
 
     #[test]

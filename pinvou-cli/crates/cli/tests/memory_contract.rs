@@ -801,11 +801,19 @@ fn memory_pending_confirm_reports_a_profile_shaped_no_op_honestly() {
 /// `memory update` rejects an empty/whitespace body as a usage error at
 /// parse time — the same gate `add` applies — instead of an exit 1 from a
 /// store rejection for a knowable-at-parse-time invalid argument.
+///
+/// Both spellings stay exit 2; only which layer refuses them differs. A
+/// literally empty `--content ""` is now stopped by the option parser, which
+/// treats an empty value as a MISSING value in every family (the shell writes
+/// it that way when an unset variable expands), so it never reaches the
+/// command. `"   "` carries a value and is refused by `update`'s own
+/// non-empty-content gate. The exit code is the contract; the message names
+/// the layer that caught it.
 #[test]
 fn memory_update_rejects_empty_content_as_a_usage_error() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("update-empty-content");
-    for content in ["", "   "] {
+    for (content, needle) in [("", "requires a value"), ("   ", "non-empty content")] {
         let error = expect_usage_error(&[
             "pinvou",
             "memory",
@@ -817,8 +825,202 @@ fn memory_update_rejects_empty_content_as_a_usage_error() {
         ]);
         assert_eq!(error.exit_code(), ExitCode::Usage, "content={content:?}");
         assert!(
-            error.to_string().contains("non-empty content"),
+            error.to_string().contains(needle),
             "content={content:?}: {error}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// parser contract parity with support::parse_family_flags
+// ---------------------------------------------------------------------------
+
+/// A repeated boolean flag is a usage error, exactly as in
+/// `support::parse_family_flags` and the `models` family.
+///
+/// This mattered most for the destructive subcommand: `memory delete` took
+/// `--yes --yes` and DELETED, while the equivalent `models remove X --yes
+/// --yes` exited 2. A duplicated confirmation flag is the signature of a
+/// command line assembled by a script that appended `--yes` to an argv that
+/// already had one — precisely the situation where a destructive family must
+/// stop rather than guess. Without the `has_flag` guard in
+/// `memory::parse_options` every case below parses and exits 0.
+#[test]
+fn memory_rejects_duplicate_boolean_flags() {
+    for arguments in [
+        &[
+            "pinvou",
+            "memory",
+            "delete",
+            "preferences",
+            "id",
+            "--yes",
+            "--yes",
+        ][..],
+        &["pinvou", "memory", "organize", "--yes", "--yes"][..],
+    ] {
+        let error = expect_usage_error(arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
+        assert!(
+            error.to_string().contains("duplicate option --yes"),
+            "{arguments:?}: {error}"
+        );
+    }
+}
+
+/// An empty value for a valued option is a missing value, not a request to
+/// address the empty-named item.
+///
+/// `memory` used to accept every one of these and hand the blank string to
+/// the store, where `--store ""` became an unknown-store error phrased in
+/// store vocabulary and `--reason ""`/`--call-name ""` were written as real
+/// blank fields. `support::parse_family_flags` has always refused them; this
+/// pins the `memory` family onto the same contract. Without the
+/// `value.is_empty()` guard every case below reaches `execute`.
+#[test]
+fn memory_rejects_empty_option_values() {
+    for arguments in [
+        &["pinvou", "memory", "list", "--store", ""][..],
+        &["pinvou", "memory", "add", "preference", "--content", ""][..],
+        &["pinvou", "memory", "add", "preference", "--file", ""][..],
+        &["pinvou", "memory", "profile", "set", "--call-name", ""][..],
+        &[
+            "pinvou", "memory", "pending", "confirm", "id", "--reason", "",
+        ][..],
+    ] {
+        let error = expect_usage_error(arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
+        assert!(
+            error.to_string().contains("requires a value"),
+            "{arguments:?}: {error}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// add: truncation honesty
+// ---------------------------------------------------------------------------
+
+/// A work-context add of 130 characters must never silently lose its tail.
+///
+/// The `add` path is enqueue-then-confirm, and the FIRST normalization on it
+/// is `pending_item_from_suggestion`'s `clean_text(content, 120)` — a hard
+/// `chars().take(120)`. The work-context store's own
+/// `WORK_CONTEXT_TEXT_MAX_CHARS` (160) therefore NEVER binds here, so an
+/// input of 121..=160 characters was truncated by a cap the CLI was not
+/// warning about. Worse, the post-write verification compared the store
+/// against `pending.content` — the already-truncated value the pipeline
+/// echoed back — so it confirmed the truncation instead of catching it and
+/// the command exited 0 with no indication anything was dropped.
+///
+/// This pins all three halves of the fix: the truncation really happens at
+/// 120 (asserted against the feature store, so the CLI's constant cannot
+/// drift from the feature layer unnoticed), the add still succeeds, and the
+/// loss is disclosed on the command's own output rather than only on stderr.
+/// Before the fix the assertions on `truncated` fail: no such field existed
+/// and the 160-char warning never fired for a 130-char input.
+#[test]
+fn memory_add_work_context_over_the_cap_reports_the_truncation() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("work-context-over-cap");
+
+    // 130 single-byte characters, no whitespace runs and no leading or
+    // trailing punctuation, so the only normalization that can change the
+    // text is the cap itself. Deliberately in the 121..=160 window that the
+    // 160-char warning could never catch.
+    let content: String = std::iter::repeat_n("abcdefghij", 13).collect();
+    assert_eq!(content.chars().count(), 130);
+
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        &content,
+        "--output",
+        "json",
+    ]))
+    .expect("single-line JSON output");
+
+    assert_eq!(
+        json["truncated"],
+        serde_json::json!(true),
+        "an over-cap add must disclose the truncation: {json}"
+    );
+    assert_eq!(
+        json["submitted_characters"],
+        serde_json::json!(130),
+        "{json}"
+    );
+    assert_eq!(json["stored_characters"], serde_json::json!(120), "{json}");
+
+    // The store itself is the authority on where the cut fell: this is what
+    // makes the 120 in memory.rs a checked fact rather than a comment.
+    let stored = pinvou3_lib::features::memory::load_work_context().unwrap();
+    let item = stored
+        .iter()
+        .find(|item| content.starts_with(&item.text))
+        .unwrap_or_else(|| panic!("the truncated item must be stored: {stored:?}"));
+    assert_eq!(
+        item.text.chars().count(),
+        120,
+        "the add pipeline caps at 120, not at WORK_CONTEXT_TEXT_MAX_CHARS (160)"
+    );
+    assert_eq!(item.text, content.chars().take(120).collect::<String>());
+
+    // The human rendering carries the same disclosure, for the interactive
+    // caller who never looks at JSON.
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        &content,
+    ]);
+    assert!(
+        human.contains("exceed the 120-character cap") && human.contains("only the first 120"),
+        "the human output must disclose the truncation: {human}"
+    );
+}
+
+/// An add whose text is NOT what the pipeline stored must fail, not succeed.
+///
+/// `enqueue_memory_candidate`'s second dedupe branch matches an existing
+/// *pending* row on a LOWERCASED content key and returns that row unchanged,
+/// so the confirm writes the earlier row's wording and the caller's own text
+/// never lands. The old verification compared the store against
+/// `pending.content` — that same earlier row — which made the check
+/// self-satisfying: it passed while the submitted text was silently dropped.
+/// Anchoring the comparison on the ORIGINAL user input is what turns this
+/// into a visible, actionable failure.
+///
+/// Before the fix this add exits 0 and reports "Remembered work context".
+#[test]
+fn memory_add_fails_when_the_pipeline_stores_different_text() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("work-context-case-dedupe");
+
+    // A pending candidate the user never resolved, in a different casing.
+    enqueue_fixture("work_context", "We Deploy On Fridays");
+
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        "WE DEPLOY ON FRIDAYS",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("memory_add_not_materialized"),
+        "the divergence must be reported: {message}"
+    );
+    assert!(
+        message.contains("We Deploy On Fridays") && message.contains("WE DEPLOY ON FRIDAYS"),
+        "the message must name both the stored and the submitted text: {message}"
+    );
 }

@@ -564,11 +564,7 @@ impl KnowledgeService {
 
             // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
             if !cancel.load(Ordering::Relaxed) {
-                let stale: Vec<String> = existing
-                    .keys()
-                    .filter(|p| !visited.contains(*p))
-                    .cloned()
-                    .collect();
+                let stale = stale_entries(&existing, &visited, &roots);
                 if !stale.is_empty() {
                     let _ = store.delete_many(&stale);
                 }
@@ -674,6 +670,55 @@ pub fn model_dir() -> PathBuf {
         .join("knowledge")
         .join("models")
         .join("bge-m3")
+}
+
+/// 计算本轮该删除的「已消失」条目：**只在本次真正遍历过的根之内**判定。
+///
+/// 旧逻辑把「库里有、本次没遍历到」一律当作已消失删掉。GUI 下这没问题——它永远只扫用户
+/// 家目录这一个根（`kb_start_scan(roots: null)`），库里每一条都在该根之下，所以本函数对
+/// GUI 的结果与旧逻辑逐条相同：家目录下的条目照旧按 visited 判定，根外条目本就不存在。
+/// 但 CLI 的 `knowledge scan start --root <DIR>` 允许扫任意目录：扫 B 目录时，从 A 目录
+/// 索引进来的条目会被整片误判为 stale，于是静默清库还报 `done`。删除的前提因此是该条目
+/// 落在本次扫过的某个根之内——根外条目从来不在本轮扫描的职责范围里，无从判断其存亡。
+///
+/// 包含关系用 [`Path::starts_with`] 按**路径分量**比较，不能用字符串前缀：`/home/a` 不得
+/// 匹配 `/home/abc`。
+fn stale_entries(
+    existing: &std::collections::HashMap<String, (i64, u64)>,
+    visited: &std::collections::HashSet<String>,
+    roots: &[PathBuf],
+) -> Vec<String> {
+    // 每个根只 canonicalize 一次（失败则退回原样，例如根在判定前被删掉）。原样与规范化
+    // 两种形态都参与比较：库里的键既可能是按原样根写入的，也可能是按规范化根写入的。
+    let bounds: Vec<(PathBuf, PathBuf)> = roots
+        .iter()
+        .map(|root| {
+            let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            (root.clone(), canonical)
+        })
+        .collect();
+    existing
+        .keys()
+        .filter(|path| !visited.contains(*path))
+        .filter(|path| within_scanned_roots(Path::new(path.as_str()), &bounds))
+        .cloned()
+        .collect()
+}
+
+/// 路径是否落在本次扫过的某个根之内（含根自身）。
+///
+/// 库里的路径多半已经不在盘上（这正是 stale 的常态），`fs::canonicalize` 对它会失败，
+/// 所以原样路径必须先直接参与比较；只有 canonicalize 成功（被扫的根是软链、或库里的键
+/// 本身是相对/软链形态）时才额外拿规范化结果再比一次。
+fn within_scanned_roots(path: &Path, bounds: &[(PathBuf, PathBuf)]) -> bool {
+    let canonical = std::fs::canonicalize(path).ok();
+    bounds.iter().any(|(raw_root, canonical_root)| {
+        path.starts_with(raw_root)
+            || path.starts_with(canonical_root)
+            || canonical
+                .as_ref()
+                .is_some_and(|c| c.starts_with(raw_root) || c.starts_with(canonical_root))
+    })
 }
 
 fn now() -> i64 {

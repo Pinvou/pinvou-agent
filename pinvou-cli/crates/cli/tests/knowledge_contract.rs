@@ -1204,10 +1204,12 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The scan state is in-process, but its completion marker
-/// (`last_scan_finished_at`) persists in `index.db` — so `scan status` from a
-/// fresh CLI invocation converges to `done` once the background scan thread
-/// of `scan start` finishes.
+/// `scan start` waits for the scan to finish inside the invocation (a
+/// fire-and-forget scan would be killed by process exit before doing any
+/// work), so the returned state is already terminal and the completion
+/// marker (`last_scan_finished_at`) is persisted in `index.db` by the time
+/// the command exits — `scan status` from a fresh CLI invocation reports
+/// `done` deterministically.
 #[test]
 fn scan_start_persists_its_completion_marker() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1224,34 +1226,226 @@ fn scan_start_persists_its_completion_marker() {
         "--root",
         root.to_str().unwrap(),
     ]);
-    // The background thread may finish before the returned snapshot for a
-    // tiny root, so both phases are valid starts.
+    assert_eq!(started["phase"], serde_json::json!("done"));
+    assert_eq!(started["running"], serde_json::json!(false));
     assert!(
-        started["phase"] == serde_json::json!("scanning")
-            || started["phase"] == serde_json::json!("done"),
-        "scan start must begin scanning or finish immediately"
+        started["finishedAt"].as_i64().unwrap_or(0) > 0,
+        "a completed scan must carry its persisted marker"
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
-        if state["phase"] == serde_json::json!("done") {
-            assert!(
-                state["finishedAt"].as_i64().unwrap_or(0) > 0,
-                "finished scan must persist its marker"
-            );
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "scan did not finish in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
+    assert_eq!(state["phase"], serde_json::json!("done"));
+    assert!(state["finishedAt"].as_i64().unwrap_or(0) > 0);
 
     // Cancel is a real signal on the service (harmless once the scan is done).
     let cancelled = run_json(&["pinvou", "knowledge", "scan", "cancel"]);
     assert_eq!(cancelled["cancelled"], serde_json::json!(true));
+}
+
+/// A missing or non-directory `--root` is refused before the scan starts: a
+/// root that walks to nothing would otherwise report a cheerful `done` for a
+/// scan that indexed zero files, so the typo must fail loudly and name the
+/// path. This is the usability guard; index safety against an unrelated root
+/// is the sweep's own contract, asserted by the regression test below.
+#[test]
+fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-preflight");
+    let root = home.path().join("docs");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
+
+    let seeded = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(seeded["phase"], serde_json::json!("done"));
+
+    let missing = home.path().join("docs-typo");
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        missing.to_str().unwrap(),
+    ]);
+    assert!(
+        error.to_string().contains("does not exist"),
+        "the refusal must name the missing root, got: {error}"
+    );
+
+    let file = home.path().join("plain.txt");
+    std::fs::write(&file, "not a directory").unwrap();
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        file.to_str().unwrap(),
+    ]);
+    assert!(
+        error.to_string().contains("not a directory"),
+        "the refusal must name the non-directory root, got: {error}"
+    );
+
+    // The seeded index must be intact: the refused scans never started, so
+    // the stale sweep never ran.
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(1),
+        "a refused scan must not wipe the index"
+    );
+}
+
+/// Scanning one directory must never delete what another directory put in
+/// the index. The incremental sweep deletes the entries it did not re-visit,
+/// which is correct for the GUI (it always scans the user home, so every
+/// indexed path is in scope) but catastrophic for `--root`: an existing
+/// directory passes every pre-flight, so before the sweep was scoped to the
+/// walked roots, `scan start --root <B>` reported `done` with exit 0 while
+/// silently deleting everything indexed from A.
+#[test]
+fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-root-scope");
+    let docs_a = home.path().join("docsA");
+    let docs_b = home.path().join("docsB");
+    std::fs::create_dir_all(&docs_a).unwrap();
+    std::fs::create_dir_all(&docs_b).unwrap();
+    for index in 0..5 {
+        std::fs::write(docs_a.join(format!("rootA-{index}.txt")), "from root A").unwrap();
+    }
+    std::fs::write(docs_b.join("rootB.txt"), "from root B").unwrap();
+
+    let seeded = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs_a.to_str().unwrap(),
+    ]);
+    assert_eq!(seeded["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(5),
+        "root A must seed its five files"
+    );
+
+    let second = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs_b.to_str().unwrap(),
+    ]);
+    assert_eq!(second["phase"], serde_json::json!("done"));
+
+    // Root A was never walked this time, so none of its entries may be
+    // classified as stale: the index is A's five plus B's one.
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(6),
+        "scanning root B must add to the index, never wipe root A"
+    );
+    let hits = run_json(&["pinvou", "knowledge", "search", "rootA"]);
+    let hits = hits["hits"].as_array().expect("hits array");
+    assert!(
+        hits.iter()
+            .any(|hit| hit["name"] == serde_json::json!("rootA-0.txt")),
+        "a file indexed from root A must still be searchable after scanning root B"
+    );
+
+    // A file genuinely removed from a root that IS walked is still swept,
+    // so scoping the sweep did not disable it.
+    std::fs::remove_file(docs_b.join("rootB.txt")).unwrap();
+    let third = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs_b.to_str().unwrap(),
+    ]);
+    assert_eq!(third["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(5),
+        "a file that vanished under a walked root must still be swept"
+    );
+}
+
+/// The walker does not follow symlinks, so a symlinked `--root` would key the
+/// same files a second time under the link's path — and, one scan later,
+/// sweep the originals as stale. `scan start` canonicalizes the root first,
+/// so scanning through the link is scanning the directory itself: no
+/// duplicates, no wipe.
+#[test]
+#[cfg(unix)]
+fn scan_start_through_a_symlinked_root_neither_duplicates_nor_wipes_entries() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-symlink-root");
+    let docs = home.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("linked-one.txt"), "first").unwrap();
+    std::fs::write(docs.join("linked-two.txt"), "second").unwrap();
+    let link = home.path().join("docs-link");
+    std::os::unix::fs::symlink(&docs, &link).unwrap();
+
+    let seeded = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs.to_str().unwrap(),
+    ]);
+    assert_eq!(seeded["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(stats["totalFiles"], serde_json::json!(2));
+
+    let through_link = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        link.to_str().unwrap(),
+    ]);
+    assert_eq!(through_link["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(2),
+        "scanning through a symlink must re-visit the same keys, not mint new ones"
+    );
+    let hits = run_json(&["pinvou", "knowledge", "search", "linked-one"]);
+    let hits = hits["hits"].as_array().expect("hits array");
+    let named: Vec<&serde_json::Value> = hits
+        .iter()
+        .filter(|hit| hit["name"] == serde_json::json!("linked-one.txt"))
+        .collect();
+    assert_eq!(named.len(), 1, "the file must be indexed exactly once");
+    // The surviving key is the canonical one, not a second key minted under
+    // the link: re-keying under the link would look identical in the totals
+    // while having deleted every original entry as stale.
+    let canonical = std::fs::canonicalize(&docs).unwrap();
+    assert_eq!(
+        named[0]["path"],
+        serde_json::json!(canonical.join("linked-one.txt").to_str().unwrap()),
+        "the entry must stay keyed by its canonical path"
+    );
 }
 
 /// L0 seeding is scan-driven and offline: `scan start` upserts file metadata

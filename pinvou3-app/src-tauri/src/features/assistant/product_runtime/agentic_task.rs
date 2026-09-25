@@ -42,8 +42,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    EVAL_SESSION_FACTORY_TITLE, ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind,
-    SessionStore, validate_user_workspace_path,
+    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, NEW_CHAT_TITLE, SessionKind, SessionStore,
+    validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -431,20 +431,24 @@ pub async fn run_agentic_task(
         // The submit boundary is not atomic with transcript admission: the
         // engine lazily spawns on submit and can durably admit the user
         // message before the fault surfaces (a submit error, or the setup
-        // timeout landing right after admission). The classification reads
-        // the durable record, not the submit flag, and shares one decision
-        // with the errored-after-submit arm: a zero-message stub is
-        // cleanup-eligible while it still wears the factory title (it would
-        // otherwise litter the shared store — and the GUI history — one
+        // timeout landing right after admission). The classification therefore
+        // reads the durable record, not the submit flag: a zero-message stub
+        // is cleanup-eligible while it still wears the new-chat sentinel (it
+        // would otherwise litter the shared store — and the GUI history — one
         // eviction per failing batch), while a stub that already carries
-        // admitted messages is a started transcript and the only copy — it
+        // admitted messages is a started transcript and the only copy, so it
         // stays inspectable under the default keep contract. A rename is
-        // ownership on every path, and an unloadable record keeps: deleting
-        // on unknown state is the unsafe direction.
+        // ownership, and an unloadable record keeps: deleting on unknown state
+        // is the unsafe direction.
+        //
+        // This is the only failure arm. `run_turn` reports `submitted = true`
+        // exclusively on paths that fold the fault into the report (`status:
+        // "error"` / `"timeout"` with an `Ok` outcome), so a submitted run can
+        // never arrive here with `outcome.is_err()`.
         let has_messages = store.chat_session_has_messages(&session_id).map_err(|_| ());
         let factory_titled = store
             .load(&session_id)
-            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+            .map(|record| record.metadata.title == NEW_CHAT_TITLE)
             .unwrap_or(false);
         if failed_run_cleanup_decision(has_messages, factory_titled, keep_session)
             == FailedRunDisposition::Cleanup
@@ -453,26 +457,6 @@ pub async fn run_agentic_task(
             log_cleanup_delete(&runtime, &session_id).await;
         } else {
             runtime.pool.evict(&session_id).await;
-        }
-    } else if outcome.is_err() {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // The same durable-record classification as the never-submitted arm:
-        // a started transcript is the only copy of the failed attempt and
-        // stays inspectable under the default keep contract, while a
-        // zero-message factory-titled stub is eviction bait. The title check
-        // is the adoption exception, and it holds on every path: a GUI rename
-        // before the failure is ownership, and survives even the legacy
-        // one-shot opt-in.
-        let has_messages = store.chat_session_has_messages(&session_id).map_err(|_| ());
-        let factory_titled = store
-            .load(&session_id)
-            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
-            .unwrap_or(false);
-        if failed_run_cleanup_decision(has_messages, factory_titled, keep_session)
-            == FailedRunDisposition::Cleanup
-        {
-            runtime.schedule_eval_cleanup(&session_id);
-            log_cleanup_delete(&runtime, &session_id).await;
         }
     } else if !keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
@@ -519,13 +503,32 @@ pub async fn run_agentic_task(
 /// Best-effort cleanup delete: a failed delete must not mask the run's own
 /// outcome, but silently stranding the session in the shared store hides the
 /// failure from the operator — log it instead of discarding the result.
-/// The session id stays out of the message (boot logs persist to disk and
-/// the CodeQL cleartext-logging gate flags ids on stderr); the error context
-/// from the store already names the failing write.
+/// The session id stays out of the message (boot logs persist to disk and the
+/// CodeQL cleartext-logging gate flags ids on stderr), and only the root cause
+/// is rendered — the `{:#}` chain re-carries the id through the store's own
+/// context, which is exactly what the id-free message exists to avoid.
+/// Put a caller-provided session's approval mode back after a setup that never
+/// reached submit. Only `--mode plan` on an existing session arms this: nothing
+/// ran, so leaving the user's GUI session in Plan would be a permanent change
+/// made by a run that did no work. Best-effort — a failed restore must not mask
+/// the setup error that is being returned, but it is worth a stderr note.
+fn restore_plan_mode(store: &SessionStore, session_id: &str, previous: Option<SerializableMode>) {
+    let Some(previous) = previous else {
+        return;
+    };
+    if let Err(error) = store.set_mode_and_persist(session_id, previous) {
+        super::note_stderr(&format!(
+            "[agent-task] failed to restore the pre-run session mode after a setup failure: {}",
+            error.root_cause()
+        ));
+    }
+}
+
 async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
     if let Err(error) = runtime.close_eval_session_result(session_id).await {
         super::note_stderr(&format!(
-            "[agent-task] cleanup delete for session {session_id} failed: {error:#}"
+            "[agent-task] cleanup delete failed: {}",
+            error.root_cause()
         ));
     }
 }
@@ -870,6 +873,13 @@ async fn run_turn(
     // a hang in either phase must still produce a timeout report, never an
     // unbounded wait.
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    // A caller-provided session is the user's, and a run that never submits
+    // must not leave their GUI session flipped into Plan. The pre-run mode is
+    // captured here and rolled back on a setup failure; once submit lands the
+    // turn owns the session and the mode stays, exactly like a GUI Plan send.
+    // Fresh sessions need no restore — the stub cleanup deletes the whole
+    // record, mode sidecar included.
+    let mut plan_restore: Option<SerializableMode> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -894,12 +904,17 @@ async fn run_turn(
             // persist on a caller-provided session too, or the session
             // reopens in its stale mode (the unbound default is Yolo) — the
             // same unsafe divergence the fresh branch refuses. Failure is
-            // fatal like the fresh branch; an existing session is never
-            // cleaned up, so the caller's record stays untouched.
+            // fatal like the fresh branch. The previous mode is remembered so
+            // a setup that never reaches submit can put the caller's session
+            // back the way they left it.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
+                let previous = store.mode_state(session_id).mode;
                 store
                     .set_mode_and_persist(session_id, SerializableMode::Plan)
                     .context("persist session mode")?;
+                if previous != SerializableMode::Plan {
+                    plan_restore = Some(previous);
+                }
             }
             crate::features::assistant::timing::register_eval_observation(session_id);
         } else {
@@ -964,31 +979,37 @@ async fn run_turn(
         remove_consumed_sources(&consumed_sources);
         Ok(handle)
     };
-    let handle =
-        match tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await
-        {
-            Ok(submitted) => match submitted {
-                Ok(handle) => handle,
-                Err(error) => return (false, Err(error)),
-            },
-            Err(_elapsed) => {
-                return (
-                    false,
-                    Ok(AgenticTaskReport {
-                        session_id: session_id.to_owned(),
-                        status: "timeout".to_string(),
-                        timed_out: true,
-                        completed_after_deadline: false,
-                        assistant_text: String::new(),
-                        tool_events: Vec::new(),
-                        usage: None,
-                        error: Some(
-                            "agentic session setup did not finish within the timeout".to_string(),
-                        ),
-                    }),
-                );
+    // Bound separately: a match scrutinee temporary would keep the future —
+    // and its mutable borrow of `plan_restore` — alive into the arms.
+    let setup_result =
+        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await;
+    let handle = match setup_result {
+        Ok(submitted) => match submitted {
+            Ok(handle) => handle,
+            Err(error) => {
+                restore_plan_mode(&store, session_id, plan_restore.take());
+                return (false, Err(error));
             }
-        };
+        },
+        Err(_elapsed) => {
+            restore_plan_mode(&store, session_id, plan_restore.take());
+            return (
+                false,
+                Ok(AgenticTaskReport {
+                    session_id: session_id.to_owned(),
+                    status: "timeout".to_string(),
+                    timed_out: true,
+                    completed_after_deadline: false,
+                    assistant_text: String::new(),
+                    tool_events: Vec::new(),
+                    usage: None,
+                    error: Some(
+                        "agentic session setup did not finish within the timeout".to_string(),
+                    ),
+                }),
+            );
+        }
+    };
     drop(suite_guard);
 
     let mut timed_out = false;
@@ -1368,9 +1389,9 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
-        ensure_model_exists, ensure_stage_size, fresh_session_id, keep_session_from_env,
-        retention_eviction_warning, validate_attachments,
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, SerializableMode,
+        ensure_existing_chat_session, ensure_model_exists, ensure_stage_size, fresh_session_id,
+        keep_session_from_env, restore_plan_mode, retention_eviction_warning, validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -1972,6 +1993,63 @@ mod tests {
         .unwrap();
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_unreadable"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
+    }
+
+    /// A `--mode plan` run that never reaches submit must leave a
+    /// caller-provided session in the mode the user left it in: the run did no
+    /// work, so it may not permanently flip their GUI session into Plan. The
+    /// restore is skipped when the session was already in Plan (nothing to put
+    /// back) and when no mode was captured (a fresh session, whose whole record
+    /// the stub cleanup removes).
+    #[test]
+    fn setup_failure_restores_a_caller_sessions_pre_run_mode() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-plan-restore-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        let chat = store
+            .create_new("test-model".to_string(), None, tmp.clone())
+            .unwrap();
+        let id = chat.metadata.id.clone();
+
+        // What setup does for `--mode plan` on an existing session.
+        let previous = store.mode_state(&id).mode;
+        assert_ne!(
+            previous,
+            SerializableMode::Plan,
+            "fixture must start outside Plan or the restore is vacuous"
+        );
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        assert_eq!(store.mode_state(&id).mode, SerializableMode::Plan);
+
+        restore_plan_mode(&store, &id, Some(previous));
+        assert_eq!(
+            store.mode_state(&id).mode,
+            previous,
+            "a setup failure must put the caller's session back"
+        );
+
+        // No captured mode means nothing to restore.
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(&store, &id, None);
+        assert_eq!(
+            store.mode_state(&id).mode,
+            SerializableMode::Plan,
+            "an unarmed restore must not touch the session"
+        );
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 

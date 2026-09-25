@@ -936,6 +936,203 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
     assert!(message.contains("loopback"), "message: {message}");
 }
 
+/// The no-`--url` branch obeys the same orderings as the `--url` branch.
+///
+/// Two separate defects lived here, both invisible to the test above because
+/// it only ever passed `--url`:
+///
+/// 1. Ordering. The `--url` branch checks the loopback constraint (usage,
+///    exit 2) before resolving `--api-key-env` (host failure, exit 1). The
+///    stored-`base_url` branch did the opposite — it resolved the env var
+///    first — so `probe-local --api-key-env MISSING` against a non-loopback
+///    active model exited 1 where the contract says 2. Resolving the target
+///    first for BOTH branches makes the ordering a property of the function.
+///
+/// 2. Classification. A malformed `base_url` read out of `settings.json` was
+///    reported as a USAGE error (exit 2), but argv was well-formed — the
+///    host's own stored state is broken, which is exit 1. `models test`
+///    already classifies exactly this condition that way
+///    (`{"code":"invalid_url"}`), so the two commands disagreed about the
+///    same fact. probe-local now matches `models test`.
+///
+/// Neither case reaches the network: both refusals happen before any request.
+#[test]
+fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failures() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("probe-local-active-model");
+
+    // No key is passed, so `models add` never touches the credential store.
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Remote",
+        "--model",
+        "deepseek-v4-pro",
+        "--base-url",
+        "https://api.deepseek.com/v1",
+        "--set-active",
+    ]);
+    assert!(stdout.starts_with("id: "), "{stdout}");
+
+    // Ordering: the stored base_url is non-loopback AND the env var is
+    // missing. Usage (2) must win, exactly as it does on the --url branch.
+    // Before the fix this exits 1 with the env-var message.
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "models",
+        "probe-local",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_DEFINITELY_MISSING_KEY",
+    ]);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the stored-base_url loopback refusal must win over the env failure: {message}"
+    );
+    assert!(message.contains("loopback"), "message: {message}");
+
+    // Same refusal without the broken env override, so the ordering fix is
+    // not the only reason the assertion above passes.
+    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    assert_eq!(code, ExitCode::Usage, "message: {message}");
+    assert!(message.contains("loopback"), "message: {message}");
+
+    // Classification: a malformed stored base_url is a host failure (1),
+    // matching `models test`'s invalid_url, not a usage error about argv.
+    // Before the fix this exits 2.
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "add",
+        "--preset",
+        "openai_compatible",
+        "--name",
+        "Broken",
+        "--model",
+        "local",
+        "--base-url",
+        "not a url",
+        "--set-active",
+    ]);
+    assert!(stdout.starts_with("id: "), "{stdout}");
+    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    assert_eq!(
+        code,
+        ExitCode::Failed,
+        "a corrupt stored base_url is a host failure, not a usage error: {message}"
+    );
+    assert!(
+        message.contains("invalid_url"),
+        "the message must use the same code `models test` reports: {message}"
+    );
+    // A malformed value supplied on the command line stays a usage error:
+    // the classification follows where the url came from, not its shape.
+    let (_, code) = run_err(&["pinvoy", "models", "probe-local", "--url", "not a url"]);
+    assert_eq!(code, ExitCode::Usage);
+}
+
+/// An empty value for a valued option is a missing value in the `models`
+/// family too, matching `support::parse_family_flags` and `memory`.
+///
+/// `models` rejected a value that merely *looked* like a flag
+/// (`starts_with("--")`) but accepted `""`, so `--name ""` reached the store
+/// and `--api-key-env ""` reached `std::env::var("")`, each failing later
+/// with a message about the store or the environment rather than about the
+/// command line. Without the `value.is_empty()` guard every case below
+/// parses.
+#[test]
+fn models_rejects_empty_option_values() {
+    for args in [
+        vec![
+            "pinvoy",
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            "",
+            "--model",
+            "M",
+            "--base-url",
+            "https://example.com",
+        ],
+        vec![
+            "pinvoy",
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            "N",
+            "--model",
+            "M",
+            "--base-url",
+            "https://example.com",
+            "--api-key-env",
+            "",
+        ],
+        vec!["pinvoy", "models", "probe-local", "--url", ""],
+        vec!["pinvoy", "settings", "search", "set", "--provider", ""],
+    ] {
+        let error = parse_args(args.clone()).expect_err("an empty option value is a usage error");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{args:?}: {error}");
+        assert!(
+            error.to_string().contains("requires a value"),
+            "{args:?}: {error}"
+        );
+    }
+}
+
+/// `settings get` with no key is always JSON, and the usage text says so.
+///
+/// `--output` is a global flag accepted on every subcommand, so a reader can
+/// reasonably expect `--output human` to change this dump; it cannot, because
+/// the payload is the whole nested `UserPrefs` document with no `key = value`
+/// rendering. Silently ignoring the flag is the thing under test: the
+/// behaviour is fine, leaving it undocumented was not.
+///
+/// This also covers the other half of the same defect — the dump used to end
+/// in `serde_json::to_string(&value).unwrap_or_default()`, so a serialization
+/// failure printed an EMPTY line and exited 0. It now propagates as a host
+/// failure. `UserPrefs` cannot actually fail to serialize, so the propagation
+/// itself is pinned by the type system (`?` on a `Result`) rather than by a
+/// test that would need an unserializable settings document to exist.
+#[test]
+fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("settings-get-all");
+
+    for mode in [
+        vec!["pinvoy", "settings", "get"],
+        vec!["pinvoy", "--output", "human", "settings", "get"],
+        vec!["pinvoy", "--output", "json", "settings", "get"],
+    ] {
+        let stdout = run_ok(&mode);
+        assert!(
+            !stdout.trim().is_empty(),
+            "{mode:?}: the settings dump must never be an empty successful line"
+        );
+        let value: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|error| panic!("{mode:?} must print JSON: {error}: {stdout}"));
+        assert!(
+            value.is_object(),
+            "{mode:?}: the dump is the whole settings object: {value}"
+        );
+    }
+
+    // The always-JSON rule is stated where a caller looks for it rather than
+    // left to be discovered from output that did not change.
+    let message = usage_error(&["pinvoy", "settings"]);
+    assert!(
+        message.contains("always prints JSON") && message.contains("--output"),
+        "the settings usage must disclose that the keyless dump ignores --output: {message}"
+    );
+}
+
 #[test]
 fn settings_search_list_reports_defaults() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

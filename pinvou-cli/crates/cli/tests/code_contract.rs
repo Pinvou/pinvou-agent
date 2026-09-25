@@ -218,6 +218,30 @@ fn seed_two_turn_transcript(id: &str) {
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
+/// Reads repository state back with a *fixture-owned* git invocation, pinned
+/// away from any ambient configuration. Assertions about what the CLI did to a
+/// repository must not be decided by the same configuration the CLI honours,
+/// otherwise a test that writes a global gitconfig could observe its own
+/// filters instead of the stored objects.
+fn fixture_git(root: &Path, arguments: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .output()
+        .unwrap_or_else(|error| panic!("fixture git {arguments:?}: {error}"));
+    assert!(
+        output.status.success(),
+        "fixture git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 /// Initializes a git repository with `main` + `feature` branches and one
 /// committed file; returns `None` when git is unavailable, printing a visible
 /// skip line so a green run cannot hide an environment gap.
@@ -419,6 +443,9 @@ fn every_code_subcommand_parses() {
         vec!["pinvou", "code", "workspace", "diff", "s-1"],
         vec!["pinvou", "code", "workspace", "diff", "s-1", "src/main.rs"],
         vec!["pinvou", "code", "workspace", "branches", "s-1"],
+        // `--yes` is accepted by the parser in every mode; it is enforced at
+        // execute level, so the flagless forms must keep parsing too (the
+        // caller has to reach the `require_yes` message, not a usage string).
         vec![
             "pinvou",
             "code",
@@ -437,7 +464,19 @@ fn every_code_subcommand_parses() {
             "s-1",
             "feature",
             "--mode",
+            "carry",
+            "--yes",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
             "stash",
+            "--yes",
         ],
         vec![
             "pinvou",
@@ -450,6 +489,7 @@ fn every_code_subcommand_parses() {
             "commit",
             "--message",
             "wip",
+            "--yes",
         ],
         vec!["pinvou", "code", "checkpoints", "list", "s-1"],
         vec!["pinvou", "code", "checkpoints", "diff", "s-1", "c1-123"],
@@ -1067,7 +1107,9 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
         "the combined diff must contain both per-file hunks"
     );
 
-    // checkout without a dirty tree: carry switches branches cleanly.
+    // checkout without a dirty tree: carry switches branches cleanly. The
+    // confirmed form is the only one that reaches git — see
+    // `workspace_checkout_requires_yes_before_touching_the_tree`.
     let value = run_json(&[
         "pinvou",
         "code",
@@ -1077,6 +1119,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
         "feature",
         "--mode",
         "carry",
+        "--yes",
     ]);
     assert_eq!(value["checkedOut"], "feature");
     assert_eq!(value["branches"]["current"], "feature");
@@ -1094,6 +1137,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
             branch,
             "--mode",
             "carry",
+            "--yes",
         ])
         .unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Failed, "{branch}");
@@ -1111,6 +1155,100 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
         "commit",
     ]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
+}
+
+/// `workspace checkout` moves the user's working tree in every mode, so it
+/// carries the same `--yes` gate as `logout` / `providers remove` /
+/// `checkpoints rewind` / `checkpoints undo`, and the gate runs before any
+/// side effect: none of the modes below may reach git.
+///
+/// Also pins the gate against the obvious bypasses. The tree is dirty here —
+/// the state the GUI refuses to switch without its confirmation dialog, and the
+/// state where the three modes diverge (carry / stash push / add + commit) — so
+/// a gate applied only on the clean fast path would show up. And the branch
+/// name is checked *after* the gate: an unconfirmed command must not get as far
+/// as reporting whether the branch exists.
+#[test]
+fn workspace_checkout_requires_yes_before_touching_the_tree() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("checkout-yes");
+    let Some(project) = init_git_repo("checkout-yes") else {
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("tracked.txt"), "dirty\n").unwrap();
+    std::fs::write(project.join("untracked.txt"), "new\n").unwrap();
+
+    for mode in ["carry", "stash", "commit"] {
+        let mut arguments = vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            id.as_str(),
+            "feature",
+            "--mode",
+            mode,
+        ];
+        if mode == "commit" {
+            arguments.extend(["--message", "wip"]);
+        }
+        let error = run(&arguments).expect_err("an unconfirmed checkout must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "--mode {mode}: {error}");
+        assert!(
+            error.to_string().contains("--yes"),
+            "--mode {mode}: the refusal must name the flag: {error}"
+        );
+    }
+
+    // Nothing moved: still on main, the dirty content is untouched, no stash
+    // entry exists and no commit was added.
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
+    assert_eq!(value["current"], "main");
+    assert_eq!(
+        std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+        "dirty\n"
+    );
+    assert!(project.join("untracked.txt").is_file());
+    assert_eq!(fixture_git(&project, &["stash", "list"]).trim(), "");
+    assert_eq!(
+        fixture_git(&project, &["log", "--format=%s"]).trim(),
+        "init"
+    );
+
+    // The gate precedes branch validation: an unknown branch is still the
+    // `--yes` usage error (exit 2), not a branch failure (exit 1).
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "missing-branch",
+        "--mode",
+        "carry",
+    ])
+    .expect_err("an unconfirmed checkout must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+
+    // With `--yes` the same command runs and the dirty content survives the
+    // stash round trip, proving the refusals came from the gate alone.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "stash",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    assert_eq!(
+        std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+        "dirty\n"
+    );
 }
 
 // The whole-workspace diff must stop diffing once the payload is over
@@ -1182,13 +1320,12 @@ fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
         .and_then(|parsed| pinvou_cli::execute(parsed));
         let _ = tx.send(result);
     });
-    let result = rx
-        .recv_timeout(std::time::Duration::from_secs(90))
-        .expect("the diff must finish — a hang here means the capped reader \
-                 stopped draining past the cap and parked git on a full pipe");
+    let result = rx.recv_timeout(std::time::Duration::from_secs(90)).expect(
+        "the diff must finish — a hang here means the capped reader \
+                 stopped draining past the cap and parked git on a full pipe",
+    );
     let outcome = result.expect("over-cap diff executes");
-    let value: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("single-line json");
+    let value: serde_json::Value = serde_json::from_str(&outcome.stdout).expect("single-line json");
     assert_eq!(value["truncated"], serde_json::json!(true));
     // The body is cut at DIFF_LIMIT; the section header rides on top.
     assert!(
@@ -1244,34 +1381,62 @@ fn per_file_diff_composes_staged_and_unstaged_sections() {
 /// reads, English section copy, whole-workspace composition are CLI-specific),
 /// so its output is differentially pinned against the app module on the same
 /// fixture tree: identical `truncated` flags and identical git diff bodies.
-/// Unix-only like the env-var guard it shares with the other git lanes.
+/// Unix-only (the clean filter below is a shell command).
+///
+/// The comparison is run **with a global gitconfig actually present** in the
+/// guarded `HOME`, and that is the load-bearing part. `HomeGuard` points `HOME`
+/// at a fresh empty directory, so a run with no `~/.gitconfig` compares the two
+/// implementations under the one configuration where a config divergence cannot
+/// show: the app module strips `GIT_CONFIG_*` from its child and would read
+/// nothing either way. The config written here (a `filter.<driver>.clean`
+/// driver named by `.gitattributes` — the shape `git lfs install` writes)
+/// changes the rendered diff, so any future attempt to pin the gitconfig away
+/// on the CLI side turns this equality assertion red instead of passing
+/// vacuously.
 #[cfg(unix)]
 #[test]
 fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("diff-pin");
-    // The CLI's git lane pins the ambient gitconfig away while the app module
-    // honors it; pin it here too so both render the same diff for the same
-    // tree regardless of the developer's global diff settings.
+    let home = HomeGuard::new("diff-pin");
+    // Both sides must resolve the user's config the same way, so no ambient
+    // GIT_CONFIG_* may survive into either child: the app module removes these
+    // keys, and so does the CLI, but the developer's shell could still define
+    // them for *this* process and skew the `git config` probes run in-process.
     let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
     let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
     unsafe {
-        std::env::set_var(
-            "GIT_CONFIG_GLOBAL",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        );
-        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        std::env::remove_var("GIT_CONFIG_GLOBAL");
+        std::env::remove_var("GIT_CONFIG_NOSYSTEM");
     }
+    std::fs::write(
+        home.root.join("home").join(".gitconfig"),
+        "[filter \"pinvoudemo\"]\n\tclean = sed s/v2/CLEANED/\n\tsmudge = cat\n",
+    )
+    .unwrap();
     let Some(project) = init_git_repo("diff-pin") else {
         return; // git unavailable in the environment
     };
     let id = create_code_session_fixture(Some(&project));
+    std::fs::write(
+        project.join(".gitattributes"),
+        "tracked.txt filter=pinvoudemo\n",
+    )
+    .unwrap();
     std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
     std::fs::write(project.join("untracked.txt"), "brand new\n").unwrap();
 
+    // Sanity: the filter really is in effect, so the equality below is being
+    // asserted on a diff that the global config decided. Without the config
+    // the hunk would read `+v2`.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("+CLEANED"),
+        "the user's global clean filter must apply to the CLI diff lane: {}",
+        cli["text"]
+    );
+
     // Modified tracked file: both render one section-header line followed by
     // the same git diff.
-    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
     let app = app_workspace::workspace_diff(&id, &project, "tracked.txt")
         .expect("app diff for the modified tracked file");
     assert_eq!(cli["relativePath"], app.relative_path);
@@ -1295,6 +1460,134 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     );
 }
 
+/// The workspace read and mutate lanes act on the user's real checkout, so they
+/// must see the repository the user's own git sees — the GUI's contract
+/// (`codex_acp::workspace` → `platform::process::strip_git_override_env`).
+/// Pinning `~/.gitconfig`/`/etc/gitconfig` away is not a harmless
+/// strengthening: `core.excludesFile` stops being honoured, so files the user
+/// globally ignores become `??` entries, a tree the GUI calls clean enters the
+/// stash/commit path, and `--mode commit`'s `git add -A` commits them.
+///
+/// Unix-only: the fixture writes an excludes file into the guarded `HOME`.
+#[cfg(unix)]
+#[test]
+fn workspace_checkout_honours_the_users_global_gitconfig() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("git-global-config");
+    let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
+    let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
+    unsafe {
+        std::env::remove_var("GIT_CONFIG_GLOBAL");
+        std::env::remove_var("GIT_CONFIG_NOSYSTEM");
+    }
+    let guarded_home = home.root.join("home");
+    std::fs::write(guarded_home.join("globalignore"), "ignored-by-global.txt\n").unwrap();
+    std::fs::write(
+        guarded_home.join(".gitconfig"),
+        format!(
+            "[core]\n\texcludesFile = {}\n",
+            guarded_home.join("globalignore").display()
+        ),
+    )
+    .unwrap();
+    let Some(project) = init_git_repo("git-global-config") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("ignored-by-global.txt"), "private\n").unwrap();
+
+    // With the user's excludes honoured the tree is clean, so `--mode commit`
+    // takes the clean fast path and commits nothing. With the config pinned
+    // away the file would be an untracked change, `git add -A` would stage it
+    // and a second commit would appear on main.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "wip",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    assert_eq!(
+        value["branches"]["dirtyCount"], 0,
+        "a globally ignored file must not count as a workspace change"
+    );
+    assert_eq!(
+        fixture_git(&project, &["log", "--format=%s", "main"]).trim(),
+        "init",
+        "the globally ignored file must not have been committed"
+    );
+    assert!(
+        fixture_git(&project, &["ls-tree", "-r", "--name-only", "main"])
+            .lines()
+            .all(|name| name != "ignored-by-global.txt"),
+        "the globally ignored file must not be tracked"
+    );
+    assert!(project.join("ignored-by-global.txt").is_file());
+}
+
+/// A change row the whole-workspace diff cannot render must be reported, not
+/// dropped. Dropping it renders exactly like "this file has no changes", so the
+/// caller cannot tell a clean file from a failed one and exits 0 either way.
+///
+/// Unix-only: the undiffable file is made undiffable with `chmod 000`, and the
+/// test skips itself when that does not actually deny reads (running as root).
+#[cfg(unix)]
+#[test]
+fn whole_workspace_diff_reports_files_it_cannot_diff() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("diff-failure");
+    let Some(project) = init_git_repo("diff-failure") else {
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    // One file that diffs normally, so the failure is reported *alongside* the
+    // successful diffs rather than instead of them.
+    std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
+    let unreadable = project.join("unreadable.txt");
+    std::fs::write(&unreadable, "secret\n").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&unreadable).is_ok() {
+        eprintln!("skipping: the process can read a 0o000 file (running as root?)");
+        let _ = std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644));
+        return;
+    }
+
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
+    // Restore before asserting so a failing assertion still leaves a
+    // removable fixture directory.
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let failures = value["failures"].as_array().expect("failures array");
+    assert_eq!(
+        failures.len(),
+        1,
+        "the undiffable file must be reported: {value}"
+    );
+    assert_eq!(failures[0]["relativePath"], "unreadable.txt");
+    assert!(
+        failures[0]["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "the failure must carry the underlying error: {value}"
+    );
+    let text = value["text"].as_str().unwrap();
+    assert!(
+        text.contains("# diff failed: unreadable.txt"),
+        "human output must carry the failure marker too: {text}"
+    );
+    assert!(
+        text.contains("+v2"),
+        "the other files must still be diffed: {text}"
+    );
+}
+
 #[test]
 fn workspace_stash_mode_round_trips_dirty_changes() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1313,6 +1606,7 @@ fn workspace_stash_mode_round_trips_dirty_changes() {
         "feature",
         "--mode",
         "stash",
+        "--yes",
     ]);
     assert_eq!(value["checkedOut"], "feature");
     // The stash was popped after the switch: the dirty content survived.
@@ -1851,6 +2145,9 @@ fn session_lock_reports_busy_for_every_mutating_command() {
                 "main",
                 "--mode",
                 "stash",
+                // Confirmed on purpose: the point of this row is the busy
+                // error from the held lock, and `require_yes` runs first.
+                "--yes",
             ],
             "checkout_busy",
         ),

@@ -253,6 +253,28 @@ fn roots_human(project: &Project) -> String {
         .join(", ")
 }
 
+/// One human-mode `projects list` row: four tab-separated columns
+/// (id, name, member count, roots).
+///
+/// Two of the four cells carry strings this CLI does not control. The project
+/// name is stored as typed — `features::projects::store` only trims the ends,
+/// so a tab, a newline or an ESC survives into the store file and back out
+/// here — and root paths are filesystem paths, where the same bytes are
+/// legal. A tab would invent a fifth column and a newline would split one
+/// project across two rows for whoever is cutting the output on `\t`, so both
+/// cells go through the column collapse. Human mode only: the JSON payload
+/// keeps the real name and paths (`serde_json` escapes everything below
+/// 0x20, so it is already safe to read back).
+fn project_row(project: &Project, assigned_session_count: usize) -> String {
+    format!(
+        "{}\t{}\t{}\t{}",
+        project.id,
+        crate::support::collapse_control_characters(&project.name),
+        assigned_session_count,
+        crate::support::collapse_control_characters(&roots_human(project)),
+    )
+}
+
 /// Mirror of `list_projects`: projects in store order (position, id) with
 /// per-root availability and the full assignment map.
 fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -263,13 +285,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut items = Vec::new();
     for project in &projects {
         let count = store.assigned_session_ids(&project.id).len();
-        rows.push(format!(
-            "{}\t{}\t{}\t{}",
-            project.id,
-            project.name,
-            count,
-            roots_human(project),
-        ));
+        rows.push(project_row(project, count));
         items.push(project_item(project, count));
     }
     let value = serde_json::json!({
@@ -378,4 +394,62 @@ fn move_session(
         None => format!("moved {session_id} out of its project"),
     };
     Ok(success(render(output, human, &value)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_fixture(name: &str, roots: Vec<PathBuf>) -> Project {
+        let now = chrono::Utc::now();
+        Project {
+            id: "prj-fixture".to_owned(),
+            name: name.to_owned(),
+            roots,
+            position: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// The human `projects list` row is a four-column tab-separated record
+    /// and `projects_contract.rs` asserts that shape. A name or a root path
+    /// carrying a tab, a newline or an ESC must not be able to break it:
+    /// the store keeps such a name verbatim (it only trims the ends), so
+    /// without the column collapse a single project would render as two rows
+    /// with five columns between them, and the ESC would reach the terminal.
+    #[test]
+    fn list_row_keeps_four_columns_when_the_name_and_roots_carry_control_characters() {
+        let row = project_row(
+            &project_fixture(
+                "Alpha\tBeta\nGamma\x1b[31m",
+                vec![PathBuf::from("/tmp/one\ttwo"), PathBuf::from("/tmp/three")],
+            ),
+            2,
+        );
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "the row must stay one line: {row:?}"
+        );
+        let columns: Vec<&str> = row.split('\t').collect();
+        assert_eq!(columns.len(), 4, "the row must keep four columns: {row:?}");
+        assert_eq!(columns[0], "prj-fixture");
+        assert_eq!(columns[1], "Alpha Beta Gamma [31m");
+        assert_eq!(columns[2], "2");
+        assert_eq!(columns[3], "/tmp/one two, /tmp/three");
+        assert!(
+            !row.contains('\x1b'),
+            "ESC must not reach the terminal: {row:?}"
+        );
+    }
+
+    /// The collapse is a rendering choice, not a data change: a name without
+    /// control characters must render byte-for-byte, and a project with no
+    /// roots must keep the "-" placeholder rather than an empty cell.
+    #[test]
+    fn list_row_leaves_ordinary_names_and_empty_roots_untouched() {
+        let row = project_row(&project_fixture("Alpha", Vec::new()), 0);
+        assert_eq!(row, "prj-fixture\tAlpha\t0\t-");
+    }
 }

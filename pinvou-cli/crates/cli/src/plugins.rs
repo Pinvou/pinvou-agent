@@ -49,10 +49,18 @@
 //!   branch of `bundle_readiness`). CLI-connector live status (feishu/wecom/
 //!   dingtalk/tmeet `*_status`) and ima credential status need the connector
 //!   runtime; the CLI reports the registry's conservative readiness and
-//!   defers live probes to the `connectors` family. Credential presence is
-//!   consulted in the system credential store for every installed bundle, so
-//!   a read-only CLI run CAN touch the OS keyring (macOS may prompt) — only
-//!   a run with nothing installed never does.
+//!   defers live probes to the `connectors` family. Because a CLI connector's
+//!   readiness IS its connection state, that deferral means the verdict for a
+//!   `cli`-kind bundle is not decidable here at all: those rows are reported
+//!   as `ready: false` with `probe: "unavailable_in_cli"` (and reason
+//!   `connection_unknown_in_cli` when nothing else is wrong) rather than
+//!   claiming a readiness no probe established — the same disclosure shape as
+//!   `oauth_token_present` / `token_check` above. Every row carries `probe`,
+//!   so `registry` rows are equally self-describing and the JSON shape does
+//!   not vary by kind. Credential presence is consulted in the system
+//!   credential store for every installed bundle, so a read-only CLI run CAN
+//!   touch the OS keyring (macOS may prompt) — only a run with nothing
+//!   installed never does.
 //! - enable/disable/project-skills → `scope::load_disabled_bundles_for` /
 //!   `update_disabled_bundles_for` (single-critical-section RMW) /
 //!   `set_project_skills_enabled` (the storage behind `set_disabled_skills` /
@@ -69,7 +77,7 @@ use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
-    bundle::{BundleRegistry, Readiness, keyring_target, readiness_for},
+    bundle::{BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
     package_export, plugin_import, recycle_bin,
     skill_marketplace::SkillMarketplaceManager,
     skill_scope,
@@ -1334,6 +1342,25 @@ fn default_export_name(id: &str) -> PathBuf {
 // readiness / enable / disable / project-skills
 // ---------------------------------------------------------------------------
 
+/// `probe` field on a `plugins readiness` row: how complete the row's
+/// `ready` / `reason` pair is. `registry` means the registry verdict IS the
+/// whole answer (the GUI computes it from the same `readiness_for` call).
+/// `unavailable_in_cli` means the verdict is a headless under-approximation:
+/// the desktop reaches the real answer through a live probe this crate cannot
+/// run, so `ready: false` on such a row means "not determined here", not
+/// "known broken" — `pinvoy connectors ... status` is the authority. Every row
+/// carries the field so the JSON shape does not depend on the kind.
+const PROBE_REGISTRY: &str = "registry";
+const PROBE_UNAVAILABLE_IN_CLI: &str = "unavailable_in_cli";
+
+/// Reason paired with `probe: "unavailable_in_cli"` when the registry has
+/// nothing negative to report about a CLI connector: everything headless can
+/// check passes, but "ready" for a CLI connector means "logged in", and the
+/// login state lives in the connector runtime. Named after the limitation
+/// (same spirit as `token_check: "unavailable_in_cli"` in `tools auth`) so a
+/// reader is not sent chasing a fault that was never observed.
+const REASON_CONNECTION_UNKNOWN: &str = "connection_unknown_in_cli";
+
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let registry = BundleRegistry::new();
     let rows = registry
@@ -1364,9 +1391,30 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
                         credential_store.get(&reference).ok().flatten().is_some()
                     })
             };
-            let (ready, reason) = match readiness_for(&bundle, has) {
+            let (registry_ready, registry_reason) = match readiness_for(&bundle, has) {
                 Readiness::Ready => (true, None),
                 Readiness::NotReady(reason) => (false, Some(reason.to_owned())),
+            };
+            // A CLI connector's readiness IS its connection state: the desktop
+            // answers it from a live `*_status` probe (`bundle_readiness`'s Cli
+            // arm, `connected = connected_of(&status)`), which needs the
+            // connector runtime this crate does not link. `readiness_for`'s
+            // headless fallback only sees registry facts — installed, and its
+            // assets verify — and a logged-out feishu satisfies both. Passing
+            // that through as `ready: true` would be a false positive against
+            // the GUI's `not_connected`, so the headless surface never claims a
+            // CLI bundle is ready: it reports the conservative `false` plus a
+            // reason and a probe marker naming the limitation, the same
+            // disclosure shape `tools auth` uses for `oauth_token_present` /
+            // `token_check`. Registry-visible negatives (`cli_not_installed`,
+            // `cli_assets_mismatch`) are facts the CLI really did observe and
+            // pass through unchanged — only their probe marker records that a
+            // connection check was still not performed.
+            let (ready, reason, probe) = if bundle.kind == BundleKind::Cli {
+                let reason = registry_reason.or_else(|| Some(REASON_CONNECTION_UNKNOWN.to_owned()));
+                (false, reason, PROBE_UNAVAILABLE_IN_CLI)
+            } else {
+                (registry_ready, registry_reason, PROBE_REGISTRY)
             };
             let kind = serde_json::to_value(&bundle.kind)
                 .ok()
@@ -1378,6 +1426,7 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
                 "installed": bundle.installed,
                 "ready": ready,
                 "reason": reason,
+                "probe": probe,
             })
         })
         .collect::<Vec<_>>();
@@ -1385,13 +1434,17 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = rows
         .iter()
         .map(|row| {
+            // The probe column is part of the human line too: without it a
+            // reader cannot tell a verdict that was computed from a verdict
+            // that could not be computed here.
             format!(
-                "{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 row["bundle_id"].as_str().unwrap_or(""),
                 row["kind"].as_str().unwrap_or(""),
                 row["installed"].as_bool().unwrap_or(false),
                 row["ready"].as_bool().unwrap_or(false),
                 row["reason"].as_str().unwrap_or("-"),
+                row["probe"].as_str().unwrap_or("-"),
             )
         })
         .collect::<Vec<_>>()

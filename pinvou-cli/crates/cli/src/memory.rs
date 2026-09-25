@@ -441,6 +441,19 @@ fn parse_options(
         let token = values[index].as_str();
         if token.starts_with("--") {
             if allowed_flags.contains(&token) {
+                // Duplicate boolean flags are a usage error here for the same
+                // reason they are in `support::parse_family_flags`: repeating
+                // a flag almost always means the command line was assembled
+                // wrongly (a script appending `--yes` to an argv that already
+                // had one), and for a destructive family that silently
+                // accepting it would be the difference between refusing and
+                // deleting. Without this check `memory delete X --yes --yes`
+                // succeeded while `models remove X --yes --yes` exited 2,
+                // which made the "duplicate flags are rejected" contract a
+                // per-family accident instead of a rule.
+                if options.has_flag(token) {
+                    return Err(CliError::usage(format!("duplicate option {token}")));
+                }
                 options.flags.push(token.to_owned());
                 index += 1;
                 continue;
@@ -450,7 +463,15 @@ fn parse_options(
                     .get(index + 1)
                     .ok_or_else(|| CliError::usage(format!("{token} requires a value")))?
                     .clone();
-                if value.starts_with("--") {
+                // An empty value is rejected alongside a flag-looking one:
+                // `--store ""` or `--topic ""` is a missing value that the
+                // shell expanded from an unset variable, not a request to
+                // address the empty-named item. Letting it through handed the
+                // store a blank id/topic to resolve, which is either a
+                // confusing host failure or — worse — a match on whatever the
+                // store normalizes the empty string to. Mirrors the
+                // `value.is_empty()` guard in `support::parse_family_flags`.
+                if value.is_empty() || value.starts_with("--") {
                     return Err(CliError::usage(format!("{token} requires a value")));
                 }
                 if options.value(token).is_some() {
@@ -938,6 +959,100 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
     ))
 }
 
+/// Character cap the `memory add` pipeline actually applies, for BOTH kinds.
+///
+/// `memory add` never writes a store directly: it enqueues a candidate and
+/// immediately confirms it, and the FIRST normalization on that route is
+/// `pending_item_from_suggestion`'s `clean_text(&suggestion.content, 120)`
+/// (`features/memory/io.rs`), whose tail is a hard `.chars().take(120)`. The
+/// per-store caps downstream — `PREFERENCE_TEXT_MAX_CHARS` (120) and
+/// `WORK_CONTEXT_TEXT_MAX_CHARS` (160) — are applied to a string that is
+/// already at most 120 characters, so the work-context store's nominal 160
+/// can never bind on this path: input of 121..=160 characters loses its tail
+/// in the pending queue before the work-context writer ever sees it.
+///
+/// Warning against the store cap (160) instead of the cap that is really
+/// applied is what made the loss silent, so this constant is deliberately the
+/// pending-queue cap rather than either store constant. It is a plain literal
+/// because the feature layer does not export the pending-queue cap: the 120
+/// in `pending_item_from_suggestion` is an unnamed literal, and
+/// `PREFERENCE_TEXT_MAX_CHARS` — which happens to share the value — is
+/// `pub(super)` and in any case describes a different, later stage.
+/// `memory_add_work_context_over_the_cap_reports_the_truncation` pins the
+/// value against the feature layer's observable behavior — it asserts the
+/// stored length against the store itself — so this cannot drift unnoticed.
+const ADD_PIPELINE_TEXT_MAX_CHARS: usize = 120;
+
+/// Mirror of `features::memory::util::clean_text` (`pub(super)`, so the CLI
+/// cannot call it): collapse every whitespace run to one space, trim, then
+/// hard-truncate to `max_chars` characters.
+///
+/// Reproducing it is what lets `add` predict — from the ORIGINAL user input —
+/// exactly what the store will hold, instead of trusting the value the
+/// pending queue echoes back. The mirror is pinned by the add tests, which
+/// compare this prediction against what the feature layer really wrote.
+fn clean_text_like_feature(value: &str, max_chars: usize) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+/// The exact text `memory add` will store for `content`, derived from the
+/// ORIGINAL user input by replaying the feature pipeline stage by stage.
+///
+/// Stage 1 is the pending queue's `clean_text(content, 120)`; stage 2 is the
+/// target store's own normalization — verbatim for preferences
+/// (`write_preference_unlocked` stores `item.content` as-is) and
+/// `clean_candidate_sentence` for work context (`upsert_work_context_unlocked`
+/// strips 请记住-style prefixes and outer punctuation).
+///
+/// Anchoring the post-write verification on this instead of on the enqueue
+/// result is the point: `enqueue_memory_candidate` does not always return the
+/// caller's own text. Its dedupe branch matches an existing *pending* row on
+/// a LOWERCASED content key and returns that row unchanged, so a re-add that
+/// differs only in case gets the earlier row's casing written to the store.
+/// Verifying against that returned value compares the store with itself and
+/// passes no matter what was lost; verifying against the user's input
+/// detects it.
+fn expected_stored_text(kind: AddKind, content: &str) -> String {
+    let enqueued = clean_text_like_feature(content, ADD_PIPELINE_TEXT_MAX_CHARS);
+    match kind {
+        AddKind::Preference => enqueued,
+        AddKind::WorkContext => {
+            feature::clean_candidate_sentence(&enqueued, feature::WORK_CONTEXT_TEXT_MAX_CHARS)
+        }
+    }
+}
+
+/// Error for an add whose store write used text OTHER than the caller's,
+/// or `None` when the enqueue echoed the caller's own text back (in which
+/// case the store simply holds nothing and the caller's own "not stored"
+/// message is the accurate one).
+///
+/// `enqueue_memory_candidate` does not always queue what it was handed: its
+/// second dedupe branch matches an existing *pending* row on a LOWERCASED
+/// content key and returns that row untouched, so re-adding text that differs
+/// only in case makes the confirm write the EARLIER row's wording. Reporting
+/// that as a flat "was not stored" would send the user looking for a failed
+/// write that never happened; naming the text that actually landed makes it
+/// immediately recoverable (resolve or ignore the pending row, then re-add).
+fn diverged_text(kind: AddKind, enqueued: &str, expected: &str) -> Option<CliError> {
+    let actually_stored = expected_stored_text(kind, enqueued);
+    if actually_stored == *expected {
+        return None;
+    }
+    Some(CliError::failed(format!(
+        "memory_add_not_materialized: the pipeline stored {actually_stored:?} instead of the \
+         submitted {expected:?} (an existing pending candidate matching this text \
+         case-insensitively was reused); resolve it with `pinvou memory pending` and retry"
+    )))
+}
+
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the
 /// candidate into `_pending.jsonl` and immediately confirm it so the item is
 /// materialized into its authoritative store.
@@ -968,36 +1083,43 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
 memory profile instead",
         ));
     }
+    // The text the feature pipeline will really store, predicted from the
+    // original input. Computed once and reused for the pre-flight probe, the
+    // truncation report and the post-write verification, so those three can
+    // never disagree about what "stored" means.
+    let expected = expected_stored_text(kind, &content);
     // Same fail-before-state-change discipline for work-context: content the
     // confirm path's sentence cleanup empties ("记住。") would pass the
     // enqueue gates, then fail inside the work-context write with the
     // pending entry already stranded. Reject up front, mirroring the
-    // preference probe above.
-    if kind == AddKind::WorkContext
-        && feature::clean_candidate_sentence(&content, feature::WORK_CONTEXT_TEXT_MAX_CHARS)
-            .trim()
-            .is_empty()
-    {
+    // preference probe above. The probe replays the full pipeline (pending
+    // truncation first, then the sentence cleanup) rather than cleaning the
+    // raw input, so it matches the writer exactly.
+    if kind == AddKind::WorkContext && expected.trim().is_empty() {
         return Err(CliError::failed(
             "memory_add_not_materialized: work-context content is empty after \
 normalization (task-like or punctuation-only text is not stored)",
         ));
     }
-    // The feature caps stored text (120 chars for preference items, 160 for
-    // work context) with a hard truncate during normalization; a longer
-    // input silently loses its tail, so warn before the write. The caps are
-    // GUI-shared store facts, disclosed in docs/pinvou-cli.md.
-    let cap = match kind {
-        AddKind::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
-        AddKind::Preference => Some(120),
-    };
-    if let Some(cap) = cap {
-        if content.chars().count() > cap {
-            crate::note!(
-                "memory add: content exceeds the {cap}-character store cap; the tail was \
-                 truncated"
-            );
-        }
+    // Truncation is decided by whether the whitespace-collapsed input still
+    // fits the cap the pipeline applies — NOT by `content.chars().count()` on
+    // the raw string, which over-reports for input padded with newlines or
+    // runs of spaces that normalization removes before the cap is reached.
+    //
+    // The cap is `ADD_PIPELINE_TEXT_MAX_CHARS` for both kinds: warning
+    // work-context input against the work-context store's 160 was the bug —
+    // 121..=160 characters are truncated by the pending queue at 120 and the
+    // warning never fired, so the tail vanished silently and the post-write
+    // check (which compared against the already-truncated echo) still passed.
+    let collapsed = clean_text_like_feature(&content, usize::MAX);
+    let truncated = collapsed.chars().count() > ADD_PIPELINE_TEXT_MAX_CHARS;
+    if truncated {
+        crate::note!(
+            "memory add: content is {} characters and exceeds the \
+             {ADD_PIPELINE_TEXT_MAX_CHARS}-character cap applied when the candidate is \
+             queued; the tail was truncated",
+            collapsed.chars().count()
+        );
     }
     // The preference and work-context stores are replace-per-topic: a new
     // item lands in a fixed topic bucket (the CLI adds without a topic, so
@@ -1021,18 +1143,27 @@ normalization (task-like or punctuation-only text is not stored)",
         .ok_or_else(|| {
             CliError::failed("memory_add_failed: pending candidate disappeared before confirm")
         })?;
+    // Every lookup below matches on `expected` — derived from the ORIGINAL
+    // user input, never from `pending.content`. `pending.content` is the
+    // pipeline's own echo of what it decided to keep, so comparing the store
+    // against it asks "did the store keep what the store kept?", which is
+    // true even when the submitted text was truncated or replaced by a
+    // lowercased dedupe match. Matching on the prediction turns both of
+    // those into a visible failure instead of a green no-op.
     let (mut human, mut value, replaced) = match kind {
         AddKind::Preference => {
             let items = feature::list_preferences().map_err(|error| feature_error("add", error))?;
             let item = items
                 .iter()
                 .rev()
-                .find(|item| item.text == pending.content)
+                .find(|item| item.text == expected)
                 .ok_or_else(|| {
-                    CliError::failed(
-                        "memory_add_not_materialized: preference content belongs to the \
+                    diverged_text(kind, &pending.content, &expected).unwrap_or_else(|| {
+                        CliError::failed(
+                            "memory_add_not_materialized: preference content belongs to the \
 memory profile instead",
-                    )
+                        )
+                    })
                 })?;
             let after = items
                 .iter()
@@ -1045,23 +1176,20 @@ memory profile instead",
             )
         }
         AddKind::WorkContext => {
-            // The confirm path stores `clean_candidate_sentence(content)` —
-            // leading 请记住-style prefixes and outer punctuation stripped —
-            // so the verification must compare against the same normalized
-            // form, or ordinary punctuated input false-fails after storing
-            // fine.
-            let stored = feature::clean_candidate_sentence(
-                &pending.content,
-                feature::WORK_CONTEXT_TEXT_MAX_CHARS,
-            );
+            // `expected` already carries the confirm path's
+            // `clean_candidate_sentence` stage (leading 请记住-style prefixes
+            // and outer punctuation stripped), so ordinary punctuated input
+            // matches instead of false-failing after storing fine.
             let items =
                 feature::load_work_context().map_err(|error| feature_error("add", error))?;
             let item = items
                 .iter()
                 .rev()
-                .find(|item| item.text == stored)
+                .find(|item| item.text == expected)
                 .ok_or_else(|| {
-                    CliError::failed("memory_add_not_materialized: work context was not stored")
+                    diverged_text(kind, &pending.content, &expected).unwrap_or_else(|| {
+                        CliError::failed("memory_add_not_materialized: work context was not stored")
+                    })
                 })?;
             let after = items
                 .iter()
@@ -1074,6 +1202,30 @@ memory profile instead",
             )
         }
     };
+    // stderr notes vanish into `2>/dev/null` and are invisible to a JSON
+    // consumer, so a truncating add also reports the loss on the command's
+    // own output channel: the add still succeeds (the item IS stored, just
+    // shortened), but neither a human nor a script can miss it.
+    if truncated {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("truncated".to_owned(), serde_json::json!(true));
+            object.insert(
+                "submitted_characters".to_owned(),
+                serde_json::json!(collapsed.chars().count()),
+            );
+            object.insert(
+                "stored_characters".to_owned(),
+                serde_json::json!(expected.chars().count()),
+            );
+        }
+        human.push_str(&format!(
+            "\nNote: the submitted {} characters exceed the \
+             {ADD_PIPELINE_TEXT_MAX_CHARS}-character cap applied when the candidate is \
+             queued; only the first {} characters were stored",
+            collapsed.chars().count(),
+            expected.chars().count()
+        ));
+    }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {
             object.insert("replaced".to_owned(), serde_json::json!(replaced));

@@ -511,6 +511,219 @@ fn sessions_timeline_reads_timing_events_and_tolerates_missing_file() {
     assert!(lines[0].contains("t1-start"));
 }
 
+/// `SessionStore::set_pinned` / `set_hidden` return `()`: the sidecar layer
+/// catches a failed persist, rolls its in-memory cache back to the durable
+/// state and only reports on stderr. Without a post-write verification the
+/// CLI printed "pinned <id>" and exited 0 with nothing written, so a script
+/// on a read-only `~/.pinvou3` recorded a pin (or an archive) that no later
+/// run can see. Make the write genuinely impossible and require a non-zero
+/// exit plus a message that names the sidecar.
+#[cfg(unix)]
+#[test]
+fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("sidecar-readonly");
+    let id = create_session_fixture();
+
+    // The pinned/hidden registries live next to the transcripts, so a
+    // read-only sessions directory is exactly the production failure: the
+    // transcript still LOADS (reads are unaffected), only the sidecar write
+    // is refused.
+    let sessions_root = home.sessions_root();
+    let original = std::fs::metadata(&sessions_root).unwrap().permissions();
+    std::fs::set_permissions(&sessions_root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let pin = run(&["pinvou", "sessions", "pin", &id]);
+    let archive = run(&["pinvou", "sessions", "archive", &id]);
+
+    // Restore before asserting: a failing assertion must not leave an
+    // unremovable directory behind for HomeGuard's Drop.
+    std::fs::set_permissions(&sessions_root, original).unwrap();
+
+    let pin = pin.expect_err("pin must not report success when nothing was written");
+    assert_eq!(pin.exit_code(), ExitCode::Failed);
+    assert!(
+        pin.to_string().contains("pinned-sessions"),
+        "the failure must name the sidecar that did not persist: {pin}"
+    );
+    let archive = archive.expect_err("archive must not report success when nothing was written");
+    assert_eq!(archive.exit_code(), ExitCode::Failed);
+    assert!(
+        archive.to_string().contains("hidden-sessions"),
+        "the failure must name the sidecar that did not persist: {archive}"
+    );
+
+    // Nothing was written, and the honest report matches: the session is
+    // still unpinned and still visible in the default listing.
+    let listed = run_json(&["pinvou", "sessions", "list"]);
+    assert_eq!(listed["sessions"][0]["id"], id);
+    assert_eq!(listed["sessions"][0]["pinned"], false);
+    assert_eq!(listed["sessions"][0]["archived"], false);
+}
+
+/// A transcript is model-authored text printed straight to a terminal. In
+/// human mode the ESC-driven sequences must not survive (they move the
+/// cursor, repaint, rewrite the window title) and neither must CR, which
+/// redraws the current line over earlier output. The transcript's own
+/// newlines and tabs must survive, because they ARE the output the caller
+/// asked for. JSON mode keeps the verbatim bytes.
+#[test]
+fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("transcript-escapes");
+    let id = create_session_fixture();
+    let hostile = "line1\n\tindented\x1b[2J\x1b]0;pwned\x07 tail\roverwrite";
+    seed_transcript(&id, "hello", hostile);
+
+    for arguments in [
+        vec!["pinvou", "sessions", "show", &id],
+        vec!["pinvou", "sessions", "export", &id],
+    ] {
+        let outcome = run(&arguments).unwrap_or_else(|error| panic!("{arguments:?}: {error}"));
+        assert!(
+            !outcome.stdout.contains('\x1b'),
+            "{arguments:?} leaked ESC to the terminal: {:?}",
+            outcome.stdout
+        );
+        assert!(
+            !outcome.stdout.contains('\r') && !outcome.stdout.contains('\x07'),
+            "{arguments:?} leaked CR/BEL to the terminal: {:?}",
+            outcome.stdout
+        );
+        assert!(
+            outcome.stdout.contains("line1\n\tindented"),
+            "{arguments:?} destroyed the transcript layout: {:?}",
+            outcome.stdout
+        );
+    }
+
+    // JSON mode was never the problem (serde_json escapes everything below
+    // 0x20) and must keep reporting the stored bytes.
+    let value = run_json(&["pinvou", "--output", "json", "sessions", "show", &id]);
+    assert_eq!(value["messages"][1]["text"], serde_json::json!(hostile));
+}
+
+/// `sessions export --output` writes the whole conversation — system prompt,
+/// every turn, tool calls and their results. A default-umask file (~0644)
+/// would hand that to every local user on the machine, so the destination is
+/// created 0600 like `code providers export` does.
+#[cfg(unix)]
+#[test]
+fn sessions_export_output_file_is_owner_readable_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("export-mode");
+    let id = create_session_fixture();
+    seed_transcript(&id, "hello", "hi there");
+
+    let destination = std::env::temp_dir().join(format!(
+        "pinvou-cli-export-mode-{}-{}.md",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    run_json(&[
+        "pinvou",
+        "sessions",
+        "export",
+        &id,
+        "--output",
+        destination.to_str().unwrap(),
+    ]);
+    let mode = std::fs::metadata(&destination)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    let _ = std::fs::remove_file(&destination);
+    assert_eq!(
+        mode, 0o600,
+        "an exported transcript must not be group/world readable (got {mode:o})"
+    );
+}
+
+/// `sessions subagents` renders a four-column tab-separated row whose last
+/// two cells are untrusted: `objective` is verbatim from the model's own
+/// `agent` tool call and `error` is whatever the failing worker reported. A
+/// tab would invent a fifth column and a newline would turn one subagent
+/// into two rows, silently breaking every consumer that cuts on `\t`.
+#[test]
+fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("subagents-columns");
+    let id = create_session_fixture();
+
+    // The worker ledger the multiagent transcript listing reads, seeded at
+    // the same path the engine writes it to under the session ledger root
+    // (`sessions_root/<id>/workspace` for a plain chat session).
+    let ledger = home.sessions_root().join(&id).join("workspace");
+    let state_dir = ledger.join(".codewhale").join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join("subagents.v1.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "agents": [],
+            "workers": [{
+                "spec": {
+                    "worker_id": "w-1",
+                    "objective": "audit\tthe\nrepo\x1b[31m",
+                    "agent_type": "general",
+                    "model": "test-model",
+                    "workspace": ledger.display().to_string(),
+                    "context_mode": "fresh",
+                    "fork_context": false,
+                    "tool_profile": "inherited",
+                    "max_steps": 8,
+                    "spawn_depth": 0,
+                    "max_spawn_depth": 2,
+                },
+                "status": "failed",
+                "created_at_ms": 1_700_000_000_000_u64,
+                "updated_at_ms": 1_700_000_001_000_u64,
+                "error": "boom\tdetail\nsecond line",
+            }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let outcome = run(&["pinvou", "sessions", "subagents", &id]).expect("subagents must succeed");
+    assert_eq!(
+        outcome.stdout.lines().count(),
+        1,
+        "one worker must render as exactly one row: {:?}",
+        outcome.stdout
+    );
+    let columns: Vec<&str> = outcome.stdout.split('\t').collect();
+    assert_eq!(
+        columns.len(),
+        4,
+        "the subagents row layout changed: {:?}",
+        outcome.stdout
+    );
+    assert_eq!(columns[0], "w-1");
+    assert_eq!(columns[2], "audit the repo [31m");
+    assert_eq!(columns[3], "boom detail second line");
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+
+    // JSON keeps the verbatim strings: the collapse is a rendering choice.
+    let value = run_json(&["pinvou", "--output", "json", "sessions", "subagents", &id]);
+    assert_eq!(
+        value["subagents"][0]["objective"],
+        serde_json::json!("audit\tthe\nrepo\x1b[31m")
+    );
+}
+
 #[test]
 fn sessions_subagents_lists_read_only_and_folder_prints_session_path() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -492,12 +492,23 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
 /// `<connector>_disabled` marker file alone only gates skill directories
 /// inside the desktop app; the execpolicy CLI hard-block and the skill
 /// materialization exclusion read `disabled_bundles.json`, so a switch must
-/// sync the connector id there too. Disabling adds the id to **every**
-/// session mode's disabled set and marks each scope initialized — the switch
-/// is an explicit user decision, so from then on the read path trusts the
-/// persisted list instead of a policy fallback. Enabling removes the id from
-/// every disabled and hidden list again. Sole caller is the pinvou-cli
-/// `connectors enable/disable` command, mirroring the GUI command layer.
+/// sync the connector id there too. Enabling removes the id from every
+/// disabled and hidden list again.
+///
+/// Disabling makes the connector denied in **every** session mode, but it
+/// only *writes* the scopes that do not already deny it: a scope whose
+/// effective set (persisted list, or the DenyAll policy fallback for an
+/// uninitialized scope) already contains the package is left untouched, so
+/// an uninitialized DenyAll scope keeps its policy fallback instead of being
+/// frozen into a persisted list by a switch that changes nothing there. The
+/// scopes that are written are marked initialized — the switch is an explicit
+/// user decision for them, so from then on the read path trusts the persisted
+/// list instead of the fallback; the freeze follows
+/// [`update_disabled_bundles_for`]'s contract, i.e. the persisted list is the
+/// off-lock sample unioned with a fresh in-lock installed-package read, so a
+/// package installed in the sample→freeze window does not escape the default
+/// deny. Sole caller is the pinvou-cli `connectors enable/disable` command,
+/// mirroring the GUI command layer.
 ///
 /// Fails closed like the other writers: an unavailable cross-process lock
 /// refuses the write with `Err`.
@@ -509,11 +520,30 @@ pub fn sync_disabled_bundles_for_connector_switch(
         return remove_bundle_from_disabled_scopes(connector_id);
     }
     let package_id = to_package_id(connector_id);
+    // 与 `update_disabled_bundles_for` 同型：DenyAll 兜底展开要按技能逐个探测
+    // 技能包根（#584 的 overdeny 口径），在 flock 内枚举等于把 GUI↔CLI 的串行点
+    // 压在一次文件系统遍历上。采样必须发生在临界区**之前**；判别式回归是
+    // `connector_switch_samples_denyall_expansion_outside_the_critical_section`。
+    //
+    // Hoisted for the same reason as the sibling RMW writer: the flock must
+    // cover only a file-sized read/write, never the packages-root scan.
+    let mut sample = sample_denyall_expansion();
     with_disabled_bundles_writer(|| {
+        // 锁内再并一次 installed.json（文件大小的读，不破坏免扫描契约）：本入口
+        // 会把 DenyAll scope 从「未初始化 = 按策略兜底」冻结成一份显式列表，采样
+        // 之后、冻结之前由别的进程装上的包，其安装期 DenyAll 同步在当时仍是未初始
+        // 化 scope 上的 no-op，这里是它进入禁用集的最后机会。只做并集：store 一时
+        // 读不出来只会让集合保持不变，不会收窄。已记录的残差与兄弟写方一致——同
+        // 窗口内新装的**技能**仍会漏掉，重扫技能包根正是上面外提要避免的事。
+        for id in MarketplaceManager::new().installed_ids() {
+            if !sample.installed_ids.iter().any(|known| known == &id) {
+                sample.installed_ids.push(id);
+            }
+        }
         let mut file = load_disabled_bundles_file_locked()?;
         let mut changed = false;
         for mode in SessionMode::ALL {
-            let mut ids = resolve_scope_disabled_ids(&file, *mode);
+            let mut ids = resolve_scope_disabled_ids_with_sample(&file, *mode, &sample);
             if ids.iter().any(|id| id == &package_id) {
                 continue;
             }
@@ -943,6 +973,147 @@ mod tests {
             }
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
         });
+    }
+
+    /// Same lock-discipline contract as
+    /// `update_rmw_samples_denyall_expansion_outside_the_critical_section`,
+    /// for the connector-switch bridge: the DenyAll fallback expansion it
+    /// needs to freeze a scope must be SAMPLED before the cross-process
+    /// critical section, because the strict enumeration behind the sample
+    /// probes the skill packages root per skill (#584) and running it inside
+    /// the flock would hold the GUI↔CLI serialization point for a filesystem
+    /// scan. Same discriminator: while the writer is provably blocked on the
+    /// flock, degrade the packages root. Sampling precedes the lock attempt
+    /// in program order, so the frozen list must be the CLEAN expansion — the
+    /// installed owner present, the not-installed preset owner of the
+    /// degraded blanket absent. Moving the enumeration back inside the
+    /// critical section makes it observe the degraded root and turns this
+    /// red.
+    ///
+    /// The switched id is deliberately one the DenyAll default does not
+    /// already imply: a builtin connector is skipped by the "already denied"
+    /// branch and would never freeze a scope, so it could not discriminate.
+    #[test]
+    fn connector_switch_samples_denyall_expansion_outside_the_critical_section() {
+        with_temp_home("pinvou3-scope-switch-hoist", || {
+            install_preset_skill_under_claimed_owner();
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                sync_disabled_bundles_for_connector_switch("custom-connector", false).unwrap();
+                tx.send(()).expect("signal writer completion");
+            });
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+                    .is_err(),
+                "the writer must be blocked on the flock before the root is degraded"
+            );
+            let bundles_root = paths::bundles_root();
+            let unreadable = make_dir_unreadable_for_test(&bundles_root);
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the writer completes once the flock is released");
+            writer.join().unwrap();
+            drop(unreadable);
+            let persisted = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                persisted.contains(&"custom-connector".to_string()),
+                "the switched-off connector must be in the frozen deny set: {persisted:?}"
+            );
+            assert!(
+                persisted.contains(&"gongwen".to_string()),
+                "the installed preset owner must be in the frozen deny set: {persisted:?}"
+            );
+            assert!(
+                !persisted.contains(&"pptx".to_string()),
+                "the critical section must not re-enumerate a degraded packages \
+                 root: the write-back must freeze the expansion sampled before \
+                 the flock, not the degraded blanket union: {persisted:?}"
+            );
+        });
+    }
+
+    /// Freezing an uninitialized DenyAll scope must not release packages from
+    /// the deny-by-default: once `initialized` holds the key the read path
+    /// returns the persisted list verbatim, so anything missing from the
+    /// frozen snapshot is silently ENABLED from then on — and a package
+    /// installed after the off-lock sample has an install-time DenyAll sync
+    /// that was a no-op precisely because the scope was still uninitialized.
+    /// The in-lock `installed_ids()` union is what closes that window, so the
+    /// discriminator installs the package while the writer is provably
+    /// blocked on the flock, i.e. strictly after it sampled. A hoist without
+    /// the union turns this red.
+    #[test]
+    fn connector_switch_freeze_keeps_a_late_install_denied_by_default() {
+        with_temp_home("pinvou3-scope-switch-freeze", || {
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            assert!(
+                !load_disabled_bundles_file()
+                    .initialized
+                    .contains(ConnectorScope::Code.as_str()),
+                "precondition: the DenyAll scope must still be uninitialized"
+            );
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                sync_disabled_bundles_for_connector_switch("custom-connector", false).unwrap();
+                tx.send(()).expect("signal writer completion");
+            });
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+                    .is_err(),
+                "the writer must be blocked on the flock before the late install"
+            );
+            // Installed strictly after the writer sampled: only an in-lock
+            // read of installed.json can still see it.
+            write_installed_ids(&["late-pkg".to_string()]);
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the writer completes once the flock is released");
+            writer.join().unwrap();
+            assert!(
+                load_disabled_bundles_file()
+                    .initialized
+                    .contains(ConnectorScope::Code.as_str()),
+                "the switch must have frozen the DenyAll scope for this to be the \
+                 interesting case"
+            );
+            let persisted = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                persisted.contains(&"late-pkg".to_string()),
+                "a package installed in the sample→freeze window must stay denied \
+                 by default after the freeze: {persisted:?}"
+            );
+        });
+    }
+
+    /// Writes `marketplace/installed.json` directly, the same file
+    /// `MarketplaceManager::installed_ids` reads: the test needs to install a
+    /// package at an exact instant (while a writer is parked on the flock),
+    /// which the manager's install path cannot express.
+    fn write_installed_ids(ids: &[String]) {
+        let path = paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(ids).unwrap()).unwrap();
     }
 
     /// The flock's actual exclusion: while another fd in this process holds

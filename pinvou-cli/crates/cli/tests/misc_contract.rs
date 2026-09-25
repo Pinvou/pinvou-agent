@@ -574,6 +574,69 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
     );
 }
 
+/// A child the wait loop already reaped must never have its process group
+/// killed: the pid is free for reuse the moment it is reaped, so `kill(-pgid)`
+/// could SIGKILL an unrelated group with the user's privileges. Exit code 6 is
+/// the documented "no speech" answer of the external ASR CLI, so this fires on
+/// an ordinary user action. The fake engine leaves a live descendant in its own
+/// process group before exiting 6; that descendant is the observable proof —
+/// a group kill after the reap would take it down with it.
+#[cfg(unix)]
+#[test]
+fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("voice-transcribe-no-speech");
+    let _asr_env = AsrEnvGuard::new();
+    let marker = home.root.join("descendant.pid");
+    let engine = home.root.join("fake-asr.sh");
+    // The descendant's own pipes go to /dev/null so it cannot hold the CLI's
+    // capture pipes open past the exit; only the process-group membership
+    // matters for this test.
+    std::fs::write(
+        &engine,
+        format!(
+            "#!/bin/sh\nsleep 300 >/dev/null 2>&1 &\necho $! > {}\nexit 6\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _overrides = EnvOverrideGuard::set(&[("PINVOU3_ASR_CMD", engine.to_str().unwrap())]);
+    let wav = home.root.join("capture.wav");
+    // 44-byte header-only WAV: large enough to pass the empty-audio gate.
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+
+    let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
+        .expect_err("exit code 6 is the no-speech failure");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().starts_with("asr_no_speech"),
+        "expected the no-speech code, got: {error}"
+    );
+
+    let descendant: i32 = std::fs::read_to_string(&marker)
+        .expect("the fake engine records its descendant pid")
+        .trim()
+        .parse()
+        .expect("the descendant pid is numeric");
+    // Safety: `kill(pid, 0)` only probes for existence; the pid came from this
+    // test's own fake engine seconds ago.
+    let alive = unsafe { libc::kill(descendant, 0) } == 0;
+    if alive {
+        // Safety: the descendant is verifiably still this test's own `sleep`,
+        // so the sandbox leaves nothing running behind. A dead pid is left
+        // alone rather than signalled — that is the very reuse hazard under
+        // test here.
+        unsafe { libc::kill(descendant, libc::SIGKILL) };
+    }
+    assert!(
+        alive,
+        "the reaped child's process group was killed: descendant {descendant} is gone"
+    );
+}
+
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)
 /// and calls the configured model endpoint. Run with: cargo test -p
 /// pinvou-cli --test misc_contract -- --ignored voice_postprocess
@@ -949,8 +1012,13 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
     }
 }
 
+/// A concluded submission leaves exactly one file: the receipt, carrying the
+/// request it answers. The bundle used to stay under `feedback/pending/`
+/// forever — the community `submit_feedback` never uploads and no retry lane
+/// exists — so a directory documented for transient packages accumulated
+/// permanent copies of the user's free text.
 #[test]
-fn feedback_submit_round_trips_pending_and_receipt_files() {
+fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("feedback-submit");
     let body = home.root.join("body.md");
@@ -975,35 +1043,59 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
         "https://github.com/Pinvou/pinvou-agent/issues"
     );
 
-    // The request bundle is kept under feedback/pending, the receipt under
-    // feedback/receipts (the platform's feedback directory contract).
-    let pending: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            home.root
-                .join("feedback")
-                .join("pending")
-                .join(format!("{feedback_id}.json")),
-        )
-        .expect("pending bundle must exist"),
-    )
-    .unwrap();
-    assert_eq!(pending["type"], "suggestion");
-    assert_eq!(pending["title"], "cli smoke");
-    assert_eq!(pending["description"], "Reproduction steps go here.\n");
-    assert_eq!(pending["entry_point"], "settings");
+    // Nothing is left staged: the run concluded, so no package is pending.
+    let pending_dir = home.root.join("feedback").join("pending");
+    assert!(
+        !pending_dir
+            .join(format!("{feedback_id}.json"))
+            .try_exists()
+            .unwrap(),
+        "a concluded submission must not leave a pending bundle"
+    );
+    if pending_dir.exists() {
+        let left: Vec<_> = std::fs::read_dir(&pending_dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(left.is_empty(), "feedback/pending must be empty: {left:?}");
+    }
 
-    let receipt: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            home.root
-                .join("feedback")
-                .join("receipts")
-                .join(format!("{feedback_id}.json")),
-        )
-        .expect("receipt must exist"),
-    )
-    .unwrap();
+    // The receipt is the record, and it carries the request it answers so the
+    // user still has their text to paste into the issue tracker.
+    let receipt_path = home
+        .root
+        .join("feedback")
+        .join("receipts")
+        .join(format!("{feedback_id}.json"));
+    let receipt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&receipt_path).expect("receipt must exist"))
+            .unwrap();
     assert_eq!(receipt["status"], "failed_validation");
     assert_eq!(receipt["retryable"], false);
+    assert_eq!(receipt["feedback_id"], feedback_id);
+    assert_eq!(receipt["request"]["type"], "suggestion");
+    assert_eq!(receipt["request"]["title"], "cli smoke");
+    assert_eq!(
+        receipt["request"]["description"],
+        "Reproduction steps go here.\n"
+    );
+    assert_eq!(receipt["request"]["entry_point"], "settings");
+    // The JSON no longer advertises a path that was just removed.
+    assert!(value.get("pending_path").is_none(), "{value}");
+    assert_eq!(value["receipt_path"], receipt_path.display().to_string());
+
+    // Free text the user wrote is not world-readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&receipt_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "receipt mode must be 0600, got {mode:o}");
+    }
 
     // The human output prints the issues URL instead of opening a browser.
     let outcome = run(&[
@@ -1024,8 +1116,13 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
             .stdout
             .contains("https://github.com/Pinvou/pinvou-agent/issues")
     );
+    assert!(
+        !outcome.stdout.contains("Pending:"),
+        "human mode must not point at a staged file that is gone: {}",
+        outcome.stdout
+    );
 
-    // Attachments are registered in the bundle.
+    // Attachments are registered in the request the receipt embeds.
     let attachment = home.root.join("trace.log");
     std::fs::write(&attachment, "log line\n").unwrap();
     let value = run_json(&[
@@ -1042,18 +1139,21 @@ fn feedback_submit_round_trips_pending_and_receipt_files() {
         attachment.to_str().unwrap(),
     ]);
     let feedback_id = value["feedback_id"].as_str().unwrap();
-    let pending: serde_json::Value = serde_json::from_str(
+    let receipt: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
             home.root
                 .join("feedback")
-                .join("pending")
+                .join("receipts")
                 .join(format!("{feedback_id}.json")),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(pending["attachments"][0]["name"], "trace.log");
-    assert_eq!(pending["attachments"][0]["media_type"], "text/plain");
+    assert_eq!(receipt["request"]["attachments"][0]["name"], "trace.log");
+    assert_eq!(
+        receipt["request"]["attachments"][0]["media_type"],
+        "text/plain"
+    );
 }
 
 #[test]
@@ -1128,6 +1228,13 @@ fn monitor_rejects_invalid_usage_with_exit_two() {
 /// probes the configured model endpoint; without a model it must report a
 /// clean offline zero state. Run with: cargo test -p pinvou-cli --test
 /// misc_contract -- --ignored monitor_status
+///
+/// Only the *probe* needs the opt-in. The stable-shape guard this test used to
+/// carry was hermetic all along and is now a plain unit test next to the
+/// payload builder (`monitor::tests::status_json_has_one_key_set_in_both_branches`
+/// and friends, `cargo test -p pinvou-cli --lib monitor`), so a branch that
+/// drifts out of shape fails on every run instead of only when someone
+/// remembers `--ignored` on a machine with a display.
 #[test]
 #[ignore = "needs display host + model endpoint probe: cargo test --test misc_contract -- --ignored"]
 fn monitor_status_reports_clean_zero_state_without_a_model() {
@@ -1140,27 +1247,53 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
         outcome.stdout.contains("Online: false"),
         "monitor status output missing the offline line"
     );
-    // The zero state carries the same key set as the model-present branch,
-    // with null values where there is no snapshot, so scripts parse one
-    // stable shape.
+    // The zero state carries the same 8-key set as the model-present branch,
+    // so scripts parse one stable shape. Asserted on the key set itself: a
+    // key emitted as an explicit JSON `null` is `Some(Value::Null)`, so a
+    // `get(key).is_none()` check passes on a key that is very much present —
+    // which is how `upstream` survived the last "stale keys are gone" guard.
     let value = run_json(&["pinvou", "monitor", "status"]);
     assert_eq!(value["vllm_online"], false);
     assert_eq!(value["health_status"], "unavailable");
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("monitor status json must be an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "vllm_online",
+            "last_check_ms",
+            "max_model_len",
+            "status",
+            "health_status",
+            "model",
+            "configured_model",
+            "target_kind",
+        ]
+    );
     for key in [
         "max_model_len",
         "status",
-        "provider",
         "model",
         "configured_model",
-        "upstream",
         "target_kind",
-        "diagnostic",
     ] {
         assert!(
             value.get(key).is_some_and(serde_json::Value::is_null),
             "{key} must be present and null in the zero state"
         );
     }
+    // Human mode mirrors the same fields in both branches (8 labeled lines);
+    // the zero state used to print only three.
+    assert_eq!(
+        outcome.stdout.trim_end().lines().count(),
+        8,
+        "{}",
+        outcome.stdout
+    );
 }
 
 /// OPT-IN: `monitor snapshot` boots the windowless host (display required),
@@ -1180,5 +1313,31 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
         "monitor snapshot must carry the GeneratedAt header"
     );
     assert!(outcome.stdout.contains("Ram: "));
+    assert!(outcome.stdout.contains("Cpu: "));
     assert!(outcome.stdout.contains("Backend: "));
+    // The process-local accumulators are structurally zero in a one-shot
+    // process, so they are reported as not-applicable rather than as a
+    // measurement. The shape rules are pinned hermetically in
+    // `monitor::tests::snapshot_*`; this only checks the live sample agrees.
+    assert!(
+        outcome.stdout.contains("SelfPerf: n/a"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.contains("SelfGenTokens"),
+        "{}",
+        outcome.stdout
+    );
+    let value = run_json(&["pinvou", "monitor", "snapshot"]);
+    assert!(value["self_perf"].is_null(), "{value}");
+    assert!(value["app"]["session_uptime_secs"].is_null(), "{value}");
+    assert!(
+        value.get("cpu").is_some(),
+        "cpu must always be a key: {value}"
+    );
+    assert_eq!(
+        value["not_applicable_headless"],
+        serde_json::json!(["/self_perf", "/app/session_uptime_secs"])
+    );
 }
