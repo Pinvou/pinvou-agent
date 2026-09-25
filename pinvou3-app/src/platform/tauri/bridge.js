@@ -2407,6 +2407,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       send: auxChatFeature.send,
       snapshot: auxChatFeature.snapshot,
       discard: auxChatFeature.discard,
+      reset: auxChatFeature.reset,
     },
     voice: {
       startVoiceInput,

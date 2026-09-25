@@ -114,10 +114,29 @@
       if (auxId) purgeSessionBuffer(auxId);
     }
 
+    // Atomic restart (M6): one backend command discards the old aux session
+    // (gated against its turns) and creates the fresh one — no two-invoke
+    // window for an orphaned discard to land in. The aux id is derived
+    // (aux-<taskId>, round-30 B8), so the stale buffer purge needs no
+    // auxIdByTask lookup; the backend's session:deleted also purges through
+    // the sessions domain as a fallback.
+    async function reset(taskId) {
+      const task = String(taskId || "").trim();
+      if (!task) throw new Error(bt("targetSessionMissing"));
+      const metadata = await invoke("reset_aux_session", { sessionId: task });
+      const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+      if (!isAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+      purgeSessionBuffer(auxId);
+      // Aux sessions never become active: they use the background-buffer
+      // load_session(setActive:false) path.
+      await ensureSessionBufferLoaded(auxId);
+      return auxId;
+    }
+
     // isAuxSession stays domain-private: both facades only validate their own
     // ensure/send inputs with it, and no feature ever needed it across the
     // bridge — the dead public export (pinned by the domain contract) is gone
     // instead of being maintained on both sides forever.
-    return { ensure, send, snapshot, discard };
+    return { ensure, send, snapshot, discard, reset };
   };
 })(typeof window === "undefined" ? globalThis : window);

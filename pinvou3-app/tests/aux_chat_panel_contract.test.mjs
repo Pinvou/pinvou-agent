@@ -43,9 +43,7 @@ assert.match(auxChatPanel, /import \{ createAuxChatController, removeAuxQuote \}
 assert.match(auxChatPanel, /const \[panel\] = useState\(\(\) => auxChatController\.createPanel\(\)\);/);
 assert.match(auxChatPanel, /useEffect\(\(\) => panel\.subscribe\(setView\), \[panel\]\);/);
 assert.match(auxChatPanel, /useEffect\(\(\) => \(\) => panel\.dispose\(\), \[panel\]\);/);
-// The bind effect refreshes the bridge and binds the task; the round-30 D2
-// recovery re-bind runs inside the controller, so no re-run token reaches
-// this effect.
+// The bind effect refreshes the bridge and binds the task.
 assert.match(
   auxChatPanel,
   /panel\.setBridge\(\s*auxChat,\s*\(callback\) => bridge\.state\.subscribeMany\(\['chat'\], callback\),\s*\);\s*panel\.bind\(sessionId\);\s*\}, \[panel, auxChat, sessionId\]\);/,
@@ -53,15 +51,18 @@ assert.match(
 );
 // The registry Maps and the per-instance async refs must NOT come back into
 // the JSX — they live in the controller, where the executing tests drive
-// them. (The round-30 B1 extraction guard.)
+// them. (The round-30 B1 extraction guard; M6 deleted the stuck family —
+// discardInFlightByTask/discardStuckByTask/sentTextByTask/sentQuotesByTask/
+// restartDiscardFailedByTask/restartWindowKeptAckByTask/
+// discardStuckListenersByTask exist nowhere now.)
 assert.doesNotMatch(
   auxChatPanelRaw,
-  /sendInFlightByTask|discardInFlightByTask|discardStuckByTask|draftByTask|sentTextByTask|sentQuotesByTask|restartEpochByTask|restartDiscardFailedByTask|restartWindowKeptAckByTask|draftDeleteListenersByTask|discardStuckListenersByTask/,
+  /sendInFlightByTask|resetInFlightByTask|draftByTask|restartEpochByTask|draftDeleteListenersByTask/,
   'the per-task registries must stay in the controller, not the JSX',
 );
 assert.doesNotMatch(
   auxChatPanelRaw,
-  /generationRef|sendingRef|sessionIdRef|auxIdRef|hasSendContent|restartKeptDraft|consumeSentDraft|withSettleBound/,
+  /generationRef|sendingRef|sessionIdRef|auxIdRef|hasSendContent|consumeSentDraft|withSettleBound/,
   'the async state machine must stay in the controller, not the JSX',
 );
 
@@ -101,9 +102,10 @@ assert.match(auxChatPanel, /\{sendInFlight && !busy && \(/);
 assert.match(auxChatPanel, /\{view\.sendFailed && \(/);
 assert.match(auxChatPanel, /\{view\.ensureFailed && \(/);
 assert.match(auxChatPanel, /\{view\.discardFailed && \(/);
-assert.match(auxChatPanel, /\{view\.discardStuck && \(/);
-assert.match(auxChatPanel, /data-testid="aux-chat-discard-stuck"/);
-assert.match(auxChatPanel, /copy\.discardStuck/);
+// M6: the stuck banner died with the two-invoke restart — the atomic reset
+// has no wedged-discard state to surface.
+assert.doesNotMatch(auxChatPanel, /discardStuck/);
+assert.doesNotMatch(auxChatPanelRaw, /aux-chat-discard-stuck/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 assert.match(auxChatPanel, /panelId="aux-chat"/);

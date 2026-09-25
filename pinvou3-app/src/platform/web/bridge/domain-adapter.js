@@ -155,6 +155,7 @@
       send: "auxChatSend",
       snapshot: "auxChatSnapshot",
       discard: "auxChatDiscard",
+      reset: "auxChatReset",
     }),
     voice: domain(["startVoiceInput", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText"]),
     knowledge: domain(["mountCollection", "setCollectionEnabled", "removeCollection", "unmountCollection", "listCollections", "kbModelStatus"]),

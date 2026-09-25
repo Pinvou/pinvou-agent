@@ -3611,6 +3611,22 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     delete auxIdByTask[task];
     if (auxId) purgeSessionBuffer(auxId);
   }
+  // Atomic restart (M6), same shape as desktop aux-chat.js reset(): one
+  // backend command discards the old aux session (gated against its turns)
+  // and creates the fresh one. The aux id is derived (aux-<taskId>,
+  // round-30 B8), so the stale buffer purge needs no auxIdByTask lookup; the
+  // backend's session:deleted also purges through applyDeletedSession as a
+  // fallback.
+  async function auxChatReset(taskId) {
+    const task = String(taskId || "").trim();
+    if (!task) throw new Error(bt("targetSessionMissing"));
+    const metadata = await invoke("reset_aux_session", { sessionId: task });
+    const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
+    if (!auxChatIsAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
+    purgeSessionBuffer(auxId);
+    await ensureSessionBufferLoaded(auxId);
+    return auxId;
+  }
 
   function findFirstTurnItem(clientMessageId) {
     return state.chatItems.find(function (item) {
@@ -7322,6 +7338,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     auxChatSend,
     auxChatSnapshot,
     auxChatDiscard,
+    auxChatReset,
     getComposerDraft,
     setComposerDraft,
     retryFirstTurn,

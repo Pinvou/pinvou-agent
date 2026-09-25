@@ -1,9 +1,17 @@
 /**
  * Aux-chat controller contract: the async state machine extracted from
- * AuxChatPanel.jsx (round-30 B1), driven through the interleavings that 29
+ * AuxChatPanel.jsx (round-30 B1), driven through the interleavings that the
  * review rounds hardened — send/restart guard ordering, the duplicate-send
- * lattice, ack-consumption classification, the discard stuck/recovery paths
- * and the watchdogs — with a fake bridge and fake timers, no React.
+ * lattice, ack-consumption classification and the atomic-reset (M6) paths —
+ * with a fake bridge and fake timers, no React.
+ *
+ * M6 rewrite: restart is one backend `reset_aux_session` call (discard
+ * through the turn gate + recreate atomically), so the two-invoke "stuck"
+ * family is gone and the D1/D2 stuck-recovery tests were replaced by their
+ * atomic-reset equivalents: a failed reset preserves the draft and surfaces
+ * the honest ambiguous outcome, and a late send ack after a completed reset
+ * structurally cannot mis-delete the draft (the truth table lives in the
+ * controller's module header).
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -18,8 +26,7 @@ import {
 } from '../src/features/aux-chat/aux-quote.mjs';
 
 const SEND_WATCHDOG_MS = 1_000;
-const DISCARD_WATCHDOG_MS = 1_000;
-const ENSURE_WATCHDOG_MS = 1_000;
+const SETTLE_WATCHDOG_MS = 1_000;
 
 function deferred() {
   let resolve;
@@ -61,13 +68,13 @@ function createFakeTimers() {
   return { setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn, advance };
 }
 
-// Fake bridge: sends and discards return manually-settled deferreds (the
+// Fake bridge: sends and resets return manually-settled deferreds (the
 // interleavings under test live exactly in their settle ordering), while
 // ensure auto-resolves one aux id per task (idempotent, like the real
 // mapping) and snapshot reads a per-aux map the test writes to simulate
 // turn_started / turn-terminal events landing in the buffer.
 function createFakeAuxChat() {
-  const calls = { send: [], discard: [], ensure: [] };
+  const calls = { send: [], reset: [], ensure: [] };
   const snapshots = new Map();
   return {
     calls,
@@ -77,9 +84,9 @@ function createFakeAuxChat() {
       calls.send.push({ auxId, text, ...d });
       return d.promise;
     },
-    discard(taskId) {
+    reset(taskId) {
       const d = deferred();
-      calls.discard.push({ taskId, ...d });
+      calls.reset.push({ taskId, ...d });
       return d.promise;
     },
     ensure(taskId) {
@@ -113,8 +120,7 @@ function createHarness() {
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     sendWatchdogMs: SEND_WATCHDOG_MS,
-    discardWatchdogMs: DISCARD_WATCHDOG_MS,
-    ensureWatchdogMs: ENSURE_WATCHDOG_MS,
+    settleWatchdogMs: SETTLE_WATCHDOG_MS,
     restartConfirmMs: 50,
   });
   const mountPanel = (taskId) => {
@@ -137,6 +143,12 @@ async function mountBoundPanel(harness, taskId) {
   assert.equal(panel.view.auxId, `aux-${taskId}`, 'bind must ensure and bind the aux session');
   return panel;
 }
+
+// A confirmed restart: the two-step arm + confirm issues exactly one reset.
+const confirmRestart = (panel) => {
+  void panel.restart();
+  void panel.restart();
+};
 
 test('round-29 B1: the send watchdog releases the latch when turn events coalesce (busy never observed)', async () => {
   const h = createHarness();
@@ -187,103 +199,173 @@ test('round-29 B1 control: busy observed → the busy-gated release owns the lat
   assert.equal(h.auxChat.calls.send.length, 2, 'the watchdog no-op must not disturb later sends');
 });
 
-test('round-30 D1: a newer restart completing behind an orphaned stuck discard must not resurrect the survival marker — the kept ack keeps its draft', async () => {
+test('M6 truth table: a send ack landing inside or after a completed reset can never consume the recovery draft', async () => {
   const h = createHarness();
-  const panel1 = await mountBoundPanel(h, 'd1-task');
-  panel1.setDraftText('recovery material');
-  void panel1.send(); // sent at epoch 0, stays in flight through both restarts
+  const panel = await mountBoundPanel(h, 'm6-ack');
+  panel.setDraftText('recovery material');
+  void panel.send(); // dispatched at epoch 0, still in flight
   assert.equal(h.auxChat.calls.send.length, 1);
-  // R1: the first restart issues discard d1 (epoch 1) and parks on it.
-  void panel1.restart();
-  void panel1.restart();
-  assert.equal(h.auxChat.calls.discard.length, 1);
-  // The panel remounts behind the pending discard: the rebind awaits d1 and
-  // captures the pre-await epoch (round-30 D1).
-  panel1.dispose();
-  const panel2 = h.mountPanel('d1-task');
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 1, 'the confirmed restart issues the atomic reset');
+  // The reset completes FIRST: fresh binding, draft deliberately preserved.
+  h.auxChat.calls.reset[0].resolve('aux-m6-ack');
   await h.flush();
-  // d1's settle-watchdog fires → stuck: the rebind stops awaiting it and the
-  // stuck-escape re-arms New Topic (round-22 Major).
-  h.timers.advance(DISCARD_WATCHDOG_MS);
-  assert.equal(panel2.view.discardStuck, true, 'the remounted panel must mirror the stuck marker');
-  // R2 enters through the stuck-escape (epoch 2), discards and re-ensures.
-  void panel2.restart();
-  void panel2.restart();
-  assert.equal(h.auxChat.calls.discard.length, 2, 'the stuck-escape must issue a fresh discard');
-  h.auxChat.calls.discard[1].resolve({});
-  await h.flush();
-  assert.equal(panel2.view.restarting, false, 'R2 completed: fresh binding restored');
-  // The orphaned d1 rejects LATE — after R2 already completed. Its rebind
-  // rejection arm runs with a stale epoch capture and must NOT re-add the
-  // survival marker R2's entry cleared.
-  h.auxChat.calls.discard[0].reject(new Error('orphaned stuck discard'));
-  await h.flush();
-  // The pre-restart send's ack now settles inside R2's window: without the
-  // epoch gate the resurrected marker would misclassify this kept ack as
-  // delivered and consumeSentDraft would delete the recovery draft.
+  assert.equal(panel.view.auxId, 'aux-m6-ack', 'the reset success path binds the fresh session');
+  assert.equal(panel.view.restarting, false);
+  // The pre-restart send's ack settles LATE — after the reset completed.
+  // The epoch changed since dispatch, so the ack is classified keep-draft:
+  // no consumption, no banner, no mis-delete (the D1/D2 replacement: this
+  // interleaving is structurally a no-op now, where the old two-invoke
+  // lattice needed the survival-marker machinery to classify it).
   h.auxChat.calls.send[0].resolve({});
   await h.flush();
-  assert.equal(
-    panel2.view.draft,
-    'recovery material',
-    'the restart-preserved draft must survive the epoch-skipped ack (round-30 D1)',
-  );
+  assert.equal(panel.view.draft, 'recovery material', 'a late ack after the reset keeps the draft');
+  assert.equal(panel.view.sendFailed, false, 'a late ack after the reset raises no banner');
   // The store entry survives too — a task round trip restores it.
-  panel2.bind('d1-other');
+  panel.bind('m6-other');
   await h.flush();
-  panel2.bind('d1-task');
+  panel.bind('m6-ack');
   await h.flush();
-  assert.equal(panel2.view.draft, 'recovery material', 'the draft store must keep the recovery text');
+  assert.equal(panel.view.draft, 'recovery material', 'the draft store keeps the recovery text');
+  // A late REJECTED ack after a completed reset is equally inert: nothing
+  // was delivered, the draft stays, and the epoch gate silences the banner.
+  panel.setDraftText('will be refused');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2);
+  confirmRestart(panel);
+  h.auxChat.calls.reset[1].resolve('aux-m6-ack');
+  await h.flush();
+  h.auxChat.calls.send[1].reject(new Error('session being reset'));
+  await h.flush();
+  assert.equal(panel.view.draft, 'will be refused', 'a refused dispatch keeps its text');
+  assert.equal(panel.view.sendFailed, false, 'the restart-window rejection stays silent');
 });
 
-test('round-30 D2: a stuck discard settling after a remount re-binds the panel (binding restored, banner gone)', async () => {
+test('M6: a failed reset preserves the draft, surfaces the honest ambiguous banner, and the next bind re-ensures', async () => {
   const h = createHarness();
-  const panel1 = await mountBoundPanel(h, 'd2-task');
-  void panel1.restart();
-  void panel1.restart();
-  assert.equal(h.auxChat.calls.discard.length, 1);
-  // The discard wedges, its watchdog marks it stuck, and the panel remounts:
-  // the rebind skips ensure behind the stuck banner, so R1's generation is
-  // dead and its own re-ensure is unreachable.
-  h.timers.advance(DISCARD_WATCHDOG_MS);
-  panel1.dispose();
-  const panel2 = h.mountPanel('d2-task');
+  const panel = await mountBoundPanel(h, 'm6-fail');
+  panel.setDraftText('keep me');
+  const ensuresAfterMount = h.auxChat.calls.ensure.length;
+  confirmRestart(panel);
+  h.auxChat.calls.reset[0].reject(new Error('web_session_reset_aux_session_failed'));
   await h.flush();
-  assert.equal(panel2.view.discardStuck, true);
-  assert.equal(panel2.view.auxId, null, 'the stuck rebind must not ensure past the orphan (round-23 MAJOR-2)');
-  const ensuresBefore = h.auxChat.calls.ensure.length;
-  // The orphaned discard finally settles. The settle clears entry and marker
-  // before notifying, so the mounted panel sees "no discard in flight" and
-  // re-runs its bind — the round-30 D2 recovery.
-  h.auxChat.calls.discard[0].resolve({});
-  await h.flush();
-  assert.ok(
-    h.auxChat.calls.ensure.length > ensuresBefore,
-    'the settle must re-arm the bind effect — its ensure recovers the panel (round-30 D2)',
+  assert.equal(panel.view.discardFailed, true, 'the failed reset surfaces its banner');
+  assert.equal(panel.view.auxId, null, 'the binding stays cleared — the old transcript may be gone');
+  assert.equal(panel.view.restarting, false, 'the outer finally frees the restart latch');
+  assert.equal(panel.view.bindingPending, false);
+  assert.equal(panel.view.draft, 'keep me', 'a failed reset never eats the draft');
+  assert.equal(
+    h.auxChat.calls.ensure.length,
+    ensuresAfterMount,
+    'no restore ensure fires inside the failed-reset path — recovery is the next bind',
   );
-  assert.equal(panel2.view.auxId, 'aux-d2-task', 'the binding is restored');
-  assert.equal(panel2.view.discardStuck, false, 'the banner clears with the marker');
-  assert.equal(panel2.view.bindingPending, false);
+  // The re-ensure-on-next-bind recovery: any rebind re-ensures, and the
+  // backend get-or-create rebinds the old transcript when it survived or
+  // creates a fresh session. The banner clears with the rebind.
+  panel.bind('m6-fail-other');
+  await h.flush();
+  panel.bind('m6-fail');
+  await h.flush();
+  assert.ok(h.auxChat.calls.ensure.length > ensuresAfterMount, 'the rebind re-ensures');
+  assert.equal(panel.view.auxId, 'aux-m6-fail', 'the panel is bound again');
+  assert.equal(panel.view.discardFailed, false, 'the banner clears on rebind');
+  assert.equal(panel.view.draft, 'keep me', 'the draft store still holds the text');
 });
 
-test('round-30 D2 rejection variant: a stuck discard rejecting after a remount recovers to the bound old transcript', async () => {
+test('M6: a hung reset surfaces the failure state at the settle bound and frees the latches; the late resolution stays inert', async () => {
   const h = createHarness();
-  const panel1 = await mountBoundPanel(h, 'd2-reject');
-  void panel1.restart();
-  void panel1.restart();
-  h.timers.advance(DISCARD_WATCHDOG_MS);
-  panel1.dispose();
-  const panel2 = h.mountPanel('d2-reject');
+  const panel = await mountBoundPanel(h, 'm6-hung');
+  confirmRestart(panel);
+  assert.equal(panel.view.restarting, true);
+  // The reset invoke never settles: at the settle bound the withSettleBound
+  // rejection surfaces as the reset-failure state and the outer finally
+  // frees the latches (the settle watchdog's only surviving role).
+  h.timers.advance(SETTLE_WATCHDOG_MS);
   await h.flush();
-  assert.equal(panel2.view.auxId, null);
-  h.auxChat.calls.discard[0].reject(new Error('stuck discard rejected'));
+  assert.equal(panel.view.discardFailed, true, 'a hung reset surfaces as the reset-failure state');
+  assert.equal(panel.view.auxId, null, 'the binding is honestly cleared');
+  assert.equal(panel.view.restarting, false, 'the outer finally releases the restart latch');
+  assert.equal(panel.view.bindingPending, false);
+  // The registry entry left with the settle, so New Topic is usable again.
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 2, 'the freed task can restart again');
+  h.auxChat.calls.reset[1].resolve('aux-m6-hung');
+  await h.flush();
+  // The FIRST reset's late resolution stays inert behind the generation
+  // check and the registry identity gate.
+  h.auxChat.calls.reset[0].resolve('aux-m6-stale');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-m6-hung', 'the late resolution of the wedged reset is inert');
+  assert.equal(panel.view.discardFailed, false);
+});
+
+test('restart gating: Enter is rejected while restarting, and New Topic is refused behind a healthy in-flight reset (the N1 intent)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'gated-task');
+  panel.setDraftText('blocked text');
+  // Enter during restarting is rejected: the confirmed restart is about to
+  // reset the session this send would land in.
+  confirmRestart(panel);
+  assert.equal(panel.view.restarting, true);
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 0, 'a send during restarting never dispatches');
+  assert.equal(h.auxChat.calls.reset.length, 1);
+  // A→B→A resets `restarting` but leaves the healthy reset in flight: New
+  // Topic must refuse a second reset (and un-arm the confirm, round-12 N1).
+  panel.bind('gated-other');
+  await h.flush();
+  panel.bind('gated-task');
+  await h.flush();
+  assert.equal(panel.view.restarting, false);
+  void panel.restart();
+  assert.equal(h.auxChat.calls.reset.length, 1, 'no second reset while a healthy one is in flight');
+  assert.equal(panel.view.restartArmed, false, 'the refusal un-arms the confirm');
+  void panel.restart();
+  assert.equal(h.auxChat.calls.reset.length, 1, 'the guard runs before arming, so arming is refused too');
+  // The reset settles: the guard frees and the next New Topic goes through.
+  h.auxChat.calls.reset[0].resolve('aux-gated-task');
+  await h.flush();
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 2, 'once the reset settles, New Topic works again');
+});
+
+test('bind awaits an in-flight reset before re-ensuring the same task (M6: no binding to the doomed aux session)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'await-task');
+  const ensuresAfterMount = h.auxChat.calls.ensure.length;
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 1);
+  // The panel remounts behind the in-flight reset: the rebind must NOT
+  // ensure yet — the old mapping is still live and the reset deletes it.
+  panel.dispose();
+  const panel2 = h.mountPanel('await-task');
   await h.flush();
   assert.equal(
-    panel2.view.auxId,
-    'aux-d2-reject',
-    'the re-armed bind must re-ensure the surviving old transcript',
+    h.auxChat.calls.ensure.length,
+    ensuresAfterMount,
+    'the rebind waits for the in-flight reset instead of binding the doomed aux session',
   );
-  assert.equal(panel2.view.discardStuck, false);
+  assert.equal(panel2.view.auxId, null);
+  // The reset settles: the awaiting rebind re-ensures and binds the fresh
+  // session the reset just made.
+  h.auxChat.calls.reset[0].resolve('aux-await-task');
+  await h.flush();
+  assert.ok(h.auxChat.calls.ensure.length > ensuresAfterMount, 'the settled reset releases the rebind ensure');
+  assert.equal(panel2.view.auxId, 'aux-await-task', 'the binding is restored');
+  assert.equal(panel2.view.bindingPending, false);
+  // Same on the failure arm: the rebind still re-ensures (get-or-create
+  // rebinds the surviving transcript or recreates), without a banner.
+  confirmRestart(panel2);
+  panel2.bind('await-other');
+  await h.flush();
+  panel2.bind('await-task');
+  await h.flush();
+  const ensuresBeforeFailure = h.auxChat.calls.ensure.length;
+  h.auxChat.calls.reset[1].reject(new Error('reset failed'));
+  await h.flush();
+  assert.ok(h.auxChat.calls.ensure.length > ensuresBeforeFailure, 'the failed reset still releases the rebind ensure');
+  assert.equal(panel2.view.auxId, 'aux-await-task', 'the rebind recovers the panel');
+  assert.equal(panel2.view.discardFailed, false, 'the remounted panel shows no stale banner');
 });
 
 test('duplicate-send lattice: double Enter, an A→B→A switch mid-flight and the turn_started lag all stay single-dispatch', async () => {
@@ -348,33 +430,37 @@ test('ack consumption: a same-task ack consumes only the draft that still equals
   assert.equal(panel.view.draft, 'second message, edited', 'the draft store keeps the newer text');
 });
 
-test('ack consumption: a restart-window ack keeps the recovery draft and the failed-discard restore consumes exactly that marked kept ack', async () => {
+test('ack consumption: a restart-window ack keeps the recovery draft through a successful reset', async () => {
   const h = createHarness();
+  stageAuxQuote('kept-task', 'staged excerpt');
   const panel = await mountBoundPanel(h, 'kept-task');
   panel.setDraftText('delivered before the restart');
   void panel.send();
-  // The restart bumps the epoch and nulls the binding before the discard.
-  void panel.restart();
-  void panel.restart();
-  // The ack settles inside the discard window: classified keep-draft, the
-  // window is marked (round-26 MAJOR-2), the text stays as recovery material.
+  // The restart bumps the epoch and nulls the binding before the reset.
+  confirmRestart(panel);
+  // The ack settles inside the reset window: classified keep-draft, the text
+  // stays as recovery material (the delivery, if it landed, dies with the
+  // old transcript — see the module-header truth table).
   h.auxChat.calls.send[0].resolve({});
   await h.flush();
   assert.equal(panel.view.draft, 'delivered before the restart', 'the epoch-skipped ack keeps the draft');
-  // The discard FAILS: the old transcript survived, so the delivery reached a
-  // live transcript — the restore fixup consumes the marked kept ack's draft.
-  h.auxChat.calls.discard[0].reject(new Error('discard failed'));
+  assert.equal(getAuxQuotes('kept-task').length, 1, 'the captured quotes stay staged as recovery material');
+  // The reset SUCCEEDS: with the atomic reset there is no restore path that
+  // could reclassify the delivery — the draft simply stays.
+  h.auxChat.calls.reset[0].resolve('aux-kept-task');
   await h.flush();
-  assert.equal(panel.view.discardFailed, true);
-  assert.equal(panel.view.auxId, 'aux-kept-task', 'the restore re-binds the surviving session');
-  assert.equal(
-    panel.view.draft,
-    '',
-    'the delivered draft is consumed once the failed discard proves the delivery survived (round-25 MAJOR-24-3)',
-  );
+  assert.equal(panel.view.auxId, 'aux-kept-task', 'the fresh session binds');
+  assert.equal(panel.view.draft, 'delivered before the restart', 'a successful reset keeps the recovery draft');
+  assert.equal(getAuxQuotes('kept-task').length, 1, 'a successful reset keeps the staged quotes');
+  // And the draft store keeps it across a task round trip.
+  panel.bind('kept-other');
+  await h.flush();
+  panel.bind('kept-task');
+  await h.flush();
+  assert.equal(panel.view.draft, 'delivered before the restart');
 });
 
-test('ack consumption: an unmarked restore never eats a re-typed or never-sent draft', async () => {
+test('ack consumption: a re-typed or never-sent draft survives a failed reset', async () => {
   const h = createHarness();
   const panel = await mountBoundPanel(h, 'unmarked-task');
   panel.setDraftText('same question');
@@ -382,63 +468,26 @@ test('ack consumption: an unmarked restore never eats a re-typed or never-sent d
   h.auxChat.calls.send[0].resolve({});
   await h.flush();
   assert.equal(panel.view.draft, '', 'the ordinary ack consumes the original');
-  // An ordinary re-ask: the user re-types the identical text. No ack settles
-  // inside the coming restart window, so the kept-ack marker is absent.
+  // An ordinary re-ask: the user re-types the identical text, then the reset
+  // fails. No ack is pending and nothing may consume the re-typed draft.
   panel.setDraftText('same question');
-  void panel.restart();
-  void panel.restart();
-  h.auxChat.calls.discard[0].reject(new Error('discard failed'));
+  confirmRestart(panel);
+  h.auxChat.calls.reset[0].reject(new Error('reset failed'));
   await h.flush();
   assert.equal(
     panel.view.draft,
     'same question',
-    'a draft re-typed after its ack was consumed carries no kept-ack marker and must survive (round-26 MAJOR-2)',
+    'a draft re-typed after its ack was consumed must survive the failed reset',
   );
-  // A never-sent draft survives a failed restart the same way.
+  // A never-sent draft survives a failed reset the same way.
   panel.setDraftText('never sent');
-  void panel.restart();
-  void panel.restart();
-  h.auxChat.calls.discard[1].reject(new Error('discard failed again'));
+  confirmRestart(panel);
+  h.auxChat.calls.reset[1].reject(new Error('reset failed again'));
   await h.flush();
   assert.equal(panel.view.draft, 'never sent');
 });
 
-test('discard-stuck gating: Enter is rejected while restarting, while a discard is stuck, and New Topic is refused behind a healthy in-flight discard (round-24 N1)', async () => {
-  const h = createHarness();
-  const panel = await mountBoundPanel(h, 'gated-task');
-  panel.setDraftText('blocked text');
-  // Enter during restarting is rejected: the confirmed restart is about to
-  // discard the session this send would land in.
-  void panel.restart();
-  void panel.restart();
-  assert.equal(panel.view.restarting, true);
-  void panel.send();
-  assert.equal(h.auxChat.calls.send.length, 0, 'a send during restarting never dispatches');
-  assert.equal(h.auxChat.calls.discard.length, 1);
-  // A→B→A resets `restarting` but leaves the healthy discard in flight: New
-  // Topic must refuse a second discard (and un-arm the confirm, round-12 N1).
-  panel.bind('gated-other');
-  await h.flush();
-  panel.bind('gated-task');
-  await h.flush();
-  assert.equal(panel.view.restarting, false);
-  void panel.restart();
-  assert.equal(h.auxChat.calls.discard.length, 1, 'no second discard while a healthy one is in flight');
-  assert.equal(panel.view.restartArmed, false, 'the refusal un-arms the confirm');
-  void panel.restart();
-  assert.equal(h.auxChat.calls.discard.length, 1, 'the guard runs before arming, so arming is refused too');
-  // The discard wedges past its watchdog: sends are now refused behind the
-  // stuck marker (round-23 MAJOR-2) and the stuck-escape re-arms New Topic.
-  h.timers.advance(DISCARD_WATCHDOG_MS);
-  assert.equal(panel.view.discardStuck, true);
-  void panel.send();
-  assert.equal(h.auxChat.calls.send.length, 0, 'a send while the discard is stuck never dispatches');
-  void panel.restart();
-  void panel.restart();
-  assert.equal(h.auxChat.calls.discard.length, 2, 'the stuck-escape issues a fresh discard (round-22 Major)');
-});
-
-test('settle-bound ensures: a hung recreate ensure surfaces ensureFailed and frees the latches; the entry clears stale banners', async () => {
+test('bind ensure rejection surfaces ensureFailed and frees the pending hint', async () => {
   const h = createHarness();
   const ensureCalls = [];
   h.auxChat.ensure = (taskId) => {
@@ -446,12 +495,21 @@ test('settle-bound ensures: a hung recreate ensure surfaces ensureFailed and fre
     ensureCalls.push({ taskId, ...d });
     return d.promise;
   };
-  const panel = h.mountPanel('hung-task');
-  ensureCalls[0].resolve('aux-hung-task');
+  const panel = h.mountPanel('ensure-fail');
   await h.flush();
-  assert.equal(panel.view.auxId, 'aux-hung-task');
+  assert.equal(panel.view.bindingPending, true, 'the pending hint shows while ensure is in flight');
+  ensureCalls[0].reject(new Error('web_session_get_or_create_aux_session_failed'));
+  await h.flush();
+  assert.equal(panel.view.ensureFailed, true, 'a rejected bind ensure surfaces the init-failure state');
+  assert.equal(panel.view.bindingPending, false);
+  assert.equal(panel.view.auxId, null, 'the composer stays honestly disabled');
+});
+
+test('restart entry clears stale failure banners and a successful reset binds the fresh session', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'banner-task');
   // A failed send raises its banner first: the restart entry must clear it,
-  // or it renders next to the ensure failure as a contradictory double
+  // or it renders next to the reset outcome as a contradictory double
   // banner (round-9 minor-1).
   panel.setDraftText('will fail');
   void panel.send();
@@ -459,71 +517,14 @@ test('settle-bound ensures: a hung recreate ensure surfaces ensureFailed and fre
   await h.flush();
   assert.equal(panel.view.sendFailed, true);
   assert.equal(panel.view.sending, false, 'the failure path releases the latch directly');
-  void panel.restart();
-  void panel.restart();
+  confirmRestart(panel);
   assert.equal(panel.view.sendFailed, false, 'the restart entry clears the stale send banner');
-  h.auxChat.calls.discard[0].resolve({});
+  h.auxChat.calls.reset[0].resolve('aux-banner-task');
   await h.flush();
-  assert.equal(ensureCalls.length, 2, 'the recreate ensure was issued');
-  // The recreate ensure never settles: at the bound it surfaces as the
-  // ensure-failure state and the outer finally frees the latches (round-25
-  // minor). The late resolution stays inert behind the generation check.
-  h.timers.advance(ENSURE_WATCHDOG_MS);
-  await h.flush();
-  assert.equal(panel.view.ensureFailed, true, 'a hung ensure surfaces as the ensure-failure state');
-  assert.equal(panel.view.auxId, null, 'the binding is honestly cleared (the old aux is gone)');
-  assert.equal(panel.view.restarting, false, 'the outer finally releases the restart latch');
+  assert.equal(panel.view.auxId, 'aux-banner-task', 'the fresh session binds from the reset result');
+  assert.equal(panel.view.restarting, false);
   assert.equal(panel.view.bindingPending, false);
-  ensureCalls[1].resolve('aux-late');
-  await h.flush();
-  assert.equal(panel.view.auxId, null, 'the late ensure resolution stays inert');
-  assert.equal(panel.view.ensureFailed, true);
-});
-
-test('settle-bound ensures: a hung failed-discard restore ensure surfaces ensureFailed instead of latching restarting', async () => {
-  const h = createHarness();
-  const ensureCalls = [];
-  h.auxChat.ensure = (taskId) => {
-    const d = deferred();
-    ensureCalls.push({ taskId, ...d });
-    return d.promise;
-  };
-  const panel = h.mountPanel('hung-restore');
-  ensureCalls[0].resolve('aux-hung-restore');
-  await h.flush();
-  void panel.restart();
-  void panel.restart();
-  h.auxChat.calls.discard[0].reject(new Error('discard failed'));
-  await h.flush();
-  assert.equal(panel.view.discardFailed, true);
-  assert.equal(ensureCalls.length, 2, 'the restore ensure was issued');
-  h.timers.advance(ENSURE_WATCHDOG_MS);
-  await h.flush();
-  assert.equal(panel.view.ensureFailed, true, 'a hung restore ensure surfaces the binding-lost state');
-  assert.equal(panel.view.restarting, false, 'the restart latch still frees through the outer finally');
-  assert.equal(panel.view.bindingPending, false);
-});
-
-test('failed-discard restore: the fixup skips while an ack is pending, and the survival marker falls that late ack through to consumption (round-25 MAJOR-24-3)', async () => {
-  const h = createHarness();
-  const panel = await mountBoundPanel(h, 'pending-ack');
-  panel.setDraftText('delivered before the restart');
-  void panel.send();
-  void panel.restart();
-  void panel.restart();
-  // The discard fails while the send's ack is STILL in flight: the restore
-  // marks survival but the fixup must not classify with an ack pending.
-  h.auxChat.calls.discard[0].reject(new Error('discard failed'));
-  await h.flush();
-  assert.equal(panel.view.discardFailed, true);
-  assert.equal(panel.view.auxId, 'aux-pending-ack', 'the restore re-binds the surviving session');
-  assert.equal(panel.view.draft, 'delivered before the restart', 'no classification while the ack is pending');
-  // The ack settles late: the discard failed and the SAME live transcript
-  // was restored, so the keep-draft premise is false — the survival marker
-  // (single-shot) falls this ack through to normal consumption.
-  h.auxChat.calls.send[0].resolve({});
-  await h.flush();
-  assert.equal(panel.view.draft, '', 'the delivery survived, so the draft consumes like a normal ack');
+  assert.equal(panel.view.discardFailed, false, 'a successful reset shows no failure banner');
 });
 
 test('restart entry bumps the generation so a stale in-flight bind ensure cannot rebind the discarded session (round-11 B3)', async () => {
@@ -535,21 +536,16 @@ test('restart entry bumps the generation so a stale in-flight bind ensure cannot
     return d.promise;
   };
   const panel = h.mountPanel('gen-task');
-  // The initial bind's ensure is still in flight when the restart runs its
-  // whole discard+ensure chain.
-  void panel.restart();
-  void panel.restart();
-  h.auxChat.calls.discard[0].resolve({});
+  // The initial bind's ensure is still in flight when the restart runs.
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 1, 'the restart issued its atomic reset');
+  h.auxChat.calls.reset[0].resolve('aux-fresh');
   await h.flush();
-  assert.equal(ensureCalls.length, 2, 'the restart issued its recreate ensure');
   // The stale bind ensure resolves LAST: it must not rebind the panel to
   // the just-discarded aux session.
   ensureCalls[0].resolve('aux-stale');
   await h.flush();
-  assert.notEqual(panel.view.auxId, 'aux-stale', 'the stale bind ensure is inert past the entry bump');
-  ensureCalls[1].resolve('aux-fresh');
-  await h.flush();
-  assert.equal(panel.view.auxId, 'aux-fresh', 'only the restart\'s own ensure binds the panel');
+  assert.equal(panel.view.auxId, 'aux-fresh', 'the stale bind ensure is inert past the entry bump');
 });
 
 test('watchdog identity: a stale settle after the failsafe cannot remove a newer send\'s registry entry or release its latch', async () => {
@@ -583,7 +579,7 @@ test('watchdog identity: a stale settle after the failsafe cannot remove a newer
   await h.flush();
 });
 
-test('watchdog identity: a stale rejection after the failsafe stays silent and keeps the newer send\'s records', async () => {
+test('watchdog identity: a stale rejection after the failsafe stays silent', async () => {
   const h = createHarness();
   const panel = await mountBoundPanel(h, 'stale-reject');
   panel.setDraftText('first');
@@ -601,7 +597,7 @@ test('watchdog identity: a stale rejection after the failsafe stays silent and k
   h.auxChat.calls.send[1].resolve({});
   await h.flush();
   assert.equal(panel.view.sendFailed, false);
-  assert.equal(panel.view.draft, '', 'the newer send\'s own ack still consumes its draft (round-26 minor M1)');
+  assert.equal(panel.view.draft, '', 'the newer send\'s own ack still consumes its draft');
 });
 
 test('hasSendContent accepts text-only, quote-only and both — and only those (round-30 B1 canary)', async () => {

@@ -86,7 +86,10 @@ const expectedProtocolHashes = {
   // discard_aux_session / chat(restrictTools:true); buffer loading reuses the
   // ensureSessionBufferLoaded injected by the sessions domain (the
   // load_session hash is accounted in the sessions domain).
-  auxChat: 'f82a39c964d1049ffe0f77f895d0ec690b424ee7d52bfd7a66fdf70c7de14eab',
+  // Recomputed for M6: the domain gains reset() invoking the atomic
+  // reset_aux_session command (one discard+recreate round trip instead of the
+  // two independent invokes the frontend used to sequence).
+  auxChat: '9cd7e72c672ddbc3fe1a417b12451c55bdabf553bf0a1486684e8edc6a8fe20b',
   // Batch-A dead-code/dedup sweep: byte-identical helpers shared between the web and
   // tauri lanes moved verbatim into src/shared/bridge-shared-helpers.js (loaded by
   // index.html before both bridges). The moved bodies carry their invoke( calls with

@@ -665,7 +665,7 @@ assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
 assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
-assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard"/,
+assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard",\s*reset: "auxChatReset"/,
   'WebUI domain facade must expose the same auxChat domain as desktop');
 assert.match(webBridge, /async function auxChatEnsure\(taskId\)/);
 assert.match(webBridge, /invoke\("get_or_create_aux_session", \{ sessionId: task \}\)/,
@@ -673,6 +673,11 @@ assert.match(webBridge, /invoke\("get_or_create_aux_session", \{ sessionId: task
 assert.match(webBridge, /invoke\("web_access_chat", \{ message, attachmentHandles: \[\], sessionId: sid, restrictTools: true \}\)/,
   'WebUI aux chat sends must ride the bounded web chat command with tools restricted');
 assert.match(webBridge, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
+assert.match(webBridge, /async function auxChatReset\(taskId\)/);
+assert.match(webBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
+  'WebUI aux chat restart must ride the atomic reset command (M6)');
+assert.match(desktopAuxChatBridge, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
+  'desktop aux chat restart must ride the atomic reset command (M6)');
 assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
 // Matched against the desktop aux-chat bridge source itself (round-30 B2):

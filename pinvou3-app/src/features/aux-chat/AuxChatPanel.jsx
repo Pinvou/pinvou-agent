@@ -28,7 +28,7 @@ import { createAuxChatController, removeAuxQuote } from './aux-chat-controller.m
  * This file is the thin React adapter: rendering, scroll management,
  * composer auto-grow and the useState/useEffect wiring. Every async state
  * transition (the send/restart guards, the in-flight registries, the
- * watchdogs, the ack/discard interleaving logic) lives in the pure
+ * watchdogs, the ack/restart interleaving logic) lives in the pure
  * controller — extracted in round-30 B1 so the interleavings are covered by
  * executing tests (tests/aux_chat_controller.test.mjs). The registries are
  * module-scoped ON PURPOSE (they track backend-scoped operations that
@@ -52,9 +52,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
 
   // First open and main-session rebind: refresh the bridge (bridge.available
   // flips once at bootstrap, and the controller's chat-domain subscription
-  // re-runs with it) and bind the new task's aux session. The round-30 D2
-  // recovery re-bind runs inside the controller (the stuck-notify listener
-  // re-invokes bind), so no re-run token reaches this effect.
+  // re-runs with it) and bind the new task's aux session.
   useEffect(() => {
     panel.setBridge(
       auxChat,
@@ -221,9 +219,6 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         )}
         {view.discardFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardFailed}</div>
-        )}
-        {view.discardStuck && (
-          <div data-testid="aux-chat-discard-stuck" className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardStuck}</div>
         )}
         <div className={`rounded-xl border px-3 py-2 ${
           theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'
