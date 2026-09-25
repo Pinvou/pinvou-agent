@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
-import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
+import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
+import { builtinToolShortName } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -895,4 +896,84 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       );
     };
 
-export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, unwrapMcpTextEnvelope, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+
+    // Read-only builtin plugin card (docs/builtin-toolset-contract.md §3.1
+    // transparency/audit window): shows the tool list, security level, version
+    // and data access scopes; no action buttons at all (no uninstall, no
+    // toggle). The read-only badge reuses PlatformToolAction's Web read-only
+    // degraded styling. All copy goes through uiBuiltinPlugins, falling back to
+    // the zh dictionary per the tc precedent when copy is not passed; unknown
+    // data-access scope keys render as-is.
+    // Builtin skills (e.g. visual design) reuse this card: no tool list /
+    // security level / data access (a pure prompt skill does not touch data
+    // directly) — they declare facts with a kindLabel (type) row and a
+    // versionText ("Built-in") row.
+    const BuiltinPluginCard = ({ tool, copy }) => {
+      const C = copy || dict.zh.uiBuiltinPlugins;
+      const Icon = tool.icon || Package;
+      const mcpTools = Array.isArray(tool.mcpTools) ? tool.mcpTools : [];
+      const dataAccess = Array.isArray(tool.dataAccess) ? tool.dataAccess : [];
+      const levelDesc = (tool.securityLevel && C.levels) ? C.levels[tool.securityLevel] : null;
+      const rowCls = 'flex items-start gap-2 text-[12px]';
+      const labelCls = 'shrink-0 w-[72px] font-semibold text-slate-400 dark:text-slate-500 leading-5';
+      return (
+        <div data-testid="builtin-plugin-card" data-tool-id={tool.backendId || ''}
+          className="flex items-start gap-4 py-3 px-3 border-b border-slate-100 dark:border-white/5 last:border-0">
+          <div className={`h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-gradient-to-b from-slate-400 to-slate-600'}`}>
+            <Icon size={30} strokeWidth={1.5} />
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h2>
+              <span className="px-3 py-1 text-[12px] rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap">{C.readonlyBadge}</span>
+            </div>
+            {tool.subtitle && <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium">{tool.subtitle}</p>}
+            {tool.desc && <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{tool.desc}</p>}
+            {tool.kindLabel && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.kindLabel}</span>
+                <span className="leading-5 text-slate-600 dark:text-slate-300">{tool.kindLabel}</span>
+              </div>
+            )}
+            {mcpTools.length > 0 && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.toolsLabel}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {mcpTools.map(name => (
+                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {tool.securityLevel && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.securityLabel}</span>
+                <span className="inline-flex items-center gap-1.5 leading-5">
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
+                  {levelDesc && <span className="text-slate-500 dark:text-slate-400">{levelDesc}</span>}
+                </span>
+              </div>
+            )}
+            {(tool.bundleVersion || tool.versionText) && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.versionLabel}</span>
+                <span className="leading-5 text-slate-600 dark:text-slate-300">{tool.bundleVersion ? `v${tool.bundleVersion}` : tool.versionText}<span className="ml-1.5 text-slate-400 dark:text-slate-500">{C.versionNote}</span></span>
+              </div>
+            )}
+            {dataAccess.length > 0 && (
+              <div className={rowCls}>
+                <span className={labelCls}>{C.dataAccessLabel}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {dataAccess.map(scope => (
+                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+
+export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, unwrapMcpTextEnvelope, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn, BuiltinPluginCard };

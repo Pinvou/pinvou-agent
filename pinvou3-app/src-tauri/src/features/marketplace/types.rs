@@ -40,6 +40,32 @@ pub struct ToolManifest {
     /// 配套技能 id:装该 MCP 时一并装、卸时一并删(让"一个能力"=引擎+引导整体装卸)。
     #[serde(default)]
     pub companion_skills: Vec<String>,
+    // --- docs/builtin-toolset-contract.md §3.1: builtin semantics fields
+    // (all optional; absent means a normal plugin) ---
+    /// Builtin plugin marker: true = ships with the application, cannot be
+    /// uninstalled/disabled (server-side defense in depth, see
+    /// `super::builtin`).
+    #[serde(default)]
+    pub builtin: bool,
+    /// Display visibility: "normal" (default) | "system" for builtin plugins
+    /// (the frontend groups these into a system section). Only the embedded
+    /// catalog may declare "system"; the import pipeline rejects uploaded
+    /// manifests claiming it (docs/builtin-toolset-contract.md §3.1).
+    #[serde(default)]
+    pub visibility: String,
+    /// Data security level: "L0" | "L1" | "L2" (semantics localized by the
+    /// frontend).
+    #[serde(default)]
+    pub security_level: String,
+    /// Data-access semantic scope keys (e.g. "sessions.read"; the frontend
+    /// localizes them).
+    #[serde(default)]
+    pub data_access: Vec<String>,
+    /// Full tool name -> feature id array (many-to-many; feature switches
+    /// remove tools by union semantics, see
+    /// `super::builtin::feature_disabled_tool_names`).
+    #[serde(default)]
+    pub tool_features: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,4 +188,137 @@ pub struct MarketplaceToolInfo {
     /// 详情页「导出」按钮，与后端 fail-fast 口径一致（避免按钮必然报错）。
     #[serde(default = "default_tool_exportable")]
     pub exportable: bool,
+    // --- docs/builtin-toolset-contract.md §3.1: builtin semantics
+    // passthrough (non-empty only for builtin plugins; empty values are
+    // omitted from serialization) ---
+    /// Builtin plugin marker (from the manifest's `builtin`).
+    #[serde(default)]
+    pub builtin: bool,
+    /// Data security level (filled only for builtin plugins, e.g. "L0";
+    /// localized by the frontend).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_level: Option<String>,
+    /// Data-access semantic scope keys (filled only for builtin plugins; the
+    /// frontend localizes them).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub data_access: Vec<String>,
+    /// Full names of the MCP tools this plugin provides (frontend detail view).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_tools: Vec<String>,
+    /// Bundle version a builtin plugin ships with (Some only for builtin
+    /// plugins; omitted otherwise).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_version: Option<String>,
+    /// Display visibility passthrough from the manifest (`Some` only for
+    /// builtin plugins, e.g. "system"; omitted for normal plugins).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A legacy manifest (without the builtin semantics fields) parses with
+    /// all defaults = normal plugin (docs/builtin-toolset-contract.md §3.1
+    /// "all optional, absent means normal plugin").
+    #[test]
+    fn legacy_manifest_without_builtin_fields_parses_as_normal() {
+        let json = r#"{
+            "id":"weather","name":"Weather","description":"d","version":"1","icon":"x",
+            "category":"c","mcp_tools":["get_weather"],"command":"python","args":["server.py"]
+        }"#;
+        let manifest: ToolManifest = serde_json::from_str(json).unwrap();
+        assert!(!manifest.builtin);
+        assert!(manifest.visibility.is_empty());
+        assert!(manifest.security_level.is_empty());
+        assert!(manifest.data_access.is_empty());
+        assert!(manifest.tool_features.is_empty());
+    }
+
+    /// The builtin manifest (session-reader embedded snapshot) parses its 5
+    /// contract fields correctly, and the tool_features keys match the
+    /// mcp_tools full names exactly (a shared-contract hard constraint).
+    #[test]
+    fn session_reader_manifest_carries_builtin_contract_fields() {
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .unwrap()
+                .expect("session-reader is in the embedded catalog");
+        assert!(manifest.builtin);
+        assert_eq!(manifest.visibility, "system");
+        assert_eq!(manifest.security_level, "L0");
+        assert_eq!(manifest.data_access, ["sessions.read".to_string()]);
+        assert_eq!(manifest.tool_features.len(), 2);
+        for tool in &manifest.mcp_tools {
+            let features = manifest
+                .tool_features
+                .get(tool)
+                .unwrap_or_else(|| panic!("tool_features is missing an entry for {tool}"));
+            assert_eq!(
+                features,
+                &["session-mention".to_string(), "long-memory".to_string()]
+            );
+        }
+    }
+
+    /// MarketplaceToolInfo frontend contract: builtin plugins carry
+    /// security_level/data_access/mcp_tools/bundle_version/visibility; for
+    /// normal plugins these fields are omitted from serialization (clean
+    /// contract).
+    #[test]
+    fn tool_info_omits_builtin_fields_for_normal_plugins() {
+        let normal = MarketplaceToolInfo {
+            id: "weather".into(),
+            name: "Weather".into(),
+            description: "d".into(),
+            version: "1".into(),
+            installed: true,
+            companion_skills: vec![],
+            source: "builtin".into(),
+            exportable: false,
+            builtin: false,
+            security_level: None,
+            data_access: vec![],
+            mcp_tools: vec![],
+            bundle_version: None,
+            visibility: None,
+        };
+        let json = serde_json::to_value(&normal).unwrap();
+        assert_eq!(json["builtin"], false);
+        for key in [
+            "security_level",
+            "data_access",
+            "mcp_tools",
+            "bundle_version",
+            "visibility",
+        ] {
+            assert!(
+                json.get(key).is_none(),
+                "empty-value field {key} should be omitted: {json}"
+            );
+        }
+
+        let builtin = MarketplaceToolInfo {
+            id: "session-reader".into(),
+            builtin: true,
+            security_level: Some("L0".into()),
+            data_access: vec!["sessions.read".into()],
+            mcp_tools: vec!["mcp_session-reader_read_session".into()],
+            bundle_version: Some("0.32-test".into()),
+            visibility: Some("system".into()),
+            ..normal
+        };
+        let json = serde_json::to_value(&builtin).unwrap();
+        assert_eq!(json["builtin"], true);
+        assert_eq!(json["security_level"], "L0");
+        assert_eq!(json["data_access"], serde_json::json!(["sessions.read"]));
+        assert_eq!(json["bundle_version"], "0.32-test");
+        assert_eq!(json["visibility"], "system");
+    }
 }

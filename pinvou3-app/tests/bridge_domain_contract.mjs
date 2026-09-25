@@ -8,7 +8,8 @@ export const desktopBridgeApi = {
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
   sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
-  settings: ['saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setSelectedPet'],
+
+  settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
   feedback: ['submitFeedback'],
   vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
@@ -45,12 +46,18 @@ export const desktopOnlyBridgeApi = {
   // Session archive export writes the local-disk tar.xz via a native save
   // dialog over ~/.pinvou3/sessions; web keeps no local session store.
   sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'setDraftWorkspace'],
+
   // The queued chip's zap-send goes through the foundation EnginePool and needs
   // the Tauri command channel; web has no such backend.
   chat: ['interruptAndSendQueued'],
+  // Builtin feature toggles (list_builtin_features / set_builtin_feature_enabled)
+  // are desktop Rust command channels with no web backend. list_builtin_features
+  // is consumed by ChatView (the session-mention feature gate, PR #586);
+  // set_builtin_feature_enabled is the contract hook for future per-feature
+  // settings pages — no consumer yet.
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
-  settings: ['saveSearchSettingsAndRestart'],
+  settings: ['saveSearchSettingsAndRestart', 'listBuiltinFeatures', 'setBuiltinFeatureEnabled'],
   // Vendor-edition one-click vLLM bootstrap is a vendor-edition desktop surface: the web capability bit is always
   // false and the related commands are not in the access-policy allowlist.
   vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],

@@ -6,7 +6,17 @@
 pub fn list_marketplace_tools()
 -> Result<Vec<crate::features::marketplace::MarketplaceToolInfo>, String> {
     let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let tools = mgr.list_tools();
+    let mut tools = mgr.list_tools();
+    // bundle_version for builtin plugins is filled at the command layer (the
+    // bundle version the app ships with): a marketplace -> runtime_bundle
+    // dependency would be a feature cycle (architecture guard
+    // rust_cyclic_feature_dependencies baseline is 0); app -> features is fine.
+    for tool in &mut tools {
+        if tool.builtin {
+            tool.bundle_version =
+                Some(crate::features::runtime_bundle::platform::BUNDLE_VERSION.to_string());
+        }
+    }
     Ok(tools)
 }
 
@@ -483,6 +493,18 @@ pub async fn uninstall_marketplace_tool(
 }
 
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
+    // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
+    // §3.1): fail fast at the command layer with a user-facing error; the
+    // manager layer `MarketplaceManager::uninstall` carries the same guard
+    // (defense in depth). Ids are normalized with `to_package_id` first, so a
+    // `skill:`-prefixed alias of a builtin package is judged by its package.
+    if crate::features::marketplace::builtin::is_builtin_tool(
+        &crate::features::marketplace::scope::to_package_id(tool_id),
+    ) {
+        return Err(format!(
+            "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
+        ));
+    }
     let mgr = crate::features::marketplace::MarketplaceManager::new();
     // Resolve companion ownership before any OAuth, skill, or MCP state is mutated.
     let companions = mgr.companion_skills(tool_id);

@@ -607,6 +607,7 @@ dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'U
 dictEn.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictEn.uiToolDetails.tools, {
+  'session-reader':{ title:'Session Reader', subtitle:'Read-only access to other local sessions', latency:'Local', desc:'Lets AI read other Pinvou session histories on this device in paged, read-only form: after you @-reference a session in the composer, AI fetches its contents on demand (installed by default; reads local session files only, no network, nothing uploaded). If uninstalled, referenced sessions can no longer be read.', welcomeQueries:['Summarize the session I referenced','Where did my last session leave off'] },
   weather:{ title:'Amap Weather', subtitle:'Real-time weather and multi-day forecasts from Amap', desc:'Query real-time weather and multi-day forecasts for cities nationwide through the Amap Web Service API. Enter your own Amap Web Service API Key; the key is written only to this device\u2019s system credentials.', configTitle:'Amap Weather Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Create a Web Service Key', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'Choose the \u201CWeb Service\u201D type.', placeholder:'Paste your Amap Web Service Key'}], welcomeQueries:['Weather in Hangzhou today','Will it rain in Beijing this week','What to wear in Shanghai tomorrow'] },
   iwencai:{ title:'iWenCai', subtitle:'A-share quotes, financials, screening, macro, and news', desc:'Provides 12 financial query tools based on the official iWenCai API. Enter your own iWenCai API Key; the key is written only to this device\u2019s system credentials.', configTitle:'iWenCai Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Open iWenCai SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'Open any official Skill and copy it from \u201CInstallation\u201D.', placeholder:'Paste your IWENCAI_API_KEY'}], welcomeQueries:['Latest Moutai share price','How is the market doing today','Bank stocks with P/E below 10','Recent rate-cut news'] },
   card3:{ title:'QQ Mail API', subtitle:'Smart email sending/receiving and thread summarization', desc:'Provides standard interfaces for sending, receiving, searching, and organizing email. Combined with an LLM, you can read mail in natural language, summarize long threads, and automatically archive and manage folders.' },
@@ -626,6 +627,29 @@ Object.assign(dictEn.uiToolDetails.tools, {
   pptx:{ title:'PPT Generation', subtitle:'Editable PowerPoint generated locally, with theme templates, real charts, and covers', latency:'Local', desc:'Say \u201Cmake a PPT / report\u201D and the AI drafts an outline for your confirmation, then picks a theme (9 available) and generates an editable .pptx\u2014real charts, with a cover thumbnail, fully local and your data never leaves the device. The first install downloads the python-pptx dependency (requires network).', welcomeQueries:['Make a Q2 quarterly report PPT','Make a product intro PPT','Make a project proposal presentation','Make a company intro PPT'] },
   gongwen:{ title:'Official Document Writing', subtitle:'Party/government official documents as GB/T 9704-compliant .docx', latency:'Local', desc:'Say \u201Cwrite a notice / draft an opinion\u201D and the AI writes the content following the document-type structure and fixed phrasing, then the renderer applies the national standard format for party/government documents (FangZheng XiaoBiaoSong title, FangSong_GB2312 body, standard margins, red header and red separator line) to produce a .docx\u2014fully local, your data never leaves the device. Works best with the \u201COfficial Document Writing\u201D skill. The first install downloads the python-docx dependency (requires network).', welcomeQueries:['Draft a notice on issuing management measures','Write an implementation opinion on strengthening certain work','Draft a meeting notice','Write a situation report'] },
 });
+
+// Built-in plugins read-only section (docs/builtin-toolset-contract.md §3.1):
+// section title / read-only badge / audit field labels / security level copy /
+// data-access scope copy. Unknown dataAccess scope keys fall back to the raw key
+// on the card and are not enumerated here.
+dictEn.uiBuiltinPlugins = {
+  sectionTitle:'Built-in Plugins',
+  kindLabel:'Type',
+  pageIntro:'Plugins shipped with the app and updated together with it. This page only shows what they can do and what data they access — they cannot be uninstalled or turned off here.',
+  readonlyBadge:'Built-in · Always on',
+  toolsLabel:'Tools',
+  securityLabel:'Security level',
+  versionLabel:'Version',
+  versionNote:'Updates with the app',
+  dataAccessLabel:'Data access',
+  levels:{ L0:'Read-only: modifies no state; content is marked untrusted', L1:'Write: produces user-visible side effects (e.g. send messages, create tasks)', L2:'Destructive: irreversible delete/overwrite; requires explicit authorization' },
+  dataAccess:{ 'sessions.read':'Local session store (read-only)' },
+};
+
+// Generic built-in feature degradation copy (docs/builtin-toolset-contract.md
+// §3.3 hook): reused by future feature settings pages for the "feature turned
+// off" fallback.
+dictEn.uiBuiltinFeatures = { disabledNotice:'This built-in feature is turned off; its entry points and capabilities are disabled.' };
 
 Object.assign(dictEn.uiCodexWorkspace, { showRawErrors:false, operationFailed:'Workspace operation failed. Please retry' });
 

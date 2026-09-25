@@ -628,6 +628,27 @@ fn landing_target(
     None
 }
 
+/// Reject an uploaded MCP manifest that claims builtin-only semantics
+/// (`builtin: true` / `visibility: "system"`). Payloads that do not parse as a
+/// `ToolManifest` are left to component detection, which reports malformed
+/// manifests on its own path.
+fn reject_builtin_claims_in_upload(what: &str, bytes: &[u8]) -> Result<(), String> {
+    let Ok(tm) = serde_json::from_slice::<crate::features::marketplace::ToolManifest>(bytes) else {
+        return Ok(());
+    };
+    if tm.builtin {
+        return Err(format!(
+            "uploaded package manifest ({what}) declares builtin: true, which is reserved for plugins shipped with the application (docs/builtin-toolset-contract.md §3.1)"
+        ));
+    }
+    if tm.visibility == "system" {
+        return Err(format!(
+            "uploaded package manifest ({what}) declares visibility: \"system\", which is reserved for builtin plugins (docs/builtin-toolset-contract.md §3.1)"
+        ));
+    }
+    Ok(())
+}
+
 /// 为无 plugin.json 的裸包合成一份最小规范化清单（自描述，§5.2 派生 manifest），
 /// 落盘 `bundles/<id>/plugin.json`。组件目录统一用规范化布局（`mcp/`、`skills/<name>/`），
 /// 与落盘结果一致，保证后续重装/卸载/枚举按同一口径读。
@@ -743,6 +764,18 @@ pub fn import_plugin_package(
             let buf = read_bounded_checked(&mut entry, "manifest.json")?;
             other_manifests.push((path_str, buf));
         }
+    }
+
+    // Trust boundary (docs/builtin-toolset-contract.md §3.1): builtin status is
+    // declared solely by the publisher through the compile-time embedded
+    // catalog. An uploaded package claiming `builtin: true` or
+    // `visibility: "system"` in any MCP manifest is rejected loudly — never
+    // silently stripped, or the uploader would believe the claim took effect.
+    if let Some(bytes) = &mcp_manifest_bytes {
+        reject_builtin_claims_in_upload("mcp/manifest.json", bytes)?;
+    }
+    for (path, bytes) in &other_manifests {
+        reject_builtin_claims_in_upload(path, bytes)?;
     }
 
     // 识别 manifest（可选）。
@@ -1307,6 +1340,156 @@ mod tests {
             crate::features::marketplace::store::BundleSource::Upload("combo.zip".to_string()),
             "上传包登记来源应为 Upload"
         );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Trust boundary (docs/builtin-toolset-contract.md §3.1): an uploaded
+    /// package whose MCP manifest claims `builtin: true` or
+    /// `visibility: "system"` is rejected with an explicit error instead of
+    /// silently landing with the claim stripped — builtin status belongs to
+    /// the publisher's embedded catalog only.
+    #[test]
+    fn import_rejects_manifest_claiming_builtin_semantics() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-builtin-claim-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        for (id, manifest_tail, needle) in [
+            ("claim-builtin", r#","builtin":true}"#, "builtin: true"),
+            ("claim-system", r#","visibility":"system"}"#, "system"),
+        ] {
+            let zip_path = dir.join(format!("{id}.zip"));
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    format!(
+                        r#"{{"id":"{id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{manifest_tail}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"print('hi')").unwrap();
+                zw.finish().unwrap();
+            }
+            let err = import_plugin_package(&zip_path.to_string_lossy(), &format!("{id}.zip"))
+                .unwrap_err();
+            assert!(
+                err.contains(needle),
+                "rejection should name the claim ({needle}): {err}"
+            );
+            assert!(
+                !dir.join("bundles").join(id).exists(),
+                "rejected package must not land on disk"
+            );
+        }
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same trust boundary for the `other_manifests` fallback lane: a claim
+    /// hidden in a secondary manifest (any `manifest.json` other than
+    /// `mcp/manifest.json`, e.g. `extra/manifest.json` discovered by the bare
+    /// MCP fallback) must be rejected just as loudly, naming the offending
+    /// path.
+    #[test]
+    fn import_rejects_builtin_claims_in_secondary_manifests() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-builtin-claim-secondary-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        for (id, claim, needle) in [
+            (
+                "claim-secondary-builtin",
+                r#","builtin":true}"#,
+                "builtin: true",
+            ),
+            (
+                "claim-secondary-system",
+                r#","visibility":"system"}"#,
+                "system",
+            ),
+        ] {
+            let zip_path = dir.join(format!("{id}.zip"));
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                // The primary MCP manifest is clean...
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    format!(
+                        r#"{{"id":"{id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"print('hi')").unwrap();
+                // ...but a secondary manifest carries the builtin claim.
+                zw.start_file("extra/manifest.json", opts).unwrap();
+                zw.write_all(
+                    format!(
+                        r#"{{"id":"{id}-extra","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{claim}"#
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                zw.finish().unwrap();
+            }
+            let err = import_plugin_package(&zip_path.to_string_lossy(), &format!("{id}.zip"))
+                .unwrap_err();
+            assert!(
+                err.contains(needle),
+                "rejection should name the claim ({needle}): {err}"
+            );
+            assert!(
+                err.contains("extra/manifest.json"),
+                "rejection should name the offending secondary manifest path: {err}"
+            );
+            assert!(
+                !dir.join("bundles").join(id).exists(),
+                "rejected package must not land on disk"
+            );
+        }
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

@@ -172,6 +172,21 @@ impl Pinvou3Bundle {
         // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
         // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
         Self::import_legacy_bundle_store();
+        // Boot seed for default-installed preset MCP tools (session-reader
+        // etc.): installs only when no BundleStore record exists; placed
+        // before write_mcp_servers' embedded-content check of installed
+        // records so release and registration complete within the same boot.
+        // Skipped for this cycle when the plaintext secret migration failed
+        // (same gating as write_mcp_servers' relocation: install reruns the
+        // migration internally and failure paths must not touch the old
+        // layout); the next boot self-heals.
+        if mcp_secret_migration_ok {
+            marketplace.ensure_default_installed_mcp_tools();
+        }
+        // Boot-time replay of the builtin feature-switch state file from
+        // prefs (the authoritative store): heals a crash window between the
+        // prefs commit and the state write. Best-effort, failures only log.
+        crate::features::marketplace::builtin::replay_feature_state_from_prefs();
         // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
         // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
         // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
