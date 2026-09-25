@@ -41,6 +41,9 @@ mod tool;
 mod types;
 
 // ---- Tool and shared state (tool / guard): consumed by the composition root and Tauri commands ----
+// `remove_session_audit` is the session-deletion hook: the audit trail is the
+// one computer-use artifact that outlives the session that produced it.
+pub use self::audit::remove_session_audit;
 pub use self::guard::{ComputerUseShared, GrantOutcome};
 pub use self::tool::ComputerUseTool;
 

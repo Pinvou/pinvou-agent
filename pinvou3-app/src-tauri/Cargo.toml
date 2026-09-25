@@ -290,6 +290,13 @@ msg_parser = "0.3.0"
 windows-core = "0.61"
 # Computer Use accessibility tree (features/computer_use): Windows UI Automation.
 uiautomation = "0.25"
+# The same `windows` release uiautomation builds against, so it is already in
+# the lock through it and this adds no package. Declared directly because
+# `ui_tree`'s cache request needs `TreeScope_Element | TreeScope_Children`,
+# which uiautomation's plain `TreeScope` enum cannot express: the flag is set
+# on the underlying `IUIAutomationCacheRequest`, and that interface has to be
+# the type from this exact `windows` version.
+windows = { version = "0.62", features = ["Win32_UI_Accessibility"] }
 
 # Process liveness probe using kill(pid, 0) semantics; see process_alive in
 # platform/os/posix.rs. Browser watch uses it to guard stale port-file deletion.
