@@ -688,11 +688,12 @@ fn write_tree_node(
     // class here is what let a cache request that never cached the node's own
     // properties render an entire tree as `<unreadable element>` without one
     // error surfacing.
+    // `format_tree_line` has already run its errors through `map_uia_err`, so
+    // the access-denied class arrives as `Unavailable`; every other read
+    // failure is `Failed` and stays tolerated.
     let line = match format_tree_line(index, depth, &cached) {
         Ok(line) => line,
-        Err(error) if error.code() == E_ACCESSDENIED => {
-            return Err(map_uia_err("ui_tree node", error));
-        }
+        Err(error @ ComputerUseError::Unavailable { .. }) => return Err(error),
         Err(_) => format!(
             "{}[{}] <unreadable element>",
             "  ".repeat(depth as usize),

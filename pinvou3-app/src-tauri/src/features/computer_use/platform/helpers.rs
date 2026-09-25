@@ -217,6 +217,7 @@ pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
 /// the rest — and the split can land inside a surrogate pair. `type` returned
 /// `Ok` regardless, telling the agent it had typed text that was silently cut
 /// in half.
+#[cfg(target_os = "macos")]
 pub(crate) const MACOS_UNICODE_STRING_UTF16_UNITS: usize = 20;
 
 /// Splits `text` so every chunk fits in `max_units` UTF-16 units, cutting only
@@ -225,6 +226,7 @@ pub(crate) const MACOS_UNICODE_STRING_UTF16_UNITS: usize = 20;
 /// Because a chunk of at most `max_units` UTF-16 units also has at most
 /// `max_units` characters, a consumer that re-chunks by `char` at the same
 /// bound (as enigo does) emits each chunk whole.
+#[cfg(target_os = "macos")]
 pub(crate) fn utf16_chunks(text: &str, max_units: usize) -> Vec<&str> {
     debug_assert!(max_units >= 2, "a single character can be two UTF-16 units");
     let mut chunks = Vec::new();
@@ -362,6 +364,7 @@ mod tests {
         assert_eq!(char_chunks("中文测试", 3), vec!["中文测", "试"]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn utf16_chunks_bound_the_unicode_string_budget() {
         // BMP text: identical to character chunking.
