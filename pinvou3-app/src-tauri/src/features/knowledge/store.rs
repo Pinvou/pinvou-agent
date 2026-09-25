@@ -24,6 +24,21 @@ use serde::Serialize;
 /// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。
 const SCHEMA_VERSION: i64 = 4;
 
+/// Whether a store at `version` may be deleted and rebuilt on open.
+///
+/// Only pre-v3 schemas qualify: v3 is the first that holds knowledge-set
+/// business data, which a rescan cannot reconstruct. Deliberately NOT
+/// "anything that is neither 3 nor `SCHEMA_VERSION`" — whitelisting the
+/// current version is a landmine for the next schema bump, because the day
+/// `SCHEMA_VERSION` becomes 5 every existing v4 store stops matching the
+/// whitelist and is deleted on first launch, taking exactly the
+/// non-rebuildable data this rule exists to protect. Anything from v3 up
+/// migrates in place (the idempotent `IF NOT EXISTS` batch) or is refused
+/// (the newer-than-us check); it is never deleted.
+fn schema_is_disposable(version: i64) -> bool {
+    version < 3
+}
+
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -261,6 +276,7 @@ impl Store {
     ///
     /// A store written by a newer binary is never deleted by a downgrade:
     /// the open refuses with a clear error and leaves every file intact.
+
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -287,9 +303,7 @@ impl Store {
                 ));
             }
         }
-        // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
-        let stale =
-            matches!(current_version, Some(version) if version != 3 && version != SCHEMA_VERSION);
+        let stale = matches!(current_version, Some(version) if schema_is_disposable(version));
         if stale {
             let p = db_path.display().to_string();
             let _ = std::fs::remove_file(db_path);
@@ -539,6 +553,30 @@ fn escape_like(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// No schema at or above v3 may ever be deleted on open — v3 is where
+    /// non-rebuildable knowledge-set data starts. The loop is the point: a
+    /// predicate written as "neither 3 nor SCHEMA_VERSION" passes for today's
+    /// 3 and 4 and then deletes every user's store the day SCHEMA_VERSION is
+    /// bumped, which is precisely the regression this pins.
+    #[test]
+    fn only_pre_v3_schemas_are_disposable() {
+        assert!(
+            super::schema_is_disposable(0),
+            "v0 is a rebuildable L0 index"
+        );
+        assert!(
+            super::schema_is_disposable(2),
+            "v2 is a rebuildable L0 index"
+        );
+        for version in 3..64 {
+            assert!(
+                !super::schema_is_disposable(version),
+                "schema v{version} holds non-rebuildable data and must migrate or refuse, \
+                 never be deleted"
+            );
+        }
+    }
     use super::*;
 
     fn rec(path: &str, name: &str, ext: Option<&str>, size: u64, mtime: i64) -> FileRecord {
