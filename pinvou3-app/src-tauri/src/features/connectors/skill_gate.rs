@@ -69,44 +69,7 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            // The DenyAll write takes the cross-process bundle lock, which can
-            // block on the desktop/CLI two-process pair; keep it off the async
-            // worker like the apply_skills lane above.
-            //
-            // A refused sync retracts the skill files this command just
-            // wrote. Reporting the error and leaving them on disk is the
-            // fail-open half-state: the connector's skills would be live in
-            // an initialized DenyAll scope with no deny entry — callable
-            // without the user having enabled them, after an operation the
-            // user was told had failed.
-            // A panicked sync task is the same fail-open shape as a refused
-            // one: the skill files are on disk and no deny entry was written.
-            // Flattening the join error into the same `Err` routes it through
-            // the retract below instead of `?`-returning past it.
-            let synced = match tokio::task::spawn_blocking(move || {
-                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id)
-            })
-            .await
-            {
-                Ok(result) => result,
-                Err(join_error) => Err(format!("sync_deny_all join: {join_error}")),
-            };
-            if let Err(error) = synced {
-                match tokio::task::spawn_blocking(move || self.apply_skills(false)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(retract_error)) => eprintln!(
-                        "[{}] retracting the skills after a refused consent sync: \
-                         {retract_error}",
-                        self.id
-                    ),
-                    Err(join_error) => eprintln!(
-                        "[{}] retracting the skills after a refused consent sync: \
-                         join failed ({join_error})",
-                        self.id
-                    ),
-                }
-                return Err(error);
-            }
+            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
         }
         Ok(json!({ "visible": show }))
     }

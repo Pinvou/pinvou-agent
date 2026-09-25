@@ -314,19 +314,6 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
-/// 删除用户卡(只能删 user- 前缀的自制卡)。
-/// Headless caller (the CLI families stack). Unlike the crate-private `_with`
-/// variant (whose in-tree caller also clears the persona from every GUI
-/// session that still references it), this entry point cannot reach the
-/// sessions feature from here — the session cleanup runs in the caller's
-/// process against the shared PINVOU3_HOME. A headless caller sharing a home
-/// with a live GUI must therefore treat "persona deleted while sessions
-/// still equip it" as its own cleanup step until the cross-process signal
-/// lands; disclosed rather than silently skipped.
-pub fn delete_user_persona(id: &str) -> Result<(), String> {
-    delete_user_persona_with(id, || ())
-}
-
 /// Delete a card and run cross-feature cleanup before another operation can
 /// publish a snapshot of that card.
 pub(crate) fn delete_user_persona_with<T>(

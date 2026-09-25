@@ -59,7 +59,7 @@ pub(crate) fn strip_all_git_env(command: &mut Command) {
 /// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
 /// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
 /// keys need no enumeration.
-const GIT_OVERRIDE_KEYS: [&str; 25] = [
+const GIT_OVERRIDE_KEYS: [&str; 20] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -72,25 +72,6 @@ const GIT_OVERRIDE_KEYS: [&str; 25] = [
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    // GIT_TEMPLATE_DIR would seed a fresh `git init` of the shadow repo with
-    // hook-carrying templates (pre-auto-gc runs under `gc --auto`).
-    "GIT_TEMPLATE_DIR",
-    // The pathspec-magic trio, stripped together for one reason: the secret
-    // purge's pathspecs are `:(icase)*.pem`-shaped, so anything that changes
-    // how default magic is interpreted can silently turn the purge into a
-    // no-op. GIT_LITERAL_PATHSPECS=1 disables magic outright (the `:(icase)`
-    // prefix is then matched as literal text); GIT_NOGLOB_PATHSPECS=1 makes
-    // the default no-glob, so `*.pem` matches only a file literally named
-    // `*.pem`. GIT_ICASE_PATHSPECS only broadens matching — the safe
-    // direction — but goes with its siblings so the purge's matching rules
-    // come from the command line rather than from whatever the host exported.
-    "GIT_LITERAL_PATHSPECS",
-    "GIT_NOGLOB_PATHSPECS",
-    "GIT_ICASE_PATHSPECS",
-    // GIT_EXTERNAL_DIFF replaces the diff driver with an arbitrary command.
-    // `--no-ext-diff` closes it at the one diff call site, but the isolation
-    // primitive must not depend on every future call site remembering a flag.
-    "GIT_EXTERNAL_DIFF",
     "GIT_CONFIG",
     "GIT_CONFIG_GLOBAL",
     "GIT_CONFIG_SYSTEM",
@@ -647,15 +628,6 @@ mod tests {
             "GIT_CONFIG_NOSYSTEM",
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG_PARAMETERS",
-            // Named explicitly so removing one goes red here. The sibling
-            // test iterates GIT_OVERRIDE_KEYS itself and is therefore
-            // tautological; only the array length would otherwise object, and
-            // it objects to every edit equally.
-            "GIT_TEMPLATE_DIR",
-            "GIT_LITERAL_PATHSPECS",
-            "GIT_NOGLOB_PATHSPECS",
-            "GIT_ICASE_PATHSPECS",
-            "GIT_EXTERNAL_DIFF",
         ] {
             assert!(
                 GIT_OVERRIDE_KEYS.contains(&key),

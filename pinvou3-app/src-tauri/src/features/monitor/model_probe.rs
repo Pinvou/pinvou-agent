@@ -609,9 +609,9 @@ fn resolve_served_model_from_entries(
 }
 
 /// Fetches `/v1/models` and decides the actual model name via
-/// `resolve_served_model_from_entries` (private helper). On probe failure
-/// returns the configured name with `None` window/limit. `bearer` semantics
-/// match [`probe_vllm_model_info`] (inference-same-origin key).
+/// [`resolve_served_model_from_entries`]. On probe failure returns the
+/// configured name with `None` window/limit. `bearer` semantics match
+/// [`probe_vllm_model_info`] (inference-same-origin key).
 pub async fn resolve_served_model(
     base_url: &str,
     bearer: Option<&str>,

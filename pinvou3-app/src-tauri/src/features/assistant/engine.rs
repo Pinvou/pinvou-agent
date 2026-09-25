@@ -1675,32 +1675,21 @@ impl AppEngine {
         // above is driven directly by that boolean), so dispatch on roster
         // presence instead of re-asserting the same invariant twice between
         // the bool and the Option.
-        // The config build consults the scope unavailable sets twice per
-        // session (scope_deny_ruleset's CLI-binary and skill-script deny
-        // rules) — blocking disk I/O via the marketplace readers; keep it
-        // off the async worker like every other blocking path.
-        let mut engine_config = {
-            let bridge = bridge.clone();
-            let session_id = session_id.to_string();
-            let snapshot = expert_snapshot.clone();
-            tokio::task::spawn_blocking(move || match snapshot.as_deref() {
-                Some(snapshot) => {
-                    // Multi-agent surface: assemble the expert roster and the
-                    // dedicated resource caps; the tool surface stays identical to
-                    // a plain session, which inherits none of these limits. The
-                    // swarm switch and the session's multi_agent switch share one
-                    // source (the mode_state just read above).
-                    bridge.build_engine_config_for_multi_agent(
-                        &session_id,
-                        roots,
-                        snapshot,
-                        multi_agent_enabled,
-                    )
-                }
-                None => bridge.build_engine_config_for_session_roots(&session_id, roots),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("engine config build join: {e}"))?
+        let mut engine_config = match expert_snapshot.as_deref() {
+            Some(snapshot) => {
+                // Multi-agent surface: assemble the expert roster and the
+                // dedicated resource caps; the tool surface stays identical to
+                // a plain session, which inherits none of these limits. The
+                // swarm switch and the session's multi_agent switch share one
+                // source (the mode_state just read above).
+                bridge.build_engine_config_for_multi_agent(
+                    session_id,
+                    roots,
+                    snapshot,
+                    multi_agent_enabled,
+                )
+            }
+            None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
@@ -1792,27 +1781,15 @@ impl AppEngine {
     /// production builds have no caller, hence the allow.
     #[allow(dead_code)]
     pub async fn spawn_headless(bridge: Pinvou3Bridge) -> Result<Self> {
-        // The config build + ruleset consult are blocking disk I/O via the
-        // marketplace readers (scope_deny_ruleset's CLI-binary and
-        // skill-script deny rules); keep them off the async worker,
-        // matching spawn_for_session.
-        let mut engine_config = {
-            let bridge = bridge.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut engine_config = bridge.build_engine_config();
-                // The headless engine carries the same hard-deny ruleset as
-                // real sessions (scope gate + safety fallback, see
-                // `scope_deny_ruleset`); a bare `build_engine_config` leaves
-                // the empty default execpolicy engine.
-                engine_config.exec_policy_engine =
-                    codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-                        bridge.scope_deny_ruleset(""),
-                    ]);
-                engine_config
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("headless engine config build join: {e}"))?
-        };
+        let mut engine_config = bridge.build_engine_config();
+        // The headless engine carries the same hard-deny ruleset as real
+        // sessions (scope gate + safety fallback, see `scope_deny_ruleset`);
+        // a bare `build_engine_config` leaves the empty default execpolicy
+        // engine.
+        engine_config.exec_policy_engine =
+            codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
+                bridge.scope_deny_ruleset(""),
+            ]);
         let scheduled_disallowed_tools = engine_config.disallowed_tools.clone().unwrap_or_default();
         let workspace = engine_config.workspace.clone();
         engine_config.runtime_services.shell_manager =

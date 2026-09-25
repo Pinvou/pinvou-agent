@@ -1783,10 +1783,10 @@ mod tests {
             r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
         )
         .unwrap();
-        crate::features::marketplace::save_disabled_connectors(&[
-            "data_analysis".to_string(),
-            "weather".to_string(),
-        ])
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["data_analysis".to_string(), "weather".to_string()],
+        )
         .unwrap();
 
         bundle.cleanup_removed_marketplace_tools().unwrap();
