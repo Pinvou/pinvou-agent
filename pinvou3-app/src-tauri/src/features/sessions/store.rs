@@ -737,11 +737,11 @@ impl SessionStore {
 
     /// The forward query `main_id → Option<aux_id>` (round-30 B8): compute the
     /// derived id, then probe whether its record is on disk. Fail-closed —
-    /// [`Self::durable_session_record_is_absent`] counts only a genuine
-    /// NotFound as absent, so a transient stat fault reads as "aux present"
-    /// and no destructive path (delete / discard / retention eviction) can
-    /// mistake "unknown" for "no aux". An aux id itself has no aux (the
-    /// prefix check keeps the delete cascade's recursion depth at 1).
+    /// `durable_session_record_is_absent` counts only a genuine NotFound as
+    /// absent, so a transient stat fault reads as "aux present" and no
+    /// destructive path (delete / discard / retention eviction) can mistake
+    /// "unknown" for "no aux". An aux id itself has no aux (the prefix check
+    /// keeps the delete cascade's recursion depth at 1).
     pub fn aux_session_id(&self, main_id: &str) -> Option<String> {
         if super::validators::is_aux_session_id(main_id) {
             return None;
