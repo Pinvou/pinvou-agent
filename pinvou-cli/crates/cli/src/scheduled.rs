@@ -339,16 +339,19 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
             )
         })?
         .to_owned();
-    // Syntactic gate at parse time; the past-ONCE/next-slot resolution for
-    // an ACTIVE task is the foundation `create_automation`'s own eager
-    // policy (the CLI used to defer it and a past one-shot ended up Paused
-    // by the first sweep, never running) — the exit-code classes are the
-    // same usage (2), so the split pins the grammar here and the calendar
-    // truth in the layer that owns the rule.
+    // Syntactic gate at parse time for EVERY create, `--paused` included:
+    // the rrule string is argv, so a grammar-invalid value is a usage error
+    // (exit 2) — skipping the check for a paused create would surface the
+    // same input later as `scheduled_create_failed` (exit 1) and would
+    // bypass the MAX_HOURLY_INTERVAL pre-check that keeps a
+    // scheduler-breaking record out of the store. `--paused` only defers
+    // the past-ONCE/next-slot calendar resolution, which stays the
+    // foundation `create_automation`'s own eager policy for an ACTIVE task
+    // (the CLI used to defer it and a past one-shot ended up Paused by the
+    // first sweep, never running): grammar here (exit 2), calendar truth in
+    // the layer that owns the rule (exit 1).
+    validate_rrule(&rrule)?;
     let paused = flags.contains(&"--paused");
-    if !paused {
-        validate_rrule(&rrule)?;
-    }
     let kind = match option(&options, "--kind") {
         Some(value) => TaskKind::parse_value(value)?,
         None => TaskKind::Chat,
@@ -1883,7 +1886,8 @@ fn update(
     // the schedule or status changed (paused keeps it unset, active resolves
     // the slot eagerly — including the past-one-shot failure, mirroring the
     // GUI's own update refusal for a one-shot with no future run). Workspace
-    // pinning follows the GUI's ensure_automation_workspace.
+    // pinning follows the GUI's ensure_automation_workspace, including its
+    // persistence of a repaired cwd.
     let mut def = def_to_value(&updated);
     ensure_workspace(&store_holder, &mut def)?;
     if validated_model_id.is_some() {
@@ -1910,7 +1914,12 @@ fn update(
 }
 
 /// Mirrors `ensure_automation_workspace`: the durable execution workspace is
-/// derived from the task id and persisted as the single cwd entry.
+/// derived from the task id and persisted as the single cwd entry — including
+/// the persistence half (the GUI writes the repair through
+/// `update_automation(cwds: …)`): mutating only the in-memory def would let
+/// the executor run with a different cwd than this command reported. A def
+/// that already pins the workspace is left untouched, so the repair is
+/// idempotent and writes only when the content actually changed.
 fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Result<(), CliError> {
     let id = str_field(def, "id").unwrap_or("").to_owned();
     // `require_object_definition` already rejected non-component ids at the
@@ -1922,8 +1931,21 @@ fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Re
             workspace.display()
         ))
     })?;
+    let already_pinned = def
+        .get("cwds")
+        .and_then(Value::as_array)
+        .is_some_and(|cwds| {
+            cwds.len() == 1
+                && cwds
+                    .first()
+                    .and_then(Value::as_str)
+                    .is_some_and(|cwd| Path::new(cwd) == workspace)
+        });
+    if already_pinned {
+        return Ok(());
+    }
     def["cwds"] = serde_json::json!([workspace.display().to_string()]);
-    Ok(())
+    store_holder.write_def(def)
 }
 
 /// Persist one (model_id, wire model) pair in the bindings sidecar. The
@@ -1992,6 +2014,11 @@ fn persist_task_kind(
 
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
+    // Same unknown-id pre-gate as update/show/runs/pin: the foundation
+    // pause/resume would surface a missing task as `scheduled_update_failed`
+    // wrapping the raw read error, so read the definition first and answer
+    // with the family's stable `scheduled_task_not_found`.
+    store_holder.read_def(id)?;
     let manager = store_holder.manager()?;
     // Foundation pause/resume: `update_automation` under the hood, which
     // recomputes `next_run_at` for the FINAL status — resume resolves the
@@ -2015,7 +2042,8 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
     let action = if pause { "paused" } else { "resumed" };
     if !pause {
         // Same GUI step as create/update: the durable workspace stays pinned
-        // to the id-derived path.
+        // to the id-derived path, and a missing/empty stored cwd is
+        // persisted like the GUI's `update_automation(cwds: …)` repair.
         ensure_workspace(&store_holder, &mut def)?;
     }
     // Enrichment is best-effort: the status flip is committed above, so a

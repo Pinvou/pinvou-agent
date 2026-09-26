@@ -537,6 +537,24 @@ fn runs_and_show_reject_unknown_task_ids() {
     let _ = home;
 }
 
+/// pause/resume answer an unknown id with the family's stable
+/// `scheduled_task_not_found` (like show/runs/pin/update/run), not the
+/// foundation's raw `scheduled_update_failed: … Failed to read automation …`
+/// read error.
+#[test]
+fn pause_and_resume_reject_unknown_task_ids_like_the_rest_of_the_family() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("unknown-id-pause-resume");
+    for command in ["pause", "resume"] {
+        let error = expect_failed(&["scheduled", command, "does-not-exist"]);
+        assert!(
+            error.starts_with("scheduled_task_not_found"),
+            "{command}: {error}"
+        );
+    }
+    let _ = home;
+}
+
 #[test]
 fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -1570,6 +1588,39 @@ fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
     }
 }
 
+/// A grammar-invalid rrule must be a usage error (exit 2) on `create
+/// --paused` too: `--paused` defers only the foundation's past-ONCE/next-slot
+/// calendar resolution (a state-dependent failure, exit 1), never the argv
+/// grammar — and the MAX_HOURLY_INTERVAL scheduler guard must not be
+/// bypassed by pausing the create.
+#[test]
+fn paused_create_still_validates_the_rrule_grammar() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("paused-grammar");
+    let prompt = write_prompt_file(&home, "paused-grammar.md", "Summarize the reports.");
+    for bad in ["FREQ=BOGUS", "FREQ=ONCE", "FREQ=HOURLY;INTERVAL=4000000000"] {
+        let error = assert_usage(&[
+            "scheduled",
+            "create",
+            "--name",
+            "Paused grammar",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            bad,
+            "--paused",
+        ]);
+        assert!(!error.is_empty(), "{bad}: {error}");
+        let listed = run_json(&["scheduled", "list"]);
+        assert_eq!(
+            listed["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "{bad}: a usage-refused create must not persist a task"
+        );
+    }
+    let _ = home;
+}
+
 #[test]
 fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
     // The GUI's VersionedJsonStore quarantines a registry whose
@@ -2355,6 +2406,73 @@ fn update_with_model_id_moves_both_the_definition_and_the_pin() {
     assert_eq!(def["model"].as_str(), Some("other-wire-name"));
 
     let _ = prompt;
+}
+
+/// `update`/`resume` must PERSIST the workspace repair: the GUI's
+/// `ensure_automation_workspace` writes a repaired `cwds` back through
+/// `update_automation(cwds: …)`, so a definition whose stored `cwds` is empty
+/// must not be repaired in memory only — the executor would run with a
+/// different cwd than the command reported. A definition that already pins
+/// the workspace stays untouched (the repair is idempotent).
+#[test]
+fn update_and_resume_persist_a_repaired_workspace_cwd() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("workspace-repair");
+    let created = create_task(&home, "Repaired task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let expected = pinvou3_lib::platform::paths::scheduled_task_workspace_dir(&task_id);
+    let persisted_cwds = || -> Vec<String> {
+        let def: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap())
+                .unwrap();
+        def["cwds"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| value.as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Strip the persisted cwd the way a definition predating the workspace
+    // pin (or a hand-edit) looks.
+    let strip_cwds = || {
+        let mut def: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap())
+                .unwrap();
+        def["cwds"] = serde_json::json!([]);
+        std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
+    };
+
+    // update repairs the definition on disk, not only in memory.
+    strip_cwds();
+    run_json(&["scheduled", "update", &task_id, "--name", "Repaired"]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "update must persist the repaired cwd"
+    );
+
+    // resume performs the same repair.
+    run_json(&["scheduled", "pause", &task_id]);
+    strip_cwds();
+    run_json(&["scheduled", "resume", &task_id]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "resume must persist the repaired cwd too"
+    );
+
+    // The repair is idempotent: a definition already pinning the workspace is
+    // left with exactly one entry (never rewritten or duplicated).
+    run_json(&["scheduled", "update", &task_id, "--name", "Repaired again"]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "an already-pinned workspace must not be rewritten or duplicated"
+    );
+    let _ = home;
 }
 
 /// BLOCKER 3 (round-18 review): a CLI one-shot used to persist
