@@ -360,6 +360,7 @@ export const dictEn = {
           grantDeny:'Deny',
           confirmTitle:'Confirm this action',
           confirmActionLabel:'Action',
+          unreadableTarget:'(no readable target)',
           confirmElementLabel:'Target element',
           confirmOnce:'Allow this once',
           confirmDeny:'Deny',
