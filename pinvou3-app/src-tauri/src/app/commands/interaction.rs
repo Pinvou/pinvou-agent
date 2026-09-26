@@ -187,6 +187,7 @@ pub async fn accept_plan(
             &session_id,
             roots.ledger,
             roots.execution,
+            "✅ 就这么干".to_string(),
             "accept_plan",
         )
         .await;
