@@ -32,7 +32,7 @@ const conversationJa = {
 
 const codexJa = {
   unknownDirectory:'不明なディレクトリ', temporaryWorkspace:'一時ワークスペース', projectMissing:'元のプロジェクトディレクトリが存在しません',
-  applyingConfig:'設定を適用中…', workspace:'ワークスペース', workspaceTitle:'Agent ワークスペースのファイルと変更を表示',
+  applyingConfig:'設定を適用中…', stop:'停止', workspace:'ワークスペース', workspaceTitle:'Agent ワークスペースのファイルと変更を表示',
   branches:'ブランチ', branchTooltip:'Git ブランチの表示と切り替え',
   branchSwitchDirtyConfirm:(branch, count)=>`ワークスペースに ${count} 件の未コミットの変更があります。「${branch}」への切り替え方法を選択してください：`,
   branchSwitchCancel:'キャンセル',
@@ -127,6 +127,18 @@ const codexJa = {
   accountRecoveryHint:'現在のアカウントは期限切れ、または利用枠不足の可能性があります。アカウントを切り替えても既存のセッションとメッセージは保持されます。',
   serviceRecoveryHint:'サービス状態を再確認してください。問題が続く場合は、後でもう一度試すかアカウントを切り替えてください。',
   errorDetails:'エラー詳細を表示', dismissNotice:'閉じる',
+  agentUnresponsive:agent=>`${agent} が応答しなくなっています`,
+  agentStderr:agent=>`${agent} が問題を報告しました`,
+  agentStallHint:'このターンはまだ新しいイベントがありません。待機を続けるか、「停止」で切り上げられます。',
+  agentStallCancelHint:'Agent が応答しない状態が続いたため、自動的に停止を要求しました。終了を待っています。',
+  agentStallSettledHint:'Agent が長時間応答しなかったため、このターンは中断として切り上げました。再送信するか、そのまま続けられます。',
+  agentCancelTimeoutHint:'「停止」に Agent から応答がなかったため、このターンは中断として切り上げました。',
+  agentStderrHint:'Agent アダプターのエラーは機密情報を除いて表示しています。原文はセッションログにのみ記録されます。',
+  agentStderrNoDetailHint:'Agent アダプターが問題を報告しました。エラー原文はデスクトップのセッションログにのみ保存されています。',
+  agentRestarted:agent=>`${agent} のセッションを再起動しました`,
+  agentStallRestartHint:'同じセッションが短時間に繰り返し応答しなくなったため、次のメッセージは新しい Agent セッションで続行します。以前の会話を引き継げるかはその Agent の復元機能によります。切り替え後にどちらになったかをお知らせします。',
+  agentRestartHint:'以前の Agent セッションが繰り返し応答しなくなったため、新しいセッションで続行しました。会話履歴は保持されますが、未完了のターンは再送信が必要です。',
+  agentRestartFreshHint:'以前の Agent セッションが繰り返し応答しなくなったため、新しいセッションで続行しました。この Agent は以前の会話を復元できませんでした。必要な文脈はもう一度お伝えください。未完了のターンは再送信が必要です。',
   runtimeSources:{ system:'システム CLI', override:'カスタム CLI', bundled:'内蔵 Bridge', legacy_bundled:'内蔵 Codex' },
 };
 

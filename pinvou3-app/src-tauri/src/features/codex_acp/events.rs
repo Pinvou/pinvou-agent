@@ -174,6 +174,12 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "turn_started" | "turn_completed" => {
             project_allowed_fields(value, &["status", "error", "message", "recoveryReason"])
         }
+        // Turn-watchdog and adapter runtime notices expose host-owned protocol
+        // fields only. `detail` contains raw adapter stderr, including absolute
+        // paths in field evidence and potentially gateway bodies or credentials.
+        // Keep it local for the desktop card and `codex-acp.log`; Relay must not
+        // forward untrusted text.
+        "runtime_notice" => project_allowed_fields(value, &["kind"]),
         // runtime_ready is a signal; the Web client fetches the authoritative
         // session info separately and does not need adapter capabilities here.
         "runtime_ready" => Value::Object(serde_json::Map::new()),
@@ -686,6 +692,10 @@ pub struct EventBridge {
     web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
     timeline_writer: Arc<Mutex<TimelineWriter>>,
+    /// Agent-side activity clock (see [`super::stall`]). Inbound notifications
+    /// and permission/elicitation requests advance it; a prompt response exits
+    /// the stall loop instead of advancing this clock.
+    activity: super::stall::ActivityClock,
 }
 
 #[derive(Clone)]
@@ -754,11 +764,51 @@ impl EventBridge {
             web_delivery: OrderedWebDelivery::new(last_seq),
             tools: Arc::new(Mutex::new(HashMap::new())),
             timeline_writer,
+            activity: super::stall::new_activity_clock(),
         }
     }
 
     pub fn pinvou_session_id(&self) -> &str {
         &self.pinvou_session_id
+    }
+
+    /// Session activity handle sharing the same clock as [`super::stall::ActivityClock`].
+    pub fn activity(&self) -> super::stall::ActivityClock {
+        self.activity.clone()
+    }
+
+    /// Current turn ID, claimed by the closer through [`EventBridge::finish_turn_once`].
+    pub fn current_turn_id(&self) -> Option<String> {
+        self.current_turn.read().clone()
+    }
+
+    /// Record inbound Agent activity (notifications or permission/elicitation requests).
+    pub fn note_agent_activity(&self) {
+        super::stall::mark_activity(&self.activity);
+    }
+
+    /// Idempotent settlement: emit `turn_completed` only while this bridge owns the turn.
+    ///
+    /// Prompt response and watchdog settlement are independent paths. The late
+    /// path must yield or the same turn would get two terminal events.
+    pub fn finish_turn_once(
+        &self,
+        turn_id: &str,
+        status: &str,
+        error: Option<&str>,
+        recovery_reason: Option<&str>,
+    ) -> bool {
+        if !super::stall::claim_current_turn(&self.current_turn, turn_id) {
+            return false;
+        }
+        let mut data = json!({ "status": status, "error": error });
+        if let Some(reason) = recovery_reason {
+            if let Value::Object(map) = &mut data {
+                map.insert("recoveryReason".to_string(), json!(reason));
+            }
+        }
+        self.emit_with_turn(Some(turn_id.to_string()), "turn_completed", data);
+        true
     }
 
     pub fn begin_turn(&self, content: &str, attachments: &[CodexDisplayAttachment]) -> String {
@@ -781,18 +831,6 @@ impl EventBridge {
         turn_id
     }
 
-    pub fn finish_turn(&self, turn_id: &str, status: &str, error: Option<&str>) {
-        self.emit_with_turn(
-            Some(turn_id.to_string()),
-            "turn_completed",
-            json!({ "status": status, "error": error }),
-        );
-        let mut current = self.current_turn.write();
-        if current.as_deref() == Some(turn_id) {
-            *current = None;
-        }
-    }
-
     /// 把 timeline 中只开始、未结束的旧回合收口为已中断。
     ///
     /// ACP prompt future 和当前 turn 只存在于宿主进程内；应用被直接关闭后，Agent
@@ -800,7 +838,7 @@ impl EventBridge {
     /// 会让前端永久停在“处理中”，而恢复后的 session/cancel 也没有旧 turn 可取消。
     ///
     /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
-    /// `prompt()` 返回后调用 `finish_turn()` 收口。
+    /// `prompt()` settles the turn through `finish_turn_once()` when it returns.
     pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
         // Orphan detection must pair turn_started/turn_completed events that
         // can live arbitrarily far apart, so this scan is inherently over the
@@ -834,6 +872,8 @@ impl EventBridge {
     }
 
     pub fn handle(&self, notification: SessionNotification) {
+        // Every inbound session update proves the agent is alive for the silence watchdog.
+        self.note_agent_activity();
         let meta = serde_json::to_value(notification.meta).unwrap_or(Value::Null);
         match notification.update {
             SessionUpdate::UserMessageChunk(chunk) => {
@@ -1876,6 +1916,33 @@ mod tests {
             project_acp_event_for_web(&future).event.data,
             json!({"webProjection": {"omitted": true}}),
             "new adapter events require an explicit Web projection before exposing data"
+        );
+    }
+
+    /// `runtime_notice` projects host-owned protocol fields to Web/Relay only.
+    /// `detail` is raw adapter stderr and remains local by this module's boundary.
+    #[test]
+    fn forkguard_runtime_notice_web_projection_keeps_only_host_fields() {
+        let mut notice = event(3, Some("turn-1"), "runtime_notice");
+        notice.event.data = json!({
+            "kind": "agent_stderr",
+            "agent": "claude",
+            "quietSeconds": 200,
+            "detail": "File C:\\Users\\l28756\\Temp\\x.ps1: cancel floor elapsed without the SDK yielding",
+        });
+        let projected = project_acp_event_for_web(&notice).event.data;
+        assert_eq!(projected["kind"], json!("agent_stderr"));
+        assert!(
+            projected.get("quietSeconds").is_none(),
+            "unused runtime fields must not cross the Relay: {projected}"
+        );
+        assert!(
+            projected.get("detail").is_none(),
+            "raw adapter stderr must not cross Relay: {projected}"
+        );
+        assert!(
+            projected.get("agent").is_none(),
+            "Web derives the title from the active agent and needs no agent payload field"
         );
     }
 

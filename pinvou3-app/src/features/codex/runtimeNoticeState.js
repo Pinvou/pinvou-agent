@@ -47,3 +47,61 @@ export function classifyAcpServiceFailure(envelope) {
     key: `${envelope.seq || ''}:${envelope.timestamp || ''}:${detail}`,
   };
 }
+
+// Agent-side runtime notices cover adapter diagnostics and host watchdog recovery.
+// They are informational and recoverable rather than model-service failures.
+const AGENT_RUNTIME_NOTICE_KINDS = new Set([
+  'agent_stderr',
+  'agent_stall',
+  'agent_stall_cancel',
+  'agent_stall_settled',
+  'agent_stall_restart',
+  'agent_session_restarted',
+  'agent_session_restarted_fresh',
+  'cancel_timeout',
+]);
+
+const PRE_TERMINAL_AGENT_NOTICE_KINDS = new Set([
+  'agent_stall',
+  'agent_stall_cancel',
+]);
+
+/**
+ * Return the latest agent-side runtime notice.
+ *
+ * Expiration follows proven recovery, not merely another user message: a
+ * restart notice may itself be emitted while processing the next message, so a
+ * newer `turn_started` cannot clear it. A later **Completed** turn proves
+ * recovery. Pre-terminal `agent_stall` and `agent_stall_cancel` notices clear on
+ * any terminal event; settlement, restart, and cancel-timeout outcomes survive
+ * interrupted completion to explain why the turn ended. Users may also dismiss.
+ */
+export function latestAgentRuntimeNotice(events) {
+  if (!Array.isArray(events)) return null;
+  let notice = null;
+  for (const envelope of events) {
+    const type = envelope?.event?.type;
+    if (type === 'runtime_notice') {
+      const kind = String(envelope?.event?.data?.kind || '');
+      if (AGENT_RUNTIME_NOTICE_KINDS.has(kind)) notice = envelope;
+      continue;
+    }
+    const turnCompleted = type === 'turn_completed';
+    const recovered = turnCompleted
+      && String(envelope?.event?.data?.status || '') === 'Completed';
+    const preTerminalNoticeEnded = turnCompleted
+      && PRE_TERMINAL_AGENT_NOTICE_KINDS.has(String(notice?.event?.data?.kind || ''));
+    if ((recovered || preTerminalNoticeEnded)
+      && notice
+      && Number(envelope.seq || 0) > Number(notice.seq || 0)) {
+      notice = null;
+    }
+  }
+  if (!notice) return null;
+  const data = notice.event.data || {};
+  return {
+    kind: String(data.kind || ''),
+    detail: String(data.detail || ''),
+    key: `${notice.seq || ''}:${notice.timestamp || ''}`,
+  };
+}
