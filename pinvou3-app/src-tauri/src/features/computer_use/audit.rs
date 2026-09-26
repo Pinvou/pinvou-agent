@@ -383,7 +383,7 @@ mod tests {
         remove_session_audit(&session);
         assert!(
             !path.exists(),
-            "remove_session_audit must delete the file for_session created: {path:?}"
+            "remove_session_audit must delete the file for_session created"
         );
         // Idempotent: a missing trail is success, so a second session deletion
         // (or a session that never used the tool) cannot log a spurious error.
