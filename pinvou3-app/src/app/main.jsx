@@ -3821,21 +3821,26 @@ const NAV_PREFETCH = {
             )}
 
             {apiKeyGateOpen && browserOverlayPublicationReady && (
-              <ViewErrorBoundary t={t}>
-                <Suspense fallback={(
-                  <div
-                    className="fixed inset-0 z-[57]"
-                    style={{ background: 'rgba(0,0,0,.5)' }}
-                    aria-busy="true"
-                  />
-                )}>
-                  <LazyApiKeyGateDialog
-                    theme={activeTheme}
-                    t={t}
-                    onOpenModelSettings={() => openSettingsSection('model')}
-                  />
-                </Suspense>
-              </ViewErrorBoundary>
+              // The gate must cover chat in every state of its lazy chunk:
+              // while loading (Suspense fallback) AND after a chunk failure
+              // (ViewErrorBoundary's in-flow error card). Both layers sit
+              // inside this outer backdrop, so React.lazy's cached rejection
+              // can never leave the composer interactable.
+              <div
+                className="fixed inset-0 z-[57] flex items-center justify-center overflow-auto p-6"
+                style={{ background: 'rgba(0,0,0,.5)' }}
+                aria-busy="true"
+              >
+                <ViewErrorBoundary t={t}>
+                  <Suspense fallback={null}>
+                    <LazyApiKeyGateDialog
+                      theme={activeTheme}
+                      t={t}
+                      onOpenModelSettings={() => openSettingsSection('model')}
+                    />
+                  </Suspense>
+                </ViewErrorBoundary>
+              </div>
             )}
 
             {/* 厂商预装本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}

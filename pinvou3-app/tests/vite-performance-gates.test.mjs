@@ -62,10 +62,23 @@ test('new lazy global mounts contain chunk failures without exposing protected c
       `${component} must keep lazy chunk failures inside the app error boundary`,
     );
   }
-  assert.match(
-    mainSource,
-    /apiKeyGateOpen[\s\S]{0,180}<Suspense fallback=\{\([\s\S]{0,180}aria-busy="true"/u,
-    'the API key gate must block chat interactions while its chunk loads',
+  // The gate's blocking backdrop sits OUTSIDE ViewErrorBoundary/Suspense:
+  // it must cover chat not only while the chunk loads but also after a chunk
+  // failure (React.lazy caches the rejection, so the boundary's in-flow error
+  // card must not be able to expose chat either).
+  const gateMountAt = mainSource.indexOf('apiKeyGateOpen && browserOverlayPublicationReady && (');
+  assert.ok(gateMountAt >= 0, 'the API key gate mount must exist');
+  const gateMount = mainSource.slice(gateMountAt, gateMountAt + 900);
+  const backdropAt = gateMount.indexOf('fixed inset-0 z-[57]');
+  const boundaryAt = gateMount.indexOf('<ViewErrorBoundary t={t}>');
+  const suspenseAt = gateMount.indexOf('<Suspense fallback={null}>');
+  assert.ok(
+    backdropAt >= 0 && boundaryAt > backdropAt && suspenseAt > boundaryAt,
+    'the API key gate backdrop must wrap the error boundary and Suspense, so it survives chunk failures',
+  );
+  assert.ok(
+    gateMount.includes('aria-busy="true"'),
+    'the API key gate backdrop must announce its busy state',
   );
 });
 
