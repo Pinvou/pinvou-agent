@@ -419,7 +419,8 @@ impl EnginePoolRuntime {
     pub(crate) async fn close(&self, session_id: &str) {
         if let Err(error) = self.pool.delete_chat_session(session_id).await {
             note_stderr(&format!(
-                "[eval] failed to delete temporary session {session_id}: {error:#}"
+                "[eval] failed to delete a temporary session: {}",
+                error.root_cause()
             ));
         }
     }

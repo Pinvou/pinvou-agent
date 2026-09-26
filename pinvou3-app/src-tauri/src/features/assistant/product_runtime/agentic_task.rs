@@ -42,8 +42,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_HEADLESS_SESSIONS, NEW_CHAT_TITLE, SessionKind, SessionStore,
-    validate_user_workspace_path,
+    ExecutionRootResolver, HEADLESS_SESSION_PREFIX, MAX_HEADLESS_SESSIONS, NEW_CHAT_TITLE,
+    SessionKind, SessionStore, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -260,10 +260,12 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// Fresh runs persist against the separate headless retention budget
 /// ([`MAX_HEADLESS_SESSIONS`], keyed on the `HEADLESS_SESSION_PREFIX` id
 /// prefix), never the desktop app's chat budget: when a fresh run's
-/// prepare-time save evicts older headless run sessions at that cap (pinned
-/// sessions are exempt from retention), the store's real eviction events
-/// drive a stderr warning, so a batch harness is not silent about the data
-/// loss — even when the run errors after the save.
+/// prepare-time save evicts unpinned sessions at a retention cap (pinned
+/// sessions are exempt from retention) — headless run sessions at the
+/// headless cap, or desktop chats when the save-time sweep finds the chat
+/// bucket over its own cap — the store's real eviction events drive a
+/// stderr warning naming each evicted id, so a batch harness is not silent
+/// about the data loss — even when the run errors after the save.
 ///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
@@ -357,14 +359,15 @@ pub async fn run_agentic_task(
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
     // Retention-eviction observation: the prepare-time save inside the turn
-    // lands in the same store the GUI reads, and a fresh save at the headless
-    // cap evicts the oldest unpinned headless session(s) (pinned sessions are
-    // exempt from retention). The store reports its real sweep deletions into
-    // this receiver, so the warning keys on the eviction event itself: a run
-    // that errors after the save (attachment staging, submit) must still
-    // surface the eviction, and a run that fails before saving evicts nothing
-    // and stays silent — a count sampled around the run cannot see mid-run
-    // forwarder evictions, and the store's own deletions can.
+    // lands in the same store the GUI reads, and a fresh save evicts unpinned
+    // sessions at a retention cap (pinned sessions are exempt): headless ids
+    // at the headless cap, and desktop chats when the sweep finds the chat
+    // bucket over its own cap. The store reports its real sweep deletions
+    // into this receiver, so the warning keys on the eviction event itself:
+    // a run that errors after the save (attachment staging, submit) must
+    // still surface the eviction, and a run that fails before saving evicts
+    // nothing and stays silent — a count sampled around the run cannot see
+    // mid-run forwarder evictions, and the store's own deletions can.
     let evictions = Arc::new(Mutex::new(Vec::new()));
     if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
         // Single-flight normally guarantees the slot is empty here; a stale
@@ -682,24 +685,66 @@ fn one_shot_cleanup_decision(record_readable: Result<bool, ()>) -> FreshSessionD
 }
 
 /// The retention-eviction warning for a run's recorded sweep deletions:
-/// `Some` copy when the prepare-time save evicted unpinned sessions at the
+/// `Some` copy when the prepare-time save evicted unpinned sessions at a
 /// retention cap, `None` when nothing was evicted (stay silent). The decision
 /// deliberately does not consult the turn outcome — the save happened before
 /// any setup fault could surface, so the evictions are real however the run
 /// ends; taking no outcome parameter is what keeps that invariant structural
 /// instead of a code path that can regress behind an `is_ok()` gate.
+///
+/// The observer records the store's REAL sweep deletions, and one sweep
+/// enforces both retention budgets: headless ids
+/// ([`HEADLESS_SESSION_PREFIX`]) evicted at the headless cap, plus ordinary
+/// desktop chat ids when this run's save-time sweep found the chat bucket
+/// over its own cap. The message therefore names each bucket with its actual
+/// ids instead of asserting a single kind. Scheduled-run ids (`sched-`) are
+/// exempt from both budgets and should never be swept; if one ever shows up
+/// anyway, it is listed under a neutral label rather than mislabeled.
 fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
     (!evicted.is_empty()).then(|| {
+        let mut headless = Vec::new();
+        let mut chat = Vec::new();
+        let mut other = Vec::new();
+        for id in evicted {
+            if id.starts_with(HEADLESS_SESSION_PREFIX) {
+                headless.push(id.as_str());
+            } else if id.starts_with("sched-") {
+                other.push(id.as_str());
+            } else {
+                chat.push(id.as_str());
+            }
+        }
+        let mut buckets = Vec::new();
+        if !headless.is_empty() {
+            buckets.push(format!(
+                "{} headless run session(s) at the {MAX_HEADLESS_SESSIONS}-session \
+                 headless cap [{}]",
+                headless.len(),
+                headless.join(", ")
+            ));
+        }
+        if !chat.is_empty() {
+            buckets.push(format!(
+                "{} desktop chat session(s) at the desktop chat cap [{}]",
+                chat.len(),
+                chat.join(", ")
+            ));
+        }
+        if !other.is_empty() {
+            buckets.push(format!(
+                "{} other session(s) [{}]",
+                other.len(),
+                other.join(", ")
+            ));
+        }
         format!(
             "[pinvou agent run] warning: persisting this run's session evicted \
-             {} unpinned headless run session(s) at the \
-             {MAX_HEADLESS_SESSIONS}-session headless retention cap (pinned \
-             sessions are exempt, and the desktop app's own chat sessions are \
-             on a separate budget this never touches). Point PINVOU3_HOME at a \
-             sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
-             SESSION=0 only removes this run's session afterwards; the \
-             save-time eviction still happens).",
-            evicted.len()
+             {} unpinned session(s) during retention (pinned sessions are \
+             exempt): {}. Point PINVOU3_HOME at a sandbox or prune the session \
+             store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this run's \
+             session afterwards; the save-time eviction still happens).",
+            evicted.len(),
+            buckets.join("; ")
         )
     })
 }
@@ -2180,25 +2225,142 @@ mod tests {
         // PINVOU3_HOME.
     }
 
+    /// The chat-bucket half of the observer contract: a save-time sweep that
+    /// finds the DESKTOP chat bucket over its own cap deletes the oldest
+    /// unpinned chats, the observer records them, and the warning must list
+    /// them under the chat label with their ids — not claim them for the
+    /// headless budget (the pre-fix copy asserted the chat budget "is never
+    /// touched", which a sweep over the chat cap disproves). Mirrors
+    /// `retention_sweep_records_real_evictions_and_below_cap_stays_silent`
+    /// with chat ids.
+    #[test]
+    fn retention_sweep_over_the_chat_cap_reports_chats_under_the_chat_label() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-chat-retention-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        // The chat cap is `MAX_SESSIONS_PER_KIND` (50), which the sessions
+        // module does not re-export beyond its own tree; the eviction
+        // assertions below fail loudly if that constant ever grows past this
+        // seed count.
+        const CHAT_CAP: usize = 50;
+        let mut ids = Vec::new();
+        for index in 0..CHAT_CAP {
+            let id = format!("gui_seed_{index}");
+            store
+                .create_empty_with_id(id.clone(), "test-model".to_string(), None, tmp.clone())
+                .unwrap();
+            ids.push(id);
+        }
+
+        // Arm the same receiver `run_agentic_task` installs around the turn.
+        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+
+        // One more chat save pushes the bucket over the cap and evicts the
+        // oldest unpinned chat(s) — none of which are headless ids.
+        store
+            .create_empty_with_id(
+                "gui_probe_1".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        let evicted = evictions.lock().clone();
+        assert!(
+            !evicted.is_empty(),
+            "a save over the chat cap must evict and record the oldest chat(s)"
+        );
+        assert!(
+            store.load(&ids[0]).is_err(),
+            "the oldest chat must be among the evictions"
+        );
+        assert!(
+            evicted.iter().all(|id| !id.starts_with("agentic_")),
+            "chat-bucket evictions must not be headless ids: {evicted:?}"
+        );
+
+        // The warning names them as desktop chats, every id inline, without
+        // quoting the headless cap for them.
+        let warning =
+            retention_eviction_warning(&evicted).expect("recorded chat evictions must warn");
+        assert!(warning.contains("desktop chat session"), "{warning}");
+        for id in &evicted {
+            assert!(warning.contains(id.as_str()), "{warning}");
+        }
+        assert!(
+            !warning.contains("headless run session"),
+            "a chat-bucket sweep must not be reported at the headless cap: {warning}"
+        );
+        store.take_retention_eviction_observer();
+        // `_tmp_cleanup` removes the scratch dir; `_env` restores
+        // PINVOU3_HOME.
+    }
+
     /// The runner's warning decision is a pure function of the recorded
-    /// evictions: a non-empty record warns (the copy carries the cap, the
-    /// pin exemption and the KEEP_SESSION pointer) and an empty record stays
+    /// evictions: a non-empty record warns with the evicted ids grouped by
+    /// retention bucket — `agentic_` ids under the headless label, everything
+    /// else as desktop chats (one sweep enforces both budgets, so a chat-bucket
+    /// eviction is a real event this warning must name), and the never-expected
+    /// `sched-` ids under a neutral label — while an empty record stays
     /// silent. The helper takes no turn outcome, so "a run that errors after
     /// the prepare-time save still surfaces the eviction" cannot regress
     /// behind an outcome gate — there is no outcome to gate on.
     #[test]
     fn retention_eviction_warning_keys_on_the_record_regardless_of_outcome() {
-        let warning = retention_eviction_warning(&["evicted-id".to_string()])
+        // Headless ids report under the headless label with the ids inline.
+        let warning = retention_eviction_warning(&["agentic_evicted".to_string()])
             .expect("a non-empty eviction record must warn");
-        assert!(
-            warning.contains("1 unpinned headless run session"),
-            "{warning}"
-        );
+        assert!(warning.contains("1 headless run session"), "{warning}");
+        assert!(warning.contains("[agentic_evicted]"), "{warning}");
         assert!(warning.contains("pinned sessions are exempt"), "{warning}");
         assert!(
             warning.contains("PINVOU3_AGENT_TASK_KEEP_SESSION=0"),
             "{warning}"
         );
+        assert!(warning.contains("PINVOU3_HOME"), "{warning}");
+
+        // A non-headless id is a desktop chat session: it must be labelled as
+        // one — the same sweep can trim the chat bucket — and never claimed
+        // for the headless budget.
+        let warning = retention_eviction_warning(&["gui-chat-7".to_string()])
+            .expect("a chat-bucket eviction must warn");
+        assert!(warning.contains("1 desktop chat session"), "{warning}");
+        assert!(warning.contains("[gui-chat-7]"), "{warning}");
+        assert!(!warning.contains("headless run session"), "{warning}");
+
+        // Mixed records group per bucket instead of mislabeling either kind.
+        let warning = retention_eviction_warning(&[
+            "agentic_a".to_string(),
+            "chat-b".to_string(),
+            "agentic_c".to_string(),
+        ])
+        .expect("a mixed eviction record must warn");
+        assert!(warning.contains("2 headless run session(s)"), "{warning}");
+        assert!(warning.contains("[agentic_a, agentic_c]"), "{warning}");
+        assert!(warning.contains("1 desktop chat session(s)"), "{warning}");
+        assert!(warning.contains("[chat-b]"), "{warning}");
+
+        // `sched-` ids are exempt from both budgets and should never be
+        // swept; if one ever lands here anyway it gets a neutral label
+        // rather than a bucket it does not belong to.
+        let warning = retention_eviction_warning(&["sched-x".to_string()])
+            .expect("an unexpected sched eviction must still warn");
+        assert!(warning.contains("1 other session(s)"), "{warning}");
+        assert!(warning.contains("[sched-x]"), "{warning}");
+        assert!(!warning.contains("headless run session"), "{warning}");
+        assert!(!warning.contains("desktop chat session"), "{warning}");
+
         // Nothing evicted — a below-cap save, or a run that failed before the
         // prepare-time save — must stay silent.
         assert!(retention_eviction_warning(&[]).is_none());
