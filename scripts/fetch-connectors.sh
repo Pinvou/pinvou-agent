@@ -56,7 +56,19 @@ compute_sha256() {
 }
 
 verify_file() {
-  [[ -f "$1" ]] && [[ "$(compute_sha256 "$1")" == "$2" ]]
+  if [[ -f "$1" ]] && [[ "$(compute_sha256 "$1")" == "$2" ]]; then
+    return 0
+  fi
+  # The three real call sites (the --check gate, the post-download recheck
+  # and the pre-install binary check) run bare under `set -e`, so the
+  # mismatch diagnostic must live here or the script exits with no output;
+  # the pre-download cache probe silences it with >/dev/null 2>&1.
+  if [[ -f "$1" ]]; then
+    echo "sha256 mismatch: $1 (expected $2, actual $(compute_sha256 "$1"))" >&2
+  else
+    echo "sha256 check failed: $1 is missing (expected $2)" >&2
+  fi
+  return 1
 }
 
 names=()

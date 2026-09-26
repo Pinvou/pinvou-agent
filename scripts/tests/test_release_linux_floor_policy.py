@@ -1,4 +1,6 @@
+import platform
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -7,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-packages.yml"
 GUARD_SCRIPT = ROOT / "scripts" / "check-linux-glibc-floor.sh"
 ELF_POLICY_SCRIPT = ROOT / "scripts" / "check-linux-elf-policy.sh"
+ASR_BUILD_SCRIPT = ROOT / "scripts" / "asr" / "build-sensevoice-runtime.sh"
+ASR_SETUP_SCRIPT = ROOT / "scripts" / "asr" / "setup-sensevoice.sh"
 LINUX_OVERLAY = ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
 
 # Linux 发布基线是 Ubuntu 22.04 (glibc 2.35) x86_64/arm64。发布二进制链接
@@ -39,6 +43,11 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
             self.assertGreater(guard, 0, "missing glibc floor guard step")
             self.assertGreater(upload, guard, "glibc floor guard must run before upload")
         self.assertEqual(self.workflow.count("check-linux-glibc-floor.sh"), 2)
+        # Each guard must receive its own deb architecture, so an ELF built
+        # for the other architecture can never slip into the package.
+        for job, arch in ((self.x64_job, "amd64"), (self.arm64_job, "arm64")):
+            step = self._step_block(job, "check-linux-glibc-floor.sh")
+            self.assertRegex(step, rf'\.deb" {arch}\s*$')
 
     def test_linux_builds_rotate_rust_cache_key_per_runner_baseline(self):
         # 换 runner 基座必须换 rust-cache key:24.04 glibc 环境编译的缓存产物
@@ -96,8 +105,71 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
         self.assertIn('"1.3.13"', policy)  # CXXABI_ (jammy gcc 12)
 
     def test_guard_script_is_valid_bash(self):
-        subprocess.run(["bash", "-n", str(GUARD_SCRIPT)], check=True)
-        subprocess.run(["bash", "-n", str(ELF_POLICY_SCRIPT)], check=True)
+        for script in (GUARD_SCRIPT, ELF_POLICY_SCRIPT, ASR_BUILD_SCRIPT, ASR_SETUP_SCRIPT):
+            with self.subTest(script=script.name):
+                subprocess.run(["bash", "-n", str(script)], check=True)
+
+    def test_sensevoice_runtime_is_rebuilt_from_pinned_source(self):
+        source = ASR_BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("sensevoice-source.env", source)
+        self.assertIn("-DBUILD_SHARED_LIBS=OFF", source)
+        self.assertIn("-DGGML_NATIVE=OFF", source)
+        self.assertIn("check-linux-elf-policy.sh", source)
+        # The shallow checkout must be verified to be exactly the pinned
+        # commit (the same tripwire as setup-sensevoice.sh), and the
+        # mismatch diagnostic must name the commit actually checked out.
+        self.assertIn('rev-parse HEAD)" = "$SENSEVOICE_SOURCE_COMMIT"', source)
+        self.assertIn("expected $SENSEVOICE_SOURCE_COMMIT, got $(git -C", source)
+
+    def test_sensevoice_setup_script_pins_downloads_and_checksums(self):
+        # Pin the supply-chain hardening of the user setup helper: retried
+        # and sha256-verified downloads with per-quant/per-arch checksums,
+        # the pinned-commit tripwire, loud checksum failures (`--status`
+        # alone exits silently) carrying expected/actual values on stderr,
+        # a static engine build (only the binary leaves the deleted WORK
+        # dir), and same-directory temp file + rename installs for the
+        # engine, model and shim with EXIT-trap cleanup.
+        source = ASR_SETUP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("q4_k) MODEL_SHA256=", source)
+        self.assertIn("q8_0) MODEL_SHA256=", source)
+        self.assertIn("aarch64) CMAKE_SHA256=", source)
+        self.assertIn("x86_64) CMAKE_SHA256=", source)
+        self.assertEqual(source.count("--retry-all-errors"), 2)
+        self.assertEqual(source.count("sha256sum --check --status \\\n"), 2)
+        self.assertEqual(source.count("sha256 check failed"), 2)
+        self.assertEqual(source.count(", actual $(sha256sum"), 2)
+        self.assertIn("pinned commit check failed", source)
+        self.assertIn("-DBUILD_SHARED_LIBS=OFF", source)
+        # Every error message goes to stderr so piped/CI captures keep it.
+        for line in source.splitlines():
+            if 'echo "❌' in line:
+                with self.subTest(line=line.strip()):
+                    self.assertIn(">&2", line)
+        self.assertEqual(source.count(".tmp.$$"), 3)
+        self.assertEqual(source.count("mv -f"), 3)
+        for temp in ("engine_tmp", "model_tmp", "shim_tmp"):
+            self.assertIn(f'[ -z "${{{temp}:-}}" ] || rm -f "${temp}"', source)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs a Linux ELF host")
+    def test_elf_policy_accepts_host_arch_and_rejects_mismatch(self):
+        machine = platform.machine().lower()
+        if machine in ("x86_64", "amd64"):
+            expected, wrong = "amd64", "arm64"
+        elif machine in ("aarch64", "arm64"):
+            expected, wrong = "arm64", "amd64"
+        else:
+            self.skipTest(f"unsupported test host architecture: {machine}")
+
+        host_elf = str(Path("/bin/true").resolve())
+        subprocess.run([str(ELF_POLICY_SCRIPT), host_elf, expected], check=True)
+        mismatch = subprocess.run(
+            [str(ELF_POLICY_SCRIPT), host_elf, wrong],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("architecture", mismatch.stderr)
+        self.assertIn("!= expected", mismatch.stderr)
 
     def test_deb_declares_webkit_floor(self):
         # tauri-runtime-wry 启用 webkit2gtk v2_40,运行时需要 WebKitGTK ≥ 2.40;

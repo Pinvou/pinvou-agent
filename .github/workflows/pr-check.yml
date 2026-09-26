@@ -27,6 +27,8 @@ name: PR Check
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
 #   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
+#   The all-target check and the linked native regressions run as two parallel
+#   matrix legs under the same routing; both must pass.
 # - macos-rust-check: Native macOS compile check (check does not link, no signing/packaging)
 #   mirrors windows-rust-test gating; the Linux leg cannot expose platform-specific type errors.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
@@ -93,7 +95,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Validate commit messages
         run: |
@@ -115,7 +117,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -161,7 +163,7 @@ jobs:
           fetch-depth: 0
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -232,6 +234,7 @@ jobs:
               - 'scripts/tests/sync-version.test.mjs'
               - 'scripts/tests/test_ci_gate_policy.py'
               - 'scripts/tests/test_release_arm64_policy.py'
+              - 'scripts/tests/test_release_cache_policy.py'
               - 'scripts/tests/test_release_linux_floor_policy.py'
               - 'scripts/tests/test_release_manifest_probe.py'
               - '.github/workflows/release-packages.yml'
@@ -356,7 +359,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       # The workflow's own gate: YAML structure, expression typos, matrix/
       # runner labels, and cron syntax fail here before reaching a runner,
@@ -441,7 +444,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -544,7 +547,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -571,7 +574,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - uses: actions/setup-node@v7
         with:
@@ -607,7 +610,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -693,7 +696,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -907,7 +910,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1080,7 +1083,7 @@ jobs:
       # enforced by the gate policy).
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Init CodeWhale submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1185,7 +1188,7 @@ jobs:
         run: cargo test -p adapter-gaia --features test-support --locked --no-run
 
   windows-rust-test:
-    name: windows-rust-test
+    name: windows-rust-test (${{ matrix.phase }})
     needs: changes
     # Native Windows coverage runs once on ready high-risk/explicit PRs and on main.
     # Merge Queue does not repeat this up-to-90-minute leg; Linux validates the combined tree.
@@ -1208,6 +1211,19 @@ jobs:
           )
         )
       }}
+    # `cargo check --all-targets --features dev-tools` (plus the pinvou-cli
+    # check) produces metadata-only graphs, while `cargo test --lib --no-run`
+    # must codegen and link the default-feature test harness; a prior check
+    # does not turn that link into an incremental step. Running them in one
+    # serial job put both compile graphs on the critical path (passing runs
+    # took 75-108 minutes). Both legs stay required under this aggregate
+    # matrix job, but run independently so wall time is the slower leg
+    # rather than the sum. See docs/windows-rust-ci.md.
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        phase: [all-targets-check, regression]
     runs-on: windows-latest
     # 状态机回归使用 Bash 循环；job 级固定 shell 也覆盖 merge ref 从 base
     # 带入该步骤的场景。本 job 其余 run 命令均兼容 Bash。
@@ -1223,7 +1239,9 @@ jobs:
     # pinvou-cli workspace on this Windows-only leg, and lockfile changes
     # miss the rust-cache key (full cold compile); a 90-minute run was
     # cancelled mid-build (run 34802015051), so 180 minutes leaves headroom
-    # for two cold workspaces.
+    # for two cold workspaces. Each independent leg can still compile cold on
+    # a cache miss, so the cap is kept per leg until the phase timings below
+    # justify a tighter one.
     timeout-minutes: 180
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
@@ -1245,7 +1263,10 @@ jobs:
           submodules: false
 
       - name: 初始化公共底座 submodule
-        run: git submodule update --init --recursive -- CodeWhale
+        run: |
+          started=$SECONDS
+          git submodule update --init --recursive -- CodeWhale
+          echo "WINDOWS_RUST_TIMING phase=${{ matrix.phase }} step=codewhale-init elapsed_seconds=$((SECONDS-started))"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -1278,29 +1299,67 @@ jobs:
           workspaces: |
             pinvou3-app/src-tauri
             CodeWhale
+          # Both legs restore the established namespace on their isolated
+          # runners. Only the regression leg on main may save (it owns the
+          # linked app and CodeWhale test artifacts), so the split adds
+          # neither a new namespace nor a second writer racing the 10 GB cache.
           shared-key: windows-rust-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ matrix.phase == 'regression' && github.ref == 'refs/heads/main' }}
+
+      # Non-sensitive cache baseline: target presence plus fingerprint and
+      # direct dependency-artifact counts, without a recursive scan.
+      - name: Windows Rust cache baseline diagnostics
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:GITHUB_WORKSPACE "pinvou3-app/src-tauri/target"
+          $fingerprints = Join-Path $target "debug/.fingerprint"
+          $deps = Join-Path $target "debug/deps"
+          $fingerprintCount = if (Test-Path -LiteralPath $fingerprints) {
+            @(Get-ChildItem -LiteralPath $fingerprints -Directory -ErrorAction SilentlyContinue).Count
+          } else { 0 }
+          $depFileCount = if (Test-Path -LiteralPath $deps) {
+            @(Get-ChildItem -LiteralPath $deps -File -ErrorAction SilentlyContinue).Count
+          } else { 0 }
+          Write-Host "WINDOWS_RUST_CACHE phase=${{ matrix.phase }} target_exists=$(Test-Path -LiteralPath $target) fingerprint_crates=$fingerprintCount dep_files=$depFileCount"
 
       - name: Windows Rust 全目标检查
-        run: >-
-          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
-          --all-targets --features dev-tools
+        if: ${{ matrix.phase == 'all-targets-check' }}
+        run: |
+          started=$SECONDS
+          set +e
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml \
+            --all-targets --features dev-tools
+          status=$?
+          set -e
+          echo "WINDOWS_RUST_TIMING phase=all-targets-check step=cargo-check elapsed_seconds=$((SECONDS-started)) status=$status"
+          exit "$status"
 
       # The pinvou-cli Windows branches (exe/cmd candidates, cmd /D /S /C
       # shims, taskkill tree kill, CREATE_NO_WINDOW) only compile-check on a
-      # Windows runner.
+      # Windows runner. It is metadata-only as well, so it shares the check leg.
       - name: pinvou-cli Windows compile check
-        run: >-
-          cargo check --manifest-path pinvou-cli/Cargo.toml
-          --workspace --all-targets --locked
+        if: ${{ matrix.phase == 'all-targets-check' }}
+        run: |
+          started=$SECONDS
+          set +e
+          cargo check --manifest-path pinvou-cli/Cargo.toml \
+            --workspace --all-targets --locked
+          status=$?
+          set -e
+          echo "WINDOWS_RUST_TIMING phase=all-targets-check step=cli-check elapsed_seconds=$((SECONDS-started)) status=$status"
+          exit "$status"
 
       - name: Windows Rust 单元测试链接检查
+        if: ${{ matrix.phase == 'regression' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $timer = [System.Diagnostics.Stopwatch]::StartNew()
           $records = @(& cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml `
             --lib --no-run --message-format=json)
           $cargoExit = $LASTEXITCODE
+          $timer.Stop()
+          Write-Host "WINDOWS_RUST_TIMING phase=regression step=cargo-test-link elapsed_seconds=$([math]::Round($timer.Elapsed.TotalSeconds)) status=$cargoExit"
           $records | ForEach-Object { Write-Host $_ }
           if ($cargoExit -ne 0) {
             throw "FAIL: Windows Rust 单元测试链接检查失败(exit=$cargoExit)"
@@ -1332,6 +1391,7 @@ jobs:
       # link.exe 已给测试 exe 嵌入默认清单,Windows 会优先使用内嵌资源而忽略同目录
       # <exe>.manifest；因此必须用 runner 自带的 Windows SDK mt.exe 更新 resource #1。
       - name: Windows 测试 exe 嵌入 Common-Controls v6 清单
+        if: ${{ matrix.phase == 'regression' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1374,6 +1434,7 @@ jobs:
       # SxS 程序集 DLL(如 comctl32)的缺符号假阳性,嵌入前读到的是无 v6 声明的默认清单;
       # 直接传 $PINVOU3_TEST_EXE 保证诊断对象就是刚嵌入清单、回归将运行的那个 exe。
       - name: Windows 测试二进制导入诊断
+        if: ${{ matrix.phase == 'regression' }}
         continue-on-error: true
         shell: pwsh
         run: python scripts/ci-windows-imports-diagnose.py "$env:PINVOU3_TEST_EXE"
@@ -1382,9 +1443,11 @@ jobs:
       # this Windows leg explicitly runs the CodeWhale shell regressions. Assert
       # that every filter still matches so a rename cannot become a silent pass.
       - name: CodeWhale Windows PowerShell regressions
+        if: ${{ matrix.phase == 'regression' }}
         shell: bash
         run: |
           set -euo pipefail
+          started=$SECONDS
           # The tested fallback chooses pwsh.exe only when SHELL is absent.
           # Make that runner assumption explicit and deterministic.
           unset SHELL
@@ -1397,11 +1460,14 @@ jobs:
               exit 1
             }
           done
+          echo "WINDOWS_RUST_TIMING phase=regression step=codewhale-powershell elapsed_seconds=$((SECONDS-started)) status=0"
 
       - name: Windows 原子替换状态机回归
+        if: ${{ matrix.phase == 'regression' }}
         shell: bash
         run: |
           set -euo pipefail
+          total_started=$SECONDS
           # 直接运行已经由 mt.exe 修补的链接产物。这里不能再次调用 cargo test，
           # 否则 Cargo 可能重链并覆盖 exe，导致 Common-Controls v6 清单丢失。
           test_exe="$(cygpath -u "$PINVOU3_TEST_EXE")"
@@ -1412,6 +1478,7 @@ jobs:
           cd pinvou3-app/src-tauri
           # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
           # 导致的静默空跑。
+          index=0
           for filter in \
             'platform::filesystem::tests::windows_' \
             'platform::paths::tests::managed_python_' \
@@ -1430,12 +1497,16 @@ jobs:
             'features::monitor::platform::windows_gpu::tests::' \
             'features::remote_control::platform::windows::tests::' \
             'features::computer_use::platform::windows::tests::'; do
+            index=$((index+1))
+            started=$SECONDS
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
               exit 1
             }
+            echo "WINDOWS_RUST_TIMING phase=regression step=test-filter-$index elapsed_seconds=$((SECONDS-started)) status=0"
           done
+          echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"
 
   macos-rust-check:
     name: macos-rust-check
@@ -1628,7 +1699,7 @@ jobs:
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: 汇总所有适用检查
         env:

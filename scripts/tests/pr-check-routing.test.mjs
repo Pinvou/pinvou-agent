@@ -19,7 +19,9 @@ const titleWorkflow = await readFile(
 
 // Extract the path list of a named dorny/paths-filter output.
 function filterPaths(text, name) {
-  const section = text.match(new RegExp(`^ {12}${name}:\\n((?: {14}- .*\\n?)+)`, "m"));
+  const section = text.match(
+    new RegExp(`^ {12}${name}:\\r?\\n((?: {14}- .*\\r?\\n?)+)`, "m"),
+  );
   if (!section) throw new Error(`paths-filter output '${name}' not found`);
   return section[1]
     .split("\n")
@@ -31,7 +33,9 @@ function filterPaths(text, name) {
 // Extract the `if:` condition of a named workflow step.
 function stepCondition(text, stepName) {
   const escaped = stepName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = text.match(new RegExp(`- name: ${escaped}\\n[\\s\\S]*?if: \\$\\{\\{ (.*?) \\}\\}`, "m"));
+  const match = text.match(
+    new RegExp(`- name: ${escaped}\\r?\\n[\\s\\S]*?if: \\$\\{\\{ (.*?) \\}\\}`, "m"),
+  );
   if (!match) throw new Error(`step '${stepName}' or its if-condition not found`);
   return match[1];
 }
@@ -43,7 +47,7 @@ function stepCondition(text, stepName) {
 // block-sequence reformat plus an `edited` regression pass this suite 8/8 —
 // review finding on #501).
 function triggerBlock(text, key) {
-  const start = text.match(new RegExp(`^  ${key}:\\n`, "m"));
+  const start = text.match(new RegExp(`^  ${key}:\\r?\\n`, "m"));
   assert.ok(start, `\`${key}:\` trigger not found`);
   const rest = text.slice(start.index + start[0].length);
   const end = rest.search(/^(?: {2}[^ #\s]|\S)/m);
@@ -55,7 +59,7 @@ function triggerBlock(text, key) {
 // to another trigger's list.
 function pullRequestTypes(text) {
   const block = triggerBlock(text, "pull_request");
-  const flow = block.match(/^ {4}types: \[(.+)\]$/m);
+  const flow = block.match(/^ {4}types: \[(.+)\]\r?$/m);
   if (flow) {
     return flow[1]
       .split(",")
@@ -148,7 +152,9 @@ test("title gate revalidates on every subscribed event (no skip condition)", () 
   // red gate. Every event must therefore run the validator; each run
   // fetches the live title, so the latest result always reflects the
   // current title.
-  const jobBlock = titleWorkflow.match(/^  pr-title:\n(?:^(?! {2}\S).*\n)*/m);
+  const jobBlock = titleWorkflow.match(
+    /^  pr-title:\r?\n(?:^(?! {2}\S).*\r?\n)*/m,
+  );
   assert.ok(jobBlock, "pr-title job block not found");
   assert.doesNotMatch(
     jobBlock[0],

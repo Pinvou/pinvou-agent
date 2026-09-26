@@ -27,6 +27,19 @@ assert.match(
   "SenseVoice source must be pinned to an immutable commit",
 );
 
+// THIRD_PARTY_NOTICES.md names the pinned commit; keep it in lockstep with
+// the source lock so a pin advance cannot leave the notice stale.
+const pinnedCommit = sourceLock.match(/^SENSEVOICE_SOURCE_COMMIT=([0-9a-f]{40})$/mu)[1];
+const senseVoiceNotice = fs
+  .readFileSync(path.join(repoRoot, "THIRD_PARTY_NOTICES.md"), "utf8")
+  .split("\n")
+  .find((line) => line.startsWith("| SenseVoice.cpp |"));
+assert.ok(senseVoiceNotice, "THIRD_PARTY_NOTICES.md must list SenseVoice.cpp");
+assert.ok(
+  senseVoiceNotice.includes(pinnedCommit),
+  "THIRD_PARTY_NOTICES.md must name the SenseVoice.cpp commit pinned in sensevoice-source.env",
+);
+
 const trackedCheck = spawnSync(
   "git",
   ["ls-files", "--error-unmatch", trackedRuntime],
@@ -83,6 +96,21 @@ assert.throws(
   }),
   /退出码：9/,
 );
+
+// The shared Linux overlay is used for both architectures, so it maps the
+// architecture-neutral ASR files one by one. Mapping the whole asr/ directory
+// would also ship any stray local sense-voice-main (the gitignored legacy
+// location) into both debs, regardless of its architecture.
+const sharedLinuxConfig = JSON.parse(
+  fs.readFileSync(path.join(appRoot, "src-tauri/config/platforms/linux/tauri.conf.json"), "utf8"),
+);
+const sharedAsrSources = Object.keys(sharedLinuxConfig.bundle.resources)
+  .filter((source) => source.startsWith("resources/platforms/linux/asr/"))
+  .sort((left, right) => left.localeCompare(right));
+assert.deepEqual(sharedAsrSources, [
+  "resources/platforms/linux/asr/LICENSE-SenseVoice.cpp",
+  "resources/platforms/linux/asr/pinvou3-asr-shim.py",
+]);
 
 for (const [architecture, directory] of [["x64", "x86_64"], ["arm64", "aarch64"]]) {
   const configPath = path.join(

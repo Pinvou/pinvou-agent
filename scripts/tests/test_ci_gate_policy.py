@@ -504,7 +504,8 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         self.assertIn(
-            'sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+            'sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash'
+            ' "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
             rust_test,
         )
         self.assertNotIn("ci-memguard", self.pr_workflow)
@@ -553,10 +554,13 @@ class CiGatePolicyTests(unittest.TestCase):
             # the whole job limit when it hangs, so the guard enforces an
             # identical structure at every call site.
             self.assertIn(
-                'run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                "run: timeout --kill-after=15 240 sudo"
+                " --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash"
+                ' "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
                 job,
                 f"ubuntu job '{job_name}' must hard-cap ci-memory-setup with"
-                " 'timeout --kill-after=15 240' (userspace hang backstop)",
+                " 'timeout --kill-after=15 240' (userspace hang backstop) and"
+                " pass GITHUB_ACTIONS and PINVOU3_CI_DISABLE_ZRAM through sudo",
             )
             self.assertIn(
                 '|| echo "::warning::ci-memory-setup',
@@ -568,8 +572,8 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_memory_setup_wrapped_at_every_call_site(self):
         # The wrapper contract is repo-wide, not just pr-check.yml: every
         # invocation of ci-memory-setup.sh in any workflow file must carry
-        # the `timeout --kill-after=15 240` cap and the non-fatal ::warning
-        # degradation on the same run line.
+        # the `timeout --kill-after=15 240` cap, the sudo env pass-through
+        # and the non-fatal ::warning degradation on the same run line.
         workflows = sorted(
             list((ROOT / ".github/workflows").glob("*.yml"))
             + list((ROOT / ".github/workflows").glob("*.yaml"))
@@ -590,6 +594,20 @@ class CiGatePolicyTests(unittest.TestCase):
                     " hang is uninterruptible; the outer cap is the last"
                     " backstop)",
                 )
+                # sudo's default env_reset strips GITHUB_ACTIONS (the hosted
+                # images keep no env_keep for it), which silently disables
+                # the script's ::warning annotations, and strips the
+                # PINVOU3_CI_DISABLE_ZRAM opt-out when a workflow sets it
+                # through `env:`. Every call site must pass both through.
+                self.assertIn(
+                    "sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM"
+                    ' bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must pass"
+                    " GITHUB_ACTIONS and PINVOU3_CI_DISABLE_ZRAM through sudo"
+                    " (env_reset would strip them, silently disabling the"
+                    " ::warning annotations and the zram opt-out)",
+                )
                 self.assertIn(
                     '|| echo "::warning::ci-memory-setup',
                     line,
@@ -600,6 +618,150 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertGreaterEqual(
             call_sites, 20, "expected the memory-setup wrapper at 20+ call sites"
         )
+
+    def test_memory_setup_script_pins_annotations_and_honest_degradation(self):
+        # Until now only the workflow call structure was pinned; the script
+        # content itself had no coverage, so a regression back to a
+        # misleading "kept the previous swap" message or to annotating
+        # every recoverable slow path would stay green. Pin three anchor
+        # groups: zswap disabled behind zram (exactly one compress-in-RAM
+        # layer), single-line ::warning annotations, and honest failure text.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        # With zram active, zswap must be disabled explicitly; stock Ubuntu
+        # kernels enable it and it would compress every swapped page twice.
+        self.assertIn("echo 0 >/sys/module/zswap/params/enabled", source)
+        # Degradations become step annotations in Actions, and the payload
+        # must fold newlines and CRs: workflow commands are single-line, and
+        # the runner's .NET line reader also treats a lone CR as a line
+        # terminator (which could forge a second workflow command).
+        self.assertIn('echo "::warning::[memory-setup] ${*//[', source)
+        self.assertIn("${*//[$'\\r\\n']/ }", source)
+        # Slow paths that normally recover (first modprobe miss, the image
+        # swap pre-activation, the as-is swapon retry and the last-resort
+        # image swapfile after all layers) stay log-only; annotating them
+        # would leave a standing warning on every job and dilute real ones.
+        # The function body is pinned verbatim: turning it back into a
+        # ::warning:: annotation turns this red.
+        self.assertIn(
+            'warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }',
+            source,
+        )
+        for recoverable in (
+            'warn_recoverable "modprobe zram failed${modprobe_err:+: ${modprobe_err}};',
+            'warn_recoverable "no swap active; activating the image swapfile'
+            ' before the slow module install"',
+            'warn_recoverable "swapon ${cand} failed as is; trying chmod 600'
+            ' + mkswap + swapon once"',
+            'warn_recoverable "no active swap after all layers; trying the'
+            ' image-provided swapfile"',
+        ):
+            with self.subTest(recoverable=recoverable):
+                self.assertIn(recoverable, source)
+        # A failed disk-swap rebuild must carry its diagnostics, and
+        # removed_note may only be set inside the branch where rm actually
+        # succeeded (an unconditional assignment makes the guard dead code).
+        self.assertIn(
+            "if rm -f /mnt/swapfile; then\n"
+            '        removed_note=" (the previous /mnt/swapfile was removed)"\n'
+            "      fi",
+            source,
+        )
+        self.assertNotIn("keeping the existing swap configuration", source)
+
+    def test_windows_rust_test_parallel_phases_preserve_routing_and_coverage(self):
+        # The all-target check and the linked regressions run as two matrix
+        # legs of one required job. Splitting the compile graphs must not
+        # turn either leg into an optional check, add a cache writer, or drop
+        # a step from its leg.
+        windows_rust_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
+                "\n  macos-rust-check:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("name: windows-rust-test (${{ matrix.phase }})", windows_rust_test)
+        self.assertIn("fail-fast: false", windows_rust_test)
+        self.assertIn("max-parallel: 2", windows_rust_test)
+        self.assertIn("phase: [all-targets-check, regression]", windows_rust_test)
+        # Routing is job level, so it applies to both legs unchanged.
+        job_if = windows_rust_test.split("\n    if: >-", 1)[1].split("\n    strategy:", 1)[0]
+        self.assertNotIn("matrix.phase", job_if)
+
+        steps = re.split(r"\n      - name: ", windows_rust_test)[1:]
+        phase_of = {}
+        for step in steps:
+            name = step.split("\n", 1)[0].strip()
+            match = re.search(r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}", step)
+            phase_of[name] = match.group(1) if match else None
+        expected = {
+            "Windows Rust 全目标检查": "all-targets-check",
+            "pinvou-cli Windows compile check": "all-targets-check",
+            "Windows Rust 单元测试链接检查": "regression",
+            "Windows 测试 exe 嵌入 Common-Controls v6 清单": "regression",
+            "Windows 测试二进制导入诊断": "regression",
+            "CodeWhale Windows PowerShell regressions": "regression",
+            "Windows 原子替换状态机回归": "regression",
+            # Shared setup runs on both legs.
+            "初始化公共底座 submodule": None,
+            "Cargo cache": None,
+        }
+        for name, phase in expected.items():
+            with self.subTest(step=name):
+                self.assertIn(name, phase_of)
+                self.assertEqual(phase_of[name], phase)
+        self.assertIn("--all-targets --features dev-tools", windows_rust_test)
+        self.assertIn("--lib --no-run --message-format=json", windows_rust_test)
+
+        # Both legs restore one established namespace; only regression on
+        # main may save, so there is no second writer or new key.
+        self.assertEqual(windows_rust_test.count("shared-key:"), 1)
+        self.assertIn("shared-key: windows-rust-test", windows_rust_test)
+        self.assertIn(
+            "save-if: ${{ matrix.phase == 'regression' && "
+            "github.ref == 'refs/heads/main' }}",
+            windows_rust_test,
+        )
+        self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
+        self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
+        self.assertNotIn("actions/setup-node", windows_rust_test)
+
+    def test_memory_setup_disk_swap_is_mandatory(self):
+        # Disk swap is mandatory (2026-09-19): with the zram pool capped at
+        # 70% of RAM, the 8G /mnt swapfile is the only unbounded overflow
+        # layer. A leftover opt-in switch turns this red; the main flow must
+        # call setup_disk_swap unconditionally (top level, no indentation)
+        # and the 8G size is pinned.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        self.assertNotIn("PINVOU3_CI_ENABLE_DISK_SWAP", source)
+        self.assertIn("DISK_SWAP_SIZE_KIB=$((8 * 1024 * 1024))", source)
+        self.assertIn(
+            'log "provisioning the mandatory /mnt disk swap"\nsetup_disk_swap',
+            source,
+        )
+
+    def test_fetch_connectors_verifies_checksums_with_loud_diagnostics(self):
+        # verify_file is called bare under `set -e` from three places (the
+        # --check gate, the post-download recheck and the pre-install binary
+        # check); a silent mismatch leaves the gate with nothing but
+        # "exit code 1". The diagnostic lives inside verify_file so no call
+        # site can drop it; the pre-download probe silences it explicitly.
+        source = (ROOT / "scripts" / "fetch-connectors.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'echo "sha256 mismatch: $1 (expected $2, actual $(compute_sha256 "$1"))" >&2',
+            source,
+        )
+        self.assertIn('echo "sha256 check failed: $1 is missing (expected $2)" >&2', source)
+        self.assertIn('[[ "$(compute_sha256 "$1")" == "$2" ]]', source)
+        self.assertIn("return 1", source)
+        # Three bare checks plus the silenced pre-download probe: the number
+        # of verification points must not shrink quietly.
+        self.assertEqual(
+            source.count("verify_file "),
+            4,
+            "fetch-connectors.sh must keep verifying: --check gate,"
+            " pre-download probe, post-download recheck and pre-install"
+            " binary check",
+        )
+        self.assertIn('verify_file "$archive" "$expected" >/dev/null 2>&1', source)
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
@@ -636,12 +798,14 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn(
             "- name: Windows 原子替换状态机回归\n"
+            "        if: ${{ matrix.phase == 'regression' }}\n"
             "        shell: bash\n"
             "        run: |",
             windows_rust_test,
         )
         self.assertIn(
             "- name: Windows 测试 exe 嵌入 Common-Controls v6 清单\n"
+            "        if: ${{ matrix.phase == 'regression' }}\n"
             "        shell: pwsh\n"
             "        run: |",
             windows_rust_test,
