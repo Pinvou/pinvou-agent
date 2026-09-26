@@ -924,6 +924,157 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     assert_eq!(outcome.stdout, "# Report\n\nsecond version\n");
 }
 
+/// `artifacts list` renders a six-column tab-separated row whose untrusted
+/// cells come from the record's `storage_path` (the index derives `name`,
+/// `ext`, and the whole `path` cell from it) and from the record's
+/// `metadata/id` JSON field (`session_id`) — none of which pass the argv
+/// validation a `--session` argument gets. A POSIX filename may legally
+/// contain `\t`, `\n`, or ESC, and a hand-edited or restored-from-backup
+/// record is enough to put either into the row: a tab would invent a seventh
+/// column, a newline would turn one deliverable into two rows, and ESC must
+/// not reach the terminal — the same contract the `sessions list` tests pin
+/// for their titles. The collapse is a rendering choice: JSON keeps the
+/// verbatim bytes and the stored bytes are untouched.
+#[test]
+fn artifacts_list_human_row_survives_control_characters_in_record_fields() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("artifacts-columns");
+    let id = create_session_fixture();
+
+    // The artifact file exists on disk under a hostile (but POSIX-legal)
+    // filename, and is tracked through the store (the same feature-layer
+    // call the GUI `save_session_artifacts` command makes). Every cell of
+    // the row is derived from this name: name, ext, path, and via metadata
+    // even session_id stays the well-formed id here.
+    let workspace_dir = home.sessions_root().join(&id).join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    let hostile = workspace_dir.join("poison\trow\njump\x1b]0;pwned\x07.md");
+    std::fs::write(&hostile, "# Report\n\nfirst version\n").unwrap();
+    // The CLI canonicalizes tracked paths; expectations must use the
+    // canonical form (on macOS $TMPDIR canonicalizes to /private/var/...).
+    let hostile = std::fs::canonicalize(&hostile).unwrap();
+
+    let store = SessionStore::boot().expect("boot session store");
+    store
+        .update_artifacts(&id, vec![hostile.to_string_lossy().to_string()])
+        .expect("track artifact");
+    drop(store);
+
+    let outcome = run(&["pinvou", "artifacts", "list"]).expect("artifacts list must succeed");
+    // One artifact renders as exactly one line, whatever its filename says.
+    assert_eq!(
+        outcome.stdout.lines().count(),
+        1,
+        "one artifact must render as exactly one row: {:?}",
+        outcome.stdout
+    );
+    let columns: Vec<&str> = outcome.stdout.split('\t').collect();
+    assert_eq!(
+        columns.len(),
+        6,
+        "the artifacts row layout changed: {:?}",
+        outcome.stdout
+    );
+    // name, ext, category, size, session_id, path — in column order.
+    assert_eq!(columns[0], "poison row jump ]0;pwned .md");
+    assert_eq!(columns[1], "md");
+    assert_eq!(columns[2], "doc");
+    assert_eq!(columns[3], "# Report\n\nfirst version\n".len().to_string());
+    assert_eq!(columns[4], id);
+    // The path cell: the canonical path minus its four control characters —
+    // the same substitution the renderer applies (dir part has none).
+    let expected_path = ["\t", "\n", "\x1b", "\x07"]
+        .into_iter()
+        .fold(hostile.display().to_string(), |acc: String, byte| {
+            acc.replace(byte, " ")
+        });
+    assert_eq!(columns[5], expected_path);
+
+    // None of the row-breaking bytes may survive in the rendered cells. The
+    // file name on disk still carries them (the collapse is not a data
+    // change); only the rendered line is clean. A tab or newline inside a cell
+    // would show up as a seventh column or a second line, both already pinned
+    // above — what the count assertions cannot express is ESC, checked here.
+    let raw_name = hostile
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_owned();
+    assert_eq!(raw_name, "poison\trow\njump\x1b]0;pwned\x07.md");
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+
+    // JSON keeps the verbatim record bytes: the collapse is a per-render
+    // choice, not a data change.
+    let value = run_json(&["pinvou", "artifacts", "list"]);
+    assert_eq!(
+        value["artifacts"][0]["name"],
+        serde_json::json!("poison\trow\njump\x1b]0;pwned\x07.md")
+    );
+    assert_eq!(
+        value["artifacts"][0]["path"],
+        serde_json::json!(hostile.display().to_string())
+    );
+}
+
+/// The `session_id` cell is read out of the record's `metadata/id` JSON
+/// field rather than the filename, so a hand-edited record can poison it
+/// independently of every other cell. This pins that the collapse covers
+/// it too, and that JSON keeps the verbatim value.
+#[test]
+fn artifacts_list_collapses_a_hostile_metadata_id() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("artifacts-columns-meta-id");
+    let id = create_session_fixture();
+
+    // Hostile record: the artifact filename carries tab+newline+ESC (covered
+    // by the sibling test above); this one poisons only metadata/id.
+    let workspace_dir = home.sessions_root().join(&id).join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    let report = workspace_dir.join("report.md");
+    std::fs::write(&report, "# Report\n").unwrap();
+    let report = std::fs::canonicalize(&report).unwrap();
+    let store = SessionStore::boot().expect("boot session store");
+    store
+        .update_artifacts(&id, vec![report.to_string_lossy().to_string()])
+        .expect("track artifact");
+    drop(store);
+
+    let record_path = home.sessions_root().join(format!("{id}.json"));
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    value["metadata"]["id"] = serde_json::json!("poison\tid\nnewrow\x1b[2J");
+    std::fs::write(&record_path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+    // JSON mode reports /metadata/id verbatim.
+    let json = run_json(&["pinvou", "artifacts", "list"]);
+    assert_eq!(
+        json["artifacts"][0]["session_id"],
+        serde_json::json!("poison\tid\nnewrow\x1b[2J")
+    );
+    // Human mode collapses it onto the one line.
+    let outcome = run(&["pinvou", "artifacts", "list"]).expect("artifacts list must succeed");
+    assert_eq!(
+        outcome.stdout.lines().count(),
+        1,
+        "one row: {:?}",
+        outcome.stdout
+    );
+    let columns: Vec<&str> = outcome.stdout.split('\t').collect();
+    assert_eq!(columns.len(), 6, "row layout: {:?}", outcome.stdout);
+    assert_eq!(columns[4], "poison id newrow [2J");
+    // The one-row/6-column assertions above already pin that no cell can
+    // contain a tab or a newline; what they cannot express is ESC.
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+}
+
 #[test]
 fn artifacts_write_rejects_non_markdown_suffix() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -1731,3 +1731,73 @@ fn memory_add_leaves_a_same_text_candidate_of_a_different_kind_alone() {
     assert_eq!(stored[0].text, "Prefer concise answers", "{stored:?}");
     assert_eq!(stored[0].topic, "answer_style", "{stored:?}");
 }
+
+/// The 120-character cap must cut on CHARACTER boundaries, not bytes: a
+/// multibyte (CJK) body truncated "at 120" must store exactly 120 intact
+/// characters, never a split code point or a byte-budget remainder.
+///
+/// The truncation sites (`chars().take(120)` in the feature tail and the
+/// CLI's prediction mirror) are char-wise by construction, but nothing
+/// before this test pinned that against an actual multibyte body — the
+/// sibling cap tests use ASCII, so a regression to `&content[..120]` or
+/// `truncate(120)` would pass every existing assertion. This test would
+/// catch it three ways: `stored_characters` counts chars, the stored item
+/// still starts with the submitted prefix character-wise, and the store's
+/// text equals the full first 120 characters with no mojibake tail.
+#[test]
+fn memory_add_caps_multibyte_text_on_char_boundaries() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("cjk-over-cap");
+
+    // 130 three-byte CJK characters, no whitespace runs and no punctuation,
+    // so the only transformation that can change the text is the cap.
+    let content: String = std::iter::repeat_n("多字", 65).collect();
+    assert_eq!(content.chars().count(), 130);
+    assert_eq!(content.len(), 390);
+
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        &content,
+        "--output",
+        "json",
+    ]))
+    .expect("single-line JSON output");
+
+    assert_eq!(
+        json["truncated"],
+        serde_json::json!(true),
+        "a 130-character multibyte add must disclose the truncation: {json}"
+    );
+    assert_eq!(
+        json["submitted_characters"],
+        serde_json::json!(130),
+        "{json}"
+    );
+    assert_eq!(
+        json["stored_characters"],
+        serde_json::json!(120),
+        "the cap counts characters, not bytes: {json}"
+    );
+
+    // The store is the authority: exactly the first 120 characters, intact.
+    let stored = pinvou3_lib::features::memory::load_work_context().unwrap();
+    let item = stored
+        .iter()
+        .find(|item| item.text.starts_with("多字"))
+        .unwrap_or_else(|| panic!("the truncated item must be stored: {stored:?}"));
+    let expected: String = content.chars().take(120).collect();
+    assert_eq!(
+        item.text.chars().count(),
+        120,
+        "the cut must fall on a character boundary: {:?}",
+        item.text
+    );
+    assert_eq!(
+        item.text, expected,
+        "byte-level truncation would split a code point and fail here"
+    );
+}

@@ -1227,6 +1227,11 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             entries.retain(|(name, _)| name != "SKILL.md");
             entries.push(("SKILL.md".to_owned(), wrapped));
         }
+        // The wrapper zip is the package the pipeline (and any file-size
+        // consumer downstream) actually sees, so its structural bytes are
+        // charged in this pre-flight, not discovered as a "bomb" later (see
+        // the helper's doc comment).
+        charge_wrapper_structure_overhead(&mut cumulative, &entries, &display, path)?;
         Some((
             temp_zip_path("pinvou-cli-import-dir"),
             build_stored_zip(&entries)?,
@@ -1242,9 +1247,14 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         })?;
         let wrapped = wrap_markdown_skill(&content, &raw_name).into_bytes();
         charge_wrapped_skill_md(&mut cumulative, content.len(), &wrapped, &display, path)?;
+        let entries = [("SKILL.md".to_owned(), wrapped)];
+        // Same structural charge as the directory channel: the single-entry
+        // wrapper is still a zip with a header, a central directory entry,
+        // and an EOCD on top of the charged content.
+        charge_wrapper_structure_overhead(&mut cumulative, &entries, &display, path)?;
         Some((
             temp_zip_path("pinvou-cli-import-md"),
-            build_stored_zip(&[("SKILL.md".to_owned(), wrapped)])?,
+            build_stored_zip(&entries)?,
         ))
     } else if extension.as_deref() == Some("zip") {
         // The importer streams zip entries and bounds decompressed content
@@ -2041,6 +2051,52 @@ fn charge_wrapped_skill_md(
     // saturating: the raw read is always part of `cumulative`, but a future
     // caller that charges differently must not wrap around into a huge budget.
     *cumulative = cumulative.saturating_sub(raw_len as u64) + wrapped.len() as u64;
+    if *cumulative > plugin_import::MAX_PLUGIN_SIZE_BYTES {
+        return Err(import_over_limit(display, path));
+    }
+    Ok(())
+}
+
+/// Structural bytes [`build_stored_zip`] adds on top of the entry data: per
+/// entry a 30-byte local file header and a 46-byte central directory entry,
+/// each followed once by the entry name, plus one 22-byte end-of-central-
+/// directory record. Derived from the writer's own layout (the constants at
+/// its call site below); kept here, adjacent to the other budget charges,
+/// so a change to either breaks this crate's build, not a boundary.
+fn wrapper_zip_structure_overhead(entries: &[(String, Vec<u8>)]) -> u64 {
+    const LOCAL_FILE_HEADER: u64 = 30;
+    const CENTRAL_DIRECTORY_ENTRY: u64 = 46;
+    const END_OF_CENTRAL_DIRECTORY: u64 = 22;
+    // The name bytes are counted twice on purpose: they appear verbatim in
+    // both the local and the central directory copy.
+    // Saturating adds keep a hostile entry-name length from wrapping the
+    // total down (u32 offsets cap a real archive at 4 GiB anyway).
+    entries
+        .iter()
+        .map(|(name, _)| {
+            (LOCAL_FILE_HEADER + CENTRAL_DIRECTORY_ENTRY)
+                .saturating_add(2 * name.as_bytes().len() as u64)
+        })
+        .fold(END_OF_CENTRAL_DIRECTORY, u64::saturating_add)
+}
+
+/// Re-charges the import budget for the wrapper zip's STRUCTURAL overhead,
+/// in the pre-flight, before the zip is built and handed to the unified
+/// pipeline. Without it a directory sitting exactly at the cap cleared every
+/// `>` comparison here (content == limit is legal in the walk), and the
+/// package then died at the pipeline stage with the decompression-bomb
+/// message — a legitimate package accused of an attack. Charging the
+/// overhead makes the boundary fail HERE, with the honest "exceeds the
+/// import limit" message users can act on, before any zip is built or the
+/// pipeline is invoked. Same charge shape as [`charge_wrapped_skill_md`]:
+/// additive, checked against the same `MAX_PLUGIN_SIZE_BYTES`.
+fn charge_wrapper_structure_overhead(
+    cumulative: &mut u64,
+    entries: &[(String, Vec<u8>)],
+    display: &str,
+    path: &Path,
+) -> Result<(), CliError> {
+    *cumulative = cumulative.saturating_add(wrapper_zip_structure_overhead(entries));
     if *cumulative > plugin_import::MAX_PLUGIN_SIZE_BYTES {
         return Err(import_over_limit(display, path));
     }

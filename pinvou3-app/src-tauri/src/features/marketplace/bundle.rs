@@ -632,14 +632,20 @@ fn dedup_credential_declarations<T>(
     out
 }
 
-/// 断开授权时写进记录 `degraded` 的原因文案。两个写入方各自写字面量
-/// （桌面 `features::connectors::connector_cli::bundle_store_on_disconnected`、
-/// headless `pinvou-cli` 的同名镜像），marketplace 是被 connectors 依赖的一侧，
-/// 不反向引用它们的模块；这里只保留**判读**用的同一份文案。
+/// The reason copy written into a record's `degraded` field when its
+/// authorization is disconnected. Both writers (the desktop
+/// `features::connectors::connector_cli::bundle_store_on_disconnected` and the
+/// headless `pinvou-cli` mirror in connectors.rs) import THIS constant; the
+/// connectors → marketplace dependency direction matches the standing module
+/// boundary. Publishing the judgment and the copy in the same module shrinks
+/// the drift surface from "two literals drifting independently" to "edit this
+/// one constant".
 ///
-/// 判读取前缀而非全等（见本模块的 `degraded_by_disconnect`）：文案是给人看的
-/// 提示语，尾部措辞随时可能调整，全等匹配会让一次纯文案改动静默把「断开」误判回
-/// 「资产损坏」——正是本判定要避免的那类错诊。
+/// The judgment matches by prefix, not full equality (see this module's
+/// `degraded_by_disconnect`): the copy is human-facing hint text whose tail
+/// may be reworded at any time, and a full-equality match would let a pure
+/// copy edit silently reclassify "disconnected" back into
+/// "assets mismatch" -- exactly the misdiagnosis this judgment prevents.
 pub const CLI_DISCONNECTED_DEGRADED_REASON: &str =
     "已断开授权：配套技能已随断开移除，重新连接即可恢复";
 

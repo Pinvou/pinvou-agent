@@ -596,10 +596,13 @@ fn import_package_limit() -> u64 {
 /// A single `.md` skill file over the product import limit is rejected by the
 /// CLI's pre-wrap read (the unified pipeline would enforce the same limit
 /// later, but only after the whole file had been read into memory and
-/// re-copied into the wrapper zip). One byte over the limit is rejected; the
-/// boundary itself (`== limit`) is the pipeline's `>` comparison and would
-/// import a 200 MiB package, which is too heavy to execute in a contract
-/// test.
+/// re-copied into the wrapper zip). One byte over the limit is rejected. The
+/// boundary itself (`== limit`) no longer imports either: like every other
+/// import channel, the pre-flight charges the wrapper zip's structural
+/// overhead (per-entry headers + EOCD) on top of the content, so a package
+/// sitting exactly at the cap fails there with this same message instead of
+/// at the pipeline stage with the decompression-bomb one (pinned for the
+/// directory channel by the at-cap test below).
 #[test]
 fn import_rejects_oversize_markdown_file() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -635,6 +638,42 @@ fn import_rejects_directory_over_cumulative_limit() {
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "message: {message}"
+    );
+}
+
+/// An exactly-at-cap directory (content == the import limit, every walk
+/// comparison being strict `>`) used to clear the CLI pre-flight and die at
+/// the pipeline stage with the decompression-bomb message — the wrapper
+/// zip's structural bytes and the pipeline's own double-counting pushed its
+/// budget over, so a legitimate package was accused of an attack. The
+/// pre-flight now charges the wrapper's structural overhead (per-entry
+/// headers + EOCD) before the zip is built, so the boundary fails HERE, in
+/// pre-flight, with the honest limit message the other oversize tests
+/// already pin.
+#[test]
+fn import_directory_at_the_cap_fails_preflight_with_the_limit_message() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-at-limit-dir");
+    let dir = home.path().join("at-limit-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A frontmatter-named SKILL.md keeps the wrap charge out of the picture:
+    // the fixture's total lands exactly on the cap through the plain walk.
+    let skill_md = "---\nname: at-limit-dir\n---\n";
+    std::fs::write(dir.join("SKILL.md"), skill_md).unwrap();
+    write_sparse(
+        &dir.join("a.bin"),
+        import_package_limit() - skill_md.len() as u64,
+    );
+
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("exceeds the 200 MiB import limit"),
+        "the at-cap boundary must fail in pre-flight with the honest message: {message}"
+    );
+    assert!(
+        !message.contains("decompresses beyond"),
+        "a legitimate at-cap package must not be accused of being a zip bomb: {message}"
     );
 }
 
@@ -1686,14 +1725,32 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
 ///
 /// The zero state (no credentials anywhere) cannot discriminate the two
 /// vocabularies — both call it `missing_credentials` — so this default test
-/// pins what still holds without seeding: the reason is the GUI's own with
-/// credentials judged FIRST (a skill install alone does not flip it), the row
-/// shape (probe column included) matches every other registry row, and no
-/// neighboring row changes.
+/// pins what still holds when zero is guaranteed by isolation: the reason is
+/// the GUI's own with credentials judged FIRST (a skill install alone does not
+/// flip it), the row shape (probe column included) matches every other
+/// registry row, and no neighboring row changes. The isolation is the same
+/// `CODEWHALE_HOME` snapshot the opt-in sibling below uses: without it the
+/// ima rows read `SystemCredentialStore`, and on a host whose ambient
+/// `~/.codewhale/secrets/secrets.json` carries real ima credentials (the
+/// file-fallback store, headless/keyring-less) the verdict would flip away
+/// from the asserted zero state; with it the store resolves
+/// `<home>/secrets/secrets.json` inside the sandbox, where a missing file
+/// loads as the empty blob (`Ok(None)` per key) and the legacy `~/.deepseek`
+/// import is suppressed by the explicit boundary — so "zero credentials"
+/// holds deterministically on every such host. Where the OS keyring wins the
+/// probe the variable is inert (the keyring has its own namespace), the same
+/// exposure the sibling documents.
 #[test]
 fn readiness_ima_without_credentials_reports_the_gui_reason() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("readiness-ima-zero");
+    // Point the credential store's file fallback at a fresh empty dir under
+    // the sandbox (a missing secrets.json loads as "no credentials" for every
+    // key), so a host with real ima credentials in the ambient file store
+    // still exercises the asserted zero state. Inert where the OS keyring
+    // wins the probe.
+    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
+    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
 
     let value = run_json(&["pinvoy", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
@@ -2008,7 +2065,9 @@ fn import_display_name_matches_the_gui_sanitizer() {
 /// wrapper in without re-charging let a directory sitting exactly on
 /// `MAX_PLUGIN_SIZE_BYTES` ship a package over it by the frontmatter's size.
 /// The fixture lands exactly on the limit before wrapping (the walk's own
-/// check is `>`), so only the re-charge can reject it.
+/// check is `>`), so only the re-charge — frontmatter here, or the wrapper's
+/// structural overhead, which this fixture's single-entry layout stays under
+/// in the at-cap directory test above — can reject it.
 #[test]
 fn import_charges_the_wrapped_skill_md_against_the_limit() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

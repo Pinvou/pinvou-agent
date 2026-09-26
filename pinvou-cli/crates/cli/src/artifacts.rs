@@ -745,7 +745,27 @@ fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliEr
         .map(|row| {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                row.name, row.ext, row.category, row.size, row.session_id, row.path
+                // The cells are NOT machine-made here: `name` and `path` are
+                // read off the session record's `storage_path`, whose filename
+                // part may legally contain `\t` or `\n` (a POSIX filename
+                // allows both), and `session_id` comes from the record's
+                // `metadata/id` JSON field. Either would split the row into
+                // two lines or invent a seventh column for whoever cuts on
+                // `\t`, and ESC must not reach the terminal — the same
+                // reasons `sessions list` collapses its id and title.
+                // `ext` is whitelisted (`DELIVERABLE_EXTS`) and `category` is
+                // derived from it, so both are machine-made in practice, but
+                // by house rule (see the personas renderer) they go through
+                // the column collapse too rather than a chosen subset; a
+                // future whitelist change must not re-open the row. JSON
+                // keeps the verbatim bytes and `size` is numeric.
+                // (sync: `sessions.rs` list, `projects.rs` list)
+                crate::support::collapse_control_characters(&row.name),
+                crate::support::collapse_control_characters(&row.ext),
+                crate::support::collapse_control_characters(&row.category),
+                row.size,
+                crate::support::collapse_control_characters(&row.session_id),
+                crate::support::collapse_control_characters(&row.path)
             )
         })
         .collect::<Vec<_>>()
