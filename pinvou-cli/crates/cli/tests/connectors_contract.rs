@@ -1482,6 +1482,116 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     let _ = std::fs::remove_dir_all(&bin);
 }
 
+/// The feishu poll judges readiness by a status probe on every tick; the
+/// probe is a fresh spawn whose failure is NOT the login's failure. The GUI
+/// folds probe errors to "not connected yet" and keeps polling (feishu.rs
+/// `is_user_ready`); this pin holds the CLI to the same fold — before the
+/// fix, `connect` propagated the probe's error (`?`) as a hard connect
+/// failure and skipped the post-connect side effects, so a single probe
+/// hiccup (spawn failure, probe timeout) after a successful login aborted
+/// the whole command.
+///
+/// Hermetic construction: the fake lark-cli answers the login phases, then
+/// on the FIRST `auth status` probe schedules its own disappearance — a
+/// detached subshell hides the script one second later and restores it two
+/// seconds after that. The probe timeline inside `connect --timeout 30`
+/// (3 s poll period) is then:
+/// - probe 1 (~t=3): runs, exits non-zero with no JSON → `Ok(false)`
+///   (a non-zero probe exit alone never errors — the fold is not what this
+///   exercises);
+/// - probe 2 (~t=6): the script is hidden → resolution fails → the probe
+///   call returns `Err` — exactly the error the pre-fix `?` turned into a
+///   hard connect failure;
+/// - probe 3 (~t=9): the script is back and reports ready → connected.
+#[test]
+#[cfg(unix)]
+fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("connect-probe-hiccup");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let hidden = bin.join("lark-cli.off");
+    let counter = bin.join("status-probes");
+    let script = bin.join("lark-cli");
+    write_fake_cli(
+        &bin,
+        "lark-cli",
+        "lark-cli 1.2.3",
+        &format!(
+            "if [ \"$1\" = \"config\" ]; then echo \"open https://open.feishu.cn/app?ticket=reg\"; exit 0; fi\n\
+             if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ] && [ \"$3\" = \"--device-code\" ]; then exit 0; fi\n\
+             if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo '{{\"verification_uri_complete\":\"https://accounts.feishu.cn/authorize?x=1\",\"device_code\":\"DEV123\"}}'; exit 0; fi\n\
+             if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n\
+             \x20 if [ -f \"{counter}\" ]; then echo '{{\"identities\":{{\"user\":{{\"status\":\"ready\"}}}}}}'; exit 0; fi\n\
+             \x20 : > \"{counter}\"\n\
+             \x20 ( sleep 1; mv -f \"{script}\" \"{hidden}\" 2>/dev/null; sleep 3; mv -f \"{hidden}\" \"{script}\" 2>/dev/null ) >/dev/null 2>&1 &\n\
+             \x20 exit 1\n\
+             fi\n",
+            counter = counter.display(),
+            script = script.display(),
+            hidden = hidden.display(),
+        ),
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // Seed an initialized code scope so the post-connect DenyAll sync has
+    // something to write into (the connect must reach its side effects).
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{"code":[]},"hidden_scopes":{},"initialized":["code"]}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "feishu",
+        "--timeout",
+        "30",
+    ]);
+    assert_eq!(
+        value["connected"], true,
+        "a failed status probe must fold to 'not yet' and keep polling, not abort the connect: {value}"
+    );
+
+    // The connect ran its side effects: the store mirror flipped to
+    // connected and the DenyAll code-scope sync landed.
+    let record = pinvou3_lib::features::marketplace::store::BundleStore::new()
+        .get("feishu")
+        .expect("store read succeeds")
+        .expect("the connect must still register the store record after a probe error");
+    assert!(
+        record.installed,
+        "the store record must read as connected: {record:?}"
+    );
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    let feishu_entry = persisted["scopes"]["code"]
+        .as_array()
+        .expect("code scope list persists")
+        .iter()
+        .any(|id| id.as_str() == Some("feishu"));
+    assert!(
+        feishu_entry,
+        "the connect must still run the DenyAll code-scope sync after a probe error: {persisted}"
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
 /// `ensure-cli`'s user-facing claim is "present and executes". The final
 /// presence check used to be gated on `installed &&` — skipped whenever
 /// `ensure_native_cli` reported the destination hash already matched (`Ok

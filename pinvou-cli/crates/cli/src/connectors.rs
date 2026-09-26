@@ -54,7 +54,10 @@
 //!   (spec: QR image display is GUI-bound).
 //! - `ensure-cli` downloads the lock-table-pinned archive with `reqwest`
 //!   and extracts with the system `tar` (the CLI workspace has no tar/zip
-//!   crates); tmeet installs through npm like the GUI does.
+//!   crates); tmeet installs through npm like the GUI does. Both lanes
+//!   serialize concurrent installs through the shared
+//!   `locks/connector-install.lock` (blocking wait, native-lane
+//!   discipline).
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -67,6 +70,7 @@ use wait_timeout::ChildExt;
 
 use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
+use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON;
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::platform::connector_lock::{executable_name, file_sha256_hex, locked_cli_path};
@@ -94,10 +98,6 @@ const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
 const IMA_SKILL_ID: &str = "ima-skills";
 const IMA_SKILL_VERSION: &str = "1.1.8";
-/// Stored degraded reason reused verbatim from
-/// `connector_cli::bundle_store_on_disconnected` so GUI-rendered store data
-/// stays identical regardless of which surface wrote it.
-const DISCONNECTED_REASON: &str = "已断开授权：配套技能已随断开移除，重新连接即可恢复";
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
@@ -1083,8 +1083,13 @@ fn hide_connector_skills(kind: ConnectorKind) -> Result<(), CliError> {
 
 /// Mirror of `connector_cli::bundle_store_on_disconnected`: logout marks the
 /// marketplace record degraded (record stays installed; reconnect repairs).
+/// The reason text is the marketplace module's published
+/// `CLI_DISCONNECTED_DEGRADED_REASON` — the single source both write sides
+/// (desktop `bundle_store_on_disconnected`, this mirror) import, so
+/// GUI-rendered store data stays identical regardless of which surface
+/// wrote it.
 fn bundle_store_on_disconnected(id: &str) {
-    let _ = BundleStore::new().mark_degraded(id, DISCONNECTED_REASON);
+    let _ = BundleStore::new().mark_degraded(id, CLI_DISCONNECTED_DEGRADED_REASON);
 }
 
 /// Mirror of `connector_cli::bundle_store_on_connected`: register the CLI
@@ -1757,6 +1762,28 @@ fn success_or_render(
 /// stdin nulled (installers hang on an inherited TTY-less stdin), output
 /// captured to `~/.pinvou3/cli-install.log`, hard timeout.
 fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
+    // Same cross-process serialization as the native lane's lock (see
+    // `ensure_native_cli`): concurrent `ensure-cli` runs — npm and native
+    // alike — must not race (here on npm's global prefix tree and the shared
+    // install log). Blocking wait is fine, same discipline as the native
+    // lane: installs are rare and the loser just installs over the finished
+    // tree. The guard releases when this function returns.
+    let install_lock_dir = pinvou3_home().join("locks");
+    std::fs::create_dir_all(&install_lock_dir).map_err(|error| {
+        CliError::failed(format!(
+            "cannot create the connector lock directory: {error}"
+        ))
+    })?;
+    let install_lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(install_lock_dir.join("connector-install.lock"))
+        .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
+    let mut install_lock = fd_lock::RwLock::new(install_lock_file);
+    let _install_guard = install_lock
+        .write()
+        .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
     let log_path = pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -2307,7 +2334,12 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     &["auth", "login", "--device-code", &device_code, "--json"],
                     deadline,
                 );
-                if cli_connected(spec)? {
+                // A probe error counts as not-connected, exactly like the
+                // GUI's poll folds `run_probe` errors to false (feishu.rs
+                // `is_user_ready`): a spawn failure or probe timeout must
+                // not abort the connect after a successful login — the next
+                // tick retries and the loop deadline still bounds the wait.
+                if cli_connected(spec).unwrap_or(false) {
                     finish_connect_side_effects(spec)?;
                     break;
                 }
@@ -2362,8 +2394,12 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // Judge by the auth probe alone like the GUI (`wecom.rs`
                 // binds the child exit status to `_`): a wecom-cli that
                 // authorizes successfully but exits non-zero connects in
-                // the GUI and must not fail here.
-                if !cli_connected(spec)? {
+                // the GUI and must not fail here. A probe error also folds
+                // to not-connected (the GUI's `is_ready` fold), so a probe
+                // hiccup reports the honest "did not complete" verdict
+                // below instead of surfacing the probe's own error as the
+                // connect failure.
+                if !cli_connected(spec).unwrap_or(false) {
                     return Err(CliError::failed(format!(
                         "wecom authorization did not complete (cancelled or timed out){}{}",
                         captured_notes(&notes),
