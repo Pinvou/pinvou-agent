@@ -38,6 +38,10 @@ enum VoiceShortcutEvent {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct VoiceShortcutState {
     alt_down: bool,
+    /// Alt went down while Shift/Ctrl/Win was already held: the whole Alt
+    /// press belongs to a system chord (e.g. Shift+Alt input switching,
+    /// Ctrl+Alt+key) and passes through untouched until its Alt-up.
+    alt_passthrough: bool,
     alt_pending: bool,
     /// Which physical Alt key started the current gesture (meaningful only
     /// while `alt_down`); the platform layer reads it at combo replay time.
@@ -224,6 +228,35 @@ fn handle_voice_shortcut_key(
     }
 }
 
+/// Hook entry point: `other_modifier_down` reports whether Shift, Ctrl or Win
+/// was already held when this key event arrived. A modifier pressed before
+/// Alt belongs to a system chord, not a bare tap, so that Alt press is never
+/// armed, swallowed or replayed; its Alt-up also passes through, keeping the
+/// system's own down/up pairing intact. Everything else is delegated to
+/// `handle_voice_shortcut_key`.
+fn handle_voice_shortcut_with_modifiers(
+    state: &mut VoiceShortcutState,
+    key: VoiceShortcutKey,
+    key_down: bool,
+    active: bool,
+    foreground_hwnd: isize,
+    time_ms: u32,
+    other_modifier_down: bool,
+) -> VoiceShortcutDecision {
+    if matches!(key, VoiceShortcutKey::Alt(_)) && state.alt_passthrough {
+        if !key_down {
+            state.alt_passthrough = false;
+        }
+        return VoiceShortcutDecision::pass();
+    }
+    if matches!(key, VoiceShortcutKey::Alt(_)) && key_down && !state.alt_down && other_modifier_down
+    {
+        state.alt_passthrough = true;
+        return VoiceShortcutDecision::pass();
+    }
+    handle_voice_shortcut_key(state, key, key_down, active, foreground_hwnd, time_ms)
+}
+
 #[derive(Clone, Serialize)]
 struct VoiceShortcutTriggerPayload {
     mode: &'static str,
@@ -361,6 +394,62 @@ mod tests {
 
     const HWND_A: isize = 100;
     const HWND_B: isize = 200;
+
+    #[test]
+    fn modifiers_held_before_alt_pass_through_without_pending_or_trigger() {
+        for modifier in ["Shift", "Ctrl", "Win"] {
+            for side in [AltSide::Left, AltSide::Right] {
+                let mut state = VoiceShortcutState::default();
+                let down = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    true,
+                    true,
+                    HWND_A,
+                    100,
+                    true,
+                );
+                assert_eq!(down, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                assert!(!state.alt_pending);
+                let repeat = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    true,
+                    true,
+                    HWND_A,
+                    150,
+                    false,
+                );
+                assert_eq!(repeat, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                // Even if the other modifier is released before Alt-up, no tap was armed.
+                let up = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    false,
+                    true,
+                    HWND_A,
+                    200,
+                    false,
+                );
+                assert_eq!(up, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                assert!(!state.alt_down);
+                assert!(!state.alt_passthrough);
+            }
+        }
+    }
+
+    #[test]
+    fn bare_alt_tap_without_other_modifiers_still_triggers() {
+        let mut state = VoiceShortcutState::default();
+        let key = VoiceShortcutKey::Alt(AltSide::Left);
+        let down =
+            handle_voice_shortcut_with_modifiers(&mut state, key, true, true, HWND_A, 100, false);
+        assert!(down.suppress);
+        let up =
+            handle_voice_shortcut_with_modifiers(&mut state, key, false, true, HWND_A, 150, false);
+        assert!(up.suppress);
+        assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
+    }
 
     #[test]
     fn alt_tap_swallows_down_and_up_symmetrically_and_triggers() {
