@@ -834,8 +834,6 @@ pub fn run() {
                 move || remote_event_endpoint.has_active_web_transport(),
             ));
             app.handle().manage(remote_control_manager.clone());
-            app.handle()
-                .manage(features::behavior_telemetry::BehaviorTelemetry::new());
             // 多 session 并发:存 EnginePool(lazy spawn,首条消息才为该 session 起 engine)。
             // boot bridge 在 pool::new 里做一次(写盘 / 设 env 只能一次)。
             let handle = app.handle().clone();
@@ -1214,7 +1212,6 @@ pub fn run() {
             commands::checkpoints::rewind_to_turn,
             commands::checkpoints::rewind_undo_state,
             commands::checkpoints::undo_last_rewind,
-            commands::behavior_telemetry::track_behavior_event,
             commands::assistant_response::export_assistant_response,
             commands::assistant_response::open_assistant_share_target,
             commands::browser::browser_stop,
