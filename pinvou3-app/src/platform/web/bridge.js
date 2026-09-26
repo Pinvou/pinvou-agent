@@ -874,6 +874,10 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedweb().author
   let sessionBufferTouchClock = 0;
   let scheduledRunOwnerTouchClock = 0;
   let suppressNotify = false;
+  // init() 启动窗口内的批量抑制:置位期间 loader 的 notify 全部静默(状态照
+  // 写),窗口结束在 finally 里翻转并发布一个连贯快照,与 tauri 桥
+  // startupNotificationBatching 同口径。启动完成后此值恒为 false。
+  let startupNotificationBatching = false;
   // sessionId → true:标题当前是「卡牌占位名」(加卡时自动取的),可被首条用户消息覆盖。
   // 卡牌名只在「加了卡但还没开口」时当临时标题;一旦开始对话,对话内容更能区分同卡会话。
   // 内存态(不持久化):重启后丢标记仅影响「加卡→重启→才发首条消息」这一冷门路径。
@@ -1825,6 +1829,7 @@ function copySubscriptionStateObject(source) { return pinvouSharedweb().copySubs
   let notificationDispatching = false;
   function notify() {
     if (suppressNotify) return;
+    if (startupNotificationBatching) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
@@ -7166,10 +7171,14 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
   async function init() {
     if (initPromise) return initPromise;
     const attempt = (async function () {
-    // 启动加载各自写互不重叠的状态片、彼此无数据依赖(每个 loader 自吞 invoke
-    // 错误并落兜底值),串行 await 会把多个 RPC 往返叠进首屏延迟——并行后往返
-    // 宽度收敛为 1。enterDraft/markStateReady 必须等本组完成后才走(durable
-    // state 未就绪前不得放行桌面事件重放,这是 web 重试契约的前提)。
+    // 会话根在 init() 完成前就订阅桥,启动加载各自写互不重叠的状态片、彼此无
+    // 数据依赖(每个 loader 自吞 invoke 错误并落兜底值),串行 await 会把多个
+    // RPC 往返叠进首屏延迟——并行后往返宽度收敛为 1。enterDraft/markStateReady
+    // 必须等本组完成后才走(durable state 未就绪前不得放行桌面事件重放,这是
+    // web 重试契约的前提)。与 tauri 桥同口径:启动窗口内抑制 notify(状态照
+    // 写),try/finally 结束后发布一个连贯快照并把通知恢复为立即发布。
+    startupNotificationBatching = true;
+    try {
     const parallelLoads = [
       loadSettings(),
       hasCapability("pet") ? loadSelectedPet() : Promise.resolve(),
@@ -7192,13 +7201,19 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
       window.PinvouWebClient.markStateReady();
     }
     if (hasCapability("superPermission")) await refreshSuperPerm();
-    // The per-lane global defaults (work/code) are the source of truth for
-    // the draft-state mode chip; fetched at startup.
+    // The per-lane global defaults (work/code) are the source of truth for the
+    // draft-state mode chip; fetched at startup.
     refreshModeDefaults().catch(function () {});
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
-    notify();
+    } finally {
+      // finally 而非仅成功路径:即使启动中途抛错,也必须恢复立即发布,
+      // 否则抑制位会永久吞掉此后所有通知(下文 loadScheduledTasks 等
+      // fire-and-forget 仍需照常发布)。
+      startupNotificationBatching = false;
+      notify();
+    }
     })();
     initPromise = attempt.then(function (result) {
       disarmWebInitRetry();
