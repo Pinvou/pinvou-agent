@@ -341,15 +341,54 @@ function prepareWindowsCodexBridge({
   }
 }
 
+/**
+ * Prepare the Linux/macOS Codex ACP Bridge.
+ *
+ * `targetArch` is the architecture being packaged by a cross build (Node
+ * notation: `"arm64"` / `"x64"`). Without it the host architecture is used,
+ * exactly as before.
+ *
+ * Unlike SenseVoice, the bridge can be prepared for another architecture: it
+ * compiles nothing, it only downloads, verifies and unpacks the official Node
+ * tarball. The one obstacle is that `npm ci` must run on a Node that executes
+ * on the host, so the script downloads both (see its comments).
+ * @param {{platform?: string, spawn?: Function, targetArch?: string, env?: object}} options Options.
+ * @returns {boolean} Whether this platform needs the step.
+ */
 function prepareCodexBridge({
   platform = process.platform,
   spawn = spawnSync,
+  targetArch = null,
+  env = process.env,
 } = {}) {
   if (platform !== "linux" && platform !== "darwin") return false;
   const script = path.join(APP_ROOT, "scripts", "prepare-codex-bridge-runtime.sh");
+  // Node arch notation -> the machine segment of a Rust target triple (the
+  // `--target` notation). This is not `uname -m`: macOS reports arm64 while
+  // the triple says aarch64 (aarch64-apple-darwin). The script accepts both
+  // words (`Darwin-aarch64|Darwin-arm64`, like the Linux entry), so no second
+  // per-OS table is kept here; tests/tauri_effective_config.test.js pins the
+  // mapping.
+  //
+  // This map must cover every arch that `TARGET_MACHINE_ARCHITECTURES` in
+  // build.js can produce. A missing entry raises no error: machine becomes
+  // undefined, the variable is not injected, and the script falls back to
+  // `uname -m`, packaging a host-architecture Node - the silent wrong package
+  // this path exists to prevent. The same test file holds that subset check.
+  const machine = { arm64: "aarch64", x64: "x86_64" }[targetArch];
+  // Always pass a copy: inject the machine when there is one, otherwise drop
+  // any PINVOU3_BRIDGE_TARGET_ARCH left in the caller's environment. The
+  // variable is a legitimate manual switch when the script is run directly,
+  // but through this path an empty machine means there is no cross target; a
+  // leftover value would prepare another architecture's Node while the
+  // overlay still follows process.arch.
+  const childEnv = { ...env };
+  if (machine) childEnv.PINVOU3_BRIDGE_TARGET_ARCH = machine;
+  else delete childEnv.PINVOU3_BRIDGE_TARGET_ARCH;
   const result = spawn(script, [], {
     cwd: APP_ROOT,
     stdio: "inherit",
+    env: childEnv,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
