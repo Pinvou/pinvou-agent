@@ -46,7 +46,10 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done / cancelled
+    /// idle / scanning / done / cancelled / interrupted (a scan-thread panic
+    /// is caught and contained; see `finish_scan_after_panic`). The frontend
+    /// refreshes L0 only on `done`, so `interrupted` cannot read as
+    /// "scanned".
     pub phase: String,
     pub roots: Vec<String>,
     pub scanned: u64,
@@ -333,6 +336,28 @@ impl KnowledgeService {
             .unwrap_or_default()
     }
 
+    /// Import state of the NAMED job (not "the latest job").
+    ///
+    /// [`Self::index_status`] goes through `ImportJobStore::latest_state`'s
+    /// priority ordering (preparing/running → interrupted → done_with_errors →
+    /// the rest, then updated_at descending): `cancelled` lands in the last
+    /// tier, so any earlier done_with_errors / interrupted job outranks it.
+    /// The GUI is unaffected — it only polls "the job currently most worth
+    /// showing the user", which is exactly what that ordering is designed to
+    /// answer; but the headless CLI's `index cancel <job-id>` /
+    /// `index status <job-id>` report the job they NAMED, and reading latest
+    /// after a cancel would cross-wire to another job's state (the human line
+    /// says B was cancelled, the JSON body carries A). Same entry point and
+    /// same semantics as the `imports.state(&job_id)` lookups that close out
+    /// `resume_index`/`retry_index_item`.
+    ///
+    /// A nonexistent job is reported as an error (the layer below surfaces
+    /// `QueryReturnedNoRows`), letting callers distinguish "the job is gone"
+    /// from "the job exists but its state row is empty".
+    pub fn index_job_state(&self, job_id: &str) -> Result<IndexState, String> {
+        self.imports.state(job_id).map_err(|e| e.to_string())
+    }
+
     pub fn cancel_index(&self) -> Result<(), String> {
         let job_id = self
             .active_import
@@ -354,6 +379,48 @@ impl KnowledgeService {
         let status = self.index_status();
         if status.collection_id == collection_id && (status.running || status.resumable) {
             self.cancel_index()?;
+        }
+        Ok(())
+    }
+
+    /// Cancels the NAMED import job to `cancelled` and returns its
+    /// pre-transition state.
+    ///
+    /// A named-job entry point isomorphic to [`Self::interrupt_index`] (the
+    /// only difference is the transition: this method goes through
+    /// ImportJobStore::cancel, applies to preparing/running/interrupted
+    /// and commits synchronously). The headless CLI's `index cancel
+    /// <job-id>` uses it instead of [`Self::cancel_index`]'s "latest job"
+    /// re-derivation: the CLI validates `active == job_id` before calling,
+    /// while `cancel_index` re-derives the target on its own — the window
+    /// between the two store reads could cancel a job the caller never
+    /// named. A nonexistent job is reported as an error (same as
+    /// `interrupt_index`), a finished job stays an idempotent no-op — the
+    /// named job can never be silently swapped for another.
+    pub fn cancel_index_job(&self, job_id: &str) -> Result<IndexState, String> {
+        let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
+        if state.running || state.resumable {
+            self.imports.cancel(job_id).map_err(|e| e.to_string())?;
+            self.index_cancel.store(true, Ordering::Relaxed);
+            self.l1.set_collection_status(state.collection_id, "ready");
+        }
+        Ok(state)
+    }
+
+    /// Returns the NAMED import job to `interrupted` (resumable). The closing
+    /// entry point for the CLI's wait-timeout path: when the import thread is
+    /// dead or wedged, the job is left in interrupted (not running), so the
+    /// next `resume_index` can continue without waiting for the desktop app
+    /// to boot and recover it. Structurally the same defensive lookup as
+    /// [`Self::cancel_index`] — the named state is read first and an unknown
+    /// job is reported as an error (never a silent no-op); the transition
+    /// itself is delegated to `ImportJobStore::interrupt`: it only applies to
+    /// preparing/running (enforced in the SQL WHERE), and finished/interrupted
+    /// jobs are an idempotent no-op.
+    pub fn interrupt_index(&self, job_id: &str) -> Result<(), String> {
+        let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
+        if state.running {
+            self.imports.interrupt(job_id);
         }
         Ok(())
     }
@@ -542,48 +609,84 @@ impl KnowledgeService {
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
         let cancel = self.cancel.clone();
+        // The panic backstop needs its own state handle that the closure
+        // cannot move away, otherwise there is no way to close out after a
+        // panic.
+        let panic_scan_state = self.scan_state.clone();
 
         thread::spawn(move || {
-            let ex = Excluder::default();
-            // 增量：载入现有快照，scanner 只写 mtime/size 变化的文件，未变的跳过。
-            let existing = store.load_index().unwrap_or_default();
-            let mut visited = std::collections::HashSet::new();
-            let mut scanned_total = 0u64;
-            for root in &roots {
-                let base = scanned_total;
-                let walked =
-                    scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
-                        scan_state.lock().scanned = base + n;
-                    });
-                scanned_total = base + walked;
-                scan_state.lock().scanned = scanned_total;
-                if cancel.load(Ordering::Relaxed) {
-                    break;
+            // Scan-thread panic backstop (same semantics as the import
+            // thread in `launch_import`): `running` is only cleared by the
+            // normal close-out below, and `scan_state` is a parking_lot::Mutex
+            // — it cannot poison, so after a panic the lock stays lockable
+            // while the state is stuck at running:true forever. The GUI just
+            // shows a progress bar that stops advancing (lazy trigger, next
+            // visit rescans), but `pinvou knowledge scan start` is the one
+            // caller that BLOCKS on that flag and would hang with no output
+            // and no exit code.
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let ex = Excluder::default();
+                // Incremental: load the existing snapshot; the scanner only
+                // writes files whose mtime/size changed and skips the rest.
+                let existing = store.load_index().unwrap_or_default();
+                let mut visited = std::collections::HashSet::new();
+                let mut scanned_total = 0u64;
+                // Deletion authority is granted only for roots that were
+                // actually WALKED, not for roots that were REQUESTED (see
+                // `root_authorizes_deletion`): scanner::scan silently returns
+                // 0 entries for a root it cannot walk, and the cleanup phase
+                // still runs — treating that root as a deletion boundary would
+                // wipe its whole indexed slice as "discovered missing".
+                let mut swept_roots: Vec<PathBuf> = Vec::with_capacity(roots.len());
+                for root in &roots {
+                    let base = scanned_total;
+                    let walked =
+                        scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
+                            scan_state.lock().scanned = base + n;
+                        });
+                    scanned_total = base + walked;
+                    scan_state.lock().scanned = scanned_total;
+                    if root_authorizes_deletion(root, walked) {
+                        swept_roots.push(root.clone());
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
                 }
-            }
 
-            // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
-            if !cancel.load(Ordering::Relaxed) {
-                let stale: Vec<String> = existing
-                    .keys()
-                    .filter(|p| !visited.contains(*p))
-                    .cloned()
-                    .collect();
-                if !stale.is_empty() {
-                    let _ = store.delete_many(&stale);
+                // Clean up files that "disappeared" (indexed last time, not
+                // walked this time). Nothing is deleted when cancelled, so a
+                // partially-scanned run cannot destroy the unscanned remainder.
+                if !cancel.load(Ordering::Relaxed) {
+                    let stale = stale_entries(&existing, &visited, &swept_roots);
+                    if !stale.is_empty() {
+                        let _ = store.delete_many(&stale);
+                    }
                 }
-            }
 
-            // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
-            let cancelled = cancel.load(Ordering::Relaxed);
-            let finished_at = now();
-            if !cancelled {
-                let _ = store.set_last_scan_finished_at(finished_at);
+                // Deduplication (hashing) no longer runs inside the scan — it is
+                // disk-expensive, unbounded on million-file libraries and stalls
+                // slow devices. The dedup feature itself is retired.
+                let cancelled = cancel.load(Ordering::Relaxed);
+                let finished_at = now();
+                if !cancelled {
+                    let _ = store.set_last_scan_finished_at(finished_at);
+                }
+                let mut st = scan_state.lock();
+                st.running = false;
+                st.finished_at = finished_at;
+                st.phase = if cancelled { "cancelled" } else { "done" }.into();
+            }));
+            if let Err(panic) = outcome {
+                // Same "never stall silently" rule as the idle patrol's
+                // single-round backstop: without this log line, a dead scan
+                // thread would only manifest as a stopped progress bar with
+                // nothing to trace.
+                eprintln!(
+                    "[knowledge] scan thread panicked (contained; no missing-file cleanup this round): {panic:?}"
+                );
+                finish_scan_after_panic(&panic_scan_state);
             }
-            let mut st = scan_state.lock();
-            st.running = false;
-            st.finished_at = finished_at;
-            st.phase = if cancelled { "cancelled" } else { "done" }.into();
         });
 
         self.scan_state.lock().clone()
@@ -674,6 +777,131 @@ pub fn model_dir() -> PathBuf {
         .join("knowledge")
         .join("models")
         .join("bge-m3")
+}
+
+/// Post-panic close-out for the scan thread: clears `running` and lands the
+/// phase on `interrupted`.
+///
+/// A distinct phase instead of reusing done/cancelled: the scan neither
+/// finished (`last_scan_finished_at` is not recorded, so the next visit still
+/// treats it as never-scanned; the in-memory finished_at only records the
+/// moment of the abort) nor was it user-cancelled. The frontend refreshes L0
+/// only on `done`, so `interrupted` cannot be mistaken for success; the
+/// blocking CLI caller uses it to report an error instead of announcing the
+/// scan complete.
+fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
+    let mut st = scan_state.lock();
+    st.running = false;
+    st.finished_at = now();
+    st.phase = "interrupted".into();
+}
+
+/// Whether THIS scan round is authorized to run "disappeared" deletions
+/// inside `root`.
+///
+/// `scanner::scan` silently returns 0 entries for a root it cannot WALK
+/// (walk errors are skipped inside `walk_pruned`): an unmounted drive,
+/// revoked permissions, or the root being deleted after the pre-flight all
+/// look identical to "0 entries walked". Handing that root to
+/// [`stale_entries`] as a deletion boundary would condemn its whole indexed
+/// slice as disappeared — `scan start --root /mnt/usb` after the drive drops
+/// would delete every entry under `/mnt/usb` and still report
+/// `phase: done`. The two flavors of "walked zero" must be separated:
+/// - **Walked, and it is empty** (the root is still a readable directory):
+///   the user really did empty it; the slice should be cleaned, otherwise
+///   ghost entries linger forever — this is why the deletion feature exists
+///   at all, so it cannot be switched off for safety.
+/// - **Could not walk** (root missing / not a directory / unreadable): the
+///   fate of that root's indexed entries is undecidable this round, so the
+///   round must not decide for it — skip (the next round cleans up naturally
+///   once the root is back).
+///
+/// One ambiguous corner remains: a static mountpoint whose unmount leaves a
+/// readable empty directory behind — filesystem-identical to "the user
+/// emptied the directory", indistinguishable by any pure path probe. That
+/// case is treated as "empty directory" (cleanup proceeds): it is the
+/// minority compared to the common forms where a dropped drive takes the
+/// mountpoint with it or makes it unreadable (udisks automounts, ESTALE/EIO
+/// after device removal, permission revocation), and it is at least not
+/// silent — deletion only ever happens inside a root the user NAMED.
+fn root_authorizes_deletion(root: &Path, walked: u64) -> bool {
+    walked > 0 || std::fs::read_dir(root).is_ok()
+}
+
+/// Computes this round's "disappeared" entries: decided ONLY within the
+/// roots actually walked this round.
+///
+/// The old logic treated "indexed but not walked this time" as disappeared
+/// unconditionally. Under the GUI that is harmless — it only ever scans the
+/// single root of the user's home directory (`kb_start_scan(roots: null)`),
+/// every indexed entry lives under that root, so this function's result is
+/// identical to the old logic entry for entry. But the CLI's
+/// `knowledge scan start --root <DIR>` can scan any directory: while scanning
+/// directory B, entries indexed from directory A would be condemned as stale
+/// wholesale — a silent full-index wipe reported as `done`. Deletion
+/// therefore requires the entry to fall under a root WALKED this round —
+/// entries outside every walked root were never this round's responsibility,
+/// so their fate cannot be decided.
+///
+/// `roots` are the roots that were actually WALKED (filtered through
+/// [`root_authorizes_deletion`]), not the roots the caller requested: a
+/// TOCTOU stands between request and walk, and treating an unwalkable
+/// requested root as a boundary would wipe its whole slice.
+///
+/// Containment is compared by path COMPONENT via [`Path::starts_with`],
+/// never by string prefix: `/home/a` must not match `/home/abc`.
+fn stale_entries(
+    existing: &std::collections::HashMap<String, (i64, u64)>,
+    visited: &std::collections::HashSet<String>,
+    roots: &[PathBuf],
+) -> Vec<String> {
+    // Each root is canonicalized exactly once (falling back to the raw path
+    // on failure, e.g. the root was deleted between request and judgment).
+    // Both the raw and the canonicalized spellings participate in the
+    // comparison: store keys may have been written under either form.
+    let bounds: Vec<(PathBuf, PathBuf)> = roots
+        .iter()
+        .map(|root| {
+            let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            (root.clone(), canonical)
+        })
+        .collect();
+    existing
+        .keys()
+        .filter(|path| !visited.contains(*path))
+        .filter(|path| within_scanned_roots(Path::new(path.as_str()), &bounds))
+        .cloned()
+        .collect()
+}
+
+/// Whether the path falls under one of this round's scanned roots (the root
+/// itself included).
+///
+/// The raw in-memory comparison runs FIRST and short-circuits: the GUI has
+/// exactly one root (the home directory) and every indexed entry hits on
+/// this step, so the whole cleanup phase degrades to the old HashSet
+/// difference's cost. The reverse ordering (canonicalize every entry first)
+/// would fire one doomed syscall per entry — tens of thousands of them after
+/// a large directory deletion, all on the scan thread.
+///
+/// canonicalize is only the fallback: when a scanned root is a symlink, or
+/// the store's key itself is a relative/symlinked spelling, containment is
+/// only decidable after normalizing. Stale paths are usually already gone
+/// from disk (that is what stale means), so canonicalizing them necessarily
+/// fails — and failure answers "not inside a boundary": no deletion
+/// authority, the same semantics as the old version.
+fn within_scanned_roots(path: &Path, bounds: &[(PathBuf, PathBuf)]) -> bool {
+    if bounds.iter().any(|(raw_root, canonical_root)| {
+        path.starts_with(raw_root) || path.starts_with(canonical_root)
+    }) {
+        return true;
+    }
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    bounds.iter().any(|(raw_root, canonical_root)| {
+        canonical.starts_with(raw_root) || canonical.starts_with(canonical_root)
+    })
 }
 
 fn now() -> i64 {
@@ -964,6 +1192,234 @@ mod tests {
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
+
+    /// The named job's state must come from THAT job, never from
+    /// `latest_state`'s priority ordering. Regression scenario: old job A
+    /// finishes with one failed item → done_with_errors (second tier); new
+    /// job B gets cancelled and lands in the last tier, so A outranks B —
+    /// the CLI's `index cancel B` human line says "cancelled B" while the
+    /// JSON body carries A's state and A's jobId.
+    #[test]
+    fn index_job_state_reports_the_named_job_not_the_outranking_latest_one() {
+        let svc = service();
+        let older = svc
+            .l1
+            .create_collection("older", None, None)
+            .expect("older collection");
+        let newer = svc
+            .l1
+            .create_collection("newer", None, None)
+            .expect("newer collection");
+
+        // Old job: finishes after one failed item → done_with_errors
+        // (second tier of the ordering).
+        let old_job = svc.imports.create(older, &[]).expect("older job");
+        svc.imports
+            .prepare_items(&old_job, &[PathBuf::from("/nonexistent/older.txt")])
+            .expect("prepare older item");
+        let item = svc
+            .imports
+            .claim_next(&old_job)
+            .expect("claim older item")
+            .expect("one pending item");
+        svc.imports
+            .mark_failed(&old_job, item.id, "fixture failure");
+        svc.imports.finish(&old_job).expect("finish older job");
+
+        // New job: preparing at creation (tier zero), so it is the latest
+        // one.
+        let new_job = svc.imports.create(newer, &[]).expect("newer job");
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(new_job.as_str()),
+            "a running/preparing new job must outrank an old done_with_errors"
+        );
+
+        svc.imports.cancel(&new_job).expect("cancel newer job");
+        // After the cancel, latest crosses over to the old job — this is
+        // exactly the misreport being fixed; pin it so nobody later assumes
+        // index_status() would have been good enough here.
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(old_job.as_str()),
+            "cancelled falls to the last tier; latest_state is outranked by the old done_with_errors"
+        );
+
+        let named = svc
+            .index_job_state(&new_job)
+            .expect("the cancelled job must still be readable by id");
+        assert_eq!(named.job_id.as_deref(), Some(new_job.as_str()));
+        assert_eq!(named.collection_id, newer);
+        assert!(
+            named.cancelled,
+            "the named read must see the post-cancel state"
+        );
+        assert!(!named.running && !named.resumable);
+        assert!(
+            svc.index_job_state("kb-import-does-not-exist").is_err(),
+            "a nonexistent job must error, never degrade into another job's state"
+        );
+    }
+
+    /// A named cancel must cancel only THAT job and hand the pre-transition
+    /// state back to the caller (the CLI uses it to distinguish "a signal
+    /// was really sent" from "the job already finished, nothing to do").
+    /// Regression scenario: the old `cancel_index` path re-derived "the
+    /// latest job" after the CLI's validation, and a desktop-app job started
+    /// between the two store reads would be cancelled by mistake.
+    #[test]
+    fn cancel_index_job_cancels_only_the_named_job_and_reports_its_pre_state() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("cancel-by-id", None, None)
+            .expect("collection");
+
+        // A running job plus a later preparing job: the latter is the
+        // latest.
+        let older = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/a.txt")])
+            .expect("older job");
+        svc.imports
+            .prepare_items(&older, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare older item");
+        let item = svc
+            .imports
+            .claim_next(&older)
+            .expect("claim older item")
+            .expect("one pending item");
+        // Neither finishes: older stays in preparing/running (running=true).
+        let _ = item;
+        let newer = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("newer job");
+        // Two simultaneously-live jobs (tied at the prepare tier) is
+        // exactly the race window: the old path
+        // `cancel_index` re-derived latest (updated_at has second-level
+        // precision, tie order undefined);
+        // the named path must look at job_id only.
+
+        // Cancel OLDER by name: it must hit older (pre-state running),
+        // with newer left untouched.
+        let pre = svc.cancel_index_job(&older).expect("cancel older job");
+        assert_eq!(pre.job_id.as_deref(), Some(older.as_str()));
+        assert!(pre.running, "the pre-transition state must be running");
+        let after = svc.index_job_state(&older).expect("older still readable");
+        assert!(after.cancelled && !after.running && !after.resumable);
+        let newer_state = svc
+            .index_job_state(&newer)
+            .expect("newer must stay untouched");
+        assert!(
+            !newer_state.cancelled,
+            "a job that was not named must not be cancelled"
+        );
+
+        // A finished/cancelled job is an idempotent no-op (the pre state
+        // is returned as-is).
+        let pre_again = svc
+            .cancel_index_job(&older)
+            .expect("second cancel is a no-op");
+        assert!(!pre_again.running && !pre_again.resumable);
+
+        // A nonexistent job is reported as an error, never silently
+        // retargeted.
+        assert!(svc.cancel_index_job("kb-import-does-not-exist").is_err());
+    }
+
+    /// The deletion boundary for "disappeared" entries can only be roots
+    /// that were actually WALKED.
+    ///
+    /// `scanner::scan` silently returns 0 for an unwalkable root (drive
+    /// dropped / permissions revoked / root deleted); treating it as a
+    /// boundary all the same would condemn that root's whole indexed slice
+    /// as disappeared while reporting `done/scanned:0`. The legitimate path —
+    /// the user really emptied the directory — must keep working: a root
+    /// that is still there and still empty still cleans.
+    #[test]
+    fn stale_sweep_bounds_exclude_a_root_that_could_not_be_walked() {
+        let unique = format!("{}_{}", std::process::id(), now());
+        let walkable = std::env::temp_dir().join(format!("pinvou3_kb_stale_bounds_{unique}"));
+        std::fs::create_dir_all(&walkable).expect("create walkable root");
+        // A sibling directory, not a child: a child would be incidentally
+        // matched by `starts_with(walkable)` and could not test "an
+        // unwalkable root stays out of the boundary". The path is never
+        // created = the unwalkable root.
+        let vanished = std::env::temp_dir().join(format!("pinvou3_kb_stale_gone_{unique}"));
+
+        // Walked (walked>0) → authorized; walked 0 but the root is still a
+        // readable directory (the user emptied it) → authorized; walked 0
+        // and the root is unreadable (drive dropped / deleted / no
+        // permission) → not authorized.
+        assert!(root_authorizes_deletion(&walkable, 12));
+        assert!(
+            root_authorizes_deletion(&walkable, 0),
+            "an empty directory is genuinely empty; this slice must clean"
+        );
+        assert!(
+            !root_authorizes_deletion(&vanished, 0),
+            "an unwalkable root must not authorize deletion"
+        );
+
+        // End to end: two indexed slices in the store; only the walkable
+        // root enters the boundary.
+        let existing = std::collections::HashMap::from([
+            (
+                walkable.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+            (
+                vanished.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+        ]);
+        let visited = std::collections::HashSet::new();
+        let stale = stale_entries(&existing, &visited, std::slice::from_ref(&walkable));
+        assert_eq!(
+            stale,
+            vec![walkable.join("kept.txt").to_string_lossy().into_owned()],
+            "only walked roots may delete; under an unwalkable root everything must stay"
+        );
+
+        // Contrast: handing in the requested roots wholesale (including
+        // the unwalkable one) is exactly the pre-fix behavior.
+        let unscoped = stale_entries(&existing, &visited, &[walkable.clone(), vanished.clone()]);
+        assert_eq!(
+            unscoped.len(),
+            2,
+            "an unfiltered boundary would delete the unwalkable root too"
+        );
+
+        let _ = std::fs::remove_dir_all(&walkable);
+    }
+
+    /// Post-panic close-out for the scan thread: `running` must fall back
+    /// to false. `scan_state` is a parking_lot::Mutex (cannot poison), so
+    /// without the backstop it would stay at running:true forever — and
+    /// `pinvou knowledge scan start` is the one caller that blocks on that
+    /// flag and would hang.
+    #[test]
+    fn scan_panic_guard_always_clears_the_running_flag() {
+        let state = Mutex::new(ScanState {
+            running: true,
+            phase: "scanning".into(),
+            roots: vec!["/tmp".into()],
+            scanned: 7,
+            finished_at: 0,
+        });
+        finish_scan_after_panic(&state);
+        let st = state.lock();
+        assert!(
+            !st.running,
+            "running must be released after a panic or the blocking caller hangs"
+        );
+        assert_eq!(
+            st.phase, "interrupted",
+            "neither done (the frontend refreshes L0 only on done) nor cancelled (no user cancel)"
+        );
+        assert!(st.finished_at > 0);
     }
 
     /// Headless read contract (stats / type_counts / search): zero-state

@@ -632,19 +632,76 @@ fn dedup_credential_declarations<T>(
     out
 }
 
+/// The reason copy written into a record's `degraded` field when its
+/// authorization is disconnected. Both writers (the desktop
+/// `features::connectors::connector_cli::bundle_store_on_disconnected` and the
+/// headless `pinvou-cli` mirror in connectors.rs) import THIS constant; the
+/// connectors → marketplace dependency direction matches the standing module
+/// boundary. Publishing the judgment and the copy in the same module shrinks
+/// the drift surface from "two literals drifting independently" to "edit this
+/// one constant".
+///
+/// The judgment matches by prefix, not full equality (see this module's
+/// `degraded_by_disconnect`): the copy is human-facing hint text whose tail
+/// may be reworded at any time, and a full-equality match would let a pure
+/// copy edit silently reclassify "disconnected" back into
+/// "assets mismatch" -- exactly the misdiagnosis this judgment prevents.
+pub const CLI_DISCONNECTED_DEGRADED_REASON: &str =
+    "已断开授权：配套技能已随断开移除，重新连接即可恢复";
+
+/// `degraded` 原因是否来自「断开授权」而不是资产校验失败。
+fn degraded_by_disconnect(reason: &str) -> bool {
+    // `CLI_DISCONNECTED_DEGRADED_REASON` 的稳定前缀；两个写入方都以它开头。
+    reason.starts_with("已断开授权")
+}
+
 /// 就绪态判定（派生态，现算不进存储）。
-/// - CLI 包：授权存在与否——由命令层经 `bundle_readiness` 分派到各 status 查询注入
-///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）
+/// - CLI 包：桌面端由命令层经 `bundle_readiness` 分派到各 status 查询注入授权态
+///   （注册表不直连 CLI 运行时，注入闭包保持依赖方向 app → features）；headless
+///   调用方（pinvou-cli `plugins readiness`）没有命令层，落到下方按 installed
+///   + degraded 的保守回退
 /// - 凭据型：credentials 必填项在系统凭据存储中齐不齐（现算）
 /// - 本地免凭据：恒 Ready
+///
+/// degraded（`store::BundleRecord::installed` 注释的存储二态异常侧：「登记在、
+/// 资源缺」）只在 CLI 臂参与判定，且按来源分两码（见该臂注释）。非 CLI 臂**不**
+/// 读 degraded：那会改变桌面 `bundle_readiness` 的 `_` 臂结论（就绪卡翻成未就绪），
+/// 是一处没有 GUI 侧需求的可见变更；需要这个信号的是 headless 的
+/// `plugins readiness`，它自己按行上的 `degraded` 派生 `assets_missing`
+/// （见 pinvou-cli `plugins.rs`），不必让桌面端跟着改判。
 pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool) -> Readiness {
     match bundle.kind {
-        // CLI authorization state is injected by the command layer: its
-        // `bundle_readiness` `BundleKind::Cli` arm fully dispatches to the
-        // `*_status` queries, so Cli bundles never reach this function
-        // (the invariant is pinned explicitly below).
+        // The desktop command layer overrides this arm with its `*_status`
+        // dispatch; headless callers (pinvou-cli has no command layer) get
+        // the conservative installed-based verdict instead of a panic. That
+        // fallback is strictly weaker than the desktop's live probe: it sees
+        // registry facts only, never the connection state. The headless
+        // surface must disclose that gap itself rather than let a registry
+        // `Ready` pass for a probed one —— see pinvou-cli `plugins.rs`
+        // readiness (`probe: "unavailable_in_cli"`).
         BundleKind::Cli => {
-            unreachable!("CLI bundle readiness is dispatched by the command layer")
+            if !bundle.installed {
+                Readiness::NotReady("cli_not_installed")
+            } else if let Some(reason) = bundle.degraded.as_deref() {
+                // CLI 包的 degraded 有两个来源，修复动作正好相反，必须分码：
+                // 1) 断开授权 —— `connector_cli::bundle_store_on_disconnected`
+                //    在**每一次**断开（桌面断开 / `connectors logout`）时置位，
+                //    是常态路径；修复动作 = 重新授权连接（重解包 companion 技能）。
+                // 2) 存量二进制对照 lock 表校验 SHA-256 不匹配 / 无法校验
+                //    （`store::legacy_cli_records` 的 `CliAssetState::Mismatch`），
+                //    只在首启导入时一次性置位；修复动作 = 重新下载二进制。
+                // 一律报 (2) 会把「刚登出」这个最常见的 degraded 诊断成资产损坏，
+                // 把运维引去重下二进制而不是重新授权——与分码的初衷相反。
+                // 两者都不是桌面端实时探测得出的 `not_connected`：那个码只由
+                // 命令层的 status 探测下发，此处不冒名。
+                if degraded_by_disconnect(reason) {
+                    Readiness::NotReady("cli_disconnected")
+                } else {
+                    Readiness::NotReady("cli_assets_mismatch")
+                }
+            } else {
+                Readiness::Ready
+            }
         }
         BundleKind::Mcp | BundleKind::Bundle | BundleKind::Skill => {
             // Local credential-free (no required credentials) is always Ready; with required credentials, check the system credential store.
@@ -656,6 +713,8 @@ pub fn readiness_for(bundle: &BundleInfo, credential_has: impl Fn(&str) -> bool)
                 .filter(|c| c.required && !credential_has(&c.key))
                 .map(|c| c.key.as_str())
                 .collect();
+            // degraded 不在此臂参与判定（理由见函数文档）：这是桌面就绪卡直接
+            // 消费的结论，改判它是 GUI 可见变更，而提出诉求的只有 headless 侧。
             if missing.is_empty() {
                 Readiness::Ready
             } else {
@@ -794,8 +853,74 @@ mod tests {
             required: false,
         }];
         assert_eq!(
-            readiness_for(&b(BundleKind::Skill, opt), |_| false),
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
             Readiness::Ready
+        );
+        // Headless fallback (pinvou-cli has no command layer to inject the
+        // `*_status` verdict): an installed CLI bundle is Ready, an
+        // uninstalled one reports cli_not_installed instead of panicking.
+        assert_eq!(
+            readiness_for(&b(BundleKind::Cli, vec![]), |_| false),
+            Readiness::Ready
+        );
+        let mut uninstalled_cli = b(BundleKind::Cli, vec![]);
+        uninstalled_cli.installed = false;
+        assert_eq!(
+            readiness_for(&uninstalled_cli, |_| false),
+            Readiness::NotReady("cli_not_installed")
+        );
+        // CLI 记录的 degraded 分两码，因为修复动作相反：断开授权 → 重新连接，
+        // 资产校验失败 → 重下二进制。断开是每次登出都会走的常态路径，一律报
+        // 资产损坏会把运维引错方向（那正是分码前的缺陷）。
+        let mut disconnected_cli = b(BundleKind::Cli, vec![]);
+        disconnected_cli.degraded = Some(CLI_DISCONNECTED_DEGRADED_REASON.into());
+        assert_eq!(
+            readiness_for(&disconnected_cli, |_| false),
+            Readiness::NotReady("cli_disconnected")
+        );
+        let mut degraded_cli = b(BundleKind::Cli, vec![]);
+        degraded_cli.degraded = Some("CLI 二进制 SHA-256 与 lock 表不符，待重新下载".into());
+        assert_eq!(
+            readiness_for(&degraded_cli, |_| false),
+            Readiness::NotReady("cli_assets_mismatch")
+        );
+        for cli in [&disconnected_cli, &degraded_cli] {
+            assert_ne!(
+                readiness_for(cli, |_| false),
+                Readiness::NotReady("not_connected"),
+                "headless 回退不得冒用 not_connected：那个码来自桌面端的实时 status 探测"
+            );
+        }
+        // 非 CLI 臂不读 degraded：这是桌面就绪卡直接消费的结论，改判它属于没有
+        // GUI 侧需求的可见变更。需要这个信号的 headless 侧（pinvou-cli
+        // `plugins readiness`）自行按行上的 degraded 派生 assets_missing，
+        // 对应契约测试 `readiness_derives_assets_missing_for_a_degraded_package`。
+        assert_eq!(
+            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
+            Readiness::Ready
+        );
+        for kind in [BundleKind::Mcp, BundleKind::Bundle, BundleKind::Skill] {
+            let mut degraded = b(kind, opt.clone());
+            degraded.degraded = Some("resources missing".into());
+            assert_eq!(
+                readiness_for(&degraded, |_| true),
+                Readiness::Ready,
+                "{kind:?} 的 degraded 不得改变桌面就绪卡的结论"
+            );
+        }
+        // 缺必填凭据仍然判 NotReady，degraded 与否都不影响该结论。
+        let mut degraded_and_uncredentialed = b(
+            BundleKind::Mcp,
+            vec![CredentialSpec {
+                key: "AMAP_KEY".into(),
+                target: CredentialTarget::Env,
+                required: true,
+            }],
+        );
+        degraded_and_uncredentialed.degraded = Some("resources missing".into());
+        assert_eq!(
+            readiness_for(&degraded_and_uncredentialed, |_| false),
+            Readiness::NotReady("missing_credentials")
         );
     }
 

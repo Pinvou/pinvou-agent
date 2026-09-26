@@ -960,6 +960,38 @@ fn create_empty_with_id_preserves_requested_identity() {
     );
 }
 
+/// Headless sessions persist by default and show up in the GUI history, so
+/// they must carry the same trilingual placeholder GUI-created sessions do.
+/// An eval-internal label would render untranslated for en/ja users, and the
+/// command layer's auto-rename triggers on exactly this value — a different
+/// title would also freeze an adopted session's name forever. The agentic
+/// runner reads the same sentinel as its adoption marker, so this assertion
+/// guards both.
+#[test]
+fn create_empty_with_id_carries_the_localizable_new_chat_placeholder() {
+    let (store, _g) = isolated_store();
+
+    let session = store
+        .create_empty_with_id(
+            "eval_placeholder_title".to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("create session with requested id");
+
+    assert_eq!(session.metadata.title, super::store::NEW_CHAT_TITLE);
+    assert_eq!(
+        store
+            .load("eval_placeholder_title")
+            .expect("load session")
+            .metadata
+            .title,
+        super::store::NEW_CHAT_TITLE,
+        "the persisted record is what the GUI list renders"
+    );
+}
+
 /// Headless session ids persist for good now, so a second create with the
 /// same caller-chosen id must fail loud instead of silently replacing the
 /// kept record (transcript loss, and the old pin would transfer to the new

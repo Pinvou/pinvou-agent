@@ -285,6 +285,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("| sha256sum --check -", step)
         self.assertNotIn("download-actionlint.bash", step)
+
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
@@ -301,13 +302,49 @@ class CiGatePolicyTests(unittest.TestCase):
             "cli_rust must match the real crate directory (pinvou-cli)",
         )
         self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
+        self.assertIn(
+            "- 'pinvou-cli/**/Cargo.lock'",
+            cli_paths,
+            "every CLI leg builds --locked, so a lockfile-only change (a "
+            "dependency bump, a resolver rewrite) changes exactly what they "
+            "compile; without this entry such a PR skips cli-test, "
+            "windows-rust-test AND macos-cli-check and required-gate passes "
+            "on 'skipped'",
+        )
         self.assertIn("- 'CodeWhale'", cli_paths)
+        # The connector lock tables are compiled into the CLI with include_str!
+        # (connectors.rs), so editing or deleting one is a CLI source change in
+        # all but name — and macos-cli-check, the leg whose reason for existing
+        # is exactly those per-target files, is the first thing skipped without
+        # this entry.
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/resources/platforms/**'",
+            cli_paths,
+            "the connector lock tables are include_str!'d into the CLI; "
+            "without this entry a lock-table PR runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
         # gate at all).
         self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
         self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/src/features/pet/**'",
+            cli_paths,
+            "pet is exempted from rust_full like feedback/personas, so pet Rust "
+            "changes must gate through the CLI suite too",
+        )
+        # Policy: the workflow file itself is deliberately excluded from
+        # cli_rust — workflow edits must not link the full-app test suites
+        # (this test enforces that). cli-test changes are instead validated
+        # by the next cli_rust PR / the merge queue.
+        self.assertNotIn(
+            "- '.github/workflows/pr-check.yml'",
+            cli_paths,
+            "cli_rust must not include the workflow file: workflow edits must "
+            "not link the full-app test suites",
+        )
 
         cli_test = _without_yaml_comments(
             self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
@@ -340,11 +377,351 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("cache-targets: false", cli_test)
 
+        # The Windows leg also compile-checks the pinvou-cli workspace: the
+        # CLI's cfg(target_os = "windows") branches (exe/cmd shims, taskkill,
+        # CREATE_NO_WINDOW) only type-check on a Windows runner, and cli_rust
+        # must trigger that leg exactly like it triggers cli-test.
+        windows_rust_test = self.pr_workflow.split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            windows_rust_test,
+            "windows-rust-test must be triggered by cli_rust: its pinvou-cli "
+            "compile check is the only Windows leg for CLI code",
+        )
+        windows_rust_steps = _without_yaml_comments(windows_rust_test)
+        self.assertIn(
+            "- name: pinvou-cli Windows compile check",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            windows_rust_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", windows_rust_steps)
+
+        # macOS-gated CLI code must type-check somewhere: cli-test is
+        # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
+        # Windows compile check and gates through required-gate. It runs for
+        # ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
+        # (green-alone PRs can still combine into a macOS-only compile break),
+        # and main push (cumulative); see
+        # test_macos_cli_check_runs_on_main_push_and_merge_group.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15", macos_cli)
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            macos_cli,
+            "macos-cli-check must use the same cli_rust trigger as cli-test",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            macos_cli,
+            "macos-cli-check must cover rust_full like cli-test does",
+        )
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            macos_cli,
+            "draft PRs must skip the macOS compile leg like the other rust jobs",
+        )
+        macos_cli_steps = _without_yaml_comments(macos_cli)
+        self.assertIn(
+            "- name: pinvou-cli macOS compile check",
+            macos_cli_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            macos_cli_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", macos_cli_steps)
+        self.assertIn(
+            "rustup show active-toolchain",
+            macos_cli_steps,
+            "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
+        )
+
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
+        self.assertIn("- macos-cli-check", required_gate)
+        self.assertIn(
+            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
+            required_gate,
+        )
+        self.assertIn(
+            '"macos-cli-check:$MACOS_CLI_RESULT"',
+            required_gate,
+            "macos-cli-check must enter the failure loop like cli-test "
+            "(success|skipped accepted so path-filtered skips do not false-fail)",
+        )
+
+    def test_macos_cli_check_runs_on_main_push_and_merge_group(self):
+        # macos-cli-check is the only leg that type-checks
+        # #[cfg(target_os = "macos")] CLI code, and Linux cannot cover that risk
+        # class for the Merge Queue combined tree. It must therefore run on
+        # push(main) unconditionally (cumulative verification, independent of a
+        # single push's paths-filter) and on the Merge Queue when the combined
+        # diff touches cli_rust/rust_full.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("github.event_name == 'push' ||", macos_cli)
+        self.assertIn("github.event_name == 'merge_group'", macos_cli)
+        merge_group_branch = macos_cli.split(
+            "github.event_name == 'merge_group'", maxsplit=1
+        )[1].split("github.event_name == 'pull_request'", maxsplit=1)[0]
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            merge_group_branch,
+            "the Merge Queue leg must be gated by cli_rust like the PR leg",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            merge_group_branch,
+        )
+        # Draft gating only applies to the pull_request leg (merge_group and
+        # push have no draft concept).
+        pull_request_branch = macos_cli.split(
+            "github.event_name == 'pull_request'", maxsplit=1
+        )[1]
+        self.assertIn("github.event.pull_request.draft == false", pull_request_branch)
+        self.assertNotIn(
+            "github.event.pull_request.draft",
+            merge_group_branch,
+        )
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- macos-cli-check", required_gate)
+        self.assertIn(
+            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
+            required_gate,
+        )
+
+    def test_macos_cli_check_configures_the_sibling_restorable_cache(self):
+        # Round-17 close-out, fixed in round 18: the job header claimed "no
+        # macOS cache exists in this workflow that a refs/pull/N/merge run
+        # could restore", which was false — macos-rust-check configures
+        # exactly one, saved only on main, restorable by every PR through
+        # rust-cache's prefix fallback (the workflow header's own documented
+        # warm-cache design). This leg must keep that restorable treatment:
+        # it is the long pole of the serialized macOS runner queue and every
+        # uncached run pays a cold compile of the whole workspace.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15", macos_cli)
+        cache_step = _without_yaml_comments(macos_cli).split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("- name: pinvou-cli macOS compile check", maxsplit=1)[0]
+        self.assertIn("uses: Swatinem/rust-cache@v2", cache_step)
+        self.assertIn("workspaces: pinvou-cli", cache_step)
+        self.assertIn("shared-key: macos-cli-check", cache_step)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cache_step,
+            "PR-side runs must stay read-only on the 10GB quota; main is the "
+            "sole writer of every warm cache in this workflow (same policy as "
+            "macos-rust-check and cli-test)",
+        )
+        # The sibling-policy half of the round-18 decision, pinned so a future
+        # "consolidation" cannot silently alias the keys: macOS artifacts are
+        # not interchangeable with the Linux legs' (cli-test compiles the same
+        # workspace but its cache is ~/.cargo-only under the standing incident
+        # directive, and clippy artifacts differ from rustc ones anyway).
+        self.assertNotIn("shared-key: macos-rust-check", cache_step)
+        self.assertNotIn("shared-key: cli-test", cache_step)
+        # Unlike the Linux legs this cache keeps the target directory: the
+        # cache-targets: false directive exists because RESTORED target/
+        # entries that needed linking took runners down, and a check-only leg
+        # links nothing (rmeta-size artifacts). Regressing to false would
+        # silently re-introduce the cold compile this round removed.
+        self.assertNotIn("cache-targets:", cache_step)
+
+    def test_cli_lint_job_is_wired_into_required_gate(self):
+        # Round-18 review §3: "The CI leg doesn't lint the CLI" — no clippy on
+        # any lane for ~50k lines while the src-tauri [lints] bans do not
+        # apply to the pinvou-cli workspace. The new lint leg must satisfy the
+        # same three-wiring rule as every other gate job (needs entry, env
+        # backfill, summary-loop entry); removing the job or unwiring it from
+        # required-gate must turn this suite red.
+        body = _without_yaml_comments(self.pr_workflow)
+        cli_lint = body.split("\n  cli-lint:", maxsplit=1)[1].split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[0]
+        self.assertIn("needs: changes", cli_lint)
+        self.assertIn("runs-on: ubuntu-22.04", cli_lint)
+        # The trigger set must mirror cli-test exactly: main push (cumulative,
+        # paths-filter independent), the Merge Queue combined tree gated by
+        # cli_rust/rust_full, and ready non-draft PRs (drafts skip the heavy
+        # leg).
+        self.assertIn("github.event_name == 'push' ||", cli_lint)
+        self.assertIn("github.event_name == 'merge_group'", cli_lint)
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'", cli_lint
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'", cli_lint
+        )
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            cli_lint,
+            "draft PRs must skip the lint leg like the other heavy CLI jobs",
+        )
+        # Fail-closed on compile errors and nothing else may soften it: the
+        # warn-visible clippy policy (debt cleanup pending the [lints] table,
+        # see the job comment) must never grow a bypass here.
+        self.assertNotIn("continue-on-error", cli_lint)
+        self.assertIn("components: clippy", cli_lint)
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+            "the CLI lint leg must run clippy via the same --manifest-path "
+            "convention as every other CLI leg",
+        )
+        # --all-targets: tests are linted too; --no-deps: dependencies and the
+        # CodeWhale submodule are never linted; --locked like every CLI build.
+        self.assertIn("--workspace --all-targets --no-deps --locked", cli_lint)
+        # The featureless build (product-backend off) is exercised nowhere
+        # else — cargo test always runs default features — so without this
+        # check step the `#[cfg(not(feature = "product-backend"))]` refusal
+        # arms in the cli crate could rot silently.
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+        )
+        self.assertIn(
+            "--workspace --no-default-features --locked",
+            cli_lint,
+            "cli-lint must keep compiling the featureless build so the "
+            "product-backend-off cfg arms cannot rot silently",
+        )
+        # Independent cache keyed to the compiler mode (clippy-driver
+        # artifacts are not reusable by the rustc test compilers — same
+        # parallel-job split as rust-lint vs rust-test).
+        self.assertIn("shared-key: cli-lint", cli_lint)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cli_lint,
+        )
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- cli-lint", required_gate)
+        self.assertIn("CLI_LINT_RESULT: ${{ needs.cli-lint.result }}", required_gate)
+        self.assertIn(
+            '"cli-lint:$CLI_LINT_RESULT"',
+            required_gate,
+            "cli-lint must enter the failure loop like cli-test "
+            "(success|skipped accepted so path-filtered skips do not "
+            "false-fail)",
+        )
+
+    def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
+        # The workflow header states this policy in prose (no gate job
+        # carries a job-level continue-on-error) with nothing enforcing it,
+        # and it is the cheapest
+        # fail-open vector in the file: a job-level `continue-on-error: true`
+        # makes the job's own failure non-blocking AND makes
+        # `needs.<job>.result` report `success`, so required-gate's
+        # `success|skipped` loop accepts it. One line would silently disarm
+        # cli-test, windows-rust-test, macos-cli-check or rust-test while the
+        # required check stays green.
+        #
+        # Indentation is the discriminator: job keys sit at 4 spaces
+        # (`  <job>:` + `    runs-on:`), step keys at 8 (`      - name:` +
+        # `        continue-on-error:`). Comments are stripped first so the
+        # header's prose and the "no continue-on-error" annotations on the
+        # clippy gate do not count as settings.
+        body = _without_yaml_comments(self.pr_workflow)
+        job_level = []
+        step_level = []
+        for number, line in enumerate(body.splitlines(), start=1):
+            if not line.strip().startswith("continue-on-error"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            (job_level if indent <= 4 else step_level).append((number, line.strip()))
+        self.assertEqual(
+            job_level,
+            [],
+            "a job-level continue-on-error makes needs.<job>.result report "
+            "'success' to required-gate, so the whole compile/test leg becomes "
+            "advisory while the required check stays green",
+        )
+        # Exactly one legitimate use, and it is a STEP whose entire purpose is
+        # to print an analysis it must not be able to fail the job with.
+        self.assertEqual(
+            len(step_level),
+            1,
+            "only the Windows PE import diagnostic may opt out of blocking; "
+            f"found {len(step_level)} continue-on-error settings: {step_level}",
+        )
+        diagnostic_step = body.split(
+            "- name: Windows 测试二进制导入诊断", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "continue-on-error: true",
+            diagnostic_step,
+            "the single permitted continue-on-error must be the Windows PE "
+            "import diagnostic step, not some other step that moved under it",
+        )
+
+    def test_gate_jobs_do_not_swallow_their_exit_status(self):
+        # The companion fail-open vector to continue-on-error: appending
+        # `|| true` (or `|| :`) to a gate command leaves the step, the job and
+        # required-gate all green while the compiler or the test binary
+        # actually failed. The workflow uses `|| echo "::warning::..."` for its
+        # one genuinely best-effort step (ci-memory-setup), which is a
+        # different and deliberate shape, so scanning the gate jobs for the
+        # unconditional-success idioms has no false positives today.
+        gate_jobs = (
+            "rust-test",
+            "rust-lint",
+            "cli-test",
+            "cli-lint",
+            "windows-rust-test",
+            "macos-rust-check",
+            "macos-cli-check",
+            "knowledge-rust",
+        )
+        lines = self.pr_workflow.splitlines()
+        job_header = re.compile(r"^  (\S.*):\s*$")
+        for name in gate_jobs:
+            starts = [
+                number
+                for number, line in enumerate(lines)
+                if job_header.match(line) and job_header.match(line).group(1) == name
+            ]
+            self.assertEqual(
+                len(starts), 1, f"expected exactly one {name} job definition"
+            )
+            start = starts[0]
+            # The block runs to the next job header (2-space key), which is the
+            # only thing that can end a job in this file.
+            end = next(
+                (
+                    number
+                    for number in range(start + 1, len(lines))
+                    if job_header.match(lines[number])
+                ),
+                len(lines),
+            )
+            block = _without_yaml_comments("\n".join(lines[start:end]))
+            for idiom in ("|| true", "|| :", "|| exit 0"):
+                self.assertNotIn(
+                    idiom,
+                    block,
+                    f"{name} must not swallow a command's exit status with "
+                    f"'{idiom}': the leg would report success on a real "
+                    "compile or test failure and required-gate would accept it",
+                )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)

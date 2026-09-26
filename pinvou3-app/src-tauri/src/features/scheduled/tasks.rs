@@ -1825,7 +1825,6 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
-    use parking_lot::RwLock;
 
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
@@ -2082,6 +2081,53 @@ mod tests {
         assert_eq!(reloaded.kind_for("automation-1"), None);
         let cleared = ScheduledTaskKindStore::open(path).expect("reopen cleared store");
         assert_eq!(cleared.kind_for("automation-1"), None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kind_lookup_honors_a_record_written_by_another_process_after_open() {
+        // 该 sidecar 由 CLI(`pinvou scheduled create --kind memory-organize`)
+        // 与本进程共同拥有,而 registry 只在 open() 读一次;基础设施的扫描却每
+        // tick 重新从磁盘读取任务定义。因此 app 启动后由 CLI 写入的 kind 必须
+        // 仍被看见——否则该任务会被当作普通 chat 任务,以无人值守的全权限 Yolo
+        // 会话执行它的 kind 专用提示词,正是不安全的那个方向。
+        let dir = temp_home();
+        let path = dir.join("foreign-writer-task-kinds.json");
+        let store = ScheduledTaskKindStore::open(path.clone()).expect("open kind store");
+        assert_eq!(
+            store.kind_lookup_for("automation-cli"),
+            ScheduledTaskKindLookup::Chat,
+            "nothing on disk yet"
+        );
+
+        // Written straight to the path, bypassing this handle: exactly what the
+        // separate CLI process does.
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": SCHEDULED_TASK_KIND_SCHEMA_VERSION,
+                "tasks": {
+                    "automation-cli": {
+                        "kind": SCHEDULED_TASK_KIND_MEMORY_ORGANIZE,
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }
+                }
+            }))
+            .expect("serialize foreign registry"),
+        )
+        .expect("write foreign registry");
+
+        assert_eq!(
+            store.kind_lookup_for("automation-cli"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a kind record written after open() must not degrade to a chat task"
+        );
+        assert_eq!(
+            store.kind_lookup_for("automation-missing"),
+            ScheduledTaskKindLookup::Chat,
+            "an id that is absent on disk too is still an ordinary chat task"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -4411,10 +4457,8 @@ mod tests {
             created.id.clone(),
             HashSet::from(["viewed-run".to_string()]),
         );
-        state.read_state = ScheduledRunReadStore {
-            path: Arc::new(blocking_parent.join("read-state.json")),
-            registry: Arc::new(RwLock::new(registry)),
-        };
+        state.read_state =
+            ScheduledRunReadStore::from_registry(blocking_parent.join("read-state.json"), registry);
 
         let deleted = state
             .delete_for_test(created.id.clone())

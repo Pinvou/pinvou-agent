@@ -68,9 +68,16 @@ pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
-/// it per UI language and the first send triggers the auto-rename. Sessions
-/// created headlessly share the same sentinel so they behave identically in
-/// the history list.
+/// it per UI language and the first send triggers the auto-rename. Headless
+/// sessions persist by default and surface in the GUI history, so they carry
+/// the same sentinel — an eval-internal label would leak untranslated into
+/// every UI language, and because the command layer's auto-rename triggers on
+/// exactly this value it would also freeze an adopted session's title forever.
+///
+/// It doubles as the agentic runner's adoption marker: a session still wearing
+/// the sentinel is untouched factory state that a failed run may delete, while
+/// any other title means a GUI user renamed it (or their first send triggered
+/// the auto-rename) and now owns it.
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 
 /// Marker file the code-session feature writes inside a session's directory
@@ -924,9 +931,6 @@ impl SessionStore {
             None,
             None,
         );
-        // Headless sessions persist by default and surface in the GUI history,
-        // so they carry the same localized placeholder sentinel as GUI-created
-        // sessions (an eval-internal label would leak into every UI language).
         session.metadata.title = NEW_CHAT_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;

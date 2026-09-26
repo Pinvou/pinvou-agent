@@ -21,6 +21,22 @@ use tauri::Manager;
 #[cfg(feature = "benchmark-hooks")]
 pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
 
+/// Facade for the automation scheduler foundation, consumed only by the
+/// `scheduled` family of pinvou-cli: definitions and run records live behind
+/// the public API of CodeWhale `codewhale-tui`'s (this crate's
+/// `deepseek-tui` alias) `automation_manager`, while the architecture guard
+/// `rust_cli_reaches_past_pinvou3_lib` requires pinvou-cli to reach the
+/// foundation through pinvou3_lib surfaces only — the same precedent as the
+/// `pub mod` opened on `features::projects` for the CLI. Only the entries
+/// the CLI `scheduled` family actually consumes are re-exported; the GUI
+/// itself keeps using `deepseek_tui::...` directly, not through this facade.
+pub mod automation_foundation {
+    pub use deepseek_tui::automation_manager::{
+        AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedule,
+        AutomationStatus, CreateAutomationRequest, UpdateAutomationRequest,
+    };
+}
+
 use crate::app::commands;
 use crate::features::{
     assistant::{engine_pool::EnginePool, platform::bridge},

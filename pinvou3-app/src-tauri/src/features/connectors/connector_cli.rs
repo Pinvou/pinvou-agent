@@ -567,10 +567,17 @@ pub fn bundle_store_on_connected(id: &str) {
 /// 删掉 companion 技能目录，包内容不完整，故按 §3.2 的 Degraded（登记在、资源缺）
 /// 标记；修复动作 = 重新连接（重解包技能），与预置重装/上传重导入同构。
 /// 记录不存在（从未连接成功过）时 mark_degraded 返回 false，天然无操作。
+///
+/// The reason copy written comes from the marketplace side's
+/// `CLI_DISCONNECTED_DEGRADED_REASON` (prefix-match judgment in
+/// `bundle.rs`), eliminating the two-literal drift; the connectors →
+/// marketplace dependency direction matches the standing boundary (see the
+/// comment in `bundle.rs`).
 pub fn bundle_store_on_disconnected(id: &str) {
-    if let Err(e) = crate::features::marketplace::store::BundleStore::new()
-        .mark_degraded(id, "已断开授权：配套技能已随断开移除，重新连接即可恢复")
-    {
+    if let Err(e) = crate::features::marketplace::store::BundleStore::new().mark_degraded(
+        id,
+        crate::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON,
+    ) {
         log::warn!("[connectors] bundles.json 镜像写入失败（disconnect {id}）: {e}");
     }
 }

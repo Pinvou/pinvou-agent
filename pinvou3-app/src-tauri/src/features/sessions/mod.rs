@@ -88,9 +88,10 @@ pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
 /// headless runs no longer touch.
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
-/// Re-export the new-chat placeholder sentinel: the auto-rename trigger in
-/// the command layer must compare against the same value GUI-created and kept
-/// headless sessions carry, or a renamed constant silently breaks auto-rename.
+/// Re-export the new-chat placeholder sentinel: the auto-rename trigger in the
+/// command layer and the agentic runner's adoption guard must both compare
+/// against the same value GUI-created and kept headless sessions carry, or a
+/// renamed constant silently breaks auto-rename and the adoption exception.
 pub(crate) use self::store::NEW_CHAT_TITLE;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;

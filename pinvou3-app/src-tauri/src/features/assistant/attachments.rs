@@ -156,19 +156,43 @@ where
 /// Stages an attachment into a workspace subdirectory under a controlled file
 /// name; shared by the GUI attachment commands and the headless eval
 /// attachment staging path.
+///
+/// The copy is bounded by `features::files::file_ingest::MAX_FILE_BYTES`, the
+/// same 20 MiB per-file cap `file_ingest::ingest` and `validate_attachments`
+/// hard-fail on before anything is staged — so the bound can never reject a
+/// legitimate attachment; it exists because a caller-owned source can be
+/// swapped or grown between the size check and this copy (TOCTOU), and the
+/// oversized content must not land in the workspace.
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
     workspace: &std::path::Path,
     attachment_dir: &str,
 ) -> Option<String> {
-    stage_file_in_workspace_with_copier(src, basename, workspace, attachment_dir, std::io::copy)
+    stage_file_in_workspace_with_copier(
+        src,
+        basename,
+        workspace,
+        attachment_dir,
+        |source, destination| {
+            copy_bounded(
+                source,
+                destination,
+                crate::features::files::file_ingest::MAX_FILE_BYTES,
+            )
+        },
+    )
 }
 
-/// Bounded copier for staged attachments: caps the STAGED bytes even when a
-/// caller-owned source grows while the copy streams — the pre-copy re-stat in
-/// the staging loop cannot close that window. Mirrors the eval pipeline's
-/// `take(MAX + 1)` + over-check in headless staging.
+/// The one bounded copier for staged attachments, shared by every staging call
+/// site (this module's `stage_file_in_workspace`, the eval pipeline and the
+/// agentic task's per-file cap): it caps the STAGED bytes even when a
+/// caller-owned source is swapped or grows while the copy streams — the
+/// pre-copy re-stat in the staging loop cannot close that window.
+/// `take(max + 1)` reads exactly one byte past the cap, which is what lets the
+/// over-check distinguish "at the cap" from "over it";
+/// `stage_file_in_workspace_with_copier` deletes the partially written
+/// destination when this returns an error.
 pub(crate) fn copy_bounded(
     source: &mut std::fs::File,
     destination: &mut std::fs::File,
@@ -697,5 +721,119 @@ mod read_only_prompt_tests {
         assert!(prompt.contains("不要请求 bash、代码执行、write 或 edit"));
         assert!(!prompt.contains("bash(command="));
         assert!(!prompt.contains("`write`"));
+    }
+}
+
+#[cfg(test)]
+mod staged_copy_limit_tests {
+    use super::{copy_bounded, stage_file_in_workspace, stage_file_in_workspace_with_copier};
+
+    /// The cap the assertions below exercise. It is injected instead of using
+    /// the real `MAX_FILE_BYTES`: the copy streams every byte of the source
+    /// into the destination, so pinning a `take()` at the real 20 MiB cap cost
+    /// tens of megabytes of disk I/O per `cargo test` run to prove a bound
+    /// that is the same comparison at 8 bytes. `copy_bounded`'s own staging
+    /// tests in `product_runtime::agentic_task` use the same 8-byte trick.
+    const TEST_LIMIT: u64 = 8;
+
+    /// TOCTOU regression: `validate_attachments` / ingest check
+    /// `metadata.len()` first, then the staging helper copies. A source that
+    /// is swapped or grown between those two steps must not let over-limit
+    /// content through — the copy path enforces the cap itself, and the
+    /// partially written destination is removed.
+    #[test]
+    fn staged_copy_rejects_a_source_swapped_over_the_limit() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("swap.png");
+        std::fs::write(&source, b"x").unwrap();
+
+        // Same-user swap between the metadata check and the copy.
+        std::fs::write(&source, vec![b'x'; TEST_LIMIT as usize + 1]).unwrap();
+
+        let staged = stage_file_in_workspace_with_copier(
+            source.to_str().unwrap(),
+            "swap.png",
+            workspace.path(),
+            "attachments",
+            |source, destination| copy_bounded(source, destination, TEST_LIMIT),
+        );
+
+        assert_eq!(staged, None);
+        assert!(!workspace.path().join("attachments/swap.png").exists());
+    }
+
+    #[test]
+    fn staged_copy_accepts_a_source_exactly_at_the_limit() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("max.png");
+        let contents = vec![b'x'; TEST_LIMIT as usize];
+        std::fs::write(&source, &contents).unwrap();
+
+        let staged = stage_file_in_workspace_with_copier(
+            source.to_str().unwrap(),
+            "max.png",
+            workspace.path(),
+            "attachments",
+            |source, destination| copy_bounded(source, destination, TEST_LIMIT),
+        )
+        .unwrap();
+
+        assert_eq!(staged, "attachments/max.png");
+        assert_eq!(
+            std::fs::read(workspace.path().join(&staged)).unwrap(),
+            contents,
+            "a source exactly at the cap stages byte for byte"
+        );
+    }
+
+    /// The over-check itself: `take(max + 1)` means the destination has one
+    /// byte more than the cap when the copier refuses, which is exactly how
+    /// "at the cap" is told apart from "over it". The staging helper is what
+    /// deletes that partial file (asserted above); the copier only reports.
+    #[test]
+    fn capped_copier_errors_one_byte_past_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("over.bin");
+        let destination_path = dir.path().join("over.staged");
+        std::fs::write(&source_path, vec![b'x'; TEST_LIMIT as usize + 4]).unwrap();
+        let mut source = std::fs::File::open(&source_path).unwrap();
+        let mut destination = std::fs::File::create(&destination_path).unwrap();
+
+        let error = copy_bounded(&mut source, &mut destination, TEST_LIMIT).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(
+            std::fs::metadata(&destination_path).unwrap().len(),
+            TEST_LIMIT + 1
+        );
+    }
+
+    /// The production wiring: `stage_file_in_workspace` passes the real
+    /// `MAX_FILE_BYTES`, so an ordinary attachment stages through the bounded
+    /// copier untouched. Kept cheap on purpose — the bound's behaviour is
+    /// pinned above; what this adds is that the default path has a copier at
+    /// all and that its cap is not so low it rejects real files.
+    #[test]
+    fn the_default_staging_copier_passes_an_ordinary_attachment_through() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("note.md");
+        std::fs::write(&source, b"# ordinary attachment\n").unwrap();
+
+        let staged = stage_file_in_workspace(
+            source.to_str().unwrap(),
+            "note.md",
+            workspace.path(),
+            "attachments",
+        )
+        .expect("an ordinary attachment stages through the default bounded copier");
+
+        assert_eq!(staged, "attachments/note.md");
+        assert_eq!(
+            std::fs::read(workspace.path().join(&staged)).unwrap(),
+            b"# ordinary attachment\n"
+        );
     }
 }

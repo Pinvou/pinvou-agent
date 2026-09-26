@@ -12,6 +12,41 @@ use benchmark_core::{
     TaskOutcome, TaskStatus, publish_markdown_report, publish_score_json,
 };
 
+/// Streamed stderr notes must never take the CLI down: Rust ignores SIGPIPE,
+/// so a closed stderr (`pinvou ... 2>&1 | head`) turns every `eprintln!`
+/// into a panic (exit 101) that also loses the report. A note is
+/// best-effort — a failed write is dropped and the run carries on. Every
+/// streamed stderr write in library code goes through this macro; the
+/// closed-pipe contract is enforced here, not by review at each call site.
+#[macro_export]
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+mod agent_task;
+mod artifacts;
+mod code;
+mod connectors;
+mod deps;
+mod feedback;
+mod files;
+mod knowledge;
+mod memory;
+mod models;
+mod monitor;
+mod personas;
+mod plugins;
+mod projects;
+mod scheduled;
+mod sessions;
+pub mod support;
+mod voice;
+
+pub use agent_task::AgentCommand;
+
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
     SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, analyze_rules, calculate_product_score,
@@ -165,18 +200,28 @@ pub enum BenchmarkCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentCommand {
-    Run {
-        prompt_file: PathBuf,
-        workspace: Option<PathBuf>,
-        timeout_secs: u64,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Version,
+    /// `pinvou --help` / `-h`: the top-level surface, as a successful answer.
+    Help,
     Benchmark(BenchmarkCommand),
     Agent(AgentCommand),
+    Sessions(sessions::SessionsCommand),
+    Models(models::ModelsCommand),
+    Memory(memory::MemoryCommand),
+    Knowledge(knowledge::KnowledgeCommand),
+    Scheduled(scheduled::ScheduledCommand),
+    Plugins(plugins::PluginsCommand),
+    Connectors(connectors::ConnectorsCommand),
+    Personas(personas::PersonasCommand),
+    Code(code::CodeCommand),
+    Files(files::FilesCommand),
+    Voice(voice::VoiceCommand),
+    Deps(deps::DepsCommand),
+    Feedback(feedback::FeedbackCommand),
+    Monitor(monitor::MonitorCommand),
+    Artifacts(artifacts::ArtifactsCommand),
+    Projects(projects::ProjectsCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,14 +247,14 @@ pub struct CliError {
 }
 
 impl CliError {
-    fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             exit_code: ExitCode::Usage,
         }
     }
 
-    fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             exit_code: ExitCode::Failed,
@@ -242,46 +287,156 @@ where
         values.remove(0);
     }
     let mut output = OutputMode::Human;
-    let mut index = 0;
-    while index < values.len() {
-        if values[index] == "--output" {
-            let value = values.get(index + 1).ok_or_else(|| {
-                CliError::usage(
-                    "--output requires human or json (submission files use --destination)",
-                )
-            })?;
-            match value.as_str() {
-                "human" => {
-                    output = OutputMode::Human;
-                    values.drain(index..=index + 1);
-                }
-                "json" => {
-                    output = OutputMode::Json;
-                    values.drain(index..=index + 1);
-                }
-                // Leave unrecognized values in argv: `benchmark submission
-                // gaia` still accepts `--output <file>` as a legacy alias of
-                // `--destination` (consumed in parse_gaia_submission);
-                // everywhere else the leftover token surfaces as the standard
-                // usage error.
-                _ => index += 1,
+    let mut global_output_seen = false;
+    // The global `--output` scan used to remove `--output json|human` from
+    // ANYWHERE in argv. That silently deleted the pair when it sat in the
+    // middle of family input: the family parsers then saw the tokens on
+    // either side collapse together (`sessions rename s-1 see --output json
+    // now` lost two words of the title and stored "see now" with exit 0,
+    // and any other family's positional channel misjoined the same way).
+    //
+    // A mode is now claimed only where a GLOBAL flag can legally occupy at
+    // this dispatch spine, i.e. at the two ends of the line:
+    // - the leading run, from `values[0]` up to the first token that is not
+    //   a consumable pair;
+    // - the very end of the line (the position every existing trailing
+    //   `... --output json` invocation uses).
+    // Everything between them stays ordinary family input: a family's own
+    // parser either accepts `--output` as one of its value flags
+    // (`sessions export --output PATH`, `files ingest ... --output PATH`,
+    // `benchmark submission gaia`'s legacy `--destination` alias) or
+    // rejects it as an unknown flag — a global mode claim can no longer
+    // subtract tokens from a family's positional channel.
+    // (A file literally named "json"/"human" at the end of the line still
+    // needs a ./ prefix; see the note in `parse_gaia_submission`.)
+    while values.first().is_some_and(|token| token == "--output") {
+        let value = values.get(1).ok_or_else(|| {
+            CliError::usage("--output requires human or json (submission files use --destination)")
+        })?;
+        match value.as_str() {
+            "json" | "human" => {
+                record_global_output_mode(
+                    &mut output,
+                    &mut global_output_seen,
+                    if value == "json" {
+                        OutputMode::Json
+                    } else {
+                        OutputMode::Human
+                    },
+                )?;
+                values.drain(0..=1);
             }
-        } else {
-            index += 1;
+            // Not a global-mode value: end the leading run and leave the
+            // pair for the subcommand.
+            _ => break,
         }
     }
+    while values.len() >= 2 && values[values.len() - 2] == "--output" {
+        let mode = match values[values.len() - 1].as_str() {
+            "json" => OutputMode::Json,
+            "human" => OutputMode::Human,
+            // Not a global-mode value: the pair at the end of the line
+            // belongs to the subcommand (`files ingest … --output PATH`,
+            // `sessions export … --output PATH`).
+            _ => break,
+        };
+        record_global_output_mode(&mut output, &mut global_output_seen, mode)?;
+        let end = values.len() - 2;
+        values.drain(end..=end + 1);
+    }
     if values.first().map(String::as_str) == Some("agent") {
-        let command = parse_agent(&values)?;
+        let command = agent_task::parse(&values)?;
         return Ok(ParsedCli {
             command: CliCommand::Agent(command),
             output,
         });
     }
-    if values.first().map(String::as_str) != Some("benchmark") {
+    if values.first().map(String::as_str) == Some("settings") {
+        let command = models::parse(&values)?;
+        return Ok(ParsedCli {
+            command: CliCommand::Models(command),
+            output,
+        });
+    }
+    // `pinvou --help` / `-h`: asking for the usage text is not a usage error.
+    // It used to fall through to the unknown-command arm, which prints the
+    // same text on STDERR and exits 2 — so `pinvou --help > surface.txt` wrote
+    // an empty file, `pinvou --help && ...` never ran, and the packaging tools
+    // that shell out to it (help2man, the Homebrew audit) recorded a failure.
+    // The unknown-command path keeps exactly that behavior: there the text is
+    // a diagnostic about a mistake, here it is the requested output.
+    if matches!(values.first().map(String::as_str), Some("--help" | "-h")) {
+        if values.len() > 1 {
+            return Err(CliError::usage("pinvou --help accepts no arguments"));
+        }
+        return Ok(ParsedCli {
+            command: CliCommand::Help,
+            output,
+        });
+    }
+    // `pinvou --version` / `pinvou version`: a product CLI convention the
+    // docs previously could not deliver.
+    if values.first().map(String::as_str) == Some("--version")
+        || values.first().map(String::as_str) == Some("version")
+    {
+        if values.len() > 1 {
+            return Err(CliError::usage("pinvou --version accepts no arguments"));
+        }
+        let command = CliCommand::Version;
+        return Ok(ParsedCli { command, output });
+    }
+    if values.first().map(String::as_str) == Some("benchmark") {
+        let command = parse_benchmark(&values)?;
+        return Ok(ParsedCli {
+            command: CliCommand::Benchmark(command),
+            output,
+        });
+    }
+    let command = match values.first().map(String::as_str) {
+        Some("sessions") => CliCommand::Sessions(sessions::parse(&values)?),
+        Some("models") => CliCommand::Models(models::parse(&values)?),
+        Some("memory") => CliCommand::Memory(memory::parse(&values)?),
+        Some("knowledge") => CliCommand::Knowledge(knowledge::parse(&values)?),
+        Some("scheduled") => CliCommand::Scheduled(scheduled::parse(&values)?),
+        Some("plugins") => CliCommand::Plugins(plugins::parse(&values)?),
+        Some("connectors") => CliCommand::Connectors(connectors::parse(&values)?),
+        Some("personas") => CliCommand::Personas(personas::parse(&values)?),
+        Some("code") => CliCommand::Code(code::parse(&values)?),
+        Some("files") => CliCommand::Files(files::parse(&values)?),
+        Some("voice") => CliCommand::Voice(voice::parse(&values)?),
+        Some("deps") => CliCommand::Deps(deps::parse(&values)?),
+        Some("feedback") => CliCommand::Feedback(feedback::parse(&values)?),
+        Some("monitor") => CliCommand::Monitor(monitor::parse(&values)?),
+        Some("artifacts") => CliCommand::Artifacts(artifacts::parse(&values)?),
+        Some("projects") => CliCommand::Projects(projects::parse(&values)?),
+        _ => {
+            return Err(CliError::usage(support::TOP_LEVEL_USAGE));
+        }
+    };
+    Ok(ParsedCli { command, output })
+}
+
+/// Folds one claimed global output mode into the running mode.
+///
+/// A repeated identical mode is accepted (scripts append `--output json`
+/// unconditionally), but two conflicting modes must not silently last-win
+/// like the family parsers' duplicate rejection.
+fn record_global_output_mode(
+    output: &mut OutputMode,
+    seen: &mut bool,
+    mode: OutputMode,
+) -> Result<(), CliError> {
+    if *seen && mode != *output {
         return Err(CliError::usage(
-            "usage: pinvou benchmark <command> | pinvou agent run",
+            "--output given twice with conflicting global modes",
         ));
     }
+    *seen = true;
+    *output = mode;
+    Ok(())
+}
+
+fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     let command = match values.get(1).map(String::as_str) {
         Some("list") if values.len() == 2 => BenchmarkCommand::List,
         Some("run") if values.len() >= 3 => {
@@ -314,10 +469,7 @@ where
         Some("submission") => parse_gaia_submission(&values)?,
         _ => return Err(CliError::usage("unknown benchmark command")),
     };
-    Ok(ParsedCli {
-        command: CliCommand::Benchmark(command),
-        output,
-    })
+    Ok(command)
 }
 
 fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
@@ -383,7 +535,14 @@ fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError
     let output = destination
         .or(legacy_output)
         .map(PathBuf::from)
-        .ok_or_else(|| CliError::usage("benchmark submission gaia requires --destination"))?;
+        .ok_or_else(|| {
+            CliError::usage(
+                "benchmark submission gaia requires --destination (note: the global --output \
+                 flag claims the values 'json' and 'human' only in the leading run of argv and \
+                 at the very end of the line — spell a destination literally named `json` as \
+                 --destination ./json)",
+            )
+        })?;
     Ok(BenchmarkCommand::SubmissionGaia { run_id, output })
 }
 
@@ -394,46 +553,6 @@ fn require_gaia(values: &[String], command: &str) -> Result<(), CliError> {
         )));
     }
     Ok(())
-}
-
-/// Parse-time cap for `agent run --timeout-secs` (7 days): an unbounded u64
-/// would overflow `Instant + Duration`, exiting 101 with no report. Must stay
-/// in lockstep with the library clamp `pinvou_product_backend::MAX_TIMEOUT_SECS`
-/// (asserted equal by `agent_timeout_cap_matches_library_clamp`).
-const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
-
-fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
-    match values.get(1).map(String::as_str) {
-        Some("run") => {
-            let options = named_options(
-                &values[2..],
-                &["--prompt-file", "--workspace", "--timeout-secs"],
-            )?;
-            let prompt_file = option(&options, "--prompt-file")
-                .map(PathBuf::from)
-                .ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
-            let workspace = option(&options, "--workspace").map(PathBuf::from);
-            let timeout_secs = match option(&options, "--timeout-secs") {
-                None => 600,
-                Some(value) => value
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|seconds| *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX)
-                    .ok_or_else(|| {
-                        CliError::usage(format!(
-                            "agent run requires --timeout-secs to be a positive integer \
-                             no greater than {AGENT_TIMEOUT_SECS_MAX}"
-                        ))
-                    })?,
-            };
-            Ok(AgentCommand::Run {
-                prompt_file,
-                workspace,
-                timeout_secs,
-            })
-        }
-        _ => Err(CliError::usage("usage: pinvou agent run")),
-    }
 }
 
 fn named_options<'a>(
@@ -515,6 +634,19 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
+        // Success, on stdout: the caller asked for this text.
+        CliCommand::Help => Ok(success(match output {
+            OutputMode::Human => support::TOP_LEVEL_USAGE.to_owned(),
+            OutputMode::Json => {
+                serde_json::json!({ "usage": support::TOP_LEVEL_USAGE }).to_string()
+            }
+        })),
+        CliCommand::Version => Ok(success(match output {
+            OutputMode::Human => format!("pinvou {}", env!("CARGO_PKG_VERSION")),
+            OutputMode::Json => {
+                serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }).to_string()
+            }
+        })),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),
@@ -541,11 +673,23 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::RunNotAvailable(error)) => {
             Err(CliError::usage(error))
         }
-        CliCommand::Agent(AgentCommand::Run {
-            prompt_file,
-            workspace,
-            timeout_secs,
-        }) => run_agent(&prompt_file, workspace.as_deref(), timeout_secs, output),
+        CliCommand::Agent(command) => agent_task::execute(command, output),
+        CliCommand::Sessions(command) => sessions::execute(command, output),
+        CliCommand::Models(command) => models::execute(command, output),
+        CliCommand::Memory(command) => memory::execute(command, output),
+        CliCommand::Knowledge(command) => knowledge::execute(command, output),
+        CliCommand::Scheduled(command) => scheduled::execute(command, output),
+        CliCommand::Plugins(command) => plugins::execute(command, output),
+        CliCommand::Connectors(command) => connectors::execute(command, output),
+        CliCommand::Personas(command) => personas::execute(command, output),
+        CliCommand::Code(command) => code::execute(command, output),
+        CliCommand::Files(command) => files::execute(command, output),
+        CliCommand::Voice(command) => voice::execute(command, output),
+        CliCommand::Deps(command) => deps::execute(command, output),
+        CliCommand::Feedback(command) => feedback::execute(command, output),
+        CliCommand::Monitor(command) => monitor::execute(command, output),
+        CliCommand::Artifacts(command) => artifacts::execute(command, output),
+        CliCommand::Projects(command) => projects::execute(command, output),
     }
 }
 
@@ -682,22 +826,21 @@ fn report(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(text))
 }
 
+/// The product data root the benchmark run store lives under.
+///
+/// This used to resolve `PINVOU3_HOME`/`USERPROFILE`/`HOME` itself, which made
+/// it a THIRD home resolver in one binary, carrying the exact hazards
+/// [`support::sandbox_home`] documents: `var_os` reports a set-but-empty
+/// variable as `Some("")`, so an empty `PINVOU3_HOME` produced the *relative*
+/// path `""` (and an empty `$HOME` the relative `.pinvou3`) — a benchmark run
+/// store materialized under the current working directory; a non-UTF-8
+/// override was accepted here while the app silently ignores it; and
+/// `USERPROFILE` was preferred over `HOME` even on unix, where the app never
+/// reads it. Every one of those splits the store between two roots for the
+/// same invocation. There is nothing benchmark-specific about the answer, so
+/// the one resolver the families already share answers it.
 fn benchmark_base() -> Result<PathBuf, CliError> {
-    if let Some(value) = std::env::var_os("PINVOU3_HOME") {
-        return absolute_path(PathBuf::from(value));
-    }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| CliError::failed("home_directory_not_available"))?;
-    absolute_path(PathBuf::from(home).join(".pinvou3"))
-}
-
-fn absolute_path(path: PathBuf) -> Result<PathBuf, CliError> {
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err(CliError::failed("benchmark base must be absolute"))
-    }
+    support::sandbox_home()
 }
 
 fn core_error(error: benchmark_core::BenchmarkError) -> CliError {
@@ -759,7 +902,7 @@ fn fetch_gaia(
         OutputMode::Human => format!("GAIA snapshot ready\nRevision: {}", acquisition.revision()),
         OutputMode::Json => format!(
             "{{\"status\":\"ready\",\"dataset_revision\":\"{}\"}}",
-            acquisition.revision()
+            json_escape(acquisition.revision())
         ),
     };
     Ok(success(text))
@@ -1359,8 +1502,10 @@ fn submission_gaia(
     Ok(success(text))
 }
 
-/// 生成 JSON 字符串字面量的内部内容(不含引号)。委托 serde_json,覆盖
-/// 控制字符等全部需要转义的码点;手写 replace 会漏掉 \t、\u0000-\u001F。
+/// Builds the inner content of a JSON string literal (without the quotes).
+/// Delegates to serde_json so every escapable code point — control characters
+/// included — is covered; a hand-written replace would miss `\t` and
+/// `\u0000`-`\u001F`.
 fn json_escape(value: &str) -> String {
     let encoded = serde_json::to_string(value).unwrap_or_default();
     encoded[1..encoded.len().saturating_sub(1)].to_owned()
@@ -1379,114 +1524,6 @@ fn resume_smoke(_run_id: &str, _output: OutputMode) -> Result<CliOutcome, CliErr
 #[cfg(not(feature = "product-backend"))]
 fn run_gaia(_output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
-}
-
-#[cfg(not(feature = "product-backend"))]
-fn run_agent(
-    _prompt_file: &Path,
-    _workspace: Option<&Path>,
-    _timeout_secs: u64,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
-}
-
-#[cfg(feature = "product-backend")]
-fn run_agent(
-    prompt_file: &Path,
-    workspace: Option<&Path>,
-    timeout_secs: u64,
-    output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    // Consistent with the other read failures in lib.rs (read_to_string ->
-    // failed): an unreadable file is a host-level failure (exit 1), not an
-    // argument usage error — the documented exit-code contract also lists
-    // read failures under host-level.
-    let prompt = std::fs::read_to_string(prompt_file)
-        .map_err(|_| CliError::failed("agent run cannot read --prompt-file"))?;
-    // Canonicalize so the engine receives an absolute path regardless of cwd
-    // changes, and fail fast on a missing/non-directory workspace instead of
-    // letting a typo'd path get silently created deeper in the stack.
-    let workspace = match workspace {
-        Some(path) => {
-            let resolved = std::fs::canonicalize(path).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    CliError::failed(format!(
-                        "agent run --workspace does not exist: {}",
-                        path.display()
-                    ))
-                } else {
-                    CliError::failed(format!(
-                        "agent run --workspace cannot be accessed: {} ({error})",
-                        path.display()
-                    ))
-                }
-            })?;
-            if !resolved.is_dir() {
-                return Err(CliError::failed(format!(
-                    "agent run --workspace is not a directory: {}",
-                    resolved.display()
-                )));
-            }
-            Some(resolved)
-        }
-        None => None,
-    };
-    let request = pinvou_product_backend::AgenticTaskRequest {
-        prompt,
-        workspace,
-        timeout_secs,
-        // Engine-side optional request surface (session/mode/model/
-        // attachments); the one-shot `agent run` keeps today's defaults.
-        session_id: None,
-        mode: None,
-        model_id: None,
-        attachments: Vec::new(),
-    };
-    let report = pinvou_product_backend::run_agentic_task(request)
-        .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
-    // in-turn errors live in the report fields and are settled by the
-    // harness grader); non-zero exit codes are reserved for host-level
-    // failures (unreadable file, unusable backend, ...). Otherwise a timed-out
-    // task would be recorded as an exception instead of a 0-reward run and the
-    // mean would only cover surviving tasks, skewing scores.
-    Ok(CliOutcome {
-        exit_code: ExitCode::Success,
-        stdout: render_agent_report(&report, output)?,
-    })
-}
-
-#[cfg(feature = "product-backend")]
-fn render_agent_report(
-    report: &pinvou_product_backend::AgenticTaskReport,
-    output: OutputMode,
-) -> Result<String, CliError> {
-    match output {
-        OutputMode::Json => serde_json::to_string(report).map_err(|error| {
-            CliError::failed(format!("agent report serialization failed: {error}"))
-        }),
-        OutputMode::Human => {
-            let mut lines = vec![format!(
-                "session: {} status: {}",
-                report.session_id, report.status
-            )];
-            if let Some(error) = &report.error {
-                lines.push(format!("error: {error}"));
-            }
-            if let Some(usage) = &report.usage {
-                lines.push(format!(
-                    "tokens: input={} output={} tools={}",
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    report.tool_events.len()
-                ));
-            }
-            lines.push(String::new());
-            lines.push(report.assistant_text.trim_end().to_string());
-            Ok(lines.join("\n"))
-        }
-    }
 }
 
 #[cfg(feature = "product-backend")]
@@ -1799,122 +1836,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_args_accepts_agent_run_with_options() {
-        let parsed = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--workspace",
-            "/tmp/task",
-            "--timeout-secs",
-            "900",
-        ])
-        .unwrap();
-        assert_eq!(
-            parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: Some(PathBuf::from("/tmp/task")),
-                timeout_secs: 900,
-            })
-        );
-        assert_eq!(parsed.output(), OutputMode::Human);
-    }
-
-    #[test]
-    fn parse_args_defaults_agent_run_timeout_and_workspace() {
-        let parsed = parse_args(["pinvou", "agent", "run", "--prompt-file", "task.txt"]).unwrap();
-        assert_eq!(
-            parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: None,
-                timeout_secs: 600,
-            })
-        );
-    }
-
-    #[test]
-    fn parse_args_rejects_agent_run_without_prompt_file() {
-        let error = parse_args(["pinvou", "agent", "run"]).unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("--prompt-file"));
-    }
-
-    #[test]
-    fn parse_args_rejects_non_positive_agent_timeout() {
-        let error = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--timeout-secs",
-            "0",
-        ])
-        .unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("positive integer"));
-    }
-
-    #[test]
-    fn parse_args_rejects_oversized_agent_timeout() {
-        // u64::MAX parses fine, but Instant + Duration would overflow and
-        // panic; the parse layer must reject it with a usage error carrying
-        // the cap.
-        let error = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--timeout-secs",
-            &(u64::MAX.to_string()),
-        ])
-        .unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("no greater than"));
-        assert_eq!(AGENT_TIMEOUT_SECS_MAX, 7 * 24 * 60 * 60);
-    }
-
-    /// The CLI parse cap and the library clamp guard the same
-    /// `Instant + Duration` overflow; they must never diverge.
-    #[cfg(feature = "product-backend")]
-    #[test]
-    fn agent_timeout_cap_matches_library_clamp() {
-        assert_eq!(
-            AGENT_TIMEOUT_SECS_MAX,
-            pinvou_product_backend::MAX_TIMEOUT_SECS
-        );
-    }
-
-    #[test]
-    fn parse_args_rejects_unknown_agent_subcommand() {
-        let error = parse_args(["pinvou", "agent", "status"]).unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-    }
-
-    #[test]
-    fn parse_args_keeps_output_flag_for_agent_run() {
-        let parsed = parse_args([
-            "pinvou",
-            "--output",
-            "json",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-        ])
-        .unwrap();
-        assert_eq!(parsed.output(), OutputMode::Json);
-    }
-
-    #[test]
     fn parse_args_still_rejects_bare_pinvou_invocation() {
         let error = parse_args(["pinvou"]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    /// `--help` is an answer (stdout, exit 0), an unknown command is a
+    /// mistake (stderr, exit 2) — and both render the same surface text, so
+    /// the only thing that distinguishes them is the channel and the code.
+    #[test]
+    fn help_succeeds_on_stdout_while_an_unknown_command_stays_a_usage_error() {
+        for flag in ["--help", "-h"] {
+            let parsed = parse_args(["pinvou", flag]).expect("--help is not an error");
+            assert_eq!(parsed.command(), &CliCommand::Help);
+            let outcome = execute(parsed).expect("--help always renders");
+            assert_eq!(outcome.exit_code, ExitCode::Success);
+            assert_eq!(outcome.stdout, support::TOP_LEVEL_USAGE);
+        }
+        let parsed = parse_args(["pinvou", "--output", "json", "--help"]).unwrap();
+        let outcome = execute(parsed).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        assert_eq!(value["usage"], serde_json::json!(support::TOP_LEVEL_USAGE));
+
+        // Unchanged: an unknown command keeps stderr + exit 2.
+        let error = parse_args(["pinvou", "nope"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert_eq!(error.to_string(), support::TOP_LEVEL_USAGE);
+        // Arguments after --help are still a usage error, like --version.
+        let error = parse_args(["pinvou", "--help", "benchmark"]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+    }
+
+    /// The benchmark run store and the families must resolve one product data
+    /// root. The private `USERPROFILE`-then-`HOME` copy that used to live here
+    /// accepted roots `sandbox_home` refuses (set-but-empty, relative,
+    /// non-UTF-8), so `pinvou benchmark` could write under a root `pinvou
+    /// sessions` would never read in the same invocation.
+    ///
+    /// Deliberately env-free: the assertion is the agreement between the two
+    /// resolvers under whatever ambient home the test process has, which is
+    /// exactly the invariant, and it cannot race the sibling tests that swap
+    /// `PINVOU3_HOME` for their own fixtures.
+    #[test]
+    fn benchmark_base_is_the_shared_sandbox_home_resolver() {
+        let base = benchmark_base();
+        assert_eq!(
+            base.is_ok(),
+            support::sandbox_home().is_ok(),
+            "the benchmark base must accept exactly the roots the families accept"
+        );
+        if let Ok(base) = base {
+            assert!(
+                base.is_absolute(),
+                "a cwd-relative benchmark store is the failure this resolver exists to prevent: {}",
+                base.display()
+            );
+        }
     }
 
     fn temp_base(name: &str) -> PathBuf {
@@ -1941,11 +1918,50 @@ mod tests {
         assert!(!outcome.stdout.contains("ready"));
     }
 
+    /// Panic-safe `PINVOU3_HOME` restore: a failing assert must not leak the
+    /// temp home into sibling unit tests (the same RAII rule the
+    /// integration tests' `RestoreHome` guard applies).
+    ///
+    /// The guard also holds [`crate::support::ENV_LOCK`] for its whole
+    /// lifetime: these gaia tests steer the process-global `PINVOU3_HOME`
+    /// with no lock of their own and used to race the models credential
+    /// tests' `TempHome` fixtures in the same test binary (reproduced 4/5 in
+    /// combined runs, both green in isolation). The lock is taken in
+    /// `set_home`, before the env write, and released in `Drop` only after
+    /// the previous value has been restored, so every other env-steering
+    /// test in the binary (models included) observes either the untouched
+    /// environment or this test's finished fixture, never a half-set one.
+    struct RestoreHomeGuard(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+    );
+    impl RestoreHomeGuard {
+        fn set_home(path: &std::path::Path) -> Self {
+            let guard = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", path) };
+            Self(Some(guard), previous)
+        }
+    }
+    impl Drop for RestoreHomeGuard {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            // Release the shared lock only after the environment is back:
+            // a sibling test waking up on the unlock must never observe the
+            // fixture value this test is about to undo.
+            drop(self.0.take());
+        }
+    }
+
     #[test]
     fn official_gaia_consumer_rejects_a_tampered_marker_at_the_real_ready_root() {
         let home = temp_base("gaia-tampered-ready");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let _home_guard = RestoreHomeGuard::set_home(&home);
         let snapshot = gaia_snapshot_root().unwrap();
         std::fs::create_dir(&snapshot).unwrap();
         std::fs::write(
@@ -1959,10 +1975,6 @@ mod tests {
         assert_eq!(error.to_string(), "gaia_verify_failed");
         assert!(!error.to_string().contains(snapshot.to_str().unwrap()));
 
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -2038,6 +2050,7 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    #[cfg(feature = "product-backend")]
     #[test]
     fn new_smoke_manifests_record_the_canonical_read_only_web_policy_id() {
         use adapter_smoke::{SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};
@@ -2055,6 +2068,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "product-backend")]
     #[test]
     fn smoke_resume_still_accepts_manifests_stored_with_the_deprecated_policy_id() {
         use adapter_smoke::{SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};
