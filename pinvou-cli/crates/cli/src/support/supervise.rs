@@ -183,17 +183,53 @@ mod imp {
 
     /// The handler. Async-signal-safe by construction: one `write(2)` of the
     /// signal number — a 1-byte pipe write is atomic under PIPE_BUF — and
-    /// nothing else: no locks, no allocation, no errno.
+    /// nothing else: no locks, no allocation, and errno saved around the
+    /// write ([`write_signal_byte`]) so a failed one cannot leave its error
+    /// code with the thread the handler interrupted.
     extern "C" fn on_signal(sig: libc::c_int) {
         let fd = PIPE_WRITE.load(Ordering::Relaxed);
         if fd < 0 {
             return;
         }
         let byte = sig as u8;
-        // SAFETY: write(2) is reentrant; the buffer outlives the call.
+        write_signal_byte(fd, byte);
+    }
+
+    /// The handler's one syscall, split out so the unit tests can pin its
+    /// errno hygiene without real signals: a failing `write(2)` inside a
+    /// handler sets errno, and the interrupted thread classifies its EINTR
+    /// off errno (`read_terminated`) — a foreign value left behind would
+    /// misread the interrupted call's cause. Saved before, restored after:
+    /// the standard self-pipe discipline. `pub(super)` for the tests, like
+    /// the other pinned internals.
+    pub(super) fn write_signal_byte(fd: libc::c_int, byte: u8) {
+        // SAFETY: write(2) is reentrant; the buffer outlives the call. The
+        // errno location is dereferenced only on this thread, around the
+        // write itself.
         unsafe {
+            let errno = errno_location();
+            let saved = *errno;
             libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            *errno = saved;
         }
+    }
+
+    /// Thread-local errno location for [`write_signal_byte`]. macOS spells
+    /// the libc helper `__error`; Linux — the other CLI target — spells it
+    /// `__errno_location`, so the difference stays behind this seam instead
+    /// of inside the handler.
+    #[cfg(target_os = "macos")]
+    pub(super) fn errno_location() -> *mut libc::c_int {
+        // SAFETY: the location call has no preconditions and no effect
+        // beyond returning the thread-local address.
+        unsafe { libc::__error() }
+    }
+
+    /// Non-macos spelling of [`errno_location`].
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn errno_location() -> *mut libc::c_int {
+        // SAFETY: as above.
+        unsafe { libc::__errno_location() }
     }
 
     /// The watcher thread: converts the handler's byte into the slow,
@@ -544,5 +580,26 @@ mod tests {
         // Leave the flag down for whatever runs later in this binary.
         imp::reset_seen_for_tests();
         assert!(!imp::seen());
+    }
+
+    /// The handler's errno hygiene, pinned without real signals: a failing
+    /// self-pipe write (fd -1 is always EBADF) must leave the interrupted
+    /// thread's errno exactly as it was — `read_terminated` classifies EINTR
+    /// off errno, so a leaked handler error would misread the interrupted
+    /// call's cause.
+    #[test]
+    fn handler_write_preserves_errno_of_the_interrupted_thread() {
+        let errno = imp::errno_location();
+        // SAFETY: thread-local errno; the sentinel (EAGAIN) only has to be
+        // a value the failed write below does not decide, and the assert is
+        // about the restore, not the sentinel.
+        unsafe { *errno = libc::EAGAIN };
+        imp::write_signal_byte(-1, libc::SIGINT as u8);
+        // SAFETY: the same thread-local location as above.
+        assert_eq!(
+            unsafe { *errno },
+            libc::EAGAIN,
+            "a failed handler write must not leak its errno"
+        );
     }
 }

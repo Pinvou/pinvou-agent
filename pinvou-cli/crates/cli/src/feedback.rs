@@ -13,7 +13,8 @@
 //!
 //! Retention: the request is staged under `$PINVOU3_HOME/feedback/pending/`
 //! only for the duration of the (consuming) feature call, so the user's text
-//! survives a crash in between, and is removed once the receipt lands.
+//! survives a crash in between, and is removed once the run concludes — on
+//! every exit path, not only the one where the receipt lands.
 //! `platform::paths` documents that directory as "packages that failed to
 //! upload or are still being prepared"; because the community
 //! `submit_feedback` never uploads and no retry lane exists, a bundle left
@@ -219,8 +220,15 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // between here and the receipt. That directory means "packages that failed
     // to upload or are still being prepared" (`platform::paths`), which is
     // exactly what this file is *while the call is in flight* — and nothing
-    // more. It is removed again below once the run concludes.
+    // more. The guard below removes it again on every exit from here on,
+    // whatever the run concludes with.
     write_json(&pending_path, &request_value)?;
+    // From this point to the end of the function, every return path removes
+    // the staged bundle: the feature-level `Err` and not-synchronous early
+    // returns in the match, the `?`s between there and the receipt, and the
+    // receipt path itself. See `PendingBundleGuard` for why the removal is
+    // unconditional.
+    let _pending_guard = PendingBundleGuard { path: pending_path };
     // The community `submit_feedback` body is validation + a fixed receipt
     // (no awaits); poll the real future once on this thread. If a future
     // version ever awaits (e.g. an upload path), this fails cleanly instead
@@ -269,34 +277,12 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // copy is dropped (below) this is the only record of what the user wrote,
     // and they need that text to paste into the issue tracker.
     object.insert("request".to_owned(), request_value);
-    // A failed receipt write used to `?` straight out of here, leaving the
-    // staged bundle behind — precisely the permanent, never-retried file under
-    // `feedback/pending/` that the module docs argue against, and the error
-    // named only the receipt path so nothing pointed at it. The run has
-    // concluded either way, so the stage is dropped on both arms. Nothing the
-    // user wrote is lost with it: the description came from `--body-file`,
-    // which is still on disk, and the attachments were only ever referenced by
-    // path.
-    let write_result = write_json(&receipt_path, &receipt_value);
-    // The run concluded, so nothing is pending: the community `submit_feedback`
-    // never uploads and there is no retry lane that would ever pick this file
-    // up. Leaving it under `feedback/pending/` claimed an in-flight upload that
-    // does not exist and made the user's free text permanent in a directory
-    // documented for transient packages. A removal failure is only a note: on
-    // the success arm the submission itself succeeded, and failing it here
-    // would tell the user their feedback was not recorded when the receipt is
-    // on disk.
-    if let Err(error) = std::fs::remove_file(&pending_path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            note!(
-                "warning: feedback submit: the staged bundle {} could not be removed \
-                 after the submission concluded ({error}); delete it manually — \
-                 nothing will retry it",
-                pending_path.display()
-            );
-        }
-    }
-    write_result?;
+    // A failed receipt write is simply propagated from here: the guard drops
+    // the staged bundle with it, because the run has concluded either way.
+    // Nothing the user wrote is lost with the stage — the description came
+    // from `--body-file`, which is still on disk, and the attachments were
+    // only ever referenced by path.
+    write_json(&receipt_path, &receipt_value)?;
 
     let status = status_label(receipt.status);
     let message = translate_feedback_text(&receipt.message);
@@ -347,6 +333,43 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         human.push_str(&format!("\n{message}"));
     }
     Ok(success(render(output, human, &value)))
+}
+
+/// Removes the staged bundle under `feedback/pending/` on every exit of
+/// [`execute`] once it has been written — the receipt path, a failed receipt
+/// write, a feature-level error, and the not-synchronous early return alike.
+///
+/// `platform::paths` documents that directory for "packages that failed to
+/// upload or are still being prepared", but the community `submit_feedback`
+/// never uploads and no retry lane exists: a bundle left there after the run
+/// concluded would be permanent and would claim an in-flight upload that will
+/// never happen. The removal is therefore unconditional — the Drop-based
+/// guard shape other parts of this workspace use for scoped cleanup
+/// (`adapter-gaia`'s `AcquisitionLock`, the test suites' `HomeGuard`), so no
+/// future early return between staging and the receipt can silently leak the
+/// user's free text into a permanent file.
+struct PendingBundleGuard {
+    path: PathBuf,
+}
+
+impl Drop for PendingBundleGuard {
+    fn drop(&mut self) {
+        // A removal failure is only a note: the run's own outcome (receipt or
+        // error) has already been reported, and failing the command here as
+        // well would tell the user their feedback was not recorded when it
+        // was. The file is `0600` and stays theirs; the warning only says
+        // that nothing will ever retry it.
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                note!(
+                    "warning: feedback submit: the staged bundle {} could not be removed \
+                     after the run concluded ({error}); delete it manually — \
+                     nothing will retry it",
+                    self.path.display()
+                );
+            }
+        }
+    }
 }
 
 /// The feature layer's user-facing strings are Chinese (GUI copy); the CLI is
@@ -455,5 +478,53 @@ fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
     match pinned.as_mut().poll(&mut cx) {
         Poll::Ready(output) => Some(output),
         Poll::Pending => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingBundleGuard;
+    use std::path::PathBuf;
+
+    /// Scratch path for one guard test; the pid keeps parallel test runs
+    /// apart the same way `new_feedback_id` keeps receipts apart.
+    fn scratch_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pinvou-feedback-guard-{}-{name}",
+            std::process::id()
+        ))
+    }
+
+    /// The invariant that keeps `feedback/pending/` transient: dropping the
+    /// guard removes the staged bundle, whatever the run concluded with.
+    #[test]
+    fn pending_guard_removes_the_staged_bundle_when_dropped() {
+        let path = scratch_path("removes");
+        std::fs::write(&path, b"{}\n").expect("write scratch bundle");
+        drop(PendingBundleGuard { path: path.clone() });
+        assert!(!path.exists(), "the guard must remove the staged bundle");
+    }
+
+    /// A bundle that is already gone, or one `remove_file` cannot remove at
+    /// all (a directory — unlink(2) refuses directories on every unix), must
+    /// not panic the drop: the run's own outcome still propagates.
+    #[test]
+    fn pending_guard_tolerates_a_missing_or_unremovable_bundle() {
+        let missing = scratch_path("missing");
+        drop(PendingBundleGuard {
+            path: missing.clone(),
+        });
+        assert!(!missing.exists());
+
+        let stuck = scratch_path("stuck");
+        std::fs::create_dir(&stuck).expect("create scratch directory");
+        drop(PendingBundleGuard {
+            path: stuck.clone(),
+        });
+        assert!(
+            stuck.is_dir(),
+            "the guard must leave behind what it cannot remove, not panic"
+        );
+        std::fs::remove_dir(&stuck).expect("scratch cleanup");
     }
 }
