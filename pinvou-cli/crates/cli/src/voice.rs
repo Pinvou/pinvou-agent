@@ -466,6 +466,15 @@ fn wait_bounded(
                     crate::support::kill_process_tree(child);
                     return None;
                 }
+                // A Ctrl-C the supervisor (installed first-thing in main)
+                // has already observed kills this child's group in the
+                // watcher; unwinding here instead of waiting for that to
+                // work through the pipe lets the caller's staged-file guards
+                // run while the process is still alive.
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(child);
+                    return None;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(_) => {
@@ -473,6 +482,48 @@ fn wait_bounded(
                 return None;
             }
         }
+    }
+}
+
+/// Bracket for one spawned child's process-group supervision (voice's
+/// children are all `set_process_group` spawns): registers the group with
+/// `support::supervise` at construction and deregisters it on drop, so every
+/// exit path — normal completion, the bounded-wait timeout kill, an early
+/// error return — pairs the registration with a forget exactly the way
+/// `code.rs`'s login lane does it by hand and `support/supervise.rs`
+/// documents for spawn sites. A Ctrl-C that lands while a voice child is
+/// alive is forwarded to its group instead of orphaning it.
+struct SupervisedGroup {
+    pid: u32,
+}
+
+impl SupervisedGroup {
+    fn new(child: &std::process::Child) -> Self {
+        crate::support::supervise::register_child_group(child.id());
+        Self { pid: child.id() }
+    }
+}
+
+impl Drop for SupervisedGroup {
+    fn drop(&mut self) {
+        crate::support::supervise::forget_child_group(self.pid);
+    }
+}
+
+/// Removes a staged private file when dropped — the `TempWrapperZip`
+/// convention from `plugins.rs`, applied to this module's three staged paths:
+/// the 0600 input wav ([`write_temp_wav`]), the 0600 normalized conversion,
+/// and the model download `.part`. The explicit `remove_file` calls at the
+/// ordinary exits stay (unchanged behavior); the guard adds the panic and
+/// early-return paths, and the `let _` keeps the drop panic-free even while
+/// already unwinding.
+struct StagedFile {
+    path: PathBuf,
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -487,6 +538,11 @@ fn ffmpeg_available() -> bool {
     let Ok(mut child) = command.spawn() else {
         return false;
     };
+    // Group-registered for the probe's whole lifetime: a Ctrl-C that lands
+    // while even this short-lived ffmpeg runs must take it down with this
+    // CLI instead of orphaning it behind its own process group (the same
+    // bracket `code.rs`'s login lane installs by hand).
+    let _supervised = SupervisedGroup::new(&child);
     wait_bounded(&mut child, FFMPEG_PROBE_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
@@ -516,7 +572,8 @@ fn asr_components() -> (bool, bool, bool, bool) {
 /// reach) and Windows' bundled runtime is a CLI that speaks the external
 /// protocol, not the SenseVoice.cpp argument protocol the native lane emits.
 /// The pre-flight gate and the `cli_transcribe_ready` status flag both ask
-/// this question, so they agree with the dispatcher by construction — a
+/// this question — the gate does not lean on the dispatcher being derived
+/// from the same code, they just answer the same pure question — so a
 /// Windows user who drops an engine plus model into the managed dir must not
 /// pass a gate that then dies with `asr_engine_missing`.
 fn native_lane_supported() -> bool {
@@ -877,6 +934,11 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     // download helper order), so no window exists where an unverified model
     // sits at the canonical path.
     let part = dest.with_extension("part");
+    // Best-effort unlink of the staged `.part` on EVERY path out of this
+    // function (the explicit removes below cover the named failures; the
+    // guard adds the unnamed ones — an early error return between them, a
+    // panic), so a truncated download never sits at the staged path.
+    let _staged_part = StagedFile { path: part.clone() };
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
@@ -969,16 +1031,19 @@ struct AsrLanes {
     native: bool,
 }
 
-/// Probes the installed lanes. The external-CLI lookup stays behind the short
-/// circuit so a complete native install never pays for a PATH walk. The short
-/// circuit is keyed on the *native* lane, not on the component triple: on
+/// Probes the installed lanes. The external-CLI lookup runs unconditionally:
+/// it costs at most a PATH walk (a handful of stats), and a short-circuit on
+/// a complete native install made `external` report `false` on a host that
+/// also had an external CLI — a fact the dispatcher's own post-failure
+/// re-resolve then contradicted. The flag now states the truth for both
+/// consumers: the pre-flight gate's answer and the advisory status flag. On
 /// macOS `asr_components` reports the system Speech runtime as engine +
-/// ffmpeg + model, and skipping the external probe there would hide the only
-/// lane the CLI actually has.
+/// ffmpeg + model, and the external probe there is the only lane the CLI
+/// actually has, so it must never be skipped.
 fn installed_lanes() -> AsrLanes {
     let (engine, ffmpeg, model, _) = asr_components();
     let native = native_lane_supported();
-    let external = !(native && engine && ffmpeg && model) && external_asr_command().is_some();
+    let external = external_asr_command().is_some();
     AsrLanes {
         engine,
         ffmpeg,
@@ -1136,6 +1201,10 @@ fn transcribe_with(
         ));
     }
     let wav = write_temp_wav(&audio)?;
+    // Staged private audio in the shared temp dir: the guard unlinks it on
+    // every path out of the rest of this function (the manual remove below
+    // covers only the recognize call), panic unwinding included.
+    let _staged_wav = StagedFile { path: wav.clone() };
     let result = recognize(&wav);
     let _ = std::fs::remove_file(&wav);
     let (text, source) = result?;
@@ -1269,6 +1338,13 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
         }
     }
     drop(normalized_file);
+    // The normalized staging file is 0600 private audio in the shared temp
+    // dir: this guard unlinks it on every path out of the rest of this
+    // function (the explicit remove near the end covers only the ordinary
+    // exit), panic unwinding and early error returns included.
+    let _staged_normalized = StagedFile {
+        path: normalized.clone(),
+    };
     let input = if ffmpeg_available() {
         let mut convert_command = std::process::Command::new("ffmpeg");
         convert_command
@@ -1282,9 +1358,15 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
         crate::support::set_process_group(&mut convert_command);
         let spawned = convert_command.spawn();
         let status_ok = match spawned {
-            Ok(mut convert) => wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
-                .map(|status| status.success())
-                .unwrap_or(false),
+            Ok(mut convert) => {
+                // Same supervised bracket as every other spawned child: a
+                // Ctrl-C during the conversion takes the ffmpeg group down
+                // with this CLI.
+                let _supervised = SupervisedGroup::new(&convert);
+                wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+            }
             Err(_) => false,
         };
         let converted = status_ok
@@ -1320,6 +1402,15 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     // vendor CLI spawns).
     crate::support::set_process_group(&mut engine_command);
     let mut child = spawn_asr_engine(&mut engine_command, &normalized)?;
+    // The recognized-pid rule the wait loop below documents (no group kill
+    // once `try_wait` has reaped the child) is about signaling, not
+    // registration: the supervised bracket forgets the group on EVERY exit
+    // from here on — normal completion, timeout kill, broken wait — so an
+    // interrupt later in the command cannot signal a pgid the OS may already
+    // have recycled, while an interrupt that lands while the engine runs is
+    // forwarded to its group instead of orphaning it (and the loop below
+    // unwinds through its sigint check rather than waiting out the budget).
+    let _supervised_engine = SupervisedGroup::new(&child);
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
@@ -1339,11 +1430,20 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     // `try_wait` has reaped the child, whatever its exit status, the pid is
     // free for reuse and `kill(-pgid)` could hit an unrelated process group
     // with this user's privileges, so no kill happens there (the same rule
-    // every `connectors` call site follows).
+    // every `connectors` call site follows). A Ctrl-C already observed by
+    // the supervisor is the standing exception: the watcher is taking this
+    // process down, unwinding here lets the staged-file guards run, and the
+    // child is verifiably still alive at this point in the loop.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(&mut child);
+                    break Err(CliError::failed(
+                        "voice transcribe: local ASR engine interrupted",
+                    ));
+                }
                 if started.elapsed() >= Duration::from_secs(timeout) {
                     crate::support::kill_process_tree(&mut child);
                     break Err(CliError::failed(format!(
@@ -1515,7 +1615,9 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
             ))
         }
     })?;
-
+    // The supervised bracket for this spawn, pairing registration with the
+    // forget on every exit below (see the local-engine lane).
+    let _supervised_cli = SupervisedGroup::new(&child);
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
@@ -1532,11 +1634,19 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
     // branches that leave the CLI unreaped. A non-success exit is ordinary
     // here — exit code 6 is the documented "no speech" answer — and the child
     // is already reaped by then, so killing its group would race a reused pid
-    // and SIGKILL an unrelated process group.
+    // and SIGKILL an unrelated process group. A Ctrl-C already observed by
+    // the supervisor is the standing exception (child verifiably alive, this
+    // process going down): unwind now so the guards run.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(&mut child);
+                    break Err(CliError::failed(
+                        "asr_interrupted: local speech recognition was interrupted",
+                    ));
+                }
                 if started.elapsed() >= Duration::from_secs(timeout) {
                     crate::support::kill_process_tree(&mut child);
                     break Err(CliError::failed(format!(
@@ -2661,6 +2771,55 @@ mod review_fix_tests {
             "the failed spawn must not leak the normalized staging file"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The staged private audio (the 0600 wav from `write_temp_wav`, the
+    /// normalized conversion) is unlinked by the [`StagedFile`] guard on
+    /// EVERY path out of its scope — including a panic unwind, the path the
+    /// explicit `remove_file` calls cannot cover and the reason the guard
+    /// exists (a `?` return between staging and the manual remove used to
+    /// leave `pinvou-cli-voice-*.wav` debris in the shared temp dir).
+    #[test]
+    fn staged_file_guard_removes_the_staged_wav_on_an_error_path() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-cli-voice-guard-{}-{nonce}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, vec![0u8; 44]).unwrap();
+
+        // The error path: the guard is dropped while the early `?` return
+        // unwinds, so the staged file must not survive the scope.
+        let result = std::panic::catch_unwind(|| {
+            let _staged = StagedFile { path: path.clone() };
+            // The shape of every guarded site: an error return between the
+            // staging and the manual remove.
+            let failure: Result<(), CliError> = Err(CliError::failed("simulated early failure"));
+            failure
+        })
+        .expect("the closure returns the simulated failure without panicking");
+        assert!(
+            result.is_err(),
+            "the simulated failure propagates unchanged"
+        );
+        assert!(
+            !path.exists(),
+            "the StagedFile guard must unlink the staged wav when dropped on an error path"
+        );
+
+        // And the panic path: the same guard must run during unwinding.
+        std::fs::write(&path, vec![0u8; 44]).unwrap();
+        let _ = std::panic::catch_unwind(|| {
+            let _staged = StagedFile { path: path.clone() };
+            panic!("simulated panic between staging and the manual remove");
+        });
+        assert!(
+            !path.exists(),
+            "the StagedFile guard must unlink the staged wav even while unwinding a panic"
+        );
     }
 }
 

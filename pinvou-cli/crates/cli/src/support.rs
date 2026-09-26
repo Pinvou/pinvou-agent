@@ -438,8 +438,16 @@ pub fn resolve_secret(
         ));
     }
     if let Some(var) = api_key_env {
-        let raw = std::env::var(var).map_err(|_| {
-            CliError::failed(format!("secret environment variable {var} is not set"))
+        let raw = std::env::var(var).map_err(|error| match error {
+            // Same distinction `validate_sandbox_home` draws for
+            // PINVOU3_HOME: a set-but-non-UTF-8 value is a different problem
+            // from an unset one, and reporting it as "not set" would send the
+            // user hunting for a missing export when the variable exists but
+            // carries undecodable bytes.
+            std::env::VarError::NotUnicode(_) => CliError::failed(format!(
+                "secret environment variable {var} is set but not valid UTF-8"
+            )),
+            _ => CliError::failed(format!("secret environment variable {var} is not set")),
         })?;
         // A set-but-empty variable is as useless as an empty stdin read;
         // storing it would report "key-set" while every signed request fails.
@@ -799,6 +807,53 @@ mod tests {
         // Ordinary text, including non-ASCII and combining marks, is not a
         // display hazard and must be left alone.
         assert_eq!(collapse_control_characters("会话 café ✓"), "会话 café ✓");
+    }
+
+    /// The ENV lane must distinguish "not set" from "set but not valid
+    /// UTF-8", the same distinction `validate_sandbox_home` draws for
+    /// `PINVOU3_HOME`: a set-but-non-UTF-8 variable is a different problem
+    /// with a different fix, and the old `_ =>` collapsed both into "is not
+    /// set". Pinned without the env lock: unique variable name plus a
+    /// save-and-restore guard, like the sibling test below it.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_env_lane_distinguishes_not_unicode_from_not_set() {
+        use std::os::unix::ffi::OsStrExt as _;
+        const VAR: &str = "PINVOU_CLI_TEST_RESOLVE_SECRET_NOT_UTF8";
+        struct RestoreVar(Option<std::ffi::OsString>);
+        impl Drop for RestoreVar {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(VAR, value) },
+                    None => unsafe { std::env::remove_var(VAR) },
+                }
+            }
+        }
+        let previous = RestoreVar(std::env::var_os(VAR));
+
+        unsafe { std::env::set_var(VAR, std::ffi::OsStr::from_bytes(b"sk-\xff-not-utf8")) };
+        let error = resolve_secret(&Some(VAR.to_owned()), false)
+            .expect_err("a non-UTF-8 secret variable must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let message = error.to_string();
+        assert!(
+            message.contains("set but not valid UTF-8"),
+            "a set-but-non-UTF-8 variable must be named as such: {message}"
+        );
+        assert!(
+            !message.contains("is not set"),
+            "misreporting a set variable as unset sends the user hunting for a missing export: \
+             {message}"
+        );
+
+        unsafe { std::env::remove_var(VAR) };
+        let error = resolve_secret(&Some(VAR.to_owned()), false)
+            .expect_err("an unset secret variable must be refused");
+        assert!(
+            error.to_string().contains("is not set"),
+            "an unset variable keeps its message: {error}"
+        );
+        drop(previous);
     }
 
     /// The ENV lane of [`resolve_secret`] must trim the way the stdin lane

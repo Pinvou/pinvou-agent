@@ -10,9 +10,11 @@
 //!   `~/.pinvou3/knowledge/index.db` (`default_db_path()` honours
 //!   `PINVOU3_HOME`); it also runs the GUI's startup recovery of interrupted
 //!   imports.
-//! - scan start/status/cancel → `KnowledgeService::{start_scan, status,
-//!   cancel_scan}`; `--root` omitted defaults to the user home like
-//!   `kb_start_scan`.
+//! - scan start/status → `KnowledgeService::{start_scan, status}`;
+//!   `--root` omitted defaults to the user home like `kb_start_scan`. Scan
+//!   cancel is a stable exit-1 refusal (see `scan_cancel`): the in-memory
+//!   scan state is process-local, so a one-shot invocation can never have a
+//!   scan of its own to signal.
 //! - collections list/create/update/delete → `KnowledgeService::l1()`
 //!   (`L1Store` CRUD). Delete mirrors GUI `kb_collection_delete`:
 //!   `cancel_index_for_collection`, `delete_collection` (which cascades the
@@ -26,16 +28,20 @@
 //! - documents → `L1Store::{list_documents, remove_document}` (`--limit`
 //!   omitted maps to the GUI's 0 = default page of 500).
 //! - index status/cancel/resume/retry/failed → `KnowledgeService::
-//!   {index_status, cancel_index, resume_index, retry_index_item,
-//!   failed_index_files}`; `--limit` for failed files defaults to the GUI
-//!   page size 50. `index status` without an id reports the GUI's latest job
-//!   (`kb_index_status` semantics); with an id it reports THAT job through
+//!   {index_status, cancel_index_job, resume_index, retry_index_item,
+//!   failed_index_files}` (`cancel_index_job` is the CLI-facing id-taking
+//!   cancel, the same shape `interrupt_index` uses); `--limit`
+//!   for failed files defaults to the GUI page size 50. `index status`
+//!   without an id reports the GUI's latest job (`kb_index_status`
+//!   semantics); with an id it reports THAT job through
 //!   `KnowledgeService::index_job_state`, because the latest-job ordering
 //!   ranks `cancelled` last and would answer with an older `done_with_errors`
 //!   job instead. `index cancel` reports the cancelled job through the same
 //!   per-job read for exactly that reason.
-//!   `index cancel/resume/retry <job-id>` validate the named id against that
-//!   latest job, and `resume`/`retry` additionally refuse while the latest
+//!   `index cancel <job-id>` cancels exactly the named job through the
+//!   id-taking transition — never a re-derived "latest" job, which could
+//!   race a desktop-app import — while `resume`/`retry <job-id>` validate the
+//!   named id against the latest job and additionally refuse while the latest
 //!   job is still `running`: the CLI never runs the GUI's boot recovery of
 //!   interrupted jobs (see "One-shot semantics"), so every command must fail
 //!   honestly on state it must not touch.
@@ -1449,39 +1455,39 @@ fn named_job_state(
     })
 }
 
-/// GUI `kb_index_cancel` targets the active/latest job; refuse when the
-/// caller named a different one so the CLI never cancels the wrong job.
+/// GUI `kb_index_cancel` targets the active/latest job. The CLI takes the
+/// job id explicitly: the cancel goes through `cancel_index_job` — the
+/// id-taking transition `interrupt_index` already uses as its shape — which
+/// looks up and cancels exactly the named job inside one store call. The
+/// pre-PR flow verified `active == job_id` from one `index_status()` read
+/// and then called `cancel_index()`, which re-derived the "latest" job
+/// server-side: a sub-second swap between the two reads could cancel a
+/// desktop-app import the caller never named.
+///
+/// Semantics: a running or resumable named job is really cancelled (the
+/// store's `cancel` is synchronous and transactional) and reported as
+/// signalled; a finished named job (done or already cancelled) is an
+/// idempotent no-op that still succeeds and honestly reports that nothing
+/// was signalled; an unknown id is the family's stable
+/// `knowledge_index_job_not_found` code.
 fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
-    let latest = service.index_status();
-    let Some(active) = latest.job_id.as_deref() else {
-        // No job exists at all: claiming a cancel was signalled would be a
-        // false success.
-        return Err(CliError::failed(format!(
-            "knowledge_index_job_not_found: no index job exists (nothing to cancel for \
-             {job_id})"
-        )));
-    };
-    if active != job_id {
-        // `cancel_index` acts on the latest job at call time even when the
-        // named job is finished, so a job the caller did not name would be
-        // the one cancelled.
-        return Err(CliError::failed(format!(
-            "knowledge index cancel({job_id}): job is not the active/latest index \
-             job (latest: {active})"
-        )));
-    }
-    // `ImportJobStore::cancel` is synchronous: a running or interrupted
-    // (resumable) job is flipped to `cancelled` inside the call, so the
-    // post-cancel status never reports running — deciding the message from
-    // it printed "nothing was signalled" on every effective cancel. Decide
-    // from the pre-cancel state instead: a running or resumable job gets a
-    // real signal, a finished job (done/cancelled) takes the same call
-    // without anything to signal.
-    let was_active = latest.running || latest.resumable;
-    service
-        .cancel_index()
-        .map_err(|error| feature_error("index cancel", error))?;
+    // The pre-transition read and the transition are the same store call, so
+    // the `was_active` decision below cannot describe a different job than
+    // the one the store cancelled.
+    let pre = service.cancel_index_job(job_id).map_err(|error| {
+        if error.contains("Query returned no rows") {
+            CliError::failed(format!(
+                "knowledge_index_job_not_found: no index job {job_id} exists"
+            ))
+        } else {
+            feature_error(&format!("index cancel({job_id})"), error)
+        }
+    })?;
+    // A running or resumable job got a real cancel signal; a finished job
+    // (done/cancelled) took the same call without anything to signal —
+    // `ImportJobStore::cancel`'s WHERE clause is the idempotent no-op here.
+    let was_active = pre.running || pre.resumable;
     // Report the job that was actually cancelled, NOT `index_status()`. The
     // latest-job read ranks `cancelled` in its last bucket, so the successful
     // cancel hands the "latest" crown to any older `done_with_errors` /
@@ -1493,7 +1499,7 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     } else {
         format!(
             "index cancel: job {job_id} was not active (running: {}); nothing was signalled",
-            latest.running
+            pre.running
         )
     };
     let human = format!("{header}\n{}", render_index_state(&state));

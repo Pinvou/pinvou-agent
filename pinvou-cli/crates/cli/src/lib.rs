@@ -538,8 +538,9 @@ fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError
         .ok_or_else(|| {
             CliError::usage(
                 "benchmark submission gaia requires --destination (note: the global --output \
-                 flag claims the values 'json' and 'human' anywhere in argv — spell a \
-                 destination literally named `json` as --output ./json)",
+                 flag claims the values 'json' and 'human' only in the leading run of argv and \
+                 at the very end of the line — spell a destination literally named `json` as \
+                 --destination ./json)",
             )
         })?;
     Ok(BenchmarkCommand::SubmissionGaia { run_id, output })
@@ -1501,8 +1502,10 @@ fn submission_gaia(
     Ok(success(text))
 }
 
-/// 生成 JSON 字符串字面量的内部内容(不含引号)。委托 serde_json,覆盖
-/// 控制字符等全部需要转义的码点;手写 replace 会漏掉 \t、\u0000-\u001F。
+/// Builds the inner content of a JSON string literal (without the quotes).
+/// Delegates to serde_json so every escapable code point — control characters
+/// included — is covered; a hand-written replace would miss `\t` and
+/// `\u0000`-`\u001F`.
 fn json_escape(value: &str) -> String {
     let encoded = serde_json::to_string(value).unwrap_or_default();
     encoded[1..encoded.len().saturating_sub(1)].to_owned()

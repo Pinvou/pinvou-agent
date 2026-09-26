@@ -906,8 +906,8 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
         "{error}"
     );
 
-    // Cancel targets the active/latest job; on a finished job it is a
-    // signal-only no-op that still succeeds.
+    // Cancel targets the NAMED job (id-taking; on a finished job it is a
+    // signal-only no-op that still succeeds).
     run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
 
     // Resume/retry validate the named id against the latest job first: a
@@ -1184,6 +1184,29 @@ fn index_failed_names_an_unknown_job() {
     assert!(
         error.to_string().contains("knowledge_index_job_not_found"),
         "{error}"
+    );
+}
+
+/// `index cancel` cancels the NAMED job through the id-taking service
+/// transition (`cancel_index_job`), never a re-derived "latest" job. An
+/// unknown id must report the family's stable not-found code (the old flow
+/// first had to read a latest job to compare against, so its unknown-id
+/// answer was "no index job exists"; the id-taking call maps the store's
+/// no-rows answer the same way `index failed` does).
+#[test]
+fn index_cancel_names_an_unknown_job() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("index-cancel-unknown");
+    let error = execute_error(&["pinvou", "knowledge", "index", "cancel", "missing-job"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_index_job_not_found"),
+        "{message}"
+    );
+    assert!(
+        message.contains("missing-job"),
+        "the unknown id must be named: {message}"
     );
 }
 
