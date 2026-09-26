@@ -418,11 +418,13 @@ assert.ok(
 //     resolves through pkg-config. Its .pc emits only `-lpipewire-0.3`.
 //   - libEGL: `xcap` → `libwayshot-xcap` → `khronos-egl`, whose build script
 //     pkg-config-probes `egl` and emits `-lEGL`.
-//   - libgbm: `gbm-sys` carries neither a `links` declaration nor a build
-//     script that emits a link flag by itself, so its edge is not provable
-//     from crate metadata; `libgbm1` is additionally a hard dependency of
-//     libwebkit2gtk-4.1-0, making the entry belt-and-braces. Re-check with
-//     `readelf -d` on the shipped binary before ever removing it.
+//   - libgbm: `gbm-sys` declares no `links` and its build script emits no
+//     link flag, but `gbm-sys-0.4.0/src/lib.rs` carries
+//     `#[link(name = "gbm")]`, which rustc honors unconditionally — so the
+//     edge is provable from crate source, just not from manifest metadata;
+//     `libgbm1` is additionally a hard dependency of libwebkit2gtk-4.1-0,
+//     making the entry belt-and-braces. Re-check with `readelf -d` on the
+//     shipped binary before ever removing it.
 // Tauri's deb bundler writes `Depends:` verbatim and never runs
 // dpkg-shlibdeps, so a missing entry installs cleanly and then fails to start
 // with a dynamic-linker error on any system that lacks the library.

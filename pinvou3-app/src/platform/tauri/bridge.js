@@ -1569,6 +1569,11 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   // every streaming delta. The cost scales with the number of subscribers,
   // which turned into a per-tool-card cost once tool-renderers.jsx started
   // subscribing for the computer-use screenshot card.
+  // The cache has no eviction: it grows with the number of DISTINCT domain
+  // arrays ever requested. All current callers pass array literals, so it is
+  // constant in practice — same shape as the single-domain
+  // `subscriptionSliceCache` above. Revisit if a caller ever builds its
+  // domain list dynamically.
   function subscriptionStateSlices(domains) {
     if (!Array.isArray(domains) || domains.length === 0) {
       throw new Error("Tauri bridge state.subscribeMany requires at least one domain");

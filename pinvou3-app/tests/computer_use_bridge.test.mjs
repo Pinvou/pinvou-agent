@@ -1097,6 +1097,37 @@ function emit(harness, event, payload) {
   );
 }
 
+// ── 35c. a session-less refresh must clear stale grant/confirm requests ──
+// Same branch, one field over: a request left in the slice kept the previous
+// session's consent dialog (and its working Allow button) floating over the
+// draft composer. The per-session pending map is NOT the slice; nulling the
+// slice fields here must not lose the request for a later switch-back — that
+// resurfacing is refreshStatus's job for the active session.
+{
+  const harness = createHarness({
+    initialState: {
+      enabled: true,
+      granted: true,
+      stopped: false,
+      grantRequest: { sessionId: 's1' },
+      confirmRequest: { sessionId: 's1', action: 'click', element: 'Buy now', confirmId: 'c1' },
+    },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.grantRequest,
+    null,
+    'a session-less refresh must clear a stale grant request',
+  );
+  assert.equal(
+    harness.state.computerUse.confirmRequest,
+    null,
+    'a session-less refresh must clear a stale confirm request',
+  );
+}
+
 // ── 36. turning the feature off must clear the latched stop ──
 // The documented resume path is "turn it off and back on". Keeping `stopped`
 // set through the off step made the settings row tell a user who had just

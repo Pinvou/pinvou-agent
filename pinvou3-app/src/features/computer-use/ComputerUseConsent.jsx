@@ -125,10 +125,14 @@ export function ComputerUseDialogs({ slice, copy }) {
   // The backend names an unreadable screening slot with the canonical
   // "(no readable target)" sentinel (it is also the approval-token binding,
   // so it must stay locale-independent on the wire); the dialog localizes it
-  // for the user at render time.
+  // for the user at render time. Drag labels join every screened point with
+  // " → ", so the sentinel can appear as one segment of a longer label —
+  // a plain equality would leave it in English mid-label.
   const UNREADABLE_TARGET = '(no readable target)';
   const localizeTarget = (element) =>
-    element === UNREADABLE_TARGET ? copy.unreadableTarget : element;
+    element
+      .split(UNREADABLE_TARGET)
+      .join(copy.unreadableTarget);
   // Focus the safe (deny) button of whichever dialog is up; effects may read
   // refs, render may not, so the refs are per-dialog and never spread around.
   const grantDenyRef = useRef(null);

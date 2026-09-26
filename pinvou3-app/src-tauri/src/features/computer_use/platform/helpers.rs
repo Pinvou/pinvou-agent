@@ -109,12 +109,15 @@ fn is_invisible_formatting(c: char) -> bool {
         | '\u{2060}'..='\u{2064}'
         | '\u{2065}'
         | '\u{2066}'..='\u{2069}'
+        | '\u{206A}'..='\u{206F}'
         | '\u{3164}'
         | '\u{2FFC}'..='\u{2FFF}'
         | '\u{FE00}'..='\u{FE0F}'
         | '\u{FEFF}'
         | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFF8}'
         | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
         | '\u{1D173}'..='\u{1D17A}'
         | '\u{E0000}'..='\u{E0FFF}')
 }
@@ -296,6 +299,7 @@ pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guard::FOLD_CHUNK_CHARS;
 
     #[test]
     fn drag_waypoints_interpolates_and_excludes_start() {
@@ -506,13 +510,18 @@ mod tests {
 
     #[test]
     fn screening_hit_finds_terms_across_chunk_boundaries() {
-        // The streaming matcher folds 4096 raw characters at a time; a term
-        // straddling that boundary is only found because the carry keeps the
-        // tail of the previous chunk.
+        // The streaming matcher folds [`FOLD_CHUNK_CHARS`] raw characters at a
+        // time; a term straddling that boundary is only found because the
+        // carry keeps the tail of the previous chunk. The shared constant
+        // keeps this probe pinned to the real chunk size.
         for offset in 0.."Delete".len() {
-            let raw = format!("{}Delete", "x".repeat(4096 - offset));
+            let raw = format!("{}Delete", "x".repeat(FOLD_CHUNK_CHARS - offset));
             assert!(screening_hit(&raw), "term split at offset {offset}");
         }
+        // Just past the first boundary, at the carry edge: the term must
+        // still be found through the second window.
+        let raw = format!("{}Delete", "x".repeat(FOLD_CHUNK_CHARS + 20));
+        assert!(screening_hit(&raw), "term in the second window");
     }
 
     #[test]
