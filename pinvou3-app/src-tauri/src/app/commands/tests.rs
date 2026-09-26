@@ -2542,3 +2542,182 @@ fn e2e_build_llm_cases() {
         std::fs::write(out, prompt).expect("写 prompt");
     }
 }
+
+// ---- model deletion ordering (delete_model saves prefs before the keyring) ----
+
+fn model_deletion_test_model(id: &str, with_credential: bool) -> SavedModel {
+    let mut json = serde_json::json!({
+        "id": id,
+        "name": format!("Model {id}"),
+        "preset": "deepseek",
+        "model": "deepseek-v4-pro",
+        "base_url": "https://api.deepseek.com"
+    });
+    if with_credential {
+        json["credential_ref"] = serde_json::json!({
+            "service": "pinvou3-model-api-key",
+            "account": format!("model:{id}"),
+            "version": 1
+        });
+        json["credential_state"] = serde_json::json!("configured");
+        json["has_secret"] = serde_json::json!(true);
+    }
+    serde_json::from_value(json).expect("deserialize fixture model")
+}
+
+fn seed_model_deletion_prefs(models: &[SavedModel]) {
+    UserPrefs::update_transaction(|prefs| {
+        prefs.advanced.saved_models.clear();
+        for model in models {
+            prefs.advanced.saved_models.push(model.clone());
+        }
+        Ok(())
+    })
+    .expect("seed model deletion prefs");
+}
+
+#[test]
+fn delete_model_persists_prefs_before_touching_the_keyring() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("delete-model-order");
+    seed_model_deletion_prefs(&[
+        model_deletion_test_model("m-keep", false),
+        model_deletion_test_model("m-drop", true),
+    ]);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_delete();
+
+    // With the keyring delete failing, Ok + a persisted removal is only
+    // reachable when the prefs save commits BEFORE the delete attempt: the
+    // reverted ordering (delete first) would have failed the command and
+    // left the model in place.
+    super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
+
+    let prefs = UserPrefs::load();
+    assert!(
+        prefs.model_by_id("m-drop").is_none(),
+        "the model must be removed from the persisted prefs"
+    );
+    assert!(prefs.model_by_id("m-keep").is_some());
+    let ops = store.ops();
+    assert_eq!(ops.len(), 1, "exactly one keyring call: {ops:?}");
+    assert!(
+        ops[0].starts_with("delete:"),
+        "the keyring delete must be attempted for the removed model: {ops:?}"
+    );
+}
+
+#[test]
+fn delete_model_keyring_success_removes_the_secret() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("delete-model-ok");
+    seed_model_deletion_prefs(&[
+        model_deletion_test_model("m-keep", false),
+        model_deletion_test_model("m-drop", true),
+    ]);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+
+    super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
+
+    assert_eq!(
+        store.ops(),
+        vec!["delete:pinvou3-model-api-key:model:m-drop".to_string()],
+        "the deferred keyring delete must target the removed model's credential"
+    );
+    assert!(UserPrefs::load().model_by_id("m-drop").is_none());
+}
+
+#[test]
+fn delete_model_rejects_the_last_model_without_touching_the_keyring() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("delete-model-last");
+    seed_model_deletion_prefs(&[model_deletion_test_model("m-only", true)]);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+
+    let error = super::settings::delete_model_inner("m-only", &store)
+        .expect_err("the last model must not be deletable");
+
+    assert!(error.contains("delete_model"));
+    assert!(
+        store.ops().is_empty(),
+        "a rejected deletion must not reach the keyring: {:?}",
+        store.ops()
+    );
+    assert!(UserPrefs::load().model_by_id("m-only").is_some());
+}
+
+#[test]
+fn save_model_delete_action_defers_the_keyring_delete() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("save-model-defer");
+    let mut model = model_deletion_test_model("m-edit", true);
+    model.credential_action = Some(CredentialEditAction::Delete);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+
+    let (model, deferred) = super::settings::apply_model_credential(model, None, &store)
+        .expect("the delete action must not fail");
+
+    assert!(
+        deferred.is_some(),
+        "the delete action must return a deferred credential delete"
+    );
+    assert_eq!(
+        model.credential_state,
+        CredentialState::Missing,
+        "the saved record must carry the missing state"
+    );
+    assert!(
+        store.ops().is_empty(),
+        "no keyring call may run before the prefs save committed: {:?}",
+        store.ops()
+    );
+}
+
+#[test]
+fn save_model_inner_commits_prefs_before_the_deferred_delete() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("save-model-order");
+    seed_model_deletion_prefs(&[
+        model_deletion_test_model("m-keep", false),
+        model_deletion_test_model("m-edit", true),
+    ]);
+    let mut model = model_deletion_test_model("m-edit", true);
+    model.credential_action = Some(CredentialEditAction::Delete);
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_delete();
+
+    // With the keyring delete failing, Ok + a committed Missing edit is only
+    // reachable when the prefs save landed BEFORE the delete attempt: a
+    // delete-inside-the-transaction ordering would have failed the command
+    // and left the stale credential reference in place.
+    super::settings::save_model_inner(model, &store).expect("the save must succeed");
+
+    let prefs = UserPrefs::load();
+    let saved = prefs
+        .model_by_id("m-edit")
+        .expect("the edited model must stay in prefs");
+    assert_eq!(
+        saved.credential_state,
+        CredentialState::Missing,
+        "the delete edit must persist the missing state"
+    );
+    assert!(
+        saved.credential_ref.is_none(),
+        "the cleared reference must not survive in prefs"
+    );
+    assert_eq!(
+        store.ops(),
+        vec!["delete:pinvou3-model-api-key:model:m-edit".to_string()],
+        "exactly one deferred keyring delete, attempted after the commit"
+    );
+}
