@@ -988,12 +988,28 @@ fn scope_state_disabled(kind: ConnectorKind) -> bool {
         .any(|id| id == &package_id || id == kind.as_str())
 }
 
-/// Whether the connector's skills must stay hidden: the user's switch says so
-/// **or** a legacy marker is still on disk (in which case the app's gate
-/// really does keep deleting the skill directories, so reporting anything
-/// else would be a lie).
+/// Whether the connector reports as switched off in `status`: the plain-scope
+/// state (the GUI toggle's own persistence, so a connector the user disabled
+/// in the desktop app reports disabled here too) or a legacy marker (which
+/// the app's gate really does honor). This is the STATUS read only; the
+/// on-disk skill gate (`gui_skill_gate_shows`) mirrors the GUI's
+/// `skills_should_show` and deliberately does NOT consult the scope state.
 fn is_disabled(kind: ConnectorKind) -> bool {
     scope_state_disabled(kind) || legacy_disabled_marker(kind)
+}
+
+/// The on-disk skill gate, mirroring `features/connectors/skill_gate.rs::
+/// ConnectorGate::skills_should_show` exactly: `!legacy_marker && ready_probe`
+/// — the LEGACY `<id>_disabled` marker plus the connection state. The
+/// plain-scope switch state is NOT part of the gate: the GUI's toggle
+/// (`set_disabled_connectors`) governs the composite materialization and tool
+/// gating and never deletes `bundles/<id>/skills`, so the CLI's hide
+/// direction must not fire on the switch alone either — only the marker or
+/// the absence of a connection does. A probe error counts as not-connected,
+/// exactly like the GUI's `ready_probe` folds `run_probe` errors to false
+/// (feishu.rs `is_user_ready`, wecom.rs `is_ready`, …).
+fn gui_skill_gate_shows(kind: ConnectorKind) -> bool {
+    !legacy_disabled_marker(kind) && cli_connected(kind.spec()).unwrap_or(false)
 }
 
 /// Removes a legacy `<id>_disabled` marker if one is present. This is the
@@ -1376,7 +1392,17 @@ fn set_enabled(
         },
     )?;
     let connected = cli_connected(spec).unwrap_or(false);
-    let skills_should_show = connected && !is_disabled(kind);
+    // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
+    // the connection state + the legacy `<id>_disabled` marker
+    // (`skill_gate.rs::ConnectorGate::skills_should_show`); the plain-scope
+    // write above is the connector SWITCH — it governs the composite
+    // materialization and tool gating in the GUI, which never deletes
+    // `bundles/<id>/skills`. Tearing the tree down on the switch alone would
+    // silently renege on a connection the user still has, with no surface
+    // able to restore it (the show direction needs the app's embedded
+    // bundle). A probe error counts as not-connected here exactly like the
+    // GUI's ready probes fold `run_probe` errors to false.
+    let skills_should_show = gui_skill_gate_shows(kind);
     // The hide direction is the CLI's to perform (see `hide_connector_skills`)
     // — a `disable` that left the skill tree on disk would keep the engine
     // offering commands the switch just turned off, until the desktop app
@@ -1419,8 +1445,12 @@ fn set_enabled(
 }
 
 /// Mirror of `<connector>_apply_skills` (`ConnectorGate::apply_skills_command`
-/// → `skills_should_show() = !is_disabled && ready_probe()`): recompute
-/// `should_show = !disabled && connected`, then apply it.
+/// → `skills_should_show()` = marker read + `ready_probe()`), unchanged from
+/// the GUI: recompute `should_show`, then apply it. The gate deliberately
+/// does NOT consult the plain-scope switch state — the GUI's toggle governs
+/// composite materialization and never deletes `bundles/<id>/skills`, so the
+/// CLI's hide direction fires only on the marker or the absence of a
+/// connection (round-18 finding 1).
 ///
 /// The `false` half is applied for real here — it is the app's plain
 /// `remove_dir_all` of the skill dirs plus the NOTICE file, which needs no
@@ -1433,7 +1463,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     // "not connected" (the visible outcome is the same: skills stay hidden),
     // instead of failing the whole command on a missing binary.
     let connected = cli_connected(spec).unwrap_or(false);
-    let visible = connected && !is_disabled(kind);
+    let visible = gui_skill_gate_shows(kind);
     if visible {
         // Best-effort app-side (logs a failed write); the GUI's own
         // `apply_skills` calls the same infallible entry point.
@@ -1829,9 +1859,14 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
     let version_dir = assets_cli_dir(&artifact.name, &artifact.version);
     let destination = version_dir.join(&filename);
     if file_is_sha256(&destination, &artifact.binary_sha256) {
-        // Already installed; `resolve_vendor_cli` finds it through the same
-        // public `locked_cli_path` entry the GUI uses at spawn time.
-        return Ok(false);
+        // GUI parity (`native_installer::ensure_native_cli`): a matching hash
+        // says the bytes on disk are right; only the presence check the
+        // caller then runs tells the user the CLI binary actually executes.
+        // Mirrors the GUI, where `install()` is a no-op exactly when the
+        // hash matched and `present()` still runs in
+        // `ensure_cli_with`/"安装完成但无法执行" — so install=true here
+        // regardless of which branch produced the bytes (round-18 finding 3).
+        return Ok(true);
     }
 
     std::fs::create_dir_all(&version_dir).map_err(|error| {
@@ -2357,6 +2392,18 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
         _ => return Err(CliError::usage("unknown connector")),
     }
     notes.push(format!("{} connected", spec.id));
+    // GUI parity (round-18 finding 2): the desktop connect flow ends in the
+    // `<id>_apply_skills` follow-up, whose `apply_skills_command`
+    // (features/connectors/skill_gate.rs) runs
+    // `sync_deny_all_scopes_after_install` — 「连接器转为可用等同『新装』：
+    // 已初始化 code 开关时加入 code 禁用集」— so a freshly connected
+    // connector lands in the initialized DenyAll scopes' disabled sets
+    // (code sessions default external capabilities off). Without this, a
+    // fresh CLI connection would run code sessions with the connector ON
+    // where the GUI (which also runs the follow-up after its connect) would
+    // have it OFF. Best-effort app-side exactly like the GUI entry point: a
+    // failed write is logged by the scope layer, not failed here.
+    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
     let value = json!({
         "ok": true,
         "id": spec.id,
@@ -3077,17 +3124,63 @@ fn redact_ima_known_credentials(mut text: String, client_id: &str, api_key: &str
     text
 }
 
-/// Mirror of `ima_logout`: delete both secrets, uninstall ima-skills and
-/// remove it from the per-scope disabled sets.
+/// Mirror of `ima_logout`: delete both secrets, uninstall ima-skills, then
+/// remove it from each scope's disabled and visibility sets.
+///
+/// Deviation from the GUI, on purpose (round-18 finding 4): the GUI's
+/// `remove_bundle_from_disabled_scopes` is a `let _ =`-logged best-effort
+/// there, but this logout reports itself complete, so the CLI cannot swallow
+/// a failed scope cleanup — a stale disabled entry would keep a reconnected
+/// ima hidden from the very scopes that just wrote it. The same job the GUI
+/// does over the raw file is performed through the public per-scope load /
+/// modify / save primitives so the failure is observed and reported truthfully
+/// (per-scope sequential writes: no two-scope transaction exists; the scope
+/// layer logs nothing on write failure, so the CLI's error names the file).
 fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = SystemCredentialStore::new();
     let client_result = store.delete(&ima_secret_ref("client_id"));
     let api_result = store.delete(&ima_secret_ref("api_key"));
     let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
-    pinvou3_lib::features::marketplace::remove_bundle_from_disabled_scopes(IMA_SKILL_ID);
+    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(IMA_SKILL_ID);
+    let home = pinvou3_home().join("disabled_bundles.json");
+    let mut scope_failures: Vec<String> = Vec::new();
+    for scope in [
+        pinvou3_lib::features::marketplace::ConnectorScope::Plain,
+        pinvou3_lib::features::marketplace::ConnectorScope::Code,
+    ] {
+        let mut ids = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
+        let before = ids.len();
+        ids.retain(|id| id != &package_id);
+        if ids.len() != before {
+            if let Err(error) =
+                pinvou3_lib::features::marketplace::save_disabled_bundles_for(scope, &ids)
+            {
+                scope_failures.push(format!("scope {}: {error}", scope.as_str()));
+            }
+        }
+        let mut hidden = pinvou3_lib::features::marketplace::load_hidden_bundles_for(scope);
+        let before = hidden.len();
+        hidden.retain(|id| id != &package_id);
+        if hidden.len() != before {
+            if let Err(error) =
+                pinvou3_lib::features::marketplace::save_hidden_bundles_for(scope, &hidden)
+            {
+                scope_failures.push(format!("hidden (scope {}): {error}", scope.as_str()));
+            }
+        }
+    }
     client_result.map_err(|error| credential_error(error.user_message()))?;
     api_result.map_err(|error| credential_error(error.user_message()))?;
+    if !scope_failures.is_empty() {
+        return Err(CliError::failed(format!(
+            "connectors ima logout: the scope cleanup could not be persisted ({}); the stale \
+             entry stays in {} until it can be written. The ima secrets were deleted and the \
+             skill uninstalled; fix the permissions and retry",
+            scope_failures.join("; "),
+            home.display(),
+        )));
+    }
     let value = json!({ "ok": true, "id": "ima", "connected": false });
     Ok(success(render(output, "ima logged out".to_owned(), &value)))
 }

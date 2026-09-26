@@ -6,12 +6,16 @@
 //! - Imports (zip / .md / SKILL.md directory), preset skill install/update,
 //!   embedded-catalog MCP tool install (manifests without `pip_dependencies`
 //!   or required secrets), recycle-bin flows, export, meta, readiness, and
-//!   scope toggles are pure file operations — safe as default tests.
+//!   scope toggles are safe as default tests. Readiness now READS the
+//!   credential store for the ima row (ima_status parity — credentials are
+//!   part of its verdict); absent entries read as absent and prompt nowhere,
+//!   the same class of access the connectors zero-state tests already make.
 //! - Tool installs whose manifest declares `pip_dependencies` (pptx, gongwen,
 //!   tencent-docs skills runtime) or required secret config fields (weather,
 //!   iwencai, patsnap-search, wecom-bot — the secret lands in the system
-//!   credential store) would download packages or touch the OS keyring: they
-//!   are `#[ignore]` only. The MCP OAuth login flow itself lives in the
+//!   credential store), and the ima readiness seeding (writes both ima
+//!   credentials into the store to pin the connected verdicts), would
+//!   download packages or touch the OS keyring: they are `#[ignore]` only. The MCP OAuth login flow itself lives in the
 //!   foundation crate and is not reachable headless; the CLI surfaces that as
 //!   a deterministic exit-1 error which the default tests cover.
 
@@ -1625,6 +1629,218 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
     assert_eq!(canva["reason"], serde_json::json!("assets_missing"));
     // Fully decided from registry state: no live probe is involved.
     assert_eq!(canva["probe"], serde_json::json!("registry"));
+}
+
+/// ima is the one bundle the GUI does NOT judge through `readiness_for`:
+/// `bundle_readiness`'s ima arm dispatches to `connectors::ima::ima_status`,
+/// whose connected = both ima credentials present AND the `ima-skills`
+/// companion package installed. `plugins readiness` used to route ima through
+/// the registry branch, which looks for IMA_CLIENT_ID/IMA_API_KEY in the MCP
+/// secret namespace — the round-18 finding.
+///
+/// The zero state (no credentials anywhere) cannot discriminate the two
+/// vocabularies — both call it `missing_credentials` — so this default test
+/// pins what still holds without seeding: the reason is the GUI's own with
+/// credentials judged FIRST (a skill install alone does not flip it), the row
+/// shape (probe column included) matches every other registry row, and no
+/// neighboring row changes.
+#[test]
+fn readiness_ima_without_credentials_reports_the_gui_reason() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("readiness-ima-zero");
+
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let ima = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "ima")
+        .expect("ima row");
+    assert_eq!(ima["kind"], serde_json::json!("skill"));
+    assert_eq!(ima["installed"], serde_json::json!(false));
+    assert_eq!(ima["ready"], serde_json::json!(false));
+    assert_eq!(
+        ima["reason"],
+        serde_json::json!("missing_credentials"),
+        "no credentials: the GUI's own reason for an unconnected ima"
+    );
+    assert_eq!(
+        ima["probe"],
+        serde_json::json!("registry"),
+        "the ima verdict is decided from local facts (store + skill registry), \
+         no live probe is skipped"
+    );
+
+    // Companion skill installed, credentials still absent: ima_status judges
+    // credentials first, so the reason stays missing_credentials — and the
+    // GUI's installed override is credentials-OR-skill, so the row flips to
+    // installed even though no credential is present.
+    run_ok(&["pinvoy", "plugins", "skills", "install", "ima-skills"]);
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let ima = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "ima")
+        .expect("ima row");
+    assert_eq!(ima["installed"], serde_json::json!(true));
+    assert_eq!(ima["ready"], serde_json::json!(false));
+    assert_eq!(
+        ima["reason"],
+        serde_json::json!("missing_credentials"),
+        "credentials are judged before the companion skill, like ima_status"
+    );
+    assert_eq!(ima["probe"], serde_json::json!("registry"));
+    // Human row keeps the shared 6-column shape (probe column included).
+    let human = run_ok(&["pinvoy", "plugins", "readiness"]);
+    let ima_line = human
+        .lines()
+        .find(|line| line.starts_with("ima\t"))
+        .expect("ima human row");
+    assert_eq!(
+        ima_line.split('\t').count(),
+        6,
+        "human row: id, kind, installed, ready, reason, probe"
+    );
+    assert!(ima_line.ends_with("\tregistry"), "ima row: {ima_line}");
+
+    // The special case must not bleed into other rows: a required-credential
+    // MCP package keeps its registry verdict, and a cli-kind row keeps the
+    // headless non-verdict.
+    let weather = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "weather")
+        .expect("weather row");
+    assert_eq!(weather["ready"], serde_json::json!(false));
+    assert_eq!(weather["reason"], serde_json::json!("missing_credentials"));
+    assert_eq!(weather["probe"], serde_json::json!("registry"));
+    let feishu = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "feishu")
+        .expect("feishu row");
+    assert_eq!(feishu["ready"], serde_json::json!(false));
+    assert_eq!(
+        feishu["probe"],
+        serde_json::json!("unavailable_in_cli"),
+        "the cli arm is untouched by the ima special case"
+    );
+}
+
+/// OPT-IN (credential store): seeds both ima credentials through the same
+/// system store `plugins readiness` reads, pinning the two verdicts the zero
+/// state cannot reach — credentials + `ima-skills` installed → ready (the
+/// round-18 finding's red case: this used to read missing_credentials under
+/// probe:"registry"), and credentials without the companion skill →
+/// `skill_not_installed`. A non-ima neighbor row is re-checked after each
+/// phase so the seeding cannot masquerade as a broad verdict change.
+///
+/// On headless CI the store's file-backed fallback lands inside the sandboxed
+/// `CODEWHALE_HOME` (no OS keyring involved). On macOS the real login keychain
+/// serves the store; the previous values are snapshotted and restored on drop
+/// (including the panic path), the same exposure as the opt-in
+/// `tools_install_with_secret_persists_credential`.
+/// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
+#[test]
+#[ignore]
+fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
+    use pinvou3_lib::platform::credential_store::{
+        CredentialReference, CredentialStore, SystemCredentialStore,
+    };
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("readiness-ima-connected");
+    // Isolate the file-fallback store (headless CI) so seeded secrets never
+    // land in a real HOME; inert where the OS keyring wins the probe.
+    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
+    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
+
+    let store = SystemCredentialStore::new();
+    let client_ref = CredentialReference::for_ima_secret("client_id");
+    let api_ref = CredentialReference::for_ima_secret("api_key");
+    // Snapshot + restore in ima_connect's rollback shape: a host with real
+    // ima credentials gets them back exactly; absent entries stay absent.
+    struct ImaSecretsRestore {
+        client_ref: CredentialReference,
+        api_ref: CredentialReference,
+        client_previous: Option<String>,
+        api_previous: Option<String>,
+    }
+    impl Drop for ImaSecretsRestore {
+        fn drop(&mut self) {
+            let store = SystemCredentialStore::new();
+            let _ = match &self.client_previous {
+                Some(value) => store.set(&self.client_ref, value),
+                None => store.delete(&self.client_ref),
+            };
+            let _ = match &self.api_previous {
+                Some(value) => store.set(&self.api_ref, value),
+                None => store.delete(&self.api_ref),
+            };
+        }
+    }
+    let _restore = ImaSecretsRestore {
+        client_ref: client_ref.clone(),
+        api_ref: api_ref.clone(),
+        client_previous: store.get(&client_ref).unwrap(),
+        api_previous: store.get(&api_ref).unwrap(),
+    };
+    store
+        .set(&client_ref, "pinvou-cli-contract-ima-client")
+        .unwrap();
+    store.set(&api_ref, "pinvou-cli-contract-ima-key").unwrap();
+
+    // Credentials present, companion skill NOT installed: the GUI's
+    // skill_not_installed, not the registry branch's missing_credentials.
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let ima = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "ima")
+        .expect("ima row");
+    assert_eq!(
+        ima["installed"],
+        serde_json::json!(true),
+        "credentials alone install the package, like the GUI's ima arm"
+    );
+    assert_eq!(ima["ready"], serde_json::json!(false));
+    assert_eq!(
+        ima["reason"],
+        serde_json::json!("skill_not_installed"),
+        "credentials are present, only the companion skill is missing"
+    );
+    assert_eq!(ima["probe"], serde_json::json!("registry"));
+    let weather = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "weather")
+        .expect("weather row");
+    assert_eq!(weather["ready"], serde_json::json!(false));
+    assert_eq!(weather["reason"], serde_json::json!("missing_credentials"));
+    assert_eq!(weather["probe"], serde_json::json!("registry"));
+
+    // Credentials + companion skill: ima_status's connected, the GUI's ready.
+    run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
+    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let rows = value["bundles"].as_array().expect("bundles array");
+    let ima = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "ima")
+        .expect("ima row");
+    assert_eq!(
+        ima["ready"],
+        serde_json::json!(true),
+        "credentials + ima-skills installed is ima_status's connected"
+    );
+    assert_eq!(ima["reason"], serde_json::Value::Null);
+    assert_eq!(ima["installed"], serde_json::json!(true));
+    assert_eq!(ima["probe"], serde_json::json!("registry"));
+    let weather = rows
+        .iter()
+        .find(|row| row["bundle_id"] == "weather")
+        .expect("weather row");
+    assert_eq!(weather["ready"], serde_json::json!(false));
+    assert_eq!(
+        weather["reason"],
+        serde_json::json!("missing_credentials"),
+        "the ima seeding must not touch the MCP-credential rows"
+    );
 }
 
 /// `tools auth` is a status READ: a damaged `mcp.json` must not turn it into

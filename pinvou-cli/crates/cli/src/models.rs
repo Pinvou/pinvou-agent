@@ -73,6 +73,7 @@ pub enum ModelsCommand {
         api_key_env: Option<String>,
         api_key_stdin: bool,
         clear_api_key: bool,
+        yes: bool,
         set_active: bool,
     },
     Remove {
@@ -106,6 +107,7 @@ pub enum ModelsCommand {
         provider: SearchProvider,
         api_key_env: Option<String>,
         clear: bool,
+        yes: bool,
     },
     SearchTest {
         provider: SearchProvider,
@@ -807,7 +809,7 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         "edit",
         rest,
         &value_flags,
-        &["api-key-stdin", "clear-api-key", "set-active"],
+        &["api-key-stdin", "clear-api-key", "set-active", "yes"],
     )?;
     let id = options.exactly_one_positional()?;
     let api_key_env = options.value("api-key-env").map(str::to_owned);
@@ -896,6 +898,7 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         api_key_env,
         api_key_stdin,
         clear_api_key,
+        yes: options.has("yes"),
         set_active: options.has("set-active"),
     })
 }
@@ -929,7 +932,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
                 "search set",
                 rest,
                 &["provider", "api-key-env"],
-                &["clear"],
+                &["clear", "yes"],
             )?;
             options.reject_stray_positionals()?;
             if options.has("clear") && options.value("api-key-env").is_some() {
@@ -939,6 +942,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
                 provider: parse_search_provider(options.required("provider")?)?,
                 api_key_env: options.value("api-key-env").map(str::to_owned),
                 clear: options.has("clear"),
+                yes: options.has("yes"),
             })
         }
         "test" => {
@@ -993,6 +997,7 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             api_key_env,
             api_key_stdin,
             clear_api_key,
+            yes,
             set_active,
         } => edit(
             &id,
@@ -1000,6 +1005,7 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             &api_key_env,
             api_key_stdin,
             clear_api_key,
+            yes,
             set_active,
             output,
         ),
@@ -1024,7 +1030,8 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             provider,
             api_key_env,
             clear,
-        } => search_set(provider, &api_key_env, clear, output),
+            yes,
+        } => search_set(provider, &api_key_env, clear, yes, output),
         ModelsCommand::SearchTest { provider } => search_test(provider, output),
     }
 }
@@ -1140,11 +1147,12 @@ fn to_base36(mut value: u64) -> String {
 /// The exact bytes a secret is written to the credential store under — the
 /// single normalization every credential write in this module goes through.
 ///
-/// `support::resolve_secret` returns an `--api-key-env` value VERBATIM; only
-/// its stdin lane trims. Environment secrets routinely carry a trailing
-/// newline (a file mounted by a CI secret store, `read KEY < key.txt`, most
-/// `.env` loaders — `$(cat key.txt)` is the exception, not the rule), and
-/// storing that newline makes every signed request 401.
+/// `support::resolve_secret` trims both lanes (env and stdin), and this
+/// write-side normalization is the belt-and-braces half: environment
+/// secrets routinely carry a trailing newline into the process (a file
+/// mounted by a CI secret store, `read KEY < key.txt`, most `.env`
+/// loaders), and any lane that ever skips one of the two trims again
+/// would make every signed request 401.
 ///
 /// The failure is self-masking, which is why it must be fixed on the WRITE
 /// side: every read path trims (`settings search test`, `apply_bearer`), so
@@ -1333,9 +1341,17 @@ fn edit(
     api_key_env: &Option<String>,
     api_key_stdin: bool,
     clear_api_key: bool,
+    yes: bool,
     set_active: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // `--clear-api-key` deletes the stored credential (keyring entry and
+    // configured bookkeeping), so it opts in explicitly exactly like
+    // `models remove` (`require_yes`): destructive actions must not be
+    // runnable by a mistyped command.
+    if clear_api_key {
+        require_yes(yes)?;
+    }
     // A model cannot be its own vision fallback (the GUI form drops
     // `visionModelId === id` before saving); saying so beats storing a
     // self-reference the app then ignores.
@@ -2661,8 +2677,8 @@ fn search_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &json)))
 }
 
-/// `settings search set --provider P [--api-key-env V | --clear]`: stores or
-/// clears provider P's credential with the same bookkeeping
+/// `settings search set --provider P [--api-key-env V | --clear [--yes]]`:
+/// stores or clears provider P's credential with the same bookkeeping
 /// (`mark_configured` / `mark_missing`) as the GUI's search settings save
 /// path.
 ///
@@ -2671,16 +2687,24 @@ fn search_list(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// operation on a named provider and must not move the user's search
 /// backend; `--provider tavily --clear` means "forget the tavily key", not
 /// "search with tavily from now on".
+///
+/// `--clear` deletes the stored credential, so it requires `--yes` exactly
+/// like the model family's credential deletions (`models edit
+/// --clear-api-key`) and `models remove` (`require_yes`).
 fn search_set(
     provider: SearchProvider,
     api_key_env: &Option<String>,
     clear: bool,
+    yes: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     if provider == SearchProvider::Bing && api_key_env.is_some() {
         return Err(CliError::usage(
             "provider bing does not use an api key; it needs no configuration",
         ));
+    }
+    if clear {
+        require_yes(yes)?;
     }
     let secret = resolve_secret(api_key_env, false)?;
     let stored = if clear { None } else { secret };
@@ -2826,8 +2850,12 @@ fn search_set(
 /// `SearchProvider` variants — returned `{"ok":true,"code":"configured"}` the
 /// moment a non-empty credential existed, without contacting anything, so a
 /// revoked, expired or garbage key passed a command called `test`. The
-/// contract now is: `ok: true` means the provider answered, and the
-/// `verified` field says which of the two was actually established.
+/// contract now is: `ok: true` means the provider answered with a body its
+/// own search path accepts — the HTTP status AND, for the providers that
+/// report business errors in-band on a 200 (Metaso, Bocha, Baidu), the
+/// body's error code ([`search_body_error`], replicated from the
+/// web-search tool's per-provider checks) — and the `verified` field says
+/// which of the two was actually established.
 ///
 /// The four API lanes are built from the request shapes the product's own
 /// search tool sends (`CodeWhale/crates/tui/src/tools/web_search.rs`), not
@@ -2927,6 +2955,19 @@ const SEARCH_PROBE_RESULTS: u32 = 1;
 /// premature `timeout` on a perfectly good key would be a false negative.
 const SEARCH_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The pinned endpoint each provider's live probe targets, mirroring the
+/// request builders in `CodeWhale/crates/tui/src/tools/web_search.rs`. `None`
+/// for Bing: it has no api-key form and is routed to the scrape probe instead.
+fn search_api_endpoint(provider: SearchProvider) -> Option<&'static str> {
+    match provider {
+        SearchProvider::Tavily => Some(TAVILY_SEARCH_ENDPOINT),
+        SearchProvider::Bocha => Some(BOCHA_SEARCH_ENDPOINT),
+        SearchProvider::Metaso => Some(METASO_SEARCH_ENDPOINT),
+        SearchProvider::Baidu => Some(BAIDU_SEARCH_ENDPOINT),
+        SearchProvider::Bing => None,
+    }
+}
+
 /// Builds one provider's real search request. Every shape here — endpoint,
 /// auth scheme and body — is transcribed from the corresponding builder in
 /// `CodeWhale/crates/tui/src/tools/web_search.rs`: Tavily carries the key in
@@ -2938,46 +2979,50 @@ fn search_api_request(
     provider: SearchProvider,
     key: &str,
 ) -> Option<reqwest::blocking::RequestBuilder> {
+    search_api_request_at(client, provider, key, search_api_endpoint(provider)?)
+}
+
+/// The endpoint-parameterized form of [`search_api_request`], used by the
+/// loopback unit tests (via [`run_search_api_probe_at`]) to drive the same
+/// request lane without network access.
+fn search_api_request_at(
+    client: &reqwest::blocking::Client,
+    provider: SearchProvider,
+    key: &str,
+    endpoint: &str,
+) -> Option<reqwest::blocking::RequestBuilder> {
     let request = match provider {
         SearchProvider::Bing => return None,
-        SearchProvider::Tavily => client
-            .post(TAVILY_SEARCH_ENDPOINT)
+        SearchProvider::Tavily => client.post(endpoint).json(&serde_json::json!({
+            "api_key": key,
+            "query": SEARCH_PROBE_QUERY,
+            "search_depth": "basic",
+            "max_results": SEARCH_PROBE_RESULTS,
+        })),
+        SearchProvider::Bocha => client
+            .post(endpoint)
+            .bearer_auth(key)
             .json(&serde_json::json!({
-                "api_key": key,
                 "query": SEARCH_PROBE_QUERY,
-                "search_depth": "basic",
-                "max_results": SEARCH_PROBE_RESULTS,
+                "freshness": "noLimit",
+                "count": SEARCH_PROBE_RESULTS,
             })),
-        SearchProvider::Bocha => {
-            client
-                .post(BOCHA_SEARCH_ENDPOINT)
-                .bearer_auth(key)
-                .json(&serde_json::json!({
-                    "query": SEARCH_PROBE_QUERY,
-                    "freshness": "noLimit",
-                    "count": SEARCH_PROBE_RESULTS,
-                }))
-        }
-        SearchProvider::Metaso => {
-            client
-                .post(METASO_SEARCH_ENDPOINT)
-                .bearer_auth(key)
-                .json(&serde_json::json!({
-                    "q": SEARCH_PROBE_QUERY,
-                    "scope": "webpage",
-                    "size": SEARCH_PROBE_RESULTS,
-                }))
-        }
-        SearchProvider::Baidu => {
-            client
-                .post(BAIDU_SEARCH_ENDPOINT)
-                .bearer_auth(key)
-                .json(&serde_json::json!({
-                    "messages": [{ "role": "user", "content": SEARCH_PROBE_QUERY }],
-                    "search_source": "baidu_search_v2",
-                    "resource_type_filter": [{ "type": "web", "top_k": SEARCH_PROBE_RESULTS }],
-                }))
-        }
+        SearchProvider::Metaso => client
+            .post(endpoint)
+            .bearer_auth(key)
+            .json(&serde_json::json!({
+                "q": SEARCH_PROBE_QUERY,
+                "scope": "webpage",
+                "size": SEARCH_PROBE_RESULTS,
+            })),
+        SearchProvider::Baidu => client
+            .post(endpoint)
+            .bearer_auth(key)
+            .json(&serde_json::json!({
+                "messages": [{ "role": "user", "content": SEARCH_PROBE_QUERY }],
+                "search_source": "baidu_search_v2",
+                "resource_type_filter": [{ "type": "web", "top_k": SEARCH_PROBE_RESULTS }],
+            })),
     };
     Some(request)
 }
@@ -2988,6 +3033,30 @@ fn search_api_request(
 /// ...), so one exit contract covers both commands. Transport failures go
 /// through `connection_error_result`, which redacts the message.
 fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
+    match search_api_endpoint(provider) {
+        // Bing is routed to `run_bing_probe` before this function is reached.
+        None => SearchProbe {
+            ok: false,
+            code: "unsupported_provider",
+            detail: Some(format!(
+                "provider {} has no api-key search request",
+                provider.as_str()
+            )),
+            verified: VERIFIED_NOTHING,
+        },
+        Some(endpoint) => run_search_api_probe_at(provider, key, endpoint),
+    }
+}
+
+/// Sends one API provider's search probe against the given endpoint and
+/// classifies the answer.
+///
+/// The endpoint is a parameter (rather than read from the pinned consts via
+/// [`search_api_endpoint`]) so the loopback unit tests in this module can
+/// drive the whole request→classification lane through `spawn_probe_mock`
+/// without network access — including the canned-body cases that cannot be
+/// pointed at a real provider's 200-with-error-code answer.
+fn run_search_api_probe_at(provider: SearchProvider, key: &str, endpoint: &str) -> SearchProbe {
     let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(SEARCH_PROBE_TIMEOUT)
         .build()
@@ -2999,8 +3068,7 @@ fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
             verified: VERIFIED_NOTHING,
         };
     };
-    let Some(request) = search_api_request(&client, provider, key) else {
-        // Bing is routed to `run_bing_probe` before this function is reached.
+    let Some(request) = search_api_request_at(&client, provider, key, endpoint) else {
         return SearchProbe {
             ok: false,
             code: "unsupported_provider",
@@ -3012,15 +3080,7 @@ fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
         };
     };
     match request.send() {
-        Ok(response) => {
-            let probe = connection_http_result(response.status());
-            SearchProbe {
-                ok: probe.ok,
-                code: probe.code,
-                detail: probe.detail,
-                verified: VERIFIED_LIVE_PROBE,
-            }
-        }
+        Ok(response) => search_response_probe(provider, response),
         Err(error) => {
             let probe = connection_error_result(&error);
             SearchProbe {
@@ -3030,6 +3090,136 @@ fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
                 verified: VERIFIED_LIVE_PROBE,
             }
         }
+    }
+}
+
+/// Classifies one answered search probe: the HTTP status first (same
+/// vocabulary as `models test`), then — on a 2xx — the response BODY, because
+/// Metaso, Bocha and Baidu answer `200 OK` with a business error code in the
+/// body when the key is rejected or the quota is gone. See
+/// [`search_body_error`] for the source of those checks.
+fn search_response_probe(
+    provider: SearchProvider,
+    response: reqwest::blocking::Response,
+) -> SearchProbe {
+    let status = response.status();
+    let probe = connection_http_result(status);
+    if !probe.ok {
+        return SearchProbe {
+            ok: probe.ok,
+            code: probe.code,
+            detail: probe.detail,
+            verified: VERIFIED_LIVE_PROBE,
+        };
+    }
+    let Ok(body) = response.text() else {
+        // The status says success but the body never arrived: the probe
+        // learned the endpoint is reachable, not that it answered cleanly.
+        return SearchProbe {
+            ok: false,
+            code: "response_unreadable",
+            detail: Some(format!(
+                "failed to read the {} response body",
+                provider.as_str()
+            )),
+            verified: VERIFIED_LIVE_PROBE,
+        };
+    };
+    match search_body_error(provider, &body) {
+        Some((code, detail)) => SearchProbe {
+            ok: false,
+            code,
+            detail: Some(detail),
+            verified: VERIFIED_LIVE_PROBE,
+        },
+        None => SearchProbe {
+            ok: probe.ok,
+            code: probe.code,
+            detail: probe.detail,
+            verified: VERIFIED_LIVE_PROBE,
+        },
+    }
+}
+
+/// Classifies a 2xx search response body by the provider's own business
+/// error conventions.
+///
+/// SOURCE OF TRUTH: these are the minimal per-provider body checks the
+/// product's web-search path applies to the SAME bodies, in
+/// `CodeWhale/crates/tui/src/tools/web_search.rs` — Metaso's inline
+/// `code != 0` check in `run_metaso_search` (2005 = key rejected, 3003 =
+/// daily limit), `bocha_error_message` (fail on any code other than 0/200),
+/// and `baidu_error_message` (fail on `error_code`/`code` other than 0).
+/// They are replicated here rather than imported because those items are
+/// private to the TUI crate the CLI does not depend on; the probes and the
+/// search tool must classify these bodies identically or `settings search
+/// test` passes keys the product's own search rejects. Tavily carries no
+/// business error code on 2xx, matching `run_tavily_search`, which parses
+/// the body without an error-code check.
+///
+/// Returns `(probe code, truthful detail)` for a body that means failure.
+fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static str, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    match provider {
+        SearchProvider::Tavily => None,
+        SearchProvider::Metaso => {
+            let code = parsed.get("code").and_then(|value| value.as_i64())?;
+            if code == 0 {
+                return None;
+            }
+            let message = parsed
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown error");
+            Some(match code {
+                2005 => (
+                    "key_rejected",
+                    format!("Metaso API key rejected (code {code}: {message})"),
+                ),
+                3003 => (
+                    "quota_exhausted",
+                    format!("Metaso daily search limit reached (code {code}: {message})"),
+                ),
+                _ => (
+                    "provider_error",
+                    format!("Metaso API error (code {code}: {message})"),
+                ),
+            })
+        }
+        SearchProvider::Bocha => {
+            let code = parsed.get("code").and_then(|value| value.as_i64())?;
+            if code == 0 || code == 200 {
+                return None;
+            }
+            let message = parsed
+                .get("msg")
+                .or_else(|| parsed.get("message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown error");
+            Some((
+                "provider_error",
+                format!("Bocha search API error (code {code}: {message})"),
+            ))
+        }
+        SearchProvider::Baidu => {
+            let code = parsed
+                .get("error_code")
+                .or_else(|| parsed.get("code"))
+                .and_then(|value| value.as_i64())?;
+            if code == 0 {
+                return None;
+            }
+            let message = parsed
+                .get("error_msg")
+                .or_else(|| parsed.get("message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown error");
+            Some((
+                "provider_error",
+                format!("Baidu search API error (code {code}: {message})"),
+            ))
+        }
+        SearchProvider::Bing => None,
     }
 }
 
@@ -3587,6 +3777,112 @@ mod tests {
                 "{} must carry the key in exactly one place",
                 provider.as_str()
             );
+        }
+    }
+
+    /// Metaso, Bocha and Baidu answer `HTTP 200` with a business error code
+    /// in the body when the key is rejected (Metaso `code: 2005`) or the
+    /// quota is gone — the product's own web-search path treats those bodies
+    /// as failures (`CodeWhale/crates/tui/src/tools/web_search.rs`
+    /// `run_metaso_search` / `bocha_error_message` / `baidu_error_message`).
+    /// A probe that classifies only the HTTP status reports a rejected key as
+    /// `ok: true` from a command named `test`. Each case below drives the
+    /// full request→classification lane against canned bodies on loopback.
+    #[test]
+    fn search_probe_classifies_error_bodies_as_not_ok() {
+        let cases: &[(SearchProvider, &str, &str)] = &[
+            // Metaso `2005`: the API key was rejected (invalid/expired).
+            (
+                SearchProvider::Metaso,
+                r#"{"code":2005,"message":"api key rejected"}"#,
+                "key_rejected",
+            ),
+            // Metaso daily-quota body (upstream `3003` arm).
+            (
+                SearchProvider::Metaso,
+                r#"{"code":3003,"message":"daily limit"}"#,
+                "quota_exhausted",
+            ),
+            // Metaso error body with a code the probe does not special-case:
+            // still not ok, with the code and message carried into the detail.
+            (
+                SearchProvider::Metaso,
+                r#"{"code":42,"message":"other error"}"#,
+                "provider_error",
+            ),
+            // Bocha answers 200 with a non-zero/non-200 business code.
+            (
+                SearchProvider::Bocha,
+                r#"{"code":401,"msg":"Unauthorized"}"#,
+                "provider_error",
+            ),
+            // Baidu puts the business code in `error_code`/`error_msg`.
+            (
+                SearchProvider::Baidu,
+                r#"{"error_code":17,"error_msg":"Open api daily reached"}"#,
+                "provider_error",
+            ),
+        ];
+        for (provider, body, expected_code) in cases {
+            let name = provider.as_str();
+            let mock = spawn_probe_mock(&[("/", 200u16, body)]);
+            let probe = run_search_api_probe_at(*provider, "probe-key", &mock.base_url);
+            assert!(
+                !probe.ok,
+                "{name}: a 200 body carrying a business error code must not pass the test: {:?}",
+                probe.detail
+            );
+            assert_eq!(
+                probe.code, *expected_code,
+                "{name}: {body} must classify as {expected_code}"
+            );
+            // The refusal must be truthful: the provider's own code/message
+            // text is the evidence behind the classification.
+            let detail = probe.detail.as_deref().unwrap_or("");
+            if *expected_code == "provider_error" {
+                assert!(!detail.is_empty(), "{name}: detail must not be empty");
+            }
+            if *expected_code == "key_rejected" {
+                assert!(
+                    detail.contains("2005"),
+                    "the detail must carry the provider's code: {detail}"
+                );
+            }
+            assert_eq!(probe.verified, VERIFIED_LIVE_PROBE);
+            assert_eq!(
+                mock.auth_for("/").as_deref(),
+                Some("Bearer probe-key"),
+                "{name}: the probe must actually sign with the key"
+            );
+        }
+    }
+
+    /// The happy path the classification must not over-reject: a 2xx body
+    /// without a business error code stays `ok: true`, with the per-provider
+    /// success codes (Bocha's literal `200`, Baidu's and Metaso's `0`) in the
+    /// same shapes the product accepts.
+    #[test]
+    fn search_probe_accepts_clean_success_bodies() {
+        let cases: &[(SearchProvider, &str)] = &[
+            (SearchProvider::Tavily, r#"{"results":[]}"#),
+            (SearchProvider::Metaso, r#"{"code":0,"webpages":[]}"#),
+            (
+                SearchProvider::Bocha,
+                r#"{"code":200,"data":{"webPages":[]}}"#,
+            ),
+            (SearchProvider::Baidu, r#"{"error_code":0,"references":[]}"#),
+        ];
+        for (provider, body) in cases {
+            let name = provider.as_str();
+            let mock = spawn_probe_mock(&[("/", 200u16, body)]);
+            let probe = run_search_api_probe_at(*provider, "probe-key", &mock.base_url);
+            assert!(
+                probe.ok,
+                "{name}: a clean success body must pass the probe: {:?}",
+                probe.detail
+            );
+            assert_eq!(probe.code, "ok");
+            assert_eq!(probe.verified, VERIFIED_LIVE_PROBE);
         }
     }
 

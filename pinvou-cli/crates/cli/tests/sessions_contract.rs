@@ -289,6 +289,49 @@ fn sessions_delete_without_yes_is_a_usage_error() {
     assert!(home.sessions_root().join(format!("{id}.json")).is_file());
 }
 
+/// Round-18 review finding, red-first: `sessions rename <id> see --output
+/// json now` used to strip the `--output json` pair out of the MIDDLE of the
+/// title (the global scan removed it from anywhere in argv) and store
+/// "see now" with exit 0. After the parse_args fix the pair is ordinary
+/// family input inside the title, and rename must refuse it as a
+/// flag-shaped title: exit 2 and the store untouched. The trailing pair
+/// with no garbage after it stays a legal output-mode position.
+#[test]
+fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unchanged() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rename-output-garbage");
+    let id = create_session_fixture();
+    // A known title first, so "the store is unchanged" is observable.
+    run_json(&["pinvou", "sessions", "rename", &id, "original", "title"]);
+
+    // The pair followed by more title words must be refused at PARSE time
+    // (a usage error, exit 2), before any store access.
+    let error = parse_args([
+        "pinvou", "sessions", "rename", &id, "see", "--output", "json", "now",
+    ])
+    .expect_err("a global flag pair inside the title must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(
+        error
+            .to_string()
+            .contains("cannot accept a title containing"),
+        "the refusal must name the title-pair rule: {error}"
+    );
+
+    // Store unchanged: the persisted title survives the refused rename.
+    let value = run_json(&["pinvou", "sessions", "show", &id]);
+    assert_eq!(value["title"], "original title");
+    assert!(home.sessions_root().join(format!("{id}.json")).is_file());
+
+    // The same pair at the END of the line (legal position) keeps working:
+    // mode applied, title made of the words before it.
+    let value = run_json(&["pinvou", "sessions", "rename", &id, "plain", "title"]);
+    assert_eq!(value["action"], "renamed");
+    assert_eq!(value["title"], "plain title");
+    let value = run_json(&["pinvou", "sessions", "show", &id]);
+    assert_eq!(value["title"], "plain title");
+}
+
 // ── execute-level coverage (pure storage, temp PINVOU3_HOME) ───────────────
 
 #[test]

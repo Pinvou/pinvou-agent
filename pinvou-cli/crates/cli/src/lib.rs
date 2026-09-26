@@ -287,48 +287,62 @@ where
         values.remove(0);
     }
     let mut output = OutputMode::Human;
-    let mut index = 0;
     let mut global_output_seen = false;
-    while index < values.len() {
-        if values[index] == "--output" {
-            let value = values.get(index + 1).ok_or_else(|| {
-                CliError::usage(
-                    "--output requires human or json (submission files use --destination)",
-                )
-            })?;
-            match value.as_str() {
-                "human" | "json" => {
-                    // A repeated identical mode is accepted (scripts append
-                    // `--output json` unconditionally), but two conflicting
-                    // modes must not silently last-win like the family
-                    // parsers' duplicate rejection. A value that is not
-                    // human|json is left for the subcommand and not counted.
-                    let mode = if value == "json" {
+    // The global `--output` scan used to remove `--output json|human` from
+    // ANYWHERE in argv. That silently deleted the pair when it sat in the
+    // middle of family input: the family parsers then saw the tokens on
+    // either side collapse together (`sessions rename s-1 see --output json
+    // now` lost two words of the title and stored "see now" with exit 0,
+    // and any other family's positional channel misjoined the same way).
+    //
+    // A mode is now claimed only where a GLOBAL flag can legally occupy at
+    // this dispatch spine, i.e. at the two ends of the line:
+    // - the leading run, from `values[0]` up to the first token that is not
+    //   a consumable pair;
+    // - the very end of the line (the position every existing trailing
+    //   `... --output json` invocation uses).
+    // Everything between them stays ordinary family input: a family's own
+    // parser either accepts `--output` as one of its value flags
+    // (`sessions export --output PATH`, `files ingest ... --output PATH`,
+    // `benchmark submission gaia`'s legacy `--destination` alias) or
+    // rejects it as an unknown flag — a global mode claim can no longer
+    // subtract tokens from a family's positional channel.
+    // (A file literally named "json"/"human" at the end of the line still
+    // needs a ./ prefix; see the note in `parse_gaia_submission`.)
+    while values.first().is_some_and(|token| token == "--output") {
+        let value = values.get(1).ok_or_else(|| {
+            CliError::usage("--output requires human or json (submission files use --destination)")
+        })?;
+        match value.as_str() {
+            "json" | "human" => {
+                record_global_output_mode(
+                    &mut output,
+                    &mut global_output_seen,
+                    if value == "json" {
                         OutputMode::Json
                     } else {
                         OutputMode::Human
-                    };
-                    if global_output_seen && mode != output {
-                        return Err(CliError::usage(
-                            "--output given twice with conflicting global modes",
-                        ));
-                    }
-                    global_output_seen = true;
-                    output = mode;
-                    values.drain(index..=index + 1);
-                }
-                // Not a global-mode value: leave the pair for the subcommand.
-                // `sessions export --output FILE` legitimately takes a path,
-                // and `benchmark submission gaia` still accepts `--output
-                // <file>` as a legacy alias of `--destination` (consumed in
-                // parse_gaia_submission); families without such a flag report
-                // it themselves. (A file literally named "json"/"human" needs
-                // a ./ prefix.)
-                _ => index += 1,
+                    },
+                )?;
+                values.drain(0..=1);
             }
-        } else {
-            index += 1;
+            // Not a global-mode value: end the leading run and leave the
+            // pair for the subcommand.
+            _ => break,
         }
+    }
+    while values.len() >= 2 && values[values.len() - 2] == "--output" {
+        let mode = match values[values.len() - 1].as_str() {
+            "json" => OutputMode::Json,
+            "human" => OutputMode::Human,
+            // Not a global-mode value: the pair at the end of the line
+            // belongs to the subcommand (`files ingest … --output PATH`,
+            // `sessions export … --output PATH`).
+            _ => break,
+        };
+        record_global_output_mode(&mut output, &mut global_output_seen, mode)?;
+        let end = values.len() - 2;
+        values.drain(end..=end + 1);
     }
     if values.first().map(String::as_str) == Some("agent") {
         let command = agent_task::parse(&values)?;
@@ -400,6 +414,26 @@ where
         }
     };
     Ok(ParsedCli { command, output })
+}
+
+/// Folds one claimed global output mode into the running mode.
+///
+/// A repeated identical mode is accepted (scripts append `--output json`
+/// unconditionally), but two conflicting modes must not silently last-win
+/// like the family parsers' duplicate rejection.
+fn record_global_output_mode(
+    output: &mut OutputMode,
+    seen: &mut bool,
+    mode: OutputMode,
+) -> Result<(), CliError> {
+    if *seen && mode != *output {
+        return Err(CliError::usage(
+            "--output given twice with conflicting global modes",
+        ));
+    }
+    *seen = true;
+    *output = mode;
+    Ok(())
 }
 
 fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {

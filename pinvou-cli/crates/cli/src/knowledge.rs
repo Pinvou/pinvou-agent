@@ -10,16 +10,36 @@
 //!   `~/.pinvou3/knowledge/index.db` (`default_db_path()` honours
 //!   `PINVOU3_HOME`); it also runs the GUI's startup recovery of interrupted
 //!   imports.
-//! - scan start/status/cancel → `KnowledgeService::{start_scan, status,
-//!   cancel_scan}`; `--root` omitted defaults to the user home like
-//!   `kb_start_scan`.
+//! - scan start/status → `KnowledgeService::{start_scan, status}`; `--root`
+//!   omitted defaults to the user home like `kb_start_scan`. `scan start`
+//!   blocks until the scan finishes inside the invocation (round-16 fix). A
+//!   `scan cancel` subcommand is deliberately absent: `scan start` blocks, so
+//!   no scan is ever running in this process by the time the CLI can take
+//!   more input, and the scan cancel channel is a process-local in-memory
+//!   flag (`KnowledgeService::cancel_scan`) that a one-shot CLI can never
+//!   aim at the desktop app's scan — a subcommand could only ever report a
+//!   no-op signal, which AGENTS.md §4 rejects as placeholder capability.
 //! - collections list/create/update/delete → `KnowledgeService::l1()`
-//!   (`L1Store` CRUD). Delete mirrors GUI `kb_collection_delete`:
-//!   `cancel_index_for_collection`, `delete_collection`, then
-//!   `SessionStore::remove_mounted_collection_from_all` (now only reached
-//!   through the desktop app's own surface).
-//! - add-sources → `KnowledgeService::start_index` (non-blocking; returns the
-//!   DB-persisted job state that `index status` polls).
+//!   (`L1Store` CRUD). Delete mirrors GUI `kb_collection_delete` minus the
+//!   process-local parts: `cancel_index_for_collection` (a real, targeted
+//!   DB-level cancel of the collection's own job) and `delete_collection`.
+//!   The GUI's `SessionStore::remove_mounted_collection_from_all` sweep is
+//!   NOT run by the CLI: mounted collections live in the desktop app's
+//!   per-process memory, so the sweep is always empty in a one-shot process
+//!   while booting the session store would run its 50-sessions-per-kind
+//!   retention (irreversible eviction of the user's oldest sessions) as a
+//!   side effect of a delete.
+//! - add-sources → `KnowledgeService::start_index`, then the invocation
+//!   WAITS for the spawned import job to reach a terminal phase (mirroring
+//!   `scan start`): a one-shot process that returned immediately would kill
+//!   the import thread — usually mid embedder load — and strand the job as
+//!   `running` with no owner, which a live GUI would show as "Indexing"
+//!   forever (its resume requires `interrupted`). The wait is bounded by a
+//!   no-progress deadline, the command reports the job's final state, and
+//!   it exits non-zero unless the job finished `done`. When the latest job
+//!   for the target collection is still preparing/running (a live desktop
+//!   app import owns it), add-sources refuses (exit 2) instead of racing
+//!   it.
 //! - documents → `L1Store::{list_documents, remove_document}` (`--limit`
 //!   omitted maps to the GUI's 0 = default page of 500).
 //! - index status/cancel/resume/retry/failed → `KnowledgeService::
@@ -31,11 +51,17 @@
 //!   ranks `cancelled` last and would answer with an older `done_with_errors`
 //!   job instead. `index cancel` reports the cancelled job through the same
 //!   per-job read for exactly that reason.
-//!   `index cancel/resume/retry <job-id>` validate the named id
-//!   against that latest job BEFORE the recovering open: boot recovery would
-//!   flip every preparing/running job to interrupted — including one a live
-//!   desktop-app process is still importing — so a mistyped id must fail
-//!   without ever running it.
+//!   `index cancel/resume/retry <job-id>` validate the named id against the
+//!   latest job first, and reject a mistyped id without touching anything.
+//!   `resume`/`retry` additionally REFUSE (exit 2) when the named job is
+//!   still preparing/running — a live worker (the desktop app, typically)
+//!   owns it, and there is no cross-process owner heartbeat that could tell
+//!   a live owner from a dead process. `cancel` is a real, targeted cancel:
+//!   `ImportJobStore::cancel` flips the job row to `cancelled` and deletes
+//!   its staged chunks in the DB, which the owning import thread observes at
+//!   its next per-item checkpoint — it never touches any other job.
+//!   `resume`/`retry`, like `add-sources`, wait for the re-armed job to
+//!   finish and report its final state.
 //! - stats/type-counts → the headless `KnowledgeService::{stats, type_counts}`
 //!   (the same store calls as `kb_stats`/`kb_type_counts`, synchronously).
 //! - search → the headless `KnowledgeService::search` (`kb_search` semantics:
@@ -84,9 +110,12 @@
 //!   inference session before the atomic deploy (the caller owns actually
 //!   loading the candidate model after the deploy reports success).
 //!   `model status` therefore reports what a one-shot CLI
-//!   process can know (on-disk completeness mirror + `semantic_ready`), and
-//!   `model cancel` calls the real `kb_model_cancel` (process-local by
-//!   nature).
+//!   process can know (on-disk completeness mirror + `semantic_ready`).
+//!   `model cancel` is deliberately absent: the download's cancel channel is
+//!   the process-local `CANCEL` static in model_download.rs, and downloads
+//!   only ever run inside the desktop app process — a CLI subcommand could
+//!   never cancel a real download, only report `cancelled:true` for a no-op
+//!   signal, which AGENTS.md §4 rejects as placeholder capability.
 //!
 //! One-shot semantics: import jobs run on in-process background threads.
 //! The CLI prints the start state and exits; jobs are
@@ -121,20 +150,19 @@ use std::path::{Path, PathBuf};
 
 use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::features::knowledge::model_download::{MODEL_VERSION, kb_model_cancel};
+use pinvou3_lib::features::knowledge::model_download::MODEL_VERSION;
 use pinvou3_lib::features::knowledge::{
     IndexState, KnowledgeService, ScanState, SearchQueryDto, default_db_path, model_dir,
 };
 use pinvou3_lib::features::remote_knowledge::RemoteKnowledgeService;
-use pinvou3_lib::features::sessions::SessionStore;
 
 const USAGE: &str = "usage: pinvou knowledge <scan|stats|type-counts|collections|documents|index|search|model|mounts|mount|unmount|remote|host>";
-const SCAN_USAGE: &str = "usage: pinvou knowledge scan <start [--root DIR]|status|cancel>";
+const SCAN_USAGE: &str = "usage: pinvou knowledge scan <start [--root DIR]|status>";
 const COLLECTIONS_USAGE: &str =
     "usage: pinvou knowledge collections <list|create|update|delete|add-sources>";
 const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] | pinvou knowledge documents remove <doc-id> --yes";
 const INDEX_USAGE: &str = "usage: pinvou knowledge index <status [job-id]|cancel job-id|resume job-id|retry job-id item-id|failed job-id [--offset N --limit N]> (failed page: --offset defaults to 0, --limit to 50)";
-const MODEL_USAGE: &str = "usage: pinvou knowledge model <status|download|cancel> (download: needs network and the desktop model host; long-running)";
+const MODEL_USAGE: &str = "usage: pinvou knowledge model <status|download> (download: needs network and the desktop model host; long-running)";
 const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query>>";
 const HOST_USAGE: &str = "usage: pinvou knowledge host status";
 
@@ -144,7 +172,6 @@ pub enum KnowledgeCommand {
         root: Option<PathBuf>,
     },
     ScanStatus,
-    ScanCancel,
     Stats,
     TypeCounts,
     CollectionsList,
@@ -202,7 +229,6 @@ pub enum KnowledgeCommand {
     },
     ModelStatus,
     ModelDownload,
-    ModelCancel,
     Mounts {
         session_id: String,
     },
@@ -253,10 +279,6 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 "status" => {
                     no_options(&rest[1..], "scan status")?;
                     Ok(KnowledgeCommand::ScanStatus)
-                }
-                "cancel" => {
-                    no_options(&rest[1..], "scan cancel")?;
-                    Ok(KnowledgeCommand::ScanCancel)
                 }
                 _ => Err(CliError::usage(SCAN_USAGE)),
             }
@@ -442,10 +464,6 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 "download" => {
                     no_options(&rest[1..], "model download")?;
                     Ok(KnowledgeCommand::ModelDownload)
-                }
-                "cancel" => {
-                    no_options(&rest[1..], "model cancel")?;
-                    Ok(KnowledgeCommand::ModelCancel)
                 }
                 _ => Err(CliError::usage(MODEL_USAGE)),
             }
@@ -653,32 +671,18 @@ fn model_download_unavailable() -> CliError {
 }
 
 /// Constructs the per-invocation `KnowledgeService` over
-/// `~/.pinvou3/knowledge/index.db` (temp-`PINVOU3_HOME` aware); the
-/// constructor also performs the GUI's startup recovery of interrupted
-/// imports.
-/// Opens the store WITHOUT boot-time recovery. Read-only commands must not
-/// degrade an import a live desktop-app process is still running: the
-/// upstream recovery flips any preparing/running job to terminal state, and
-/// `index resume` could then re-arm it under the still-alive owner. Recovery
-/// stays with the write commands ([`open_service_recovering`]).
+/// `~/.pinvou3/knowledge/index.db` (temp-`PINVOU3_HOME` aware), always
+/// WITHOUT boot-time recovery. No CLI command runs the GUI's startup
+/// recovery: it flips EVERY preparing/running job in the store to
+/// `interrupted` — including one a live desktop-app process is executing
+/// right now (the store has no cross-process owner heartbeat) — which would
+/// wedge the app's live job so its GUI shows "Indexing" forever.
+/// Reconciliation of jobs orphaned by a hard-killed process belongs to the
+/// desktop app's own boot (or an explicit `index cancel` of that job).
 fn open_service() -> Result<KnowledgeService, CliError> {
     sandbox_home()?;
     let db = default_db_path();
     KnowledgeService::new_without_recovery(&db).map_err(|error| {
-        CliError::failed(format!(
-            "knowledge index store unavailable at {}: {error}",
-            db.display()
-        ))
-    })
-}
-
-/// Opens the store WITH boot-time recovery of jobs orphaned by a crashed
-/// process — the write/maintenance commands that legitimately own the
-/// reconciliation.
-fn open_service_recovering() -> Result<KnowledgeService, CliError> {
-    sandbox_home()?;
-    let db = default_db_path();
-    KnowledgeService::new(&db).map_err(|error| {
         CliError::failed(format!(
             "knowledge index store unavailable at {}: {error}",
             db.display()
@@ -713,7 +717,6 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         }
         KnowledgeCommand::ScanStart { root } => scan_start(root, output),
         KnowledgeCommand::ScanStatus => scan_status(output),
-        KnowledgeCommand::ScanCancel => scan_cancel(output),
         KnowledgeCommand::Stats => stats(output),
         KnowledgeCommand::TypeCounts => type_counts(output),
         KnowledgeCommand::CollectionsList => collections_list(output),
@@ -760,7 +763,6 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         ),
         KnowledgeCommand::ModelStatus => model_status(output),
         KnowledgeCommand::ModelDownload => Err(model_download_unavailable()),
-        KnowledgeCommand::ModelCancel => model_cancel(output),
         KnowledgeCommand::RemoteConnections => remote_connections(output),
         KnowledgeCommand::RemoteProbe { url } => remote_probe(&url, output),
         KnowledgeCommand::RemoteCollections => remote_collections(output),
@@ -888,20 +890,6 @@ fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         state,
         output,
     )
-}
-
-fn scan_cancel(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
-    service.cancel_scan();
-    // The GUI polls scan status afterwards; a one-shot CLI reports the signal
-    // only (the in-memory scan dies with the process, and the next
-    // incremental `scan start` re-runs).
-    Ok(success(render(
-        output,
-        "scan cancel signalled (process-local: the CLI can only signal cancels inside its own process; use the desktop app to cancel an app-side scan)"
-            .to_owned(),
-        &serde_json::json!({ "cancelled": true, "scope": "process-local" }),
-    )))
 }
 
 fn scan_out(header: &str, state: ScanState, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1172,11 +1160,11 @@ fn collections_update(
     )))
 }
 
-/// The collection existence gate the destructive/recovering commands run
-/// BEFORE the recovering open: boot recovery flips every preparing/running
-/// job to interrupted — including one a live desktop-app process is still
-/// importing — so a mistyped id must fail without ever running it (the same
-/// rule `index cancel/resume/retry` implement on their latest-job read).
+/// The collection existence gate: unknown ids fail with the family's
+/// "collection not found" error instead of a silent upstream no-op. It runs
+/// on the same plain (non-recovering) open as the mutation itself — no CLI
+/// lane ever runs boot recovery, so a mistyped id cannot disturb a live
+/// desktop-app import either.
 fn ensure_collection_exists(
     service: &KnowledgeService,
     id: i64,
@@ -1191,15 +1179,20 @@ fn ensure_collection_exists(
     }
 }
 
-/// GUI `kb_collection_delete`: cancel a running import for the collection,
-/// delete it, then clear every session mount.
+/// GUI `kb_collection_delete`, minus the process-local parts: cancel the
+/// collection's own running import (`ImportJobStore::cancel` is a real,
+/// targeted, DB-level cancel that never touches another collection's job),
+/// then delete the collection. The GUI's session-mount sweep is deliberately
+/// not mirrored: mounted collections live in the desktop app's per-process
+/// memory, so the sweep is always empty in a one-shot CLI process, while
+/// booting the session store would run its 50-sessions-per-kind retention
+/// (irreversible eviction of the user's oldest sessions) as a side effect of
+/// a delete; the app cleans up its own mounts on its next mode load.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // The existence check runs on a plain open first — recovery must not
-    // fire for a mistyped id — and again on the mutating open, so a
-    // collection deleted in between fails honestly instead of reporting a
-    // silent no-op as "deleted".
-    ensure_collection_exists(&open_service()?, id, "collections delete")?;
-    let service = open_service_recovering()?;
+    let service = open_service()?;
+    // The single existence gate: this lane owns exactly one plain open, and
+    // the pre-check keeps an unknown id a loud failure instead of the
+    // upstream silent no-op (the GUI has the same TOCTOU window).
     ensure_collection_exists(&service, id, "collections delete")?;
     service
         .cancel_index_for_collection(id)
@@ -1208,50 +1201,21 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
         .l1()
         .delete_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
-    // The mount table lives in the app's in-process session memory, so this
-    // store-level sweep is empty in a one-shot CLI process; mounted
-    // collections in a running desktop app are cleaned up on its next mode
-    // load, not here. Best-effort: the collection is already deleted, so a
-    // session-store failure must not turn the outcome into a failure (an
-    // exit 1 after the destructive step would claim the delete did not
-    // happen).
-    // The stderr warning stays static: the CodeQL cleartext-logging gate
-    // flags interpolated store details in log writes, so the error text
-    // travels in the JSON payload instead.
-    let (unmounted, mount_sweep_error) = match open_store() {
-        Ok(store) => (store.remove_mounted_collection_from_all(id), None),
-        Err(error) => {
-            note!(
-                "warning: knowledge collections delete: could not sweep session mounts \
-                 for the deleted collection; stale mounts may remain in a running \
-                 desktop app session"
-            );
-            (Vec::new(), Some(error.to_string()))
-        }
-    };
-    let mut human = format!("deleted collection {id}");
-    if !unmounted.is_empty() {
-        human.push_str(&format!("\nunmounted from {} session(s)", unmounted.len()));
-    } else {
-        human.push_str(
-            "\nnote: mounts held in a running desktop app session are unaffected by this \
-             process",
-        );
-    }
+    let human = format!(
+        "deleted collection {id}\nnote: mounts held in a running desktop app session are \
+         unaffected by this process"
+    );
     Ok(success(render(
         output,
         human,
-        &serde_json::json!({
-            "id": id,
-            "unmounted_sessions": unmounted.len(),
-            "mount_sweep_error": mount_sweep_error,
-        }),
+        &serde_json::json!({ "id": id }),
     )))
 }
 
-/// GUI `kb_collection_add_sources`: persists the import job and returns its
-/// state; the actual parsing/chunking/ingestion runs on a background thread
-/// that `knowledge index status` polls. The GUI frontend only offers existing
+/// GUI `kb_collection_add_sources`: persists the import job and waits for the
+/// import to finish inside this invocation (mirroring `scan start`), so the
+/// one-shot process never kills its import thread and never strands the job
+/// as `running` with no owner. The GUI frontend only offers existing
 /// collections, so the CLI adds the existence check the API silently assumes
 /// (upstream returns an idle no-job state for unknown ids).
 fn collections_add_sources(
@@ -1260,9 +1224,8 @@ fn collections_add_sources(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Validate everything a mistyped invocation could get wrong BEFORE the
-    // recovering open (see ensure_collection_exists): the path pre-flight is
-    // pure filesystem, the existence check runs on a plain open, and the
-    // re-check on the mutating open closes the disappear-in-between window.
+    // store is touched: the path pre-flight is pure filesystem, then the
+    // existence check on the single plain open this lane uses.
     for path in &paths {
         let Ok(meta) = std::fs::metadata(path) else {
             return Err(CliError::failed(format!(
@@ -1278,13 +1241,28 @@ fn collections_add_sources(
             )));
         }
     }
-    ensure_collection_exists(&open_service()?, id, "collections add-sources")?;
-    let service = open_service_recovering()?;
+    let service = open_service()?;
     ensure_collection_exists(&service, id, "collections add-sources")?;
+    // The import-job store ranks every preparing/running job as "the latest
+    // job": the CLI cannot tell a genuinely live import (a desktop-app
+    // process) from a job stranded running by a hard-killed one — there is
+    // no cross-process owner heartbeat — so enqueuing new sources behind it
+    // is refused (exit 2) rather than raced.
+    let latest = service.index_status();
+    if latest.running {
+        return Err(CliError::usage(format!(
+            "knowledge_index_job_busy: index job {} for collection {} is still \
+             preparing/running and may be owned by a live process; refusing to enqueue \
+             new sources (check `pinvou knowledge index status`, wait for it to finish or \
+             `index cancel` it, then re-run this command)",
+            latest.job_id.as_deref().unwrap_or("none"),
+            latest.collection_id
+        )));
+    }
     // `start_index` falls back to `index_status()` when the job create or
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
-    let previous_job = service.index_status().job_id;
+    let previous_job = latest.job_id;
     let state = service.start_index(id, paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
     // requested sources are silently dropped — a fresh job reports
@@ -1313,7 +1291,13 @@ fn collections_add_sources(
             state.running
         )));
     }
-    index_started("index job", Ok(state), output)
+    index_wait(
+        &service,
+        "index completed",
+        Ok(state),
+        "add-sources",
+        output,
+    )
 }
 
 // ───────────────────────── documents ─────────────────────────
@@ -1365,10 +1349,9 @@ fn documents(
 /// GUI `kb_remove_document` with the existence check the rest of this family
 /// adds: the upstream delete is a silent no-op for unknown ids, which would
 /// report success for a document that was never there. Pure L1 CRUD (an
-/// existence check plus a delete), so it opens WITHOUT boot recovery — the
-/// recovering open belongs to commands that legitimately reconcile the job
-/// store, and running it here would wedge a live desktop-app import for a
-/// delete that never touches the job store.
+/// existence check plus a delete) on the family's plain, non-recovering
+/// open: it never touches the import-job store, so it cannot disturb a
+/// live desktop-app import either.
 fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let exists = service
@@ -1432,14 +1415,17 @@ fn named_job_state(
     })
 }
 
-/// GUI `kb_index_cancel` targets the active/latest job; refuse when the
-/// caller named a different one so the CLI never cancels the wrong job.
+/// GUI `kb_index_cancel`: a real, TARGETED cancel. The underlying
+/// `ImportJobStore::cancel` flips the named job's row to `cancelled`,
+/// cancels its pending items and deletes its staged chunks in the DB inside
+/// one transaction — so it works for a job owned by another process too (a
+/// live desktop-app import observes the cancel at its next per-item
+/// checkpoint and stops) and it never touches any other job. The named id
+/// is validated against the latest job first so the CLI never cancels the
+/// wrong job.
 fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // Validate the named id BEFORE the recovering open: boot recovery flips
-    // every preparing/running job to interrupted — including one a live
-    // desktop-app process is still importing — so a wrong id must fail
-    // without ever running it.
-    let latest = open_service()?.index_status();
+    let service = open_service()?;
+    let latest = service.index_status();
     match &latest.job_id {
         Some(active) if active == job_id => {}
         Some(active) => {
@@ -1465,32 +1451,6 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // real signal, a finished job (done/cancelled) takes the same call
     // without anything to signal.
     let was_active = latest.running || latest.resumable;
-    // A finished job has nothing to signal, so the recovering open buys
-    // nothing here and would still flip a job a live desktop process is
-    // importing to interrupted.
-    let service = if was_active {
-        open_service_recovering()?
-    } else {
-        open_service()?
-    };
-    // Re-check on the open that will actually cancel — in BOTH branches:
-    // `cancel_index` targets the latest job at call time even when the named
-    // job is finished, so a job created between the validation open and this
-    // one must fail here instead of being cancelled unvalidated — the whole
-    // point of the pre-check above.
-    match service.index_status().job_id.as_deref() {
-        Some(active) if active == job_id => {}
-        Some(active) => {
-            return Err(CliError::failed(format!(
-                "knowledge index cancel({job_id}): job is no longer the active/latest index job (latest: {active}); re-run to act on {active}"
-            )));
-        }
-        None => {
-            return Err(CliError::failed(format!(
-                "knowledge_index_job_not_found: no index job exists anymore (nothing to cancel for {job_id})"
-            )));
-        }
-    }
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
@@ -1515,57 +1475,86 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     Ok(success(render(output, human, &value)))
 }
 
-/// Validates the named job id against the latest job BEFORE any recovering
-/// open (the same rule `index cancel` applies): boot recovery flips every
-/// preparing/running job to interrupted — including one a live desktop-app
-/// process is still importing — so a mistyped id must fail without ever
-/// running it.
-fn require_latest_job_id(job_id: &str, operation: &str) -> Result<(), CliError> {
-    let latest = open_service()?.index_status();
+/// Opens the service (no recovery) and validates the named job id for
+/// `resume`/`retry`: a mistyped id fails without touching the store, and a
+/// job that is still preparing/running is REFUSED (exit 2) — the job may be
+/// owned by a live worker (a desktop-app import, or one stranded running by
+/// a hard-killed process; the store has no cross-process owner heartbeat to
+/// tell them apart), and re-arming a running job would race its owner's
+/// per-item checkpoints.
+fn open_service_for_rearm(job_id: &str, operation: &str) -> Result<KnowledgeService, CliError> {
+    let service = open_service()?;
+    let latest = service.index_status();
     match &latest.job_id {
-        Some(active) if active == job_id => Ok(()),
-        Some(active) => Err(CliError::failed(format!(
-            "knowledge index {operation}({job_id}): job is not the active/latest index \
-             job (latest: {active})"
-        ))),
+        Some(active) if active == job_id => {}
+        Some(active) => {
+            return Err(CliError::failed(format!(
+                "knowledge index {operation}({job_id}): job is not the active/latest index \
+                 job (latest: {active})"
+            )));
+        }
         // No job exists at all: claiming a {operation} landed would be a
         // false success.
-        None => Err(CliError::failed(format!(
-            "knowledge_index_job_not_found: no index job exists (nothing to {operation} for \
-             {job_id})"
-        ))),
+        None => {
+            return Err(CliError::failed(format!(
+                "knowledge_index_job_not_found: no index job exists (nothing to {operation} for \
+                 {job_id})"
+            )));
+        }
     }
+    if latest.running {
+        return Err(CliError::usage(format!(
+            "knowledge_index_job_busy: index job {job_id} for collection {} is still \
+             preparing/running and may be owned by a live process; refusing to {operation} it \
+             (check `pinvou knowledge index status`, wait for it to finish or `index cancel` \
+             it, then re-run this command)",
+            latest.collection_id
+        )));
+    }
+    Ok(service)
 }
 
-/// GUI `kb_index_resume` re-arms an interrupted job; the named id is
-/// validated against the latest job before the recovering open (see
-/// [`require_latest_job_id`]).
+/// GUI `kb_index_resume` re-arms an interrupted job and then waits for the
+/// re-armed import to finish inside this invocation (like `add-sources`).
 fn index_resume(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    require_latest_job_id(job_id, "resume")?;
-    index_started(
-        "index resumed",
-        open_service_recovering()?.resume_index(job_id.to_owned()),
+    let service = open_service_for_rearm(job_id, "resume")?;
+    index_wait(
+        &service,
+        "index resume completed",
+        service.resume_index(job_id.to_owned()),
+        "resume",
         output,
     )
 }
 
-/// GUI `kb_index_retry` re-queues one failed item; same pre-validation as
-/// [`index_resume`].
+/// GUI `kb_index_retry` re-queues one failed item; same pre-validation and
+/// wait-for-finish as [`index_resume`].
 fn index_retry(job_id: &str, item_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    require_latest_job_id(job_id, "retry")?;
-    index_started(
-        "index retry queued",
-        open_service_recovering()?.retry_index_item(job_id.to_owned(), item_id),
+    let service = open_service_for_rearm(job_id, "retry")?;
+    index_wait(
+        &service,
+        "index retry completed",
+        service.retry_index_item(job_id.to_owned(), item_id),
+        "retry",
         output,
     )
 }
 
-/// Shared shape for the start/status-style job operations (`add-sources`,
-/// `resume`, `retry`): the feature call returns immediately with the
-/// DB-persisted job state that `index status` polls.
-fn index_started(
+/// Shared shape for the job-spawning operations (`add-sources`, `resume`,
+/// `retry`): the feature call creates or re-arms the job and launches the
+/// import on an in-process background thread, and then the invocation WAITS
+/// for the job to reach a terminal phase (mirroring `scan start`) — a
+/// one-shot process that returned immediately would kill the import thread
+/// mid-flight (usually during the ~570 MB embedder load) and strand the job
+/// as `running` with no owner, which a live GUI shows as "Indexing" forever
+/// (its resume requires `interrupted`). The final state is reported, and a
+/// job that did not end `done` fails the command (exit 1) so scripts can
+/// tell.
+fn index_wait(
+    service: &KnowledgeService,
     header: &str,
     result: Result<IndexState, String>,
+    operation: &str,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let state = result.map_err(|error| {
@@ -1582,7 +1571,79 @@ fn index_started(
             CliError::failed(format!("knowledge index: {error}"))
         }
     })?;
-    index_out(header, state, output)
+    // Defensive: every caller validates that a concrete job was created or
+    // re-armed before this point; a state without an id cannot be waited on,
+    // so it is reported as-is (the pre-call validations own rejecting that).
+    let Some(job_id) = state.job_id.clone() else {
+        return index_out(header, state, output);
+    };
+    let final_state = wait_for_job(service, &job_id, operation)?;
+    let phase = display_phase(&final_state);
+    if phase != "done" {
+        return Err(CliError::failed(format!(
+            "knowledge index {operation}: job {job_id} ended in phase {phase} (progress: \
+             {}/{}, failed: {}); `pinvou knowledge index failed {job_id}` lists the failed \
+             items (`index retry` re-queues one, `index resume` continues an interrupted job)",
+            final_state.done, final_state.total, final_state.failed,
+        )));
+    }
+    index_out(header, final_state, output)
+}
+
+/// How long the job-spawning commands keep waiting on a job that is still
+/// running but whose progress signature (items done, item total, current
+/// file, chunk checkpoint) has stopped advancing. The same generous
+/// no-progress shape as `scan start`'s bound: the embedder load (~570 MB
+/// ONNX + tokenizer) and single-file parsing can legitimately take minutes
+/// with no DB-visible progress, so the bound is not wall-clock; "still
+/// running and not advancing" past it is the honest signature of a lost
+/// import thread.
+const INDEX_NO_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Waits for the named import job to leave its active (preparing/running)
+/// phase, polling the DB-backed job state (the import thread commits its own
+/// progress rows, so the poll works across threads on one service handle).
+/// Bounded by [`INDEX_NO_PROGRESS_TIMEOUT`]: the panic guard inside
+/// `launch_import` interrupts the job when the import thread panics, but
+/// process death skips it, and this wait must never hang a one-shot CLI with
+/// no output and no exit code.
+fn wait_for_job(
+    service: &KnowledgeService,
+    job_id: &str,
+    operation: &str,
+) -> Result<IndexState, CliError> {
+    let mut last_signature: Option<(u64, u64, u64, Option<String>)> = None;
+    let mut last_progress = std::time::Instant::now();
+    loop {
+        let state = service
+            .index_job_state(job_id)
+            .map_err(|error| feature_error(&format!("index {operation}({job_id})"), error))?;
+        if !state.running {
+            return Ok(state);
+        }
+        let signature = (
+            state.done,
+            state.total,
+            state.current_chunks_done,
+            state.current_path.clone(),
+        );
+        if Some(&signature) != last_signature.as_ref() {
+            last_signature = Some(signature);
+            last_progress = std::time::Instant::now();
+        } else if last_progress.elapsed() >= INDEX_NO_PROGRESS_TIMEOUT {
+            return Err(CliError::failed(format!(
+                "knowledge index {operation}: job {job_id} is still running but reported no \
+                 progress for {}s (progress: {}/{}, failed: {}); the import thread is gone \
+                 or wedged — check `pinvou knowledge index status`, cancel it or resume it \
+                 from the desktop app",
+                INDEX_NO_PROGRESS_TIMEOUT.as_secs(),
+                state.done,
+                state.total,
+                state.failed,
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn index_out(header: &str, state: IndexState, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1731,7 +1792,7 @@ fn index_failed(
 /// service's real readiness, and the version.
 ///
 /// The whole payload is process-local and JSON says so with the same
-/// `"scope": "process-local"` marker `scan cancel` and `model cancel` carry.
+/// `"scope": "process-local"` marker.
 /// `ready` is the reason the marker is not optional: it is
 /// `semantic_ready()`, i.e. "is the ~570 MB ONNX model loaded IN THIS
 /// PROCESS", and a one-shot CLI never loads it — so it reads `false` even
@@ -1808,18 +1869,6 @@ fn configured_model_dir() -> PathBuf {
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(model_dir)
-}
-
-/// Real `kb_model_cancel` (sets the upstream cancel flag). Its effect is
-/// process-local by nature: downloads run inside the desktop app process,
-/// never in a one-shot CLI invocation.
-fn model_cancel(output: OutputMode) -> Result<CliOutcome, CliError> {
-    kb_model_cancel();
-    Ok(success(render(
-        output,
-        "model download cancel signalled (downloads run in the desktop app process)".to_owned(),
-        &serde_json::json!({ "cancelled": true, "scope": "process-local" }),
-    )))
 }
 
 // ───────────────────────── remote / host ─────────────────────────
@@ -2120,12 +2169,6 @@ fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// `engine_pool` is `pub(crate)` and not nameable from the CLI).
 fn host_error(operation: &str, error: anyhow::Error) -> CliError {
     CliError::failed(format!("knowledge {operation}: {error:#}"))
-}
-
-fn open_store() -> Result<SessionStore, CliError> {
-    SessionStore::boot().map_err(|error| {
-        CliError::failed(format!("knowledge session store unavailable: {error:#}"))
-    })
 }
 
 /// The mount surface refuses honestly, same pattern as `model download`:

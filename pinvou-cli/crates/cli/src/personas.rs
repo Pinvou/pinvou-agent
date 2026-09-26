@@ -27,6 +27,15 @@
 //! equivalent of the GUI's `remove_persona_from_all` cascade) and reports
 //! the cleared session ids as `cleared_sessions`.
 //!
+//! Consumption: the sidecar is read on the CLI's own headless lane —
+//! `agent run --session <id>` prepends the staged body to the turn's prompt
+//! at the same injection point the GUI chat send uses (chat.rs
+//! `take_pending_turn_injections`), consumes it one-shot, and keeps the
+//! `persona_id` so `active` keeps reporting the card until `unequip`. The
+//! two equip states stay separate by design: the desktop app never reads
+//! `persona_equipped.json` (the name appears nowhere in `pinvou3-app`), so a
+//! GUI equip and a CLI equip are invisible to each other's turns.
+//!
 //! One-sided sweep, disclosed: the GUI's own persona delete never touches
 //! `persona_equipped.json` (the file is a CLI concept and the name appears
 //! nowhere in `pinvou3-app`), so a card deleted in the desktop app leaves the
@@ -688,6 +697,90 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+// ── agent-run consumption seam ─────────────────────────────────────────
+//
+// Round-18 wiring: `personas equip` used to stage the injection body on the
+// sidecar with nothing on any lane reading it. The GUI consumes its own
+// (memory-only) equip state in the chat send; the headless `agent run
+// --session` lane now consumes the sidecar at the same injection point. The
+// two helpers below are that seam.
+
+/// The staged one-shot persona injection for the session's next
+/// `agent run --session` turn: the `pending_body` this module's `equip` wrote
+/// (the `equip_body_injection` text, frozen at equip time). Nothing staged,
+/// or a missing/unreadable/corrupt sidecar (the same tolerance
+/// [`equipped_persona_id`] applies) → `None`, and the turn's prompt is passed
+/// through verbatim.
+///
+/// The staged text is returned as-is rather than recomputed from the card,
+/// because the GUI's one-shot semantics freeze the body at equip time:
+/// editing the card afterwards must not retroactively change what the
+/// promised turn injects.
+pub(crate) fn pending_persona_injection(session_id: &str) -> Option<String> {
+    staged_persona_injection_at(&equip_state_path(session_id).ok()?)
+}
+
+/// Clears the staged one-shot body after the turn that consumed it, keeping
+/// `persona_id` on the sidecar — the same state split the GUI's one-shot take
+/// leaves in memory (`take_pending_turn_injections` clears
+/// `pending_persona_body` while `active_persona` survives, so `personas
+/// active` keeps reporting the card until `unequip`). A missing/corrupt
+/// sidecar or one without a staged body is already in the target state and
+/// succeeds without touching the file.
+pub(crate) fn consume_pending_persona_injection(session_id: &str) -> Result<(), CliError> {
+    consume_staged_persona_injection_at(&equip_state_path(session_id)?)
+}
+
+/// Path-resolved core of [`pending_persona_injection`] (and its unit tests:
+/// the path is handed in so the read needs no `PINVOU3_HOME` dance).
+fn staged_persona_injection_at(path: &std::path::Path) -> Option<String> {
+    let raw = crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run").ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("pending_body")
+        .and_then(serde_json::Value::as_str)
+        .filter(|body| !body.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// Path-resolved core of [`consume_pending_persona_injection`].
+fn consume_staged_persona_injection_at(path: &std::path::Path) -> Result<(), CliError> {
+    let raw = match crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run") {
+        Ok(raw) => raw,
+        // Missing/unreadable: nothing verifiably staged to clear. Degrading to
+        // success matches the read side's tolerance — decoration that cannot
+        // be inspected was never guaranteed to inject either.
+        Err(_) => return Ok(()),
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(());
+    };
+    let Some(persona_id) = value
+        .get("persona_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+    else {
+        return Ok(());
+    };
+    let staged = value
+        .get("pending_body")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|body| !body.trim().is_empty());
+    if !staged {
+        return Ok(());
+    }
+    let payload = serde_json::json!({ "persona_id": persona_id, "pending_body": null });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
+    })?;
+    // Same stage+rename/owner-only discipline as [`persist_equipped_persona`]:
+    // the retained `persona_id` is still read by `active` and the delete
+    // sweep, and a concurrent reader must never observe a torn sidecar.
+    crate::artifacts::atomic_write(path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
+        .map_err(|error| CliError::failed(format!("cannot save session persona sidecar: {error}")))
+}
+
 /// 4 MiB body cap × worst-case JSON escape expansion + wrapper/envelope.
 const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
 /// The body budget the sidecar cap is computed from — the same 4 MiB the
@@ -763,12 +856,12 @@ fn persist_equipped_persona(
 }
 
 /// Mirror of `equip_persona`: resolve the card, persist the equipped state on
-/// the session sidecar and return the summary. Honest scope: the pending-body
-/// injection store is process memory — only the desktop app's turn loop
-/// consumes it — so a CLI equip records intent on the sidecar; no turn (GUI
-/// or CLI) reads that file today, and a GUI equip is invisible to this
-/// command. Revealed in the output below so the command cannot be mistaken
-/// for live persona injection.
+/// the session sidecar and return the summary. The staged body is consumed by
+/// the CLI's own headless lane — the next `agent run --session <id>` turn
+/// prepends it to the prompt at the same injection point the GUI chat send
+/// uses (see [`pending_persona_injection`]) — while the desktop app keeps its
+/// own memory-only equip state and never reads this sidecar, so a GUI equip
+/// and a CLI equip are invisible to each other's turns.
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Usage before Failed: character validation first (a traversal id is a
     // usage error, via the sidecar-path check below), then session
@@ -800,15 +893,17 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     persist_equipped_persona(session_id, persona_id, &injection)?;
     let mut value = summary_value(&summary, "equip")?;
     value["session_id"] = serde_json::json!(session_id);
-    value["applies_to_next_turn"] = serde_json::json!(false);
+    value["applies_to_next_turn"] = serde_json::json!(true);
     value["note"] = serde_json::json!(
-        "equip state is recorded on the session sidecar; persona injection into turns happen only inside the running desktop app — equip the session there for live injection"
+        "the staged persona body is prepended to the next `pinvou agent run --session` turn on \
+         this session (one-shot); the desktop app keeps its own equip state and does not read \
+         this sidecar"
     );
     Ok(success(render(
         output,
         format!(
-            "equipped {persona_id} on {session_id} (recorded; injection happens in the \
-             desktop app's turns)"
+            "equipped {persona_id} on {session_id} (applies to the next agent run on this \
+             session)"
         ),
         &value,
     )))
@@ -1158,5 +1253,98 @@ mod tests {
             !value.as_object().expect("an object").is_empty(),
             "an empty object would be the old silent-failure answer"
         );
+    }
+
+    // ── agent-run consumption seam ─────────────────────────────────────
+
+    /// The round-18 wiring this seam exists for: `equip` stages
+    /// `equip_body_injection` on the sidecar, `agent run --session` reads it
+    /// back, and the two must stay in lockstep. Pin the read (verbatim
+    /// round-trip of the staged text) and the consume (one-shot body
+    /// clearance that keeps the persona_id, mirroring
+    /// `take_pending_turn_injections`' split between `pending_persona_body`
+    /// and `active_persona`) at the unit level, path-resolved so no
+    /// `PINVOU3_HOME` dance is needed.
+    #[test]
+    fn the_seam_returns_the_equip_staged_body_verbatim() {
+        let card = PersonaCard {
+            id: "user-seam".to_owned(),
+            dept: "specialized".to_owned(),
+            name: "Seam".to_owned(),
+            description: String::new(),
+            emoji: "🃏".to_owned(),
+            color: "#7C3AED".to_owned(),
+            body: "# Persona\n\nDoes things.".to_owned(),
+            source: "user".to_owned(),
+            conversational_only: false,
+        };
+        let injection = equip_body_injection(&card);
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-personas-seam-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("persona_equipped.json");
+        crate::artifacts::atomic_write(
+            &sidecar,
+            serde_json::json!({ "persona_id": "user-seam", "pending_body": injection })
+                .to_string()
+                .as_bytes(),
+            crate::artifacts::WriteVisibility::OwnerOnly,
+        )
+        .unwrap();
+        // Read side: the staged text comes back exactly as written (frozen at
+        // equip time, not recomputed from the card).
+        let staged =
+            staged_persona_injection_at(&sidecar).expect("a staged sidecar must yield its body");
+        assert_eq!(
+            staged, injection,
+            "the staged body must round-trip verbatim"
+        );
+        // Consume side: the body is cleared (one-shot) while the persona_id
+        // stays, so `personas active` keeps reporting the card until unequip.
+        consume_staged_persona_injection_at(&sidecar).expect("consume must succeed");
+        assert!(
+            staged_persona_injection_at(&sidecar).is_none(),
+            "the body must be gone after consumption"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(value["persona_id"], "user-seam", "the persona id must stay");
+        // Re-consuming the already-consumed sidecar is a no-op success
+        // (idempotent, like `unequip`).
+        consume_staged_persona_injection_at(&sidecar).expect("re-consume must succeed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Missing and corrupt sidecars are the "no persona" case on both sides
+    /// of the seam: `None` on the read side (turn prompt passes through
+    /// verbatim), `Ok(())` on the consume side (nothing verifiably staged to
+    /// clear).
+    #[test]
+    fn the_seam_tolerates_missing_and_corrupt_sidecars() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-personas-seam-tol-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("persona_equipped.json");
+        assert!(staged_persona_injection_at(&missing).is_none());
+        consume_staged_persona_injection_at(&missing)
+            .expect("a missing sidecar must consume as a no-op");
+        let corrupt = dir.join("corrupt.json");
+        std::fs::write(&corrupt, b"{ not json").unwrap();
+        assert!(staged_persona_injection_at(&corrupt).is_none());
+        consume_staged_persona_injection_at(&corrupt)
+            .expect("a corrupt sidecar must consume as a no-op");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

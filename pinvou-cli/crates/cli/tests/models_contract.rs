@@ -448,6 +448,16 @@ fn parses_settings_get_set_and_search() {
             "tavily",
             "--clear",
         ],
+        vec![
+            "pinvoy",
+            "settings",
+            "search",
+            "set",
+            "--provider",
+            "tavily",
+            "--clear",
+            "--yes",
+        ],
         vec!["pinvoy", "settings", "search", "test", "bing"],
     ] {
         parse_args(args).unwrap_or_else(|error| panic!("valid command rejected: {error}"));
@@ -1287,6 +1297,7 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
         "--provider",
         "tavily",
         "--clear",
+        "--yes",
     ]);
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
     assert_eq!(
@@ -1309,6 +1320,140 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
     // credential-store write.
     run_ok(&["pinvoy", "settings", "search", "set", "--provider", "bing"]);
     assert_eq!(load_prefs().search.provider, SearchProvider::Bing);
+}
+
+/// Round-18 finding: credential deletions ran without `--yes`. In the
+/// models family that is `models edit --clear-api-key` — it deletes the
+/// keyring entry and marks the model `missing`, i.e. the same destructive
+/// credential loss `models remove` already gates with `require_yes`. Without
+/// `--yes` the command must refuse with the family's confirmation-refusal
+/// shape (usage error naming `--yes`), with `--yes` it must proceed.
+///
+/// Both cases drive the real store under a sandboxed `PINVOU3_HOME`. The
+/// model is never configured, so the clear path runs end to end without
+/// touching any keyring entry (the keyring deletion is gated on the model's
+/// stored `credential_ref`).
+#[test]
+fn models_edit_clear_api_key_requires_yes() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("edit-clear-api-key-yes");
+
+    // The bare form must refuse like `models remove`: a usage error whose
+    // message names --yes, with nothing written.
+    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let (message, code) = run_err(&["pinvoy", "models", "edit", "default", "--clear-api-key"]);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the confirmation refusal is a usage error, like models remove: {message}"
+    );
+    assert!(
+        message.contains("--yes"),
+        "the refusal must name the flag: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home_settings_path()).unwrap_or_default(),
+        before,
+        "a refused clear must not write settings.json"
+    );
+
+    // With --yes the same command proceeds and reports the credential as
+    // cleared.
+    let stdout = run_ok(&[
+        "pinvoy",
+        "models",
+        "edit",
+        "default",
+        "--clear-api-key",
+        "--yes",
+    ]);
+    assert!(stdout.contains("credential: cleared"), "{stdout}");
+    let prefs = load_prefs();
+    let model = prefs.model_by_id("default").expect("default model");
+    assert!(
+        !model.has_secret && model.credential_ref.is_none(),
+        "the cleared model must be recorded as secretless: {:?}",
+        model.credential_state
+    );
+
+    // --yes composes with a field change on the same command (the refusal
+    // happens at execute, exactly like `models remove`).
+    parse_args(
+        [
+            "pinvoy",
+            "models",
+            "edit",
+            "m1",
+            "--clear-api-key",
+            "--yes",
+            "--name",
+            "Renamed",
+        ]
+        .to_vec(),
+    )
+    .expect("clear-api-key with --yes and a field change must parse");
+}
+
+/// Round-18 finding (same class): `settings search set --provider P --clear`
+/// wipes provider P's stored credential — the search-family sibling of
+/// `models edit --clear-api-key` — and ran without `--yes`. Same contract:
+/// without `--yes` refuse with the family's confirmation-refusal shape and
+/// write nothing; with `--yes` proceed (and still not switch the active
+/// provider). Drives the real store under a sandboxed `PINVOU3_HOME`; the
+/// provider is never configured, so no keyring entry is ever touched.
+#[test]
+fn settings_search_set_clear_requires_yes() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("search-set-clear-yes");
+
+    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "settings",
+        "search",
+        "set",
+        "--provider",
+        "tavily",
+        "--clear",
+    ]);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the confirmation refusal is a usage error, like models remove: {message}"
+    );
+    assert!(
+        message.contains("--yes"),
+        "the refusal must name the flag: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home_settings_path()).unwrap_or_default(),
+        before,
+        "a refused clear must not write settings.json"
+    );
+
+    // With --yes the clear proceeds (and still must not switch the active
+    // provider — that contract is pinned separately in
+    // settings_search_set_clear_does_not_switch_the_active_provider).
+    let stdout = run_ok(&[
+        "pinvoy",
+        "--output",
+        "json",
+        "settings",
+        "search",
+        "set",
+        "--provider",
+        "tavily",
+        "--clear",
+        "--yes",
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
+    assert_eq!(value["credential"], "cleared", "{stdout}");
+    assert_eq!(value["active_provider"], "bing", "{stdout}");
+    assert_eq!(
+        load_prefs().search.provider,
+        SearchProvider::Bing,
+        "the persisted active provider must be untouched by a clear"
+    );
 }
 
 /// Human rows must not be forgeable. `models.rs` was the last family still

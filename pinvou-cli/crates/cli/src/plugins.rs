@@ -59,8 +59,17 @@
 //!   `recycle_bin::{RecycleBin, restore_plugin}`; meta →
 //!   `SkillMarketplaceManager::update_display_meta`.
 //! - readiness → `bundle::BundleRegistry` + `readiness_for` (the registry
-//!   branch of `bundle_readiness`). CLI-connector live status (feishu/wecom/
-//!   dingtalk/tmeet `*_status`) and ima credential status need the connector
+//!   branch of `bundle_readiness`), EXCEPT ima, which the GUI judges through
+//!   `connectors::ima::ima_status` instead (`bundle_readiness`'s ima arm):
+//!   ready = both OpenAPI credentials present (ima secret namespace) AND the
+//!   `ima-skills` companion installed, credentials judged first, installed =
+//!   credentials OR skill. The CLI mirrors those semantics exactly (see
+//!   [`ima_readiness_parts`]; the GUI helpers are app-crate-private, so the
+//!   check is replicated with ima.rs as the source of truth) — the ima row
+//!   must not route through `readiness_for`, whose `IMA_CLIENT_ID` /
+//!   `IMA_API_KEY` lookup is the wrong namespace and would report
+//!   `missing_credentials` for a connected ima. CLI-connector live status
+//!   (feishu/wecom/dingtalk/tmeet `*_status`) still needs the connector
 //!   runtime; the CLI reports the registry's conservative readiness and
 //!   defers live probes to the `connectors` family. Because a CLI connector's
 //!   readiness IS its connection state, that deferral means the verdict for a
@@ -74,8 +83,10 @@
 //!   as ready, whatever its real state — use `pinvou connectors ... status`
 //!   for that verdict. Credential presence is consulted in the system
 //!   credential store for every installed bundle, so a read-only CLI run CAN
-//!   touch the OS keyring (macOS may prompt) — only a run with nothing
-//!   installed never does. The `assets_missing` demotion of a `degraded`
+//!   touch the OS keyring (macOS may prompt) — and the ima row reads the ima
+//!   secret namespace on EVERY run, installed or not (ima_status parity), so
+//!   even a run with nothing installed can touch the OS keyring for a user
+//!   who connected ima in the GUI. The `assets_missing` demotion of a `degraded`
 //!   non-CLI package is derived in this module rather than in `readiness_for`,
 //!   so the desktop readiness card keeps its existing verdict.
 //! - enable/disable/project-skills → `load_disabled_bundles_for` +
@@ -1551,6 +1562,53 @@ const REASON_CONNECTION_UNKNOWN: &str = "connection_unknown_in_cli";
 /// already reports it.
 const REASON_ASSETS_MISSING: &str = "assets_missing";
 
+/// Reason for an ima row whose credentials are present but whose `ima-skills`
+/// companion package is not installed — the GUI `bundle_readiness` ima arm's
+/// exact code for the same state, replicated so the two surfaces speak the
+/// same reason vocabulary for ima.
+const REASON_IMA_SKILL_NOT_INSTALLED: &str = "skill_not_installed";
+
+/// The companion skill `ima_connect` installs alongside the ima credentials
+/// (mirror of `features/connectors/ima.rs` `IMA_SKILL_ID`, which is
+/// app-crate-private and not importable from here).
+const IMA_SKILL_ID: &str = "ima-skills";
+
+/// ima readiness inputs, mirroring the GUI's `bundle_readiness` ima arm
+/// (`app/commands/marketplace.rs`) → `connectors::ima::ima_status` →
+/// `status_with_store`: ima is the ONE bundle the desktop does not judge
+/// through `readiness_for`, so neither does the CLI. Source of truth:
+/// `pinvou3-app/src-tauri/src/features/connectors/ima.rs` (`status_with_store`
+/// and `credentials`). Those helpers are app-crate-private, so this function
+/// replicates the smallest faithful check: both OpenAPI credentials
+/// (`client_id` and `api_key`, non-empty after trim, in the ima secret
+/// namespace — NOT the IMA_CLIENT_ID/IMA_API_KEY MCP-namespace keys the
+/// registry branch would look for) and the `ima-skills` companion package's
+/// installed flag.
+///
+/// A credential-store READ failure propagates instead of reading as absent:
+/// `ima_status` fails the whole GUI command on one, and "unavailable" is a
+/// different fact from "missing" for the same reason the `tools auth` token
+/// probe discloses itself rather than guessing.
+fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> Result<(bool, bool), CliError> {
+    let credential_present = |name: &str| -> Result<bool, CliError> {
+        credential_store
+            .get(&CredentialReference::for_ima_secret(name))
+            .map(|value| value.is_some_and(|secret| !secret.trim().is_empty()))
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "plugins readiness(ima): ima credential store unavailable: {}",
+                    error.user_message()
+                ))
+            })
+    };
+    let credentials_present = credential_present("client_id")? && credential_present("api_key")?;
+    let skill_installed = SkillMarketplaceManager::new()
+        .list_skills()
+        .into_iter()
+        .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
+    Ok((credentials_present, skill_installed))
+}
+
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let registry = BundleRegistry::new();
     let rows = registry
@@ -1562,7 +1620,43 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // the OS keyring. Uninstalled bundles report the same
             // `missing_credentials` reason the GUI derives for absent
             // credentials.
+            //
+            // ima is the exception judged ABOVE this gate: its credentials
+            // live in the ima secret namespace and feed the gui-parity branch
+            // below, so they are read on every readiness run regardless of
+            // the store record (a GUI-connected ima has credentials present
+            // even when no bundle record exists yet).
             let credential_store = SystemCredentialStore::new();
+            // ima mirrors the GUI's `bundle_readiness` ima arm instead of the
+            // registry branch: ready = ima_status's `connected` (credentials
+            // AND companion skill), credentials judged first, installed =
+            // credentials OR skill — the registry's `IMA_CLIENT_ID`/
+            // `IMA_API_KEY` lookup is the wrong namespace and would report
+            // `missing_credentials` for a connected ima.
+            if bundle.kind == BundleKind::Skill && bundle.id == "ima" {
+                let (credentials_present, skill_installed) =
+                    ima_readiness_parts(&credential_store)?;
+                let ready = credentials_present && skill_installed;
+                let reason = if ready {
+                    None
+                } else if !credentials_present {
+                    Some("missing_credentials".to_owned())
+                } else {
+                    Some(REASON_IMA_SKILL_NOT_INSTALLED.to_owned())
+                };
+                let kind = serde_json::to_value(bundle.kind)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".to_owned());
+                return Ok(serde_json::json!({
+                    "bundle_id": bundle.id,
+                    "kind": kind,
+                    "installed": credentials_present || skill_installed,
+                    "ready": ready,
+                    "reason": reason,
+                    "probe": PROBE_REGISTRY,
+                }));
+            }
             let bundle_id = bundle.id.clone();
             let has = |key: &str| -> bool {
                 if !bundle.installed {
@@ -1617,20 +1711,20 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             } else {
                 (registry_ready, registry_reason, PROBE_REGISTRY)
             };
-            let kind = serde_json::to_value(&bundle.kind)
+            let kind = serde_json::to_value(bundle.kind)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "unknown".to_owned());
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "bundle_id": bundle.id,
                 "kind": kind,
                 "installed": bundle.installed,
                 "ready": ready,
                 "reason": reason,
                 "probe": probe,
-            })
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, CliError>>()?;
     let value = serde_json::json!({ "bundles": rows });
     let human = rows
         .iter()

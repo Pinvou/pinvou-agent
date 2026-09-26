@@ -153,6 +153,38 @@ pub async fn organize_memory_with_llm(
         );
         return Err(anyhow!("another organize pass is already in progress"));
     };
+    // Cross-process single-flight: the guard above only sees this process —
+    // the GUI's manual button / scheduled task can race a CLI
+    // `pinvou memory organize` in another process, and two passes
+    // interleaving their destructive apply steps from stale snapshots is
+    // exactly the interleaving the apply phase's re-check cannot repair.
+    // Try-lock semantics (fail fast, never queue behind the running pass's
+    // up to 75-second LLM call); the guard is a scoped RAII value, so every
+    // exit path below releases it, and the lock file itself stays in place —
+    // only the OS advisory lock decides, so a leftover file never blocks a
+    // future pass.
+    let _cross_process = match io::try_lock_organize_pass() {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            append_memory_review_diagnostic(
+                "organize",
+                "skipped",
+                json!({ "reason": "already_in_progress_other_process" }),
+            );
+            return Err(anyhow!(
+                "{} in another process; wait for it to finish before organizing again",
+                io::ORGANIZE_LOCK_BUSY
+            ));
+        }
+        Err(error) => {
+            append_memory_review_diagnostic(
+                "organize",
+                "failed",
+                json!({ "error": error.to_string() }),
+            );
+            return Err(anyhow!("acquire cross-process organize lock: {error}"));
+        }
+    };
     let started_at = Utc::now().to_rfc3339();
     append_memory_review_diagnostic(
         "organize",

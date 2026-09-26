@@ -1091,27 +1091,91 @@ fn expected_stored_text(kind: AddKind, content: &str) -> String {
     }
 }
 
-/// Error for an enqueue that handed back a pending row carrying text this
-/// invocation did not submit, or `None` when the row holds this caller's own
-/// text — including the legitimately truncated form, which
-/// `expected_stored_text` predicts exactly, so a merely-shortened add is not
-/// refused here.
+/// The kind of pending row this add would identify as its own.
 ///
-/// `enqueue_memory_candidate` does not always queue what it was handed: its
-/// second dedupe branch matches an existing *pending* row on a LOWERCASED
-/// content key and returns that row with its own `content` intact (only
-/// topic/source/updated_at are touched). Confirming the id it returns would
-/// approve a candidate the user has not reviewed yet AND write that row's
-/// wording into the topic bucket, so this is checked BEFORE the confirm: the
-/// add fails with the pending queue and every store untouched, which is what
-/// the remediation below can then honestly promise.
-fn diverged_text(
+/// The pending stage's `pending_item_from_suggestion` runs
+/// `normalize_pending_kind(clean_text(&suggestion.kind, 20))` on the SUGGESTION
+/// kind; both CLI kinds ("preference", "work_context") are recognized there, so
+/// the row kind is the kind string itself, unchanged. The AddKind enum already
+/// carries it through `feature_kind`, which is the same string — no mirror, no
+/// drift; this accessor exists so the divergence check reads symmetrically
+/// next to `expected_pending_topic` and `expected_stored_text`.
+fn expected_pending_kind(kind: AddKind) -> &'static str {
+    kind.feature_kind()
+}
+
+/// The pending-row topic this add would identify as its own, per kind.
+///
+/// `pending_item_from_suggestion` normalizes topics ONLY for preference-kind
+/// suggestions (`features/memory/io.rs`: `if kind == "preference" { topic =
+/// normalize_preference_topic(&topic) }`), and the CLI adds without a topic,
+/// so the two kinds land on different row topics. Both normalizers are
+/// `pub(super)` to the app crate, so the values are documented literals
+/// rather than calls; each is pinned by `memory add`'s own contract — a
+/// drifting literal fails every ordinary add in the divergence check, which
+/// is what `memory_add_still_confirms_when_every_field_matches_this_adds_own_
+/// candidate` turns into a red test.
+fn expected_pending_topic(kind: AddKind) -> &'static str {
+    match kind {
+        // `normalize_preference_topic` (features/memory/types.rs) maps the
+        // empty suggestion topic onto the default preference bucket.
+        AddKind::Preference => "answer_style",
+        // No topic normalization for work context at the pending stage: the
+        // row an add of this kind calls its own carries the topic verbatim,
+        // which for a topic-less CLI add is the empty string. (The store-side
+        // `upsert_work_context_memory` maps the empty topic onto
+        // "task_pattern" only later, at the confirm.)
+        AddKind::WorkContext => "",
+    }
+}
+
+/// Error for an enqueue that handed back a pending row which is not this
+/// add's own candidate, or `None` when the row matches this invocation on
+/// every identifying field.
+///
+/// Round-18 fix: the check used to compare only the text body, so a pending
+/// GUI candidate whose text matched but whose topic (or kind) differed was
+/// treated as "the same candidate" and confirmed — approving someone else's
+/// data and writing through their entry. The comparison now covers every
+/// identifying field of a candidate, each in the form that field carries in
+/// the pending row.
+///
+/// Text (as before): `enqueue_memory_candidate` does not always queue what it
+/// was handed. Its dedupe branch matches an existing *pending* row on a
+/// LOWERCASED content key and returns that row with its own `content` intact
+/// (only topic/source/updated_at are touched); confirming the id it returns
+/// would approve a candidate the user has not reviewed yet AND write that
+/// row's wording into the topic bucket. Topic and kind (round-18): the same
+/// dedupe branch matches on the kind plus a case-insensitive content key and
+/// IGNORES the topic, so a foreign-topic candidate whose text matches
+/// case-insensitively was handed back with its own topic/kind untouched —
+/// fields the prior check never looked at.
+///
+/// On any mismatch the add fails with the pending queue and every store
+/// untouched — before `confirm_pending_memory` runs — which is what the
+/// remediation below promises.
+fn diverged_candidate(
     kind: AddKind,
     pending_id: &str,
-    enqueued: &str,
+    pending: &feature::PendingMemoryItem,
     expected: &str,
 ) -> Option<CliError> {
-    let actually_stored = expected_stored_text(kind, enqueued);
+    let diverge = |field: &str, own: &str, foreign: &str| {
+        Some(CliError::failed(format!(
+            "memory_add_not_materialized: the candidate pipeline reused the existing \
+             pending entry {pending_id}, whose {field} {foreign:?} differs from this add's \
+             own {own:?}; nothing was confirmed and no store was written — resolve that \
+             entry first (`pinvou memory pending confirm|ignore|never {pending_id}`), \
+             then retry this add"
+        )))
+    };
+    if pending.topic != expected_pending_topic(kind) {
+        return diverge("topic", expected_pending_topic(kind), &pending.topic);
+    }
+    if pending.kind != expected_pending_kind(kind) {
+        return diverge("kind", expected_pending_kind(kind), &pending.kind);
+    }
+    let actually_stored = expected_stored_text(kind, &pending.content);
     if actually_stored == *expected {
         return None;
     }
@@ -1210,19 +1274,21 @@ normalization (task-like or punctuation-only text is not stored)",
     let pending = feature::enqueue_memory_candidate(suggestion)
         .map_err(|error| feature_error("add", error))?;
     // The enqueue can hand back a row this invocation did not create: its
-    // second dedupe branch matches an EXISTING pending row on a lowercased
-    // content key and returns that row with its own text intact. Confirming
-    // that id has two real side effects behind what ends up being a FAILED
-    // command — it approves a candidate the user never reviewed and writes
-    // the other row's wording into the topic bucket — so the divergence is
-    // caught here, before `confirm_pending_memory` runs, leaving the pending
-    // queue and both stores exactly as they were.
+    // dedupe branch matches an EXISTING pending row on a kind plus
+    // lowercased content key and returns that row with its own fields
+    // intact. Confirming that id has two real side effects behind what ends
+    // up being a FAILED command — it approves a candidate the user never
+    // reviewed and writes the other row's wording into ITS topic bucket
+    // (round-18: a foreign-topic candidate with the same text was adopted
+    // and confirmed through, deleting that bucket's previous item) — so the
+    // divergence is caught here, before `confirm_pending_memory` runs,
+    // leaving the pending queue and both stores exactly as they were.
     //
-    // The comparison replays the pipeline over the returned content, so a row
-    // that IS derivable from this caller's input still passes: an add whose
-    // text was merely truncated at ADD_PIPELINE_TEXT_MAX_CHARS predicts the
-    // same `expected` and proceeds to report its truncation below.
-    if let Some(error) = diverged_text(kind, &pending.id, &pending.content, &expected) {
+    // The comparison replays the pipeline over the returned row's fields, so
+    // a row that IS derivable from this caller's input still passes: an add
+    // whose text was merely truncated at ADD_PIPELINE_TEXT_MAX_CHARS predicts
+    // the same `expected` and proceeds to report its truncation below.
+    if let Some(error) = diverged_candidate(kind, &pending.id, &pending, &expected) {
         return Err(error);
     }
     feature::confirm_pending_memory(&pending.id)

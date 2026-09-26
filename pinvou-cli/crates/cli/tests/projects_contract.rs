@@ -128,6 +128,11 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "delete", "prj-1"],
         vec!["pinvou", "projects", "delete", "prj-1", "--yes"],
         vec!["pinvou", "projects", "move", "s-1", "prj-1"],
+        // the ungroup form parses with and without --yes; the exit-2
+        // confirmation gate runs at execute time (support::require_yes),
+        // the same unconfirmed-but-parseable contract as sessions delete.
+        vec!["pinvou", "projects", "move", "s-1"],
+        vec!["pinvou", "projects", "move", "s-1", "--yes"],
     ];
     for arguments in &valid {
         let parsed = parse_args(arguments.clone())
@@ -185,6 +190,8 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "move", "s-1", ""],
         vec!["pinvou", "projects", "move", "s-1", "--json"],
         vec!["pinvou", "projects", "move", "s-1", "prj-1", "extra"],
+        // --yes is only a flag on the ungroup form; between the two ids it
+        // is positional garbage.
         vec!["pinvou", "projects", "move", "s-1", "prj-1", "--yes"],
     ];
     for arguments in &invalid {
@@ -510,8 +517,10 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     //
     // The session created by the fixture has no workspace binding and no
     // assignment, so it resolves to nothing: ungrouping it is refused BEFORE
-    // it is put into a project.
-    let error = run(&["pinvou", "projects", "move", &session_id])
+    // it is put into a project. --yes is supplied so this arm asserts the
+    // resolution gate itself; the no-confirmation form is covered further
+    // down, after the session is put into a project.
+    let error = run(&["pinvou", "projects", "move", &session_id, "--yes"])
         .expect_err("an already-ungrouped session must not be pinned as explicitly ungrouped");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
@@ -533,7 +542,27 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     let project_id = value["id"].as_str().unwrap().to_owned();
     let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
     assert_eq!(value["project_id"], project_id);
-    let outcome = run(&["pinvou", "projects", "move", &session_id]).expect("human ungroup");
+
+    // --yes gate, red-first: the ungroup write is irreversible, so without
+    // --yes it must be refused before any store access — the same
+    // confirmation convention (and refusal copy) as projects delete /
+    // sessions delete.
+    let error = run(&["pinvou", "projects", "move", &session_id])
+        .expect_err("an ungroup without --yes must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(
+        error.to_string().contains("--yes"),
+        "the refusal must point at the --yes gate: {error}"
+    );
+    let value = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(
+        value["assignments"][session_id.as_str()],
+        project_id,
+        "a refused ungroup must not write the explicit entry"
+    );
+
+    let outcome =
+        run(&["pinvou", "projects", "move", &session_id, "--yes"]).expect("human ungroup");
     assert!(
         outcome.stdout.contains("out of its project"),
         "the human ungroup must report the session leaving its project"
@@ -547,8 +576,9 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
 
     // The repeat is now refused rather than silently re-pinning: the session
     // no longer resolves to a project, which is the state the explicit entry
-    // itself created.
-    let error = run(&["pinvou", "projects", "move", &session_id])
+    // itself created. --yes present: this asserts the resolution gate, not
+    // the confirmation gate.
+    let error = run(&["pinvou", "projects", "move", &session_id, "--yes"])
         .expect_err("a repeat ungroup must be refused, not reported as idempotent");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
@@ -556,13 +586,21 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "{error}"
     );
 
+    // Without --yes the refusal is the confirmation gate, and it fires
+    // before the resolution gate can be reached at all.
+    let error = run(&["pinvou", "projects", "move", &session_id])
+        .expect_err("a repeat ungroup without --yes must hit the --yes gate");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"), "{error}");
+
     // The only documented way back is naming a project again.
     let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
     assert_eq!(value["project_id"], project_id);
 
-    // The session gate still runs before the ungroup gate, so an unknown
-    // session is reported as unknown rather than as "not in a project".
-    let error = run(&["pinvou", "projects", "move", "no-such-session"])
+    // The session gate still runs before the ungroup resolution gate, so an
+    // unknown session is reported as unknown rather than as "not in a
+    // project" (--yes supplied: this arm asserts the session gate).
+    let error = run(&["pinvou", "projects", "move", "no-such-session", "--yes"])
         .expect_err("an unknown session is still a failure without a project id");
     assert!(error.to_string().contains("does not exist"), "{}", error);
 

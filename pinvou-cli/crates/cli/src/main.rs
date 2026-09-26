@@ -1,6 +1,11 @@
 use std::io::Write;
 
 fn main() {
+    // First statement: installs the SIGINT/SIGTERM forward/kill wiring for
+    // vendor children spawned in their own process groups (see
+    // `support/supervise.rs`). Runs before any supervised child exists; the
+    // install is Once-guarded. The one wiring call this main.rs gets.
+    pinvou_cli::support::supervise::install_signal_cleanup();
     // `std::env::args` panics on non-Unicode argv (a raw-bytes path from a
     // tool would exit 101 with a backtrace); lossy-convert instead so the
     // regular usage/exit-code contract handles the argument.

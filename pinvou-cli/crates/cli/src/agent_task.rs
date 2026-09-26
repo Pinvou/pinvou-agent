@@ -222,6 +222,18 @@ fn run_agent(
     // narrowing of what `--prompt-file` used to accept.
     let prompt =
         crate::support::read_text_file_capped(prompt_file, PROMPT_FILE_MAX_BYTES, "agent run")?;
+    // Consumed persona (round-18 wiring): a `pinvou personas equip` on this
+    // session staged a one-shot persona body on the per-session sidecar
+    // `persona_equipped.json`; this lane now delivers it through
+    // [`prompt_with_persona_injection`] — the same injection point the GUI
+    // chat send uses. No staged persona → the prompt passes through
+    // verbatim, byte for byte (the hard no-behavior-change requirement).
+    // Fresh sessions never consult the sidecar (nothing can be equipped on a
+    // session that does not exist yet).
+    let prompt = prompt_with_persona_injection(
+        prompt,
+        session.and_then(crate::personas::pending_persona_injection),
+    );
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
     // letting a typo'd path get silently created deeper in the stack.
@@ -271,6 +283,10 @@ fn run_agent(
         })
         .collect();
     let request = pinvou_product_backend::AgenticTaskRequest {
+        // The consumed persona body travels inside the prompt (prepended
+        // above, same point the GUI injects): the headless engine call has
+        // no separate persona lane, and the GUI's own one-shot body reaches
+        // the engine the same way — as part of the submitted user message.
         prompt,
         workspace,
         timeout_secs,
@@ -290,6 +306,22 @@ fn run_agent(
     // does not add one of its own.
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
+    // The consumed persona was one-shot and the turn that consumed it has
+    // now been submitted (setup faults above propagate and skip this). Clear
+    // the staged body, keeping the persona_id on the sidecar — `personas
+    // active` keeps reporting the card until `unequip`, the same split the
+    // GUI's in-memory take leaves behind. A failure here is warned, not
+    // fatal: the report exists, the turn ran, and failing the whole run
+    // after a submitted turn would misreport it as never-started. A
+    // re-run against the same session then sees no staged body (the
+    // already-consumed state), which is exactly the one-shot contract.
+    if let Some(session_id) = session {
+        if let Err(error) = crate::personas::consume_pending_persona_injection(session_id) {
+            crate::note!(
+                "warning: agent run: could not clear the consumed persona sidecar: {error}"
+            );
+        }
+    }
     // A fresh run's session is deliberately left under the shared new-chat
     // placeholder, and the CLI does NOT rename it. Two reasons, both from this
     // PR's own contracts: the placeholder is the exact sentinel the GUI's
@@ -317,6 +349,27 @@ fn run_agent(
         exit_code: ExitCode::Success,
         stdout: render_agent_report(&report, output)?,
     })
+}
+
+#[cfg(feature = "product-backend")]
+/// Prepends the session's staged one-shot persona body to the turn's prompt,
+/// at the exact injection point the GUI chat send uses
+/// (`app/commands/chat.rs`: `full = format!("{body}\n\n---\n\n{full}")` after
+/// `take_pending_turn_injections` — the persona body first, then the
+/// `\n\n---\n\n` separator, then the user's message). `None` passes the
+/// prompt through unchanged, byte for byte: a session without an equipped
+/// persona (the only case before this wiring) must behave identically.
+///
+/// Pure on purpose: the composition is the testable part of the wiring. The
+/// full `run_agent` path needs a real engine (deliberately out of scope for
+/// the hermetic contract tests), so this helper is what the unit tests pin —
+/// including the separator, so the headless lane cannot drift from the GUI's
+/// injection point.
+fn prompt_with_persona_injection(prompt: String, injection: Option<String>) -> String {
+    match injection {
+        Some(injection) => format!("{injection}\n\n---\n\n{prompt}"),
+        None => prompt,
+    }
 }
 
 #[cfg(feature = "product-backend")]
@@ -622,6 +675,41 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
         assert!(error.to_string().contains("plan or agent"));
+    }
+
+    /// The persona wiring composes the turn prompt offline exactly the way
+    /// the GUI chat send does online: persona body first, `\n\n---\n\n`,
+    /// then the user's message (chat.rs injects
+    /// `format!("{body}\n\n---\n\n{full}")`). The separator is pinned byte
+    /// for byte so the headless lane cannot drift from the GUI's injection
+    /// point, and the staged text is embedded verbatim (the wrapper around
+    /// the card body already happened at `personas equip` time, via
+    /// `equip_body_injection`).
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn prompt_with_persona_injection_matches_the_gui_injection_point() {
+        let injection = "【你被加持了一张专家面具:Test】\n\n====== 专家人设开始 ======\n\
+                         # Persona\n\nbody\n====== 专家人设结束 ======";
+        let composed =
+            prompt_with_persona_injection("do the task".to_owned(), Some(injection.to_owned()));
+        let expected = format!("{injection}\n\n---\n\ndo the task");
+        assert_eq!(composed, expected);
+        // Composition is prepend-only: the user's message survives untouched
+        // at the tail of the prompt.
+        assert!(composed.ends_with("\n\n---\n\ndo the task"));
+    }
+
+    /// The no-persona case is the hard requirement from the wiring review:
+    /// `None` must leave the prompt bit-identical (no injection markers, no
+    /// separator, no whitespace drift) — every pre-wiring invocation took
+    /// this arm, so its behavior is a contract.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn prompt_without_persona_injection_is_byte_identical() {
+        let prompt = "# Task\n\nmulti-line\nbody with --- separators\n\nend\n";
+        let passthrough = prompt_with_persona_injection(prompt.to_owned(), None);
+        assert_eq!(passthrough, prompt);
+        assert_eq!(passthrough.len(), prompt.len());
     }
 
     #[test]

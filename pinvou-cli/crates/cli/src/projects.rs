@@ -39,9 +39,10 @@
 //!
 //! Error copy: the feature's own error strings are English and pass through
 //! prefixed with `projects <subcommand>`; unknown ids and operational
-//! failures exit 1, usage errors exit 2, and destructive `delete` requires
-//! `--yes` before any store access (deleting a project never deletes
-//! sessions — affected sessions are only unassigned).
+//! failures exit 1, usage errors exit 2, and the destructive `delete` and
+//! the irreversible ungrouping `move` both require `--yes` before any
+//! store access (deleting a project never deletes sessions — affected
+//! sessions are only unassigned).
 
 use std::path::{Path, PathBuf};
 
@@ -64,7 +65,8 @@ const USAGE: &str = "usage: pinvou projects <list|create|update|delete|move>";
 /// way out is another `move <session> <project>`.
 const MOVE_UNGROUP_NOTE: &str = "note: `projects move <session>` without a project id writes an \
 EXPLICIT ungroup that permanently opts the session out of auto-grouping; it cannot be reverted \
-to \"grouped automatically\" — only another `projects move <session> <project>` overwrites it";
+to \"grouped automatically\" — only another `projects move <session> <project>` overwrites it, \
+and it requires --yes";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectsCommand {
@@ -85,6 +87,7 @@ pub enum ProjectsCommand {
     Move {
         session_id: String,
         project_id: Option<String>,
+        yes: bool,
     },
 }
 
@@ -96,6 +99,7 @@ const UPDATE_OPTIONS: &[&str] = &["--name"];
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
+const MOVE_FLAGS: &[&str] = &["--yes"];
 
 pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
@@ -140,28 +144,49 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
         }
         "move" => {
             let session_id = require_id(rest.first(), "move")?;
-            // Omitting the project id moves the session out of its project —
-            // the store's None arm, the same entry the GUI's move picker
-            // offers as ungrouped. An explicit empty or flag-shaped token
-            // stays a usage error. What that arm WRITES is irreversible, so
-            // every usage error on this lane carries the disclosure.
-            let project_id = match rest.get(1) {
-                None => None,
+            // Split the session-id tail into the project positional and the
+            // flag region, positional first like every sibling subcommand
+            // (delete/show parse their flags after the id). Omitting the
+            // project id is the ungroup form — the store's None arm, the
+            // same entry the GUI's move picker offers as ungrouped. Its
+            // remaining tokens are only `--yes`; with a project id the line
+            // ends there. What the None arm WRITES is irreversible, so every
+            // usage error on this lane carries the disclosure.
+            let (project_id, flag_tail): (Option<String>, &[String]) = match rest.get(1) {
+                // No project id: ungroup form, all remaining tokens are flags.
+                None => (None, &rest[1..]),
+                // The confirmation flag is the only legal non-positional
+                // after the session id, but a flag BEFORE the positional
+                // (`--yes prj-1`) is malformed.
+                Some(token) if token == "--yes" => match rest.get(2) {
+                    Some(_) => {
+                        return Err(CliError::usage(format!(
+                            "projects move: invalid project id\n{MOVE_UNGROUP_NOTE}"
+                        )));
+                    }
+                    None => (None, &rest[1..]),
+                },
+                // Explicit empty or other flag-shaped project token.
                 Some(id) if id.is_empty() || id.starts_with("--") => {
                     return Err(CliError::usage(format!(
                         "projects move: invalid project id\n{MOVE_UNGROUP_NOTE}"
                     )));
                 }
-                Some(id) => Some(id.clone()),
+                // A project id: the line ends there, no flags this form takes.
+                Some(id) => {
+                    if rest.len() > 2 {
+                        return Err(CliError::usage(format!(
+                            "projects move accepts no options\n{MOVE_UNGROUP_NOTE}"
+                        )));
+                    }
+                    (Some(id.clone()), &[])
+                }
             };
-            if rest.len() > 2 {
-                return Err(CliError::usage(format!(
-                    "projects move accepts no options\n{MOVE_UNGROUP_NOTE}"
-                )));
-            }
+            let (_, flags) = parse_flags(flag_tail, &[], MOVE_FLAGS)?;
             Ok(ProjectsCommand::Move {
                 session_id,
                 project_id,
+                yes: flags.contains(&"--yes"),
             })
         }
         _ => Err(CliError::usage(USAGE)),
@@ -230,7 +255,8 @@ pub fn execute(command: ProjectsCommand, output: OutputMode) -> Result<CliOutcom
         ProjectsCommand::Move {
             session_id,
             project_id,
-        } => move_session(&session_id, project_id.as_deref(), output),
+            yes,
+        } => move_session(&session_id, project_id.as_deref(), yes, output),
     }
 }
 
@@ -498,6 +524,7 @@ fn resolved_project_id(
 fn move_session(
     session_id: &str,
     project_id: Option<&str>,
+    yes: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Session ids join onto store paths inside the session store, so apply
@@ -506,6 +533,17 @@ fn move_session(
     // traversal. Usage wins over Failed: a malformed session id reports the
     // usage error even when the project id is unknown too.
     crate::support::require_valid_session_id(session_id, "projects move")?;
+    // Omitting the project id is the ungrouping form, whose write is
+    // irreversible on both surfaces (neither can turn the explicit entry
+    // back into "auto-grouped"). Every other irreversible write in this
+    // crate already carries the `support::require_yes` confirmation gate
+    // (`projects delete`, `sessions delete`), so the ungrouping move gets
+    // the same gate: same exit class (usage, exit 2), same copy shape, and
+    // before any store access — with the reason spelled out via
+    // MOVE_UNGROUP_NOTE.
+    if project_id.is_none() {
+        require_yes(yes)?;
+    }
     let sessions = open_session_store()?;
     match sessions
         .session_kind(session_id)

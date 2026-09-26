@@ -386,17 +386,25 @@ pub fn resolve_secret(
         ));
     }
     if let Some(var) = api_key_env {
-        let value = std::env::var(var).map_err(|_| {
+        let raw = std::env::var(var).map_err(|_| {
             CliError::failed(format!("secret environment variable {var} is not set"))
         })?;
         // A set-but-empty variable is as useless as an empty stdin read;
         // storing it would report "key-set" while every signed request fails.
-        if value.trim().is_empty() {
+        if raw.trim().is_empty() {
             return Err(CliError::failed(format!(
                 "secret environment variable {var} is empty"
             )));
         }
-        return Ok(Some(value));
+        // Trim like the stdin lane below: environment secrets routinely
+        // carry a trailing newline (`read KEY < key.txt`, a file mounted by
+        // a CI secret store, most `.env` loaders), and storing it verbatim
+        // put that "\n" into the credential while every read path trimmed —
+        // the provider kept reporting `configured` and every signed request
+        // 401'd. The empty check above stays on the *raw* value so a
+        // whitespace-only variable is still named as empty, not trimmed
+        // into Ok(Some("")).
+        return Ok(Some(raw.trim().to_owned()));
     }
     if api_key_stdin {
         // Bounded read: unbounded stdin (`yes | pinvou ... --api-key-stdin`)
@@ -583,7 +591,8 @@ fn json_failure_payload(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collapse_control_characters, emit_report, json_failure_payload, validate_sandbox_home,
+        collapse_control_characters, emit_report, json_failure_payload, resolve_secret,
+        validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};
@@ -740,6 +749,40 @@ mod tests {
         assert_eq!(collapse_control_characters("会话 café ✓"), "会话 café ✓");
     }
 
+    /// The ENV lane of [`resolve_secret`] must trim the way the stdin lane
+    /// already does. Environment secrets routinely carry a trailing newline
+    /// (`export KEY=$(printf '%s\n' …)` without a chomp, a file mounted by a
+    /// CI secret store, most `.env` loaders); storing it verbatim put that
+    /// "\n" into the credential, and every signed request 401'd while the
+    /// read paths still trimmed — the failure was self-masking.
+    #[test]
+    fn resolve_secret_env_lane_trims_the_stored_value() {
+        const VAR: &str = "PINVOU_CLI_TEST_RESOLVE_SECRET_ENV";
+        // Unique name + save-and-restore guard: this is the only test in the
+        // binary reading the variable, so it needs no cross-test env lock.
+        struct RestoreVar(Option<std::ffi::OsString>);
+        impl Drop for RestoreVar {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(VAR, value) },
+                    None => unsafe { std::env::remove_var(VAR) },
+                }
+            }
+        }
+        let previous = RestoreVar(std::env::var_os(VAR));
+        unsafe { std::env::set_var(VAR, "sk-env-lane\n") };
+
+        let stored = resolve_secret(&Some(VAR.to_owned()), false)
+            .expect("an env lane with content must resolve");
+
+        assert_eq!(
+            stored,
+            Some("sk-env-lane".to_owned()),
+            "a trailing newline from the environment must not reach the stored credential"
+        );
+        drop(previous);
+    }
+
     /// The JSON failure payload is built through serde_json, so a message
     /// carrying quotes/backslashes/newlines still parses; and it is marked
     /// as a failure instead of looking like an ordinary record.
@@ -756,3 +799,12 @@ mod tests {
         );
     }
 }
+
+// Child-group signal supervision, split out of this file the same way
+// `support.rs` itself is a flat family module: one `pub mod` line here keeps
+// the module name the families and integration tests already reach it by —
+// `pinvou_cli::support` — and exposes the new API to spawn sites as
+// `pinvou_cli::support::supervise` (the path the examples in
+// `support/supervise.rs` document). Later waves wire spawn sites through
+// that path without editing lib.rs, support.rs or main.rs again.
+pub mod supervise;

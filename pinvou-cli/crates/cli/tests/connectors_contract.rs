@@ -18,6 +18,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
+
 use pinvou_cli::{CliError, CliOutcome, ExitCode, execute, parse_args};
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` / `PATH`
@@ -1383,4 +1386,280 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     );
 
     let _ = std::fs::remove_dir_all(&prefix);
+}
+
+// ── round-18 review fixes: GUI-parity gate, connect scope sync, honest writes ─
+
+/// Plants the wecom companion-skill tree exactly as the desktop bundle unpack
+/// leaves it — one directory per `WECOM_SKILL_DIRS` entry with its SKILL.md,
+/// the connector NOTICE file, plus an unrelated sibling that pins the removal
+/// as table-driven.
+#[cfg(unix)]
+fn plant_wecom_skills(home: &HomeGuard) -> std::path::PathBuf {
+    use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
+    let skills = home.connector_skills_dir("wecom");
+    for dir in WECOM_SKILL_DIRS.iter() {
+        std::fs::create_dir_all(skills.join(dir).join("references")).unwrap();
+        std::fs::write(skills.join(dir).join("SKILL.md"), "# wecom").unwrap();
+    }
+    std::fs::write(skills.join("NOTICE-wecom.md"), "notice").unwrap();
+    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+    skills
+}
+
+/// Asserts every table entry and the NOTICE file survived (the unrelated
+/// sibling is checked by the caller where relevant).
+#[cfg(unix)]
+fn assert_wecom_skills_kept(home: &HomeGuard, skills: &std::path::Path) {
+    use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
+    for dir in WECOM_SKILL_DIRS.iter() {
+        assert!(
+            skills.join(dir).join("SKILL.md").is_file(),
+            "skill dir {dir} must NOT be deleted on the plain-scope switch alone"
+        );
+    }
+    assert!(
+        skills.join("NOTICE-wecom.md").is_file(),
+        "the connector NOTICE file must NOT be deleted on the plain-scope switch alone"
+    );
+    assert!(
+        home.disabled_bundles_file().is_file(),
+        "the scope state itself must still be written (the switch is real)"
+    );
+}
+
+/// Finding 1 (round-18): the GUI's skill gate is
+/// `skill_gate.rs::ConnectorGate::skills_should_show` = `!legacy_marker &&
+/// ready_probe`. The plain-scope switch state is NOT part of it — the GUI's
+/// toggle (`set_disabled_connectors`) governs the composite materialization
+/// and tool gating, and never deletes `bundles/<id>/skills`. The CLI's
+/// `apply-skills` / `enable` / `disable` must drive their on-disk removal on
+/// the same gate only: connection state + the legacy `<id>_disabled` marker.
+#[test]
+#[cfg(unix)]
+fn skill_directory_deletion_follows_the_gui_gate_not_the_plain_scope_state() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("gate-parity");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-gate-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // Connected fake: `--version` is answered by the prelude (1.9.9 parses and
+    // is ≥ the 1.2.1 gate), `auth show --status` answers authorized.
+    write_fake_cli(
+        &bin,
+        "wecom-cli",
+        "wecom-cli 1.9.9 (build 1)",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"show\" ]; then echo authorized; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // Phase 1: the plain-scope write itself (disable on a CONNECTED connector,
+    // no legacy marker) must not touch the bundle skill directories.
+    let skills = plant_wecom_skills(&home);
+    let value = run_json(&["pinvou", "connectors", "disable", "wecom"]);
+    assert_eq!(value["ok"], true);
+    assert_eq!(
+        value["skills_should_show"], true,
+        "the GUI gate (connected, no marker) shows skills whatever the switch says: {value}"
+    );
+    assert_eq!(
+        value["skills_removed"], false,
+        "the plain-scope write must not delete the companion skill tree: {value}"
+    );
+    assert_wecom_skills_kept(&home, &skills);
+
+    // Phase 2: `apply-skills` with the plain-scope state disabled but the
+    // connector connected (the GUI's auth-gate refresh would SHOW here).
+    plant_wecom_skills(&home);
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "wecom"]);
+    assert_eq!(
+        value["visible"], true,
+        "apply-skills must gate on connection + marker, not the scope state: {value}"
+    );
+    assert_eq!(
+        value["skills_removed"], false,
+        "apply-skills must not delete on the plain-scope state alone: {value}"
+    );
+    assert_wecom_skills_kept(&home, &home.connector_skills_dir("wecom"));
+
+    // Phase 3: same for `enable` on a still-scope-disabled connector.
+    plant_wecom_skills(&home);
+    let value = run_json(&["pinvou", "connectors", "enable", "wecom"]);
+    assert_eq!(value["ok"], true);
+    assert_wecom_skills_kept(&home, &home.connector_skills_dir("wecom"));
+
+    // Phase 4: gate ON via the legacy marker — deletion happens (the app's
+    // gate really does keep deleting while a marker exists).
+    plant_wecom_skills(&home);
+    std::fs::write(home.disabled_marker("wecom"), b"1").unwrap();
+    let skills = home.connector_skills_dir("wecom");
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "wecom"]);
+    assert_eq!(value["visible"], false, "{value}");
+    assert_eq!(value["skills_removed"], true, "{value}");
+    assert_wecom_gate_removal_complete(&skills);
+
+    // Phase 5: gate ON via the connection state — the connector answers
+    // `unauthorized`, deletion happens with no scope state and no marker.
+    std::fs::remove_file(home.disabled_marker("wecom")).unwrap();
+    write_fake_cli(
+        &bin,
+        "wecom-cli",
+        "wecom-cli 1.9.9 (build 1)",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"show\" ]; then echo unauthorized; exit 1; fi\n",
+    );
+    plant_wecom_skills(&home);
+    let skills = home.connector_skills_dir("wecom");
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "wecom"]);
+    assert_eq!(value["visible"], false, "{value}");
+    assert_eq!(value["skills_removed"], true, "{value}");
+    assert_wecom_gate_removal_complete(&skills);
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[cfg(unix)]
+fn assert_wecom_gate_removal_complete(skills: &std::path::Path) {
+    use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
+    for dir in WECOM_SKILL_DIRS.iter() {
+        assert!(
+            !skills.join(dir).exists(),
+            "gate-on deletion must remove the {dir} skill directory"
+        );
+    }
+    assert!(
+        !skills.join("NOTICE-wecom.md").exists(),
+        "gate-on deletion must remove the connector NOTICE file"
+    );
+    assert!(
+        skills.join("unrelated").is_dir(),
+        "the removal stays table-driven: unlisted entries in the skills root survive"
+    );
+}
+
+/// Finding 2 (round-18): the GUI's connect flow ends in the `<id>_apply_skills`
+/// follow-up, whose `apply_skills_command` runs
+/// `sync_deny_all_scopes_after_install` (skill_gate.rs: 连接器转为可用等同
+/// 「新装」——已初始化 code 开关时加入 code 禁用集). A freshly connected
+/// connector must therefore land in the initialized code scope's disabled set.
+#[test]
+#[cfg(unix)]
+fn connect_applies_the_code_scope_default_after_success() {
+    use pinvou3_lib::features::marketplace::scope::package_id_for;
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("connect-scope-sync");
+    // The user has touched the code switch (initialized), so the DenyAll sync
+    // has a scope to write into; plain is untouched (empty lists).
+    std::fs::write(
+        home.disabled_bundles_file(),
+        serde_json::json!({
+            "scopes": {"plain": [], "code": []},
+            "hidden_scopes": {},
+            "initialized": ["code"],
+            "project_skills_enabled": false,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-sync-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // Connected fake: auth init prints the landing URL (auth-domain match) and
+    // exits; the status probe answers authorized.
+    write_fake_cli(
+        &bin,
+        "wecom-cli",
+        "wecom-cli 1.9.9 (build 1)",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"init\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"show\" ]; then echo authorized; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "wecom",
+        "--timeout",
+        "10",
+    ]);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["connected"], true, "{value}");
+
+    // The observable effect: after connect, the code scope's disabled set
+    // contains the connector's package id (the GUI's code-sessions-default-
+    // off rule applied to the fresh connection).
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.disabled_bundles_file()).unwrap())
+            .unwrap();
+    let expected = package_id_for("wecom");
+    let code = file["scopes"]["code"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        code,
+        vec![serde_json::json!(expected)],
+        "a freshly connected connector must land in the initialized code scope's disabled set: {file}"
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+/// Finding 4 (round-18): `ima logout` must surface a failed scope-cleanup
+/// write instead of swallowing it — the family convention for write failures
+/// (no `let _ =` on state-mutating writes). GUI `ima_logout` performs the
+/// same cleanup (`remove_bundle_from_disabled_scopes`) as a best-effort step;
+/// the CLI performs it over the public per-scope primitives so the failure is
+/// reported truthfully.
+#[test]
+#[cfg(unix)]
+fn ima_logout_reports_a_failing_scope_cleanup() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("ima-logout-scope-cleanup");
+    // Scope state as it looks while ima is connected: the connector package id
+    // sits in the (initialized) disabled scopes, so the post-logout removal
+    // has real work to persist.
+    std::fs::write(
+        home.disabled_bundles_file(),
+        serde_json::json!({
+            "scopes": {"plain": ["ima"], "code": ["ima"]},
+            "hidden_scopes": {},
+            "initialized": ["plain", "code"],
+            "project_skills_enabled": false,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // The write must fail: `write_atomic` replaces the file via a temp file
+    // + rename in the same DIRECTORY, so the FILE mode is irrelevant — making
+    // the parent directory non-writable is what makes the cleanup un-writable
+    // (rename then fails with EACCES, surfaced by save_disabled_bundles_for).
+    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let error = run(&["pinvou", "connectors", "ima", "logout", "--yes"])
+        .expect_err("a failing scope cleanup must not be reported as a clean logout");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("scope"),
+        "the error must name the scope cleanup: {message}"
+    );
+    assert!(
+        message.contains("disabled_bundles"),
+        "the error must name the file that could not be written: {message}"
+    );
+    // Restore for HomeGuard's remove_dir_all on drop.
+    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o755)).unwrap();
 }

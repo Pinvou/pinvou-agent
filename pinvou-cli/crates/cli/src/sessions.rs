@@ -176,16 +176,38 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
                     "sessions rename requires a title\n{RENAME_OUTPUT_NOTE}"
                 )));
             }
-            // A flag-shaped title ("--limit") would be swallowed as a flag
-            // by every other subcommand, so reject titles that LOOK like
-            // flags; a title that merely CONTAINS "--" ("War and Peace --
-            // annotated") is legitimate text — the shell has already
-            // stripped any quotes by the time the CLI sees the token.
+            // A title whose first token looks like a flag ("--limit") would be
+            // swallowed as a flag by every other subcommand, so reject titles
+            // that LOOK like flags; a title that merely CONTAINS "--" ("War
+            // and Peace -- annotated") is legitimate text — the shell has
+            // already stripped any quotes by the time the CLI sees the token.
             if title.starts_with('-') {
                 return Err(CliError::usage(format!(
                     "sessions rename takes a plain title and cannot accept one that looks \
-                     like a flag; rename the session from the desktop app instead (got \
-                     '{title}')\n{RENAME_OUTPUT_NOTE}"
+                     like a flag; retitling text like `--limit` must go through the desktop \
+                     app instead (got '{title}')\n{RENAME_OUTPUT_NOTE}"
+                )));
+            }
+            // The global `--output` scan no longer strips `--output json|human`
+            // out of the middle of the line (parse_args claims a mode only in
+            // the leading run or at the very end of argv). A pair that is
+            // still visible in the title therefore has ordinary title words
+            // AFTER it — it cannot be the caller asking for JSON output
+            // (that pair would have ended the line and been consumed there).
+            // Refuse it instead of renaming to an unintended title: exit 2,
+            // nothing stored. A `--output` with a non-mode value ("see
+            // --output now") is ordinary text and stays allowed.
+            if rest
+                .windows(2)
+                .skip(1)
+                .any(|pair| pair[0] == "--output" && (pair[1] == "json" || pair[1] == "human"))
+            {
+                return Err(CliError::usage(format!(
+                    "sessions rename cannot accept a title containing the global `--output \
+                     json|human` flag pair followed by more title words (`--output json` as \
+                     the LAST two tokens of the line is the legal way to ask for JSON \
+                     output); retitling to such text must go through the desktop app \
+                     instead (got '{title}')\n{RENAME_OUTPUT_NOTE}"
                 )));
             }
             Ok(SessionsCommand::Rename { id, title })
@@ -253,29 +275,32 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
 
 const USAGE: &str = "usage: pinvou sessions <list|show|rename|pin|unpin|archive|restore|delete|export|timeline|subagents|folder>";
 
-/// Export-specific usage. The note discloses the global `--output` scan:
-/// `parse_args` strips `--output json|human` ANYWHERE in argv (lib.rs leaves
-/// only non-mode values for the subcommand, and the `./` workaround lives
-/// only in a code comment there), so `sessions export s-1 --output json`
-/// silently becomes JSON stdout instead of writing a file named "json".
+/// Export-specific usage. The note discloses the global `--output` mode
+/// scan: `parse_args` claims `--output json|human` where a global flag is
+/// legal (the leading run and the very end of the line, lib.rs), so
+/// `sessions export s-1 --output json` still selects JSON stdout instead
+/// of writing a file named "json".
 const EXPORT_USAGE: &str = "usage: pinvou sessions export <id> [--format markdown|json] \
 [--output PATH]\n\
-note: the global --output flag claims the values 'json' and 'human' anywhere in argv, so \
-`--output json` prints JSON stdout instead of writing a file named 'json'; spell such a \
-destination as --output ./json (or use any other path)";
+note: the global --output flag claims the values 'json' and 'human' wherever a global flag is \
+legal, so `--output json` prints JSON stdout instead of writing a file named 'json'; spell such \
+a destination as --output ./json (or use any other path)";
 
 /// Rename's share of the same disclosure. `export` loses a FILE NAME to the
-/// global scan; `rename` loses two WORDS out of the middle of a title and
-/// still exits 0, because the title is every remaining argv token joined with
-/// spaces: by the time this family runs, `parse_args` has already removed
-/// `--output json` from wherever it appeared, so
-/// `sessions rename s-1 see --output json now` stores "see now". There is no
-/// error to attach this to at the moment it happens (the rename succeeds), so
-/// it rides on the usage errors a caller fighting the collision does reach.
+/// global scan; `rename` used to lose two WORDS out of the middle of a
+/// title: before the round-18 fix, `parse_args` stripped `--output json`
+/// from ANYWHERE in argv, so `sessions rename s-1 see --output json now`
+/// stored "see now" and exited 0. The scan now leaves the pair alone inside
+/// family input, so the title arrives intact as "see --output json now":
+/// rename refuses it (the flag-shaped-title rule) because a title that
+/// begins with a flag token would be swallowed as a flag by every other
+/// subcommand. The disclosure rides on the usage errors a caller fighting
+/// the collision does reach.
 const RENAME_OUTPUT_NOTE: &str = "note: the global --output flag claims the values 'json' and \
-'human' anywhere in argv, so a title containing `--output json` (or `--output human`) silently \
-loses both tokens — `sessions rename s-1 see --output json now` renames to 'see now'; rename \
-such a title from the desktop app instead";
+'human' only where a global flag is legal (the leading run or the last two tokens of the line); \
+a title that starts like a flag, or that contains the `--output json|human` pair with more \
+title words after it, is refused rather than silently edited — retitle through the desktop app \
+instead";
 
 fn require_id(value: Option<&String>) -> Result<String, CliError> {
     let id = value
@@ -1219,26 +1244,39 @@ mod tests {
 
     #[test]
     fn rename_usage_discloses_the_global_output_collision() {
-        // `sessions rename s-1 see --output json now` stores "see now" and
-        // exits 0: `parse_args` strips `--output json` from anywhere in argv
-        // before rename joins the remaining tokens into the title. That
-        // silent edit has no error of its own to ride on, so — like
-        // EXPORT_USAGE does for the file-name collision — the rename usage
-        // errors carry the disclosure.
+        // `sessions rename s-1 see --output json now` used to lose two words
+        // of the title to the global --output scan (which stripped the pair
+        // from ANYWHERE in argv) and store "see now" with exit 0. The scan
+        // now claims the mode only at a legal global flag position (the
+        // leading run / the very end of the line); a pair still visible in
+        // the title has title words after it, so rename refuses it: exit 2,
+        // nothing stored.
+        let error = parse(&["rename", "s-1", "see", "--output", "json", "now"])
+            .expect_err("a title containing a global flag pair must be refused");
+        assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot accept a title containing"),
+            "the refusal must name the pair rule: {error}"
+        );
+        // The other legal spelling of the same request (pair at the END of
+        // the line) still works: mode applied, title from the words before.
         assert_eq!(
-            parse(&["rename", "s-1", "see", "--output", "json", "now"]).unwrap(),
+            parse(&["rename", "s-1", "see", "--output", "json"]).unwrap(),
             SessionsCommand::Rename {
                 id: "s-1".into(),
-                title: "see now".into(),
-            },
-            "the collision itself is the thing being disclosed; pin it too"
+                title: "see".into(),
+            }
         );
         for arguments in [vec!["rename", "s-1"], vec!["rename", "s-1", "--limit"]] {
             let error = parse(&arguments).expect_err("a usage error");
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{arguments:?}");
             assert!(
-                error.to_string().contains("renames to 'see now'"),
-                "{arguments:?} must disclose the --output collision: {error}"
+                error
+                    .to_string()
+                    .contains("refused rather than silently edited"),
+                "{arguments:?} must disclose the --output collision rule: {error}"
             );
         }
     }

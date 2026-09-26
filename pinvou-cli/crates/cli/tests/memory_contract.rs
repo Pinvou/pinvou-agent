@@ -1232,3 +1232,291 @@ fn memory_add_case_dedupe_failure_leaves_the_pending_queue_and_store_untouched()
         "a failed add must not materialize the reused candidate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// add: the enqueue->confirm divergence check compares every identifying field
+// ---------------------------------------------------------------------------
+
+/// `enqueue_fixture` with an explicit topic: pending candidates the GUI
+/// pipeline queues carry a real topic bucket (llm_review normalizes them
+/// before enqueueing), so cross-bucket divergence fixtures need one.
+fn enqueue_fixture_with_topic(
+    kind: &str,
+    topic: &str,
+    content: &str,
+) -> pinvou3_lib::features::memory::PendingMemoryItem {
+    pinvou3_lib::features::memory::enqueue_memory_candidate(
+        pinvou3_lib::features::memory::MemorySuggestion {
+            kind: kind.to_owned(),
+            topic: topic.to_owned(),
+            content: content.to_owned(),
+            source: "contract-test".to_owned(),
+        },
+    )
+    .expect("fixture pending entry")
+}
+
+/// `memory add` must not confirm a pending candidate that is not this add's
+/// own, even when the text body matches exactly.
+///
+/// Round-18 finding: the enqueue->confirm bridging compared ONLY the text
+/// body. `enqueue_memory_candidate`'s content-key dedupe branch hands back an
+/// existing pending row that matches this add on the kind plus a
+/// case-insensitive content key while IGNORING the topic, so a GUI candidate
+/// sitting in a different topic bucket with this add's exact text was adopted
+/// and confirmed: the add approved a candidate the user had not reviewed, and
+/// its confirm wrote through the GUI's entry — deleting the item already in
+/// that bucket (replace-per-topic) and putting this add's text there instead.
+/// Exit 0, presented as an ordinary remember.
+///
+/// Before the fix this test is red at its first assertion: the add succeeds.
+#[test]
+fn memory_add_refuses_a_same_text_candidate_in_a_foreign_topic_bucket() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-foreign-bucket");
+
+    // Someone else's data in the workflow_preference bucket, materialized
+    // through the GUI's own pipeline (enqueue + confirm).
+    let bucket_owner = enqueue_fixture_with_topic(
+        "preference",
+        "workflow_preference",
+        "Use git rebase for edits",
+    );
+    pinvou3_lib::features::memory::confirm_pending_memory(&bucket_owner.id)
+        .unwrap()
+        .unwrap();
+    // A GUI candidate awaiting review in that same bucket, carrying the exact
+    // text this add will submit: identical on the text body, foreign on the
+    // topic, so only the identifying fields can tell the two apart.
+    let gui = enqueue_fixture_with_topic(
+        "preference",
+        "workflow_preference",
+        "Prefer concise answers",
+    );
+
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("memory_add_not_materialized"),
+        "the divergence must be reported: {message}"
+    );
+    assert!(
+        message.contains("nothing was confirmed"),
+        "the remediation must not claim a write happened: {message}"
+    );
+    assert!(
+        message.contains("workflow_preference") && message.contains("answer_style"),
+        "the message must name both the reused entry's topic and this add's own topic: {message}"
+    );
+
+    // The GUI candidate is untouched — still awaiting its owner's review,
+    // still in its own bucket.
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let gui_row = pending
+        .iter()
+        .find(|item| item.id == gui.id)
+        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
+    assert_eq!(gui_row.topic, "workflow_preference", "{pending:?}");
+    assert_eq!(gui_row.content, "Prefer concise answers", "{pending:?}");
+
+    // And someone else's data survived: the foreign bucket still holds its
+    // own item, and this add's text reached no bucket through the GUI's row.
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1, "nothing was written: {stored:?}");
+    assert_eq!(stored[0].topic, "workflow_preference", "{stored:?}");
+    assert_eq!(stored[0].text, "Use git rebase for edits", "{stored:?}");
+}
+
+/// The work-context half of the same finding, pinned separately because the
+/// CLI's own work-context candidate carries an EMPTY pending-row topic (the
+/// pending stage normalizes only preference topics), so the foreign bucket is
+/// any non-empty one — here `role_domain`, a bucket the GUI pipeline really
+/// queues candidates into.
+///
+/// Before the fix the add confirms the GUI's row: the `role_domain` bucket's
+/// previous item is deleted and this add's text written in its place.
+#[test]
+fn memory_add_refuses_a_same_text_work_context_candidate_in_a_foreign_bucket() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("work-context-foreign-bucket");
+
+    let bucket_owner =
+        enqueue_fixture_with_topic("work_context", "role_domain", "Use git rebase for edits");
+    pinvou3_lib::features::memory::confirm_pending_memory(&bucket_owner.id)
+        .unwrap()
+        .unwrap();
+    let gui = enqueue_fixture_with_topic("work_context", "role_domain", "We deploy on Fridays");
+
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        "We deploy on Fridays",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("memory_add_not_materialized"),
+        "the divergence must be reported: {message}"
+    );
+    assert!(
+        message.contains("nothing was confirmed"),
+        "the remediation must not claim a write happened: {message}"
+    );
+    assert!(
+        message.contains("role_domain"),
+        "the message must name the reused entry's topic: {message}"
+    );
+
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let gui_row = pending
+        .iter()
+        .find(|item| item.id == gui.id)
+        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
+    assert_eq!(gui_row.topic, "role_domain", "{pending:?}");
+    assert_eq!(gui_row.content, "We deploy on Fridays", "{pending:?}");
+
+    let stored = pinvou3_lib::features::memory::load_work_context().unwrap();
+    assert_eq!(stored.len(), 1, "nothing was written: {stored:?}");
+    assert!(
+        stored
+            .iter()
+            .any(|item| item.text == "Use git rebase for edits"),
+        "the foreign bucket must keep its own item: {stored:?}"
+    );
+}
+
+/// Guard against over-tightening: the check now compares kind, topic AND
+/// text, so it must still confirm whenever every field is this add's own —
+/// both the fresh row the enqueue creates and the equivalent row its dedupe
+/// legitimately folds onto (the id branch matches kind+topic+content, i.e. it
+/// really is this add's candidate, queued by an earlier identical add).
+///
+/// The two arms also pin the CLI's own-field mirrors against the feature
+/// layer: `answer_style` (the pending-stage normalization of the empty
+/// preference topic) and the empty work-context pending topic. If either
+/// drifts, every add refuses in the check and THIS test is the one that goes
+/// red — the same pinning shape `memory_add_work_context_over_the_cap_...`
+/// uses for the 120-character cap.
+#[test]
+fn memory_add_still_confirms_when_every_field_matches_this_adds_own_candidate() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("own-candidate-roundtrip");
+
+    // Preference arm: a pending row with the CLI's own fields — the empty
+    // suggestion topic normalizes to answer_style at the pending stage, the
+    // same value the CLI's own add produces — and the same text.
+    let seeded = enqueue_fixture("preference", "Prefer concise answers");
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let seeded_row = pending
+        .iter()
+        .find(|item| item.id == seeded.id)
+        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", seeded.id));
+    assert_eq!(seeded_row.status, "confirmed", "{pending:?}");
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0].text, "Prefer concise answers", "{stored:?}");
+    // The answer_style literal in memory.rs mirrors the feature default
+    // bucket; this assertion is what makes that mirror a checked fact.
+    assert_eq!(stored[0].topic, "answer_style", "{stored:?}");
+
+    // Work-context arm: the CLI's own add leaves the pending row's topic
+    // empty (topics are not normalized for work context at the pending
+    // stage), so an equivalent seeded row matches on every field too.
+    let seeded_ctx = enqueue_fixture("work_context", "We deploy on Fridays");
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "--content",
+        "We deploy on Fridays",
+    ]);
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let ctx_row = pending
+        .iter()
+        .find(|item| item.id == seeded_ctx.id)
+        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", seeded_ctx.id));
+    assert_eq!(ctx_row.status, "confirmed", "{pending:?}");
+    let stored_ctx = pinvou3_lib::features::memory::load_work_context().unwrap();
+    assert_eq!(stored_ctx.len(), 1, "{stored_ctx:?}");
+    assert_eq!(stored_ctx[0].text, "We deploy on Fridays", "{stored_ctx:?}");
+}
+
+/// The cross-kind half of the round-18 finding, pinned at its real boundary.
+///
+/// A pending candidate of a DIFFERENT kind with the same text can never be
+/// adopted by this add: `enqueue_memory_candidate`'s dedupe key includes the
+/// kind, so the CLI's add confirms its OWN row and leaves the foreign
+/// candidate exactly as it was. This test keeps that boundary observable: if
+/// the feature dedupe ever drops the kind from its key, the enqueue would
+/// hand back a foreign row, the field-by-field check would refuse the add —
+/// and this test's `run_ok` would go red, surfacing the change here instead
+/// of in a user's bucket. (The refusal side itself needs no separate
+/// reachable case: the check compares the kind alongside topic and text, so
+/// the topic tests below the hood exercise the same refusal lane.)
+#[test]
+fn memory_add_leaves_a_same_text_candidate_of_a_different_kind_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("cross-kind-no-adoption");
+
+    // A GUI candidate awaiting review in a different store, carrying the
+    // exact text this add will submit. `recent_work` folds into
+    // `current_focus` at the pending stage, so the row is genuinely of
+    // another kind than this preference add.
+    let gui = enqueue_fixture_with_topic("recent_work", "", "Prefer concise answers");
+    assert_eq!(gui.kind, "current_focus", "{gui:?}");
+
+    // The add confirms its OWN candidate only: it succeeds (the current-focus
+    // row is a different memory, not this add's), the foreign candidate stays
+    // unreviewed, and nothing is written through it.
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+
+    let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
+    let gui_row = pending
+        .iter()
+        .find(|item| item.id == gui.id)
+        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
+    assert_eq!(gui_row.kind, "current_focus", "{pending:?}");
+    assert_eq!(gui_row.topic, "", "{pending:?}");
+
+    // Nothing was written through the foreign row: the timed stores stay
+    // empty and the preference bucket holds only this add's own text.
+    assert!(
+        pinvou3_lib::features::memory::load_current_focus()
+            .unwrap()
+            .is_empty()
+    );
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0].text, "Prefer concise answers", "{stored:?}");
+    assert_eq!(stored[0].topic, "answer_style", "{stored:?}");
+}

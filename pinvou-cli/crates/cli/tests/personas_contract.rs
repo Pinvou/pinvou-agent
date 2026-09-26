@@ -479,6 +479,16 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert_eq!(value["id"], persona_id);
     assert_eq!(value["name"], "Equip Expert");
     assert_eq!(value["source"], "user");
+    // Round-18 contract: the staged body is delivered by the CLI's own
+    // `agent run --session <id>` lane (same injection point the GUI chat send
+    // uses). The old field said `false` with a note claiming injection
+    // happens "in the desktop app's turns" — false twice over: the desktop
+    // app never reads this sidecar, and before the wiring nothing consumed it.
+    assert_eq!(value["applies_to_next_turn"], serde_json::json!(true));
+    assert!(
+        value["note"].as_str().unwrap().contains("agent run"),
+        "the note must name the lane that actually delivers the body: {value}"
+    );
     let outcome =
         run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("human equip");
     assert!(
