@@ -22,9 +22,15 @@ import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '..
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
+import { interpretFolderEnsureOutcomes } from '../features/projects/folderEnsure.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
+import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
+import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
+import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting, rootPathOf } from '../features/projects/manageFoldersState.js';
+import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
+import { SessionWorkspaceDialog } from '../features/projects/SessionWorkspaceDialog.jsx';
 import { classifyRebindError } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
@@ -1394,6 +1400,9 @@ const NAV_PREFETCH = {
             // posture). Unbound sessions leave both values empty and stay in
             // the date view.
             workspacePath: s.workspace_binding || '',
+            // §6 keychain snapshot (cwd first): powers the "view workspace"
+            // menu entry's access-scope list. Absent on older hosts → [].
+            workspaceRoots: Array.isArray(s.workspace_roots) ? s.workspace_roots : [],
             // A standalone 'bound' kind: shares the three-tier grouping with
             // the code/ACP 'project' kind, but is not a disguised
             // project-kind (review #452 finding 5).
@@ -1416,6 +1425,9 @@ const NAV_PREFETCH = {
         updatedAt: session.updated_at || session.created_at || '',
         workspacePath: session.workspace_path || '',
         workspaceKind: session.workspace_kind || '',
+        // §6 keychain snapshot for the "view workspace" menu entry (same
+        // cwd-first shape as the chat lane's workspaceRoots).
+        workspaceRoots: Array.isArray(session.workspace_roots) ? session.workspace_roots : [],
         pinned: !!session.pinned,
         pinnedAt: session.pinned_at || '',
         working: !!codexBusyBySession[session.id],
@@ -1764,6 +1776,339 @@ const NAV_PREFETCH = {
         : []), [taskListSort, sidebarCodeTasks]);
       const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
+      // Sidebar group-header props per group kind (extracted so the render map
+      // stays readable): the project channel (§9.9) and manage-panel (§4)
+      // entries are desktop-only, gated by the projects bridge domain.
+      // Single source for the ProjectGroupHeader domain props (review #484
+      // MINOR: the mount site used to repeat onRename/onDelete/onRebind
+      // before this spread, and the spread silently shadowed the gated
+      // spellings with un-gated ones). Every bridge-backed entry
+      // is gated here: the projects domain is desktop-only (§9.8), and a
+      // web group must render no dead entries.
+      const unavailableRootsOf = (group) => (group.roots || [])
+        // Only a root explicitly marked available=false is unavailable;
+        // missing availability data (older host, stub) counts as available —
+        // same default as manageFolderRows (review #484 round-6). The keep
+        // predicate must select strictly-false roots: `available !== false`
+        // here would invert the list and pin the unavailable badge on every
+        // healthy folder.
+        .filter(root => !!(root && typeof root === 'object' && root.available === false))
+        .map(root => String(root.path));
+      const projectGroupHeaderProps = (group) => ({
+        // Tag-only projects (no roots left) have no directory to bind: the
+        // "new session" entry must not render for them — the handler would
+        // silently no-op on a missing primary root (review #484 M3).
+        onNewSession: bridge.projects && pickerProjectRoots(group).length > 0 ? () => handleProjectNewSession(group.projectId) : undefined,
+        onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
+        onRename: bridge.projects ? (name) => handleRenameProject(group.projectId, name) : undefined,
+        onDelete: bridge.projects ? () => handleDeleteProject(group.projectId) : undefined,
+        unavailableRoots: unavailableRootsOf(group),
+        onRebind: bridge.projects ? (rootPath) => startRebindWorkspace(rootPath) : undefined,
+        onDropSession: bridge.projects ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined,
+      });
+      const folderGroupHeaderProps = (group) => ({
+        title: group.path,
+        // bridge.projects exists on desktop only: no dead entries on web.
+        onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
+      });
+      const sidebarGroupHeaderProps = (group) => {
+        if (group.kind === 'project') return projectGroupHeaderProps(group);
+        if (group.kind === 'folder') return folderGroupHeaderProps(group);
+        return {};
+      };
+      // Picker inputs: the projects snapshot plus every directory-bound item
+      // (code/ACP project sessions and #445 bound work sessions).
+      const projectsListEntries = sidebarProjectsData && sidebarProjectsData.projects;
+      const projectsListAssignments = sidebarProjectsData && sidebarProjectsData.assignments;
+      // Hot-view inputs come from the UNFILTERED task pool: deriving from
+      // sidebarCodeTasks (the sidebar-filtered slice) made a warm folder go
+      // cold — or vanish from the picker — whenever the sidebar sat in
+      // another filter/style, which has nothing to do with recency
+      // (review #484 round-3 minor).
+      const boundWorkspaceItems = useMemo(() => [
+        ...allSidebarTasks
+          .filter(s => s.taskKind === 'codex'
+            || (can('desktopChrome') && s.taskKind === 'regular' && s.workspacePath))
+          .map(s => ({ id: s.id, workspaceKind: s.workspaceKind, workspacePath: s.workspacePath, updatedAt: s.updatedAt || '' })),
+        ...codexSessions
+          .filter(s => s && s.workspace_kind === 'project' && s.workspace_path)
+          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' })),
+      ], [allSidebarTasks, codexSessions]);
+      // Dedicated channel for the project row's "new session" (§9.9 project
+      // channel): no picker detour — cwd = the project's remembered primary
+      // root (written by the picker / manage panel), keychain = all of the
+      // project's roots at that moment. The lane follows the current page
+      // (code page → codex draft, anything else → chat draft).
+      const handleProjectNewSession = async (projectId) => {
+        const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
+          .find(entry => entry.id === projectId);
+        if (!project) return;
+        const primary = pickerPrimaryRoot(project);
+        if (!primary) return; // tag-only project: no root to bind; the render side already keeps the button away
+        const roots = pickerProjectRoots(project);
+        // Grant-notice parity: this channel grants the project's whole root set
+        // without a picker detour, so the mode-aware notice must still surface
+        // at grant time (§9.4) — but only when the draft actually staged.
+        if (await applyWorkspaceTarget({
+          lane: currentView === 'codex' ? 'codex' : 'chat',
+          path: primary,
+          projectId: project.id,
+          roots,
+        })) {
+          setSettingsToast(workspaceGrantNotice(
+            activeLaneMode(),
+            roots.length,
+            currentView === 'codex' && codexLaneDeliveryLimited,
+          ));
+        }
+      };
+
+      // ── Session workspace viewer (sidebar "more" menu) ──────────────────
+      // Read-only access-scope view: the session's §6 keychain snapshot with
+      // the primary folder marked. Desktop-only: the web lane's session list
+      // redacts host absolute paths, so a scope viewer there would display
+      // misleading redacted data.
+      const [viewWorkspaceChat, setViewWorkspaceChat] = useState(null);
+      const openSessionWorkspaceViewer = useCallback((chat) => setViewWorkspaceChat(chat), []);
+
+      // ── Manage-folders panel (§4) ───────────────────────────────────────
+      // View/add/remove project roots, primary-root memory, rename, and the
+      // exclusion list view/revoke. Removing a root writes explicit move-outs
+      // for its auto members inside the backend's update_project; after
+      // add/remove the bridge reloads projects on its own (event + active
+      // refetch, belt and braces).
+      const [manageFoldersId, setManageFoldersId] = useState(null);
+      const manageFoldersProject = manageFoldersId
+        ? (((sidebarProjectsData && sidebarProjectsData.projects) || [])
+            .find(entry => entry.id === manageFoldersId) || null)
+        : null;
+      const closeManageFolders = () => setManageFoldersId(null);
+      // Add folder: system folder picker → whole-set roots replacement (the
+      // grant notice sits on the panel's "add" entry, the same weight as the
+      // picker, §2). Paths already in the project are skipped with a notice.
+      const handleManageAddFolder = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || !manageFoldersProject || projectOpsBusy) return;
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick project folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        if (rootAlreadyPresent(manageFoldersProject, folder)) {
+          setSettingsToast(t.uiManageFolders.addDuplicate);
+          return;
+        }
+        if (rootConflictsWithExisting(manageFoldersProject, folder)) {
+          setSettingsToast(t.uiManageFolders.addNested);
+          return;
+        }
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(
+            manageFoldersProject.id,
+            [...manageFoldersProject.roots.map(root => rootPathOf(root)), folder],
+          );
+        } catch (error) {
+          console.warn('add project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageRemoveRoot = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        const plan = removeRootPlan(manageFoldersProject, root);
+        if (!plan.removed || plan.needsNewPrimary) return; // primary-root removal is blocked inside the panel
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(manageFoldersProject.id, plan.roots);
+        } catch (error) {
+          console.warn('remove project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageSetPrimary = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setPrimaryRoot(manageFoldersProject.id, root);
+        } catch (error) {
+          console.warn('set primary root failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      // Exclusion list (§3): listed = no more auto-materialization
+      // (reversible; projects/sessions untouched); unlisted = revoked.
+      const handleSetNeverMaterialize = async (root, never) => {
+        if (projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setNeverMaterialize(root, never);
+          setSettingsToast(t.uiManageFolders.exclusionDone);
+        } catch (error) {
+          console.warn('set never-materialize failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+
+      // ── Unified "choose workspace" picker (single entry, §2/§3/§9.3/§9.4) ──
+      // The picker is mounted by the host below and is pure display: every
+      // consequential action (draft staging, ensure/materialization, codex
+      // workspacePickerRequest) is handled here. The dialog only ever reads
+      // hot-view rows + callbacks and never touches the backend.
+      const [workspacePicker, setWorkspacePicker] = useState(null); // { lane, mode }
+      const [pickerBusy, setPickerBusy] = useState(false);
+      const [pickerExcluded, setPickerExcluded] = useState(null);
+      const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
+      // The codex lane's effective mode is reported up by CodexAcpView so
+      // sidebar surfaces opened while the code page is active show the codex
+      // lane's mode-aware copy rather than the chat lane's. The delivery
+      // flag mirrors the §6 stage-gate the same way: a third-party ACP agent
+      // only receives the primary root, so codex-lane grant notices use the
+      // recorded-only copy.
+      const [codexLaneMode, setCodexLaneMode] = useState(null);
+      const [codexLaneDeliveryLimited, setCodexLaneDeliveryLimited] = useState(false);
+      const workspacePickerRows = useMemo(() => computePickerRows({
+        projects: projectsListEntries || [],
+        items: boundWorkspaceItems,
+        assignments: projectsListAssignments || {},
+      }), [projectsListEntries, projectsListAssignments, boundWorkspaceItems]);
+      const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
+      // Returns whether the draft actually staged (the codex lane's request
+      // object always lands); callers surface grant notices only on a real
+      // staging. Async: the chat lane may need to enter a fresh draft first.
+      const applyWorkspaceTarget = async ({ lane, path, projectId, roots }) => {
+        // Default false: a missing bridge surface means nothing was staged, so
+        // callers must not claim the grant happened (review #484 n5).
+        let applied = false;
+        if (lane === 'codex') {
+          setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
+          applied = true;
+        } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
+          // The bridge stages a draft workspace only in draft state — with an
+          // active session the call is a documented silent no-op, so the
+          // project row "+" used to dead-end without any feedback on the most
+          // common path (review #484 round-5 M2). Enter a fresh chat draft
+          // first (the same path as handleNewChat), then stage; the
+          // navigation makes the new draft visible instead of silently
+          // discarding the click. The active-session read must go through the
+          // subscribed snapshot: the public bridge object exposes no
+          // activeSessionId getter, so bridge.activeSessionId is always
+          // undefined and the guard below never fired (review #484 round-8 B1).
+          if (bs && bs.activeSessionId && bridge.sessions.createNewSession) {
+            setCodeModeOn(false);
+            await bridge.sessions.createNewSession();
+            setActiveChat(null);
+            setCurrentView('chat');
+          }
+          applied = bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] }) !== false;
+        }
+        closeWorkspacePicker();
+        return applied;
+      };
+      const activeLaneMode = () => (currentView === 'codex'
+        ? codexLaneMode
+        : ((bs && bs.modeState && bs.modeState.mode) || null));
+      // Same-weight grant notice for every entry that grants folder access
+      // without the picker's expansion panel (§9.4). Codex-lane channels for
+      // a third-party ACP agent say "recorded" instead: the §6 stage-gate
+      // delivers only the primary root until the session/new follow-up lands.
+      // Recorded wording is gated on count > 1: a single root is the
+      // cwd/primary and is delivered on the wire, so the recorded copy would
+      // be false at n=1 (review #484 round-9 N3).
+      const workspaceGrantNotice = (mode, count, deliveryLimited = false) => (
+        workspaceNoticeTone(mode) === 'restricted'
+          ? (deliveryLimited && count > 1
+            ? t.uiWorkspacePicker.noticeRestrictedRecorded(count)
+            : t.uiWorkspacePicker.noticeRestricted(count))
+          : (deliveryLimited && count > 1
+            ? t.uiWorkspacePicker.noticeVisibilityRecorded(count)
+            : t.uiWorkspacePicker.noticeVisibility(count)));
+      const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
+      // Project channel (§9.3): cwd = the picked root, keychain = the project's
+      // full root set at that moment; the backend writes last_primary_root
+      // inside create_session.
+      const handlePickerSelectProject = (project, root) => {
+        applyWorkspaceTarget({ lane: pickerLane(), path: root, projectId: project.id, roots: pickerProjectRoots(project) });
+      };
+      const handlePickerTemporary = () => {
+        applyWorkspaceTarget({ lane: pickerLane(), path: null, projectId: null, roots: [] });
+      };
+      // Browse channel (§9.9 folder channel): system folder picker → ensure
+      // (anchor reuse / materialize; the exclusion list skips) → start at the
+      // picked folder with cwd = F, roots = [F], projectId = the anchored
+      // project's id. The assignment is required: without it, tier-2 nested
+      // grouping adopts the session into a broader project whose root covers
+      // F (e.g. a Desktop-rooted project), but the user picked F itself —
+      // the decision is "group only on an exact primary-root match, else
+      // materialize a new project and belong to it".
+      const handlePickerBrowse = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
+        // Capture the lane synchronously: the system folder dialog can outlive
+        // the picker (closed meanwhile), and reading pickerLane() after the
+        // await would mistarget the chat lane (review #484 m1).
+        const lane = pickerLane();
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick workspace folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        let materialized = false;
+        // Only an ensure that actually ran may interpret "no outcome" as the
+        // exclusion list; a missing bridge entry proves nothing about the
+        // folder (review #484 round-6: the panel's copy asserts the list, so
+        // it must not render on an unverified claim). An IPC-level rejection
+        // is neither an outcome nor an exclusion either — the folder's
+        // exclusion status stays unverified.
+        let ensured = false;
+        let errored = false;
+        let ensuredProjectId = null;
+        if (bridge.projects && bridge.projects.ensureFolderProjects) {
+          ensured = true;
+          setPickerBusy(true);
+          try {
+            const outcomes = await bridge.projects.ensureFolderProjects([folder]);
+            const interpreted = interpretFolderEnsureOutcomes(outcomes);
+            materialized = interpreted.materialized;
+            // The picked folder now owns an anchored project (created or
+            // reused): the conversation must be assigned to THAT project, or
+            // tier-2 nested grouping adopts it into a broader project whose
+            // root covers the folder (e.g. a Desktop-rooted project) — the
+            // user picked the subfolder, not its ancestor (review decision:
+            // group only on an exact primary-root match, else materialize).
+            ensuredProjectId = interpreted.projectId;
+            // A failed root is NOT the exclusion list: it gets the failure
+            // toast and stops here — the excluded-folder panel is only for
+            // the "skipped without an outcome" case (review #484 MINOR).
+            if (!materialized && interpreted.failed) {
+              setSettingsToast(t.uiProjects.opFailed);
+              return;
+            }
+          } catch (error) {
+            // Log and start the plain folder conversation — browse promises a
+            // conversation at the picked folder, and the failed-outcome branch
+            // above is the stop surface for a real backend refusal.
+            console.warn('ensure folder project failed', error);
+            errored = true;
+          } finally {
+            setPickerBusy(false);
+          }
+        }
+        if (!materialized && ensured && !errored) {
+          // Exclusion list (§3): the backend skipped it → no outcome; the
+          // picker says so honestly and still allows starting as a plain
+          // folder (no projectId).
+          setPickerExcluded(folder);
+          return;
+        }
+        applyWorkspaceTarget({ lane, path: folder, projectId: ensuredProjectId, roots: [folder] });
+      };
+
       const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
         ? groupSessionsWithProjects(
             sidebarUnpinnedCodeTasks,
@@ -2857,6 +3202,7 @@ const NAV_PREFETCH = {
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
             onMoveToProject={projectMovesAvailable ? openMovePicker : undefined}
+            onViewWorkspace={can('desktopChrome') ? openSessionWorkspaceViewer : undefined}
             dndPayload={projectMovesAvailable && sidebarCodeListActive
               ? cachedItemCallback(sidebarDndPayloads, chat, (c) => ({ sessionId: c.id }))
               : undefined}
@@ -2979,6 +3325,7 @@ const NAV_PREFETCH = {
       //   onRightDockPanelSelectionChange：browser_native_surface.test.mjs
       const chatViewBaseProps = {
         theme: activeTheme,
+        onOpenWorkspacePicker: ({ lane, mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane, mode }); },
         t,
         bs,
         onOpenEditor: handleOpenPersonaEditor,
@@ -2989,6 +3336,10 @@ const NAV_PREFETCH = {
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
+        // Align feedback (and other keychain notices) surface as the host
+        // toast: without this prop every align outcome is silent in the chat
+        // lane (review #484 M4).
+        onNotify: setSettingsToast,
       };
       // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
@@ -3095,6 +3446,66 @@ const NAV_PREFETCH = {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {manageFoldersProject && (
+            <ManageProjectFoldersDialog
+              open
+              project={manageFoldersProject}
+              neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
+              mode={activeLaneMode()}
+              // Same §6 stage-gate mirror as the picker: on the codex lane a
+              // third-party ACP agent only receives the primary root, so an
+              // added folder is recorded-not-delivered and the notice must
+              // say so (review #484 round-9 N1).
+              deliveryLimited={currentView === 'codex' && codexLaneDeliveryLimited}
+              busy={projectOpsBusy}
+              t={t}
+              onClose={closeManageFolders}
+              onAddFolder={handleManageAddFolder}
+              onRemoveRoot={handleManageRemoveRoot}
+              onSetPrimary={handleManageSetPrimary}
+              onRename={(name) => handleRenameProject(manageFoldersProject.id, name)}
+              onExcludeRoot={(root) => handleSetNeverMaterialize(root, true)}
+              onRevokeExclusion={(root) => handleSetNeverMaterialize(root, false)}
+            />
+          )}
+
+          {viewWorkspaceChat && (
+            // Conditional mount (the ManageProjectFoldersDialog idiom): the
+            // snapshot shown belongs to the chat captured at open time.
+            <SessionWorkspaceDialog
+              open
+              sessionTitle={viewWorkspaceChat.title}
+              roots={viewWorkspaceChat.workspaceRoots && viewWorkspaceChat.workspaceRoots.length
+                ? viewWorkspaceChat.workspaceRoots
+                : (viewWorkspaceChat.workspacePath ? [viewWorkspaceChat.workspacePath] : [])}
+              t={t}
+              onClose={() => setViewWorkspaceChat(null)}
+            />
+          )}
+
+          {workspacePicker && (
+          // Conditional mount (the ManageProjectFoldersDialog idiom): the query
+          // and the expanded row must not leak across opens — remounting resets
+          // them, so a leftover filter can never render a false empty state.
+          <WorkspacePickerDialog
+            open
+            rows={workspacePickerRows}
+            mode={workspacePicker.mode}
+            language={language}
+            busy={pickerBusy}
+            webOnly={!can('desktopChrome') || !bridge.projects}
+            excludedFolder={pickerExcluded}
+            deliveryLimited={!!workspacePicker.deliveryLimited}
+            t={t}
+            onClose={closeWorkspacePicker}
+            onSelectProject={handlePickerSelectProject}
+            onTemporary={handlePickerTemporary}
+            onBrowse={handlePickerBrowse}
+            onBrowseExcluded={(folder) => applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] })}
+            onDismissExcluded={() => setPickerExcluded(null)}
+          />
           )}
 
           {rebindDraft && (
@@ -3502,21 +3913,9 @@ const NAV_PREFETCH = {
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}
                                   t={t}
-                                  title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
-                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
-                                  // 死入口(点击无反馈违反显式不支持约定)。
-                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
-                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
-                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
-                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
-                                  unavailableRoots={group.kind === 'project'
-                                    ? (group.roots || [])
-                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
-                                        .map(root => String(typeof root === 'object' ? root.path : root))
-                                    : []}
-                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  {...sidebarGroupHeaderProps(group)}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
@@ -3702,10 +4101,16 @@ const NAV_PREFETCH = {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 onOpenSettingsSection={openSettingsSection}
+                onOpenWorkspacePicker={({ mode, deliveryLimited }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode, deliveryLimited }); }}
+                workspacePickerRequest={pickerCodexRequest}
+                onWorkspacePickerRequestConsumed={() => setPickerCodexRequest(null)}
+                onLaneModeChange={setCodexLaneMode}
+                onLaneDeliveryChange={setCodexLaneDeliveryLimited}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}
                 onGotoTools={() => navigateFromScheduledRun('toolStore')}
+                onNotify={setSettingsToast}
               />
             )}
             {currentView === 'scheduled' && (

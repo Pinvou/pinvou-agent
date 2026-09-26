@@ -10,7 +10,7 @@ import { ChevronDown, FolderOpen, Sparkles } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { loadRecentWorkspaces, workspaceName } from '../../shared/workspace-recents.js';
 
-export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace }) {
+export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace, grantNotice }) {
   const [open, setOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
   const [pickError, setPickError] = useState('');
@@ -26,7 +26,12 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function chooseDirectory() {
     setOpen(false);
     setPickError('');
-    onPickWorkspace()
+    // The callback contract covers both host wirings: the in-app picker opens
+    // and resolves void (no path to refresh), the legacy dialog returns a
+    // promise of the path. Promise.resolve keeps a void-returning wiring from
+    // throwing on `.then` (review #484 round-6: the picker branch returned
+    // undefined and every click died inside this handler).
+    Promise.resolve(onPickWorkspace())
       .then(path => { if (path) setRecentWorkspaces(loadRecentWorkspaces()); })
       // Directory dialog failures (including an old backend without the
       // command) must be visible — silently closing the menu would make the
@@ -37,7 +42,11 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function select(path) {
     setOpen(false);
     setPickError('');
-    onSelectWorkspace(path);
+    // The host's recents staging is async (folder-channel ensure runs first);
+    // a backend refusal rejects and must surface here instead of dying as an
+    // unhandled rejection while the menu silently closes.
+    Promise.resolve(onSelectWorkspace(path))
+      .catch(error => setPickError(String((error && error.message) || error || 'error')));
   }
 
   return (
@@ -78,6 +87,12 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
           {recentWorkspaces.length > 0 && (
             <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
               <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.recentDirectories}</div>
+              {/* Grant-notice parity (§9.4): a recents pick grants the chosen
+                  folder directly (single root), the same notice weight as the
+                  in-app picker's rows. The host computes the mode-aware copy. */}
+              {grantNotice && (
+                <div className="px-3 pb-1 text-[10px] text-gray-400">{grantNotice}</div>
+              )}
               {recentWorkspaces.map(path => (
                 <button key={path} type="button" title={path}
                   onClick={() => select(path)}

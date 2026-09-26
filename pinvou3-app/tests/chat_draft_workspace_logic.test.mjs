@@ -160,7 +160,12 @@ test('ensureSession：草稿选择随 create_session 载荷下发，物化成功
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: '/work/project' }]);
+  assert.deepEqual(rt.createSessionArgs(), [{
+    workspacePath: '/work/project',
+    // 钥匙串快照随绑定草稿下发:仅路径的普通草稿以自身为单根。
+    workspaceRoots: ['/work/project'],
+    projectId: null,
+  }]);
   assert.equal(rt.state.draftWorkspacePath, null, '物化成功后草稿选择必须清除');
 });
 
@@ -168,7 +173,37 @@ test('ensureSession：未选择工作区时载荷显式为 null（后端现状�
   const rt = loadSessionsFeature();
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: null }]);
+  assert.deepEqual(rt.createSessionArgs(), [{ workspacePath: null, workspaceRoots: null, projectId: null }]);
+});
+
+test('setDraftWorkspace：两参 extras 把 projectId 与钥匙串快照送进 create_session 载荷（review #484 round-8 M2）', async () => {
+  // The picker/project-row channel stages the tier-① project ownership and
+  // the extra roots through the SECOND argument. Every earlier test called
+  // setDraftWorkspace with a single argument, so deleting the
+  // `draftProjectId = extras.projectId` leg left the whole suite green —
+  // the payload assertions passed off the `[path]` default instead of the
+  // extras channel. This test pins the two-argument propagation end to end:
+  // staged draft state → materialization payload → cleared on success.
+  const rt = loadSessionsFeature();
+  assert.equal(
+    rt.api.setDraftWorkspace('/work/project', { projectId: 'prj-1', workspaceRoots: ['/work/project', '/work/extra'] }),
+    true,
+  );
+  assert.equal(rt.state.draftWorkspacePath, '/work/project');
+  assert.equal(rt.state.draftProjectId, 'prj-1');
+  assert.deepEqual(rt.state.draftWorkspaceRoots, ['/work/project', '/work/extra']);
+
+  const id = await rt.api.ensureSession();
+  assert.equal(id, 'chat-new');
+  assert.deepEqual(rt.createSessionArgs(), [{
+    workspacePath: '/work/project',
+    workspaceRoots: ['/work/project', '/work/extra'],
+    projectId: 'prj-1',
+  }], '§9.9 tier-① ownership and the keychain snapshot must ride the payload');
+
+  assert.equal(rt.state.draftProjectId, null, '物化成功后项目归属随草稿清除');
+  // state 在 vm realm 内,跨 realm 数组原型不同,以长度断言空集合。
+  assert.equal(rt.state.draftWorkspaceRoots.length, 0, '物化成功后钥匙串草稿清除');
 });
 
 test('ensureSession：仅路径失效失败清理最近列表；瞬时失败与中途改选不误伤', async () => {

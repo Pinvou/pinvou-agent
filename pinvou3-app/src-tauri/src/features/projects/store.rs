@@ -28,6 +28,17 @@ pub struct Project {
     pub position: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 来源标识:`Some("folder")` = 按文件夹自动物化的项目;`None` = 用户手工
+    /// 创建。仅作数据溯源(GET 返回、store 测试锚点),不参与分组判定与删除
+    /// 语义;用户改名/加根后保留原值,不做名字回写同步。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 项目记住的主文件夹(§9.2/§9.3):项目入口新建会话时的默认 cwd。必须是
+    /// roots 成员;由创建流程/管理面板显式写入;root 更替把该根挤出 roots 时
+    /// 降级为 None(见 `demote_stale_primary_root`),避免失效的主文件夹继续
+    /// 充当项目入口 cwd。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_primary_root: Option<PathBuf>,
 }
 
 /// 归属映射值:`Some(project_id)` = 显式归属;`None` = 显式移出(跳过自动
@@ -54,15 +65,41 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
+    /// 反物化排除表(§3,canonical 身份键):用户显式声明「此文件夹不再自动
+    /// 建项目」;可在管理面板查看与撤销。旧文件缺该键时读为空表。
+    #[serde(default)]
+    pub never_materialize_roots: Vec<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
 
+/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+/// `affected_session_ids` 目前无前端消费者(handleDeleteProject 丢弃返回值),
+/// 属协议面预留字段,供后续提示功能使用;在消费方落地前不得据此宣称"前端会提示"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeleteProjectReport {
+    pub affected_session_ids: Vec<String>,
+}
+
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
+    pub project_id: Option<String>,
     /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
     pub added_root: Option<PathBuf>,
+}
+
+/// `ensure_folder_roots` 的单根结果:调用方据此区分新建、复用与冲突,冲突不
+/// 阻断其余根。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsureFolderOutcome {
+    /// 新建了同名文件夹项目(origin=folder)。
+    Created { project: Project },
+    /// 已有物化项目锚定在该文件夹(origin=folder 且 roots 恰含此路径),复用不动。
+    Covered { project_id: String },
+    /// 无法创建(非绝对路径等);`reason` 可直接进日志。
+    Failed { reason: String },
 }
 
 /// Round-8 review M3: a rebind failure must distinguish a genuine overlap
@@ -108,6 +145,8 @@ struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
+    /// 反物化排除表(canonical 身份键,已去重);ensure 跳过其中列出的根。
+    never_materialize_roots: Vec<String>,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -176,6 +215,55 @@ fn validate_name(raw: String) -> Result<String> {
         bail!("project name must not be empty");
     }
     Ok(name)
+}
+
+/// 降级已失效的「主文件夹」记忆:root 更替后,若 `last_primary_root` 已不再是
+/// roots 成员,它会继续充当项目入口的默认 cwd(§9.3),而这个文件夹其实已经
+/// 离开项目。成员判定与 `set_last_primary_root` 同用折叠键精确比较。
+fn demote_stale_primary_root(project: &mut Project) {
+    let Some(primary) = &project.last_primary_root else {
+        return;
+    };
+    let key = identity_key_of_display(primary);
+    if !project
+        .roots
+        .iter()
+        .any(|root| identity_key_of_display(root) == key)
+    {
+        project.last_primary_root = None;
+    }
+}
+
+/// 差集两份 roots 快照:旧 roots 中未被任何新 root 覆盖(既不相等也不嵌套于
+/// 其下)的即为本次被移除的根(§4 文件夹移除语义)。命令层据此枚举这些根下
+/// 的自动归组成员,写成显式移出,避免分组/物化立刻把移除结果「翻回来」。
+pub fn removed_roots(old: &[PathBuf], new: &[PathBuf]) -> Vec<PathBuf> {
+    let new_keys: Vec<String> = new
+        .iter()
+        .map(|root| identity_key_of_display(root))
+        .collect();
+    old.iter()
+        .filter(|root| {
+            let key = identity_key_of_display(root);
+            !new_keys
+                .iter()
+                .any(|new_key| key_is_same_or_nested(&key, new_key))
+        })
+        .cloned()
+        .collect()
+}
+
+/// 会话工作区是否仍被(编辑后的)新 roots 覆盖——相等或嵌套于其一之下。
+/// 窄化编辑(旧 `[A]` → 新 `[A/sub]`)会让被移除的旧根 `A` 下的部分会话
+/// 仍居于新根领地内;这些会话不是移出对象:tier-① 的显式移出是用户声明,
+/// 而非根集合编辑的副作用(评审 #484 round-6——`removed_roots` 只看
+/// 「旧根未被新根覆盖」,照搬枚举会把仍在新根下的成员一并写成显式移出,
+/// 永久挡住 tier-② 重收编)。
+pub fn workspace_covered_by_roots(workspace: &Path, roots: &[PathBuf]) -> bool {
+    let key = identity_key_of_display(workspace);
+    roots
+        .iter()
+        .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
 }
 
 /// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
@@ -278,14 +366,13 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
 /// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
 /// - 必须是绝对路径;
-/// - 组内不得重复或互相嵌套;
-/// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
-///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
-fn validate_roots(
-    projects: &[Project],
-    skip_project_id: Option<&str>,
-    roots: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+/// - 组内不得重复或互相嵌套。
+///
+/// 跨项目重叠不在校验范围内(§9.9 裁定合法):`projects`/`skip_project_id`
+/// 形参已随 §9.9 移除——历史上这里会拦截跨项目重叠("Codex #22767 错归组"
+/// 的根源),§9.9 用确定性 (position, id) 归属规则消解了二义,合法化由
+/// `create_allows_overlap_with_other_projects` 等测试锁定。
+fn validate_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut displays = Vec::with_capacity(roots.len());
     let mut keys = Vec::with_capacity(roots.len());
     for root in roots {
@@ -311,26 +398,6 @@ fn validate_roots(
             }
         }
     }
-    for project in projects {
-        if Some(project.id.as_str()) == skip_project_id {
-            continue;
-        }
-        for existing in &project.roots {
-            let existing_key = identity_key_of_display(existing);
-            for (key, display) in keys.iter().zip(displays.iter()) {
-                if key_is_same_or_nested(key, &existing_key)
-                    || key_is_same_or_nested(&existing_key, key)
-                {
-                    bail!(
-                        "project root overlaps project '{}' ({} vs {})",
-                        project.name,
-                        existing.display(),
-                        display.display()
-                    );
-                }
-            }
-        }
-    }
     Ok(displays)
 }
 
@@ -343,7 +410,12 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty() && state.assignments.is_empty() {
+    // 仅剩 tombstone(显式移出 None)时也保留文件:否则重启后文件消失,
+    // 曾删除项目的文件夹会被下一次 ensure 重新物化,死而复生。
+    if state.projects.is_empty()
+        && state.assignments.is_empty()
+        && state.never_materialize_roots.is_empty()
+    {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -354,6 +426,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
+        never_materialize_roots: state.never_materialize_roots.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -389,9 +462,17 @@ fn load_state(path: &Path) -> Result<StoreState> {
     }
     let mut projects = file.projects;
     projects.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
+    // The exclusion table's StoreState invariant is "canonical keys,
+    // deduplicated" (writes go through set_never_materialize, which folds and
+    // dedupes); a hand-edited or legacy file can carry duplicates, so re-pin
+    // the invariant at load (review #484 n4).
+    let mut never_materialize_roots = file.never_materialize_roots;
+    let mut seen_keys = std::collections::HashSet::new();
+    never_materialize_roots.retain(|key| seen_keys.insert(key.clone()));
     Ok(StoreState {
         projects,
         assignments: file.assignments,
+        never_materialize_roots,
         refuse_writes: false,
     })
 }
@@ -479,8 +560,6 @@ impl ProjectStore {
         self.state.read().projects.clone()
     }
 
-    /// 仅测试用断言原料（生产路径走 `list` / `assignments_snapshot`）。
-    #[cfg(test)]
     pub fn get(&self, project_id: &str) -> Option<Project> {
         self.state
             .read()
@@ -507,6 +586,70 @@ impl ProjectStore {
         explicit_assignments_of(&self.state.read().assignments, project_id)
     }
 
+    /// 反物化排除表快照(canonical 键;命令层随 list_projects 下发,管理面板
+    /// 据此展示与撤销)。
+    pub fn never_materialize_roots(&self) -> Vec<String> {
+        self.state.read().never_materialize_roots.clone()
+    }
+
+    /// 排除表的展示形态(管理面板展示/撤销用)。表本身按折叠身份键存储
+    /// (Windows 上是小写折叠键,直接下发会把 `C:/Users/X` 显示成
+    /// `c:/users/x`),这里在已知范围内反查展示形态:项目 roots 是排除条目
+    /// 的常见来源;查不到的条目(手工挑选的任意文件夹)原样返回——键仍是
+    /// 身份的权威形态,撤销路径 set_never_materialize 先折叠再比较,两侧
+    /// 一致。
+    pub fn never_materialize_display_roots(&self) -> Vec<String> {
+        let state = self.state.read();
+        state
+            .never_materialize_roots
+            .iter()
+            .map(|key| {
+                state
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.roots.iter())
+                    .find(|root| &identity_key_of_display(root) == key)
+                    .map(|root| root_display(root).to_string_lossy().to_string())
+                    .unwrap_or_else(|| key.clone())
+            })
+            .collect()
+    }
+
+    /// 显式反物化(§3):`never = true` 把该文件夹(canonical 键)加入排除表,
+    /// 之后 ensure 跳过它;`false` 撤销。幂等;返回更新后的表。只影响未来的自动
+    /// 物化,既有项目与会话归属不受影响。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the idempotent
+    /// early-return reads the same memory a commit-first order would have
+    /// advanced, so a failed persist used to make every in-process retry
+    /// return `Ok` over a disk still missing the entry.
+    pub fn set_never_materialize(&self, root: &Path, never: bool) -> Result<Vec<String>> {
+        if !root.is_absolute() {
+            bail!(
+                "never-materialize root must be absolute: {}",
+                root.display()
+            );
+        }
+        let key = identity_key_of_display(&root_display(root));
+        let mut state = self.state.write();
+        let contains = state.never_materialize_roots.contains(&key);
+        if never == contains {
+            return Ok(state.never_materialize_roots.clone());
+        }
+        let mut persisted = state.clone();
+        if never {
+            persisted.never_materialize_roots.push(key);
+        } else {
+            persisted
+                .never_materialize_roots
+                .retain(|entry| entry != &key);
+        }
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
+        Ok(state.never_materialize_roots.clone())
+    }
+
     /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
     ///
     /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
@@ -515,7 +658,7 @@ impl ProjectStore {
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
         let name = validate_name(name)?;
         let mut state = self.state.write();
-        let roots = validate_roots(&state.projects, None, &roots)?;
+        let roots = validate_roots(&roots)?;
         let now = Utc::now();
         let position = state
             .projects
@@ -531,6 +674,8 @@ impl ProjectStore {
             position,
             created_at: now,
             updated_at: now,
+            origin: None,
+            last_primary_root: None,
         };
         state.projects.push(project.clone());
         state
@@ -540,6 +685,12 @@ impl ProjectStore {
         Ok(project)
     }
 
+    /// 更新名称/roots。生产路径的 roots 变更走 `update_project_and_expel`
+    /// 的 persist-first 线,此方法实际只承担改名。
+    ///
+    /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
+    /// 抛,不回滚内存)——同 create_project 的 commit-first 已知语义:重试
+    /// 按目标态幂等收敛,由下一次成功写盘自愈(评审 #484 round-9 N4)。
     pub fn update_project(
         &self,
         project_id: &str,
@@ -556,7 +707,7 @@ impl ProjectStore {
             bail!("project not found: {project_id}");
         };
         let roots = match roots {
-            Some(roots) => Some(validate_roots(&state.projects, Some(project_id), &roots)?),
+            Some(roots) => Some(validate_roots(&roots)?),
             None => None,
         };
         let project = &mut state.projects[index];
@@ -565,6 +716,7 @@ impl ProjectStore {
         }
         if let Some(roots) = roots {
             project.roots = roots;
+            demote_stale_primary_root(project);
         }
         project.updated_at = Utc::now();
         let updated = project.clone();
@@ -572,7 +724,41 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+    /// Validates and normalizes a roots payload without touching state. The
+    /// command layer runs this before enumerating "sessions under removed
+    /// roots" so the diff compares canonical forms on both sides: the invoke
+    /// payload only gets key folding (no symlink/ancestor resolution), and
+    /// without this step a no-op edit spelled differently (macOS `/var` vs
+    /// `/private/var`, symlinked home, autofs) would be misjudged as a
+    /// removal, hard move-outs included (review #484 B3).
+    pub fn normalize_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        validate_roots(roots)
+    }
+
+    /// Root replacement + auto-member expulsion in a single store transaction
+    /// (review #484 B3): one lock, one persist. Previously the two were two
+    /// persists; if expulsion failed after the new roots landed, the command
+    /// returned Err but a retry computed `removed_roots` as empty (roots were
+    /// already replaced) and skipped expulsion forever — the next ensure would
+    /// silently re-adopt those members. `expel_session_ids` enumerates the
+    /// command layer's "sessions under removed roots"; entry-less ones are
+    /// written as explicit move-outs (None), ones with existing entries are
+    /// untouched (tier-① semantics, matching `delete_project`'s expel path).
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 M3, same
+    /// convention as `rebind_roots`): the previous order mutated the in-memory
+    /// roots before the write, so a failed persist left memory at the new
+    /// roots over a disk still holding the old ones — an in-process retry
+    /// recomputed `removed` against the mutated memory as empty and skipped
+    /// the expulsion permanently.
+    pub fn update_project_and_expel(
+        &self,
+        project_id: &str,
+        name: Option<String>,
+        roots: Vec<PathBuf>,
+        expel_session_ids: &[String],
+    ) -> Result<Project> {
+        let name = name.map(validate_name).transpose()?;
         let mut state = self.state.write();
         let Some(index) = state
             .projects
@@ -581,15 +767,130 @@ impl ProjectStore {
         else {
             bail!("project not found: {project_id}");
         };
-        state.projects.remove(index);
-        // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
-        // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected = explicit_assignments_of(&state.assignments, project_id);
-        for session_id in &affected {
-            state.assignments.remove(session_id);
+        // §9.9: cross-project root overlap is legal; only the intra-set
+        // invariants (absolute paths, duplicates, nesting) are revalidated
+        // here. A folder project overlapping a manual project is a designed
+        // legal state, and editing the manual project's roots from the manage
+        // panel must not be rejected because of it.
+        let roots = validate_roots(&roots)?;
+        let mut persisted = state.clone();
+        {
+            let project = &mut persisted.projects[index];
+            if let Some(name) = name {
+                project.name = name;
+            }
+            project.roots = roots;
+            demote_stale_primary_root(project);
+            project.updated_at = Utc::now();
         }
-        persist_locked(&state, &self.path)?;
-        Ok(())
+        for session_id in expel_session_ids {
+            if !persisted.assignments.contains_key(session_id) {
+                persisted.assignments.insert(session_id.clone(), None);
+            }
+        }
+        let updated = persisted.projects[index].clone();
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
+        Ok(updated)
+    }
+
+    /// 记录项目记住的主文件夹(§9.2):只接受 roots 成员(折叠键比较),外来
+    /// 路径一律拒绝——主文件夹必须是项目势力范围内的目录。返回更新后的项目。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the idempotent
+    /// early-return reads the same memory a commit-first order would have
+    /// advanced, so a failed persist used to make every in-process retry
+    /// return the in-memory value without ever writing it.
+    pub fn set_last_primary_root(&self, project_id: &str, root: &Path) -> Result<Project> {
+        let mut state = self.state.write();
+        let Some(index) = state
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+        else {
+            bail!("project not found: {project_id}");
+        };
+        let display = root_display(root);
+        let key = identity_key_of_display(&display);
+        let is_member = state.projects[index]
+            .roots
+            .iter()
+            .any(|existing| identity_key_of_display(existing) == key);
+        if !is_member {
+            bail!(
+                "primary root must be one of the project roots: {}",
+                root.display()
+            );
+        }
+        if state.projects[index].last_primary_root.as_deref() == Some(display.as_path()) {
+            return Ok(state.projects[index].clone());
+        }
+        let mut persisted = state.clone();
+        {
+            let project = &mut persisted.projects[index];
+            project.last_primary_root = Some(display);
+            project.updated_at = Utc::now();
+        }
+        let updated = persisted.projects[index].clone();
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
+        Ok(updated)
+    }
+
+    /// 删除项目:会话只被解绑(回落隐式分组),永不删除。全体成员——显式
+    /// `Some(pid)` 条目加上命令层枚举的自动归组成员 `expel_session_ids`——一律
+    /// 写成显式移出(None):留在未分组,且不会随文件夹的下一次自动物化复活;
+    /// 之后在该文件夹新建的会话没有归属条目,照常自动归组。已有条目的 id
+    /// (None = 已移出 / Some(其他) = 显式归属他处)不重写,tier-① 语义优先。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-5 M3,
+    /// same convention as `update_project_and_expel`/`rebind_roots`): the
+    /// previous order mutated memory before the write, so a failed persist
+    /// left the project deleted in memory but alive on disk — and an
+    /// in-process retry then failed with "project not found", making the
+    /// deletion unrecoverable without a restart.
+    ///
+    /// 有意的边界语义(§9.9 跨项目重叠合法化后的交互,由测试锁定):tombstone 是
+    /// 全局的——被删项目 A 的 root 若仍被存活项目 B 引用,该 root 下的自动成员
+    /// 也被写成 None,不会被 B 的 tier-② 分组重新收编。删除是用户的显式声明
+    /// ("这些会话退出分组"),自动复活会推翻它;要移入 B 需显式移动。
+    pub fn delete_project(
+        &self,
+        project_id: &str,
+        expel_session_ids: &[String],
+    ) -> Result<DeleteProjectReport> {
+        let mut state = self.state.write();
+        if !state
+            .projects
+            .iter()
+            .any(|project| project.id == project_id)
+        {
+            bail!("project not found: {project_id}");
+        }
+        let mut affected: Vec<String> = state
+            .assignments
+            .iter()
+            .filter(|(_, assigned)| assigned.as_deref() == Some(project_id))
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        for session_id in expel_session_ids {
+            if !state.assignments.contains_key(session_id) && !affected.contains(session_id) {
+                affected.push(session_id.clone());
+            }
+        }
+        let mut persisted = state.clone();
+        persisted
+            .projects
+            .retain(|project| project.id != project_id);
+        for session_id in &affected {
+            persisted.assignments.insert(session_id.clone(), None);
+        }
+        persist_locked(&persisted, &self.path)?;
+        *state = persisted;
+        Ok(DeleteProjectReport {
+            affected_session_ids: affected,
+        })
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -599,6 +900,10 @@ impl ProjectStore {
     ///   与归属一并落盘,避免半提交。
     /// - `project_id = None`:写显式移出条目,阻止自动归组把会话"复活"回
     ///   原项目。
+    ///
+    /// 落盘失败时内存态(归属与顺带加入的 root)已前进而磁盘滞后——同
+    /// create_project 的 commit-first 已知语义:重试按目标态幂等收敛,由
+    /// 下一次成功写盘自愈(评审 #484 round-9 N4)。
     pub fn move_session_to_project(
         &self,
         session_id: &str,
@@ -622,14 +927,10 @@ impl ProjectStore {
                         workspace.display()
                     );
                 }
-                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
-                // 一并拦截(错误信息指向冲突项目)。
+                // 单元素集组内校验退化为绝对路径检查(§9.9:跨项目重叠合法,
+                // 不再在此拦截)。
                 let owned_root = workspace.to_path_buf();
-                let mut displays = validate_roots(
-                    &state.projects,
-                    Some(target_id),
-                    std::slice::from_ref(&owned_root),
-                )?;
+                let mut displays = validate_roots(std::slice::from_ref(&owned_root))?;
                 let Some(display) = displays.pop() else {
                     bail!("add_workspace_root produced no canonical key");
                 };
@@ -655,6 +956,19 @@ impl ProjectStore {
                     .iter()
                     .any(|existing_key| key_is_same_or_nested(&key, existing_key));
                 if !covered.is_empty() && !already_covered {
+                    // Capture the absorbed paths before the drain: a covered
+                    // descendant that served as the remembered primary is
+                    // about to leave `roots`, and stranding the memory would
+                    // break "new conversation" on every later project-row
+                    // entry (demote per §9.2 — the channel falls back to the
+                    // first roots entry).
+                    let covered_paths: Vec<PathBuf> = project
+                        .roots
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| covered.contains(index))
+                        .map(|(_, root)| root.clone())
+                        .collect();
                     project.roots = project
                         .roots
                         .drain(..)
@@ -663,6 +977,15 @@ impl ProjectStore {
                         .map(|(_, root)| root)
                         .collect();
                     project.roots.push(display.clone());
+                    if let Some(primary) = project.last_primary_root.as_ref() {
+                        let primary_key = identity_key_of_display(primary);
+                        if covered_paths
+                            .iter()
+                            .any(|path| identity_key_of_display(path) == primary_key)
+                        {
+                            project.last_primary_root = None;
+                        }
+                    }
                     project.updated_at = Utc::now();
                     added_root = Some(display);
                 } else if !already_covered {
@@ -684,7 +1007,10 @@ impl ProjectStore {
             state.assignments.insert(session_id.to_string(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(MoveSessionOutcome { added_root })
+        Ok(MoveSessionOutcome {
+            project_id: project_id.map(str::to_string),
+            added_root,
+        })
     }
 
     /// Pure candidate computation shared by [`plan_rebind_roots`] (the
@@ -723,6 +1049,22 @@ impl ProjectStore {
                 };
                 changed = true;
             }
+            // The remembered primary folder moves with its directory (§9.2):
+            // it is the project channel's default cwd, so stranding a
+            // `/from`-spelled memory would break "new conversation" on every
+            // later project-row entry with a nonexistent-path rejection —
+            // minted by the very command that repairs broken links.
+            if let Some(primary) = project.last_primary_root.as_mut() {
+                if let Some(suffix) =
+                    crate::platform::os::path_relative_suffix_under(primary, &from_display)
+                {
+                    *primary = if suffix.as_os_str().is_empty() {
+                        to_display.clone()
+                    } else {
+                        to_display.join(suffix)
+                    };
+                }
+            }
             if changed {
                 project.updated_at = Utc::now();
                 affected_projects.push(project.id.clone());
@@ -735,8 +1077,8 @@ impl ProjectStore {
     /// M3): the session lanes now run before the project roots so an
     /// interrupted run still leaves the old root registered (hence
     /// badge-retryable), which means a root rewrite that cannot succeed —
-    /// an overlap conflict — must be detected BEFORE any session binding is
-    /// touched. Validates the same candidate `rebind_roots` will commit and
+    /// an intra-set nesting conflict, the one failure mode §9.9 leaves —
+    /// must be detected BEFORE any session binding is touched. Validates the same candidate `rebind_roots` will commit and
     /// returns the project ids it would affect; nothing is written or
     /// persisted. `rebind_roots` revalidates under its write lock, so a
     /// concurrent project mutation cannot slip past the invariant.
@@ -751,9 +1093,15 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
+        // Plan and commit must agree (review #484 M2): the commit legalizes
+        // cross-project overlap (§9.9), so the pre-flight asserts exactly what
+        // rebind_roots revalidates under its write lock — the intra-set
+        // invariants per project. This keeps the only failure mode the commit
+        // can still hit (a translated root nesting inside one project) a
+        // detected-before-anything-moved condition instead of a mid-run
+        // rollback.
         for project in &candidate {
-            validate_roots(&candidate, Some(&project.id), &project.roots)
-                .context("rebind produced overlapping project roots")?;
+            validate_roots(&project.roots).context("rebind produced nesting project roots")?;
         }
         Ok(affected_projects)
     }
@@ -766,10 +1114,10 @@ impl ProjectStore {
     /// component deeper, and cutting by the raw argument's count would keep
     /// an extra component, rewriting the root to `<to>/x` instead of `<to>`.
     /// `to` is validated by the command layer as an existing canonical path.
-    /// After rewriting, overlap invariants are revalidated per project — a
-    /// translated root may collide with another project's territory, in which
-    /// case the whole rebind fails and rolls back (memory untouched, nothing
-    /// persisted). Returns the affected project ids.
+    /// After rewriting, the intra-set no-nesting invariant is revalidated per
+    /// project (§9.9: a translated root landing on another project's
+    /// territory is legal) — a nesting conflict fails the whole rebind with
+    /// memory untouched and nothing persisted. Returns the affected project ids.
     ///
     /// Idempotent: no matching root is an empty Ok, not an error. The retry
     /// contract depends on this — a rerun after a partially failed run finds
@@ -790,24 +1138,88 @@ impl ProjectStore {
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
             for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots).map_err(|error| {
+                // §9.9: cross-project overlap is legal; only the intra-set
+                // no-nesting invariant is revalidated here. A genuine nesting
+                // conflict stays classified as Overlap (the localized
+                // REBIND_ROOTS_CONFLICT marker and the retry dialog are the
+                // right UX for it); other failures surface as Other.
+                validate_roots(&project.roots).map_err(|error| {
                     RebindRootsError::Overlap(
-                        error.context("rebind produced overlapping project roots"),
+                        error.context("rebind produced nesting project roots"),
                     )
                 })?;
             }
-            // Persist FIRST, commit the in-memory candidate only on success
-            // (round-8 review M2, mirroring the codex lane): committing
-            // before the write let a persist failure leave memory at `to`
-            // over a disk still holding `from` — an in-process retry then
-            // found no `from`-roots and reported success while the persisted
-            // file stayed unmigrated.
-            let mut persisted = state.clone();
-            persisted.projects = candidate;
-            persist_locked(&persisted, &self.path)?;
-            state.projects = persisted.projects;
         }
+        // The exclusion table moves with its directories too (review #484
+        // round-8 m5): a moved never-materialize folder must keep suppressing
+        // the NEW path, or the next ensure re-materializes the ghost the user
+        // excluded — minted by the very command that repairs broken links.
+        let translated_exclusions =
+            Self::translate_never_materialize_candidates(&state.never_materialize_roots, from, to);
+        if affected_projects.is_empty() && translated_exclusions.is_none() {
+            return Ok(affected_projects);
+        }
+        // Persist FIRST, commit the in-memory candidate only on success
+        // (round-8 review M2, mirroring the codex lane): committing
+        // before the write let a persist failure leave memory at `to`
+        // over a disk still holding `from` — an in-process retry then
+        // found no `from`-roots and reported success while the persisted
+        // file stayed unmigrated.
+        let mut persisted = state.clone();
+        if !affected_projects.is_empty() {
+            persisted.projects = candidate;
+        }
+        if let Some(exclusions) = translated_exclusions {
+            persisted.never_materialize_roots = exclusions;
+        }
+        persist_locked(&persisted, &self.path)?;
+        state.projects = persisted.projects;
+        state.never_materialize_roots = persisted.never_materialize_roots;
         Ok(affected_projects)
+    }
+
+    /// Pure translation of the exclusion table for a rebind (review #484
+    /// round-8 m5): the table stores folded identity keys rather than display
+    /// paths, so containment and the cut both run in the key domain — keys
+    /// equal to or nested under `from`'s key move onto `to`'s key. `None` =
+    /// nothing matched, no rewrite needed.
+    fn translate_never_materialize_candidates(
+        keys: &[String],
+        from: &Path,
+        to: &Path,
+    ) -> Option<Vec<String>> {
+        let from_key = identity_key_of_display(&root_display(from));
+        let to_key = identity_key_of_display(&root_display(to));
+        let from_key = from_key.trim_end_matches('/');
+        let to_key = to_key.trim_end_matches('/');
+        let mut changed = false;
+        let translated = keys
+            .iter()
+            .map(|key| {
+                let trimmed = key.trim_end_matches('/');
+                // Same folded-prefix boundary as
+                // `path_identity_is_same_or_nested`: a trailing separator is
+                // noise, and the remainder must start with one so `/a/bc`
+                // never counts as nested in `/a/b`.
+                let suffix = if trimmed == from_key {
+                    Some("")
+                } else if trimmed.starts_with(from_key)
+                    && trimmed[from_key.len()..].starts_with('/')
+                {
+                    Some(&trimmed[from_key.len()..])
+                } else {
+                    None
+                };
+                match suffix {
+                    None => key.clone(),
+                    Some(suffix) => {
+                        changed = true;
+                        format!("{to_key}{suffix}")
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        if changed { Some(translated) } else { None }
     }
 
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否
@@ -823,6 +1235,153 @@ impl ProjectStore {
             eprintln!("[projects] persist after forget_session failed: {error:#}");
         }
         true
+    }
+
+    /// 文件夹项目自动物化(Codex 客户端式收编,幂等):对每个输入文件夹,复用
+    /// 已锚定在它的物化项目,否则创建以目录 basename 命名的 `origin=folder`
+    /// 项目(§9.9:被其它项目引用不算 covered,重叠合法)。排除表(§3)中的根
+    /// 直接跳过。非绝对路径按根汇报 Failed,不阻断其余。输入按键去重;整批共用
+    /// 一次落盘。分组规则不变——新项目的 roots 让既有 tier-② 根匹配自然收编
+    /// 该文件夹下的会话,而显式移出条目(删除项目时写入)仍然压制,重建的项目
+    /// 只会接收之后新建的会话。
+    ///
+    /// Persist FIRST, commit memory only on success (review #484 round-8 M1,
+    /// same convention as `update_project_and_expel`): the batch builds on a
+    /// clone and the previous order pushed created projects into live memory
+    /// before the write, so a failed persist let the next ensure hit the
+    /// anchored-reuse branch and report `Covered` forever — a session's tier-①
+    /// assignment then pointed at a project id that vanished on restart,
+    /// blocking tier-② re-adoption.
+    pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
+        let mut state = self.state.write();
+        let mut persisted = state.clone();
+        let mut outcomes = Vec::with_capacity(roots.len());
+        let mut seen_keys: Vec<String> = Vec::with_capacity(roots.len());
+        let mut created_any = false;
+        for root in roots {
+            if !root.is_absolute() {
+                outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("folder root must be absolute: {}", root.display()),
+                });
+                continue;
+            }
+            let display = root_display(root);
+            let key = identity_key_of_display(&display);
+            if seen_keys.contains(&key) {
+                continue;
+            }
+            seen_keys.push(key.clone());
+            // 排除表(§3):用户已显式声明「此文件夹不建项目」——静默跳过
+            // (与输入去重同形);tombstone 不会被复活。
+            if persisted.never_materialize_roots.contains(&key) {
+                continue;
+            }
+            // 锚定复用(§9.9):仅当已存在**锚定在该文件夹**的物化项目
+            // (origin=folder 且 roots 恰含此路径)时复用;被其它项目当作附加/
+            // 主根引用不算 covered——浏览通道始终以所选文件夹为家,重叠合法,
+            // 于是会新建一个同名项目。
+            let anchored = persisted.projects.iter().find(|project| {
+                project.origin.as_deref() == Some("folder")
+                    && project
+                        .roots
+                        .iter()
+                        .any(|existing| identity_key_of_display(existing) == key)
+            });
+            if let Some(project) = anchored {
+                outcomes.push(EnsureFolderOutcome::Covered {
+                    project_id: project.id.clone(),
+                });
+                continue;
+            }
+            let name = display
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| display.to_string_lossy().into_owned());
+            // 同批内先前创建的文件夹项目已在 persisted.projects 中;相同根由
+            // seen_keys 去重;锚定按精确路径判定,嵌套输入各自物化。
+            match validate_roots(std::slice::from_ref(root)) {
+                Ok(displays) => {
+                    let now = Utc::now();
+                    let position = persisted
+                        .projects
+                        .iter()
+                        .map(|project| project.position)
+                        .max()
+                        .unwrap_or(-1)
+                        + 1;
+                    let project = Project {
+                        id: generate_project_id(),
+                        name,
+                        roots: displays,
+                        position,
+                        created_at: now,
+                        updated_at: now,
+                        origin: Some("folder".to_string()),
+                        last_primary_root: None,
+                    };
+                    persisted.projects.push(project.clone());
+                    persisted
+                        .projects
+                        .sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
+                    created_any = true;
+                    outcomes.push(EnsureFolderOutcome::Created { project });
+                }
+                Err(error) => outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("{error:#}"),
+                }),
+            }
+        }
+        if created_any {
+            persist_locked(&persisted, &self.path)?;
+            *state = persisted;
+        }
+        Ok(outcomes)
+    }
+
+    /// 「对齐到项目」的归属解析(§6/§9.7):tier-① 显式归属(Some);显式移出
+    /// (None 条目)阻断 tier-②;tier-② 用 workspace 的折叠键匹配 roots 前缀,
+    /// 多个命中取 position 最小者(前端同款 tiebreak;projects 恒按
+    /// (position, id) 排序,故 `find` 即最小)。
+    pub fn resolve_session_project(&self, session_id: &str, workspace: &Path) -> Option<Project> {
+        let state = self.state.read();
+        match state.assignments.get(session_id) {
+            Some(Some(project_id)) => {
+                return state
+                    .projects
+                    .iter()
+                    .find(|project| &project.id == project_id)
+                    .cloned();
+            }
+            Some(None) => return None,
+            None => {}
+        }
+        let key = identity_key_of_display(&root_display(workspace));
+        state
+            .projects
+            .iter()
+            .find(|project| {
+                project
+                    .roots
+                    .iter()
+                    .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
+            })
+            .cloned()
+    }
+
+    /// 对齐用的钥匙串形态:主槽 = 会话自身 cwd(不换门,§9.2);附加根 = 项目
+    /// roots 去掉 cwd,保持顺序(折叠键比较)。底座 normalize 会再归一化一次;
+    /// 存储层按此形态写入,让「读到的」与「生效的」一致。
+    pub fn keychain_for_workspace(cwd: &Path, project_roots: &[PathBuf]) -> Vec<PathBuf> {
+        let cwd_display = root_display(cwd);
+        let cwd_key = identity_key_of_display(&cwd_display);
+        let mut out = vec![cwd_display];
+        for root in project_roots {
+            if identity_key_of_display(root) != cwd_key {
+                out.push(root.clone());
+            }
+        }
+        out
     }
 
     /// 启动对账:剔除归属表中已不存在的会话条目(会话可能在删除钩子注册

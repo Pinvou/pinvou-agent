@@ -48,8 +48,9 @@ assert.match(
 );
 
 // 5. Flip-up placement estimate covers the 7-item menu
-// (6 items × h-9 36px + divider 9px + vertical padding 8px), passed to the
-// shared usePortalMenu hook.
-assert.ok(nav.includes('usePortalMenu({ height: 233 })'), 'menu flip-up height estimate must match the current menu item count');
+// (7 items × h-9 36px + divider 9px + vertical padding 8px), passed to the
+// shared usePortalMenu hook. The seventh entry is the desktop-gated
+// view-workspace item.
+assert.ok(nav.includes('usePortalMenu({ height: 269 })'), 'menu flip-up height estimate must match the current menu item count');
 
 console.log('session export contract tests passed');

@@ -139,6 +139,9 @@ import {
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
+import { interpretFolderEnsureOutcomes } from '../projects/folderEnsure.js';
+import { consumePickerRequest } from './picker-request.js';
 import {
   invokeTauri,
   listenTauri,
@@ -165,7 +168,11 @@ import {
   setAcpModel,
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
+  alignAcpSession,
+  ensureFolderProjects,
 } from './acpClient.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 import {
   forgetWorkspace,
@@ -621,6 +628,24 @@ export function CodexAcpView({
   onGotoModelSettings,
   onGotoSettings,
   fixedSession = false,
+  // The "choose workspace" picker (§2) delivers its result through here:
+  // { epoch, path, projectId, roots }; path=null = temporary session.
+  // onOpenWorkspacePicker opens the picker (held by the host, main.jsx).
+  onOpenWorkspacePicker,
+  workspacePickerRequest = null,
+  // Consumption acknowledgement (review #484 M1): the host clears the request
+  // once the view has applied it, so a remount can never replay a stale one.
+  onWorkspacePickerRequestConsumed,
+  // Toast channel for the align action's result feedback (§9.7).
+  onNotify,
+  // The host (main.jsx) mirrors the lane's effective mode so sidebar surfaces
+  // opened while the codex lane is active (manage-folders panel) show the
+  // same mode-aware copy as the lane itself.
+  onLaneModeChange,
+  // The host mirrors whether the lane's current agent receives only the
+  // primary root (third-party ACP, §6 stage-gate), so host-side grant
+  // notices (sidebar project-row "+") use the recorded-only copy too.
+  onLaneDeliveryChange,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -778,6 +803,10 @@ export function CodexAcpView({
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  // Ownership and keychain snapshot brought in by the project channel
+  // (picker) (§9.3): passed down with createAcpSession at materialization;
+  // beginDraft's other entries (temporary/recent directory) clear it.
+  const [draftProjectBinding, setDraftProjectBinding] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
   // Branch context marker mirrored from activeId/branchWorkspacePath; checkout
@@ -910,6 +939,10 @@ export function CodexAcpView({
   const composerModeValue = sessionControlsInfo
     ? controls.effectiveMode || ''
     : (draftConfigSelection && draftConfigSelection.mode) || controls.effectiveMode || '';
+  // Report the lane's effective mode upward (see the prop contract above).
+  useEffect(() => {
+    if (onLaneModeChange) onLaneModeChange(composerModeValue || null);
+  }, [composerModeValue, onLaneModeChange]);
   function composerConfigOptionValue(option) {
     if (sessionControlsInfo) return option.currentValue || '';
     const staged = draftConfigSelection && draftConfigSelection.configs
@@ -933,6 +966,12 @@ export function CodexAcpView({
     [sessions, activeId],
   );
   const activeAgentId = activeSession?.agent_id || draftAgentId;
+  // Keychain chip derivation, memoized: computing describeKeychain four times
+  // per render (once per chip prop) was pure waste.
+  const activeKeychain = useMemo(
+    () => (activeSession ? describeKeychain(activeSession.workspace_roots) : null),
+    [activeSession],
+  );
   // 原生（品悟 Engine）代码会话：发消息走 chat 命令 + chat:* 事件，会话状态按
   // session 缓存在 lane Map 里（后台会话的 turn 也能继续推进，切回不丢流式内容）。
   const isNativeAgent = activeAgentId === 'pinvou';
@@ -988,6 +1027,20 @@ export function CodexAcpView({
     multiAgentAvailable: false,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
+  // Grant-notice/picker mode source, agent-aware (review #484 round-8 m4):
+  // the native selector's staged mode only describes the native agent — a
+  // YOLO touched there followed by switching the draft to a third-party ACP
+  // agent must not under-report that agent's notice. ACP drafts read their
+  // own cached controls through composerModeValue instead.
+  const laneNoticeMode = isNativeAgent
+    ? (nativeDraftControls.mode || composerModeValue || null)
+    : (composerModeValue || nativeDraftControls.mode || null);
+  // Same mirror for the root-delivery state (§6 stage-gate): a third-party
+  // ACP agent only ever receives the primary root on the wire. Lives below
+  // isNativeAgent's declaration — the lint gate rejects use-before-declaration.
+  useEffect(() => {
+    if (onLaneDeliveryChange) onLaneDeliveryChange(!isNativeAgent);
+  }, [isNativeAgent, onLaneDeliveryChange]);
   // First-send session creation persists draft controls before activation. Keep the
   // staged values associated with that exact session until its authoritative load
   // completes so the selector never falls back to a different global model in between.
@@ -1979,16 +2032,29 @@ export function CodexAcpView({
     const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
+    // Capture the keychain/project ownership synchronously (re-picking during
+    // the await does not affect this creation).
+    const requestedProjectBinding = draftProjectBinding;
     const metadata = await createAcpSession({
       workspacePath: requestedWorkspacePath,
       workspaceHandle: requestedWorkspaceHandle,
       agentId: requestedAgentId,
+      workspaceRoots: requestedProjectBinding ? requestedProjectBinding.roots : null,
+      projectId: requestedProjectBinding ? requestedProjectBinding.projectId : null,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (requestedAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
     if (requestedWorkspacePath) setRecentWorkspaces(rememberWorkspace(requestedWorkspacePath));
     setDraftWorkspaceHandle(current => (
       current === requestedWorkspaceHandle ? null : current
+    ));
+    // The staged project binding is consumed by this creation too: clear it
+    // unless a re-pick during the await replaced it (same conditional-clear
+    // idiom as the handle above) — otherwise the stale binding would ride the
+    // next temporary creation and the payload would claim roots the session
+    // was never granted (review #484 round-5 M4).
+    setDraftProjectBinding(current => (
+      current === requestedProjectBinding ? null : current
     ));
     await refreshSessions();
     // Persist native controls before the first load. If persistence fails after the
@@ -2017,6 +2083,7 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
     setDraftWorkspaceHandle(workspaceHandle);
+    setDraftProjectBinding(null);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
     setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
@@ -2068,6 +2135,25 @@ export function CodexAcpView({
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
 
+  // Picker result landing: project/folder channels → beginDraft(path) with the
+  // ownership and keychain staged; temporary session → beginDraft(null). The
+  // effect depends on epoch, so re-delivering the same choice still applies.
+  const pickerRequestEpochRef = useRef(0);
+  useEffect(() => {
+    const request = consumePickerRequest(workspacePickerRequest, pickerRequestEpochRef.current);
+    if (!request) return;
+    pickerRequestEpochRef.current = request.epoch;
+    const { path, projectId, roots } = request;
+    // beginDraft first (it clears the old staged binding internally), then set
+    // the target values — the later write wins within the same batch.
+    beginDraft(path || null, { clearComposer: false });
+    setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
+    // Acknowledge consumption: the host clears the request object, so a later
+    // remount (this ref resets to 0) cannot replay it (review #484 M1).
+    if (onWorkspacePickerRequestConsumed) onWorkspacePickerRequestConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft is a stable local function; the effect is driven by the request epoch only
+  }, [workspacePickerRequest]);
+
   function recreateUnavailableWorkspaceSession() {
     if (activeSession && activeSession.workspace_path) {
       setRecentWorkspaces(forgetWorkspace(activeSession.workspace_path));
@@ -2085,6 +2171,38 @@ export function CodexAcpView({
       setRecentWorkspaces(rememberWorkspace(selected.path));
       beginDraft(selected.path, { workspaceHandle: selected.workspaceHandle });
     }
+  }
+
+  // Recents channel (§9.9 folder-channel parity, desktop): a recents pick is
+  // the same explicit folder choice as the picker's browse channel, so it
+  // runs the same ensure (anchor reuse / materialize) and stages the anchored
+  // project id as the draft binding — without it the created session has no
+  // tier-1 assignment and tier-2 nested grouping adopts it into a broader
+  // project whose root covers the folder (e.g. a Desktop-rooted project).
+  async function chooseRecentDraft(path) {
+    if (isWeb) {
+      await chooseProjectDraft(path);
+      return;
+    }
+    let interpreted;
+    try {
+      interpreted = interpretFolderEnsureOutcomes(await ensureFolderProjects([path]));
+    } catch (error) {
+      // IPC-level failure: same promise as the browse channel — the draft
+      // still lands at the picked folder, as a plain one.
+      console.warn('ensure folder project failed', error);
+      beginDraft(path);
+      return;
+    }
+    if (!interpreted.materialized && interpreted.failed) {
+      // A backend refusal (nesting conflict etc.) is not the exclusion list:
+      // landing a plain draft would let tier-2 adopt the session into a
+      // broader project — surface the failure instead.
+      throw new Error(t.uiProjects.opFailed);
+    }
+    // Excluded folders (no outcome) land plain with a null binding.
+    beginDraft(path);
+    setDraftProjectBinding(interpreted.projectId ? { projectId: interpreted.projectId, roots: [path] } : null);
   }
 
   function updateAttachments(sessionId, update) {
@@ -2561,7 +2679,13 @@ export function CodexAcpView({
       activeIdRef.current = null;
       sessionLoadRequestRef.current += 1;
       if (preserveDraftWorkspaceRef.current) preserveDraftWorkspaceRef.current = false;
-      else setDraftWorkspacePath(null);
+      else {
+        setDraftWorkspacePath(null);
+        // The binding travels with the staged path: resetting the draft but
+        // keeping it would let a stale project binding leak into the next
+        // temporary creation's payload (review #484 round-5 M4).
+        setDraftProjectBinding(null);
+      }
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset events/pending/session info when returning to draft; one-shot mirror
       setEvents([]);
       setPending([]);
@@ -3330,6 +3454,45 @@ export function CodexAcpView({
     await applyAcpConfigChange('mode', targetId => setAcpMode(targetId, modeId));
   }
 
+  // Align to project (§9.7): the session keychain is replaced by the owning
+  // project's full root set at that moment; typed rejections map to copy by
+  // marker and any other failure gets the generic toast; on success the
+  // session list refreshes (the chip's roots update with the list).
+  async function alignKeychainToProject() {
+    if (!activeId) return;
+    try {
+      const outcome = await alignAcpSession(activeId);
+      if (outcome && outcome.applied) {
+        await refreshSessions().catch(() => {});
+        // live_push_failed: written, but the live engine kept the previous
+        // (possibly wider) root set — surface it (review #484 round-9 N2).
+        if (onNotify) onNotify(outcome.live_push_failed ? t.uiKeychain.alignPushDeferred : t.uiKeychain.alignDone);
+      } else if (outcome && outcome.reason === 'no_change' && onNotify) {
+        onNotify(t.uiKeychain.alignNoChange);
+      } else if (outcome && outcome.reason === 'write_skipped' && onNotify) {
+        // Nothing failed and nothing was written (the binding store had no
+        // readable record) — surfacing it beats silence either way.
+        onNotify(t.uiKeychain.alignWriteSkipped);
+      } else if (outcome && outcome.reason === 'no_project' && onNotify) {
+        onNotify(t.uiKeychain.alignNoProject);
+      } else if (onNotify) {
+        // Any other non-applied outcome is unexpected; surface it instead of
+        // failing silently (chat lane parity, review #484 m2).
+        onNotify(t.uiKeychain.alignFailed);
+      }
+    } catch (error) {
+      const message = String((error && error.message) || error || '');
+      // Typed markers map to copy (ALIGN_BUSY/ALIGN_NO_WORKSPACE are thrown
+      // as-is by acpClient); unexpected failures get the generic toast
+      // (chat lane parity, review #484 m2).
+      if (onNotify) {
+        onNotify(message.startsWith('ALIGN_BUSY') ? t.uiKeychain.alignBusy : t.uiKeychain.alignFailed);
+      } else {
+        showError(error);
+      }
+    }
+  }
+
   return (
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
@@ -3338,9 +3501,40 @@ export function CodexAcpView({
           <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
-            <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
+            <div className={`text-[10px] ${activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? '' : 'truncate'} ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {activeAgentName + ' · ' + (activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace) + (activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing)}
+              {activeAgentName + ' · '}
+              {/* Keychain chip (§6): project sessions show the primary
+                  directory + N and offer "align to project" (§9.7); temporary
+                  sessions / unavailable directories keep the original text
+                  line. No truncate on the chip branch: its overflow:hidden
+                  would clip the chip's pop-up panel (review #484 M2). */}
+              {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
+                <WorkspaceKeychainChip
+                  copy={t.uiKeychain}
+                  primary={(activeKeychain && activeKeychain.primary) || activeSession.workspace_path}
+                  additionalCount={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.additional
+                    : 0}
+                  roots={activeKeychain && activeKeychain.primary
+                    ? activeKeychain.roots
+                    : [activeSession.workspace_path]}
+                  // Third-party ACP sessions sit behind the §6 stage-gate:
+                  // additional roots are recorded, only the primary is
+                  // delivered — the chip copy must not promise access.
+                  deliveryLimited={!isNativeAgent}
+                  canAlign={!isWeb && !!resolveSessionProjectId(
+                    { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },
+                    (bs && bs.projectsList && bs.projectsList.projects) || [],
+                    (bs && bs.projectsList && bs.projectsList.assignments) || {},
+                  )}
+                  busy={busy}
+                  onAlign={alignKeychainToProject}
+                />
+              ) : (
+                activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace
+              )}
+              {activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
@@ -3724,7 +3918,7 @@ export function CodexAcpView({
                       </button>
                       {workspaceMenuOpen && (
                         <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
+                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: laneNoticeMode, deliveryLimited: !isNativeAgent })}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
@@ -3737,12 +3931,21 @@ export function CodexAcpView({
                             {recentWorkspaces.length > 0 && (
                               <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
+                                {/* Grant-notice parity (§9.4, the same shape as the chat lane's
+    ComposerWorkspaceSelector): a recents pick grants the folder directly
+    (single root), so the mode-aware notice sits on the recents section. The
+    mode mirrors the picker entry above (native draft staging first, then the
+    lane's reported effective mode). No recorded variant here: a single root
+    is the cwd/primary and is delivered to a third-party ACP agent too, so
+    "recorded only" would be false at n=1 (review #484 round-9 N3). */}
+                                <div className="px-3 pb-1 text-[10px] text-gray-400">
+                                  {workspaceNoticeTone(laneNoticeMode) === 'restricted'
+                                    ? t.uiWorkspacePicker.noticeRestricted(1)
+                                    : t.uiWorkspacePicker.noticeVisibility(1)}
+                                </div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
-                                    onClick={() => {
-                                      if (isWeb) chooseProjectDraft(path).catch(showError);
-                                      else beginDraft(path);
-                                    }}
+                                    onClick={() => { chooseRecentDraft(path).catch(showError); }}
                                     className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
                                     <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>

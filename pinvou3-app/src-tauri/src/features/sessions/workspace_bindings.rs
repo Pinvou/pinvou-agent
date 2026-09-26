@@ -91,6 +91,10 @@ const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
 struct SessionWorkspaceSidecar {
     version: u32,
     path: PathBuf,
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根)。旧 sidecar 缺该键
+    /// 或为空 = 单根语义(仅 `path` 目录)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workspace_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound_at: Option<i64>,
 }
@@ -115,6 +119,36 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
         path_key.trim_end_matches('/'),
         base_key.trim_end_matches('/'),
     )
+}
+
+/// Keychain persist shape at creation/bind time (§6; review #484 round-5 M2):
+/// the primary slot is always the session's own cwd. The base's
+/// `normalize_workspace_roots` consumes the set cwd-first, so persisting the
+/// caller's storage order verbatim would diverge the stored order from the
+/// effective one and the workspace chip would mislabel the primary root.
+/// Mirrors `ProjectStore::keychain_for_workspace` and the base normalizer:
+/// cwd promoted to slot 0 verbatim (matching the binding path persisted
+/// beside it), the remaining roots keep their relative order with duplicates
+/// removed under folded identity keys (case/separator spellings of the same
+/// directory collapse). An empty set stays empty — it is the documented
+/// single-root contract, not a one-element keychain.
+pub(crate) fn cwd_first_workspace_roots(cwd: &Path, roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if roots.is_empty() {
+        return roots;
+    }
+    let mut seen = vec![crate::platform::os::filesystem_path_identity_key(
+        &cwd.to_string_lossy(),
+    )];
+    let mut normalized = vec![cwd.to_path_buf()];
+    for root in roots {
+        let key = crate::platform::os::filesystem_path_identity_key(&root.to_string_lossy());
+        if seen.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        seen.push(key);
+        normalized.push(root);
+    }
+    normalized
 }
 
 /// A future-version format must never be silently parsed as the current version:
@@ -186,6 +220,19 @@ impl SessionStore {
     /// empty session, leaving no session that merely "looked bound" and lost the
     /// binding after restart.
     pub fn bind_session_workspace(&self, id: &str, path: PathBuf) -> Result<()> {
+        self.bind_session_workspace_with_roots(id, path, Vec::new())
+    }
+
+    /// 绑定 + 钥匙串快照(§6):`workspace_roots` 是全量可访问根(空 = 单根
+    /// 语义,底座按 cwd 归一)。落盘前经 `cwd_first_workspace_roots` 归一为
+    /// cwd 居首去重,落盘序即底座生效序。落盘纪律与
+    /// `bind_session_workspace` 相同。
+    pub fn bind_session_workspace_with_roots(
+        &self,
+        id: &str,
+        path: PathBuf,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<()> {
         validate_session_id(id)?;
         let record = self.manager.sessions_dir().join(format!("{id}.json"));
         if !record.is_file() {
@@ -193,6 +240,7 @@ impl SessionStore {
         }
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            workspace_roots: cwd_first_workspace_roots(&path, workspace_roots),
             path,
             bound_at: Some(now_unix_secs()),
         };
@@ -209,6 +257,50 @@ impl SessionStore {
             .write()
             .insert(id.to_string(), sidecar.path);
         Ok(())
+    }
+
+    /// 创建时锁定的钥匙串快照(§6);无绑定/旧 sidecar/残留目录 = 空(单根
+    /// 语义)。冷路径直接读 sidecar(只在引擎 spawn/resume 调用),不填充
+    /// `session_workspaces` 路径缓存。
+    pub fn session_workspace_roots(&self, id: &str) -> Vec<PathBuf> {
+        if validate_session_id(id).is_err()
+            || !self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+        {
+            return Vec::new();
+        }
+        read_workspace_sidecar(&self.session_workspace_sidecar_path(id))
+            .map(|sidecar| sidecar.workspace_roots)
+            .unwrap_or_default()
+    }
+
+    /// 「对齐到项目」(§9.7)的钥匙串替换:整体重写 sidecar 快照(绑定路径与
+    /// bound_at 保留)。无绑定时返回 Ok(false)——临时会话已由命令层先行拒绝,
+    /// 这里是第二道防线。
+    pub fn set_session_workspace_roots(
+        &self,
+        id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<bool> {
+        validate_session_id(id)?;
+        let file = self.session_workspace_sidecar_path(id);
+        let Some(existing) = read_workspace_sidecar(&file) else {
+            return Ok(false);
+        };
+        let updated = SessionWorkspaceSidecar {
+            version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            path: existing.path,
+            workspace_roots,
+            bound_at: existing.bound_at,
+        };
+        let payload =
+            serde_json::to_vec_pretty(&updated).context("serialize session workspace binding")?;
+        crate::platform::filesystem::atomic_write(&file, &payload)
+            .with_context(|| format!("persist session workspace roots to {}", file.display()))?;
+        Ok(true)
     }
 
     /// Reads the session's user working-directory binding (None when unbound; the
@@ -365,6 +457,13 @@ impl SessionStore {
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
             path: next.clone(),
+            // 钥匙串快照随绑定一起平移:单个未覆盖前缀的根替换时,磁盘上已有
+            // 的快照原样保留(逐根平移由下方 rebind_workspace_bindings 的整批
+            // 通道处理)。
+            workspace_roots: previous
+                .as_ref()
+                .map(|sidecar| sidecar.workspace_roots.clone())
+                .unwrap_or_default(),
             bound_at: previous.and_then(|sidecar| sidecar.bound_at),
         };
         let payload = match serde_json::to_vec_pretty(&sidecar) {
@@ -526,11 +625,35 @@ impl SessionStore {
                 }
                 // bound_at is metadata only: keep it as-is, same convention as
                 // the codex store's rebind; it is no longer reset to None
-                // (review #452 finding 3).
-                let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
+                // (review #452 finding 3). The keychain snapshot shifts along:
+                // roots under the `from` prefix move onto `to`, the rest stay
+                // (round-8 should-fix 9: the same shared predicate and suffix
+                // cut as the containment above).
+                let previous = read_workspace_sidecar(&sidecar_path);
+                let bound_at = previous.as_ref().and_then(|s| s.bound_at);
+                let rebound_roots: Vec<PathBuf> = previous
+                    .map(|s| s.workspace_roots)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|root| {
+                        // The keychain is translated against the rebind prefix
+                        // (`from` → `to`), not against the binding's own new
+                        // path `next` (= `to` + the binding's suffix): a session
+                        // bound at `from/deep` whose keychain holds `from`
+                        // itself or the sibling root `from/x` must land on
+                        // `to` / `to/x`, same convention as the codex lane's
+                        // rebind_workspace_prefix (review #484 B1).
+                        match crate::platform::os::path_relative_suffix_under(&root, from) {
+                            Some(suffix) if suffix.as_os_str().is_empty() => to.to_path_buf(),
+                            Some(suffix) => to.join(suffix),
+                            None => root,
+                        }
+                    })
+                    .collect();
                 let updated = SessionWorkspaceSidecar {
                     version: SESSION_WORKSPACE_SIDECAR_VERSION,
                     path: next.clone(),
+                    workspace_roots: rebound_roots,
                     bound_at,
                 };
                 let payload = serde_json::to_vec_pretty(&updated)

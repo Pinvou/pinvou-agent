@@ -102,7 +102,10 @@ test("stale assignment ids fall through to auto grouping", () => {
   assert.equal(groups.find((g) => g.projectId === "p1").rows.length, 1);
 });
 
-test("longest matching root wins for nested roots", () => {
+test("membership resolves by smallest position, not root length (§9.9)", () => {
+  // Cross-project nesting is legal now: the first project in (position, id)
+  // order whose roots contain the workspace wins, mirroring the backend's
+  // resolve_session_project — even when another project's root is deeper.
   const projects = [
     project("p1", "Work", ["D:/work"], 0),
     project("p2", "Deep", ["D:/work/deep"], 1),
@@ -115,8 +118,25 @@ test("longest matching root wins for nested roots", () => {
     projects,
     {},
   );
-  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
-  assert.deepEqual(groups.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), [
+    "deep",
+    "shallow",
+  ]);
+  assert.equal(groups.find((g) => g.projectId === "p2").rows.length, 0);
+});
+
+test("position tiebreak honors id order and same-position stability", () => {
+  const projects = [
+    project("pb", "Later", ["D:/work"], 0),
+    project("pa", "Earlier-id", ["D:/work"], 0),
+  ];
+  const groups = groupSessionsWithProjects(
+    [projectItem("s1", "D:/work/x", "2026-08-01T08:00:00Z")],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups.find((g) => g.projectId === "pa").rows.map((r) => r.id), ["s1"]);
+  assert.equal(groups.find((g) => g.projectId === "pb").rows.length, 0);
 });
 
 test("project groups sort by manual position, folders by activity, temporary last", () => {
@@ -166,7 +186,7 @@ test("temporary sessions never auto-group even under a project root", () => {
 
 test("windows roots match case-insensitively, posix roots stay case-sensitive", () => {
   // The store folds identity keys on Windows (root_keys_fold_case_only_on_windows);
-  // the display-side longest-root guard must not let a case-differing workspace
+  // the position-first display rule must not let a case-differing workspace
   // path slip past its project (review finding 19).
   const projects = [project("p1", "Alpha", ["D:/Work/Alpha"], 0)];
   const groups = groupSessionsWithProjects(

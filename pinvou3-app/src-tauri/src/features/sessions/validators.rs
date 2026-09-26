@@ -102,6 +102,47 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     ))
 }
 
+/// Input validation for the keychain snapshot (§6): every additional root
+/// must be absolute (hard reject, same gate as cwd); nonexistent/non-
+/// directory roots only log a soft warning — following rebind's established
+/// pattern, the target directory may be moved away and recreated later, the
+/// snapshot faithfully records the user's choice at the time, and the
+/// engine-side write exemption for a nonexistent root naturally lapses.
+/// Successfully canonicalized roots use the canonical form (resolving
+/// symlink/verbatim prefixes, same invariant as
+/// validate_user_workspace_path); failures keep the lexical original.
+pub(crate) fn validate_workspace_roots(raw: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let path = PathBuf::from(&entry);
+        if !path.is_absolute() {
+            return Err(format!("workspace root must be absolute: {entry}"));
+        }
+        match path.canonicalize() {
+            Ok(canonical) if canonical.is_dir() => {
+                roots.push(crate::platform::os::platform_compat_path(
+                    &canonical.to_string_lossy(),
+                ));
+            }
+            Ok(_) => {
+                // Log hygiene (CodeQL cleartext-logging, same convention as
+                // the rebind lanes): the user-supplied absolute path stays out
+                // of the log; the soft warning records only the failure class.
+                eprintln!("[sessions] workspace root is not a directory (kept as-is)");
+                roots.push(path);
+            }
+            Err(error) => {
+                eprintln!(
+                    "[sessions] workspace root canonicalize failed (kept as-is): {:?}",
+                    error.kind()
+                );
+                roots.push(path);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {
     match system_prompt {
         Some(SystemPrompt::Text(text)) => Some(text.clone()),
@@ -140,4 +181,106 @@ pub(crate) fn generate_session_id() -> String {
         n /= 36;
     }
     buf
+}
+
+#[cfg(test)]
+mod workspace_roots_tests {
+    //! `validate_workspace_roots` is the security-relevant validation of a
+    //! new input surface (§6 keychain snapshot): relative paths are hard-
+    //! rejected, nonexistent/non-directory roots are soft-kept, existing
+    //! directories are canonicalized.
+    use super::*;
+
+    fn unique_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pinvou3-roots-validate-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn rejects_relative_roots() {
+        let error = validate_workspace_roots(vec!["relative/x".to_string()])
+            .expect_err("relative root must be rejected");
+        assert!(error.contains("must be absolute"), "{error}");
+        // Mixing in a legal root does not let it through: any relative path
+        // rejects the whole batch.
+        let abs = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(validate_workspace_roots(vec![abs, "x".to_string()]).is_err());
+    }
+
+    #[test]
+    fn empty_input_is_single_root_semantics() {
+        assert_eq!(
+            validate_workspace_roots(Vec::new()).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn existing_dirs_are_canonicalized() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        // Trailing `.` and separator spellings are normalized by
+        // canonicalize (symlink/verbatim prefix stripping is covered by the
+        // platform helper; this locks the lexical normalization).
+        let spelled = format!("{}/./", real.display());
+        let roots = validate_workspace_roots(vec![spelled]).expect("valid");
+        // The expected side goes through the same projection as production
+        // (canonicalize + platform_compat_path), so Windows verbatim `\?\`
+        // prefixes are stripped on both sides of the comparison.
+        let expected = crate::platform::os::platform_compat_path(
+            &real.canonicalize().unwrap().to_string_lossy(),
+        );
+        assert_eq!(roots, vec![expected]);
+    }
+
+    #[test]
+    fn symlink_spelling_resolves_to_canonical_form() {
+        // Same shape as macOS /var→/private/var: a symlink spelling is
+        // stored in canonical form, consistent with the project layer's
+        // stored-value identity keys. Directory symlinks on Windows need
+        // privileges; unix/macOS cover this (no cfg: architecture-guard).
+        if std::env::consts::OS == "windows" {
+            return;
+        }
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temp.path().join("link");
+        let status = std::process::Command::new("ln")
+            .arg("-s")
+            .arg(&real)
+            .arg(&link)
+            .status()
+            .expect("spawn ln");
+        assert!(status.success());
+        let roots = validate_workspace_roots(vec![link.to_string_lossy().into_owned()])
+            .expect("symlink root kept");
+        assert_eq!(roots, vec![real.canonicalize().unwrap()]);
+    }
+
+    #[test]
+    fn missing_or_file_roots_are_soft_kept_lexically() {
+        // Soft keep: a nonexistent additional root is kept at its lexical
+        // value (the target may be recreated later).
+        let missing = unique_dir("missing");
+        let roots =
+            validate_workspace_roots(vec![missing.to_string_lossy().into_owned()]).expect("kept");
+        assert_eq!(roots, vec![missing.clone()]);
+
+        // Existing but not a directory is equally soft-kept (lexical value,
+        // no canonicalize).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let roots =
+            validate_workspace_roots(vec![file.to_string_lossy().into_owned()]).expect("kept");
+        assert_eq!(roots, vec![file]);
+        let _ = std::fs::remove_dir_all(&missing);
+    }
 }

@@ -216,8 +216,12 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
+  // Recomputed again for the single-entry workspace picker: create_session now
+  // also carries the keychain snapshot (workspaceRoots) and project ownership
+  // (projectId) captured from the draft, and the draft staging gains
+  // draftWorkspaceRoots/draftProjectId (bridge/sessions.js).
   // Recomputed for the shared-helper dedup (see batch note above).
-  sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
+  sessions: '2e6d8899b5fee3e6cf74a3a048ec2f48d6fa57872b6f0e59b1690fb0e6a645fa',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -239,8 +243,12 @@ const expectedProtocolHashes = {
   // payload — the dialog's previous report fed back on retry, honored by the
   // backend only as a reporting reclassification inside its own to-lane
   // retry population. Same command surface, no new invoke or listen entries.
-  projects: '90c12ab7494aba3975ac4ece4b23594f4a4fcf309f6252b721ce15575b245979',
-};
+  // Recomputed again after the single-entry workspace picker merge: on top of
+  // the rebind carryover feed-back the domain also gains
+  // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
+  // projects_set_never_materialize / align_session_to_project
+  // (bridge/projects.js).
+  projects: '04a4d40cc4d870c691ae9c524241f0b340ab62afdef413af9e4a249ae8771413',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
