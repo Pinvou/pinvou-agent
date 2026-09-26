@@ -7,8 +7,7 @@
 //!   `install` / `uninstall` plus the companion-skill and DenyAll-scope
 //!   follow-ups the GUI command layer performs (`companion_skills`,
 //!   `skill_marketplace::SkillMarketplaceManager::install`,
-//!   `skill_scope::sync_deny_all_scopes_after_skill_install`,
-//!   `sync_deny_all_scopes_after_install`, `remove_connector_from_disabled_scopes`).
+//!   `sync_deny_all_scopes_after_install`, `remove_bundle_from_disabled_scopes`).
 //!   The GUI's post-install `validate_remote_connection` handshake and the
 //!   OAuth token deletion on uninstall run inside the Tauri host on the
 //!   foundation's async MCP stack, which the CLI does not link; the CLI prints
@@ -36,8 +35,8 @@
 //!   is foundation-internal and not reachable from this crate, so the command
 //!   fails with `oauth_login_unavailable_in_cli` instead of half-reimplementing
 //!   PKCE + callback + token persistence that the desktop app could not read.
-//! - skills list/install/update/uninstall → `SkillMarketplaceManager` +
-//!   `skill_scope` exactly like `install_marketplace_skill_sync` /
+//! - skills list/install/update/uninstall → `SkillMarketplaceManager` + the
+//!   scope sync/cleanup entries exactly like `install_marketplace_skill_sync` /
 //!   `update_marketplace_skill` / `uninstall_marketplace_skill_sync`.
 //! - import → `plugin_import::import_plugin_package` (the unified plugin
 //!   upload pipeline behind `import_plugin_package_cmd`), replacing the GUI
@@ -79,11 +78,15 @@
 //!   installed never does. The `assets_missing` demotion of a `degraded`
 //!   non-CLI package is derived in this module rather than in `readiness_for`,
 //!   so the desktop readiness card keeps its existing verdict.
-//! - enable/disable/project-skills → `scope::update_disabled_bundles_for`
-//!   (single-critical-section RMW, with the requested state verified inside
-//!   that same critical section) / `set_project_skills_enabled` (the storage
-//!   behind `set_disabled_skills` / `set_project_skills_enabled`), with
-//!   `package_id_for` normalizing ids for the verification. Two caveats are
+//! - enable/disable/project-skills → `load_disabled_bundles_for` +
+//!   `save_disabled_bundles_for` (the same load-modify-save the GUI's
+//!   `set_disabled_skills` / `set_disabled_connectors` persist through, with
+//!   the requested state verified on the exact list handed to the writer) /
+//!   `set_project_skills_enabled`, with `scope::package_id_for` normalizing
+//!   ids for the verification. The load and the save are two separate
+//!   in-process critical sections, so a desktop-app write to the same file
+//!   landing in between is last-writer-wins (see docs/pinvou-cli.md, Known
+//!   limitations). Two caveats are
 //!   printed at the point of action: the toggle performs no hot-refresh
 //!   broadcast (the GUI's `hot_refresh` needs the engine pool this crate does
 //!   not host), so a running desktop app's live engines keep the stale
@@ -103,9 +106,8 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
     bundle::{BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
-    package_export, plugin_import, recycle_bin,
+    package_export, plugin_import, recycle_bin, remove_bundle_from_disabled_scopes,
     skill_marketplace::SkillMarketplaceManager,
-    skill_scope,
     store::{BundleSource, BundleStore},
     sync_deny_all_scopes_after_install,
 };
@@ -710,24 +712,15 @@ fn tools_install(
         .map_err(|error| feature_error("tools install", id, error))?;
     // Companion skills follow the package (GUI `install_marketplace_tool`):
     // a companion INSTALL failure is logged and does not roll back the MCP
-    // install (a skill is an enhancement), but a companion SCOPE SYNC failure
-    // is a consent gap and is collected, not swallowed. The GUI makes exactly
-    // that split: it pushes sync failures into `sync_errors` and returns them
-    // from the command once the loop is done. Collect-then-raise rather than
-    // `?` per iteration for the same reason it gives: an early return would
-    // skip the remaining companions and the package-level sync below, leaving
-    // "package installed but its consent set did not follow" — a fail-open
-    // half state.
+    // install (a skill is an enhancement). The DenyAll scope syncs are the
+    // same best-effort entry points the GUI calls: a failed consent-file
+    // write is logged by the scope layer (a documented fail-open concession
+    // there), not returned.
     let mut companion_note = Vec::new();
-    let mut sync_errors: Vec<String> = Vec::new();
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
-                if let Err(error) = skill_scope::sync_deny_all_scopes_after_skill_install(&sid) {
-                    sync_errors.push(format!(
-                        "companion skill '{sid}' scope sync failed: {error}"
-                    ));
-                }
+                sync_deny_all_scopes_after_install(&sid);
                 companion_note.push(sid);
             }
             Err(error) => {
@@ -736,15 +729,7 @@ fn tools_install(
         }
     }
     // DenyAll scopes (e.g. code) keep newly installed packages off by default.
-    if let Err(error) = sync_deny_all_scopes_after_install(id) {
-        sync_errors.push(format!("package '{id}' scope sync failed: {error}"));
-    }
-    if !sync_errors.is_empty() {
-        return Err(CliError::failed(format!(
-            "plugins tools install({id}): {}",
-            sync_errors.join("; ")
-        )));
-    }
+    sync_deny_all_scopes_after_install(id);
     // The GUI validates remote MCP connections right after install
     // (validate_on_install manifests) and, on a failed handshake, UNINSTALLS
     // the tool again. The handshake runs on the foundation's async MCP stack,
@@ -803,20 +788,17 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         SkillMarketplaceManager::new()
             .uninstall(sid)
             .map_err(|error| feature_error("tools uninstall", id, error))?;
-        skill_scope::remove_skill_from_disabled_scopes(sid)
-            .map_err(|error| feature_error("tools uninstall", id, error))?;
+        remove_bundle_from_disabled_scopes(sid);
     }
     mgr.uninstall(id)
         .map_err(|error| feature_error("tools uninstall", id, error))?;
     if recycles_with_package {
         for sid in &companions {
-            skill_scope::remove_skill_from_disabled_scopes(sid)
-                .map_err(|error| feature_error("tools uninstall", id, error))?;
+            remove_bundle_from_disabled_scopes(sid);
         }
     }
     // Keep the disabled sets free of stale connector ids (GUI parity).
-    pinvou3_lib::features::marketplace::remove_connector_from_disabled_scopes(id)
-        .map_err(|error| feature_error("tools uninstall", id, error))?;
+    remove_bundle_from_disabled_scopes(id);
     let action = if recycles_with_package {
         "uninstalled (moved to recycle bin)"
     } else {
@@ -1107,8 +1089,7 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
     SkillMarketplaceManager::new()
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
-    skill_scope::sync_deny_all_scopes_after_skill_install(id)
-        .map_err(|error| feature_error("skills install", id, error))?;
+    sync_deny_all_scopes_after_install(id);
     let value = serde_json::json!({ "id": id, "action": "installed" });
     Ok(success(render(output, format!("installed {id}"), &value)))
 }
@@ -1139,8 +1120,7 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
     SkillMarketplaceManager::new()
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
-    skill_scope::remove_skill_from_disabled_scopes(id)
-        .map_err(|error| feature_error("skills uninstall", id, error))?;
+    remove_bundle_from_disabled_scopes(id);
     let value = serde_json::json!({ "id": id, "action": "uninstalled" });
     Ok(success(render(output, format!("uninstalled {id}"), &value)))
 }
@@ -1304,8 +1284,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     })?;
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
-    sync_deny_all_scopes_after_install(&report.id)
-        .map_err(|error| feature_error("import", &report.id, error))?;
+    sync_deny_all_scopes_after_install(&report.id);
     let kind = serde_json::to_value(&report.kind)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -1695,7 +1674,7 @@ fn set_enabled(
     // and the read-back verification must both use that id: comparing the
     // raw id reported false `persistence_verified` for enables (nothing was
     // removed) and could never verify disables of remapped ids.
-    let packages = pinvou3_lib::features::marketplace::package_id_for(id);
+    let packages = pinvou3_lib::features::marketplace::scope::package_id_for(id);
     // `--scope both` is two independent single-scope writes: the storage layer
     // exposes one scope per critical section and no two-scope transaction, so
     // a failure on the second scope cannot roll the first one back. Rather
@@ -1704,59 +1683,48 @@ fn set_enabled(
     // and in the success payload otherwise.
     let mut applied: Vec<&'static str> = Vec::new();
     for connector_scope in scope.scopes() {
-        // Single-critical-section read-modify-write: loading and saving in
-        // two separate lock acquisitions let a concurrent GUI toggle between
-        // them be silently dropped (the same lost-update window the app
-        // layer documented and fixed for its own RMW).
-        // The RMW is fail-closed: an unavailable bundle lock, a corrupt
-        // consent file, or a failing write all surface through this `?`.
+        // The same load-modify-save the GUI persists a scope through
+        // (`load_disabled_bundles_for` → `save_disabled_bundles_for`, which
+        // marks the scope initialized). The load and the save are two
+        // separate in-process critical sections, exactly like the desktop
+        // app's own toggle; a desktop-app write landing between them is
+        // last-writer-wins (disclosed in docs/pinvou-cli.md). A failing disk
+        // write surfaces through the `?` below.
         //
-        // The requested state is verified INSIDE the closure, i.e. under the
-        // same flock the write holds and against the exact list the writer is
-        // about to persist (it maps every entry through the same
-        // `package_id_for` normalization, which is idempotent on an already
-        // normalized id). The previous shape re-read the scope with
-        // `load_disabled_bundles_for` AFTER the lock was released: a GUI
-        // toggle of the same package in that window was reported as "the
-        // storage write failed or was dropped" for a write that had in fact
-        // succeeded, i.e. a hard failure invented by an unrelated concurrent
-        // writer.
-        let recorded = std::cell::Cell::new(false);
-        pinvou3_lib::features::marketplace::update_disabled_bundles_for(
-            connector_scope,
-            |ids: &mut Vec<String>| {
-                if enabled {
-                    ids.retain(|existing| existing != &packages);
-                } else if !ids.iter().any(|existing| existing == &packages) {
-                    ids.push(packages.clone());
-                }
-                // Verified on the NORMALIZED projection, which is what the
-                // writer persists and what every later read resolves: an
-                // entry whose ownership flipped (a companion skill id still
-                // spelled raw) normalizes onto `packages` too, and an enable
-                // that only dropped the exact spelling would otherwise report
-                // success while the package stayed disabled. The per-entry
-                // `package_id_for` is the same walk the writer already runs
-                // inside this critical section, so it adds no new scan class.
-                recorded.set(ids.iter().any(|existing| {
-                    pinvou3_lib::features::marketplace::package_id_for(existing) == packages
-                }));
-            },
-        )
-        .map_err(|error| {
-            CliError::failed(format!(
-                "plugins {action}: could not update disabled bundles for {id} in \
-                 scope {} : {error}{}",
-                connector_scope.as_str(),
-                applied_scopes_suffix(&applied)
-            ))
-        })?;
+        // The loaded list is the effective one (DenyAll fallback included),
+        // so saving it freezes an uninitialized DenyAll scope with exactly
+        // what the user saw plus this change — the GUI's shape too.
+        let mut ids =
+            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
+        if enabled {
+            ids.retain(|existing| existing != &packages);
+        } else if !ids.iter().any(|existing| existing == &packages) {
+            ids.push(packages.clone());
+        }
+        // Verified on the NORMALIZED projection of the exact list handed to
+        // the writer, which is what it persists and what every later read
+        // resolves: an entry whose ownership flipped (a companion skill id
+        // still spelled raw) normalizes onto `packages` too, and an enable
+        // that only dropped the exact spelling would otherwise report success
+        // while the package stayed disabled.
+        let recorded = ids.iter().any(|existing| {
+            pinvou3_lib::features::marketplace::scope::package_id_for(existing) == packages
+        });
+        pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "plugins {action}: could not update disabled bundles for {id} in \
+                     scope {} : {error}{}",
+                    connector_scope.as_str(),
+                    applied_scopes_suffix(&applied)
+                ))
+            })?;
         // Only reachable if the mutation above did not leave the list in the
         // requested state — storage errors already surfaced through the `?`.
         // Fail closed in both directions: an enable that did not stick
         // re-activates the package, and a lost disable leaves it ACTIVE while
         // the caller sees success.
-        if recorded.get() == enabled {
+        if recorded == enabled {
             return Err(CliError::failed(format!(
                 "plugins {action}: could not persist {id} for scope {} (the resolved \
                  disabled set did not take the requested state){}",
@@ -1766,8 +1734,8 @@ fn set_enabled(
         }
         applied.push(connector_scope.as_str());
     }
-    // Reaching this point means every scope's under-lock verification matched
-    // the requested state; a mismatch hard-failed above.
+    // Reaching this point means every scope's verification matched the
+    // requested state; a mismatch hard-failed above.
     let value = serde_json::json!({
         "id": id,
         "action": action,
@@ -1817,12 +1785,12 @@ fn known_installed_ids() -> Vec<String> {
 }
 
 fn project_skills(enabled: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // `skill_scope::set_project_skills_enabled` (alias of the scope.rs
-    // storage the GUI set_project_skills_enabled command writes). The write
-    // is fail-closed; the getter still verifies the persisted value.
-    skill_scope::set_project_skills_enabled(enabled)
+    // `scope::set_project_skills_enabled` (the scope.rs storage the GUI
+    // set_project_skills_enabled command writes). A failing write propagates;
+    // the getter still verifies the persisted value.
+    pinvou3_lib::features::marketplace::scope::set_project_skills_enabled(enabled)
         .map_err(|error| CliError::failed(format!("plugins project-skills: {error}")))?;
-    if skill_scope::project_skills_enabled() != enabled {
+    if pinvou3_lib::features::marketplace::scope::project_skills_enabled() != enabled {
         return Err(CliError::failed(
             "plugins project-skills: could not persist the new value (the storage write \
              failed or was dropped)",

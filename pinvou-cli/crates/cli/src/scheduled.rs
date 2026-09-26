@@ -22,10 +22,16 @@
 //!
 //! Disclosed deviations from the GUI (all deferred to the foundation, never
 //! duplicated half-way here):
-//! - `next_run_at` is left unset on create/rrule-update/resume. The GUI
-//!   computes it from the local-timezone schedule; the foundation's scheduler
-//!   sweep initializes a missing `next_run_at` on its next tick
-//!   (`automation_manager::collect_due_runs`), so the end state converges.
+//! - `next_run_at` is left unset for non-once schedules on
+//!   create/rrule-update/resume; the foundation's scheduler sweep initializes
+//!   a missing `next_run_at` on its next tick
+//!   (`automation_manager::collect_due_runs`). For `FREQ=ONCE` the AT anchor
+//!   is persisted eagerly instead (create/rrule-update while active, and
+//!   every resume): the sweep's lazy initialization runs
+//!   `next_after_with_anchor(now, now)` and errors with "no future run" for a
+//!   one-shot whose AT already elapsed, which silently pauses the task
+//!   instead of firing late the way a GUI-created one-shot (persisted with
+//!   `next_run_at = AT`) does.
 //! - Run-status reconciliation needs the foundation `TaskManager`; runs are
 //!   reported exactly as persisted.
 //! - `scheduled run` executes only `memory_organize` tasks (app-side, no
@@ -33,11 +39,21 @@
 //!   minus the session-bound bridge which is `pub(crate)` to `pinvou3_lib`).
 //!   Chat-kind run-now drives the GUI's `ScheduledChatExecutor` +
 //!   `TaskManager`, which are not exposed headlessly, and is refused with a
-//!   stable error instead of being faked.
+//!   stable error instead of being faked. A run whose outcome status is
+//!   `failed` still prints the same output body but exits 1: the
+//!   completed-command-failed-result convention the `models` family
+//!   established for `probe-local` — an exit-0 would tell scripts the run
+//!   succeeded.
 //! - `update` cannot change a task's model: the GUI's `update_task` applies
 //!   `input.model`, while `--model-id` here only re-binds the pin for the
-//!   definition's existing wire model (the GUI's model pinning call). Edit
-//!   the model in the GUI, or delete and recreate the task from the CLI.
+//!   definition's existing wire model (the GUI's model pinning call — a raw
+//!   registry write, no store lookup). `create --model-id`, unlike update,
+//!   resolves the id against the saved models store and persists the
+//!   *selected* record's wire name — exactly the pair the executor's
+//!   `resolve_scheduled_model` later checks — so an unknown id is refused
+//!   with exit 2 before anything is persisted instead of writing a binding
+//!   that fails on every later run. Edit the model in the GUI, or delete and
+//!   recreate the task from the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -48,7 +64,7 @@ use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
 use crate::support::{render, require_yes, sandbox_home, success};
-use crate::{CliError, CliOutcome, OutputMode};
+use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 const SCHEDULED_USAGE: &str = "usage: pinvou scheduled \
 <list|show|create|update|pause|resume|pin|unpin|delete|run|runs|runs-all|mark-viewed|chat-prompt>";
@@ -753,6 +769,71 @@ fn validate_once_at(at: &str, active: bool) -> Result<(), CliError> {
         )));
     }
     Ok(())
+}
+
+/// The eager next-run stamp for a one-shot: a `FREQ=ONCE` record is persisted
+/// with `next_run_at` already set to its AT anchor, because the foundation
+/// schedule sweep never can. Its lazy initialization is
+/// `next_after_with_anchor(now, now)` — for an elapsed AT it fails with
+/// "no future run", which silently pauses the one-shot (and, through the
+/// error-returning sweep, stalls the whole family) instead of firing late
+/// the way a GUI-created one-shot (persisted with `next_run_at = AT`) does.
+///
+/// This is a rendering, not a parse: `validate_rrule` proved the anchor's
+/// calendar validity (and future-ness where the entry point requires it) on
+/// the same channel just before, so here the anchor only needs to be
+/// converted to the persisted `DateTime<Utc>` rendering the GUI writes for
+/// its own one-shots (`record.next_run_at.to_rfc3339()`), truncated to
+/// milliseconds like every stamp here. Uppercase is enough — rrules are
+/// stored uppercased by `create`/`update`, and this helper normalizes for
+/// lookups.
+///
+/// Returns None for a missing AT (a malformed rrule the caller validated
+/// elsewhere): callers deny the write, they never guess.
+fn once_anchor(rrule: &str) -> Option<String> {
+    let at = rrule.split(';').find_map(|part| {
+        let part = part.trim();
+        part.strip_prefix("AT=")
+            .or_else(|| part.strip_prefix("at="))
+            .map(str::trim)
+    })?;
+    let (secs, nanos) = match parse_rfc3339(at) {
+        Some(instant) => instant,
+        None => {
+            // Naive-local channel: the foundation resolves the stamp through
+            // the system timezone (`Local`); `validate_once_at` has already
+            // proved it exists there (a DST gap was refused).
+            let number = |start: usize, end: usize| {
+                std::str::from_utf8(at.as_bytes().get(start..end)?)
+                    .ok()?
+                    .parse::<u32>()
+                    .ok()
+            };
+            // The naive channel is either YYYY-MM-DDTHH:MM or
+            // YYYY-MM-DDTHH:MM:SS (validated in `validate_once_at`; seconds
+            // default to 0 for the 16-char shape).
+            let second = if at.len() == 19 { number(17, 19)? } else { 0 };
+            let resolved = {
+                use chrono::TimeZone as _;
+                chrono::Local
+                    .from_local_datetime(
+                        &chrono::NaiveDate::from_ymd_opt(
+                            number(0, 4)? as i32,
+                            number(5, 7)?,
+                            number(8, 10)?,
+                        )?
+                        .and_hms_opt(
+                            number(11, 13)?,
+                            number(14, 16)?,
+                            second,
+                        )?,
+                    )
+                    .earliest()?
+            };
+            (resolved.timestamp(), resolved.timestamp_subsec_nanos())
+        }
+    };
+    Some(format_rfc3339_millis(secs, nanos))
 }
 
 /// Structural mirror of the foundation `ParsedCronExpr` grammar: five
@@ -2262,6 +2343,48 @@ fn default_automation_model() -> String {
         .unwrap_or_else(|| "default-model".to_owned())
 }
 
+/// The wire name `--model-id <id>` binds to: the saved record X's own
+/// `model`, never the active model's. The pair persisted for a binding is
+/// exactly what the executor's `resolve_scheduled_model` later checks — any
+/// other pairing (including a dangling unknown id) fails every run at
+/// startup ("此任务绑定的 AI 模型配置已变更"), so the id is resolved here and
+/// an unknown one is refused as a usage error (exit 2): the id is invalid
+/// at the moment it is named, the same class as `--kind`/`--mode` checks.
+/// The lookup goes through the same saved-models store `UserPrefs` migrates
+/// and normalizes on load (`models list` / the model picker read).
+fn resolve_saved_model_wire_name(model_id: &str) -> Result<String, CliError> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Ok(default_automation_model());
+    }
+    UserPrefs::load()
+        .model_by_id(model_id)
+        .map(|model| model.model.clone())
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "unknown model id '{model_id}' (saved models: {}); a task bound to a \
+                 nonexistent model fails on every run at the model resolution check",
+                saved_models_for_usage()
+            ))
+        })
+}
+
+/// Compact listing of saved models for `--model-id`'s unknown-id error, built
+/// from the same store `UserPrefs::load` migrates and normalizes.
+fn saved_models_for_usage() -> String {
+    let models: Vec<String> = UserPrefs::load()
+        .advanced
+        .saved_models
+        .iter()
+        .map(|model| format!("[{}] {} ({})", model.name, model.model, model.id))
+        .collect();
+    if models.is_empty() {
+        "(no saved models; add one from the app's settings)".to_owned()
+    } else {
+        models.join(", ")
+    }
+}
+
 /// Mirrors `Pinvou3Bridge::allow_shell_for_prefs` (crate-private in
 /// `pinvou3_lib`): env > prefs.advanced > default true.
 fn current_allow_shell() -> bool {
@@ -2310,6 +2433,17 @@ fn create(
 enabled in settings",
         ));
     }
+    // Model resolution mirrors the GUI's pairing (`selected.model` with
+    // `selected.modelId` and nothing else): with `--model-id` the selected
+    // record's wire name is the definition's model, and the same pair is
+    // persisted as the binding. Writing the active model's name against
+    // another record's id would fail every later run at
+    // `resolve_scheduled_model`, so the unknown-id check happens here, before
+    // anything is persisted.
+    let model = match model_id.as_deref() {
+        Some(model_id) => resolve_saved_model_wire_name(model_id)?,
+        None => default_automation_model(),
+    };
     // The workspace is allocated from the automation id exactly like the GUI
     // (`ensure_automation_workspace`); clients cannot provide a path.
     let id = new_storage_id();
@@ -2326,8 +2460,19 @@ enabled in settings",
             workspace.display()
         ))
     })?;
-    // The foundation's scheduler sweep fills next_run_at on its next tick;
-    // see the module docs for the deferred-schedule deviation.
+    // A one-shot is persisted with `next_run_at` already at its AT anchor in
+    // the active branch: the sweep resolves a missing anchor through
+    // `next_after_with_anchor(now, now)`, which fails with "no future run"
+    // for an elapsed AT and silently pauses the task instead of firing late
+    // the way a GUI-created one-shot (persisted with the anchor) does. Every
+    // other schedule keeps the deferred-schedule deviation (module docs).
+    let next_run_at = if paused {
+        serde_json::Value::Null
+    } else {
+        once_anchor(rrule)
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null)
+    };
     let def = serde_json::json!({
         "schema_version": 2,
         "id": id,
@@ -2335,7 +2480,7 @@ enabled in settings",
         "prompt": prompt,
         "rrule": rrule.trim().to_ascii_uppercase(),
         "cwds": [workspace.display().to_string()],
-        "model": default_automation_model(),
+        "model": model,
         "mode": mode.unwrap_or_default().persisted(),
         "allow_shell": current_allow_shell(),
         "trust_mode": true,
@@ -2343,7 +2488,7 @@ enabled in settings",
         "status": if paused { "paused" } else { "active" },
         "created_at": now,
         "updated_at": now,
-        "next_run_at": serde_json::Value::Null,
+        "next_run_at": next_run_at,
         "last_run_at": serde_json::Value::Null,
     });
     store_holder.write_def(&def)?;
@@ -2432,14 +2577,21 @@ fn update(
         }
         def["prompt"] = serde_json::json!(prompt);
     }
-    if let Some(rrule) = rrule {
+    if let Some(rrule) = rrule.as_deref() {
         def["rrule"] = serde_json::json!(rrule.trim().to_ascii_uppercase());
         schedule_changed = true;
     }
     if schedule_changed {
-        // Active or paused, the next slot is recomputed by the foundation
-        // scheduler sweep (paused tasks keep it unset, like the GUI).
-        def["next_run_at"] = serde_json::Value::Null;
+        // Same eager-anchor rule as create: an active one-shot carries its AT
+        // from the start (the parser future-checked this rrule), nothing else
+        // gets a value — the sweep fills in the first slot for the rest.
+        def["next_run_at"] = if str_field(&def, "status") == Some("active") {
+            once_anchor(rrule.as_deref().unwrap_or(""))
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            serde_json::Value::Null
+        };
     }
     def["updated_at"] = serde_json::json!(now_string());
     ensure_workspace(&store_holder, &mut def)?;
@@ -2547,9 +2699,20 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
     let mut def = store_holder.read_def(id)?;
     let action = if pause { "paused" } else { "resumed" };
     def["status"] = serde_json::json!(if pause { "paused" } else { "active" });
-    // Both branches clear the next slot: pause must not fire, and resume lets
-    // the foundation scheduler sweep recompute it in the local timezone.
-    def["next_run_at"] = serde_json::Value::Null;
+    // Pause clears the next slot in both branches; resume of a once task
+    // instead restores its AT anchor: the sweep initializes a missing anchor
+    // through `next_after_with_anchor(now, now)`, which errors ("no future
+    // run") for an elapsed AT and silently pauses the task instead of firing
+    // late the way a GUI resume (recomputed slot, anchor preserved) does.
+    // Every other resumed schedule keeps the deferred-schedule deviation
+    // (module docs).
+    def["next_run_at"] = if pause {
+        serde_json::Value::Null
+    } else {
+        once_anchor(str_field(&def, "rrule").unwrap_or(""))
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null)
+    };
     def["updated_at"] = serde_json::json!(now_string());
     if !pause {
         ensure_workspace(&store_holder, &mut def)?;
@@ -2934,7 +3097,19 @@ enabled in settings",
         "Run: {}\nTask: {}\nSession: -\nStatus: {}",
         run_id, id, status
     );
-    Ok(success(render(output, human, &value)))
+    let stdout = render(output, human, &value);
+    // A completed command reporting a failed result exits 1, the convention
+    // the `models` family set with `probe-local`: the output body (and the
+    // persisted run record) stay exactly as before, but the exit code must
+    // tell scripts the outcome was not a success.
+    Ok(CliOutcome {
+        exit_code: if status == "failed" {
+            ExitCode::Failed
+        } else {
+            ExitCode::Success
+        },
+        stdout,
+    })
 }
 
 /// One memory-organize pass through the windowless product host, the same

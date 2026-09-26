@@ -75,8 +75,19 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
+// Only the benchmark-gated headless runner (agentic_task) mints headless ids
+// and warns about retention eviction, so both re-exports follow its gate.
+// Retention itself reaches `store` directly and needs neither.
+/// Re-export the headless session id prefix: the runner mints ids from it and
+/// retention keys the separate headless eviction budget on it, so the two must
+/// not drift into separate literals.
 #[cfg(feature = "benchmark-hooks")]
-pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
+pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
+/// Re-export the headless retention cap: it is the number the runner's
+/// eviction warning quotes, and quoting the chat cap there would name a budget
+/// headless runs no longer touch.
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
 /// Re-export the new-chat placeholder sentinel: the auto-rename trigger in the
 /// command layer and the agentic runner's adoption guard must both compare
 /// against the same value GUI-created and kept headless sessions carry, or a

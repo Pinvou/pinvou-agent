@@ -6,10 +6,9 @@
 //! `pub(crate)`, so this module cannot call them directly. Every behavior
 //! below mirrors the exact GUI feature function over the public
 //! `pinvou3_lib` building blocks the feature itself uses:
-//! - the connector switch → `pinvou3_lib::features::marketplace::
-//!   sync_disabled_bundles_for_connector_switch` /
-//!   `sync_deny_all_scopes_after_install` (the calls the GUI command layer
-//!   makes around the feature calls). The unified scope state
+//! - the connector switch → the plain-scope `load_disabled_bundles_for` /
+//!   `save_disabled_bundles_for` pair the GUI toggle uses, and
+//!   `sync_deny_all_scopes_after_install` after a connect's skill apply. The unified scope state
 //!   (`disabled_bundles.json`) is the switch on BOTH surfaces: the GUI's
 //!   toggle is `set_disabled_connectors` → `apply_disabled_connectors_for`,
 //!   and `features/connectors/skill_gate.rs` records that the marker's
@@ -972,8 +971,8 @@ fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
 
 /// The connector switch as the GUI persists it: the unified scope state
 /// (`disabled_bundles.json`, plain scope) the GUI's `set_disabled_connectors`
-/// → `apply_disabled_connectors_for` writes and
-/// `sync_disabled_bundles_for_connector_switch` mirrors for this CLI.
+/// → `apply_disabled_connectors_for` writes and `set_enabled` below writes the
+/// same way.
 ///
 /// Read through the app's own `load_disabled_bundles` (plain scope) rather
 /// than off the raw file: it applies the same read-time package-id
@@ -983,7 +982,7 @@ fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
 /// off"), so an any-scope read would report a perfectly enabled connector as
 /// switched off right after `apply-skills`.
 fn scope_state_disabled(kind: ConnectorKind) -> bool {
-    let package_id = pinvou3_lib::features::marketplace::package_id_for(kind.as_str());
+    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(kind.as_str());
     pinvou3_lib::features::marketplace::load_disabled_bundles()
         .iter()
         .any(|id| id == &package_id || id == kind.as_str())
@@ -1090,18 +1089,19 @@ fn bundle_store_on_disconnected(id: &str) {
 /// (the GUI only logs them).
 fn bundle_store_on_connected(id: &str) {
     use pinvou3_lib::features::marketplace::bundle::cli_bundle_bin;
-    use pinvou3_lib::features::marketplace::store::{ASSET_KIND_CLI, AssetRef};
+    use pinvou3_lib::features::marketplace::store::{ASSET_KIND_CLI, AssetEntry, AssetRef};
     let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
     // The lock table is keyed by CLI binary name ("feishu" → "lark-cli"), the
     // same resolution `connector_cli::bundle_store_on_connected` performs.
     if let Some(bin) = cli_bundle_bin(id) {
         if let Some(pin) = artifact_pin(bin) {
-            record.assets.push(AssetRef {
+            record.assets.push(AssetEntry::Ref(AssetRef {
                 kind: ASSET_KIND_CLI.to_owned(),
                 name: bin.to_owned(),
                 version: pin.version,
                 sha256: pin.binary_sha256,
-            });
+                extra: Default::default(),
+            }));
         }
     }
     let _ = BundleStore::new().upsert_preserving(record);
@@ -1354,65 +1354,27 @@ fn set_enabled(
     if enabled {
         clear_legacy_disabled_marker(spec)?;
     }
-    // Mirror of the GUI switch (`set_disabled_connectors` →
-    // `apply_disabled_connectors_for`): the execpolicy CLI hard-block, the
-    // skill materialization exclusion and the app's own composer all read
-    // `disabled_bundles.json`, which is where a connector switch belongs.
-    pinvou3_lib::features::marketplace::sync_disabled_bundles_for_connector_switch(
-        spec.id, enabled,
-    )
-    .map_err(|error| {
-        CliError::failed(format!(
-            "connectors {}: could not sync disabled bundles for the switch: {error}",
-            spec.id
-        ))
-    })?;
-    // Verify the switch actually landed by reading back the raw on-disk
-    // mirror (`disabled_bundles.json` — the same file the execpolicy CLI
-    // hard-block and skill materialization read): a dropped write would
-    // otherwise flip a connector the user explicitly toggled while the
-    // command still reports success. The disable direction must record the
-    // package in at least one persisted scope list (uninitialized DenyAll
-    // scopes deny by policy and store no entry); the enable direction must
-    // remove it from every list.
-    //
-    // The writer normalizes through `to_package_id` before persisting, so the
-    // read-back has to look for that package id, not the raw connector id: a
-    // raw id that is re-claimed to an owner package is stored under the owner
-    // and would make a disable look unpersisted, while an enable would look
-    // verified because the raw id was never there to begin with. `plugins.rs`
-    // verifies through the same public helper for the same reason.
-    let mirrored_id = pinvou3_lib::features::marketplace::package_id_for(spec.id);
-    let mirror_path = pinvou3_home().join("disabled_bundles.json");
-    let mirror: Value = std::fs::read_to_string(&mirror_path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_else(|| json!({}));
-    let recorded_in = |key: &str| -> bool {
-        mirror[key]
-            .as_object()
-            .map(|scopes| {
-                scopes.values().any(|ids| {
-                    ids.as_array()
-                        .map(|ids| {
-                            ids.iter()
-                                .any(|id| id.as_str() == Some(mirrored_id.as_str()))
-                        })
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false)
-    };
-    let recorded = recorded_in("scopes") || recorded_in("hidden_scopes");
-    if recorded == enabled {
-        return Err(CliError::failed(format!(
-            "connectors {}: the disabled-bundles mirror did not persist the switch \
-             ({} still lists the connector as {}); retry the command",
-            spec.id,
-            mirror_path.display(),
-            if enabled { "disabled" } else { "enabled" },
-        )));
+    // The GUI switch (`set_disabled_connectors` → `apply_disabled_connectors_for`)
+    // writes the plain scope's list and nothing else: hidden lists and the
+    // DenyAll code scope are separate decisions (docs/capability-governance.md),
+    // and `status` reads the plain scope. Same load-modify-save as the GUI and
+    // `plugins enable/disable --scope plain`; a failed write fails the command.
+    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(spec.id);
+    let scope = pinvou3_lib::features::marketplace::ConnectorScope::Plain;
+    let mut ids = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
+    if enabled {
+        ids.retain(|id| id != &package_id);
+    } else if !ids.iter().any(|id| id == &package_id) {
+        ids.push(package_id.clone());
     }
+    pinvou3_lib::features::marketplace::save_disabled_bundles_for(scope, &ids).map_err(
+        |error| {
+            CliError::failed(format!(
+                "connectors {}: could not update the plain-scope disabled set: {error}",
+                spec.id
+            ))
+        },
+    )?;
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
     // The hide direction is the CLI's to perform (see `hide_connector_skills`)
@@ -1473,14 +1435,9 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = cli_connected(spec).unwrap_or(false);
     let visible = connected && !is_disabled(kind);
     if visible {
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
-            |error| {
-                CliError::failed(format!(
-                    "connectors {}: deny-all scope sync failed: {error}",
-                    spec.id
-                ))
-            },
-        )?;
+        // Best-effort app-side (logs a failed write); the GUI's own
+        // `apply_skills` calls the same infallible entry point.
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
     } else {
         hide_connector_skills(kind)?;
     }
@@ -3001,10 +2958,11 @@ fn ima_connect(
         SkillMarketplaceManager::new()
             .install(IMA_SKILL_ID)
             .map_err(|error| CliError::failed(format!("ima skill install failed: {error}")))?;
-        pinvou3_lib::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-            IMA_SKILL_ID,
-        )
-        .map_err(|error| CliError::failed(format!("ima skill scope sync failed: {error}")))?;
+        // Same entry point the app's `ima_connect` uses (the skill id is
+        // normalized to its package id inside the scope layer). Best-effort
+        // app-side: a failed write is logged, and the credential rollback
+        // below is about the secrets, not this sync.
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(IMA_SKILL_ID);
         Ok(())
     })();
     if let Err(error) = result {
@@ -3127,9 +3085,7 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let client_result = store.delete(&ima_secret_ref("client_id"));
     let api_result = store.delete(&ima_secret_ref("api_key"));
     let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
-    let _ = pinvou3_lib::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(
-        IMA_SKILL_ID,
-    );
+    pinvou3_lib::features::marketplace::remove_bundle_from_disabled_scopes(IMA_SKILL_ID);
     client_result.map_err(|error| credential_error(error.user_message()))?;
     api_result.map_err(|error| credential_error(error.user_message()))?;
     let value = json!({ "ok": true, "id": "ima", "connected": false });

@@ -60,7 +60,7 @@ impl HomeGuard {
 
     /// The unified scope state that IS the connector switch on both
     /// surfaces (`set_disabled_connectors` in the GUI,
-    /// `marketplace::sync_disabled_bundles_for_connector_switch` here).
+    /// the same plain-scope save here).
     fn disabled_bundles_file(&self) -> PathBuf {
         self.root.join("disabled_bundles.json")
     }

@@ -116,7 +116,7 @@ fn expect_failed(arguments: &[&str]) -> String {
     error.to_string()
 }
 
-fn assert_usage(arguments: &[&str]) {
+fn assert_usage(arguments: &[&str]) -> String {
     let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
         .chain(arguments.iter().map(|value| value.to_string()))
         .collect();
@@ -125,6 +125,7 @@ fn assert_usage(arguments: &[&str]) {
         Ok(parsed) => execute(parsed).expect_err("expected usage error"),
     };
     assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+    error.to_string()
 }
 
 fn write_prompt_file(home: &TempHome, name: &str, prompt: &str) -> PathBuf {
@@ -170,6 +171,40 @@ fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
         "--rrule",
         VALID_RRULE,
     ])
+}
+
+/// Writes the saved-model store `UserPrefs::load` reads: a default (active)
+/// local-vllm record and a second DeepSeek record, mirroring the shape the
+/// GUI's model list persists (`migrate_models`/`normalize` run on load, so a
+/// raw settings.json fixture is the same store the app sees).
+fn write_saved_models(home: &TempHome) {
+    std::fs::write(
+        home.path().join("settings.json"),
+        serde_json::json!({
+            "memory_enabled": true,
+            "advanced": {
+                "saved_models": [
+                    {
+                        "id": "default",
+                        "name": "Local Qwen",
+                        "preset": "local_vllm",
+                        "model": "qwen36_35b_256k",
+                        "base_url": "http://127.0.0.1:8000/v1"
+                    },
+                    {
+                        "id": "sel-1",
+                        "name": "DeepSeek Flash",
+                        "preset": "deepseek",
+                        "model": "deepseek-flash",
+                        "base_url": "https://api.deepseek.com"
+                    }
+                ],
+                "active_model_id": "default"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
 }
 
 // ---- parse level: invalid shapes are exit-code 2 usage errors ----
@@ -2116,6 +2151,268 @@ fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
     assert!(
         !home.root.join("escape").exists(),
         "the workspace join must never escape the scheduled root"
+    );
+    let _ = home;
+}
+
+// ---- model binding pairing ("--model-id" resolves the selected record) ----
+
+#[test]
+fn create_model_id_round_trips_the_selected_records_wire_name() {
+    // The pair the executor's `resolve_scheduled_model` later checks is
+    // (`selected.model`, `selected.id`) — the binding must carry the
+    // selected record's own wire name for the modelId, not the active
+    // model's, and `update --model-id` must resolve the same lookup so a
+    // dangling id cannot be persisted. The GUI's create sends
+    // `model: selected.model, modelId: selected.id`; pre-fix, the CLI wrote
+    // the active model's wire name against sel-1's id, and the task failed
+    // on every run at the model-resolution check.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("model-id-round-trip");
+    write_saved_models(&home);
+    let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Bound task",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+        "--model-id",
+        "sel-1",
+    ]);
+    assert_eq!(created["modelId"].as_str(), Some("sel-1"));
+    assert_eq!(created["model"].as_str(), Some("deepseek-flash"));
+    // On-disk definition: the selected record's wire name in the `model`
+    // field, and the anchor the sweep would otherwise have to guess.
+    let def: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.def_path(created["id"].as_str().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(def["model"].as_str(), Some("deepseek-flash"));
+    assert_ne!(
+        def["model"].as_str(),
+        Some("qwen36_35b_256k"),
+        "with --model-id the definition's model must be the selected record's wire name, \
+         never the active model's"
+    );
+    // The binding sidecar persists exactly that pair and nothing else.
+    let bindings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("automations/model-bindings.json")).unwrap(),
+    )
+    .unwrap();
+    let binding = &bindings["tasks"][created["id"].as_str().unwrap()];
+    assert_eq!(binding["model_id"].as_str(), Some("sel-1"));
+    assert_eq!(binding["model"].as_str(), Some("deepseek-flash"));
+    let _ = home;
+}
+
+#[test]
+fn create_model_id_unknown_id_is_a_usage_error() {
+    // An unknown id must be refused before anything is persisted; today X is
+    // never checked, the binding lands with the active model's wire name,
+    // and the task fails on every run at `resolve_scheduled_model`.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("model-id-unknown");
+    write_saved_models(&home);
+    let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
+    let error = assert_usage(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Dangling task",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+        "--model-id",
+        "missing-1",
+    ]);
+    assert!(
+        error.to_string().contains("unknown model id 'missing-1'"),
+        "{error}"
+    );
+    // Nothing was persisted — no task, no binding.
+    let listed = run_json(&["scheduled", "list"]);
+    assert_eq!(listed["tasks"].as_array().map(Vec::len), Some(0));
+    assert!(
+        !home.path().join("automations/model-bindings.json").exists(),
+        "a refused create must not write a binding sidecar"
+    );
+    let _ = home;
+}
+
+// ---- one-shot anchors (create/resume persist next_run_at = AT) ----
+
+#[test]
+fn once_tasks_persist_their_anchor_on_create_and_resume() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-anchor");
+    let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
+    let at = "2027-06-01T09:30";
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Once reminder",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        &format!("FREQ=ONCE;AT={at}"),
+    ]);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // The anchor landed on disk as the GUI would persist it (RFC3339 UTC
+    // millis): the sweep never needs to initialize it, so a first tick that
+    // finds the AT elapsed fires the run late instead of failing with
+    // "no future run" and silently pausing the task. The exact stamp is
+    // computed in-test (not hardcoded) so the test stays correct in any
+    // local timezone the runner provides.
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    let expected_anchor = {
+        use chrono::TimeZone as _;
+        let resolved = chrono::Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(2027, 6, 1)
+                    .unwrap()
+                    .and_hms_opt(9, 30, 0)
+                    .unwrap(),
+            )
+            .earliest()
+            .unwrap();
+        resolved
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
+    };
+    assert!(
+        def["next_run_at"].is_string(),
+        "a one-shot must carry its AT anchor: {}",
+        def["next_run_at"]
+    );
+    assert_eq!(
+        def["next_run_at"].as_str(),
+        Some(expected_anchor.as_str()),
+        "the anchor must be the once AT (local 09:30 resolved in the local zone, rendered UTC)"
+    );
+
+    // Pause then resume: resume must recompute the anchor, not leave null.
+    run_json(&["scheduled", "pause", &task_id]);
+    let paused_def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert!(paused_def["next_run_at"].is_null());
+    run_json(&["scheduled", "resume", &task_id]);
+    let resumed_def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        resumed_def["next_run_at"], def["next_run_at"],
+        "resuming a once task must restore its anchor, not leave it null"
+    );
+    let _ = home;
+}
+
+#[test]
+fn once_tasks_with_a_past_anchor_resume_to_their_anchor_too() {
+    // The `resume` gap: a paused one-shot whose AT already elapsed is resumed
+    // with the anchor restored, because the sweep's lazy initialization would
+    // error ("no future run") and silently pause the task instead of firing
+    // late. (An active create refuses a past AT, so the paused channel is the
+    // only honest way to reach this state.)
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-past-resume");
+    let prompt = write_prompt_file(&home, "once-past.md", "Summarize the reports.");
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Past once",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        &format!("FREQ=ONCE;AT={yesterday}T08:30"),
+        "--paused",
+    ]);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let paused_def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(paused_def["status"].as_str(), Some("paused"));
+    assert!(paused_def["next_run_at"].is_null());
+    // Resume: the anchor the GUI's resume would recompute — the AT itself
+    // (here already elapsed), rendered as the local-time UTC stamp.
+    run_json(&["scheduled", "resume", &task_id]);
+    let resumed_def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(resumed_def["status"].as_str(), Some("active"));
+    assert!(
+        resumed_def["next_run_at"].is_string(),
+        "resuming a once task must write its anchor, not leave null: {}",
+        resumed_def["next_run_at"]
+    );
+    let _ = home;
+}
+
+// ---- run exit contract ----
+
+#[test]
+fn run_reports_a_failed_run_through_a_nonzero_exit() {
+    // A completed command reporting a failed result exits 1 instead of 0,
+    // following the family's completed-command-failed-result convention —
+    // pre-fix the success line printed unconditionally, so a failed run
+    // looked like a success to scripts.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-failed-exit");
+    std::fs::write(
+        home.path().join("settings.json"),
+        serde_json::json!({ "memory_enabled": true }).to_string(),
+    )
+    .unwrap();
+    let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Nightly organize",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=12",
+        "--kind",
+        "memory-organize",
+    ]);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // Deterministic failed run: a corrupted pending store makes the organize
+    // pass fail inside the host (the snapshot load checks every jsonl line;
+    // `_pending.jsonl` with junk lines has no valid `.bak`/`.tmp-` recovery
+    // candidate, so the read surfaces InvalidData). The failure happens
+    // before any LLM call, so no display, model endpoint, or network is
+    // involved — the same class of failure a real broken store produces.
+    // The real binary runs as a child so the event loop owns a true main
+    // thread and the assertion checks the process exit code users observe.
+    let memory_dir = home.path().join("user").join("memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    std::fs::write(memory_dir.join("_pending.jsonl"), "{not json\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["scheduled", "run", &task_id, "--output", "json"])
+        .env("PINVOU3_HOME", home.path())
+        .output()
+        .expect("spawn pinvou scheduled run");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a failed run must exit 1, not 0; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .expect("single-line JSON output from the child");
+    assert_eq!(value["status"].as_str(), Some("failed"));
+    assert!(
+        value["error"].as_str().is_some(),
+        "the failed run must carry its error: {}",
+        value
     );
     let _ = home;
 }

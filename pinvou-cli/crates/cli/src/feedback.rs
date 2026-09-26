@@ -189,7 +189,6 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
             path: display_path,
             name,
             media_type,
-            mime: None,
             size_bytes: Some(size),
         });
     }
@@ -199,7 +198,6 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         description,
         // See module docs: the CLI has no error-banner context.
         entry_point: "settings".to_owned(),
-        error_summary: None,
         attachments,
         privacy_notice_version: "community-v1".to_owned(),
     };
@@ -384,7 +382,6 @@ fn translate_feedback_text(text: &str) -> String {
 fn status_label(status: FeedbackStatus) -> &'static str {
     match status {
         FeedbackStatus::Submitted => "submitted",
-        FeedbackStatus::FailedRetryable => "failed_retryable",
         FeedbackStatus::FailedValidation => "failed_validation",
     }
 }

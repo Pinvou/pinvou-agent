@@ -678,17 +678,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
         ("unpin", "unpinned")
     };
     require_existing(&store, id, verb)?;
-    store.set_pinned(id, pinned);
-    // `set_pinned` returns `()`: the sidecar layer swallows a failed persist,
-    // rolls its in-memory cache back to the durable state and only reports
-    // the failure on stderr. Without this check a read-only or full
-    // `~/.pinvou3` would still print "pinned <id>" and exit 0 with nothing
-    // written, so a script would record a pin that no later run can see.
-    // Because the cache is rolled back to the FILE's content on failure,
-    // reading the flag straight back is a reliable post-write verification:
-    // the value can only still disagree with the requested one when the
-    // durable write did not land.
-    if store.is_pinned(id) != pinned {
+    if store.set_pinned(id, pinned).is_err() {
         return sidecar_not_persisted(
             verb,
             id,
@@ -710,13 +700,7 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
         ("restore", "restored")
     };
     require_existing(&store, id, verb)?;
-    store.set_hidden(id, hidden);
-    // Same swallowed-persist contract as `set_pinned` above: the hidden
-    // registry rolls back to the durable state and only logs, so the flag
-    // read back is the honest answer about what reached the disk. An
-    // unverified "archived" is worse here than for pins — the session stays
-    // visible in every later `sessions list` the caller runs.
-    if store.is_hidden(id) != hidden {
+    if store.set_hidden(id, hidden).is_err() {
         return sidecar_not_persisted(
             verb,
             id,

@@ -1632,7 +1632,6 @@ fn credential_state_str(state: CredentialState) -> &'static str {
         CredentialState::Missing => "missing",
         CredentialState::Configured => "configured",
         CredentialState::EnvOverride => "env_override",
-        CredentialState::NeedsMigration => "needs_migration",
         CredentialState::Unavailable => "unavailable",
     }
 }

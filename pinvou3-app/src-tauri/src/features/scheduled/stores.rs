@@ -277,7 +277,7 @@ pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
 /// files (this handle and the `pinvou` CLI) goes through an atomic
 /// write-and-rename, so a new payload always lands as a new inode with a fresh
 /// mtime and length.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
@@ -295,23 +295,39 @@ impl FileStamp {
     }
 }
 
+/// Outcome of one disk read of a store's file.
+enum DiskRead<T> {
+    /// A usable payload as-is (possibly the default because the file is
+    /// absent — a missing sidecar is an empty registry, not a failure).
+    Loaded(T),
+    /// Usable after an on-read migration; the caller owns persisting the
+    /// migrated form back.
+    Migrated(T),
+    /// Unusable (I/O error, invalid JSON, or a newer-than-supported schema).
+    /// [`VersionedJsonStore::open`] fails open to an empty registry there
+    /// (existing startup behaviour), while [`VersionedJsonStore::reload`]
+    /// keeps its previous state so the next check retries once the file is
+    /// repaired.
+    Failed,
+}
+
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
     /// Read, parse and migrate the payload at `path`, applying this store's
-    /// quarantine policy to an unusable one. Returns the registry plus whether
-    /// it was migrated (the caller owns writing the migrated form back).
+    /// quarantine policy to an unusable one, and report whether the payload
+    /// was migrated on read (the caller owns writing the migrated form back).
     ///
     /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
     /// reload path exists precisely because a foreign process may have
     /// rewritten the file, so it must honour the same version, migration and
     /// quarantine rules the initial read applies.
-    fn read_from_disk(path: &Path) -> (T, bool) {
-        let mut migrated = false;
-        let registry = match std::fs::read_to_string(path) {
+    fn read_from_disk(path: &Path) -> DiskRead<T> {
+        match std::fs::read_to_string(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
-                Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => registry,
+                Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => {
+                    DiskRead::Loaded(registry)
+                }
                 Ok(registry) if registry.schema_version() < T::SUPPORTED_VERSION => {
-                    migrated = true;
-                    registry.migrate()
+                    DiskRead::Migrated(registry.migrate())
                 }
                 Ok(registry) => {
                     Self::handle_invalid(
@@ -322,14 +338,16 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                             T::SUPPORTED_VERSION
                         ),
                     );
-                    T::default()
+                    DiskRead::Failed
                 }
                 Err(error) => {
                     Self::handle_invalid(path, &format!("invalid JSON: {error}"));
-                    T::default()
+                    DiskRead::Failed
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => T::default(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                DiskRead::Loaded(T::default())
+            }
             Err(error) => {
                 log::warn!(
                     "Unable to read {} {}: {error}{}",
@@ -337,21 +355,33 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     path.display(),
                     T::WARN_SUFFIX
                 );
-                T::default()
+                DiskRead::Failed
             }
-        };
-        (registry, migrated)
+        }
     }
 
     pub(crate) fn open(path: PathBuf) -> Result<Self> {
-        let (registry, migrated) = Self::read_from_disk(&path);
-        let seen = FileStamp::of(&path);
+        // Stat before read, matching `reload`: a foreign write landing between
+        // the two leaves the stamp older than memory, which at worst costs one
+        // extra read later — never the reverse (memory stale under a stamp
+        // that matches).
+        let stamp = FileStamp::of(&path);
+        let (registry, migrated) = match Self::read_from_disk(&path) {
+            // Fail open to an empty registry as before: existing startup
+            // behaviour kept (there is no previous state to preserve here).
+            DiskRead::Loaded(registry) => (registry, false),
+            DiskRead::Migrated(registry) => (registry, true),
+            DiskRead::Failed => (T::default(), false),
+        };
         let store = Self {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
-            seen: Arc::new(RwLock::new(seen)),
+            seen: Arc::new(RwLock::new(stamp)),
         };
         if migrated {
+            // persist() refreshes `seen` from the file it just wrote; on a
+            // failed write the pre-read stamp stays, which only forces a
+            // (cheap) re-read later.
             store.persist_migrated();
         }
         Ok(store)
@@ -376,8 +406,22 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     /// file is never behind this handle, while a *foreign* process (the
     /// `pinvou` CLI writes the same sidecars) can put it ahead.
     pub(crate) fn reload(&self) {
-        let (registry, migrated) = Self::read_from_disk(self.path.as_ref());
+        // Stat before read: if a foreign write lands between the two, the
+        // stamp ends up older than memory, which at worst costs this handle
+        // one extra read later. Stating after the read produced the reverse —
+        // memory behind the file while the stamp matched — which made
+        // `reload_if_changed` skip the re-read that would have fixed it.
         let stamp = FileStamp::of(self.path.as_ref());
+        let (registry, migrated) = match Self::read_from_disk(self.path.as_ref()) {
+            DiskRead::Loaded(registry) => (registry, false),
+            DiskRead::Migrated(registry) => (registry, true),
+            // Unusable payload: keep the previous in-memory registry and do
+            // NOT update the stamp. Swapping in `T::default()` here (the
+            // pre-fix behaviour) resolved every miss to a plain chat task and
+            // recorded the stamp so the damage never healed; with the stamp
+            // unchanged, a later check re-reads once the file is repaired.
+            DiskRead::Failed => return,
+        };
         {
             // Scoped: persist_migrated() takes a read lock, and parking_lot
             // locks are not reentrant.
@@ -427,11 +471,27 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         }
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
+        let record_len = payload.len() as u64;
         deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
             .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))?;
         // Record what we just wrote so `reload_if_changed` does not mistake
-        // this handle's own write for a foreign one and re-read it.
-        *self.seen.write() = FileStamp::of(self.path.as_ref());
+        // this handle's own write for a foreign one and re-read it. The stamp
+        // is taken from the file on disk *now* rather than derived from the
+        // write itself: a foreign process going through `write_atomic` in the
+        // same instant replaces the path with its own inode, and mtime
+        // granularity cannot separate the two writes — a length check can. If
+        // the current stamp does not describe our own payload, skip the
+        // update: memory behind the file under a matching stamp is exactly
+        // the state `reload_if_changed` exists to repair.
+        let stamp = FileStamp::of(self.path.as_ref());
+        let recorded = match stamp {
+            Some(stamp) if stamp.len == record_len => Some(stamp),
+            // Overwritten by a foreign writer (or unstat'able): "unknown"
+            // forces the next check to re-read, which merges in the foreign
+            // payload — never drops it.
+            _ => None,
+        };
+        *self.seen.write() = recorded;
         Ok(())
     }
 
@@ -511,7 +571,13 @@ where
     /// Remove one automation's entry; a missing key is a no-op (idempotent
     /// delete), and a failed persist rolls the in-memory map back so it never
     /// diverges from disk.
+    ///
+    /// The sidecar is co-owned by the `pinvou` CLI, which rewrites the whole
+    /// file on its own writes; `remove` must therefore merge with whatever the
+    /// foreign process left on disk before persisting, or its own write-back
+    /// quietly drops the foreign entries.
     pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(previous) = registry.tasks_map().remove(automation_id) else {
             return Ok(());
@@ -527,10 +593,17 @@ where
 
     /// Keep only the given automation ids; unchanged maps skip the disk write,
     /// and a failed persist restores the pre-compact snapshot.
+    ///
+    /// The GUI task-list poll fires this every few seconds against a sidecar
+    /// the `pinvou` CLI also rewrites; reloading only when the file's stamp
+    /// moved keeps the poll a `stat` when nothing changed, while a CLI write
+    /// in the window is merged into the compacted map instead of being
+    /// overwritten by this handle's stale copy.
     pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()>
     where
         T::Entry: PartialEq,
     {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let before = registry.tasks_map().clone();
         registry
@@ -695,6 +768,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
             );
         }
         let automation_id = task.id.clone();
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(&automation_id).cloned();
         registry.tasks.insert(
@@ -751,6 +825,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         automation_id: &str,
         run_id: &str,
     ) -> Result<Option<RemovedArchivedRun>> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(previous) = registry.tasks.get(automation_id).cloned() else {
             return Ok(None);
@@ -785,6 +860,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         if !archived_task_is_valid(&automation_id, &archived) {
             bail!("invalid scheduled history archive entry for {automation_id}");
         }
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.insert(automation_id.clone(), archived);
         if let Err(error) = self.persist(&registry) {
@@ -820,6 +896,7 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
             bail!("scheduled automation id cannot be empty");
         }
         let now = chrono::Utc::now().to_rfc3339();
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         if pinned {
@@ -922,6 +999,7 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
         let kind = kind
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         match kind {
@@ -992,6 +1070,7 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
         let model = model
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         match (model_id, model) {
@@ -1036,6 +1115,7 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
         if automation_id.trim().is_empty() || run_id.trim().is_empty() {
             bail!("scheduled automation and run ids cannot be empty");
         }
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let inserted = registry
             .viewed_runs
@@ -1062,6 +1142,7 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
         automation_id: &str,
         current_run_ids: &HashSet<String>,
     ) -> Result<()> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(existing) = registry.viewed_runs.get(automation_id).cloned() else {
             return Ok(());
@@ -1088,5 +1169,234 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod foreign_writer_tests {
+    //! 测试与生产代码同文件:聚焦 `VersionedJsonStore` 的外部写者(CLI)、
+    //! 损坏文件与 stat 顺序三类缺陷,复用 stores.rs 的私有可见性。
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_home() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-store-tests-{}-{}",
+            std::process::id(),
+            DIR_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn kind_store(path: &std::path::Path) -> ScheduledTaskKindStore {
+        ScheduledTaskKindStore::open(path.to_path_buf()).expect("open kind store")
+    }
+
+    fn kind_entry_json() -> serde_json::Value {
+        serde_json::json!({
+            "kind": SCHEDULED_TASK_KIND_MEMORY_ORGANIZE,
+            "updated_at": "2026-01-01T00:00:00Z",
+        })
+    }
+
+    /// A kind-registry payload with the given tasks, written straight to
+    /// `path` without going through any handle — what a foreign process does.
+    fn write_kind_registry(path: &std::path::Path, tasks: serde_json::Value) {
+        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": SCHEDULED_TASK_KIND_SCHEMA_VERSION,
+            "tasks": tasks,
+        }))
+        .expect("serialize kind registry");
+        std::fs::write(path, payload).expect("write kind registry");
+    }
+
+    fn memory_organize() -> String {
+        SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
+    }
+
+    /// (a) 两个 store 实例共享一个文件:常驻句柄的写操作
+    /// (compact / set_kind / remove)不得抹掉外部句柄已写入的变更。
+    #[test]
+    fn two_handles_over_one_file_do_not_erase_each_others_writes() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // Seed one entry via a disposable handle, then open the two long-lived
+        // handles over the same file: `gui` is the running app's (its poll
+        // fires compact every few seconds), `cli` is the foreign process.
+        kind_store(&path)
+            .set_kind("doomed", Some(memory_organize()))
+            .expect("seed kind entry");
+        let gui = kind_store(&path);
+        let cli = kind_store(&path);
+
+        // The foreign handle rewrites the sidecar: drops "doomed", writes a
+        // kind for a task the app never created.
+        cli.remove("doomed").expect("foreign delete");
+        cli.set_kind("cli-task", Some(memory_organize()))
+            .expect("foreign create");
+
+        // The GUI poll compacts for its listing, which includes the
+        // foreign-created task. Pre-fix, the GUI persisted its stale
+        // in-memory map and erased the foreign kind write.
+        gui.compact(&HashSet::from(["cli-task".to_string()]))
+            .expect("gui compact");
+        assert_eq!(
+            gui.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "compact must not rewrite the file from a stale in-memory map"
+        );
+        let after_compact = kind_store(&path);
+        assert_eq!(
+            after_compact.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a fresh handle must read the foreign kind from disk"
+        );
+
+        // A GUI-side set_kind must merge with, not overwrite, the foreign entry.
+        gui.set_kind("gui-task", Some(memory_organize()))
+            .expect("gui set kind");
+        let after_set = kind_store(&path);
+        assert_eq!(
+            after_set.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "set_kind must not erase the foreign entry"
+        );
+        assert_eq!(
+            after_set.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // A GUI-side remove must not take the foreign entry with it.
+        gui.remove("gui-task").expect("gui remove");
+        let after_remove = kind_store(&path);
+        assert_eq!(
+            after_remove.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "remove must not erase the foreign entry"
+        );
+        assert_eq!(
+            after_remove.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::Chat,
+            "only the GUI's own entry is removed"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (b) reload 读到损坏文件:保留内存旧状态、不记录 stamp(之后重试),
+    /// 文件修复后 reload_if_changed 能重新读到。
+    #[test]
+    fn reload_on_a_corrupt_file_keeps_state_and_retries_after_repair() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind("t1", Some(memory_organize()))
+            .expect("seed valid state");
+        let stamp_before = *store.seen.read();
+
+        // A crashed / hand-editing writer leaves an unusable file behind the
+        // handle's back.
+        std::fs::write(&path, "{ definitely-not-json").expect("write corrupt payload");
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a failed read must keep the previous in-memory state"
+        );
+        assert_eq!(
+            *store.seen.read(),
+            stamp_before,
+            "a failed read must not record the stamp; later checks must retry"
+        );
+        // Quarantine note: the kind store would rename the corrupt file away
+        // (Rename strategy) inside handle_invalid; the in-memory state still
+        // must not degrade while the file is unusable.
+
+        // Repaired behind the handle's back: the next miss must re-read and
+        // pick the new content up instead of failing forever.
+        write_kind_registry(
+            &path,
+            serde_json::json!({
+                "t1": kind_entry_json(),
+                "t2": kind_entry_json(),
+            }),
+        );
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a repaired file must be picked up on the next check"
+        );
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (c) stat-before-read by construction: the real window (外部写恰好落在
+    /// stat 与 read 之间)无法在调用中途注入,所以用 reload 自己的原语、
+    /// 按 reload 的顺序手工驱动同样的交错,断言由此产生的状态不会把后续
+    /// 变更掩掉,也验证 stamp 落后于内存这一安全方向。
+    #[test]
+    fn reload_stats_the_file_before_reading_it() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // v1 on disk (only t1); a handle loaded on it.
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Step 1 — reload's stat, taken BEFORE its read.
+        let stamp = FileStamp::of(&path).expect("v1 must be stat'able");
+        // Step 2 — the racing write lands here: v2 adds t2.
+        write_kind_registry(
+            &path,
+            serde_json::json!({ "t1": kind_entry_json(), "t2": kind_entry_json() }),
+        );
+        // Step 3 — reload's read of v2, then the swap, in reload's order.
+        match VersionedJsonStore::<ScheduledTaskKindRegistry>::read_from_disk(&path) {
+            DiskRead::Loaded(registry) | DiskRead::Migrated(registry) => {
+                *store.registry.write() = registry;
+            }
+            DiskRead::Failed => panic!("v2 must be readable"),
+        }
+        *store.seen.write() = Some(stamp);
+
+        // The interleaved state: memory carries the racing write (v2) while
+        // `seen` still describes v1 — never the reverse, which is what
+        // statting after the read produced.
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the write that landed between stat and read must be in memory"
+        );
+
+        // A further foreign write must not be masked by the older recorded
+        // stamp: the next check compares unequal and re-reads.
+        write_kind_registry(
+            &path,
+            serde_json::json!({
+                "t1": kind_entry_json(),
+                "t2": kind_entry_json(),
+                "t3": kind_entry_json(),
+            }),
+        );
+        assert_eq!(
+            store.kind_lookup_for("t3"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the stale recorded stamp must force a re-read, not a skip"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
