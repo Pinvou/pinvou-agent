@@ -999,7 +999,32 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     assert_eq!(code, ExitCode::Usage);
     assert!(message.contains("--yes"), "message: {message}");
 
-    run_ok(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
+    // qcc is a remote OAuth tool: the headless CLI never reaches the
+    // foundation token store, so the human uninstall keeps disclosing that
+    // stored tokens survive (the documented deviation from the GUI).
+    let stdout = run_ok(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
+    assert!(
+        stdout.contains("stored OAuth tokens were kept"),
+        "the uninstall must keep disclosing the kept OAuth tokens: {stdout}"
+    );
+
+    // JSON carries the same fact as the note, and a reinstall exercises the
+    // disclosed consequence (the tool would come back still authorized).
+    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    let value = run_json(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
+    assert_eq!(value["id"], serde_json::json!("qcc"));
+    assert_eq!(value["action"], serde_json::json!("uninstalled"));
+    assert_eq!(
+        value["recycled"],
+        serde_json::json!(false),
+        "catalog manifest installs are not uploads, so nothing is recycled"
+    );
+    assert_eq!(
+        value["oauth_tokens_kept"],
+        serde_json::json!(true),
+        "the JSON uninstall must carry the kept-OAuth-tokens fact"
+    );
+
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         !installed_only.contains("qcc"),
@@ -1258,6 +1283,27 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     assert!(
         std::fs::metadata(&dest).unwrap().len() > 0,
         "the existing destination must be untouched"
+    );
+
+    // A destination that cannot be created names the real cause instead of
+    // the overwrite refusal: `blocker` is a file, so the path below it can
+    // never exist and the exclusive create fails with a non-AlreadyExists
+    // io error.
+    let blocker = home.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "export",
+        FIXTURE_DIR_SKILL,
+        "--output",
+        blocker.join("out").join("fixture.zip").to_str().unwrap(),
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("cannot create"), "message: {message}");
+    assert!(
+        !message.contains("refusing to overwrite"),
+        "a create failure must not be mislabeled as an overwrite refusal: {message}"
     );
 
     // Embedded preset packages refuse export (feature's own error, exit 1).
@@ -2003,6 +2049,11 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
         "both scopes landed, in write order"
     );
     assert_eq!(value["persistence_verified"], serde_json::json!(true));
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON toggle carries the hot-refresh fact the human note states"
+    );
 
     let value = run_json(&["pinvoy", "plugins", "enable", "weather", "--scope", "code"]);
     assert_eq!(
@@ -2010,6 +2061,7 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
         serde_json::json!(["code"]),
         "a single-scope run reports only that scope"
     );
+    assert_eq!(value["hot_refresh"], serde_json::json!("not_broadcast"));
 
     let stdout = run_ok(&["pinvoy", "plugins", "enable", "weather", "--scope", "plain"]);
     assert!(

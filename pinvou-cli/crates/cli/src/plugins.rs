@@ -821,8 +821,15 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     } else {
         ""
     };
-    let value =
-        serde_json::json!({ "id": id, "action": "uninstalled", "recycled": recycles_with_package });
+    // Same fact as the note above, in both output modes: the CLI uninstall
+    // never deletes stored remote OAuth tokens (the disclosed deviation from
+    // the GUI's token-store teardown), so the field states what IS the case.
+    let value = serde_json::json!({
+        "id": id,
+        "action": "uninstalled",
+        "recycled": recycles_with_package,
+        "oauth_tokens_kept": true,
+    });
     Ok(success(render(
         output,
         format!("{action} {id}{oauth_note}"),
@@ -1325,6 +1332,16 @@ fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(),
             dest.display()
         ))
     };
+    // Only an exclusive-create loss (the destination already exists — the
+    // concurrent-creator race this reservation exists to close) is the
+    // overwrite refusal; any other io failure names its real cause instead of
+    // masquerading as one.
+    let cannot_create = |error: std::io::Error| {
+        CliError::failed(format!(
+            "{action}({id}): cannot create {}: {error}",
+            dest.display()
+        ))
+    };
     match std::fs::File::create_new(dest) {
         Ok(marker) => {
             drop(marker);
@@ -1346,10 +1363,12 @@ fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(),
                     drop(marker);
                     Ok(())
                 }
-                Err(_) => Err(refuse()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(refuse()),
+                Err(error) => Err(cannot_create(error)),
             }
         }
-        Err(_) => Err(refuse()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(refuse()),
+        Err(error) => Err(cannot_create(error)),
     }
 }
 
@@ -1837,6 +1856,10 @@ fn set_enabled(
         "scopes_applied": applied,
         "known_id": known,
         "persistence_verified": true,
+        // Same fact as the note below, in both output modes: no hot-refresh
+        // broadcast is sent (the engine pool the GUI's hot_refresh needs is
+        // not hosted here), so a running desktop keeps its live whitelist.
+        "hot_refresh": "not_broadcast",
     });
     let mut human = format!("{action} {id} (scope={})", scope.label());
     if !known {
