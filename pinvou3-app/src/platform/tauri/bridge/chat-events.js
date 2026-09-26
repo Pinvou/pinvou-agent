@@ -15,7 +15,8 @@ function pinvouSharedtauriChatEvents() {
     const recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
     const authoritySyncBufferSnapshot = context.authoritySyncBufferSnapshot || function () { return {}; };
     const listen = context.listen;
-    const notify = context.notify;
+    const immediateNotify = context.notify;
+    const isNotifySuppressed = context.isNotifySuppressed || function () { return false; };
     const invoke = context.invoke;
     const turnUsageDirty = context.turnUsageDirty;
     const sessionStates = context.sessionStates;
@@ -59,6 +60,65 @@ function pinvouSharedtauriChatEvents() {
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
     const normalizedPath = context.normalizedPath;
+
+    // Stream text can arrive much faster than a WebView can paint. Publish at
+    // most once per animation frame, with a bounded timer fallback for hidden
+    // or throttled windows. Entries are isolated per session because active
+    // and background sessions may stream concurrently.
+    const STREAM_NOTIFY_MAX_WAIT_MS = 32;
+    const pendingStreamNotifications = Object.create(null);
+
+    function cancelPendingStreamNotify(sid) {
+      const pending = sid && pendingStreamNotifications[sid];
+      if (!pending) return;
+      if (pending.frame !== null && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(pending.frame);
+      }
+      if (pending.timer !== null && typeof clearTimeout === "function") clearTimeout(pending.timer);
+      delete pendingStreamNotifications[sid];
+    }
+
+    // Every semantic notification is a synchronous flush boundary. Its
+    // snapshot already contains all accumulated deltas, so the pending frame
+    // must be cancelled to avoid a duplicate callback after done/error/tool/
+    // permission/session events.
+    function notify() {
+      cancelPendingStreamNotify(state.activeSessionId);
+      immediateNotify();
+    }
+
+    function scheduleStreamNotify(sid, firstDelta) {
+      // A first delta publishes immediately so the visible bubble paints
+      // without waiting for a frame. Inside a background working set the
+      // immediate notify is suppressed and schedules no frame at all, so the
+      // session's first delta would never publish — a suppressed first delta
+      // must fall through to the coalesced frame below, whose publish() runs
+      // after the working set is restored and carries the accumulated text.
+      if (!sid || (firstDelta && !isNotifySuppressed()) || typeof setTimeout !== "function") {
+        notify();
+        return;
+      }
+      if (pendingStreamNotifications[sid]) return;
+      const pending = { frame: null, timer: null };
+      pendingStreamNotifications[sid] = pending;
+      function publish() {
+        if (pendingStreamNotifications[sid] !== pending) return;
+        cancelPendingStreamNotify(sid);
+        let didRun = false;
+        const wasBackground = sid !== state.activeSessionId;
+        runSyncOnSession(sid, function () {
+          didRun = true;
+          immediateNotify();
+        });
+        // runSyncOnSession suppresses callbacks while a background working set
+        // is installed. Refresh the visible session list after it restores.
+        if (didRun && wasBackground) immediateNotify();
+      }
+      if (typeof window.requestAnimationFrame === "function") {
+        pending.frame = window.requestAnimationFrame(publish);
+      }
+      pending.timer = setTimeout(publish, STREAM_NOTIFY_MAX_WAIT_MS);
+    }
 
     function refreshEffectiveModelConfigAfterAuthError(error) {
       if (!error || !/\b401\b|unauthorized|authentication/i.test(String(error))) return;
@@ -672,9 +732,11 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   }
 
   function cancelStreamRenderTimers(purgedSid) {
-    if (!purgedSid || !streamRenderTimers[purgedSid]) return;
-    clearTimeout(streamRenderTimers[purgedSid]);
-    delete streamRenderTimers[purgedSid];
+    cancelPendingStreamNotify(purgedSid);
+    if (purgedSid && streamRenderTimers[purgedSid]) {
+      clearTimeout(streamRenderTimers[purgedSid]);
+      delete streamRenderTimers[purgedSid];
+    }
   }
 
   function finalizeAssistantStreamBeforeReasoning() {
@@ -730,10 +792,11 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     if (!item) {
       item = startReasoningBlock(index);
     }
+    const firstDelta = !item.text;
     item.text += text;
     appendReasoningBlock(text);
-    notify();
-  }); });
+    scheduleStreamNotify(e.payload && e.payload.session_id || state.activeSessionId, firstDelta);
+  }, { deferBackgroundNotify: true }); });
 
   listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
     const index = reasoningEventIndex(e);
@@ -754,6 +817,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     context.currentStreamText += text;
     // Update the streaming chat item
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    const firstDelta = !item;
     if (item) {
       item.text = context.currentStreamText;
       // The bubble's first delta (html still empty) renders immediately;
@@ -774,8 +838,8 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       });
     }
     scheduleStreamRender(e.payload && e.payload.session_id || state.activeSessionId);
-    notify();
-  }); });
+    scheduleStreamNotify(e.payload && e.payload.session_id || state.activeSessionId, firstDelta);
+  }, { deferBackgroundNotify: true }); });
 
   listen("scheduled_task:run_updated", function () {
     scheduleScheduledRunRefresh();

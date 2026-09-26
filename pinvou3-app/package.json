@@ -58,6 +58,7 @@
     "test:codex-checkpoints": "node tests/codex_checkpoints_logic.test.mjs",
     "test:codex-workspace-tree": "node tests/codex_workspace_tree_logic.test.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
+    "test:conversation-virtualization": "node tests/conversation_timeline_virtualization_smoke.mjs",
     "test:codex-acp-macos-runtime": "node tests/codex_acp_macos_runtime_smoke.js",
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",
@@ -159,6 +160,7 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.13",
     "dompurify": "^3.4.14",
     "highlight.js": "^11.11.1",
     "marked": "^14.1.4",
