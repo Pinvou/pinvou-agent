@@ -2067,13 +2067,53 @@ fn engine_bound_paths_return_stable_honest_errors() {
         );
     }
 
-    // permissions/respond still gate on session existence first.
-    let error = run(&["pinvou", "code", "permissions", "missing-session"]).unwrap_err();
+    // permissions/respond refuse unconditionally: the product-host error
+    // fires even for a charset-valid session id that does not exist (the id
+    // shape is enforced at parse time), and the refusal must not boot the
+    // session store — boot runs the destructive retention sweep, so a command
+    // that can never succeed must not touch it. Point PINVOU3_HOME at a path
+    // that does not exist: any store access would either create the sessions
+    // root or fail with a store error instead of the stable host-bound code.
+    // HomeGuard::drop restores the original root on the way out.
+    let absent_home = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-absent-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    // SAFETY: this test holds ENV_LOCK for its whole body.
+    unsafe {
+        std::env::set_var("PINVOU3_HOME", &absent_home);
+    }
+    for (arguments, expected_code) in [
+        (
+            vec!["pinvou", "code", "permissions", "missing-session"],
+            "code_permissions_requires_product_host",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "respond",
+                "missing-session",
+                "req-1",
+                "allow",
+            ],
+            "code_respond_requires_product_host",
+        ),
+    ] {
+        let error = run(&arguments).expect_err(&arguments.join(" "));
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        assert!(
+            error.to_string().contains(expected_code),
+            "{arguments:?} -> {error}"
+        );
+    }
     assert!(
-        !error
-            .to_string()
-            .contains("code_permissions_requires_product_host"),
-        "unknown sessions must fail before the host-bound error: {error}"
+        !absent_home.exists(),
+        "permissions/respond must not boot the session store: {absent_home:?} was created"
     );
 }
 

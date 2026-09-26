@@ -60,8 +60,9 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
-    AcpPool, AcpProvidersView, AgentBackend, CodexWorkspaceKind, MIN_CLAUDE_VERSION,
-    MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
+    AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS, CodexWorkspaceKind,
+    MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi,
+    SessionAgentStore,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -104,19 +105,20 @@ const MIN_VERSIONS: [(&str, &str); 3] = [
     ("kimi", MIN_KIMI_VERSION),
 ];
 
-/// Mirror of `providers::CLAUDE_MODEL_SLOTS`
-/// (`pinvou3-app/src-tauri/src/features/codex_acp/providers/mod.rs`), slot ids
-/// only. `ProviderManager::save` requires a non-empty model for every one of
-/// them when it stores a claude provider; a missing slot makes Claude Code's
-/// sub-agent and helper calls fall back to official models (official
-/// traffic), which is why the store treats them as mandatory rather than
-/// optional. The app constant is `pub(crate)` and unreachable from this
-/// crate, so the ids are mirrored here and must be kept in step with it: a
-/// slot added there without a matching entry here would slip past this
-/// family's English pre-check and surface the store's untranslated
-/// "<slot> is a required field" message through `store_error` — the same
-/// translation-boundary rule the marketplace importer follows.
-const CLAUDE_MODEL_SLOTS: [&str; 5] = ["opus", "sonnet", "haiku", "fable", "subagent"];
+// The claude model slot list is imported, not mirrored: the module-level use
+// pulls `features::codex_acp::CLAUDE_MODEL_SLOTS` (the re-export of
+// `providers::CLAUDE_MODEL_SLOTS` through the facade, the exact list
+// `ProviderManager::save` enforces) into this module, pairing each slot id
+// with the settings.json env variable it writes. `ProviderManager::save`
+// requires a non-empty model for every one of them when it stores a claude
+// provider; a missing slot makes Claude Code's sub-agent and helper calls
+// fall back to official models (official traffic), which is why the store
+// treats them as mandatory rather than optional. Iterating the imported list
+// keeps this family's English pre-check automatically in step with the
+// store, so a slot added there can never slip past this gate and surface the
+// store's untranslated "<slot> is a required field" message through
+// `store_error` — the same translation-boundary rule the marketplace
+// importer follows.
 
 /// Hard deadline for the vendor logout subcommand (login uses 600/1800s
 /// because it waits for the user; logout is a fast local call).
@@ -2890,16 +2892,20 @@ fn providers_save(
     };
     if provider_id.is_none() && agent == "claude" {
         // The store does not merely reject an EMPTY slot set: it requires a
-        // non-empty model for every id in `CLAUDE_MODEL_SLOTS` and fails the
-        // first missing one with a Chinese message. Checking only
-        // `is_empty()` here let `--model-slot sonnet=x` through the English
-        // gate and surfaced that Chinese text via `store_error`, so the
-        // pre-check validates the full required set and names what is
+        // non-empty model for every slot in the imported `CLAUDE_MODEL_SLOTS`
+        // and fails the first missing one with a Chinese message. Checking
+        // only `is_empty()` here let `--model-slot sonnet=x` through the
+        // English gate and surfaced that Chinese text via `store_error`, so
+        // the pre-check validates the full required set and names what is
         // missing. Empty models cannot reach here (`parse_model_slot_pairs`
         // rejects `SLOT=`), but the trim mirrors the store's own filter so a
-        // future caller of `providers_save` cannot slip one past.
-        let missing: Vec<&str> = CLAUDE_MODEL_SLOTS
-            .into_iter()
+        // future caller of `providers_save` cannot slip one past. The slot
+        // ids come from the store's own pair list (slot id → env variable),
+        // so a slot added app-side cannot drift out of this gate.
+        let slot_ids: Vec<&str> = CLAUDE_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect();
+        let missing: Vec<&str> = slot_ids
+            .iter()
+            .copied()
             .filter(|slot| {
                 !model_slots
                     .iter()
@@ -2912,7 +2918,7 @@ fn providers_save(
                  model slot (a missing slot falls back to official traffic); missing: {} \
                  (valid slots: {})",
                 missing.join(", "),
-                CLAUDE_MODEL_SLOTS.join(", "),
+                slot_ids.join(", "),
             )));
         }
     }
@@ -5221,9 +5227,14 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
 
 // ── permissions / respond (process-local in the product host) ───────────────
 
+// Both refusals are unconditional and must fire before any store access, the
+// same refuse-before-store rule as `code run` and `providers probe` in the
+// dispatch: `open_store()` boots the session store, whose boot runs the
+// destructive retention sweep, and a command that can never succeed must not
+// be able to evict chat sessions. The refusal therefore does not depend on
+// session existence (no `require_existing`); the session-id shape is still
+// enforced at parse time by `require_session_id` (usage error).
 fn permissions(session: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store = open_store()?;
-    require_existing(&store, session, "permissions")?;
     Err(CliError::failed(format!(
         "code_permissions_requires_product_host: pending permissions live in the running app's \
          AcpPool memory for session {session}; no CLI process can observe them. Start the \
@@ -5237,9 +5248,7 @@ fn respond(
     allow: bool,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let store = open_store()?;
-    require_existing(&store, session, "respond")?;
-    let _ = (request_id, allow);
+    let _ = (session, request_id, allow);
     Err(CliError::failed(format!(
         "code_respond_requires_product_host: permission requests are answered inside the process \
          that owns the ACP connection (the GUI host); the pending store is process-local, so \
