@@ -588,6 +588,20 @@ class CiGatePolicyTests(unittest.TestCase):
         # --all-targets: tests are linted too; --no-deps: dependencies and the
         # CodeWhale submodule are never linted; --locked like every CLI build.
         self.assertIn("--workspace --all-targets --no-deps --locked", cli_lint)
+        # The featureless build (product-backend off) is exercised nowhere
+        # else — cargo test always runs default features — so without this
+        # check step the `#[cfg(not(feature = "product-backend"))]` refusal
+        # arms in the cli crate could rot silently.
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+        )
+        self.assertIn(
+            "--workspace --no-default-features --locked",
+            cli_lint,
+            "cli-lint must keep compiling the featureless build so the "
+            "product-backend-off cfg arms cannot rot silently",
+        )
         # Independent cache keyed to the compiler mode (clippy-driver
         # artifacts are not reusable by the rustc test compilers — same
         # parallel-job split as rust-lint vs rust-test).
@@ -611,8 +625,9 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
-        # The workflow header states this policy in prose ("三项均无
-        # continue-on-error") with nothing enforcing it, and it is the cheapest
+        # The workflow header states this policy in prose (no gate job
+        # carries a job-level continue-on-error) with nothing enforcing it,
+        # and it is the cheapest
         # fail-open vector in the file: a job-level `continue-on-error: true`
         # makes the job's own failure non-blocking AND makes
         # `needs.<job>.result` report `success`, so required-gate's

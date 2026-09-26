@@ -1343,6 +1343,16 @@ jobs:
           cargo clippy --manifest-path pinvou-cli/Cargo.toml
           --workspace --all-targets --no-deps --locked
 
+      # The featureless build (product-backend off) is not exercised by any
+      # test leg — cargo test always runs default features — so without this
+      # step the `#[cfg(not(feature = "product-backend"))]` refusal arms in
+      # the cli crate could rot silently. The family modules cfg-guard their
+      # product-backend code, so the featureless build must keep compiling.
+      - name: cargo check (workspace, no default features)
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          --workspace --no-default-features --locked
+
   windows-rust-test:
     name: windows-rust-test
     needs: changes
@@ -1456,11 +1466,13 @@ jobs:
       # dataset_contract is gated behind `required-features = ["test-support"]`
       # and is silently skipped by the workspace-wide run above; the Linux
       # cli-test leg executes it, so the Windows compile leg must at least
-      # compile it.
+      # compile it. `--all-targets` is required: a bare `cargo check -p` builds
+      # lib+bins only, and `required-features` can only filter targets out of
+      # the selected set, never add the test target in.
       - name: pinvou-cli Windows compile check (adapter-gaia test-support)
         run: >-
           cargo check --manifest-path pinvou-cli/Cargo.toml
-          -p adapter-gaia --features test-support --locked
+          -p adapter-gaia --features test-support --all-targets --locked
 
       - name: Windows Rust 单元测试链接检查
         shell: pwsh
@@ -1881,11 +1893,13 @@ jobs:
       # dataset_contract is gated behind `required-features = ["test-support"]`
       # and is silently skipped by the workspace-wide run above; the Linux
       # cli-test leg executes it, so the macOS compile leg must at least
-      # compile it.
+      # compile it. `--all-targets` is required: a bare `cargo check -p` builds
+      # lib+bins only, and `required-features` can only filter targets out of
+      # the selected set, never add the test target in.
       - name: pinvou-cli macOS compile check (adapter-gaia test-support)
         run: >-
           cargo check --manifest-path pinvou-cli/Cargo.toml
-          -p adapter-gaia --features test-support --locked
+          -p adapter-gaia --features test-support --all-targets --locked
 
   required-gate:
     name: required-gate
