@@ -180,7 +180,6 @@ fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordi
 pub async fn install_marketplace_tool(
     tool_id: String,
     config: Option<std::collections::HashMap<String, String>>,
-    app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
@@ -252,12 +251,6 @@ pub async fn install_marketplace_tool(
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
     hot_refresh(&pool, true).await;
-    crate::features::behavior_telemetry::track(
-        &app,
-        crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
-            .tool(&tool_id, &tool_id, "mcp")
-            .success(true),
-    );
     Ok(())
 }
 
@@ -575,7 +568,6 @@ pub fn list_marketplace_skills()
 #[tauri::command]
 pub async fn install_marketplace_skill(
     skill_id: String,
-    app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     let install_skill_id = skill_id.clone();
@@ -589,12 +581,6 @@ pub async fn install_marketplace_skill(
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
     hot_refresh(&pool, true).await;
-    crate::features::behavior_telemetry::track(
-        &app,
-        crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
-            .tool(&skill_id, &skill_id, "skill")
-            .success(true),
-    );
     Ok(())
 }
 

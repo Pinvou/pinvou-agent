@@ -135,30 +135,7 @@ pub async fn refresh_connector_auth_gates(
     Ok(result)
 }
 
-fn track_cli_install(app: &AppHandle, tool_key: &str, tool_name: &str) {
-    crate::features::behavior_telemetry::track(
-        app,
-        crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
-            .tool(tool_key, tool_name, "cli")
-            .success(true),
-    );
-}
-
-fn was_new_cli_install(result: &Value) -> bool {
-    result
-        .get("already")
-        .and_then(Value::as_bool)
-        .is_some_and(|already| !already)
-}
-
-#[tauri::command]
-pub async fn feishu_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = feishu_domain::feishu_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "feishu", "飞书");
-    }
-    Ok(result)
-}
+async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
@@ -176,14 +153,7 @@ pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, S
 }
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
 
-#[tauri::command]
-pub async fn wecom_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = wecom_domain::wecom_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "wecom", "企业微信");
-    }
-    Ok(result)
-}
+async_command_passthrough!(wecom_domain, wecom_ensure_cli() -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>);
@@ -197,14 +167,7 @@ pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, St
 }
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
 
-#[tauri::command]
-pub async fn dingtalk_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = dingtalk_domain::dingtalk_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "dingtalk", "钉钉");
-    }
-    Ok(result)
-}
+async_command_passthrough!(dingtalk_domain, dingtalk_ensure_cli() -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, String>);
@@ -218,14 +181,7 @@ pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value,
 }
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
 
-#[tauri::command]
-pub async fn tmeet_ensure_cli(app: AppHandle) -> Result<Value, String> {
-    let result = tmeet_domain::tmeet_ensure_cli().await?;
-    if was_new_cli_install(&result) {
-        track_cli_install(&app, "tmeet", "腾讯会议");
-    }
-    Ok(result)
-}
+async_command_passthrough!(tmeet_domain, tmeet_ensure_cli() -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>);
