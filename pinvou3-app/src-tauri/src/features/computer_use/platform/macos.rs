@@ -95,8 +95,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    MACOS_UNICODE_STRING_UTF16_UNITS, TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll,
+    normalize_typed_newlines, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -993,8 +993,16 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     };
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     ElementInfo {
+        // AXRole/AXSubrole are free-form strings supplied by the target app,
+        // so the role is carried **raw**: it is a screening input
+        // (`is_secure_role` is a `contains` test and the denylist matches the
+        // role too), and bounding it here would let ~80 characters of padding
+        // hide `…SecureTextField` from that test — the same evasion
+        // `name_screening_hit` exists to close on the name. Display bounding
+        // happens where the value is rendered: the consent target line and the
+        // tree node both sanitize.
         role: info.role,
-        screening_name: screening_name(&name, &display_name),
+        name_screening_hit: screening_hit(&name),
         name: display_name,
         x: info.x,
         y: info.y,
@@ -1758,9 +1766,19 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             }
             let injector = self.enigo()?;
             let result = match run {
-                TypeRun::Text(chunk) => injector
-                    .text(&chunk)
-                    .map_err(|err| map_input_err("type text", err)),
+                // Re-chunked by UTF-16 width, not by character:
+                // `CGEventKeyboardSetUnicodeString` stores at most 20 UTF-16
+                // units, and enigo chunks by `char`, so 20 non-BMP characters
+                // (emoji, supplementary-plane CJK) produced 40 units of which
+                // the OS silently kept 20 — with the cut able to land inside a
+                // surrogate pair — while `type` still returned Ok.
+                TypeRun::Text(chunk) => utf16_chunks(&chunk, MACOS_UNICODE_STRING_UTF16_UNITS)
+                    .into_iter()
+                    .try_for_each(|part| {
+                        injector
+                            .text(part)
+                            .map_err(|err| map_input_err("type text", err))
+                    }),
                 TypeRun::Return => injector
                     .key(enigo::Key::Return, Direction::Click)
                     .map_err(|err| map_input_err("type text newline", err)),
@@ -2096,6 +2114,77 @@ mod tests {
             ..base
         };
         assert!(ensure_readable(&unreadable).is_err());
+    }
+
+    /// The screening inputs must be the **raw** strings, not the display
+    /// copies, and this is the only place that can go wrong silently.
+    ///
+    /// `ElementInfo.name` is display-truncated, so the denylist verdict is
+    /// taken here, where the untruncated name still exists, and carried as
+    /// `name_screening_hit`. `role` is a screening input too — `is_secure_role`
+    /// is a `contains` test and the denylist matches the role — and macOS is
+    /// the one backend where it is a free-form, app-supplied string, so it is
+    /// carried raw and bounded only when rendered.
+    ///
+    /// Regressing either one costs nothing at the tool layer (`screen_element`
+    /// keeps compiling and keeps returning Clear), which is exactly why the
+    /// producer needs its own pin: a padded label or role would silently stop
+    /// screening.
+    #[test]
+    fn element_info_screens_raw_strings_not_display_copies() {
+        let padding = "A".repeat(MAX_NODE_NAME_CHARS);
+        let base = AxNodeInfo {
+            role: "AXButton".to_string(),
+            title: String::new(),
+            subrole: String::new(),
+            description: String::new(),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            disabled: false,
+            focused: false,
+            secure: false,
+            geometry_read: true,
+        };
+
+        // A denylist term pushed past the display window by padding: the
+        // display name no longer carries it, the verdict still does.
+        let padded_name = element_info_from(AxNodeInfo {
+            title: format!("{padding}Delete"),
+            ..base.clone()
+        });
+        assert!(
+            !padded_name.name.contains("Delete"),
+            "the display name is expected to be truncated: {:?}",
+            padded_name.name
+        );
+        assert!(
+            padded_name.name_screening_hit,
+            "the verdict must come from the raw name, not the truncated copy"
+        );
+
+        // The role reaches `is_secure_role`/`matches_t3_denylist` verbatim, so
+        // padding must not be able to push the signal out of it either.
+        let padded_role = element_info_from(AxNodeInfo {
+            role: format!("{padding}AXSecureTextField"),
+            title: "Card number".to_string(),
+            ..base.clone()
+        });
+        assert!(
+            padded_role.role.ends_with("AXSecureTextField"),
+            "the role must be carried raw: {:?}",
+            padded_role.role
+        );
+
+        // The ordinary case is unchanged: a short raw name that does not hit
+        // stays a non-hit, so the flag is not simply always true.
+        let benign = element_info_from(AxNodeInfo {
+            title: "Open settings".to_string(),
+            ..base
+        });
+        assert!(!benign.name_screening_hit);
+        assert_eq!(benign.role, "AXButton");
     }
 
     #[test]

@@ -59,6 +59,7 @@ use std::time::Duration;
 use enigo::{Button, Direction, Enigo, Keyboard, Mouse, Settings};
 use uiautomation::UIAutomation;
 use uiautomation::types::{ControlType, Point, TreeScope, UIProperty};
+use windows::Win32::UI::Accessibility::TreeScope as RawTreeScope;
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits, GetWindowDC, HBITMAP, HDC, HGDIOBJ,
@@ -81,7 +82,7 @@ use super::super::types::{
 };
 use super::helpers::{
     TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    screening_hit, split_type_runs,
 };
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
@@ -413,6 +414,23 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {err}"))
 }
 
+/// `TreeScope_Element | TreeScope_Children` as the raw UIA flag value. UIA's
+/// `TreeScope` is a bitmask; the `uiautomation` crate models it as a plain
+/// enum, so the combination the per-node descent needs has no variant.
+const TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3;
+
+/// The tree range a cache request covers.
+///
+/// Not `uiautomation::types::TreeScope`, which cannot express
+/// `Element | Children` (see [`TREE_SCOPE_ELEMENT_AND_CHILDREN`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheScope {
+    /// The retrieved element only.
+    Element,
+    /// The retrieved element **and** its direct children.
+    ElementAndChildren,
+}
+
 fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
     if err.code() == E_ACCESSDENIED {
         ComputerUseError::unavailable(format!(
@@ -609,7 +627,7 @@ fn element_info_from_cache(
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     Ok(ElementInfo {
         role: format!("{control_type:?}"),
-        screening_name: screening_name(&name, &display_name),
+        name_screening_hit: screening_hit(&name),
         name: display_name,
         x: rect.get_left(),
         y: rect.get_top(),
@@ -652,8 +670,24 @@ fn write_tree_node(
     }
     // Fetch failures do not consume budget: destroyed elements must not crowd out slots for
     // visible nodes.
-    let Ok(cached) = element.build_updated_cache(cache) else {
-        return Ok(());
+    //
+    // Access denied is the exception, and this is the leg where it actually
+    // happens: `build_updated_cache` is the cross-process call, so an elevated
+    // target blocked by UIPI fails HERE. (The cached getters below read a
+    // local record; per UIA they report "not in the cache", never
+    // E_ACCESSDENIED.) Swallowing it returned an empty tree and `Ok` — the
+    // caller could not tell "nothing on screen" from "not allowed to look".
+    //
+    // It is only propagated while the tree is still empty. Once any node has
+    // been serialized the denial is a single inaccessible branch inside a
+    // usable tree, which is the same churn the tolerated arm exists for, and
+    // failing the whole call over it would be worse than the partial answer.
+    let cached = match element.build_updated_cache(cache) {
+        Ok(cached) => cached,
+        Err(error) if writer.next_index == 0 && error.code() == E_ACCESSDENIED => {
+            return Err(map_uia_err("ui_tree node fetch", error));
+        }
+        Err(_) => return Ok(()),
     };
     writer.remaining -= 1;
     let index = writer.next_index;
@@ -663,8 +697,19 @@ fn write_tree_node(
     // serialization — the same churn the fetch leg tolerates. Treat it as
     // "this branch ended" too: fall back to a nameless line for this node
     // and keep the tree usable instead of failing the whole call.
+    //
+    // Access denied is NOT churn and is not tolerated: it means the target is
+    // elevated and UIPI is blocking the read, which the caller has to be told
+    // about instead of being handed an anonymous tree. Swallowing every error
+    // class here is what let a cache request that never cached the node's own
+    // properties render an entire tree as `<unreadable element>` without one
+    // error surfacing.
+    // `format_tree_line` has already run its errors through `map_uia_err`, so
+    // the access-denied class arrives as `Unavailable`; every other read
+    // failure is `Failed` and stays tolerated.
     let line = match format_tree_line(index, depth, &cached) {
         Ok(line) => line,
+        Err(error @ ComputerUseError::Unavailable { .. }) => return Err(error),
         Err(_) => format!(
             "{}[{}] <unreadable element>",
             "  ".repeat(depth as usize),
@@ -800,11 +845,12 @@ impl WindowsComputerUseBackend {
 
     /// Property cache request: merges many per-node cross-process COM round-trips into a
     /// single batched read. `scope` gives the tree range of the cached fetch (`ui_tree`'s
-    /// per-node descent uses `Children`; single-element reads use `Element`); scopes beyond
-    /// `Element` apply the control-view filter, consistent with the UIA standard view.
+    /// per-node descent needs the element **and** its children; single-element reads need
+    /// the element); scopes beyond `Element` apply the control-view filter, consistent with
+    /// the UIA standard view.
     fn property_cache(
         uia: &UIAutomation,
-        scope: TreeScope,
+        scope: CacheScope,
     ) -> Result<uiautomation::core::UICacheRequest, ComputerUseError> {
         let cache = uia
             .create_cache_request()
@@ -822,10 +868,35 @@ impl WindowsComputerUseBackend {
                 .add_property(property)
                 .map_err(|e| map_uia_err("ui_tree cache request", e))?;
         }
-        cache
-            .set_tree_scope(scope)
-            .map_err(|e| map_uia_err("ui_tree cache scope", e))?;
-        if scope != TreeScope::Element {
+        match scope {
+            CacheScope::Element => cache
+                .set_tree_scope(TreeScope::Element)
+                .map_err(|e| map_uia_err("ui_tree cache scope", e))?,
+            CacheScope::ElementAndChildren => {
+                // UIA caches the retrieved element's own properties only when the scope
+                // includes `TreeScope_Element`: "if you set only TreeScope_Children ... the
+                // properties of children of that element are cached, but not those of the
+                // element itself. To ensure that caching is done for the retrieved element
+                // itself, you must include TreeScope_Element." With `Children` alone every
+                // `get_cached_*` on the node failed, and because `write_tree_node` treats a
+                // formatting failure as element churn the descent emitted a correctly shaped
+                // tree in which every node read `<unreadable element>`.
+                //
+                // The crate's `TreeScope` enum cannot express the combination (no combined
+                // variant, and `Subtree` would restore the unbounded whole-subtree fetch the
+                // per-node descent replaced), so the value is set on the underlying COM
+                // interface.
+                // SAFETY: `cache` owns the interface for the duration of the call and
+                // `SetTreeScope` only stores a scalar on it.
+                unsafe {
+                    cache
+                        .as_ref()
+                        .SetTreeScope(RawTreeScope(TREE_SCOPE_ELEMENT_AND_CHILDREN))
+                }
+                .map_err(|e| ComputerUseError::failed(format!("ui_tree cache scope: {e}")))?;
+            }
+        }
+        if scope != CacheScope::Element {
             let control_view = uia
                 .get_control_view_condition()
                 .map_err(|e| map_uia_err("ui_tree cache filter", e))?;
@@ -1208,7 +1279,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         // unbounded by the budget (a desktop-level fallback can be tens of thousands of
         // nodes) and MAX_TREE_NODES only governed serialization. The serialization-layer
         // MAX_TREE_NODES/MAX_TREE_DEPTH semantics stay unchanged.
-        let cache = Self::property_cache(&uia, TreeScope::Children)?;
+        let cache = Self::property_cache(&uia, CacheScope::ElementAndChildren)?;
         let mut out = String::new();
         let mut writer = TreeWriter {
             next_index: 0,
@@ -1246,7 +1317,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
         let uia = self.uia_client()?;
-        let cache = Self::property_cache(&uia, TreeScope::Element)?;
+        let cache = Self::property_cache(&uia, CacheScope::Element)?;
         let element = uia
             .get_focused_element_build_cache(&cache)
             .map_err(|e| map_uia_err("focused_element", e))?;
@@ -1259,7 +1330,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
         let uia = self.uia_client()?;
-        let cache = Self::property_cache(&uia, TreeScope::Element)?;
+        let cache = Self::property_cache(&uia, CacheScope::Element)?;
         let element = uia
             .element_from_point_build_cache(Point::new(x, y), &cache)
             .map_err(|e| map_uia_err("element_at_point", e))?;

@@ -4,6 +4,7 @@
 //! inlined twice). No OS handles here: everything is a plain function so it
 //! stays unit-testable on every target.
 
+use super::super::guard::{self, for_each_folded_window};
 use super::super::types::ScrollDirection;
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -42,16 +43,26 @@ pub(crate) fn drag_waypoints(from: (i32, i32), to: (i32, i32), steps: usize) -> 
         .collect()
 }
 
-/// Element-name sanitizer for model-facing single-line tree text: quotes are
-/// straightened, every control character (newlines, tabs, C0/C1) folds to a
-/// space, the result is truncated and trimmed. Mapping before truncation
-/// guarantees a single clean line; the Linux copy used to truncate first,
-/// which let a cut point preserve a line break.
+/// Sanitizer for accessible text that is shown to the user or the model:
+/// quotes are straightened, every line-breaking character (newlines, tabs,
+/// C0/C1, and the Unicode line/paragraph separators) folds to a space, bidi
+/// and zero-width formatting characters are dropped, and the result is
+/// truncated and trimmed. Mapping and dropping before truncation is what keeps
+/// the result a single clean line and keeps invisible padding from eating the
+/// display window; the Linux copy used to truncate first, which let a cut
+/// point preserve a line break.
+///
+/// The formatting characters are dropped rather than kept because this text
+/// ends up in the consent dialog's "target element" line: a right-to-left
+/// override (U+202E) in an attacker-controlled `aria-label` renders the label
+/// the user is being asked to trust in reverse, and zero-width characters let
+/// two different controls display identically.
 pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     let cleaned: String = name
         .chars()
+        .filter(|c| !is_invisible_formatting(*c))
         .map(|c| {
-            if c.is_control() {
+            if is_line_breaking(c) {
                 ' '
             } else if c == '"' {
                 '\''
@@ -64,35 +75,74 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
-/// Wider screening copy of an accessible name for denylist matching.
-/// [`sanitize_name`] truncates to a short display line; a label an attacker
-/// controls (an `aria-label`, a window title) can pad past that window so a
-/// consequential term never reaches the matcher ("AAAA…A Pay now" truncates
-/// to "AAAA…A"). This copy control-folds the raw text like the display name
-/// but keeps far more of it, shaped head…tail inside a bounded cap so the
-/// memory cost stays bounded for large trees; the residual gap only opens
-/// for names longer than the cap with the term buried past the tail window.
-/// `None` when the display name already covers the whole folded text (the
-/// common case), so screening can fall back to the display name.
-pub(crate) fn screening_name(raw: &str, display: &str) -> Option<String> {
-    const SCREENING_MAX_CHARS: usize = 1024;
-    let folded: String = raw
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let folded = folded.trim();
-    if folded.chars().count() <= display.chars().count() {
-        return None;
-    }
-    if folded.chars().count() <= SCREENING_MAX_CHARS {
-        return Some(folded.to_string());
-    }
-    let head = SCREENING_MAX_CHARS / 2;
-    let tail = SCREENING_MAX_CHARS - head - 1;
-    let mut shaped: String = folded.chars().take(head).collect();
-    shaped.push('…');
-    shaped.extend(folded.chars().skip(folded.chars().count() - tail));
-    Some(shaped)
+/// Whether `c` would end a line for some consumer of this text.
+///
+/// `char::is_control` is category Cc only, which misses `U+2028 LINE
+/// SEPARATOR` and `U+2029 PARAGRAPH SEPARATOR` (Zl/Zp) — literally the
+/// Unicode line and paragraph breaks. They pass straight through a Cc-only
+/// test while CSS text layout and JS line splitting both honour them, so a
+/// label carrying one could forge a second `ui_tree` node line or break the
+/// consent dialog's target line in two.
+fn is_line_breaking(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// Zero-width and bidi formatting characters: invisible to the user, but they
+/// change how the surrounding text renders. `char::is_control` covers only
+/// category Cc and lets every one of these through.
+///
+/// Kept in step with the matching-side list in `guard::is_invisible_for_matching`
+/// (that one additionally folds whitespace, which display must keep). The
+/// `invisible_lists_stay_in_step` test pins the step by asserting every
+/// enumerated range below appears verbatim in the matching-side list too,
+/// so adding a range to one but not the other reddens.
+fn is_invisible_formatting(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{034F}'
+        | '\u{061C}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2065}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{206A}'..='\u{206F}'
+        | '\u{3164}'
+        | '\u{2FFC}'..='\u{2FFF}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FEFF}'
+        | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFF8}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// Runs the T3 denylist over the **whole** raw accessible name, in bounded
+/// memory.
+///
+/// [`sanitize_name`] truncates to a short display line, so the denylist must
+/// not be matched against it: a label an attacker controls (an `aria-label`,
+/// a window title) can pad past that window so a consequential term never
+/// reaches the matcher. The previous screening copy raised that window to
+/// 1024 characters and shaped anything longer as head…tail, which left the
+/// evasion intact for the price of ~512 characters of padding on each side of
+/// the term.
+///
+/// This walks the raw text in fixed chunks instead, folding each chunk with
+/// [`fold_for_matching`] and carrying [`T3_MATCH_WINDOW_CHARS`] - 1 folded
+/// characters across the boundary so a term straddling two chunks is still
+/// found. Length therefore no longer buys an evasion, while peak memory stays
+/// proportional to the chunk rather than to the label.
+/// The walk itself is [`guard::for_each_folded_window`], shared with the
+/// password-role screen so a hostile multi-megabyte role buys no
+/// proportional fold there either.
+pub(crate) fn screening_hit(raw: &str) -> bool {
+    for_each_folded_window(raw, guard::matches_t3_denylist_folded)
 }
 
 /// Normalize CR/CRLF line breaks to `'\n'` for typed text, shared by the
@@ -176,6 +226,57 @@ pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
     runs
 }
 
+/// The UTF-16 unit budget assumed for one `CGEventKeyboardSetUnicodeString`
+/// call.
+///
+/// Apple documents no length limit, and the event object itself provably
+/// stores far more than 20 units, so the truncation happens somewhere below
+/// the setter and its unit is not specified anywhere. The 20 comes from
+/// enigo's macOS backend, which chunks by `char` for enigo#68 ("truncates
+/// strings down to 20 characters… undocumented").
+///
+/// Counting the budget in UTF-16 units rather than characters is therefore the
+/// conservative reading of an underspecified limit, not a documented fact: a
+/// chunk of ≤20 UTF-16 units is also ≤20 characters, so it satisfies enigo's
+/// bound either way, while a `char`-counted chunk does *not* satisfy a
+/// unit-counted one — 20 emoji are 40 units, and if the real cap is in units
+/// the OS keeps half and can cut inside a surrogate pair, with `type` still
+/// returning `Ok`.
+///
+/// Note this bounds truncation only. Chunking still splits grapheme clusters:
+/// a ZWJ sequence, a flag or a combining mark straddling a chunk boundary
+/// arrives as two separate events and can render differently from what was
+/// requested.
+#[cfg(target_os = "macos")]
+pub(crate) const MACOS_UNICODE_STRING_UTF16_UNITS: usize = 20;
+
+/// Splits `text` so every chunk fits in `max_units` UTF-16 units, cutting only
+/// on character boundaries.
+///
+/// Because a chunk of at most `max_units` UTF-16 units also has at most
+/// `max_units` characters, a consumer that re-chunks by `char` at the same
+/// bound (as enigo does) emits each chunk whole.
+#[cfg(target_os = "macos")]
+pub(crate) fn utf16_chunks(text: &str, max_units: usize) -> Vec<&str> {
+    debug_assert!(max_units >= 2, "a single character can be two UTF-16 units");
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut units = 0usize;
+    for (index, character) in text.char_indices() {
+        let width = character.len_utf16();
+        if units + width > max_units && index > start {
+            chunks.push(&text[start..index]);
+            start = index;
+            units = 0;
+        }
+        units += width;
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
+}
+
 pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
     debug_assert!(chunk_chars > 0);
     let mut chunks = Vec::new();
@@ -198,6 +299,7 @@ pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guard::FOLD_CHUNK_CHARS;
 
     #[test]
     fn drag_waypoints_interpolates_and_excludes_start() {
@@ -293,20 +395,98 @@ mod tests {
         assert_eq!(char_chunks("中文测试", 3), vec!["中文测", "试"]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn screening_name_none_when_display_covers_all() {
-        // The common case: the folded raw fits inside the display window —
-        // no wider copy is needed.
-        assert_eq!(screening_name("Pay now", "Pay now"), None);
-        assert_eq!(screening_name("  Buy\nnow ", "Buy now"), None);
+    fn utf16_chunks_bound_the_unicode_string_budget() {
+        // BMP text: identical to character chunking.
+        assert_eq!(utf16_chunks("abcd", 2), vec!["ab", "cd"]);
+        assert!(utf16_chunks("", 20).is_empty());
+        // Non-BMP: each emoji is two UTF-16 units, so a 20-unit budget takes
+        // ten of them per chunk — the case that used to lose half the text.
+        let emoji = "\u{1F600}".repeat(25);
+        let chunks = utf16_chunks(&emoji, MACOS_UNICODE_STRING_UTF16_UNITS);
+        assert_eq!(chunks.len(), 3);
+        for chunk in &chunks {
+            let units: usize = chunk.chars().map(char::len_utf16).sum();
+            assert!(
+                units <= MACOS_UNICODE_STRING_UTF16_UNITS,
+                "chunk over budget: {units}"
+            );
+            // A chunk within the UTF-16 budget is also within the character
+            // budget, so a consumer re-chunking by char emits it whole.
+            assert!(chunk.chars().count() <= MACOS_UNICODE_STRING_UTF16_UNITS);
+        }
+        assert_eq!(chunks.concat(), emoji, "no character may be dropped");
+        // Mixed content still splits only on character boundaries.
+        let mixed = "ab\u{1F600}cd\u{1F600}";
+        assert_eq!(utf16_chunks(mixed, 4).concat(), mixed);
     }
 
     #[test]
-    fn screening_name_survives_display_truncation_padding() {
+    fn sanitize_name_drops_bidi_and_zero_width_characters() {
+        // These survive `char::is_control` (category Cc only) and reach the
+        // consent dialog's target line, where a right-to-left override
+        // reverses the very label the user is being asked to trust.
+        assert_eq!(
+            sanitize_name("Cancel \u{202E}drawhtiw", 80),
+            "Cancel drawhtiw"
+        );
+        assert_eq!(sanitize_name("De\u{200B}lete", 80), "Delete");
+        assert_eq!(sanitize_name("D\u{00AD}elete", 80), "Delete");
+        // The rest of the default-ignorable families: all render as nothing,
+        // all used to survive. The Tag block in particular is the canonical
+        // invisible-text carrier.
+        for invisible in [
+            '\u{034F}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{180B}',
+            '\u{2065}',
+            '\u{3164}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{FFA0}',
+            '\u{FFF9}',
+            '\u{1D173}',
+            '\u{E0001}',
+            '\u{E0041}',
+        ] {
+            assert_eq!(
+                sanitize_name(&format!("De{invisible}lete"), 80),
+                "Delete",
+                "U+{:04X} must not survive into a consent label",
+                invisible as u32
+            );
+        }
+        // U+2028/U+2029 are Zl/Zp, not Cc, so `char::is_control` misses them —
+        // yet they are the Unicode line and paragraph breaks and would split
+        // the one-node-per-line tree format and the dialog's target line.
+        assert_eq!(sanitize_name("a\u{2028}b", 80), "a b");
+        assert_eq!(sanitize_name("a\u{2029}b", 80), "a b");
+        // Invisible padding must not consume the display window either: the
+        // drop happens before the truncation.
+        assert_eq!(
+            sanitize_name(&format!("{}Pay now", "\u{200B}".repeat(500)), 80),
+            "Pay now"
+        );
+        // Ordinary text and the existing control folding are unchanged.
+        assert_eq!(sanitize_name("a\0b\tc", 80), "a b c");
+        assert_eq!(sanitize_name("say \"hi\"", 80), "say 'hi'");
+    }
+
+    #[test]
+    fn screening_hit_decides_short_names() {
+        assert!(screening_hit("Pay now"));
+        assert!(screening_hit("  Buy\nnow "));
+        assert!(!screening_hit("Open settings"));
+        assert!(!screening_hit(""));
+    }
+
+    #[test]
+    fn screening_hit_survives_display_truncation_padding() {
         // The attack shape: an attacker-controlled label pads past the
         // 80-char display window so a consequential term never reaches the
-        // matcher ("AAAA…A Pay now"). The wider copy must keep the tail (and
-        // therefore the term) matchable, while staying bounded.
+        // matcher ("AAAA…A Pay now").
         let raw = format!("{} Pay now", "A".repeat(200));
         let display = sanitize_name(&raw, 80);
         assert_eq!(display.chars().count(), 80);
@@ -314,27 +494,48 @@ mod tests {
             !display.contains("Pay now"),
             "display must truncate: {display}"
         );
-        let screening = screening_name(&raw, &display).expect("wider copy expected");
-        assert!(
-            screening.contains("Pay now"),
-            "term must survive: {screening}"
-        );
-        // Under the cap the copy is the whole folded raw: nothing is lost.
-        assert_eq!(screening, raw);
+        assert!(screening_hit(&raw), "the raw label must still be screened");
     }
 
     #[test]
-    fn screening_name_shapes_oversized_names_head_tail() {
-        // Beyond the cap the copy is shaped head…tail: bounded memory for
-        // pathological labels, with both ends still matchable.
-        let raw = format!("{}Pay now{}", "x".repeat(2000), "y".repeat(2000));
-        let display = sanitize_name(&raw, 80);
-        let screening = screening_name(&raw, &display).expect("wider copy expected");
-        let count = screening.chars().count();
-        assert!(count <= 1024, "bounded: {count}");
-        assert!(screening.starts_with('x') && screening.ends_with('y'));
-        assert!(screening.contains('…'), "elided middle marked: {screening}");
-        // Control characters fold exactly like the display name.
-        assert_eq!(screening_name("a\0b\tc", "a b c"), None);
+    fn screening_hit_ignores_label_length() {
+        // The evasion the previous head…tail screening copy left open: with
+        // ~512 characters of padding on each side, the term fell into the
+        // elided middle and the label screened Clear. Length must buy nothing.
+        for pad in [600usize, 4000, 20_000] {
+            let raw = format!("{}Delete{}", "x".repeat(pad), "y".repeat(pad));
+            assert!(screening_hit(&raw), "padding {pad} must not hide the term");
+        }
+    }
+
+    #[test]
+    fn screening_hit_finds_terms_across_chunk_boundaries() {
+        // The streaming matcher folds [`FOLD_CHUNK_CHARS`] raw characters at a
+        // time; a term straddling that boundary is only found because the
+        // carry keeps the tail of the previous chunk. The shared constant
+        // keeps this probe pinned to the real chunk size.
+        for offset in 0.."Delete".len() {
+            let raw = format!("{}Delete", "x".repeat(FOLD_CHUNK_CHARS - offset));
+            assert!(screening_hit(&raw), "term split at offset {offset}");
+        }
+        // Just past the first boundary, at the carry edge: the term must
+        // still be found through the second window.
+        let raw = format!("{}Delete", "x".repeat(FOLD_CHUNK_CHARS + 20));
+        assert!(screening_hit(&raw), "term in the second window");
+    }
+
+    #[test]
+    fn screening_hit_sees_through_invisible_and_confusable_characters() {
+        // Every one of these rendered identically to the user and screened
+        // Clear under the previous plain `to_lowercase().contains()` match.
+        assert!(screening_hit("De\u{200B}lete"), "zero-width space");
+        assert!(screening_hit("D\u{00AD}elete"), "soft hyphen");
+        assert!(screening_hit("\u{202E}Delete"), "bidi override");
+        assert!(screening_hit("Ｄｅｌｅｔｅ"), "fullwidth");
+        assert!(screening_hit("Pаy now"), "Cyrillic a");
+        assert!(screening_hit("支 付"), "space-split CJK");
+        // The inverse hole: folding a C0 character to a space used to split a
+        // term that the matcher would otherwise have found.
+        assert!(screening_hit("D\u{0001}elete"), "C0 inside the term");
     }
 }

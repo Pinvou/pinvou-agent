@@ -1051,6 +1051,12 @@ pub fn run() {
                                 session_id,
                             );
                             crate::features::memory::discard_turn_capture(session_id);
+                            // The computer-use audit trail is per-session
+                            // metadata about what the agent did on the user's
+                            // screen. Nothing else ever removed it, so a
+                            // deleted session kept its behavioural record on
+                            // disk indefinitely.
+                            crate::features::computer_use::remove_session_audit(session_id);
                             // Self-metrics accumulate per session key
                             // (warmed_sessions inserts on every TurnComplete
                             // and is never reclaimed); clear the keys on

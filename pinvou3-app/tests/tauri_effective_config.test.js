@@ -411,6 +411,29 @@ assert.ok(
   linux.bundle.linux.deb.depends.includes("webkit2gtk-driver"),
   "Linux BrowserCore packages must install the WebKitGTK WebDriver backend",
 );
+// Computer Use links all three of these unconditionally on Linux, as
+// DT_NEEDED entries resolved at process start — not dlopen — but they arrive
+// by different routes, which matters if anyone ever tries to drop one:
+//   - libpipewire-0.3: `pipewire-sys` declares `links = "pipewire-0.3"` and
+//     resolves through pkg-config. Its .pc emits only `-lpipewire-0.3`.
+//   - libEGL: `xcap` → `libwayshot-xcap` → `khronos-egl`, whose build script
+//     pkg-config-probes `egl` and emits `-lEGL`.
+//   - libgbm: `gbm-sys` declares no `links` and its build script emits no
+//     link flag, but `gbm-sys-0.4.0/src/lib.rs` carries
+//     `#[link(name = "gbm")]`, which rustc honors unconditionally — so the
+//     edge is provable from crate source, just not from manifest metadata;
+//     `libgbm1` is additionally a hard dependency of libwebkit2gtk-4.1-0,
+//     making the entry belt-and-braces. Re-check with `readelf -d` on the
+//     shipped binary before ever removing it.
+// Tauri's deb bundler writes `Depends:` verbatim and never runs
+// dpkg-shlibdeps, so a missing entry installs cleanly and then fails to start
+// with a dynamic-linker error on any system that lacks the library.
+for (const library of ["libpipewire-0.3-0", "libgbm1", "libegl1"]) {
+  assert.ok(
+    linux.bundle.linux.deb.depends.includes(library),
+    `Linux packages must depend on ${library}: the binary links it at load time`,
+  );
+}
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));

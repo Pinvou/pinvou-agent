@@ -207,6 +207,28 @@
         if (raw) {
           state.computerUse = Object.assign({}, state.computerUse, {
             enabled: !!raw.enabled,
+            // `stopped` is a process-global flag the backend reports for an
+            // empty session id too. Dropping it here left the settings page
+            // showing the "turn it off and back on" hint on the draft screen
+            // long after a successful resume.
+            stopped: !!raw.stopped,
+            // The draft screen has no session, so no grant can be active for
+            // what the user is looking at. A session-less refresh previously
+            // left a previous session's `granted: true` in place, keeping the
+            // "agent is controlling your machine" banner and its Stop button
+            // on the welcome page — the same stale-state defect the `stopped`
+            // fix above closed.
+            granted: false,
+            // Same class, one field over: a grant or confirm REQUEST left in
+            // the slice kept the previous session's dialog floating over the
+            // draft composer, and its Allow button still worked from a screen
+            // the user believes is session-less. `clearSessionRequests`
+            // cannot be reused here — it publishes to the active session, and
+            // there is none — so the fields are nulled directly; the
+            // per-session pending map is untouched, so switching back to the
+            // session still resurfaces a live request via refreshStatus.
+            grantRequest: null,
+            confirmRequest: null,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           });
           notify();
@@ -403,8 +425,15 @@
         // permission flow, which can block on an OS dialog.
         await refreshStatus(state.activeSessionId);
       } else {
-        // Disable wipes the backend state globally, so the pending map must
-        // go too — same phantom-dialog hazard as stop().
+        // Disable wipes the backend state globally, so the pending map must go
+        // too — same phantom-dialog hazard as stop(). The latched stop goes
+        // with it, and this mirrors the authoritative answer rather than
+        // guessing it: `computer_use_set_enabled(false)` lowers the stop flag
+        // on the backend (guard.rs `set_enabled`), so the next `refreshStatus`
+        // reports the same `stopped: false` instead of re-latching it. Leaving
+        // the flag raised was what made the settings page tell a user who had
+        // just switched the toggle OFF to "turn it off and back on".
+        state.computerUse = Object.assign({}, state.computerUse, { stopped: false });
         clearAllPending();
         notify();
       }

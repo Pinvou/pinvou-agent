@@ -18,8 +18,11 @@
 //! informational, so the caller warns and continues — an audit write error
 //! never blocks an action.
 //!
-//! Known limitation: one file per session grows unboundedly over a long
-//! session; rotation/retention cleanup is not implemented yet (policy TBD).
+//! Retention: the whole file is removed when its session is deleted
+//! ([`remove_session_audit`]). There is no in-session rotation, so one file
+//! still grows unboundedly over a single long session (policy TBD), and
+//! trails belonging to sessions deleted before that hook existed are not
+//! swept at boot.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +82,27 @@ fn sanitize_session_id(raw: &str) -> String {
 pub(crate) fn audit_file_name(session_id: &str) -> String {
     let hash = &sha256_hex(session_id.as_bytes())[..16];
     format!("audit-{}-{hash}.jsonl", sanitize_session_id(session_id))
+}
+
+/// Deletes one session's audit trail. Called when the session itself is
+/// deleted.
+///
+/// The trail is per-session metadata about what the agent did on the user's
+/// screen: timestamps, click coordinates, typed-character counts and the
+/// absolute paths of screenshots. Nothing removed it, so deleting a session
+/// left its behavioural record on disk indefinitely — still naming
+/// screenshots the 100-file retention cap had already pruned. Best-effort by
+/// design: a missing file is success, and an audit failure must never break
+/// session deletion.
+pub fn remove_session_audit(session_id: &str) {
+    let path = audit_dir().join(audit_file_name(session_id));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            eprintln!("[computer-use] failed to remove the session audit log: {error}");
+        }
+    }
 }
 
 /// One audit record: a purely informational snapshot of one tool call.
@@ -315,6 +339,57 @@ mod tests {
         log.append(&record).expect("append");
         crate::platform::filesystem::assert_private_file_mode(log.path());
         crate::platform::filesystem::assert_private_dir_mode(&audit_dir());
+        // SAFETY: holding ENV_LOCK.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+        }
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// `remove_session_audit` must target the same file `AuditLog::for_session`
+    /// created, and must stay silent when there is nothing to remove.
+    ///
+    /// The two build their path independently through `audit_file_name`, whose
+    /// naming is lossy-sanitized, length-capped and hash-suffixed. Nothing
+    /// forces them to agree, and a divergence is invisible: deletion would
+    /// quietly miss, leaving exactly the behavioural record the hook exists to
+    /// remove. The awkward session id is the point — it exercises the
+    /// sanitize, truncate and hash legs rather than the trivial path.
+    #[test]
+    fn remove_session_audit_deletes_the_file_for_session_created() {
+        // Mutually exclusive with tests that rewrite PINVOU3_HOME.
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_HOME");
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-cu-audit-rm-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let session = format!("../evil/{}", "s".repeat(80));
+        let log = AuditLog::for_session(&session).expect("audit log for session");
+        let path = log.path().to_path_buf();
+        log.append(&AuditRecord::new(&session, "screenshot", "observe").finish("ok", None, 1))
+            .expect("append");
+        assert!(path.exists(), "the trail must exist before removal");
+
+        remove_session_audit(&session);
+        assert!(
+            !path.exists(),
+            "remove_session_audit must delete the file for_session created"
+        );
+        // Idempotent: a missing trail is success, so a second session deletion
+        // (or a session that never used the tool) cannot log a spurious error.
+        remove_session_audit(&session);
+        remove_session_audit("session-that-never-ran-computer-use");
+
         // SAFETY: holding ENV_LOCK.
         unsafe {
             match previous {
