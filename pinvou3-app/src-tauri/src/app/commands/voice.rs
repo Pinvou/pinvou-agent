@@ -76,24 +76,27 @@ pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Cross-window recording mutual exclusion: the frontend syncs its own window
-/// label when recording starts/ends/fails, and the native shortcut hook uses
-/// it to pick the trigger target window (see
-/// voice_shortcut::set_recording_label). A window may only register its own
-/// label, so a broken or compromised renderer cannot pin an arbitrary window
-/// as the recording window and hijack the global Alt gesture.
+/// Cross-window recording mutual exclusion: the frontend atomically claims
+/// the recording ownership (its own window label bound to an operation token)
+/// before opening the microphone, and releases it when recording ends/fails;
+/// the native shortcut hook uses the current owner to pick the trigger target
+/// window (see voice_shortcut::set_recording_owner). A window may only
+/// register its own label, so a broken or compromised renderer cannot pin an
+/// arbitrary window as the recording window and hijack the global Alt gesture.
+/// The returned bool tells whether the claim/release landed; a failed claim
+/// fails the recording start before any microphone is opened.
 #[tauri::command]
 pub(crate) fn set_voice_shortcut_recording(
     window: tauri::WebviewWindow,
     label: Option<String>,
-) -> Result<(), String> {
+    token: String,
+) -> Result<bool, String> {
     if let Some(label) = &label {
         if label != window.label() {
             return Err("voice shortcut recording label must match the calling window".to_string());
         }
     }
-    crate::features::voice_shortcut::set_recording_label(label);
-    Ok(())
+    crate::features::voice_shortcut::set_recording_owner(window.label(), &token, label.is_some())
 }
 
 impl VoiceCommandError {

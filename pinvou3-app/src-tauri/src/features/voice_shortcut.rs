@@ -231,6 +231,10 @@ struct VoiceShortcutTriggerPayload {
     /// Target window label (a window mounting VoiceShortcutRouter); the
     /// frontend consumes it only after checking it matches its own window.
     window_label: String,
+    /// Ownership token bound to the current recording claim (present only
+    /// on the "recording" route); the frontend uses it to reject events
+    /// from a stale claim.
+    recording_token: Option<String>,
     /// Routing basis: "recording" (the targeted recording window, used for
     /// stop/mutual exclusion) or "focused" (the focused window, a normal
     /// trigger). The frontend uses this to spot a stale recording-window
@@ -241,40 +245,83 @@ struct VoiceShortcutTriggerPayload {
     route: &'static str,
 }
 
-/// Label of the window currently recording (synced by the frontend via a
-/// command when recording starts/ends).
+/// Recording claim: the (window, operation token) pair that currently owns
+/// the microphone (synced by the frontend via a command when recording
+/// starts/ends/fails, atomically claimed before the mic is opened).
 /// Used for cross-window recording mutual exclusion: while window A records,
 /// window B's Alt gesture is routed to A (to stop it) and never opens a
-/// second session.
-static RECORDING_LABEL: Mutex<Option<String>> = Mutex::new(None);
+/// second session; another window or an older operation cannot steal or
+/// clear the current claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RecordingOwner {
+    pub(super) label: String,
+    pub(super) token: String,
+}
 
-/// Called by the `set_voice_shortcut_recording` command; the frontend syncs
-/// its own window label when recording starts/ends/fails.
-pub(crate) fn set_recording_label(label: Option<String>) {
-    if let Ok(mut guard) = RECORDING_LABEL.lock() {
-        *guard = label.filter(|value| !value.trim().is_empty());
+static RECORDING_OWNER: Mutex<Option<RecordingOwner>> = Mutex::new(None);
+
+/// Called by the `set_voice_shortcut_recording` command; the frontend claims
+/// this window's label (bound to the operation token) before opening the
+/// microphone, and releases it when recording ends/fails.
+/// `claim` false releases the claim, but only when (label, token) still
+/// matches the recorded owner, so a stale teardown cannot wipe a newer
+/// session's claim.
+pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
+    if !is_voice_shortcut_router_window(label) || token.trim().is_empty() || token.len() > 128 {
+        return Err("invalid voice recording owner".to_string());
+    }
+    let mut owner = RECORDING_OWNER
+        .lock()
+        .map_err(|_| "voice recording owner unavailable".to_string())?;
+    Ok(update_recording_owner(&mut owner, label, token, claim))
+}
+
+/// Pure state transition so the claim/release/steal rules stay testable
+/// without a global: a claim fails when another window already owns the
+/// microphone; a release only lands on the exact matching owner.
+fn update_recording_owner(
+    owner: &mut Option<RecordingOwner>,
+    label: &str,
+    token: &str,
+    claim: bool,
+) -> bool {
+    let expected = RecordingOwner {
+        label: label.to_string(),
+        token: token.to_string(),
+    };
+    if claim {
+        if owner.as_ref().is_some_and(|current| current != &expected) {
+            return false;
+        }
+        *owner = Some(expected);
+        true
+    } else if owner.as_ref() == Some(&expected) {
+        *owner = None;
+        true
+    } else {
+        false
     }
 }
 
-pub(crate) fn recording_label() -> Option<String> {
-    RECORDING_LABEL.lock().ok().and_then(|guard| guard.clone())
-}
-
-fn clear_recording_label() {
-    if let Ok(mut guard) = RECORDING_LABEL.lock() {
-        *guard = None;
-    }
+pub(super) fn recording_owner() -> Option<RecordingOwner> {
+    RECORDING_OWNER.lock().ok().and_then(|guard| guard.clone())
 }
 
 /// Deregister proactively when a window is destroyed: if a recording window is
 /// closed outright, the frontend never gets to run the finishVoiceInput
-/// teardown. If the label is not cleared, the native hook keeps routing Alt
+/// teardown. If the claim is not released, the native hook keeps routing Alt
 /// gestures into the destroyed window (emit does not error on a destroyed
 /// window and the failure fallback never fires — effectively a global
 /// swallow-keys black hole).
 pub(crate) fn forget_recording_window(label: &str) {
-    if recording_label().as_deref() == Some(label) {
-        clear_recording_label();
+    if let Ok(mut owner) = RECORDING_OWNER.lock() {
+        forget_owner_window(&mut owner, label);
+    }
+}
+
+fn forget_owner_window(owner: &mut Option<RecordingOwner>, label: &str) {
+    if owner.as_ref().is_some_and(|current| current.label == label) {
+        *owner = None;
     }
 }
 
@@ -312,12 +359,23 @@ pub(crate) fn set_enabled(enabled: bool) {
 
 /// Targeted emit: send only to the target window; silently dropped when there
 /// is no focused/target window (no more broadcast to all windows).
+/// A "recording"-routed event is only emitted while the current owner still
+/// matches (same window and token); otherwise the claim is stale and the
+/// gesture is dropped instead of ghost-targeting an unrelated window.
 fn emit_shortcut_event(
     app: &AppHandle,
     event: VoiceShortcutEvent,
     window_label: &str,
     route: &'static str,
+    recording_token: Option<String>,
 ) {
+    if route == "recording"
+        && recording_owner().as_ref().is_none_or(|owner| {
+            owner.label != window_label || Some(owner.token.as_str()) != recording_token.as_deref()
+        })
+    {
+        return;
+    }
     match event {
         VoiceShortcutEvent::TriggerDictation => {
             let result = app.emit_to(
@@ -327,6 +385,7 @@ fn emit_shortcut_event(
                     mode: "dictation",
                     source: "native",
                     window_label: window_label.to_string(),
+                    recording_token: recording_token.clone(),
                     route,
                 },
             );
@@ -344,10 +403,10 @@ fn emit_shortcut_event(
                         error
                     );
                     // Target window already destroyed: if it is still recorded
-                    // as the recording window, clear the stale label so later
+                    // as the recording owner, release the stale claim so later
                     // gestures are not black-holed.
-                    if recording_label().as_deref() == Some(window_label) {
-                        clear_recording_label();
+                    if let Some(token) = recording_token.as_deref() {
+                        let _ = set_recording_owner(window_label, token, false);
                     }
                 }
             }
@@ -361,6 +420,44 @@ mod tests {
 
     const HWND_A: isize = 100;
     const HWND_B: isize = 200;
+
+    #[test]
+    fn recording_claim_release_and_window_destroy_preserve_authority() {
+        // A claim is atomic: another window cannot steal it, a tokenless or
+        // mismatched release cannot clear it, and window destruction only
+        // clears the claim of the window that still owns it.
+        let mut owner = None;
+        assert!(update_recording_owner(&mut owner, "main", "a1", true));
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "b1",
+            true
+        ));
+        assert!(!update_recording_owner(&mut owner, "main", "a0", false));
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "a1",
+            false
+        ));
+        assert_eq!(
+            resolve_trigger_target(owner.as_ref().map(|o| o.label.as_str()), Some("detached-b")),
+            Some(("main".to_string(), "recording"))
+        );
+        forget_owner_window(&mut owner, "detached-b");
+        assert!(owner.is_some());
+        assert!(update_recording_owner(&mut owner, "main", "a1", false));
+        assert!(update_recording_owner(&mut owner, "detached-b", "b1", true));
+        assert!(!update_recording_owner(&mut owner, "main", "a1", false));
+        forget_owner_window(&mut owner, "main");
+        assert_eq!(
+            resolve_trigger_target(owner.as_ref().map(|o| o.label.as_str()), Some("main")),
+            Some(("detached-b".to_string(), "recording"))
+        );
+        forget_owner_window(&mut owner, "detached-b");
+        assert!(owner.is_none());
+    }
 
     #[test]
     fn alt_tap_swallows_down_and_up_symmetrically_and_triggers() {
