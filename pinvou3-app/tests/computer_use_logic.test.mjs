@@ -559,6 +559,7 @@ const dialogCopy = {
   grantDesc: 'desc',
   grantAllow: 'Allow',
   grantDeny: 'Deny',
+  unreadableTarget: '【読み取れないターゲット】',
   confirmTitle: 'Confirm this action',
   confirmActionLabel: 'Action',
   confirmElementLabel: 'Target element',
@@ -654,6 +655,36 @@ try {
     'a 4096-char preview renders inline in the scrollable container');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
     '"Allow this once" stays enabled for a max-size preview');
+
+  // ── UI-1b. The unreadable-target sentinel is localized everywhere ──
+  // The wire label keeps the canonical English sentinel (it is part of the
+  // approval-token binding), and drag labels join every screened point, so
+  // the sentinel can arrive as one segment of a longer label. An
+  // exact-equality localization left that case as raw English inside a
+  // non-English safety dialog; every occurrence must be replaced.
+  {
+    const dragSlice = { enabled: true, granted: true, stopped: false,
+      confirmRequest: { sessionId: 's1', action: 'drag',
+        element: 'Transfer all funds (AXButton) → (no readable target)', confirmId: 'cu-4' } };
+    tree = render(dragSlice);
+    const text = allText(tree);
+    assert.ok(text.includes(dialogCopy.unreadableTarget),
+      'the unreadable-target sentinel must render localized');
+    assert.ok(!text.includes('(no readable target)'),
+      'no raw English sentinel may survive into the rendered dialog');
+    assert.ok(text.includes('Transfer all funds'),
+      'the readable half of the label must still be shown');
+    // A label that is ONLY the sentinel (single unreadable point) localizes
+    // as well — the case the original equality handled.
+    const soloSlice = { enabled: true, granted: true, stopped: false,
+      confirmRequest: { sessionId: 's1', action: 'left_mouse_down',
+        element: '(no readable target)', confirmId: 'cu-5' } };
+    tree = render(soloSlice);
+    assert.ok(allText(tree).includes(dialogCopy.unreadableTarget),
+      'a solo unreadable-target label must render localized');
+    assert.ok(!allText(tree).includes('(no readable target)'),
+      'a solo label must not keep the raw sentinel either');
+  }
 
   // ── UI-2. A failed action's error must not leak into the next dialog ──
   // actionError used to survive after a dialog closed and was then rendered

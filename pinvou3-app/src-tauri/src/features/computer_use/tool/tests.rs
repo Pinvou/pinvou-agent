@@ -107,6 +107,12 @@ struct MockState {
     /// answering — drives the last-moment re-check pin (a revoke landing
     /// mid-screening must abort before injection).
     revoke_grant_via: Option<Arc<ComputerUseShared>>,
+    /// When set, each screening query denies the pending confirmation through
+    /// this guard hook before answering (`false` return: the id was not a
+    /// live pending) — drives the deny-race pin: a Deny landing between the
+    /// token peek and the consume must stop the spend instead of executing
+    /// over a retracted approval.
+    deny_confirm_via: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
     /// When set, move_to latches the emergency stop before answering —
     /// drives the between-injections pin: a stop landing after the move_to
     /// request of a coordinate click must abort the second injection (the
@@ -173,6 +179,7 @@ impl Default for MockState {
             screenshot_cap: true,
             ui_tree_cap: true,
             revoke_grant_via: None,
+            deny_confirm_via: None,
             stop_via_move_to: None,
             revoke_via_move_to: None,
             stop_via_capabilities: None,
@@ -215,6 +222,17 @@ impl MockBackend {
         let shared = self.state.lock().revoke_grant_via.clone();
         if let Some(shared) = shared {
             shared.revoke_session("s-test");
+        }
+    }
+
+    /// Denies the live pending confirmation before answering a screening
+    /// query when the mock state asks for it. The denial happens while the
+    /// re-screen that will decide the spend is still running — exactly the
+    /// window between peek_confirmation and consume_confirmation.
+    fn maybe_deny_confirm(&self) {
+        let hook = self.state.lock().deny_confirm_via.clone();
+        if let Some(hook) = hook {
+            hook("deny-confirm-via");
         }
     }
 }
@@ -341,6 +359,7 @@ impl ComputerUseBackend for MockBackend {
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
         self.maybe_revoke_grant();
+        self.maybe_deny_confirm();
         let state = self.state.lock();
         if state.element_error {
             return Err(ComputerUseError::unavailable("mock: a11y backend failed"));
@@ -361,6 +380,7 @@ impl ComputerUseBackend for MockBackend {
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
         self.maybe_revoke_grant();
+        self.maybe_deny_confirm();
         let state = self.state.lock();
         if state.focused_error {
             return Err(ComputerUseError::unsupported(
@@ -3473,6 +3493,126 @@ async fn approved_drag_is_refused_when_the_drop_target_changed() {
     assert!(
         fixture.mock.lock().drags.is_empty(),
         "no drag may reach the backend once the drop target changed"
+    );
+}
+
+/// The deny race at the spend window, at tool level.
+///
+/// `consume_confirmation` reports whether the token was actually spent, and
+/// neither spend arm in the tool may execute when it reports false: a Deny
+/// landing between the peek and the consume ("approve → changed my mind"
+/// while the re-screen's a11y queries run) is a retracted approval. The
+/// guard-side unit test pins the report; this pins the tool's use of it —
+/// the injection surface itself, which no guard test can see. The mock's
+/// `deny_confirm_via` hook denies the live pending from inside
+/// `element_at_point`, i.e. exactly inside that window.
+#[tokio::test]
+async fn deny_during_the_rescreen_stops_the_tool_spend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let target = ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    };
+    fixture.mock.lock().element = Some(target.clone());
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved "Buy now" and the target is unchanged — the spend
+    // would normally go through. But during the re-screen the user hits Deny.
+    let shared = Arc::clone(&fixture.shared);
+    let pending_id = confirm_id.clone();
+    fixture.mock.lock().deny_confirm_via = Some(Arc::new(move |_hook_arg| {
+        shared.deny_confirmation(&pending_id)
+    }));
+    let denied = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = denied.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("denied by the user"),
+        "the spend must report the retracted approval: {text}"
+    );
+    assert!(
+        !text.contains("Approved") || text.contains("denied"),
+        "a denied spend must not read as a success: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "no injection may reach the backend over a retracted approval"
+    );
+
+    // Same race through the CLEAR arm, on the same fixture (fixture() holds
+    // the env lock for the test's lifetime; a second call would deadlock):
+    // the next pending's approved control disappears — the re-screen comes
+    // back Clear, so without the race the carried token would simply be
+    // spent and the action executed. A Deny landing during that re-screen
+    // must stop it all the same — this is the second abort site.
+    fixture.mock.lock().deny_confirm_via = None;
+    fixture.mock.lock().element = Some(ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let clear_confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&clear_confirm_id));
+
+    // The approved control disappears — the re-screen now comes back Clear —
+    // and the user denies during it. The tool must abort, not spend.
+    fixture.mock.lock().deny_confirm_via = Some(Arc::new({
+        let shared = Arc::clone(&fixture.shared);
+        let pending_id = clear_confirm_id.clone();
+        move |_hook_arg| shared.deny_confirmation(&pending_id)
+    }));
+    fixture.mock.lock().element = None;
+    let denied_clear = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": clear_confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = denied_clear.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("denied by the user"),
+        "a Clear re-screen must not spend a retracted approval: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "the Clear arm must not inject over a retracted approval either"
     );
 }
 

@@ -185,6 +185,13 @@ pub const T3_DENYLIST: &[&str] = &[
 /// pins.
 pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 
+/// Raw characters folded per pass by [`for_each_folded_window`]: large enough
+/// that the per-chunk overhead is irrelevant, small enough that a
+/// pathological multi-megabyte accessible name is never copied wholesale.
+/// Shared with the platform helpers' chunk-boundary tests so their probes
+/// cannot drift away from the real chunk size.
+pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
+
 /// Whether `c` is invisible to the user and therefore must not separate two
 /// halves of a denylist term.
 ///
@@ -200,7 +207,11 @@ pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 /// This is an enumeration of `Default_Ignorable_Code_Point` rather than a
 /// property lookup: the ranges are stable, and pulling a full property table
 /// in for one predicate is not worth the dependency. `zero_width_evasions`
-/// pins the list against the demonstrated families.
+/// pins the list against the demonstrated families. The enumerated ranges must
+/// cover every Default_Ignorable code point; when Unicode assigns a new
+/// default-ignorable range both this list and its display-side twin in
+/// `platform::helpers` need the arm (`invisible_lists_stay_in_step` keeps the
+/// two in step but cannot see a family missing from both).
 fn is_invisible_for_matching(c: char) -> bool {
     c.is_control()
         || c.is_whitespace()
@@ -216,11 +227,14 @@ fn is_invisible_for_matching(c: char) -> bool {
             | '\u{2060}'..='\u{2064}'
             | '\u{2065}'
             | '\u{2066}'..='\u{2069}'
+            | '\u{206A}'..='\u{206F}'
             | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFF8}'
             | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
             | '\u{1D173}'..='\u{1D17A}'
             | '\u{2FFC}'..='\u{2FFF}'
             | '\u{E0000}'..='\u{E0FFF}')
@@ -266,6 +280,9 @@ fn fold_confusable(c: char) -> char {
     match c {
         // Hyphens and dashes that render as `-` but survive NFKC.
         '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2212}' => '-',
+        // Same class against `top-up`: UTS#39 maps each of these to a bare
+        // hyphen, and NFKC leaves every one alone.
+        '\u{02D7}' | '\u{06D4}' | '\u{2043}' | '\u{2CBB}' => '-',
         // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
         // Latin; the caller lowercases afterwards either way).
         'а' | 'А' => 'a',
@@ -287,6 +304,14 @@ fn fold_confusable(c: char) -> char {
         'у' | 'У' => 'y',
         'х' | 'Х' => 'x',
         'ѡ' | 'Ѡ' => 'w',
+        // More Cyrillic look-alikes whose UTS#39 skeleton is a single Latin
+        // letter (third review round): sha ш and we ԝ both render as `w`
+        // (`шithdraw`, `ԝithdraw`), soft sign Ь as `b` (`Ьuy`), and straight
+        // u ү as `y` (`pүy`).
+        'ш' => 'w',
+        'ԝ' => 'w',
+        'Ь' => 'b',
+        'ү' => 'y',
         // Greek look-alikes.
         'α' | 'Α' => 'a',
         'Β' => 'b',
@@ -314,11 +339,31 @@ fn fold_confusable(c: char) -> char {
         // natural Greek word folds onto it, so this stays on the mapped side
         // of the σ/Σ decision.
         'ω' | 'Ω' => 'w',
+        // Greek gamma: renders as `y` (`pγy`). Natural Greek words do not
+        // fold onto a denylist term through it — only `pay`/`buy` carry a
+        // `y`, and no Greek word is "p" or "b" + gamma.
+        'γ' => 'y',
         // Other single-script look-alikes with no compatibility mapping.
         'ɑ' => 'a',
         'ɡ' => 'g',
         'ı' => 'i',
         'օ' => 'o',
+        // Latin iota and Armenian yiwn: `i`-shaped (`submɩt`, `submիt`).
+        'ɩ' => 'i',
+        'ւ' => 'i',
+        // Armenian ho and co: `h`- and `g`-shaped (`witհdraw`, `purcհase`,
+        // `aցree`). Armenian text does not fold onto a denylist term: the
+        // mapped letters only ever appear inside Latin terms.
+        'հ' => 'h',
+        'ց' => 'g',
+        // Estimated sign: `e`-shaped (`acc℮pt`, `del℮te`). A unit-suffix
+        // character, never part of a natural word.
+        '℮' => 'e',
+        // Thorn and wynn: `p`-shaped (`þay`, `ƿay`). Thorn appears in
+        // natural Icelandic text, but only ever word-initially before a
+        // vowel, which no denylist `p` term is.
+        'þ' => 'p',
+        'ƿ' => 'p',
         // Latin small capitals (NFKC-stable, one per Latin letter).
         'ᴀ' => 'a',
         'ᴄ' => 'c',
@@ -407,15 +452,11 @@ pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
 /// (`platform::helpers::screening_hit`) and [`is_secure_role`], which
 /// would otherwise each need its own copy of the walk.
 pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) -> bool) -> bool {
-    /// Raw characters folded per pass: large enough that the per-chunk
-    /// overhead is irrelevant, small enough that a pathological
-    /// multi-megabyte accessible name is never copied wholesale.
-    const CHUNK_CHARS: usize = 4096;
     let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
     let mut folded = String::new();
     let mut chars = raw.chars();
     loop {
-        let chunk: String = chars.by_ref().take(CHUNK_CHARS).collect();
+        let chunk: String = chars.by_ref().take(FOLD_CHUNK_CHARS).collect();
         if chunk.is_empty() {
             return false;
         }
@@ -1537,12 +1578,15 @@ mod tests {
             "'\\u{2060}'..='\\u{2064}'",
             "'\\u{2065}'",
             "'\\u{2066}'..='\\u{2069}'",
+            "'\\u{206A}'..='\\u{206F}'",
             "'\\u{3164}'",
             "'\\u{2FFC}'..='\\u{2FFF}'",
             "'\\u{FE00}'..='\\u{FE0F}'",
             "'\\u{FEFF}'",
             "'\\u{FFA0}'",
+            "'\\u{FFF0}'..='\\u{FFF8}'",
             "'\\u{FFF9}'..='\\u{FFFB}'",
+            "'\\u{1BCA0}'..='\\u{1BCA3}'",
             "'\\u{1D173}'..='\\u{1D17A}'",
             "'\\u{E0000}'..='\\u{E0FFF}'",
         ] {
@@ -1672,9 +1716,43 @@ mod tests {
             "Top\u{2013}up wallet", // en dash (word-processor autocorrect)
             "Top\u{2012}up wallet", // figure dash
             "Top\u{2212}up wallet", // minus sign
+            // Third review round: arms whose UTS#39 skeleton is a single
+            // Latin letter but which survived both NFKC and the first fold
+            // arms — each renders as the plain ASCII label.
+            "шithdraw",             // Cyrillic sha for w
+            "ԝithdraw",             // Cyrillic we for w
+            "paү",                  // Cyrillic straight u for y (pay)
+            "paγ",                  // Greek gamma for y (pay)
+            "buү",                  // straight u (buy)
+            "submɩt",               // Latin iota for i
+            "wɩthdraw",             // Latin iota
+            "subm\u{0582}t",        // Armenian yiwn (U+0582) for i
+            "witհdraw",             // Armenian ho for h
+            "purcհase",             // Armenian ho
+            "aցree",                // Armenian co for g
+            "acc℮pt",               // estimated sign for e
+            "del℮te",               // estimated sign
+            "þay",                  // thorn for p
+            "Ьuy",                  // Cyrillic soft sign for b
+            "Top\u{2043}up wallet", // hyphen bullet
+            "Top\u{02D7}up wallet", // modifier letter minus sign
+            "Top\u{2CBB}up wallet", // Coptic dialect-p ni
+            "Top\u{06D4}up wallet", // Arabic full stop
             // Unicode 15.1 ideographic description characters are
             // default-ignorable and render as nothing.
             "支\u{2FFF}付",
+            // Third review round: these default-ignorable ranges were missing
+            // from BOTH lists, so a single splice of each rendered-invisible
+            // character split a denylist term (De⟨one of these⟩lete read as
+            // plain "Delete" to the user).
+            "De\u{206A}lete",  // inhibit symmetric swapping
+            "De\u{206E}lete",  // activate arabic form shaping
+            "De\u{206F}lete",  // nominal digit shapes
+            "De\u{FFF0}lete",  // reserved, default-ignorable
+            "De\u{FFF8}lete",  // reserved, default-ignorable
+            "De\u{1BCA0}lete", // shorthand format letter overlap
+            "支\u{1BCA0}付",
+            "初\u{206E}期化",
             // Splitting and padding.
             "支 付",
             "D\u{0001}elete",
