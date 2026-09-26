@@ -194,7 +194,8 @@ pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 /// overrides and isolates, the invisible-operator block, the byte-order mark,
 /// the combining grapheme joiner, the Hangul fillers, the variation selectors
 /// (both planes), the interlinear annotation controls, the invisible musical
-/// beam controls, and the Tag block.
+/// beam controls, the Tag block, and the Unicode 15.1 ideographic description
+/// characters.
 ///
 /// This is an enumeration of `Default_Ignorable_Code_Point` rather than a
 /// property lookup: the ranges are stable, and pulling a full property table
@@ -221,19 +222,25 @@ fn is_invisible_for_matching(c: char) -> bool {
             | '\u{FFA0}'
             | '\u{FFF9}'..='\u{FFFB}'
             | '\u{1D173}'..='\u{1D17A}'
+            | '\u{2FFC}'..='\u{2FFF}'
             | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// Maps a character to the Latin letter it is visually indistinguishable
 /// from.
 ///
-/// This covers only the **cross-script** homoglyphs, which have no Unicode
-/// compatibility decomposition and therefore survive the NFKC pass in
-/// [`fold_for_matching`]: the Cyrillic and Greek letters that share a glyph
-/// with Latin (`Pаy` with a Cyrillic `а`, `ԁelete` with a Komi de). The
-/// compatibility families — fullwidth ASCII, the Math Alphanumeric block,
-/// circled and parenthesized letters, halfwidth katakana — are NFKC's job and
-/// are deliberately absent here.
+/// This covers only the homoglyphs that have no Unicode compatibility
+/// decomposition and therefore survive the NFKC pass in
+/// [`fold_for_matching`]: the Cyrillic, Greek and same-script Latin letters
+/// that share a glyph with an ASCII letter (`Pаy` with a Cyrillic `а`,
+/// `ԁelete` with a Komi de, `submıt` with a dotless i). The compatibility
+/// families — fullwidth ASCII, the Math Alphanumeric block, circled and
+/// parenthesized letters, halfwidth katakana — are NFKC's job and are
+/// deliberately absent here.
+///
+/// Hyphens are folded here for the same reason: `U+2010 HYPHEN` and
+/// `U+2011 NON-BREAKING HYPHEN` render identically to the ASCII hyphen in
+/// `top-up` but are NFKC-stable, unlike `U+FE63`/`U+FF0D` which decompose.
 ///
 /// It is a best-effort subset, not a complete confusable table: the full
 /// relation is UTS#39's, and a determined attacker can still find a glyph pair
@@ -241,6 +248,8 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// evasions; it does not make them impossible.
 fn fold_confusable(c: char) -> char {
     match c {
+        // Hyphens that render as `-` but survive NFKC.
+        '\u{2010}' | '\u{2011}' => '-',
         // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
         // Latin; the caller lowercases afterwards either way).
         'а' | 'А' => 'a',
@@ -248,6 +257,7 @@ fn fold_confusable(c: char) -> char {
         'в' | 'В' => 'b',
         'с' | 'С' => 'c',
         'е' | 'Е' | 'ё' | 'Ё' => 'e',
+        'һ' | 'Һ' => 'h',
         'н' | 'Н' => 'h',
         'і' | 'І' => 'i',
         'ј' | 'Ј' => 'j',
@@ -270,12 +280,21 @@ fn fold_confusable(c: char) -> char {
         'Ν' => 'n',
         'ο' | 'Ο' => 'o',
         'ρ' | 'Ρ' => 'p',
+        // The c-shaped sigmas: U+03F2 (lunate) NFKC-composes to U+03C2
+        // (final sigma, NFKC-stable — the form this match sees), and both
+        // render as `c` in sans-serif fonts. The o-shaped σ/Σ are left
+        // alone: mapping them would false-positive on every real Greek
+        // word, and NFKC has already merged the capital lunate sigma (Ϲ)
+        // into Σ, so it is not separable.
+        '\u{03C2}' | '\u{03F2}' => 'c',
         'τ' | 'Τ' => 't',
         'υ' | 'Υ' => 'y',
         'χ' | 'Χ' => 'x',
         'Ζ' => 'z',
         // Other single-script look-alikes with no compatibility mapping.
         'ɑ' => 'a',
+        'ɡ' => 'g',
+        'ı' => 'i',
         'օ' => 'o',
         other => other,
     }
@@ -361,6 +380,15 @@ pub enum GuardRejection {
     /// click the first session's "Allow this once" and mint its approval,
     /// which is the same self-approval hole one indirection further out.
     ConfirmationPending,
+    /// A grant-request dialog is unanswered. Blocked for the same reason as
+    /// [`Self::ConfirmationPending`] and with the same process-wide scope:
+    /// the grant dialog's "Allow control" control is also an ordinary
+    /// clickable element whose label screens Clear, so a granted session
+    /// could otherwise click *another* session's grant button and mint that
+    /// session's grant — the same self-approval hole, one consent surface
+    /// over. Granting, revoking, denying and the shared stop/disable/expiry
+    /// sweeps all unblock.
+    GrantDialogPending,
     /// The cross-session physical input lock is held by another session and
     /// the bounded wait timed out (see
     /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]).
@@ -385,6 +413,10 @@ impl GuardRejection {
             }
             Self::ConfirmationPending => {
                 "an action is waiting for the user's confirmation in the app. No input actions are accepted until that dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
+                    .to_string()
+            }
+            Self::GrantDialogPending => {
+                "a session's request for computer control is waiting for the user in the app. No input actions are accepted until the user answers it (granted or denied); wait for the user."
                     .to_string()
             }
             Self::InputBusy => {
@@ -709,6 +741,17 @@ impl ComputerUseShared {
         }
         if self.has_outstanding_pending() {
             return Err(GuardRejection::ConfirmationPending);
+        }
+        // The grant dialog gates input for the same reason the confirmation
+        // dialog does, and also process-wide: its "Allow control" control is
+        // an ordinary clickable element whose label screens Clear, so while
+        // ANY session's grant request is unanswered a granted session could
+        // click that button and mint the requesting session's grant. The
+        // marker has no TTL of its own, but every path that ends the request
+        // (grant / revoke / stop / disable / tool drop) clears it; the tool
+        // Drop sweep covers an abandoned request whose session went away.
+        if !self.grant_requests.lock().is_empty() {
+            return Err(GuardRejection::GrantDialogPending);
         }
         Ok(())
     }
@@ -1414,6 +1457,19 @@ mod tests {
             "Pɑy",      // Latin alpha
             "dօnate",   // Armenian o
             "τransfer", // Greek tau
+            // Same-class homoglyphs found in review: each renders as the
+            // plain ASCII label and survives NFKC.
+            "purcһase",             // Cyrillic shha һ
+            "aϲϲept",               // Greek lunate sigma ϲ
+            "aɡree",                // Latin script g ɡ
+            "submıt",               // Latin dotless i ı
+            "subscrıbe",            // Latin dotless i ı
+            "wıthdraw",             // Latin dotless i ı
+            "Top\u{2011}up wallet", // non-breaking hyphen, NFKC-stable
+            "Top\u{2010}up wallet", // hyphen, NFKC-stable
+            // Unicode 15.1 ideographic description characters are
+            // default-ignorable and render as nothing.
+            "支\u{2FFF}付",
             // Splitting and padding.
             "支 付",
             "D\u{0001}elete",
@@ -2170,6 +2226,50 @@ mod tests {
         assert!(shared.begin_input_action("s2").is_ok());
     }
 
+    /// An unanswered **grant** request blocks input from every session for
+    /// the same reason a pending confirmation does: the grant dialog's
+    /// "Allow control" control is an ordinary clickable element whose label
+    /// screens Clear, so a second granted session could otherwise click it
+    /// and mint the requesting session's grant. Deciding the request
+    /// (grant or revoke) unblocks everyone.
+    #[test]
+    fn another_sessions_grant_request_blocks_input_everywhere() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.grant_session("s2");
+        // s2 (grant-less) asks for control; the dialog renders while both
+        // sessions hold live grants for everything else.
+        shared.mark_grant_requested("s2");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::GrantDialogPending),
+            "a bystander session must not be able to click the grant dialog"
+        );
+        assert_eq!(
+            shared.begin_input_action("s2"),
+            Err(GuardRejection::GrantDialogPending)
+        );
+        assert!(
+            shared.check_readonly().is_ok(),
+            "observation stays allowed while a grant dialog pends"
+        );
+        // The user grants s2: everyone unblocks.
+        assert!(matches!(
+            shared.grant_session("s2"),
+            crate::features::computer_use::guard::GrantOutcome::Granted
+        ));
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert!(shared.begin_input_action("s2").is_ok());
+        // And the symmetric path: a revoke also clears the request.
+        shared.mark_grant_requested("s1");
+        assert_eq!(
+            shared.begin_input_action("s2"),
+            Err(GuardRejection::GrantDialogPending)
+        );
+        shared.revoke_session("s1");
+        assert!(shared.begin_input_action("s2").is_ok());
+    }
+
     /// Server truth for the consent UI: `pending_payload_for_session` serves
     /// the newest unexpired payload, a replaced pending replaces the served
     /// payload, and a decided (denied) pending stops being served — this is
@@ -2250,6 +2350,61 @@ mod tests {
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
             SpendOutcome::Unknown
+        );
+    }
+
+    /// Source-level pins for two fault legs this host cannot execute (one is
+    /// Windows-only and cross-compilation dies in `ring`'s C build; the other
+    /// needs a live AT-SPI session): the Windows `ui_tree` cache scope and
+    /// access-denied propagation, and the Linux undecidable-window policy.
+    ///
+    /// Weak by construction — they assert the code shape, not the behavior —
+    /// but a revert of either leg (the exact regression each shipped) turns
+    /// them red on every platform, where a behavior test would only redden
+    /// on the platform it needs. The Windows leg is the `TreeScope::Children`
+    /// bug: UIA does not cache the retrieved element's own properties unless
+    /// the scope includes `TreeScope_Element`, so reverting the scope renders
+    /// every node `<unreadable element>` with `Ok` — silently, on a platform
+    /// whose CI lane has no a11y tree to compare against.
+    #[test]
+    fn windows_and_linux_fault_legs_are_pinned_at_source_level() {
+        // The Windows cache scope must be the combined Element|Children flag
+        // (3 = 1|2) set through the raw COM interface; the crate enum cannot
+        // express it, and `Subtree` (7) would restore the unbounded fetch.
+        let windows_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/windows.rs"
+        ))
+        .expect("windows.rs readable");
+        assert!(
+            windows_source.contains("TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3"),
+            "the UIA cache scope must be TreeScope_Element | TreeScope_Children"
+        );
+        assert!(
+            windows_source.contains("CacheScope::ElementAndChildren => {"),
+            "the per-node descent must use the combined scope"
+        );
+        assert!(
+            windows_source.contains("writer.next_index == 0 && error.code() == E_ACCESSDENIED"),
+            "E_ACCESSDENIED on the empty-tree leg must propagate, not fold into churn"
+        );
+
+        // The Linux hit test must skip undecidable non-active windows and
+        // surface the remembered fault only when no window answered; the
+        // active window (index 0) is the exception and propagates its own
+        // fault immediately.
+        let linux_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/linux.rs"
+        ))
+        .expect("linux.rs readable");
+        assert!(
+            linux_source.contains("if has_active && index == 0 {"),
+            "the active window's undecidable extents must propagate immediately"
+        );
+        assert!(
+            linux_source.contains("match first_fault {"),
+            "a skipped fault must surface when no window answered the point"
         );
     }
 }
