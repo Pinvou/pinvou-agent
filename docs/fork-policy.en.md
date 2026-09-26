@@ -10,7 +10,7 @@
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
-- Keep four long-lived topics plus two appended reduction topics:
+- Keep four long-lived topics, three appended reduction topics, and one merged-into-maintenance topic:
 
   1. Host embedding and routing boundary
   2. Tool compatibility and command-execution safety
@@ -18,6 +18,8 @@
   4. Automation and runtime lifecycle
   5. Session archive export (T5, appended)
   6. Swarm rate-limit governance (T6, appended)
+  7. Compaction checkpoint role compatibility (T7, merged into the maintenance branch)
+  8. Roster presentation of host profiles (T8, appended)
 
 The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`](fork-modifications.md).
 

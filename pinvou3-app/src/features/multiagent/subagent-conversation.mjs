@@ -444,10 +444,10 @@ export function subagentOrdinalLabel(ordinal) {
 }
 
 /**
- * 模型给子智能体起的名字：任务说明第一行以「名字」开头（委派提醒教学的
- * 约定，如「调研专家-AI新闻」）。底座 role 字段只收 ASCII token，中文名
- * 走不了字段，只能走文本约定；没起名回退角色映射名+序号。上限 24 字，
- * 防止整段说明被吞进标题。
+ * 任务说明第一行的「名字」标题（如「调研专家-AI新闻」）。这是 phase 1
+ * 委派提醒时代的文本约定：蜂群二期契约已改教 `name=` 字段（仅 ASCII，
+ * 且 type= 直派的标题才用它），不再教学「」——本解析仅为渲染历史会话
+ * 保留，不是当前契约的一部分。上限 24 字，防止整段说明被吞进标题。
  */
 export function splitSubagentTitle(text) {
   const raw = String(text || '');

@@ -438,6 +438,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             false,
             &project,
             &snapshot,
+            &[],
         )
         .expect("build multi-agent turn");
     handle.send(op).await.expect("send multi-agent turn");
@@ -588,6 +589,39 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             .any(|body| body.contains(EXPERT_PROMPT_SENTINEL)),
         "child request did not receive the selected expert instructions"
     );
+    // 蜂群契约（本测试以 swarm=true 构造引擎配置）必须只出现在父会话系统提示：
+    // 子代理请求体由底座 FleetRole 提示 + 任务说明构造，结构性不携带父引擎
+    // instructions——在此用真实引擎端到端钉死该隔离，底座改动即红。
+    {
+        let bodies = probe.request_bodies.lock().expect("probe request lock");
+        let parent_bodies: Vec<&String> = bodies
+            .iter()
+            .filter(|body| body.contains("蜂群模式"))
+            .collect();
+        assert!(
+            !parent_bodies.is_empty(),
+            "swarm contract must ride the parent session system prompt"
+        );
+        // 契约必须渲染为父会话的 <instructions source="pinvou3:swarm">
+        // 系统块（spawn 级注入），而不是拼进某轮用户消息或 system-reminder
+        // 信封。只断 `instructions source=` 是空转——常驻的
+        // `pinvou3:instructions` 源让每个父请求体都含该子串；因此同时断
+        // 蜂群源名 `pinvou3:swarm`（契约块唯一的携带者）。捕获体是原始
+        // HTTP 请求，JSON 引号转义不影响这两个子串。
+        assert!(
+            parent_bodies
+                .iter()
+                .all(|body| body.contains("instructions source=") && body.contains("pinvou3:swarm")),
+            "swarm contract must render as the parent <instructions source=\"pinvou3:swarm\"> block, never a per-turn reminder"
+        );
+        assert!(
+            bodies
+                .iter()
+                .filter(|body| body.contains(EXPERT_PROMPT_SENTINEL))
+                .all(|body| !body.contains("蜂群模式")),
+            "swarm contract must never reach the subagent system prompt"
+        );
+    }
     assert!(
         !project.join(".codewhale").exists(),
         "real spawn must keep all control-plane state out of the user project"

@@ -2317,6 +2317,14 @@ impl EnginePool {
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
+        // 基准轮与生产发送走同一匹配通道：这里 `content` 就是用户原文，
+        // 与生产 match_source 同源。传空候选会让模型在真实有匹配时收到
+        // 「无相关候选」的假话（候选行是快照的唯一下游）。评测策略轮
+        // 刻意不带专家材料，见 `send_eval_user_message`。
+        let expert_candidates = expert_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.available_role_lines(&content))
+            .unwrap_or_default();
         self.send_reserved_user_message(
             session_id,
             content,
@@ -2324,11 +2332,14 @@ impl EnginePool {
             mode,
             restrict_tools_for_turn,
             expert_snapshot,
+            expert_candidates,
             reservation,
         )
         .await
     }
 
+    /// 评测策略轮刻意不带专家快照/候选：评测度量的是被测策略本身，候选
+    /// 匹配属产品行为，混入会让评测结果与产品行为互相污染。
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn send_eval_user_message(
         &self,
@@ -2380,6 +2391,10 @@ impl EnginePool {
 
     /// Submit a previously admitted append operation. This is the entry point
     /// used by chat commands that must reserve before resolving attachments.
+    /// `expert_candidates` must come from the same
+    /// [`ExpertRosterSnapshot::capture`] as `expert_snapshot`
+    /// (prepare_delegation_turn)，bridge 把它放进 `<system-reminder>` 信封。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_reserved_user_message(
         &self,
         session_id: &str,
@@ -2388,6 +2403,7 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
+        expert_candidates: Vec<String>,
         mut reservation: TurnReservation,
     ) -> Result<()> {
         let baseline_revision = reservation
@@ -2439,6 +2455,7 @@ impl EnginePool {
                 persona_reminder,
                 restrict_tools,
                 expert_snapshot,
+                expert_candidates,
                 reservation,
             )
             .await

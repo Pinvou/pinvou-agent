@@ -3,12 +3,25 @@
 
 use serde::Serialize;
 
+use crate::features::marketplace::store::MAX_DISPLAY_NAME_CHARS;
 use crate::features::marketplace::{ConnectorScope, MarketplaceManager, MarketplaceToolInfo};
+
+/// 清单展示名与上传展示名校验共用同一上限：清单每轮进 `<system-reminder>`
+/// 信封，超长的第三方清单名按内容字符如实截断，不得按原样膨胀每轮上下文。
+fn bounded_inventory_name(value: &str) -> String {
+    let stripped = crate::features::personas::strip_invisible_chars(value);
+    let mut out: String = stripped.chars().take(MAX_DISPLAY_NAME_CHARS).collect();
+    if stripped.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        out.push('…');
+    }
+    out
+}
 
 #[derive(Serialize)]
 struct InventoryEntry<'a> {
     id: &'a str,
-    name: &'a str,
+    // 展示名先剥不可见字符再进 JSON，因此需要 owned String。
+    name: String,
     enabled: bool,
 }
 
@@ -38,17 +51,21 @@ fn render_inventory(tools: &[MarketplaceToolInfo], unavailable: &[String]) -> St
         .filter(|tool| tool.installed)
         .map(|tool| InventoryEntry {
             id: &tool.id,
-            name: &tool.name,
+            // 先剥后序列化：不可见字符一旦进了 JSON 字符串，就只能在模型
+            // 面前以转义或字面形式出现，剥除必须在 serde 之前完成。
+            name: bounded_inventory_name(&tool.name),
             enabled: !unavailable.contains(&tool.id),
         })
         .collect();
     entries.sort_by_key(|entry| entry.id);
     // Names are metadata, not instructions; keep them inside JSON strings and
     // prevent uploaded display names from closing the surrounding reminder.
-    let inventory = serde_json::to_string(&entries)
-        .unwrap_or_else(|_| "[]".to_string())
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e");
+    // 展示名与卡片文案共用 personas 的两段惯例：先剥不可见字符（零宽/双向
+    // 载荷不得随显示名混进信封），serde 之后再对整段 JSON 转义信封标签
+    // 字符，避免两份惯例各自漂移。
+    let inventory = crate::features::personas::escape_envelope_tag_chars(
+        &serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
+    );
     format!("市场 MCP 应用（当前会话模式）: {inventory}")
 }
 
@@ -85,6 +102,26 @@ mod tests {
         assert!(render_inventory(&tools, &["weather".into()]).contains(r#""enabled":false"#));
         assert!(render_inventory(&tools, &[]).contains(r#""enabled":true"#));
         assert!(render_inventory(&tools, &["weather".into()]).contains(r#""enabled":false"#));
+    }
+
+    /// 第三方清单名不经过上传展示名的写入校验（只有 Upload 来源在落盘时
+    /// 校验），渲染出口必须按内容字符限长并如实标注：超长清单名不得按原样
+    /// 膨胀每轮信封。
+    #[test]
+    fn manifest_display_names_are_bounded_at_the_inventory_exit() {
+        let tools = [tool("huge", &"长".repeat(100), true)];
+        let reminder = render_inventory(&tools, &[]);
+        assert!(
+            reminder.contains(&format!(
+                "\"name\":\"{}…\"",
+                "长".repeat(MAX_DISPLAY_NAME_CHARS)
+            )),
+            "超长清单名必须按内容字符截断并标注省略号"
+        );
+        assert!(
+            !reminder.contains(&"长".repeat(MAX_DISPLAY_NAME_CHARS + 1)),
+            "截断后不得残留超长原文"
+        );
     }
 
     /// Render-layer pin: an entry passed in the unavailable union (toggle off ∪
@@ -124,9 +161,28 @@ mod tests {
         ];
         let reminder = render_inventory(&tools, &[]);
         assert!(!reminder.contains("</system-reminder>"));
-        assert!(reminder.contains(r"\u003c/system-reminder\u003e\nInjected"));
+        // 展示名先剥不可见字符（含换行等控制符，与锚点/候选行同一惯例），
+        // serde 之后整体转义信封标签字符：标签字面量必须仍以转义形式保留。
+        assert!(reminder.contains(r#"\u003c/system-reminder\u003eInjected"#));
         let a = reminder.find(r#""id":"a""#).unwrap();
         let z = reminder.find(r#""id":"z""#).unwrap();
         assert!(a < z);
+    }
+
+    /// 展示名先剥不可见字符再进 JSON：快照以字面文本进入
+    /// `<system-reminder>` 信封，零宽/双向载荷不能借显示名搭车
+    /// （与 personas 文案同一惯例的剥除腿）。
+    #[test]
+    fn display_names_are_stripped_of_invisible_characters() {
+        let tools = [tool("w", "高\u{200b}德\u{202e}天气", true)];
+        let reminder = render_inventory(&tools, &[]);
+        assert!(
+            reminder.contains(r#""name":"高德天气""#),
+            "可见语义保留: {reminder}"
+        );
+        assert!(
+            !reminder.contains('\u{200b}') && !reminder.contains('\u{202e}'),
+            "零宽/双向字符必须剥除: {reminder}"
+        );
     }
 }

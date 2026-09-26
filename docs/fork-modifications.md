@@ -3,7 +3,6 @@
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
-- T7 后续批次（2026-09-22/23，#63–#76）：#73 把检查点识别族迁至 `history_recognition` 叶模块（行为不变，识别族与 `compaction/last_round.rs` keep/recompact 过滤的关联已注明）；#65 roster 列举宿主 profiles；restore 载体 provenance 锚定（原 #74 已批准，因服务端分支丢失事故脱绑）由 #76 按同一内容重建并经确认随本批合入（`61cb769be`）。
 - 未覆盖的相邻真实 user：多次压缩后保留的**真实**用户消息之间因中间轮次被裁掉而在出站线上相邻（`retained_user_messages` 默认保留 20k token 的用户消息，测试 `compaction_does_not_merge_unrelated_adjacent_user_messages` 固定 `[user, user(summary+prompt), assistant, tool]`）。本修复刻意不合并真实用户轮次——那会改变模型看到的轮次边界——因此若某路由的模板同样拒绝相邻 `user -> user`，该路由在多次压缩后仍会 400。现有证据只有上面那条尾部形态的报错原文，未做客户服务重放，无法判定模板对相邻**真实** user 的容忍度；该场景需要路由相关的出站测试与修复，属本 PR 范围外。
 - 父仓配套：`pinvou3-app` 的模型服务错误分类把两种载体的 role/模板 400 都归为请求格式卡片且不提示重试——SSE 包装的 `HTTP 400 ... response_role: "user"` 与流式之外的 `Invalid request (400): ...`（`LlmError::InvalidRequest` 的 Display 文本）。卡片文案只说明请求格式被拒，不声称具体线形已修复，因此上述未覆盖场景不会误导用户。分类器按文本形态匹配、刻意保持宽松：含 `server error` 字样的 400 体仍归可重试的 `server` 类，带引号的 JSON-KV 形态 `{"response_role":"user"}` 不命中 `response_role\s*:` 分支而落回未分类。这两处宽度已登记，如需收紧另开改动。
 - 这是可复用的 CodeWhale 修复，已在 `Pinvou/CodeWhale#62` 通过审核并 squash 合入 `pinvou3-clean`（`2ab5e64b5`）；审核证据取自候选分支 head `abadae45d`（其已把维护分支 `92427bd8d` 并入），候选树与 squash 提交树同为 `32880a95`，内容等价。修复前持久化的会话由该修复在会话载入/恢复时自动修正，不再要求新建会话，也没有独立的迁移工具。父仓 gitlink（`7fc36e587`）已包含该提交，公开可达性门禁按过渡期口径验证通过。
@@ -46,7 +45,7 @@
 | 维护分支 | `pinvou3-clean` = `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`（r1 基线 `1fafee7e2` 之上 34 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73 与收口追加 #77/#76（替换原 #74）） |
 | 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`，父仓 gitlink、维护分支与 tag 三方相等；r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 49 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后 34 个提交全部经 PR squash 合入并过五项必需门禁 |
+| 历史组织 | 上游之上 49 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 1 个已合入维护分支的主题（T7 压缩检查点角色兼容）；r1 之后 34 个提交全部经 PR squash 合入并过五项必需门禁。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头（现 `61cb769be`），不再钉定合入前的波次 SHA（详见第 13 节教训登记） |
 | drift | `229 files, +29272/-5352`，净增 23920 行（实测于 `61cb769be` vs 上游 `dcd4c200f`）；r2 为 `190 files, +19135/-2628`（净增 16507），旧 r13 为 `110 files, +10895/-1195` |
 | 守护 | 141 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
@@ -284,7 +283,28 @@
 - `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains`
 - gate cancel-before-dispatch 与多任务 abort/pause 压力测试（限时排空回满容量，丢唤醒/许可泄漏/陈旧条目吞槽均红）
 
-## 10. 父仓适配边界
+## 10. T8 — roster 列出宿主呈现的 prompt-only profiles（追加减量主题）
+
+### 保留内容
+
+- 底座 `agent` 工具的 `action=roster` 在既有内置 `members` 之外，额外列出引擎 fleet 名册中宿主呈现的 prompt-only profiles：新增增量载荷键 `host_profiles`（按 member id 排序，上限 48）、`host_profile_count` 与 `host_profiles_truncated`；内置 `members` 的既有键保持不变。
+- 无分页面上的发现通道：roster 广告化 `profile_query` 关键词过滤（roster 作用域、大小写不敏感子串匹配 member id 与展示描述，在截断前生效），48 条上限外的宿主 profiles 可继续被发现；`host_profile_count`/`host_profiles_truncated` 如实描述过滤后的集合，空白或非字符串输入不过滤。广告 schema 由此 12→13 字段（`SUBAGENTS.md` 已同步）。
+- 动机：底座契约本就允许宿主呈现 profile id（嵌入方经 `fleet.profiles` 配置注入），但没有面向模型的发现通道，注入的 profiles 因此不可被模型发现；roster 扩展补上这一通道，模型经 `profile=<member_id>` 直接选定；profile 池超过列表上限时，`profile_query` 保证截断尾部仍可发现。
+- 配套消费方为父仓蜂群模式二期（一期为父仓 PR #444）；roster 增量载荷为嵌入方通用能力，适合上游化。
+
+- 落位：本主题原以五个提交随父仓蜂群二期 PR 携带——`8b132a182`（roster 增量载荷键 `host_profiles`）、`9322fc5f6`（广告化 `profile_query` 发现通道）、`df5df5f24`（评审钉点补测）、`0576deb2c`（fleet 宿主 id 按 `get()` 解析键确定性去重）、`4767c2816`（`load` 在 `merge_member` 之前的同键去重对齐）——#65 经 squash 合入为 `c5fadb86d`，波次 SHA 不再单独公开可达（第 13 节教训登记）。
+
+### 关键测试
+
+- `agent_roster_lists_host_presented_profiles_spawn_resolves`（roster 列出的 member_id 与 `resolve_spawn_role_with_host_profiles` 接受的 `profile=` 逐字配对）
+- `agent_roster_never_lists_ids_that_spawn_a_different_profile`（大小写/空白变体 id 碰撞：列表不得广告解析到他人 prompt 的 id，每个展示 member_id 均解析回自身）
+- `fleet::roster::tests::from_host_config_collapses_ids_that_get_resolves_together`（`from_host_config` 按 `get()` 解析键确定性去重、保留首中成员）
+- `agent_roster_truncates_host_profiles_at_the_listing_cap`（50 个 profiles 截断到 48，`host_profile_count`/`host_profiles_truncated` 如实上报）
+- `agent_roster_profile_query_discovers_members_beyond_the_listing_cap`（50 个 profiles 截断到 48 后，`profile_query` 按描述与 id 关键词发现截断尾部的第 49+ 个成员、零匹配与空白输入如实上报、发现 id 经 `profile=` 可解析）
+- `agent_tool_schema_bounds_fields_by_explicit_action`（roster 分支广告 `profile_query`）
+- `agent_roster_action_and_spawn_resolve_the_same_roles`（无宿主 profiles 时空列表形状稳定，内置 `members` 键不变）
+
+## 11. 父仓适配边界
 
 - `pinvou3-app` 负责产品工具白名单、AppMode 到 approval/trust 的映射、reasoning effort、会话 owner 过滤和定时会话创建。
 - bridge 保留 v0.9.12 的有限轮次/工具预算、read denylist、bubblewrap、MCP OAuth、goal loop 与 telemetry 安全默认值。
@@ -294,9 +314,9 @@
 - 来源范围语义：shell 任务的 `origin_tool_call_id` 是产生它的唯一 root 轮内工具调用；子智能体任务只携带 `owner_agent_id`、来源为空，走无来源对账路径。只读 `multi_tool_use.parallel` 子调用虽共享包装调用的来源，但 shell 工具带 `ExecutesCode`、不能进入只读并行，该共享对 shell 任务不会发生。消费方必须保留 owner 区分，且不得让一个任务抢占已绑定另一任务的卡片。
 - 持锁副作用 await 上界：会话 turn gate 持有期间的四类副作用 await 以 `TURN_GATE_AWAIT_TIMEOUT`（5s）为上界（issue #255）——取消阶段二级联 send、shell 清理 join、回收 shutdown send 与 shell reclaim finalize。超时放弃该次副作用并记日志：被放弃的级联 send 因 tokio mpsc send 的取消安全语义未入队，且所有持锁发送方与下一轮 `SendMessage` 串行于同一把 turn gate，不会迟到误杀经 gate 提交的新轮（引擎自治轮不经 gate 启动、由 forwarder 在 `TurnStarted` 时认领，属既有窗口）；超时的 reclaim finalize 转入后台继续收尾并保守预置 cleanup_failed，不会永久卡死会话的 active scope（rebind 与 delete 重置 registry 可解）；panic 的 finalize 如实判为「未结算」并以一次全新的 detached 收尾重试替代（finalize 幂等），终态绝不因收尾中途死亡而谎报已验证的干净 shell 状态——detached 收尾落定前，会话的下一发可能以 scope 未关瞬态失败、落定后重发即成功（rebind 与 delete 会重置 registry，天然免疫）。清理调用不再经 turn gate 串行，重叠的击杀梯次与后台 worker 清扫一律由 registry 级 cleanup gate 串行——否则并发的 `cleanup_scope_once` 会对 `PendingKill.attempts` 双计数、在任务尚在退出时耗尽 `MAX_KILL_ATTEMPTS` 永久停止重试。回收 shutdown send 超时后，未送达的收尾 op 由不持 gate 的 detached 任务按原 FIFO 顺序重试补投（每个 op 以 60s 为上界）：engine 自持有 tx_op 克隆、entry 摘除不会关闭其 ops 通道，run loop 只能经正常 `Shutdown` 路径退出，不补投则引擎任务存活到进程退出；重试亦超时则放弃并记日志，此时引擎任务滞留是持续卡死本身的结果，delete/evict 已先行返回时，滞留引擎迟到的终态落盘会在已删除的会话目录下留下孤儿文件（无害：会话列表只读顶层 `<id>.json`，不会出现幽灵会话）。仍无界的持锁等待登记在 #525：用户/评测/重发消息的提交 send 与 spawn 失败拆除的 Shutdown send（向已卡死引擎发新消息会重新阻塞 evict/delete）、scheduled 轮的整轮 gate 持有与其无界 send（既有设计），以及 reclaim 终态落盘与 forwarder join（不等待卡死引擎、依赖磁盘健康假设）。行为测试 `forkguard_cancel_holds_turn_lock_boundedly`、`forkguard_bounded_join_reports_panicked_task_as_not_settled`、`forkguard_bounded_join_detaches_task_that_outlives_budget`、`forkguard_reclaim_shutdown_sends_bounded_and_retried`、`forkguard_reclaim_shutdown_retry_gives_up_within_patience`、`forkguard_reclaim_cleanup_failed_preset_clears_on_success`、`forkguard_background_cleanup_sweep_takes_cleanup_gate` 由 fork-guard 第 3 层执行。
 
-## 11. 软上限评估与后续减量
+## 12. 软上限评估与后续减量
 
-当前净增 12759 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界、Windows PowerShell 执行策略兼容及其行为回归，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
+当前净增 17336 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
@@ -311,10 +331,11 @@
 9. 上游提供完整 static-composer/explicit-skills-root 契约后删除 T3 patch。
 10. 每次上游 release 重新核对已吸收项，不保留兼容壳。
 
-## 12. 发布与回退
+## 13. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
 - r3 已收口（2026-09-23）：不可变 `pinvou-v0.9.12-r3` 切在合并头 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`；r3 tag 在父仓引用前因 #77 修复自 `ba2a07768f` 重切。
 - r2 已收口：不可变 `pinvou-v0.9.12-r2` 切在合并头 `6f780290f1c35e8a3c5dff86b4f76da142744b0c`，`pinvou3-clean` 与父仓 gitlink 与 tag 三方相等；回退点 `pinvou-v0.9.12-r1` 仍钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。
+- 教训登记（2026-09-23）：#65 原计划随父仓蜂群二期 PR 保持提交落位合入（不 squash），实际经 squash 合入——曾钉定的波次头 `4767c2816` 自公共 refs 悬空、fast-gate 可达性校验红，蜂群二期分支当日重钉到维护分支头恢复 gitlink=公开分支头相等。后续底座合入一律在合入后立即把 gitlink 重钉到公开分支头，不得钉定合入前的波次 SHA；r3 收口已恢复三方相等，公开可达性继续以 `scripts/verify-public-submodule.sh` 验证。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
