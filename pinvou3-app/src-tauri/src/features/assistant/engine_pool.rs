@@ -1368,6 +1368,7 @@ impl EnginePool {
     ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
         let mut bridge = self.bridge.clone();
         bridge.prefs = UserPrefs::load();
+        Self::install_session_affinity_key(&mut bridge, session_id);
         let scheduled_profile = self.store.scheduled_profile(session_id);
         // 与命令层 chat.rs 的 is_scheduled 同口径(scheduled_profile 存在即算):
         // scheduled 会话图片固定走 image_analyze 硬规则,即使带 interactive
@@ -1391,6 +1392,16 @@ impl EnginePool {
             .context("No effective model is available for runtime preparation")?;
         let prepared = PreparedRuntimeModel::unchanged(selected);
         Ok((bridge, prepared, pins_scheduled_model))
+    }
+
+    /// One OpenCode gateway session-affinity ID per conversation: key the
+    /// `x-opencode-session` header by session id so engine respawns of the
+    /// same session keep a single stable value
+    /// (`core::model_endpoint::opencode_session_id_for`). Associated function
+    /// (no pool state) so unit tests can pin the funnel wiring directly — a
+    /// real EnginePool cannot be constructed in unit tests.
+    fn install_session_affinity_key(bridge: &mut Pinvou3Bridge, session_id: &str) {
+        bridge.session_affinity_key = Some(session_id.to_string());
     }
 
     /// No `&self`: this function does not read pool state, it only
@@ -3314,6 +3325,27 @@ mod scheduled_model_tests {
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
+    }
+
+    /// The spawn funnel installs the session id as the OpenCode gateway
+    /// affinity key, so every respawn of one session reuses the same
+    /// `x-opencode-session` value instead of silently falling back to the
+    /// shared `engine-default` conversation.
+    #[test]
+    fn install_session_affinity_key_pins_session_id_on_bridge() {
+        let mut bridge = Pinvou3Bridge::test_fixture(None);
+        assert!(
+            bridge.session_affinity_key.is_none(),
+            "fixture bridges start without a session affinity key"
+        );
+        super::EnginePool::install_session_affinity_key(&mut bridge, "session-a");
+        assert_eq!(bridge.session_affinity_key.as_deref(), Some("session-a"));
+        let mut respawned = Pinvou3Bridge::test_fixture(None);
+        super::EnginePool::install_session_affinity_key(&mut respawned, "session-a");
+        assert_eq!(
+            respawned.session_affinity_key, bridge.session_affinity_key,
+            "a respawned bridge for the same session must reuse the same key"
+        );
     }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。

@@ -307,6 +307,77 @@ pub fn is_anthropic_endpoint(base_url: &str) -> bool {
         .is_some_and(|url| is_anthropic_api_url(&url))
 }
 
+/// OpenCode gateway endpoint detection (opencode.ai/zen/...).
+///
+/// The Go gateway (`/zen/go/v1`) has enforced the `x-opencode-session`
+/// affinity header with HTTP 400 `MissingSessionID` since 2026-09; plain Zen
+/// (`/zen/v1`) ignores the header today. Matching the whole `/zen` prefix is
+/// deliberate future-proofing so custom endpoints keep working if Zen turns
+/// the header on too. The foundation's builtin injection keys only on the
+/// OpencodeGo/OpencodeZen provider identities, so requests that reach the
+/// gateway through a custom OpenAI-compatible endpoint (provider `openai`)
+/// must get the header from the app layer.
+pub fn is_opencode_gateway_base_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .ok()
+        .is_some_and(|url| {
+            let host = url
+                .host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase());
+            let host_matches =
+                host.is_some_and(|host| host == "opencode.ai" || host.ends_with(".opencode.ai"));
+            let path = url.path();
+            host_matches && (path == "/zen" || path.starts_with("/zen/"))
+        })
+}
+
+/// Stable `x-opencode-session` value per conversation key.
+///
+/// OpenCode's documented contract is one stable ID per conversation. The
+/// foundation's builtin injection is process-global; this app keys IDs by
+/// conversation instead: engine spawns key on the session id (stable across
+/// respawns because `EnginePool::prepare_runtime_model` reuses the same
+/// session key), auxiliary gateway callers key on the session id when they
+/// hold a session-bound bridge and on their feature label otherwise. The map
+/// lives for the process lifetime — these are client-generated ephemeral
+/// IDs, so an app restart re-keys every conversation.
+pub fn opencode_session_id_for(conversation_key: &str) -> String {
+    static SESSION_IDS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, String>>,
+    > = std::sync::OnceLock::new();
+    SESSION_IDS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(conversation_key.to_string())
+        .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+        .clone()
+}
+
+/// Attach `x-opencode-session` to an auxiliary reqwest request when the
+/// endpoint is an OpenCode gateway; no-op otherwise.
+///
+/// The engine chat path carries the header through the foundation config
+/// (`Pinvou3Bridge::build_dt_config`). Hand-rolled auxiliary clients
+/// (memory review, voice postprocess, model review, connection test,
+/// image-capability probe, model probe) bypass the foundation config and
+/// must attach the header themselves or the Go gateway rejects them with
+/// 400 `MissingSessionID`.
+pub fn with_opencode_session_header(
+    req: reqwest::RequestBuilder,
+    base_url: &str,
+    conversation_key: &str,
+) -> reqwest::RequestBuilder {
+    if is_opencode_gateway_base_url(base_url) {
+        req.header(
+            "x-opencode-session",
+            opencode_session_id_for(conversation_key),
+        )
+    } else {
+        req
+    }
+}
+
 /// 模型列表探测地址：upstream 带 `/v1` 后缀时直接拼 `/models`；不带也拼 `/models`
 /// 而非补一层 `/v1`——glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai`
 /// 的 `/models` 端点均存在，补 `/v1` 会拼成不存在的地址永远 404。

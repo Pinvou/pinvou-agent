@@ -744,6 +744,8 @@ pub async fn probe_model_connection(
             req = req.bearer_auth(key.trim());
         }
     }
+    let req =
+        crate::core::model_endpoint::with_opencode_session_header(req, base_url, "connection-test");
     match req.send().await {
         Ok(resp) => model_connection_http_result(resp.status()),
         Err(e) => model_connection_error_result(&e),
@@ -1198,6 +1200,8 @@ pub async fn run_image_capability_probe(
     if !key.trim().is_empty() {
         req = req.bearer_auth(key.trim());
     }
+    let req =
+        crate::core::model_endpoint::with_opencode_session_header(req, base_url, "image-probe");
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();
