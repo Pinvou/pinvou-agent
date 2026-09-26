@@ -107,19 +107,39 @@ function useComposerVoiceInput(adapter) {
   // because callers use them interchangeably at different call sites.
   const closeVoice = cancelVoice;
 
-  const cancelVoiceEditPreview = useCallback(() => {
+  // Abandon the result of the operation that recorded it (called when the
+  // preview is discarded): ending an unsent operation without sending it.
+  const discardVoiceResult = useCallback((context) => {
+    if (context?.operationId) {
+      const current = adapterRef.current || {};
+      const voiceApi = current.bridge && current.bridge.voice;
+      if (voiceApi && typeof voiceApi.abandonVoiceResult === 'function') {
+        voiceApi.abandonVoiceResult(context.operationId);
+      }
+    }
+  }, []);
+
+  // Disposing a preview also abandons the result: a stale preview must never
+  // keep the operation alive (or let a later apply resurrect it).
+  const discardEditPreview = useCallback(() => {
+    if (editPreviewRef.current) discardVoiceResult(editPreviewRef.current.context);
+    editPreviewRef.current = null;
     setEditPreview(null);
+  }, [discardVoiceResult]);
+
+  const cancelVoiceEditPreview = useCallback(() => {
+    discardEditPreview();
     closeVoice();
-  }, [closeVoice]);
+  }, [closeVoice, discardEditPreview]);
 
   const cancelVoiceOrPreview = useCallback(() => {
     if (editPreviewRef.current) {
-      setEditPreview(null);
+      discardEditPreview();
       closeVoice();
       return;
     }
     closeVoice();
-  }, [closeVoice]);
+  }, [closeVoice, discardEditPreview]);
 
   const applyVoiceEditPreview = useCallback(async (options = {}) => {
     const current = adapterRef.current || {};
@@ -127,7 +147,7 @@ function useComposerVoiceInput(adapter) {
     if (!preview) return false;
     const next = trimDraft(preview.next);
     if (!next) {
-      setEditPreview(null);
+      discardEditPreview();
       return false;
     }
     // Ignore repeat triggers while a send is in flight (double click, or global Enter and
@@ -141,10 +161,11 @@ function useComposerVoiceInput(adapter) {
     // the preview and keep the draft as-is.
     if (typeof current.getDraft === 'function'
       && trimDraft(current.getDraft()) !== preview.original) {
-      setEditPreview(null);
+      discardEditPreview();
       return false;
     }
     current.setDraft(next);
+    editPreviewRef.current = null;
     setEditPreview(null);
     closeVoice();
     if (!options.send) return true;
@@ -153,8 +174,8 @@ function useComposerVoiceInput(adapter) {
       return false;
     }
     if (typeof current.sendTask !== 'function') return false;
-    return deliverVoiceTask(current, next, { mode: 'edit', preview }, taskSendInFlightRef);
-  }, [editPreview, closeVoice]);
+    return deliverVoiceTask(current, next, { ...preview.context, mode: 'edit', preview }, taskSendInFlightRef);
+  }, [editPreview, closeVoice, discardEditPreview]);
 
   const clearStaleVoiceState = useCallback((targetId, sessionId) => {
     const current = adapterRef.current || {};
@@ -169,22 +190,30 @@ function useComposerVoiceInput(adapter) {
     const current = adapterRef.current || {};
     const targetId = current.targetId;
     if (!targetId || !isActiveVoiceTarget(targetId, sessionId)) {
+      discardVoiceResult(context);
       clearStaleVoiceState(targetId, sessionId);
       return;
     }
     if (typeof current.isStillActive === 'function' && !current.isStillActive()) {
+      discardVoiceResult(context);
       clearStaleVoiceState(targetId, sessionId);
       return;
     }
 
     const recognized = String(text || '').trim();
-    if (!recognized) return;
+    if (!recognized) {
+      discardVoiceResult(context);
+      return;
+    }
 
     const mode = normalizeMode(context && context.mode);
     if (mode === 'edit') {
       const original = trimDraft(draftBeforeStart);
       const next = trimDraft(recognized);
       if (!original || !next || next === original) {
+        // An unchanged edit yields no preview and no unsent result: abandon
+        // the operation instead of leaving it recorded on the draft.
+        discardVoiceResult(context);
         if (next === original && typeof current.onEditUnchanged === 'function') {
           current.onEditUnchanged({ original, instruction: trimDraft(context && context.rawText), context });
         }
@@ -232,7 +261,7 @@ function useComposerVoiceInput(adapter) {
       // notification is flipped into a failure notification.
       throw createVoiceTaskSendError();
     }
-  }, [clearStaleVoiceState]);
+  }, [clearStaleVoiceState, discardVoiceResult]);
 
   // Returns true only when a fresh voice session was started (the final
   // bridge.voice.startVoiceInput call). Every other branch — including the
@@ -301,7 +330,7 @@ function useComposerVoiceInput(adapter) {
     // global Enter handler later replace the draft wholesale with a rewrite
     // based on the stale original, silently discarding anything the new
     // session dictated into the draft.
-    if (editPreviewRef.current) setEditPreview(null);
+    if (editPreviewRef.current) discardEditPreview();
 
     const sessionId = createVoiceSessionId(current.targetId);
     voiceSessionIdRef.current = sessionId;
@@ -317,7 +346,7 @@ function useComposerVoiceInput(adapter) {
       },
     );
     return true;
-  }, [handleVoiceResult]);
+  }, [handleVoiceResult, discardEditPreview]);
 
   useEffect(() => {
     const current = adapterRef.current || {};
@@ -378,10 +407,10 @@ function useComposerVoiceInput(adapter) {
     voiceContextIdentityRef.current = identity;
     if (previous === null || previous === identity) return;
     if (editPreviewRef.current) {
-      setEditPreview(null);
+      discardEditPreview();
       closeVoice();
     }
-  }, [adapter.targetId, adapter.ownerKind, adapter.workspaceId, adapter.sessionId, closeVoice]);
+  }, [adapter.targetId, adapter.ownerKind, adapter.workspaceId, adapter.sessionId, closeVoice, discardEditPreview]);
 
   useEffect(() => {
     const current = adapterRef.current || {};

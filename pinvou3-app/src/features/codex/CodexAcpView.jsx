@@ -2301,7 +2301,7 @@ export function CodexAcpView({
     },
     canStart: () => !busy && !working && !activeRuntimeBusy,
     canSendTask: canSendNativeVoiceTask,
-    sendTask: async outgoing => send(outgoing),
+    sendTask: async (outgoing, context) => send(outgoing, { voiceOperationId: context?.operationId }),
   });
   const handleNativeVoiceTrigger = nativeVoice.triggerVoice;
 
@@ -2783,6 +2783,7 @@ export function CodexAcpView({
     sendBody,
     draftFailureCleanup,
     backgroundErrorLabel,
+    voiceOperationId,
   }) {
     let targetId = activeId;
     const materializingDraft = !targetId;
@@ -2796,6 +2797,12 @@ export function CodexAcpView({
           prepareSession,
         });
         targetId = created.id;
+        // First-turn materialization: the voice operation's submission gate
+        // binds to the really created session (shared voice bookkeeping; ACP
+        // itself never reports a chat task attempt).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
+        }
         if (created.activated && activeIdRef.current === targetId) {
           acpSendOperationTracker.switchSession(targetId);
           operation = beginAcpSendOperation(targetId);
@@ -2845,7 +2852,7 @@ export function CodexAcpView({
     }
   }
 
-  async function send(messageOverride) {
+  async function send(messageOverride, sendOptions) {
     const hasMessageOverride = typeof messageOverride === 'string';
     if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
       return nativeVoice.applyVoiceEditPreview({ send: true });
@@ -2858,6 +2865,7 @@ export function CodexAcpView({
     const workspaceReferencesAtSend = workspaceReferences;
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
+    const voiceOperationId = sendOptions && sendOptions.voiceOperationId;
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
       || composerSendBlockers.busy || composerSendBlockers.working || composerSendBlockers.configApplying) return false;
     if (composerSendBlockers.authMissing) {
@@ -2871,7 +2879,7 @@ export function CodexAcpView({
     if (composerSendBlockers.workspaceUnavailable) return false;
     if (composerSendBlockers.sessionNotReady) return false;
     if (isNativeAgent) {
-      return sendNative(message, readyAttachments);
+      return sendNative(message, readyAttachments, voiceOperationId);
     }
     return runAcpSendPipeline({
       message,
@@ -2879,6 +2887,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'ACP',
+      voiceOperationId,
       materializeDraft: async ({ created, targetId, operation }) => {
         const appliedInfo = await applyDraftConfigSelections(
           targetId,
@@ -2912,7 +2921,7 @@ export function CodexAcpView({
 
   /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
   /// 用户气泡乐观插入 lane，chat 命令同步失败（空消息 / turn 占用等）时回滚。
-  async function sendNative(message, readyAttachments) {
+  async function sendNative(message, readyAttachments, voiceOperationId) {
     const attachmentsAtSend = attachments;
     const workspaceReferencesAtSend = workspaceReferences;
     const nativeDraftControlsAtSend = nativeDraftControls;
@@ -2922,6 +2931,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'native',
+      voiceOperationId,
       prepareSession: async sessionId => {
         const prepared = await persistNativeDraftControls(
           sessionId,
