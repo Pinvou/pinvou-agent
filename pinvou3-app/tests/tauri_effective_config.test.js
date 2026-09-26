@@ -413,14 +413,16 @@ assert.ok(
 );
 // Computer Use links all three of these unconditionally on Linux, as
 // DT_NEEDED entries resolved at process start — not dlopen — but they arrive
-// by two different routes, which matters if anyone ever tries to drop one:
+// by different routes, which matters if anyone ever tries to drop one:
 //   - libpipewire-0.3: `pipewire-sys` declares `links = "pipewire-0.3"` and
 //     resolves through pkg-config. Its .pc emits only `-lpipewire-0.3`.
-//   - libgbm / libEGL: `xcap` → `libwayshot-xcap`, via `gbm-sys`
-//     (`#[link(name = "gbm")]`) and `khronos-egl` (pkg-config `egl`).
-// libgbm1 is additionally a hard dependency of libwebkit2gtk-4.1-0, so it is
-// already transitively present; it is listed explicitly because the binary
-// links it directly and that should not depend on webkit's dependency list.
+//   - libEGL: `xcap` → `libwayshot-xcap` → `khronos-egl`, whose build script
+//     pkg-config-probes `egl` and emits `-lEGL`.
+//   - libgbm: `gbm-sys` carries neither a `links` declaration nor a build
+//     script that emits a link flag by itself, so its edge is not provable
+//     from crate metadata; `libgbm1` is additionally a hard dependency of
+//     libwebkit2gtk-4.1-0, making the entry belt-and-braces. Re-check with
+//     `readelf -d` on the shipped binary before ever removing it.
 // Tauri's deb bundler writes `Depends:` verbatim and never runs
 // dpkg-shlibdeps, so a missing entry installs cleanly and then fails to start
 // with a dynamic-linker error on any system that lacks the library.
