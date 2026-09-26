@@ -1199,8 +1199,10 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
 
 #[cfg(test)]
 mod foreign_writer_tests {
-    //! 测试与生产代码同文件:聚焦 `VersionedJsonStore` 的外部写者(CLI)、
-    //! 损坏文件与 stat 顺序三类缺陷,复用 stores.rs 的私有可见性。
+    //! Tests live in the same file as the production code: they target the
+    //! three defect classes of `VersionedJsonStore` (foreign writers such as
+    //! the CLI, corrupt files, and stat ordering) and reuse stores.rs's
+    //! private visibility.
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1242,8 +1244,9 @@ mod foreign_writer_tests {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
     }
 
-    /// (a) 两个 store 实例共享一个文件:常驻句柄的写操作
-    /// (compact / set_kind / remove)不得抹掉外部句柄已写入的变更。
+    /// (a) Two store instances share one file: a resident handle's writes
+    /// (compact / set_kind / remove) must not erase changes a foreign
+    /// handle has already written.
     #[test]
     fn two_handles_over_one_file_do_not_erase_each_others_writes() {
         let dir = temp_home();
@@ -1312,8 +1315,10 @@ mod foreign_writer_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// (b) reload 读到损坏文件:保留内存旧状态、不记录 stamp(之后重试),
-    /// 文件修复后 reload_if_changed 能重新读到。
+    /// (b) A reload that reads a corrupt file keeps the in-memory state,
+    /// records no stamp (retry later), and `reload_if_changed` picks the file
+    /// up again once it is repaired.
+
     #[test]
     fn reload_on_a_corrupt_file_keeps_state_and_retries_after_repair() {
         let dir = temp_home();
@@ -1364,10 +1369,13 @@ mod foreign_writer_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// (c) stat-before-read by construction: the real window (外部写恰好落在
-    /// stat 与 read 之间)无法在调用中途注入,所以用 reload 自己的原语、
-    /// 按 reload 的顺序手工驱动同样的交错,断言由此产生的状态不会把后续
-    /// 变更掩掉,也验证 stamp 落后于内存这一安全方向。
+    /// (c) stat-before-read by construction: the real window (a foreign write
+    /// landing exactly between the stat and the read) cannot be injected
+    /// mid-call, so the test drives the same interleaving manually with
+    /// reload's own primitives in reload's own order, asserting the resulting
+    /// state does not mask subsequent changes and that the stamp lags memory
+    /// in the safe direction.
+
     #[test]
     fn reload_stats_the_file_before_reading_it() {
         let dir = temp_home();
@@ -1424,11 +1432,6 @@ mod foreign_writer_tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
-
-    /// (d) 相同字节长度的外部写不能被漏掉:同一 handle 两次 reload 之间,
-    /// 外部写者连续落盘两个等长不同内容的 payload,下一次 lookup miss 必须
-    /// 重读并看到第二个写的内容 —— stamp 比较必须覆盖身份(Unix dev/ino),
-    /// 不能只看长度。
     #[test]
     fn two_same_length_foreign_writes_between_reloads_are_both_seen() {
         let dir = temp_home();
@@ -1436,8 +1439,10 @@ mod foreign_writer_tests {
 
         // v1 seeds the handle's stamp: {t1}.
         write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
-        // 无身份平台(长度+mtime 是唯一信号)无法确定性区分等长同刻的两次
-        // 写,本用例只对提供身份的平台有意义(Windows 测试仅编译不执行)。
+        // Platforms without identity (length+mtime is the only signal) cannot
+        // deterministically distinguish two same-length writes at the same
+        // instant; this case is only meaningful where identity exists (the
+        // Windows build compiles but does not execute it).
         let seeded_identity = std::fs::metadata(&path)
             .ok()
             .and_then(|meta| metadata_file_identity(&meta));
@@ -1472,11 +1477,14 @@ mod foreign_writer_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// (e) len+mtime 相同而身份(dev/ino)不同的 stamp 不得被视为"未变化"
-    /// —— 原子重命名必然换 inode,身份必须参与相等比较;粗粒度 mtime 文件
-    /// 系统上等长同刻的两次写只有身份能区分。直接伪造 seen 的身份字段,
-    /// 因此在有/无身份的平台上同样可执行(无身份平台真实 stamp 恒为 None,
-    /// 身份比较天然不触发)。
+    /// (e) A stamp whose len+mtime match but whose identity (dev/ino)
+    /// differs must not be treated as "unchanged" — an atomic rename always
+    /// changes the inode, so identity must participate in the equality
+    /// comparison; on coarse-mtime filesystems only identity can distinguish
+    /// two same-length writes at the same instant. The seen identity field is
+    /// forged directly, so the case runs identically on platforms with and
+    /// without identity (on the latter a real stamp is always None and the
+    /// identity comparison never fires).
     #[test]
     fn file_identity_participates_in_stamp_comparison() {
         let dir = temp_home();
@@ -1515,10 +1523,13 @@ mod foreign_writer_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// (f) persist 的"盘上是我们的写吗"判定:披露的冻结场景是同长度外部写
-    /// 恰好落在 write_atomic 与记录 stamp 之间 —— 长度(甚至 mtime)都无法
-    /// 识破,只有内容比对可以。只记录被证实为我们的 stamp;不一致或无法
-    /// stat 一律记 unknown,下一次检查重读,绝不当作"未变化"。
+    /// (f) The persist-side "is the on-disk content our write?" judgment:
+    /// the disclosed freeze scenario is a same-length foreign write landing
+    /// exactly between write_atomic and the stamp being recorded — neither
+    /// length nor even mtime can catch it, only a content comparison can.
+    /// Only a stamp proven to be our write is recorded; anything else —
+    /// mismatch or un-stat-able — records unknown, forcing a re-read on the
+    /// next check, never treating it as "unchanged".
     #[test]
     fn persist_records_only_a_proven_own_write() {
         let dir = temp_home();

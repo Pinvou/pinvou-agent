@@ -21,13 +21,15 @@ use tauri::Manager;
 #[cfg(feature = "benchmark-hooks")]
 pub use features::assistant::product_runtime::{agentic_task, headless_bridge};
 
-/// 定时任务地基的对外门面(仅面向 pinvou-cli 的 `scheduled` 家族):
-/// 定义/运行记录等由 CodeWhale `codewhale-tui`(本 crate 的 `deepseek-tui`
-/// 别名)`automation_manager` 的公开 API 承载,而架构门禁
-/// `rust_cli_reaches_past_pinvou3_lib` 要求 pinvou-cli 只经 pinvou3_lib
-/// 表面取用基础座、不得直连——与 `features::projects` 为 CLI 开放
-/// `pub mod` 是同一先例。这里只转出 CLI `scheduled` 实际消费的条目;
-/// GUI 自身仍直接 `use deepseek_tui::...`,不经此门面。
+/// Facade for the automation scheduler foundation, consumed only by the
+/// `scheduled` family of pinvou-cli: definitions and run records live behind
+/// the public API of CodeWhale `codewhale-tui`'s (this crate's
+/// `deepseek-tui` alias) `automation_manager`, while the architecture guard
+/// `rust_cli_reaches_past_pinvou3_lib` requires pinvou-cli to reach the
+/// foundation through pinvou3_lib surfaces only — the same precedent as the
+/// `pub mod` opened on `features::projects` for the CLI. Only the entries
+/// the CLI `scheduled` family actually consumes are re-exported; the GUI
+/// itself keeps using `deepseek_tui::...` directly, not through this facade.
 pub mod automation_foundation {
     pub use deepseek_tui::automation_manager::{
         AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedule,
