@@ -142,15 +142,36 @@ test('Vite build contains every local classic runtime script referenced by index
     'desktop index must inline the desktop platform marker replacing bootstrap.js',
   );
 
+  // Since the startup-bundle rework, dist keeps verbatim copies only of
+  // scripts not merged into dist/startup: tags that survived the transform
+  // (legacy-polyfills, update-notice-logic) and scripts pet.html references
+  // directly (model-service-errors). Everything else — merged into a bundle
+  // or stripped for this platform — must be absent from dist.
+  const keptVerbatim = new Set(['shared/model-service-errors.js']);
   for (const relative of expected) {
     const sourcePath = resolveContainedRuntimePath(sourceRoot, relative);
-    const builtPath = resolveContainedRuntimePath(distRoot, relative);
     assert.ok(fs.statSync(sourcePath).isFile(), `missing runtime source: ${relative}`);
-    assert.ok(fs.existsSync(builtPath), `missing runtime build asset: ${relative}`);
-    assert.deepEqual(
-      fs.readFileSync(builtPath),
-      fs.readFileSync(sourcePath),
-      `runtime build asset differs from source: ${relative}`,
+    const builtPath = resolveContainedRuntimePath(distRoot, relative);
+    const tagSurvived = built.includes(relative);
+    if (tagSurvived) {
+      assert.ok(fs.existsSync(builtPath), `missing runtime build asset: ${relative}`);
+      assert.deepEqual(
+        fs.readFileSync(builtPath),
+        fs.readFileSync(sourcePath),
+        `runtime build asset differs from source: ${relative}`,
+      );
+      continue;
+    }
+    // No surviving tag: the script is served from dist/startup (or stripped
+    // for the desktop platform). Only scripts another entry loads directly
+    // keep a copy.
+    if (keptVerbatim.has(relative)) {
+      assert.ok(fs.existsSync(builtPath), `missing verbatim copy needed by another entry: ${relative}`);
+      continue;
+    }
+    assert.ok(
+      !fs.existsSync(builtPath),
+      `dist still ships a dead verbatim copy of ${relative}: its code is served from dist/startup`,
     );
   }
 });
