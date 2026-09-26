@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
@@ -610,4 +611,353 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         .expect_err("a trailing token is a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("cannot be reverted"), "{error}");
+}
+
+// ── rebind (the storage half of the GUI's rebind_workspace_root) ────────────
+
+#[test]
+fn projects_rebind_parses_two_positionals_and_the_yes_flag() {
+    // Parse only: no PINVOU3_HOME mutation, so no ENV_LOCK.
+    let valid: Vec<Vec<&str>> = vec![
+        vec!["pinvou", "projects", "rebind", "/tmp/a", "/tmp/b"],
+        vec!["pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "--yes"],
+    ];
+    for arguments in &valid {
+        let parsed = parse_args(arguments.clone())
+            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
+        let debug = format!("{:?}", parsed.command());
+        assert!(
+            debug.starts_with("Projects(") && debug.contains("Rebind"),
+            "{arguments:?} did not parse into Projects(Rebind): {debug}"
+        );
+    }
+
+    let invalid: Vec<Vec<&str>> = vec![
+        vec!["pinvou", "projects", "rebind"],
+        vec!["pinvou", "projects", "rebind", "/tmp/a"],
+        // A flag-shaped token before a positional is malformed, not a flag.
+        vec!["pinvou", "projects", "rebind", "--yes", "/tmp/b"],
+        vec!["pinvou", "projects", "rebind", "/tmp/a", "--yes"],
+        vec![
+            "pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "--bogus",
+        ],
+        vec![
+            "pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "--yes", "--yes",
+        ],
+        vec!["pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "extra"],
+    ];
+    for arguments in &invalid {
+        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+    }
+}
+
+#[test]
+fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind");
+    let from_dir = make_root_dir("rebind-from");
+    let to_dir = make_root_dir("rebind-to");
+    // Everything the lanes compare runs in the resolved display domain, so
+    // the fixtures seed and assert the canonical spelling (on macOS the temp
+    // root sits behind /var → /private/var).
+    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let to = std::fs::canonicalize(&to_dir).unwrap();
+
+    // A project whose root sits under `from`.
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Moved",
+        "--root",
+        from.to_str().unwrap(),
+    ]);
+    let project_id = value["id"].as_str().unwrap().to_owned();
+
+    // Plain lane: session JSON + workspace-binding.json sidecar, both seeded
+    // through the same store constructors the CLI command itself uses.
+    let sessions = SessionStore::boot().expect("boot session store");
+    let plain_session = sessions
+        .create_new("test-model".to_owned(), None, from.clone())
+        .expect("create plain session");
+    let plain_id = plain_session.metadata.id;
+    sessions
+        .bind_session_workspace(&plain_id, from.clone())
+        .expect("bind plain workspace");
+    // Codex lane: the session JSON plus the agent-index record and the
+    // authoritative code-session sidecar.
+    let code_session = sessions
+        .create_new("test-model".to_owned(), None, from.clone())
+        .expect("create code session");
+    let code_id = code_session.metadata.id;
+    drop(sessions);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(from.clone()))
+        .expect("bind code session");
+    drop(agents);
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ]);
+    let failed = value["failed_session_ids"].as_array().unwrap();
+    assert!(
+        failed.is_empty(),
+        "a healthy two-lane rebind must not report failures: {failed:?}"
+    );
+    let rebound: Vec<&str> = value["rebound_session_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert!(
+        rebound.contains(&plain_id.as_str()) && rebound.contains(&code_id.as_str()),
+        "both lanes' sessions must be reported as rebound: {rebound:?}"
+    );
+    assert_eq!(
+        value["affected_project_ids"],
+        serde_json::json!([project_id]),
+        "the project whose root moved must be named"
+    );
+
+    // Project root rewritten in the store.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    let roots = list["projects"][0]["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 1, "the moved project keeps exactly one root");
+    assert_eq!(roots[0]["path"].as_str().unwrap(), to.to_str().unwrap());
+
+    // SavedSession metadata replayed for both sessions.
+    for session_id in [&plain_id, &code_id] {
+        let raw = std::fs::read_to_string(home.sessions_root().join(format!("{session_id}.json")))
+            .expect("session record still on disk");
+        assert!(
+            raw.contains(to.to_str().unwrap()),
+            "session {session_id} metadata must point at the new directory"
+        );
+    }
+    // Plain sidecar moved.
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&plain_id)
+            .join("workspace-binding.json"),
+    )
+    .expect("plain binding sidecar still on disk");
+    assert!(
+        sidecar.contains(to.to_str().unwrap()),
+        "the workspace-binding sidecar must move: {sidecar}"
+    );
+    // Agent index and code-session sidecar moved.
+    let record = SessionAgentStore::load_or_empty().get(&code_id);
+    assert_eq!(
+        record.workspace_path,
+        Some(to.clone()),
+        "the agent-index binding must move"
+    );
+    let code_sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&code_id)
+            .join("code-session.json"),
+    )
+    .expect("code-session sidecar still on disk");
+    assert!(
+        code_sidecar.contains(to.to_str().unwrap()),
+        "the authoritative sidecar must move: {code_sidecar}"
+    );
+
+    // Idempotent rerun: nothing is left under `from`, so a rerun converges
+    // to an honest empty report under exit 0.
+    let outcome = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ])
+    .expect("the idempotent rerun must succeed");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome
+            .stdout
+            .contains("rebound 0 session(s) (0 failed), updated roots of 0 project(s)"),
+        "the rerun must report an empty convergence: {:?}",
+        outcome.stdout
+    );
+
+    std::fs::remove_dir_all(&from_dir).ok();
+    std::fs::remove_dir_all(&to_dir).ok();
+}
+
+#[test]
+fn projects_rebind_without_yes_is_refused_before_any_store_access() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-yes");
+    let from_dir = make_root_dir("rebind-yes-from");
+    let to_dir = make_root_dir("rebind-yes-to");
+
+    let error = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from_dir.to_str().unwrap(),
+        to_dir.to_str().unwrap(),
+    ])
+    .expect_err("rebind without --yes must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(
+        error.to_string().contains("--yes"),
+        "the refusal must point at the --yes gate: {error}"
+    );
+    assert!(
+        !home.store_file().exists(),
+        "a refused rebind must not touch the projects store"
+    );
+    assert!(
+        !home.root.join("session-agents.json").exists(),
+        "a refused rebind must not touch the agent index"
+    );
+    assert!(
+        !home.sessions_root().exists(),
+        "a refused rebind must not create the sessions root"
+    );
+
+    std::fs::remove_dir_all(&from_dir).ok();
+    std::fs::remove_dir_all(&to_dir).ok();
+}
+
+#[test]
+fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-shape");
+    let to_dir = make_root_dir("rebind-shape-to");
+
+    // One mirrored message covers empty, relative and filesystem-root `from`
+    // — the same single rule the GUI command applies at its entry.
+    for from in ["relative/dir", ""] {
+        let error = run(&[
+            "pinvou",
+            "projects",
+            "rebind",
+            from,
+            to_dir.to_str().unwrap(),
+        ])
+        .expect_err("a shape-invalid from must be rejected");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "from = {from:?}");
+        assert!(
+            error.to_string().contains("absolute, non-root"),
+            "from = {from:?} must be named by the mirrored rule: {error}"
+        );
+    }
+    // Filesystem root: the deepest ancestor of any absolute path (POSIX "/",
+    // a Windows drive root) has no parent.
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .ok()
+        .and_then(|path| {
+            path.ancestors()
+                .last()
+                .map(|ancestor| ancestor.to_path_buf())
+        })
+        .expect("temp dir must have a root ancestor");
+    let error = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        root.to_str().unwrap(),
+        to_dir.to_str().unwrap(),
+    ])
+    .expect_err("a filesystem-root from must be rejected");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("absolute, non-root"), "{error}");
+
+    // And `to` as the filesystem root mirrors the GUI's other entry rule.
+    let from_dir = make_root_dir("rebind-shape-from");
+    let error = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from_dir.to_str().unwrap(),
+        root.to_str().unwrap(),
+    ])
+    .expect_err("a filesystem-root to must be rejected");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("filesystem root"), "{error}");
+
+    assert!(
+        !home.store_file().exists(),
+        "rejected arguments must not touch the projects store"
+    );
+
+    std::fs::remove_dir_all(&from_dir).ok();
+    std::fs::remove_dir_all(&to_dir).ok();
+}
+
+#[test]
+fn projects_rebind_from_equal_to_is_a_reported_noop() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-same");
+    let dir = make_root_dir("rebind-same");
+    let same = std::fs::canonicalize(&dir).unwrap();
+
+    // Seed state that WOULD match a real rebind: if the short-circuit were
+    // missing, the run would rewrite (or at least touch) all of it.
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Same",
+        "--root",
+        same.to_str().unwrap(),
+    ]);
+    let project_id = value["id"].as_str().unwrap().to_owned();
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, same.clone())
+        .expect("create session");
+    let session_id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&session_id, same.clone())
+        .expect("bind workspace");
+    drop(sessions);
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        same.to_str().unwrap(),
+        same.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert_eq!(value["rebound_session_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(value["failed_session_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(value["affected_project_ids"].as_array().unwrap().len(), 0);
+
+    // Nothing changed anywhere.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(list["projects"][0]["id"], project_id);
+    assert_eq!(
+        list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
+        same.to_str().unwrap()
+    );
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&session_id)
+            .join("workspace-binding.json"),
+    )
+    .expect("the sidecar must be untouched");
+    assert!(
+        sidecar.contains(same.to_str().unwrap()),
+        "the no-op must leave the binding as-is: {sidecar}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
