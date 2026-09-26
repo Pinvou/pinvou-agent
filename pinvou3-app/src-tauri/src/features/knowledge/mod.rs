@@ -39,13 +39,16 @@ use tauri::State;
 pub use store::{FileHit, Stats, TypeCount};
 use store::{SearchQuery, Store};
 
-/// 后台扫描进度（回前端轮询）。前端只读 running/phase/scanned/finishedAt。
+/// Background scan progress (polled by the frontend). The frontend reads
+/// running/phase/scanned/finishedAt; `roots` (added with the headless
+/// surface) reports the scanned roots and is ignored by the GUI today.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
     /// idle / scanning / done / cancelled
     pub phase: String,
+    pub roots: Vec<String>,
     pub scanned: u64,
     pub finished_at: i64,
 }
@@ -109,12 +112,29 @@ impl KnowledgeService {
     /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
     /// 通过后台 blocking 线程加载，避免读取/构建大型 ONNX 模型阻塞 Tauri setup 和首屏。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, true)
+    }
+
+    /// Like [`Self::new`], but a crashed import is NOT reconciled at boot.
+    /// Read-only consumers (the headless CLI) must be able to open the store
+    /// without degrading an import a live app process is still running:
+    /// recovery flips that job to terminal state, which would wedge the
+    /// owner's bookkeeping. Write paths keep [`Self::new`].
+    pub fn new_without_recovery(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, false)
+    }
+
+    fn open(db_path: &Path, recover: bool) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         let conn = store.conn_arc();
         let l1 = l1::L1Store::new(conn.clone());
         let imports = import_jobs::ImportJobStore::new(conn);
-        let interrupted = imports.recover_interrupted()?;
+        let interrupted = if recover {
+            imports.recover_interrupted()?
+        } else {
+            None
+        };
         if let Some(job) = &interrupted {
             if job.resumable {
                 l1.set_collection_status(job.collection_id, "pending");
@@ -514,6 +534,7 @@ impl KnowledgeService {
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
+                roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 ..Default::default()
             };
         }
@@ -568,15 +589,48 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
+    /// Request cancellation of an in-progress scan. The GUI's lazy scan has
+    /// no frontend cancel entry, and the stacked CLI families PR decided its
+    /// `scan cancel` subcommand must NOT call this: the flag is an in-process
+    /// one-shot signal, and a one-shot CLI process can never reach a live
+    /// desktop-app scan with it — a command reporting success that cannot
+    /// cancel anything would be dishonest, so the stacked PR refuses instead.
+    /// The signal itself stays (the GUI may gain a cancel entry; the scan
+    /// thread's cancel-branch semantics are unchanged), but treat this as
+    /// signal surface without a caller in any current tree.
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
+    }
+
+    // ───────────────────── headless (CLI) read entry points ─────────────────────
+    //
+    // Same semantics as the Tauri commands below (kb_stats / kb_type_counts /
+    // kb_search), but synchronous: `spawn_db` exists to move blocking queries
+    // off the Tauri **main thread** (synchronous commands run there, and a
+    // full-table COUNT on a large library freezes the UI). A headless caller
+    // (the one-shot pinvou-cli process) runs outside the async runtime / UI
+    // main thread, so querying the store directly needs no runtime dependency
+    // and must not introduce one.
+
+    /// L0 index overview (same semantics as `kb_stats`).
+    pub fn stats(&self) -> Result<Stats, String> {
+        self.store.stats().map_err(|e| e.to_string())
+    }
+
+    /// L0: per-extension counts (same semantics as `kb_type_counts`).
+    pub fn type_counts(&self) -> Result<Vec<TypeCount>, String> {
+        self.store.type_counts().map_err(|e| e.to_string())
+    }
+
+    /// Instant search (same semantics as `kb_search`, including the NL-rule
+    /// merge through `merge_nl_rules`).
+    pub fn search(&self, query: SearchQueryDto) -> Result<Vec<FileHit>, String> {
+        let sq = merge_nl_rules(query.into());
+        self.store.search(&sq).map_err(|e| e.to_string())
     }
 }
 
@@ -638,6 +692,7 @@ pub struct SearchQueryDto {
     #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -650,6 +705,7 @@ impl From<SearchQueryDto> for SearchQuery {
             text: d.text,
             exts: d.exts,
             mtime_after: d.mtime_after,
+            mtime_before: d.mtime_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,
@@ -823,16 +879,15 @@ pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     }
 }
 
-/// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
-/// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
-pub async fn kb_search(
-    state: State<'_, KnowledgeService>,
-    query: SearchQueryDto,
-) -> Result<Vec<FileHit>, String> {
-    let mut sq: SearchQuery = query.into();
+/// Core of the NL-rule merge shared by `kb_search` and the headless
+/// [`KnowledgeService::search`] so both surfaces keep identical semantics:
+/// the text runs through NL-rule parsing ("上周的 pdf" → exts + time filter +
+/// residual text); structured filters passed **explicitly** by the caller
+/// win over the parsed result and are never overwritten.
+fn merge_nl_rules(mut sq: SearchQuery) -> SearchQuery {
     if let Some(text) = sq.text.clone() {
         let parsed = query::parse(&text);
-        sq.text = parsed.text; // 残余文本（已剥离时间/类型/大小词）
+        sq.text = parsed.text; // residual text (time/size/type words stripped)
         if sq.exts.is_empty() {
             sq.exts = parsed.exts;
         }
@@ -846,6 +901,18 @@ pub async fn kb_search(
             sq.max_size = parsed.max_size;
         }
     }
+    sq
+}
+
+/// Instant search. The text first runs through NL-rule parsing ("上周的 pdf"
+/// → exts + time filter + residual text); structured filters passed
+/// **explicitly** by the frontend take precedence over the parsed result and
+/// are not overwritten.
+pub async fn kb_search(
+    state: State<'_, KnowledgeService>,
+    query: SearchQueryDto,
+) -> Result<Vec<FileHit>, String> {
+    let sq = merge_nl_rules(query.into());
     let store = state.store.clone();
     spawn_db(move || store.search(&sq).map_err(|e| e.to_string())).await
 }
@@ -899,5 +966,84 @@ mod tests {
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
+
+    /// Headless read contract (stats / type_counts / search): zero-state
+    /// reads, post-seed reads, search with the NL-rule merge ("上周的 pdf" →
+    /// exts + mtime filter + residual text stripping) matching kb_stats /
+    /// kb_type_counts / kb_search semantics; explicit structured filters win
+    /// over the parsed result.
+    #[test]
+    fn headless_stats_type_counts_and_search_match_gui_semantics() {
+        let svc = service();
+        assert_eq!(svc.stats().expect("zero-state stats"), Stats::default());
+        assert!(
+            svc.type_counts()
+                .expect("zero-state type counts")
+                .is_empty()
+        );
+
+        // Seed one L0 record through the same upsert path the scanner uses
+        // (no full scan involved).
+        svc.store
+            .upsert_many(&[store::FileRecord {
+                path: "/tmp/docs/季度报告.pdf".into(),
+                name: "季度报告.pdf".into(),
+                ext: Some("pdf".into()),
+                size: 2048,
+                mtime: now(),
+                is_dir: false,
+            }])
+            .expect("seed one file record");
+
+        let stats = svc.stats().expect("stats after seed");
+        assert_eq!(stats.total_files, 1);
+        assert_eq!(
+            svc.type_counts().expect("type counts after seed"),
+            vec![TypeCount {
+                ext: "pdf".into(),
+                count: 1
+            }]
+        );
+
+        // Explicit structured search: text goes through FTS/LIKE on the same
+        // store path as the GUI command.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("季度报告".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("structured search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ext.as_deref(), Some("pdf"));
+
+        // NL-rule merge: "上周的 pdf" → exts=[pdf] + mtime_after ≈ 7 days ago
+        // + empty residual text. Without the merge (raw FTS on "上周的 pdf")
+        // nothing would match.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("nl-rule merged search");
+        assert_eq!(hits.len(), 1, "NL merge must hit the seeded pdf: {hits:?}");
+        assert_eq!(hits[0].name, "季度报告.pdf");
+
+        // Explicit exts win over the parsed result and are not overwritten
+        // (GUI contract).
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                exts: vec!["txt".into()],
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("explicit ext wins over parsed");
+        assert!(
+            hits.is_empty(),
+            "explicit txt filter must not hit a pdf: {hits:?}"
+        );
     }
 }

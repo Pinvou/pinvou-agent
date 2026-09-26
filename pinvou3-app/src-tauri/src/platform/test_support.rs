@@ -32,14 +32,51 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let prev = std::env::var("PINVOU3_HOME").ok();
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-    f();
-    match prev {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+
+    // Restore through Drop, not straight-line code after `f()`. A failing
+    // assertion inside the closure unwinds, and with the restore written
+    // inline it would be skipped: the temp dir leaks AND PINVOU3_HOME stays
+    // pointed at it for every later test in this process, so one genuine
+    // failure cascades into a string of unrelated ones and the suite's red
+    // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
+    struct TempHomeRestore {
+        previous: Option<OsString>,
+        dir: std::path::PathBuf,
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    impl Drop for TempHomeRestore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    // Declared after `_g` so it drops BEFORE the lock is released: no other
+    // test may observe the temporary value.
+    let _restore = TempHomeRestore {
+        previous: prev.map(OsString::from),
+        dir: dir.clone(),
+    };
+    f();
+}
+
+/// 取 crate 唯一 env 锁并一步完成一组 env 的快照：
+/// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+/// 不可重入——已持 ENV_LOCK 时不得再调。guard 在作用域退出（含 panic 路径）
+/// 释放锁并恢复 env。
+/// （`bridge.rs` 的测试模块仍保留一个私有 `locked_env`/`EnvGuard` 配对，
+/// 上百个调用点未收敛至此；新代码一律使用本实现，不再扩散旧配对。）
+#[cfg(test)]
+pub(crate) fn locked_env(
+    vars: &[&'static str],
+) -> (std::sync::MutexGuard<'static, ()>, EnvRestore) {
+    let lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    (lock, EnvRestore::capture(vars))
 }
 
 /// RAII 快照/恢复一组环境变量：`capture` 记录现值，`Drop`（含 panic 路径）

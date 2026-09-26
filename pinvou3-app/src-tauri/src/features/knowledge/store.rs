@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the probe regression test constructs an "open-read failure" with POSIX permission bits to verify the failure is no longer folded into version 0, which would trigger the store deletion (the OS-metadata check stays inside the most cohesive test per precedent)
 //! L0 元数据存储：SQLite + FTS5(trigram) 做全系统秒搜 + 去重候选查询。
 //!
 //! 设计（见 docs/本地知识底座-产品形态与架构.md §4.0/§5）：
@@ -22,6 +23,29 @@ use serde::Serialize;
 /// v3：新增 L1 知识库表（collections/documents/chunks/chunks_fts）。
 /// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。
 const SCHEMA_VERSION: i64 = 4;
+
+/// Whether a store at `version` may be deleted and rebuilt on open.
+///
+/// Only pre-v3 schemas qualify: v3 is the first that holds knowledge-set
+/// business data, which a rescan cannot reconstruct. Deliberately NOT
+/// "anything that is neither 3 nor `SCHEMA_VERSION`" — whitelisting the
+/// current version is a landmine for the next schema bump, because the day
+/// `SCHEMA_VERSION` becomes 5 every existing v4 store stops matching the
+/// whitelist and is deleted on first launch, taking exactly the
+/// non-rebuildable data this rule exists to protect. Anything from v3 up
+/// migrates in place (the idempotent `IF NOT EXISTS` batch) or is refused
+/// (the newer-than-us check); it is never deleted.
+///
+/// The range is bounded below as well as above. `user_version` is a signed
+/// 32-bit field at byte offset 60 of the database header, carried by no
+/// checksum outside WAL frames, so a healthy v4 store that takes a single bit
+/// flip in that byte reads back negative — and a bare `version < 3` would
+/// classify it as a disposable v0-era store and delete exactly the
+/// non-rebuildable data this rule exists to protect. A negative version is
+/// not an old schema, it is a damaged header: refuse it like a future one.
+fn schema_is_disposable(version: i64) -> bool {
+    (0..3).contains(&version)
+}
 
 /// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
 const SCHEMA: &str = r#"
@@ -201,12 +225,20 @@ pub struct FileHit {
     pub mtime: i64,
 }
 
+/// Upper bound on a single search's row LIMIT. The GUI pages at a few dozen
+/// hits; the headless callers now share this entry point, and an unclamped
+/// `usize` limit would both invite a full-table materialization and — at
+/// `usize::MAX` — wrap to `-1` in the `i64` conversion, which SQLite reads
+/// as "no limit at all".
+pub(crate) const SEARCH_LIMIT_CAP: usize = 1000;
+
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: Option<String>,
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub limit: usize,
@@ -238,21 +270,62 @@ pub struct Store {
 impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
     /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
+    ///
+    /// All three connections (probe / write / read-only) carry busy_timeout:
+    /// the desktop app and the headless CLI are a supported two-process pair,
+    /// and any connection hitting the other process's write transaction must
+    /// wait instead of failing with "database is locked". A failed probe read
+    /// must NOT fold into version 0 — the stale branch below deletes the
+    /// database, and since v3 it holds non-rebuildable data. When no trusted
+    /// version can be read, the error must surface as-is: failing the open
+    /// outright always beats a wrong deletion. (The GUI boot path surfaces
+    /// the error and continues without the knowledge service until restart;
+    /// headless callers can simply retry the open.)
+    ///
+    /// A store written by a newer binary is never deleted by a downgrade:
+    /// the open refuses with a clear error and leaves every file intact.
+
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let existed = db_path.exists();
-        let current_version = {
-            match Connection::open(db_path) {
-                Ok(c) => c
-                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                    .unwrap_or(0),
-                Err(_) => 0,
+        let current_version = if existed {
+            let probe = Connection::open(db_path)?;
+            probe.busy_timeout(std::time::Duration::from_millis(5_000))?;
+            let version = probe.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?;
+            Some(version)
+        } else {
+            None
+        }; // the probe connection must drop here so the file can be deleted below
+        // A store written by a NEWER binary must never be deleted by a
+        // downgrade: refuse with a clear error and leave every file intact.
+        if let Some(version) = current_version {
+            // A damaged header is refused like a newer store: never migrated
+            // in place, never deleted (see `schema_is_disposable` — a bit
+            // flip in the signed 32-bit `user_version` field reads back
+            // negative but is not an old schema).
+            if version > SCHEMA_VERSION {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                    Some(format!(
+                        "knowledge store was written by a newer version (schema v{version} \
+                         > v{SCHEMA_VERSION}); upgrade pinvou"
+                    )),
+                ));
             }
-        }; // 连接在此 drop，才能删文件
-        // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
-        let stale = existed && !matches!(current_version, 3 | SCHEMA_VERSION);
+            if version < 0 {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                    Some(format!(
+                        "knowledge store has a damaged header (schema v{version} < 0); \
+                         restore it from a backup or delete it manually after verifying \
+                         nothing else needs it"
+                    )),
+                ));
+            }
+        }
+        let stale = matches!(current_version, Some(version) if schema_is_disposable(version));
         if stale {
             let p = db_path.display().to_string();
             let _ = std::fs::remove_file(db_path);
@@ -263,10 +336,55 @@ impl Store {
             );
         }
         let w = Connection::open(db_path)?;
-        w.execute_batch(SCHEMA)?;
-        w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        w.busy_timeout(std::time::Duration::from_millis(5_000))?;
+        if current_version == Some(SCHEMA_VERSION) {
+            // Steady state: the schema is already current. Skip the DDL batch
+            // and the user_version write so opening the store takes no write
+            // lock at all in the two-process contention case (exactly the window
+            // busy_timeout could only shorten). The cost is losing the
+            // "self-heal externally dropped tables on every open" behavior:
+            // statements fail explicitly once tables were externally destroyed,
+            // which beats silent rebuilds masking the damage.
+            //
+            // Connection-level PRAGMAs do not persist (only journal_mode is
+            // written into the database file header), so the DDL batch's
+            // synchronous=NORMAL must be re-applied here for the steady-state
+            // and create/migrate paths to give write connections the same
+            // durability. It is a pure connection setting and takes no
+            // database write lock.
+            //
+            // journal_mode is re-asserted for a different reason: it lives
+            // only in the DDL batch this branch skips, and the create path
+            // can silently fail to take it (`PRAGMA journal_mode = WAL`
+            // returns the CURRENT mode as a row instead of erroring when
+            // another connection holds a read lock, which the two-process
+            // pair makes reachable). A store stuck in rollback-journal mode
+            // would then get synchronous=NORMAL forever — a combination
+            // SQLite documents as risking corruption on power loss, whereas
+            // NORMAL under WAL is safe. Re-asserting is a no-op on a store
+            // that is already WAL and takes no write lock.
+            let mode: String = w.query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))?;
+            if !mode.eq_ignore_ascii_case("wal") {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!(
+                        "knowledge store is in '{mode}' journal mode, not WAL; refusing to \
+                         apply synchronous=NORMAL (unsafe without WAL)"
+                    )),
+                ));
+            }
+            w.execute_batch("PRAGMA synchronous = NORMAL;")?;
+        } else {
+            // Fresh create / in-place v3 migration: the DDL batch and the
+            // version write each take the write lock once; busy_timeout makes
+            // them wait out the other process's short transaction instead of
+            // failing immediately.
+            w.execute_batch(SCHEMA)?;
+            w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
+        r.busy_timeout(std::time::Duration::from_millis(5_000))?;
         r.execute_batch("PRAGMA query_only = ON;")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(w)),
@@ -368,7 +486,11 @@ impl Store {
 
     /// 秒搜：text 走 FTS5(≥3 字符) 或 LIKE 兜底(1-2 字符)，叠加结构化过滤。
     pub fn search(&self, q: &SearchQuery) -> rusqlite::Result<Vec<FileHit>> {
-        let limit = if q.limit == 0 { 200 } else { q.limit } as i64;
+        let limit = if q.limit == 0 {
+            200
+        } else {
+            q.limit.min(SEARCH_LIMIT_CAP)
+        } as i64;
         let mut sql = String::new();
         let mut vals: Vec<Value> = Vec::new();
 
@@ -406,13 +528,22 @@ impl Store {
             sql.push_str(" AND f.mtime >= ?");
             vals.push(Value::Integer(v));
         }
+        if let Some(v) = q.mtime_before {
+            sql.push_str(" AND f.mtime <= ?");
+            vals.push(Value::Integer(v));
+        }
+        // Saturating, not `as`: SQLite integers are signed, so a `u64` past
+        // `i64::MAX` wraps negative and inverts the filter — `size >= -1`
+        // matches every row instead of none. Same failure class as the raw
+        // `limit` cast fixed above, and now reachable with caller-controlled
+        // values through the headless `KnowledgeService::search`.
         if let Some(v) = q.min_size {
             sql.push_str(" AND f.size >= ?");
-            vals.push(Value::Integer(v as i64));
+            vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
         if let Some(v) = q.max_size {
             sql.push_str(" AND f.size <= ?");
-            vals.push(Value::Integer(v as i64));
+            vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
         sql.push_str(" ORDER BY f.mtime DESC LIMIT ?");
         vals.push(Value::Integer(limit));
@@ -470,6 +601,43 @@ fn escape_like(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// No schema at or above v3 may ever be deleted on open — v3 is where
+    /// non-rebuildable knowledge-set data starts. The loop is the point: a
+    /// predicate written as "neither 3 nor SCHEMA_VERSION" passes for today's
+    /// 3 and 4 and then deletes every user's store the day SCHEMA_VERSION is
+    /// bumped, which is precisely the regression this pins.
+    #[test]
+    fn only_pre_v3_schemas_are_disposable() {
+        assert!(
+            super::schema_is_disposable(0),
+            "v0 is a rebuildable L0 index"
+        );
+        assert!(
+            super::schema_is_disposable(2),
+            "v2 is a rebuildable L0 index"
+        );
+        for version in 3..64 {
+            assert!(
+                !super::schema_is_disposable(version),
+                "schema v{version} holds non-rebuildable data and must migrate or refuse, \
+                 never be deleted"
+            );
+        }
+        // `user_version` is a signed field in an unchecksummed header slot, so
+        // a bit flip in a healthy v4 store reads back negative. A bare
+        // `version < 3` classified that as a disposable v0-era store and
+        // deleted exactly the data this rule protects. A negative version is a
+        // damaged header, not an old schema.
+        for version in -64..0 {
+            assert!(
+                !super::schema_is_disposable(version),
+                "a negative user_version ({version}) is a damaged header, not a pre-v3 \
+                 schema — it must be refused, never deleted"
+            );
+        }
+        assert!(!super::schema_is_disposable(i64::MIN));
+    }
     use super::*;
 
     fn rec(path: &str, name: &str, ext: Option<&str>, size: u64, mtime: i64) -> FileRecord {
@@ -511,6 +679,211 @@ mod tests {
         ])
         .unwrap();
         s
+    }
+
+    /// When the probe connection cannot read the file it must error instead
+    /// of folding into version 0: the old code treated any probe failure as
+    /// v0, exactly what drove the stale branch to delete the database (v3+
+    /// holds non-rebuildable data). A permission fault is a deterministically
+    /// constructible probe failure; environments running as root bypass file
+    /// permissions, so skip there.
+    #[cfg(unix)]
+    #[test]
+    fn failed_probe_never_deletes_an_existing_store() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            let store = Store::open(&db).expect("create store");
+            assert_eq!(store.stats().unwrap().total_files, 0);
+            // Seed one document so the survival assert below can tell
+            // "original store survived" apart from "deleted and a fresh
+            // empty store re-initialized over it" — the delete-and-recreate
+            // regression this test exists to catch.
+            store
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
+                .expect("seed one file record");
+        }
+        let restore = |mode: u32| {
+            let mut perm = std::fs::metadata(&db).unwrap().permissions();
+            perm.set_mode(mode);
+            std::fs::set_permissions(&db, perm).unwrap();
+        };
+        restore(0o000);
+        if std::fs::File::open(&db).is_ok() {
+            restore(0o644);
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping: privileged environment bypasses file permissions");
+            return;
+        }
+        assert!(
+            Store::open(&db).is_err(),
+            "an unreadable store must fail loud instead of probing version 0"
+        );
+        restore(0o644);
+        let reopened = Store::open(&db).expect("the store must survive a failed probe");
+        assert_eq!(
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
+            1,
+            "the seeded record must still be there — a delete-and-recreate over the \
+             probe failure would come back empty"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Windows twin of `failed_probe_never_deletes_an_existing_store`: a file
+    /// held open with no sharing mode makes the probe connection's open fail
+    /// (ERROR_SHARING_VIOLATION), the same deterministic probe failure the
+    /// unix test constructs through permissions. `Store::open` must fail loud
+    /// and leave the store file in place.
+    #[cfg(windows)]
+    #[test]
+    fn failed_probe_never_deletes_an_existing_store_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            let store = Store::open(&db).expect("create store");
+            assert_eq!(store.stats().unwrap().total_files, 0);
+            // Seed so the survival assert can detect delete-and-recreate
+            // (same rationale as the unix twin).
+            store
+                .upsert_many(&[rec(
+                    "/tmp/docs/annual.pdf",
+                    "annual.pdf",
+                    Some("pdf"),
+                    2048,
+                    0,
+                )])
+                .expect("seed one file record");
+        }
+        // Hold the store exclusively: any subsequent open (the probe's) fails.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&db)
+            .expect("hold the store without sharing");
+        assert!(
+            Store::open(&db).is_err(),
+            "an unopenable store must fail loud instead of probing version 0"
+        );
+        drop(held);
+        assert!(
+            db.exists(),
+            "the store file must survive a failed probe untouched"
+        );
+        let reopened =
+            Store::open(&db).expect("the store must reopen after the blocking handle is released");
+        assert_eq!(
+            reopened
+                .stats()
+                .expect("stats after the failed probe")
+                .total_files,
+            1,
+            "the seeded record must survive — a delete-and-recreate would come back empty"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A steady-state open (schema already current) no longer runs the DDL
+    /// batch and the user_version write: this is what lets the open skip the
+    /// schema write lock in the GUI+CLI two-process scenario. A connection
+    /// holding a write transaction simulates the other process's write window;
+    /// the second open must still succeed.
+    #[test]
+    fn steady_state_open_does_not_take_the_schema_write_lock() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-steady-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            Store::open(&db).expect("create store at current schema version");
+        }
+        // Simulate the other process holding a write transaction (the WAL write lock is taken).
+        let writer = Connection::open(&db).unwrap();
+        writer
+            .busy_timeout(std::time::Duration::from_millis(5_000))
+            .unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        writer
+            .execute_batch("CREATE TABLE IF NOT EXISTS _probe_lock (x INTEGER);")
+            .unwrap();
+        let opened = Store::open(&db);
+        writer.execute_batch("ROLLBACK;").unwrap();
+        assert!(
+            opened.is_ok(),
+            "steady-state open must not need the write lock another process holds: {:?}",
+            opened.err()
+        );
+        drop(writer);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Once the steady state skips the DDL batch, connection-level PRAGMAs
+    /// must still apply: synchronous is a connection setting and does not
+    /// persist (only journal_mode is written into the file header); dropping
+    /// it would silently fall steady-state write connections back to the FULL
+    /// default.
+    #[test]
+    fn steady_state_open_keeps_connection_level_pragmas() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-pragma-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            Store::open(&db).expect("create store at current schema version");
+        }
+        let store = Store::open(&db).expect("steady-state reopen");
+        let synchronous: i64 = store
+            .conn
+            .lock()
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            synchronous, 1,
+            "steady-state write connection must keep synchronous=NORMAL (1), not the FULL default (2)"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -676,5 +1049,202 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn newer_schema_store_is_refused_without_deleting_files() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_newer_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // Build a valid store first, then pretend a newer binary wrote it.
+        drop(Store::open(&path).unwrap());
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
+            .unwrap();
+        drop(c);
+
+        let error = match Store::open(&path) {
+            Ok(_) => panic!("newer-schema store must be refused, not reopened"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("newer version") && message.contains("upgrade pinvou"),
+            "{message}"
+        );
+        // The refusal happens before any destructive step: the store files
+        // stay intact for the newer binary.
+        assert!(path.exists(), "store file must survive the refusal");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// A negative `user_version` is a damaged header (it is read back
+    /// negative only when the signed 32-bit field was corrupted — see
+    /// `schema_is_disposable`), so it must be REFUSED like a newer store:
+    /// never migrated in place (which would stamp over the damage) and never
+    /// deleted. Pins the refusal at the `Store::open` dispatch level; the
+    /// predicate test below only pins `schema_is_disposable`.
+    #[test]
+    fn negative_user_version_store_is_refused_without_migration_or_deletion() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_negative_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // Build a valid store, then damage the version field exactly the way
+        // a bit flip in header bytes 60..=63 would read back.
+        drop(Store::open(&path).unwrap());
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("PRAGMA user_version = -1;").unwrap();
+        drop(c);
+
+        let error = match Store::open(&path) {
+            Ok(_) => panic!("negative user_version must be refused, not self-healed"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("damaged header"),
+            "the refusal must name the damage: {message}"
+        );
+        // The refusal happens before any destructive step AND before the
+        // migration branch: the file keeps its damaged version (not stamped
+        // to the current schema) and stays on disk.
+        assert!(path.exists(), "store file must survive the refusal");
+        let c = Connection::open(&path).unwrap();
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        drop(c);
+        assert_eq!(
+            version, -1,
+            "the damaged header must not be stamped to v{SCHEMA_VERSION} by a refusal-path open"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// Every connection a file-backed open creates must carry the 5 s
+    /// `busy_timeout`: the two-process contention case (a headless `agent
+    /// run` and the GUI, or two headless runs) is exactly what the timeout
+    /// exists for, and the steady-state no-DDL open only stays lock-free if
+    /// a contended `BEGIN` waits instead of failing immediately. Pinning the
+    /// pragma value on both connections catches a dropped `busy_timeout`
+    /// without having to construct real cross-process contention in a test.
+    #[test]
+    fn file_backed_open_sets_busy_timeout_on_both_connections() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_busy_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        let store = Store::open(&path).unwrap();
+        let write_timeout: i64 = store
+            .conn
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        // `read` is query_only; reading a pragma is allowed there.
+        let read_timeout: i64 = store
+            .read
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            write_timeout, 5_000,
+            "the write connection must keep its 5s busy_timeout"
+        );
+        assert_eq!(
+            read_timeout, 5_000,
+            "the read-only connection must keep its 5s busy_timeout"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// The search limit is clamped to [`SEARCH_LIMIT_CAP`] rather than cast
+    /// raw: a `usize::MAX` caller limit must not become an unbounded query
+    /// (the old bare `as i64` wrapped to -1, which SQLite reads as no limit
+    /// at all) — the headless search surface takes caller-provided limits,
+    /// so the clamp is load-bearing, not cosmetic.
+    #[test]
+    fn search_limit_is_clamped_to_the_cap_by_seed() {
+        let store = Store::open_in_memory().unwrap();
+        // Seed more than the cap through the same upsert path the scanner
+        // uses; one distinct file per record.
+        let records: Vec<FileRecord> = (0..SEARCH_LIMIT_CAP + 40)
+            .map(|i| FileRecord {
+                path: format!("/clamp/docs/file_{i}.md"),
+                name: format!("file_{i}.md"),
+                ext: Some("md".into()),
+                size: 16,
+                mtime: 1_700_000_000 + i as i64,
+                is_dir: false,
+            })
+            .collect();
+        store.upsert_many(&records).unwrap();
+
+        // A below-cap explicit limit is honored exactly.
+        let hits = store
+            .search(&SearchQuery {
+                text: None,
+                exts: Vec::new(),
+                mtime_after: None,
+                mtime_before: None,
+                min_size: None,
+                max_size: None,
+                limit: 5,
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 5, "an explicit below-cap limit is honored");
+
+        // A cap-exceeding limit is clamped, and a usize::MAX limit (the raw
+        // cast regression shape) is clamped too — never unbounded.
+        for limit in [SEARCH_LIMIT_CAP, SEARCH_LIMIT_CAP + 1, usize::MAX] {
+            let hits = store
+                .search(&SearchQuery {
+                    text: None,
+                    exts: Vec::new(),
+                    mtime_after: None,
+                    mtime_before: None,
+                    min_size: None,
+                    max_size: None,
+                    limit,
+                })
+                .unwrap();
+            assert_eq!(
+                hits.len(),
+                SEARCH_LIMIT_CAP,
+                "limit {limit} must clamp to SEARCH_LIMIT_CAP ({SEARCH_LIMIT_CAP}), \
+                 never wrap to unbounded"
+            );
+        }
     }
 }

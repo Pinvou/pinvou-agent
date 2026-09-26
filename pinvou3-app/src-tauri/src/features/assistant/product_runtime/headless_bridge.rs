@@ -320,6 +320,9 @@ impl ProductRuntimePort for EnginePoolPort {
             .prepare(&SessionSpec {
                 session_id: session_id.to_owned(),
                 model_selection: Some(self.suite_model.derive_case_selection()?),
+                // Eval-suite lanes use the pool's default workspace: these
+                // sessions are scratch records, not workspace-bound runs.
+                workspace: None,
             })
             .await
     }
@@ -657,9 +660,13 @@ impl ProductHeadlessBackend {
     }
 }
 
-const MAX_STAGED_ATTACHMENTS: usize = 16;
-const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+/// Upper bound on staged attachments; shared with the agent request path so
+/// the two headless pipelines cannot drift apart.
+pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
+/// Per-attachment size cap in bytes (20 MiB).
+pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// Aggregate size cap across one attachment batch (100 MiB).
+pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
 fn is_safe_attachment_name(name: &str) -> bool {
     !name.is_empty()

@@ -1,7 +1,11 @@
 pub mod assistant;
 pub(crate) mod behavior_telemetry;
 pub(crate) mod browser;
-pub(crate) mod code_checkpoints;
+// `pub` (not `pub(crate)`) only because of the `count_user_turns_in_json`
+// re-export below it: headless callers outside this crate need the exact
+// turn-counting predicate, and a crate-private module would make the
+// re-export unreachable (and dead).
+pub mod code_checkpoints;
 pub(crate) mod codex_acp;
 pub(crate) mod computer_use;
 pub(crate) mod connectors;

@@ -304,7 +304,15 @@ impl L1Store {
         limit: usize,
     ) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
-        let lim = if limit == 0 { 500 } else { limit } as i64;
+        // Clamp the limit with the same policy as Store::search: a raw
+        // `as i64` wraps usize::MAX to -1 (SQLite reads it as unbounded),
+        // materializing the whole documents table for an arbitrary caller
+        // limit.
+        let lim = if limit == 0 {
+            500
+        } else {
+            limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP)
+        } as i64;
         let sql = if collection_id > 0 {
             "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
              FROM documents d JOIN collections c ON c.id=d.collection_id \
@@ -366,6 +374,10 @@ impl L1Store {
 
     /// 分页读取某份已解析文档的 chunk 快照。这里只查数据库，不重新打开原始 Office/PDF
     /// 文件；二进制解析已经在建索引时由 `file_ingest` 完成。
+    /// The `limit` is clamped at the SQL boundary like every other
+    /// SQL-facing limit: a raw cast would wrap usize::MAX to -1, which
+    /// SQLite reads as unbounded (today's only caller passes a small cap;
+    /// the clamp guards future callers).
     pub fn document_chunk_window(
         &self,
         collection_id: i64,
@@ -374,6 +386,7 @@ impl L1Store {
         limit: usize,
     ) -> rusqlite::Result<Vec<(i64, String)>> {
         let c = self.conn.lock();
+        let limit = limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP);
         let mut stmt = c.prepare(
             "SELECT k.ord,k.text FROM chunks k JOIN documents d ON d.id=k.document_id \
              WHERE k.document_id=?1 AND k.collection_id=?2 AND d.collection_id=?2 \
@@ -422,6 +435,17 @@ impl L1Store {
         c.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
         c.execute("DELETE FROM documents WHERE id=?1", params![doc_id])?;
         Ok(())
+    }
+
+    /// Whether the document exists (headless callers reject unknown ids with
+    /// it; the GUI's delete has always been a silent no-op).
+    pub fn document_exists(&self, doc_id: i64) -> rusqlite::Result<bool> {
+        let c = self.conn.lock();
+        c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1)",
+            params![doc_id],
+            |r| r.get::<_, i64>(0).map(|v| v != 0),
+        )
     }
 
     /// 仅测试夹具使用：正式 chunks 的整体替换写法。生产入库走暂存表 + 事务提交路径。
@@ -744,6 +768,12 @@ impl L1Store {
         q: &str,
         lim: usize,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
+        // Defensive second clamp before the SQL cast (`usize::MAX` would wrap
+        // to -1, i.e. unbounded, in SQLite). The doubling that could overflow
+        // happens in the CALLER, so the clamp that prevents it lives there
+        // (`retrieve_for_chat_with_vector`) — a clamp here is reached only
+        // after the multiplication has already been evaluated.
+        let lim = lim.min(super::store::SEARCH_LIMIT_CAP);
         let c = self.conn.lock();
         let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<ChunkHit> {
             Ok(ChunkHit {
@@ -910,7 +940,14 @@ impl L1Store {
         k: usize,
         query_vector: Option<&[f32]>,
     ) -> rusqlite::Result<Vec<ChunkHit>> {
+        // Clamp here, before the doubling: `k` is caller-supplied, and
+        // `lim * 2` would overflow (debug panic / wrap in release) before
+        // either search function got a chance to bound it. Halving the cap
+        // keeps the doubled value inside it, so both arms of the hybrid merge
+        // are bounded by the same number — clamping only inside `search_fts`
+        // would leave the vector arm unbounded and skew the RRF merge.
         let lim = if k == 0 { 5 } else { k };
+        let lim = lim.min(super::store::SEARCH_LIMIT_CAP / 2);
         let fts = self.search_fts(collection_id, q, lim * 2)?;
         let ranked = if let Some(query_vector) = query_vector {
             let vec = self.search_vec(collection_id, query_vector, lim * 2)?;

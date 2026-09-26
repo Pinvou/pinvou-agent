@@ -1,9 +1,12 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! 模型不再随安装包打包；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。固定 revision 的五个文件由
-//! `pinvou-knowledge` 统一流式下载并逐文件校验。候选目录通过真实
-//! embedding 加载后才带回滚地替换托管模型并刷新工具门控，**免重启**即可建库/入库/检索。
+//! Models are no longer bundled with the installer; users download them
+//! from the knowledge page into `super::model_dir`
+//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files at the pinned
+//! revision are streamed and per-file verified by `pinvou-knowledge`. Only
+//! after the candidate directory passes a real embedding load is the managed
+//! model replaced with rollback and the tool gating refreshed, so index
+//! building, ingestion, and search all gain the model **without a restart**.
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 
@@ -23,6 +26,7 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
@@ -170,6 +174,21 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
     }
 }
 
+/// Cancel an in-progress download (takes effect at the next network chunk or
+/// file-verification boundary). Cancellation only means anything while a
+/// download runs: the flag resets when the next download starts, so one
+/// cancel never poisons the process's later downloads.
+///
+/// Signal surface without a caller in any current tree: the stacked CLI
+/// families PR deliberately refuses to call this from its `model cancel`
+/// subcommand — this process-local flag can never reach a download running
+/// in the desktop-app process, and a command reporting success that cannot
+/// cancel anything would be dishonest. It stays for a possible GUI entry
+/// point, same rationale as `KnowledgeService::cancel_scan`.
+pub fn kb_model_cancel() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 /// 前端查询模型状态（offline，不联网）。
 pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelStatus {
     current_status(&service)
@@ -244,11 +263,7 @@ pub async fn kb_model_download(
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("模型正在下载中".into());
-    }
-    // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
-    let guard = DownloadGuard;
+    let guard = begin_download()?;
 
     let parent = dir
         .parent()
@@ -288,7 +303,7 @@ pub async fn kb_model_download(
                 }),
             );
         },
-        || false, // 取消入口已随 kb_model_cancel 命令移除
+        || CANCEL.load(Ordering::Relaxed),
     )
     .await?;
     if !model_directory_is_complete(&tmp) {
@@ -561,6 +576,19 @@ impl Drop for DownloadGuard {
     }
 }
 
+/// Claim the process-level download slot and start the download with a
+/// clean cancel flag; `Err` when the slot is already taken. CANCEL is a
+/// one-shot "stop the current download" signal, not persistent state — it
+/// resets as soon as the slot is claimed, so one cancel cannot poison any
+/// later download in the process.
+fn begin_download() -> Result<DownloadGuard, String> {
+    if DOWNLOADING.swap(true, Ordering::SeqCst) {
+        return Err("模型正在下载中".into());
+    }
+    CANCEL.store(false, Ordering::SeqCst);
+    Ok(DownloadGuard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,6 +602,28 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn download_start_resets_a_poisoned_cancel_flag() {
+        // 防御：测试可能在任意静态状态下启动，先确保槽位空闲。
+        DOWNLOADING.store(false, Ordering::SeqCst);
+        CANCEL.store(true, Ordering::SeqCst);
+        let guard = begin_download().expect("slot must be free");
+        assert!(
+            !CANCEL.load(Ordering::SeqCst),
+            "a fresh download must start from a clean cancel flag - one cancel \
+             must not poison every later download"
+        );
+        assert!(
+            begin_download().is_err(),
+            "a second claim while downloading must refuse"
+        );
+        drop(guard);
+        assert!(
+            !DOWNLOADING.load(Ordering::SeqCst),
+            "dropping the guard must release the download slot"
+        );
     }
 
     #[test]

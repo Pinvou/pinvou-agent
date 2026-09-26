@@ -187,6 +187,44 @@ fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
 // ── SessionStore 行为 impl ──
 
 impl SessionStore {
+    /// The session's entry in the durable `_session_mode_states.json`, if any.
+    ///
+    /// This — not [`Self::mode_state`]'s resolved fallback — is what a failed
+    /// run's mode restore must put back: the fallback is process-relative (a
+    /// headless process installs no code-session predicate, so it resolves
+    /// Yolo for a code session whose GUI default is Plan), and durably pinning
+    /// that misresolution is exactly the unsafe reopen divergence the Plan
+    /// persist exists to prevent.
+    ///
+    /// Reads the FILE, not the boot-time cache. The cache is this process's
+    /// view from startup, so against a live GUI it goes stale the moment the
+    /// user switches a mode — and the restore would then write that stale
+    /// value back over the newer one, or (when the cache never had an entry)
+    /// clear a mode the GUI had just set. Both are the divergence above, only
+    /// caused by the code meant to prevent it. The cache remains the fallback
+    /// for an unreadable file, where a stale answer still beats inventing an
+    /// absence.
+    pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
+        let file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        match std::fs::read_to_string(&file) {
+            // A parse failure falls through to the cache rather than
+            // reporting an absence the file does not actually state.
+            Ok(content) => {
+                if let Ok(mut entries) = serde_json::from_str::<
+                    std::collections::HashMap<String, SerializableMode>,
+                >(&content)
+                {
+                    return entries.remove(id);
+                }
+            }
+            // Absent is authoritative — the mutation path removes the file
+            // when its last entry goes away.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => {}
+        }
+        self.session_mode_states.read().get(id).cloned()
+    }
+
     pub fn mode_state(&self, id: &str) -> SessionModeState {
         self.mode_states
             .read()
@@ -248,6 +286,25 @@ impl SessionStore {
     /// ACP 会话不经此命令（有自己的权限模式）。落盘失败只记日志不打断交互
     /// ——内存切换已生效，落盘只做尽力持久化。
     pub fn set_mode(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        // One critical section for the in-memory switch and the durable RMW,
+        // same as set_multi_agent (a concurrent purge or headless Plan
+        // persist must not interleave its file RMW with this one).
+        let _io = self.session_mode_states_io.lock();
+        self.set_mode_in_memory(id, mode.clone());
+        if let Err(error) = Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
+        {
+            // The session id is deliberately kept out of the message, matching
+            // persist_accepted_yolo_mode below: boot logs persist to disk and
+            // the CodeQL cleartext-logging gate flags ids on stderr.
+            eprintln!("[sessions] persist mode failed: {error:#}");
+        }
+        Ok(())
+    }
+
+    /// In-memory half of [`Self::set_mode`]: switches the session's live
+    /// state and the durable-read cache (`session_mode_states`) without
+    /// touching the sidecar file.
+    fn set_mode_in_memory(&self, id: &str, mode: SerializableMode) {
         {
             let mut m = self.mode_states.write();
             let entry = m.entry(id.to_string()).or_default();
@@ -258,7 +315,46 @@ impl SessionStore {
         self.session_mode_states
             .write()
             .insert(id.to_string(), mode);
-        self.save_session_mode_states();
+    }
+
+    /// [`Self::set_mode`] for headless runners: additionally requires the
+    /// durable `_session_mode_states.json` write to land. A caller that
+    /// reports success while the mode would not survive the process hands
+    /// back a session that reopens in the stale mode (Plan → Yolo is the
+    /// unsafe divergence), so the runner treats a failed persist as a
+    /// failed run. The interactive GUI keeps the lenient [`Self::set_mode`]
+    /// path, where the in-memory switch already took effect.
+    pub fn set_mode_and_persist(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        let _io = self.session_mode_states_io.lock();
+        self.set_mode_in_memory(id, mode.clone());
+        Self::apply_session_mode_mutation_locked(&[(id.to_string(), mode)], &[])
+            .context("persist session mode states")
+    }
+
+    /// Removes the session's durable mode entry and resets the in-memory
+    /// caches to the resolved default. The restore half of a Plan persist
+    /// whose run never started on a session that had no durable entry:
+    /// re-persisting a resolved default would freeze a value the session
+    /// was only borrowing (and in a headless process that resolution can
+    /// not even see the GUI's code-session default), so restoring the
+    /// pre-run state means removing the entry the failed run added.
+    pub fn clear_mode_and_persist(&self, id: &str) -> Result<()> {
+        // Resolved BEFORE the io lock: `resolved_default_mode` invokes the
+        // host-registered code-session predicate and reads the workspace
+        // binding sidecar, so computing it under the mode-states lock would
+        // hold that lock across an extension callback and disk I/O — and a
+        // predicate that ever touches a mode writer would deadlock on a
+        // non-reentrant mutex. The value does not depend on the removal.
+        let default = self.resolved_default_mode(id);
+        let _io = self.session_mode_states_io.lock();
+        Self::apply_session_mode_mutation_locked(&[], &[id.to_string()])
+            .context("persist session mode states")?;
+        if let Some(entry) = self.mode_states.write().get_mut(id) {
+            entry.mode = default.clone();
+            entry.pending_plan_id = None;
+            entry.plan_claim_in_flight = None;
+        }
+        self.session_mode_states.write().remove(id);
         Ok(())
     }
 
@@ -271,7 +367,7 @@ impl SessionStore {
             entry.multi_agent = enabled;
             previous
         };
-        if let Err(error) = self.save_multi_agent_flags_locked() {
+        if let Err(error) = Self::apply_multi_agent_mutation_locked(&[(id, enabled)], &[]) {
             let mut m = self.mode_states.write();
             if let Some(entry) = m.get_mut(id) {
                 entry.multi_agent = previous;
@@ -299,6 +395,12 @@ impl SessionStore {
         self.save_multi_agent_flags_locked()
     }
 
+    /// Boot-only whole-list rewrite, used after ghost cleanup re-derives the
+    /// full id list from the file just read plus the sessions directory.
+    /// Production single-flag mutations must use
+    /// [`apply_multi_agent_mutation_locked`] so entries another process added
+    /// after this one booted are preserved instead of reverted by a stale
+    /// snapshot.
     pub(crate) fn save_multi_agent_flags_locked(&self) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
         let ids = self.multi_agent_session_ids();
@@ -310,8 +412,75 @@ impl SessionStore {
             };
         }
         let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        deepseek_tui::utils::write_atomic(&file, json.as_bytes())
-            .with_context(|| format!("commit {}", file.display()))
+        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
+            .context("persist _multi_agent.json failed")
+    }
+
+    /// Apply id-level enable/disable mutations directly to the
+    /// `_multi_agent.json` id list, keeping entries written by another
+    /// process after this one booted (same rationale as
+    /// [`Self::apply_session_mode_mutation`]).
+    ///
+    /// The `_locked` suffix is the caller contract shared with
+    /// [`Self::save_multi_agent_flags_locked`]: the durable read-modify-write
+    /// must run under the store's `multi_agent_flags_io` mutex, or a
+    /// concurrent save's older snapshot lands last and resurrects removed
+    /// flags.
+    pub(crate) fn apply_multi_agent_mutation_locked(
+        upserts: &[(&str, bool)],
+        removes: &[&str],
+    ) -> Result<()> {
+        let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
+        let mut ids: Vec<String> = if file.exists() {
+            let content =
+                std::fs::read_to_string(&file).context("read _multi_agent.json failed")?;
+            serde_json::from_str(&content).map_err(|error| {
+                // Quarantine-then-refuse, matching the other sidecar
+                // mutators: this write fails, the evidence survives aside,
+                // and the next mutation starts from an empty list.
+                let note = match crate::platform::filesystem::quarantine_corrupt_file(&file) {
+                    Ok(quarantine) => {
+                        format!("; corrupt bytes quarantined at {}", quarantine.display())
+                    }
+                    Err(quarantine_error) => {
+                        format!("; quarantining failed ({quarantine_error})")
+                    }
+                };
+                anyhow::Error::new(error).context(format!("parse _multi_agent.json failed{note}"))
+            })?
+        } else {
+            Vec::new()
+        };
+        let mut changed = false;
+        for (id, enabled) in upserts {
+            let exists = ids.iter().any(|entry| entry == id);
+            if *enabled && !exists {
+                ids.push((*id).to_string());
+                ids.sort();
+                changed = true;
+            } else if !*enabled && exists {
+                ids.retain(|entry| entry != id);
+                changed = true;
+            }
+        }
+        for id in removes {
+            let before = ids.len();
+            ids.retain(|entry| entry != id);
+            changed |= ids.len() != before;
+        }
+        if !changed {
+            return Ok(());
+        }
+        if ids.is_empty() {
+            return match std::fs::remove_file(&file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("remove _multi_agent.json"),
+            };
+        }
+        let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
+        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
+            .context("persist _multi_agent.json failed")
     }
 
     pub fn load_multi_agent_flags(&self) {
@@ -809,41 +978,71 @@ impl SessionStore {
 
     // ===================== per-session mode 持久化（所有会话） =====================
 
-    /// 持久化所有会话的 per-session mode 到 `_session_mode_states.json`
-    /// Under the two-lane semantics plain sessions persist as well; an empty
-    /// table deletes the sidecar.
+    /// Apply id-level mode upserts/removes directly to
+    /// `_session_mode_states.json`, leaving every entry this process never
+    /// touched exactly as another process wrote it. The in-memory map is a
+    /// boot-time snapshot plus this process's own changes, so rewriting it
+    /// wholesale onto the shared store would silently revert a mode switch
+    /// persisted by a concurrent GUI/headless process after this one booted
+    /// — e.g. a headless Plan run flipping a just-GUI-set Yolo session back.
     ///
     /// 原子写 + 失败可见：直接 `std::fs::write` 在进程中断时可能留下截断文件，
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
     /// per-session mode 记录永久丢失，表现为「显式切过 mode，重启后回 Plan」。
-    pub fn save_session_mode_states(&self) {
-        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
-        let modes = self.session_mode_states.read();
-        if modes.is_empty() {
-            let _ = std::fs::remove_file(&states_file);
-            return;
-        }
-        let Ok(json) = serde_json::to_string_pretty(&*modes) else {
-            eprintln!("[sessions] serialize _session_mode_states.json failed");
-            return;
-        };
-        if let Err(error) = crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
-        {
-            eprintln!("[sessions] persist _session_mode_states.json failed: {error}");
-        }
+    ///
+    /// The `_locked` suffix is the caller contract shared with the other
+    /// sidecar mutators: the durable RMW must run under the store's
+    /// `session_mode_states_io` mutex (`set_mode`, `set_mode_and_persist`,
+    /// `persist_accepted_yolo_mode`, and the retention purge all do), or two
+    /// concurrent RMWs interleave and the later write lands over the earlier
+    /// one's change.
+    pub(crate) fn apply_session_mode_mutation_locked(
+        upserts: &[(String, SerializableMode)],
+        removes: &[String],
+    ) -> Result<()> {
+        crate::features::sessions::sidecars::mutate_json_map_file(
+            "_session_mode_states.json",
+            |entries: &mut std::collections::HashMap<String, SerializableMode>| {
+                let mut changed = false;
+                for (id, mode) in upserts {
+                    if entries.get(id) != Some(mode) {
+                        entries.insert(id.clone(), mode.clone());
+                        changed = true;
+                    }
+                }
+                for id in removes {
+                    changed |= entries.remove(id).is_some();
+                }
+                changed
+            },
+        )
     }
 
     /// 启动时恢复所有会话的 per-session mode：合并进 `mode_states`，
     /// 重开某个会话即恢复它自己上次显式使用的 mode。
+    ///
     /// 兼容：新文件不存在时回退读旧的 `_code_mode_states.json`（只含 code 会话
-    /// 的时代产物），下次保存自然写到新文件，旧文件不删。
+    /// 的时代产物），并**立即把它落到新文件**完成迁移，旧文件不删。
+    ///
+    /// Materializing the legacy map here is load-bearing, not tidiness. Every
+    /// durable mode write is now an id-level read-modify-write against
+    /// `_session_mode_states.json` (`apply_session_mode_mutation_locked`),
+    /// and an absent file starts that RMW from an empty map. So without this
+    /// step the first mode switch after an upgrade would write a single-entry
+    /// file, and because the legacy fallback above is keyed on the new file
+    /// being absent, it would never be consulted again: every pre-upgrade
+    /// per-session mode silently lost, and a session the user had pinned to
+    /// Plan reopening under `resolved_default_mode` — the exact reopen
+    /// divergence this persistence exists to prevent. (The whole-map writer
+    /// this replaced completed the migration implicitly by rewriting the
+    /// in-memory map on every save.)
     pub fn load_session_mode_states(&self) {
         let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
         let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
-        let source = if states_file.exists() {
-            states_file
+        let (source, from_legacy) = if states_file.exists() {
+            (states_file, false)
         } else if legacy_file.exists() {
-            legacy_file
+            (legacy_file, true)
         } else {
             return;
         };
@@ -859,6 +1058,20 @@ impl SessionStore {
                     return;
                 }
             };
+        if from_legacy && !modes.is_empty() {
+            let upserts: Vec<(String, SerializableMode)> = modes
+                .iter()
+                .map(|(id, mode)| (id.clone(), mode.clone()))
+                .collect();
+            // Boot-time, before any writer can race: the io mutex exists for
+            // concurrent mutators and there are none yet.
+            if let Err(error) = Self::apply_session_mode_mutation_locked(&upserts, &[]) {
+                // Keep booting with the in-memory map: the modes are still
+                // correct for this run, and the next boot retries the
+                // migration because the new file still does not exist.
+                eprintln!("[sessions] migrate _code_mode_states.json failed: {error:#}");
+            }
+        }
         {
             let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
@@ -923,10 +1136,19 @@ impl SessionStore {
     /// touching disk, and the in-memory return to Plan stays consistent with
     /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
+        let _io = self.session_mode_states_io.lock();
         self.session_mode_states
             .write()
             .insert(id.to_string(), SerializableMode::Yolo);
-        self.save_session_mode_states();
+        if let Err(error) = Self::apply_session_mode_mutation_locked(
+            &[(id.to_string(), SerializableMode::Yolo)],
+            &[],
+        ) {
+            // The session id is deliberately kept out of the message: boot
+            // logs persist to disk and must not accumulate raw session
+            // identifiers (CodeQL cleartext-logging gate).
+            eprintln!("[sessions] persist accepted yolo mode failed: {error:#}");
+        }
     }
 
     pub fn confirm_code_yolo(&self) -> Result<CodePermissionPrefs, String> {

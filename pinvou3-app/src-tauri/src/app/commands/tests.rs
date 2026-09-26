@@ -1227,8 +1227,18 @@ fn resolve_artifact_path_relative_joins_active_workspace() {
     let _g = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    // Round-12 review: this used a fixed `/tmp/pinvou3-resolve-test`, which
+    // collides across parallel test binaries and leaked the env value after
+    // the test. Unique dir + restore-on-drop like the other env tests.
+    let home = std::env::temp_dir().join(format!(
+        "pinvou3-resolve-test-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _env = crate::platform::test_support::EnvRestore::capture(&["PINVOU3_HOME"]);
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-resolve-test") };
+    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
     let store = SessionStore::boot().expect("boot");
 
     // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
@@ -1267,6 +1277,8 @@ fn resolve_artifact_path_relative_joins_active_workspace() {
         resolve_artifact_path(&absolute, Some("sess-owner"), &store).expect("absolute artifact"),
         absolute
     );
+
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
@@ -1416,12 +1428,12 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     );
 
     // set_session_pinned 路径：共用置顶表。
-    store.set_pinned(&id, true);
+    store.set_pinned(&id, true).expect("pin");
     assert!(store.is_pinned(&id));
     assert!(store.pinned_at(&id).is_some());
 
     // set_session_archived 路径：共用收起表,且归档列表能列出 sched-* 会话。
-    store.set_hidden(&id, true);
+    store.set_hidden(&id, true).expect("archive");
     assert!(store.is_hidden(&id));
     assert!(
         store
@@ -1432,7 +1444,7 @@ fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     );
     // 收起会强制取消置顶(与普通会话一致)。
     assert!(!store.is_pinned(&id));
-    store.set_hidden(&id, false);
+    store.set_hidden(&id, false).expect("restore");
     assert!(!store.is_hidden(&id));
 
     // 删除不允许绕过 automation 联动直删。

@@ -15,15 +15,19 @@
 //!    retention depends on, plus the runtime-sidecar purges.
 
 use std::io::ErrorKind;
+#[cfg(feature = "benchmark-hooks")]
+use std::sync::Arc;
 #[cfg(test)]
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result};
+#[cfg(feature = "benchmark-hooks")]
+use parking_lot::Mutex;
 
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
 use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
-use super::store::MAX_SESSIONS_PER_KIND;
+use super::store::{HEADLESS_SESSION_PREFIX, MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND};
 use super::validators::validate_session_id;
 use super::validators::{
     chat_session_file, scheduled_session_file, validate_scheduled_session_id,
@@ -81,6 +85,40 @@ impl SessionStore {
         Ok(path)
     }
 
+    /// Install the headless retention-eviction observer (see the field docs
+    /// and `record_retention_evictions`); returns the previously installed
+    /// one. The headless runner is single-flight per store, so a `Some`
+    /// previous value means the caller armed twice without disarming.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn set_retention_eviction_observer(
+        &self,
+        observer: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> Option<Arc<Mutex<Vec<String>>>> {
+        std::mem::replace(&mut self.retention_eviction_observer.lock(), observer)
+    }
+
+    /// Disarm and hand back the installed observer, if any.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn take_retention_eviction_observer(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+        self.retention_eviction_observer.lock().take()
+    }
+
+    /// Forward the sessions this sweep actually deleted to the installed
+    /// headless observer, so the runner's warning keys on the eviction event
+    /// itself rather than on the turn's final outcome (a run that fails after
+    /// its prepare-time save must still surface the eviction, and a run that
+    /// failed before saving must stay silent). No observer installed (every
+    /// GUI process) is a no-op.
+    #[cfg(feature = "benchmark-hooks")]
+    fn record_retention_evictions(&self, evicted: &[String]) {
+        if evicted.is_empty() {
+            return;
+        }
+        if let Some(observer) = self.retention_eviction_observer.lock().clone() {
+            observer.lock().extend(evicted.iter().cloned());
+        }
+    }
+
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
             .list_sessions_cached()
@@ -88,8 +126,26 @@ impl SessionStore {
             .as_ref()
             .clone();
         let mut chat_count = 0usize;
+        let mut headless_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
+        // Pinned sessions are the user's explicit "keep forever" mark: they
+        // count against neither the cap nor eviction. The sweep consults the
+        // durable pin file, not the boot-time map: a GUI pinning sessions
+        // while a headless batch is alive only shows up in the file.
+        //
+        // Unknown exemption set (the pin file is present but unusable AND the
+        // boot load failed the same way, so the in-memory map is empty because
+        // of the fault rather than because there are no pins): refuse to
+        // evict. Sitting over the cap is recoverable; deleting the sessions
+        // the user marked keep-forever is not.
+        let Some(pinned) = self.durable_pinned_sessions() else {
+            log::warn!(
+                "[sessions] retention sweep skipped: the pin file is present but unreadable, \
+                 so the keep-forever set is unknown and evicting could delete pinned sessions"
+            );
+            return Ok(());
+        };
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -97,8 +153,55 @@ impl SessionStore {
             if metadata.id.starts_with("sched-") {
                 continue;
             }
-            chat_count += 1;
-            if chat_count > MAX_SESSIONS_PER_KIND {
+            if pinned.contains(&metadata.id) {
+                continue;
+            }
+            // Headless `agent run` sessions get their own budget instead of
+            // competing for the GUI chat budget.
+            //
+            // Sharing it made every default-keep headless run permanently
+            // consume one of the user's 50 chat slots and evict their oldest
+            // conversation — transcript, workspace, artifacts and checkpoints
+            // — with the only notice going to the headless process's stderr,
+            // which the desktop user never sees. Fifty runs erased the whole
+            // history. Separate budgets keep the feature's promise (the runs
+            // persist and are visible) without making a CLI invocation a
+            // destructive operation on GUI data. Same shape as the `sched-`
+            // carve-out above: an id prefix that identifies a non-chat origin.
+            let (count, cap) = if metadata.id.starts_with(HEADLESS_SESSION_PREFIX) {
+                (&mut headless_count, MAX_HEADLESS_SESSIONS)
+            } else {
+                (&mut chat_count, MAX_SESSIONS_PER_KIND)
+            };
+            *count += 1;
+            if *count > cap {
+                // Re-consult the durable pin file immediately before each
+                // delete: a pin landing mid-sweep (the GUI user pinning the
+                // oldest session while a headless batch sweeps) must protect
+                // it — the snapshot taken at sweep start predates it. The
+                // read is a tiny JSON file against an fsync'd record delete,
+                // and it never widens the eviction set (an unusable file
+                // yields `None`, which we treat as "still protected").
+                match self.durable_pinned_sessions() {
+                    Some(fresh) if fresh.contains(&metadata.id) => continue,
+                    None => {
+                        // The pin file became unreadable MID-sweep (it was
+                        // readable at sweep start). Skipping the delete is
+                        // the fail-safe direction, but the operator must not
+                        // see a silently truncated sweep — the initial-read
+                        // failure warns, so this arm must too. `break` stops
+                        // the sweep (every later over-cap delete would hit
+                        // the same unknown-state read) without failing it:
+                        // deletions already committed stay committed.
+                        log::warn!(
+                            "[sessions] retention sweep stopped early: the pin file became \
+                             unreadable mid-sweep, so the keep-forever set is unknown and no \
+                             further sessions were evicted"
+                        );
+                        break;
+                    }
+                    Some(_) => {}
+                }
                 let id = metadata.id;
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
@@ -118,6 +221,8 @@ impl SessionStore {
             // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
             self.invalidate_list_cache();
         }
+        #[cfg(feature = "benchmark-hooks")]
+        self.record_retention_evictions(&deleted_ids);
         self.purge_session_side_maps(&deleted_ids);
         let reconcile_error = self.reconcile_scheduled_profiles_locked().err();
         match (delete_error, reconcile_error) {
@@ -206,36 +311,55 @@ impl SessionStore {
         }
         let contains = |candidate: &str| ids.iter().any(|id| id == candidate);
 
-        let removed_multi_agent = {
+        // Purges persist as id-level removals against the durable sidecar
+        // files (not whole-map rewrites of the boot-time maps): a headless
+        // batch sharing a PINVOU3_HOME with the GUI must not revert pins,
+        // modes, or flags the GUI persisted after this process booted.
+        {
             let mut modes = self.mode_states.write();
-            let mut removed_multi_agent = false;
-            modes.retain(|id, state| {
-                let keep = !contains(id.as_str());
-                if !keep && state.multi_agent {
-                    removed_multi_agent = true;
-                }
-                keep
-            });
-            removed_multi_agent
-        };
-        if removed_multi_agent {
-            // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
-            // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
-            if let Err(error) = self.save_multi_agent_flags() {
+            modes.retain(|id, _| !contains(id.as_str()));
+        }
+        // Purge flags against the DURABLE file with the full eviction set,
+        // same reasoning as the pin purge below: a flag another process
+        // persisted after boot is invisible to the in-memory map. The
+        // mutation no-ops (no disk write) when nothing actually changes, so
+        // the unconditional call costs only a file read. A surviving ghost id
+        // would resurrect the switch state after restart, and the
+        // workspace-rebuild linkage would act on it.
+        let multi_agent_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        // Each io guard is scoped to its own mutation: the purge hooks at the
+        // end of this function must fire with every store-side lock released
+        // (the store.rs contract on notify_session_purged) — a future hook
+        // that touches any sidecar writer would otherwise self-deadlock on
+        // the non-reentrant in-process mutexes.
+        {
+            let _io = self.multi_agent_flags_io.lock();
+            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &multi_agent_refs) {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
                 );
             }
         }
 
-        let removed_code_modes = {
+        {
             let mut modes = self.session_mode_states.write();
-            let before = modes.len();
             modes.retain(|id, _| !contains(id.as_str()));
-            modes.len() != before
-        };
-        if removed_code_modes {
-            self.save_session_mode_states();
+        }
+        // Purge modes against the DURABLE file with the full eviction set —
+        // NOT just the ids this process's boot-time map knows. Unlike the
+        // multi-agent flags, the mode sidecar has no boot-time ghost cleanup
+        // (`load_session_mode_states` merges every durable entry
+        // unconditionally), so a mode another process persisted after boot
+        // would otherwise survive its session's eviction forever and re-arm
+        // on id reuse: a recycled `agentic_{pid}_{counter}` id would reopen
+        // in the ghost mode instead of the default.
+        {
+            let _modes_io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
+                eprintln!(
+                    "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         // Working-directory binding: clear the in-memory cache and best-effort
@@ -250,14 +374,25 @@ impl SessionStore {
             }
         }
 
-        let removed_models = {
+        {
+            // In-memory cache only: the durable batch removal below is a
+            // single read-modify-write for the whole eviction set.
             let mut models = self.session_models.write();
-            let before = models.len();
             models.retain(|id, _| !contains(id.as_str()));
-            models.len() != before
-        };
-        if removed_models {
-            self.save_session_models();
+        }
+        // One durable-file RMW for the whole batch instead of one per id
+        // (mirroring the batched mode-map mutation above).
+        let model_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        // Same per-file io-mutex contract as the multi-agent purge above: a
+        // concurrent set_session_model_id RMWs the same file. Scoped to this
+        // mutation — see the io-guard note at the top of this function.
+        {
+            let _models_io = self.session_models_io.lock();
+            if let Err(error) = super::sidecars::remove_session_models_locked(&model_refs) {
+                eprintln!(
+                    "[sessions] update _session_models.json after retention purge failed: {error:#}"
+                );
+            }
         }
 
         {
@@ -267,24 +402,35 @@ impl SessionStore {
             }
         }
 
-        let removed_pins = {
+        {
             let mut pins = self.pinned_sessions.write();
-            let before = pins.len();
             pins.retain(|id, _| !contains(id.as_str()));
-            pins.len() != before
-        };
-        if removed_pins {
-            self.save_pinned_sessions();
+        }
+        // Purge pins against the DURABLE file with the full eviction set, not
+        // just the ids this process's boot-time map knows: a pin another
+        // process persisted after boot is invisible to the in-memory map, and
+        // leaving it behind would let the evicted id survive as a ghost pin
+        // that re-arms the retention exemption on id reuse. The mutation
+        // removes only ids actually present and refuses a torn file instead
+        // of rewriting it (see apply_timestamped_id_mutation_locked), so the
+        // boot-map fallback that narrows the eviction set stays intact.
+        let all_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if let Err(error) = self.purge_pinned_ids(&all_refs) {
+            eprintln!(
+                "[sessions] update _pinned_sessions.json after retention purge failed: {error:#}"
+            );
         }
 
-        let removed_hidden = {
+        {
             let mut hidden = self.hidden_sessions.write();
-            let before = hidden.len();
             hidden.retain(|id, _| !contains(id.as_str()));
-            hidden.len() != before
-        };
-        if removed_hidden {
-            self.save_hidden_sessions();
+        }
+        // Same durable-file reasoning as the pin purge above: a hidden entry
+        // written by another process after boot must not survive eviction.
+        if let Err(error) = self.purge_hidden_ids(&all_refs) {
+            eprintln!(
+                "[sessions] update _hidden_sessions.json after retention purge failed: {error:#}"
+            );
         }
 
         // Keys of process-level turn-state maps (timing/pending_user_input)

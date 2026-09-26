@@ -1332,14 +1332,29 @@ impl EnginePool {
         for sid in sids {
             let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
-            let _ = tokio::task::spawn_blocking(move || {
+            let sid_for_log = sid.clone();
+            if let Err(join_error) = tokio::task::spawn_blocking(move || {
                 crate::features::assistant::skill_materialization::rewrite_session_skills(
                     &sid,
                     scope,
                     project_workspace.as_deref(),
                 );
             })
-            .await;
+            .await
+            {
+                // Best-effort refresh: a panicked rewrite leaves the composed
+                // dirs stale until the next materialization, but the join
+                // failure itself must not vanish silently — every other
+                // spawn_blocking join in the engine fails closed or logs.
+                // eprintln, not log: the headless host installs no logger
+                // (`run_windowless_host` builds a bare Tauri app), so a
+                // `log::warn!` here is dropped in exactly the process this
+                // path was hardened for. Every other diagnostic in this file
+                // uses eprintln for the same reason.
+                eprintln!(
+                    "[engine_pool] session {sid_for_log} skills rewrite join failed: {join_error}"
+                );
+            }
         }
     }
 
@@ -2094,6 +2109,20 @@ impl EnginePool {
         self.eval_model_snapshots.discard_suite(suite);
     }
 
+    /// Resolve and privately pin the complete SavedModel while returning only a
+    /// non-sensitive opaque selection to the evaluation layer. Callers that do
+    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
     /// 创建并加载一次性评测会话。评测 runner 预先决定 session ID，以便报告和
     /// 清理精确关联；普通 GUI 会话继续使用 SessionStore 自动生成的 ID。
     #[cfg(any(feature = "benchmark-hooks", test))]
@@ -2101,7 +2130,13 @@ impl EnginePool {
         &self,
         session_id: &str,
         model_selection: Option<&EvalModelSelection>,
+        workspace: Option<&std::path::Path>,
     ) -> Result<()> {
+        // The caller's task directory (when provided) lands in the session's
+        // `metadata.workspace` so the GUI list/detail shows the directory the
+        // session actually works in; the durable binding sidecar is written
+        // separately by the caller.
+        let metadata_workspace = workspace.map(std::path::Path::to_path_buf);
         match model_selection {
             None => {
                 let (model, model_id) = self.default_model_for_new_session();
@@ -2109,7 +2144,9 @@ impl EnginePool {
                     session_id.to_string(),
                     model,
                     model_id,
-                    self.bridge.workspace.clone(),
+                    metadata_workspace
+                        .clone()
+                        .unwrap_or_else(|| self.bridge.workspace.clone()),
                 )?;
                 self.get_or_spawn(session_id).await?;
             }
@@ -2120,7 +2157,7 @@ impl EnginePool {
                     session_id.to_string(),
                     selection.wire_model().to_string(),
                     selection.model_id().map(str::to_string),
-                    self.bridge.workspace.clone(),
+                    metadata_workspace.unwrap_or_else(|| self.bridge.workspace.clone()),
                 );
                 if let Err(error) = prepare_result {
                     self.eval_model_snapshots.forget_session(session_id);
@@ -3041,9 +3078,11 @@ fn default_model_for_new_session_from(
     }
 }
 
-// Test-only snapshot resolution: production eval paths obtain the
-// (SavedModel, identity) pair through the pinned selections instead.
-#[cfg(test)]
+// Snapshot resolution. Under `test` this backs the session-continuation
+// tests; under `benchmark-hooks` it backs the production eval pin path in
+// `pin_eval_model_selection` — that gate must match the caller's, or a plain
+// `--features benchmark-hooks` build (no test cfg) fails to compile.
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn resolve_eval_model_selection_from(
     bridge: &Pinvou3Bridge,
     models: &[SavedModel],
