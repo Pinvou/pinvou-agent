@@ -210,6 +210,7 @@ pub(crate) async fn chat_with_reservation(
             reference_absolute,
         )
     };
+    super::personas::unequip_persona_deleted_elsewhere(app, store, &sid);
     let pending_injections = store.take_pending_turn_injections(&sid);
     // Side B 卡片池: 加持后首条消息一次性 prepend 完整人设 body(agency-agents-zh)。
     // 之后每 turn 只靠 equip_anchor 轻锚点维持身份(EnginePool 注入),不再重灌 body。

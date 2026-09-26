@@ -157,6 +157,31 @@ fn delete_persona_state_with(
     })
 }
 
+/// Unequip `session_id`'s persona if its card no longer exists, clearing it
+/// from every session exactly as an in-app delete does, and announce each
+/// cleared session. A card deleted by another process (the headless CLI)
+/// never reaches this app's session state, so the chat path reconciles here
+/// before the deleted card's one-shot body could be sent.
+pub(crate) fn unequip_persona_deleted_elsewhere(
+    app: &AppHandle,
+    store: &SessionStore,
+    session_id: &str,
+) {
+    for cleared in clear_persona_deleted_elsewhere(store, session_id) {
+        super::sessions::emit_session_event(app, "session:persona_changed", &cleared, "unequipped");
+    }
+}
+
+fn clear_persona_deleted_elsewhere(store: &SessionStore, session_id: &str) -> Vec<String> {
+    let Some(persona_id) = store.active_persona_id(session_id) else {
+        return Vec::new();
+    };
+    if crate::features::personas::get(&persona_id).is_some() {
+        return Vec::new();
+    }
+    store.remove_persona_from_all(&persona_id)
+}
+
 /// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。
 /// events 是前端定义的 opaque JSON 数组,后端只透明落盘。
 #[tauri::command]
@@ -294,6 +319,77 @@ mod tests {
     use crate::platform::paths::tests::ENV_LOCK;
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn chat_path_unequips_a_card_deleted_by_another_process() {
+        let _environment = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-persona-deleted-elsewhere-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        // SAFETY: ENV_LOCK serializes process-wide test environment changes.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        crate::features::personas::reload_user();
+
+        let summary = crate::features::personas::create_user_persona(PersonaCard {
+            id: String::new(),
+            dept: "specialized".into(),
+            name: "Headless card".into(),
+            description: String::new(),
+            emoji: "H".into(),
+            color: "#000000".into(),
+            body: "DELETED PERSONA BODY".into(),
+            source: "user".into(),
+            conversational_only: false,
+        })
+        .expect("create test persona");
+        let store = SessionStore::boot_at_test_dir(&root).expect("boot session store");
+        let session_id = "chat-persona-deleted-elsewhere";
+        store.set_active_persona(session_id, Some(summary.id.clone()));
+        store.set_pending_persona_body(session_id, Some("DELETED PERSONA BODY".into()));
+
+        assert!(
+            clear_persona_deleted_elsewhere(&store, session_id).is_empty(),
+            "a card that still exists stays equipped"
+        );
+        assert_eq!(
+            store.active_persona_id(session_id).as_deref(),
+            Some(summary.id.as_str())
+        );
+
+        // Another process removes the card file; nothing in this process ran
+        // the in-app delete.
+        std::fs::remove_file(
+            crate::platform::paths::user_personas_dir().join(format!("{}.json", summary.id)),
+        )
+        .expect("remove card file");
+
+        assert_eq!(
+            clear_persona_deleted_elsewhere(&store, session_id),
+            vec![session_id.to_string()]
+        );
+        let state = store.mode_state(session_id);
+        assert!(state.active_persona.is_none());
+        assert!(
+            state.pending_persona_body.is_none(),
+            "the deleted card's one-shot body must not reach the next message"
+        );
+
+        match previous_home {
+            // SAFETY: ENV_LOCK remains held through restoration and cache reload.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK remains held through restoration and cache reload.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        crate::features::personas::reload_user();
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn delete_waits_for_in_flight_equip_then_clears_its_state() {
