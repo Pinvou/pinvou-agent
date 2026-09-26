@@ -177,7 +177,10 @@ const expectedProtocolHashes = {
   // save_session_messages had no remaining caller, so its Rust command is
   // retired with it; the exposed bridge.chat API is unchanged).
   // Recomputed for the shared-helper dedup (see batch note above).
-  chat: '2258b9ed785b1a73bfd271427689c7db902edc5fa0d06eab47c28a11e7f40b86',
+  // Retired with the behavior telemetry client: the trackSceneBehavior helper
+  // (scene_triggered track_behavior_event invoke) was removed, so the chat
+  // surface is one invoke smaller.
+  chat: '9ab23d7af0a04de15a622f4efa5e544f5ce4ef7306862b7ec777189220a57ef3',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -233,7 +236,9 @@ const expectedProtocolHashes = {
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
-  voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
+  // voice recomputed for retiring the behavior telemetry client: the
+  // voice_started track_behavior_event invoke was removed with the client.
+  voice: '28eb624f27450c7d72004cb4a65403bb5f29e77e012cd76e9d58b17d340a3bf9',
   // Recomputed for the rebind carryover feed-back (review #463 F-Major):
   // rebind_workspace_root gains the optional previousPostBusySessionIds
   // payload — the dialog's previous report fed back on retry, honored by the

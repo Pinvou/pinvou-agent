@@ -75,11 +75,6 @@ command_protocol!(
     ["export_assistant_response", "open_assistant_share_target"]
 );
 command_protocol!(
-    behavior_telemetry_protocol,
-    "behavior_telemetry.rs",
-    ["track_behavior_event"]
-);
-command_protocol!(
     chat_protocol,
     "chat.rs",
     ["chat", "steer_chat", "withdraw_steer"]
