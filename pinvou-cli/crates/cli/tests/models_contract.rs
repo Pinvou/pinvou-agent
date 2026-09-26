@@ -1834,7 +1834,9 @@ fn probe_local_model_flag_names_a_saved_credential() {
 // ---------------------------------------------------------------------------
 
 /// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored bing_probe_hits_live_endpoint`
-/// Requires internet access; mirrors the GUI `test_search_provider("bing")`.
+/// Requires internet access. The GUI ships no search-provider test at all
+/// (see the `models` module doc), so this is the only automated check of the
+/// live Bing lane.
 #[test]
 #[ignore = "network: run with `pinvoy settings search test bing` against bing.com"]
 fn bing_probe_hits_live_endpoint() {

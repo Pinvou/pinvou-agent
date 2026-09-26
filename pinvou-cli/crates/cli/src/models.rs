@@ -1977,9 +1977,9 @@ fn apply_bearer(
     }
 }
 
-/// Generous cap on one probe/model-list response body: the timeout bounds
-/// time, but a hostile loopback endpoint can stream within it — the same
-/// bounded-IO rule every other CLI read follows.
+/// Generous cap on one probe/model-list/search response body: the timeout
+/// bounds time, but a hostile loopback endpoint can stream within it — the
+/// same bounded-IO rule every other CLI read follows.
 const PROBE_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
 
 /// Reads and parses a probe response body under [`PROBE_BODY_CAP_BYTES`];
@@ -3179,7 +3179,17 @@ fn search_response_probe(
             verified: VERIFIED_LIVE_PROBE,
         };
     }
-    let Ok(body) = response.text() else {
+    // The bounded-IO rule every other probe read follows (`read_json_capped`):
+    // the timeout bounds time, but a hostile endpoint can stream within it, so
+    // the body is read through [`PROBE_BODY_CAP_BYTES`] instead of an
+    // unbounded `text()`.
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    let body = if response
+        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         // The status says success but the body never arrived: the probe
         // learned the endpoint is reachable, not that it answered cleanly.
         return SearchProbe {
@@ -3191,6 +3201,21 @@ fn search_response_probe(
             )),
             verified: VERIFIED_LIVE_PROBE,
         };
+    } else if bytes.len() > PROBE_BODY_CAP_BYTES {
+        // Over-cap is its own honest failure, not a parse of the truncation.
+        return SearchProbe {
+            ok: false,
+            code: "response_too_large",
+            detail: Some(format!(
+                "the {} response body exceeded the probe cap ({PROBE_BODY_CAP_BYTES} bytes)",
+                provider.as_str()
+            )),
+            verified: VERIFIED_LIVE_PROBE,
+        };
+    } else {
+        // Same decoding `text()` applies: invalid UTF-8 degrades to the
+        // replacement character instead of failing the probe.
+        String::from_utf8_lossy(&bytes).into_owned()
     };
     match search_body_error(provider, &body) {
         Some((code, detail)) => SearchProbe {
@@ -3399,11 +3424,12 @@ mod tests {
     /// (`models add`, `models edit`, `settings search set`) passing a value
     /// that went through `secret_for_storage(...)`.
     ///
-    /// The trailing newline is the case that mattered: `--api-key-env`
-    /// values come back from `support::resolve_secret` verbatim (only its
-    /// stdin lane trims), a CI secret file carries a newline, and storing it
-    /// 401s every request while `settings search test` — which trims on read
-    /// — still reports the provider as `configured`.
+    /// The trailing newline is the case that mattered: `support::resolve_secret`
+    /// trims BOTH of its lanes (`--api-key-env` and stdin — environment
+    /// secrets routinely carry a trailing newline from `read KEY < key.txt`, a
+    /// CI secret store mount, or a `.env` loader), and a value that dodged
+    /// that trim 401s every request while `settings search test` — which
+    /// trims on read — still reports the provider as `configured`.
     #[test]
     fn secret_for_storage_strips_the_whitespace_ci_secrets_carry() {
         assert_eq!(secret_for_storage("sk-abc123\n"), "sk-abc123");
@@ -4069,6 +4095,33 @@ mod tests {
         }
     }
 
+    /// The 4 MiB cap ([`PROBE_BODY_CAP_BYTES`]) had no teeth on the search
+    /// lane: a regression to an unbounded `response.text()` would have passed
+    /// CI. Over-cap is its own honest failure — never `ok: true` from parsing
+    /// the truncation (Tavily is the sharpest canary here: with no business
+    /// error codes, a truncated parse would pass the probe).
+    #[test]
+    fn search_probe_over_the_body_cap_fails_the_probe() {
+        let oversized = format!(
+            "{{\"results\":\"{}\"}}",
+            "A".repeat(PROBE_BODY_CAP_BYTES + 1)
+        );
+        let mock = spawn_probe_mock(&[("/", 200u16, &oversized)]);
+        let probe = run_search_api_probe_at(SearchProvider::Tavily, "probe-key", &mock.base_url);
+        assert!(
+            !probe.ok,
+            "a body over PROBE_BODY_CAP_BYTES must fail the probe: {:?}",
+            probe.detail
+        );
+        assert_eq!(probe.code, "response_too_large");
+        assert_eq!(probe.verified, VERIFIED_LIVE_PROBE);
+        assert_eq!(
+            mock.hits_for("/"),
+            1,
+            "the request itself was fine; only the body was over the cap"
+        );
+    }
+
     #[test]
     fn loopback_guard_parses_ips_instead_of_prefix_matching() {
         for url in [
@@ -4628,6 +4681,166 @@ mod tests {
         assert!(
             UserPrefs::load().model_by_id(&id).is_none(),
             "the model must be removed from prefs before the keyring delete"
+        );
+    }
+
+    /// Pins the ordering `remove` documents: the settings commit FIRST, the
+    /// keyring delete only AFTER it.
+    /// `remove_deletes_the_key_through_the_injected_store` cannot tell a
+    /// delete-after-commit from one hoisted above the transaction (the happy
+    /// path orders are observationally identical), so this forces the commit
+    /// to fail AFTER the closure found the model and captured its reference:
+    /// a read-only product data dir blocks the atomic write's staging tmp
+    /// file while every read (the up-front min-1 check, the transaction's
+    /// load) still succeeds. A hoisted delete would log a `delete:` before
+    /// that failure; the deferral must not.
+    ///
+    /// Unix-only (chmod), the same pattern as
+    /// `edit_rotation_rollback_restores_the_previous_secret`: the portable
+    /// settings.json-as-a-directory blocker cannot reach the commit here —
+    /// with a directory, `load` falls back to defaults and the model lookup
+    /// fails before any save happens.
+    #[cfg(unix)]
+    #[test]
+    fn remove_defers_the_keyring_delete_until_after_the_commit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _home = TempHome::new("remove-order");
+        let _first = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-keep");
+        let store = RecordingStore::new();
+
+        // Two models: `remove`'s min-1 rule would reject a lone one before
+        // the transaction could ever reach its save.
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Keep",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        let _second = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-bye");
+        add(
+            &store,
+            ModelPreset::Deepseek,
+            "Bye",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("second add succeeds");
+
+        // The commit must fail while the loads still succeed: read-only on
+        // the product data dir blocks the atomic write's staging (`create_new`
+        // tmp file) without touching settings.json's readability.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+            .expect("make the data dir read-only");
+        let result = remove(&store, &id, true, OutputMode::Human);
+        // Restore write permission first so TempHome's cleanup can delete.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore the data dir");
+        let error = result.expect_err("must fail: the settings commit fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let operations = store.operations();
+        assert!(
+            !operations.iter().any(|op| op.starts_with("delete:")),
+            "the keyring delete is deferred behind the commit; a failed save must not delete: {operations:?}"
+        );
+        assert!(
+            store.entries().contains(&"sk-keep".to_owned()),
+            "the secret must survive the failed remove: {:?}",
+            store.entries()
+        );
+    }
+
+    /// The same pin for `edit --clear-api-key`: the record is marked missing
+    /// inside the transaction and the keyring delete waits until after the
+    /// commit (models.rs documents both). A commit failure must leave the
+    /// secret in place with no `delete:` logged — deleting first would strip
+    /// a secret the still-configured record references.
+    #[cfg(unix)]
+    #[test]
+    fn edit_clear_defers_the_keyring_delete_until_after_the_commit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _home = TempHome::new("clear-order");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-clear");
+        let store = RecordingStore::new();
+
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Clear",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+
+        // Read-only on the product data dir blocks the commit's staging tmp
+        // file while the transaction's load still succeeds (the same pattern
+        // as `remove_defers_the_keyring_delete_until_after_the_commit`).
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+            .expect("make the data dir read-only");
+        let result = edit(
+            &store,
+            &id,
+            &ModelEdit::default(),
+            &None,
+            false,
+            true,
+            true,
+            false,
+            OutputMode::Human,
+        );
+        // Restore write permission first so TempHome's cleanup can delete.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore the data dir");
+        let error = result.expect_err("must fail: the settings commit fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let operations = store.operations();
+        assert!(
+            !operations.iter().any(|op| op.starts_with("delete:")),
+            "the keyring delete is deferred behind the commit; a failed clear must not delete: {operations:?}"
+        );
+        assert_eq!(
+            store.entries(),
+            vec!["sk-clear".to_owned()],
+            "the secret must survive the failed clear"
         );
     }
 
