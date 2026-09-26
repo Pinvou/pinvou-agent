@@ -425,12 +425,13 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 }
 
 // ── ChatView 源码契约 ─────────────────────────────────────────────────
-// sendChatMessage 必须把 sendMessage 的返回协议映射给 handleSend：
-// 仅 false 触发恢复；"restored"/true/undefined（旧后端兜底）都不得触发。
+// dispatch must preserve the three-state protocol: handleSend restores
+// only on false, while the voice task lane distinguishes "restored" (text
+// returned, not accepted) from a genuine acceptance.
 assert.match(
   chatViewSource,
-  /dispatchResult = await bridge\.chat\.sendMessage\(visibleOutgoing, meta\);[\s\S]*?return dispatchResult !== false;/,
-  'sendChatMessage 必须按 dispatchResult !== false 映射 sendMessage 的返回协议',
+  /dispatchResult = await bridge\.chat\.sendMessage\(visibleOutgoing, meta, voiceOwner\);[\s\S]*?return dispatchResult;/,
+  'dispatchChatMessage 必须保留 sendMessage 的三态返回协议',
 );
 // handleSend 的恢复必须保留 empty-vs-typed 区分（空输入框整体还原，非空降级为 append prefill）。
 assert.match(

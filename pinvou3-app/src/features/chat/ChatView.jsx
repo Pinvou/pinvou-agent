@@ -1531,6 +1531,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return () => window.removeEventListener('pinvou:present-artifact', onPresentArtifact);
       }, [activeSessionId, showArtifactsPreview]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      // Capability preparation and first-turn materialization can outlive the
+      // originating voice composer; the dispatch guard compares the live epoch
+      // at await boundaries (a ref, not the render value).
+      const draftEpochRef = useRef(draftEpoch);
+      draftEpochRef.current = draftEpoch;
       // 切换 session / 新建草稿会话时读取各自 working set 里的未发送内容。
       // 从设置、工具商店等页面返回时 ChatView 会重新挂载，初始 state 也从
       // 同一份内存草稿恢复。
@@ -1555,7 +1560,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         && (hasDraftText || hasReadyAttachment);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
-      const sendChatMessage = useCallback(async (text) => {
+      const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {
         if (!bridge.available) return false;
         const outgoing = String(text || '').trim();
         const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
@@ -1616,9 +1621,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             state: pinvouModeStateRef.current,
           };
         }
+        // Capability preparation can outlive the originating voice composer.
+        // Do not let the bridge resolve its current active session as our owner.
+        if (voiceOwner && ((activeSessionIdRef.current || null) !== voiceOwner.sessionId
+          || (!voiceOwner.sessionId && Number(draftEpochRef.current || 0) !== voiceOwner.draftEpoch))) return false;
         let dispatchResult;
         try {
-          dispatchResult = await bridge.chat.sendMessage(visibleOutgoing, meta);
+          dispatchResult = await bridge.chat.sendMessage(visibleOutgoing, meta, voiceOwner);
         } catch (error) {
           pendingModeScopeMigrationRef.current = null;
           throw error;
@@ -1631,9 +1640,34 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // empty-vs-typed restore instead of silently dropping the draft
         // (#406). "restored" marks paths that already returned the text to the
         // composer (first-turn materialization abort, session switch);
-        // restoring again would duplicate it.
-        return dispatchResult !== false;
+        // restoring again would duplicate it. The three-state value is kept
+        // as-is: the voice task lane needs to tell "restored" apart from
+        // accepted, while ordinary sends treat both as not-false.
+        return dispatchResult;
       }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive]);
+
+      const sendChatMessage = useCallback(async (text, voiceContext) => {
+        const operationId = voiceContext?.operationId
+          || (bridge.voice?.getVoiceOperationId
+            ? bridge.voice.getVoiceOperationId(activeSessionId || null, 'chat')
+            : null);
+        if (operationId && bridge.voice?.beginVoiceSubmission) bridge.voice.beginVoiceSubmission(operationId);
+        try {
+          const accepted = await dispatchChatMessage(text, { voiceOperationId: operationId }, voiceContext?.draftOwner);
+          if ((accepted === false || accepted === 'restored') && operationId
+            && bridge.voice?.completeVoiceSubmission) {
+            bridge.voice.completeVoiceSubmission(operationId, null, false);
+          }
+          // Preserve "restored": ordinary send must not restore twice, while
+          // voice task delivery must treat it as not accepted.
+          return accepted;
+        } catch (error) {
+          if (operationId && bridge.voice?.completeVoiceSubmission) {
+            bridge.voice.completeVoiceSubmission(operationId, null, false);
+          }
+          throw error;
+        }
+      }, [activeSessionId, dispatchChatMessage]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
       // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
@@ -2259,7 +2293,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           pendingVoiceAfterIntroRef.current = null;
           return requestVoiceShortcutIntroAfterAsr(context && context.mode);
         },
-        sendTask: async outgoing => {
+        sendTask: async (outgoing, context) => {
           // Direct voice task send passes the same length gate: on overflow, truncate and write
           // back into the input box without sending (same policy as handleSend).
           const constrained = constrainChatInput(outgoing);
@@ -2267,9 +2301,27 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             setInputText(constrained.text);
             return false;
           }
+          if (context?.diagnostic?.task_send_blocked) return false;
+          // Consume only the exact draft this task owns. The bridge's #406
+          // restored path may then append it once without duplicating writeback.
+          if (inputTextRef.current !== constrained.text) return false;
+          const owner = {
+            sessionId: (activeSessionIdRef && activeSessionIdRef.current) || null,
+            draftEpoch: Number(draftEpoch || 0),
+            operationId: context?.operationId,
+            restored: false,
+          };
+          setInputText('');
           try {
-            return await sendChatMessage(constrained.text);
+            const result = await sendChatMessage(constrained.text, { ...context, draftOwner: owner });
+            if (result === false && bridge.chat.restoreTaskDraft) {
+              bridge.chat.restoreTaskDraft(constrained.text, owner);
+            }
+            // Voice task delivery treats "restored" as not accepted (the text
+            // is back, not sent); ordinary callers map it through to false.
+            return result === 'restored' ? false : result;
           } catch (error) {
+            if (bridge.chat.restoreTaskDraft) bridge.chat.restoreTaskDraft(constrained.text, owner);
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
           }
