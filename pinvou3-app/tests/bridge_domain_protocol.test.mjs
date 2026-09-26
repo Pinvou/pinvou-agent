@@ -244,9 +244,15 @@ const expectedProtocolHashes = {
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
-  // voice recomputed for retiring the behavior telemetry client: the
-  // voice_started track_behavior_event invoke was removed with the client.
-  voice: '28eb624f27450c7d72004cb4a65403bb5f29e77e012cd76e9d58b17d340a3bf9',
+  // Recomputed again for the recording-ownership port: the voice feature now
+  // owns an operation lifecycle (operationId submission gates) and claims the
+  // Rust recording ownership (set_voice_shortcut_recording with a token)
+  // before opening the microphone (command set unchanged; listener bodies and
+  // comment wording are part of the digest). Recomputed once more after
+  // dropping the behavior-event emitter: the terminal bookkeeping state
+  // machine stays, the track_behavior_event call sites do not (command set
+  // still unchanged).
+  voice: 'fe52e3a89d3f95932444d23eff68e8685d20e754fb402959388930093a34a10b',
   // Recomputed for the rebind carryover feed-back (review #463 F-Major):
   // rebind_workspace_root gains the optional previousPostBusySessionIds
   // payload — the dialog's previous report fed back on retry, honored by the
