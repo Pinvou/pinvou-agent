@@ -102,6 +102,13 @@ const IMA_SKILL_VERSION: &str = "1.1.8";
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Per-stream byte cap for the `run_cli_bounded` output drains: the
+/// deadlines bound the process lifetimes, not the bytes — a chatty or
+/// hostile vendor CLI (or a descendant that inherited the pipes) must not be
+/// able to balloon the CLI's memory. Bytes past the cap are read and
+/// discarded, not left in the pipe; see [`drain_vendor_output`].
+const MAX_VENDOR_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Per-stream byte cap for the login-output drainer (`drain_for_url`),
 /// matching `run_cli_bounded`'s `MAX_VENDOR_OUTPUT_BYTES`: the login deadline
 /// bounds the process lifetime, not the bytes a chatty or hostile vendor CLI
@@ -249,8 +256,11 @@ struct VendorSpec {
     /// disabled_filename`). Read-only on both surfaces now; the CLI's only
     /// write is the removal `enable` performs to heal a stale one.
     disabled_filename: &'static str,
-    /// `Some(min)` = installs below this version count as not-installed and
-    /// `status` reports `upgrade_required` (wecom/tmeet version gates).
+    /// `Some(min)` = installs below this version fail the presence gates
+    /// (`cli_installed` / the GUI's `*_cli_present` count them as not
+    /// installed, so they must be replaced, not used), while `status`
+    /// reports them as `installed: true` + `upgrade_required: true` and
+    /// still runs the status probe for them (wecom/tmeet version gates).
     min_version: Option<(u64, u64, u64)>,
     /// Per-connector wait for the first login URL, mirroring the GUI
     /// (feishu/wecom `rx.recv_timeout(40s)`, dingtalk/tmeet 60s).
@@ -589,8 +599,14 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
     }
 }
 
-/// Upper bound for one status/version probe (the GUI has no timeout here, but
-/// a hung vendor CLI must not hang the CLI forever).
+/// Upper bound for one status/version probe. The GUI does bound its probes
+/// too — `run_probe` wraps every one in
+/// `output_with_timeout_and_kill_tree(cmd, 30s)` (features/connectors/
+/// connector_cli.rs), the same class of protection against a hung npm-shim
+/// CLI. The CLI deliberately allows twice that here (no UI to keep alive,
+/// and the same history of shim hang-ups to survive); what stays
+/// non-negotiable on both surfaces is that a hung vendor CLI must not hang
+/// the command forever.
 const PROBE_TIMEOUT_SECS: u64 = 60;
 
 /// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
@@ -653,8 +669,8 @@ fn run_cli_bounded(
             spec.cli_bin, spec.id
         ))
     })?;
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
     // Lossy like the GUI's `String::from_utf8_lossy`: vendor CLIs (wecom /
     // dingtalk / tmeet on Windows especially) can emit non-UTF-8 output, and
     // a strict `read_to_string` errors on the first bad byte and discards
@@ -664,25 +680,20 @@ fn run_cli_bounded(
     // below) instead of joined unconditionally.
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
     let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-    // Size-bound the drains like voice.rs's engine capture (8 MiB): the
-    // deadline above bounds the process but not the bytes — a chatty or
-    // hostile vendor CLI (or a descendant that inherited the pipes) must not
-    // be able to balloon the CLI's memory while the drain threads block on
-    // EOF. Normal output is far below the cap, so behavior is unchanged.
-    const MAX_VENDOR_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+    // Size-bound KEEP, unbounded READ: the bytes past the cap are read and
+    // discarded rather than left in the pipe. A `take(cap)` that simply stops
+    // reading returns EOF to the drainer while the child keeps writing, so
+    // the pipe fills (64 KiB), the child blocks in write(2), the deadline
+    // below expires, and a healthy child is misreported as "timed out" and
+    // group-SIGKILLed. Same read-and-discard-to-EOF discipline as voice.rs's
+    // `drain_capped` (engine capture) and code.rs's `read_capped_to_eof`
+    // (git output). Normal output is far below the cap, so behavior for it
+    // is unchanged.
     std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_mut() {
-            let _ = pipe.take(MAX_VENDOR_OUTPUT_BYTES).read_to_end(&mut bytes);
-        }
-        let _ = stdout_tx.send(String::from_utf8_lossy(&bytes).into_owned());
+        let _ = stdout_tx.send(drain_vendor_output(stdout_pipe));
     });
     std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.take(MAX_VENDOR_OUTPUT_BYTES).read_to_end(&mut bytes);
-        }
-        let _ = stderr_tx.send(String::from_utf8_lossy(&bytes).into_owned());
+        let _ = stderr_tx.send(drain_vendor_output(stderr_pipe));
     });
     let remaining = deadline.saturating_duration_since(Instant::now());
     let status = match child.wait_timeout(remaining) {
@@ -726,6 +737,33 @@ fn run_cli_bounded(
     let stdout = drain(stdout_rx);
     let stderr = drain(stderr_rx);
     Ok((status.success(), stdout, stderr))
+}
+
+/// Drains one `run_cli_bounded` output pipe: KEEP at most
+/// [`MAX_VENDOR_OUTPUT_BYTES`] and decode lossily (the non-UTF-8 hazards the
+/// caller documents), but keep reading — and DISCARDING — until true EOF, so
+/// a child that outproduces the cap can still finish instead of blocking on
+/// a full pipe. Same loop as voice.rs's `drain_capped` and code.rs's
+/// `read_capped_to_eof`.
+fn drain_vendor_output<R: std::io::Read>(pipe: Option<R>) -> String {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let room = MAX_VENDOR_OUTPUT_BYTES.saturating_sub(kept.len() as u64) as usize;
+                if room > 0 {
+                    kept.extend_from_slice(&chunk[..read.min(room)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&kept).into_owned()
 }
 
 /// First embedded JSON object in mixed CLI output — mirror of
@@ -1305,10 +1343,20 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             }
         }
         VersionGate::Upgrade { raw } => {
-            // Installed but below the command-model baseline: mirror the
-            // `upgrade_required` three-state the wecom/tmeet DTOs report.
-            entry["ok"] = json!(false);
-            entry["connected"] = json!(false);
+            // Installed but below the command-model baseline. The status
+            // probe still runs here, GUI parity: `wecom_status` /
+            // `tmeet_status` gate on `*_cli_version` (parse gate, not the
+            // minimum), so an overly old install gets the same `auth …`
+            // spawn as a usable one and reports `connected = ok &&
+            // authorized` / "Logged in" from the live probe. A pre-fix hard
+            // `connected:false, ok:false` lied "logged out" for a credential
+            // the vendor still holds. `upgrade_required: true` is the
+            // CLI-only extra the GUI handles through ensure_cli's version
+            // gate instead.
+            let (ok, stdout, stderr) = run_status_probe(spec)?;
+            let connected = connected_from_probe(spec, ok, &stdout, &stderr);
+            entry["ok"] = json!(ok);
+            entry["connected"] = json!(connected);
             entry["installed"] = json!(true);
             entry["upgrade_required"] = json!(true);
             entry["version"] = json!(raw);

@@ -1184,6 +1184,159 @@ fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
     let _ = std::fs::remove_dir_all(&bin);
 }
 
+/// A below-minimum install is `upgrade_required`, but the vendor credentials
+/// it holds are as real as a usable install's: the GUI DTOs (`wecom_status` /
+/// `tmeet_status`) gate on `*_cli_version` (the parse gate, not the minimum),
+/// so an overly old install still gets its status-probe spawn and reports
+/// `connected` from the live probe. The pre-fix CLI arm hard-coded
+/// `connected:false, ok:false` for every below-minimum install, lying "logged
+/// out" for a credential the vendor still holds. Pin the probe-backed
+/// verdict: an authorized below-minimum wecom reports `connected:true` +
+/// `upgrade_required:true` at once, and a probe-failing below-minimum tmeet
+/// reports the honest `connected:false`.
+#[test]
+#[cfg(unix)]
+fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("upgrade-gate-probe");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // wecom 1.2.0 parses but sits below the 1.2.1 baseline; its status probe
+    // answers the whole line `authorized` with exit 0 like a connected one.
+    write_fake_cli(
+        &bin,
+        "wecom-cli",
+        "wecom-cli 1.2.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"show\" ]; then echo \"authorized\"; exit 0; fi\n",
+    );
+    // tmeet 1.0.10 sits below the 1.0.18 baseline; its `auth status` falls
+    // through to the script's trailing exit 1 with no "Logged in" line, so
+    // the probe reports not-logged-in.
+    write_fake_cli(&bin, "tmeet", "tmeet version 1.0.10", "");
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
+    let entry = &value["connectors"][0];
+    assert_eq!(entry["installed"], true, "{entry}");
+    assert_eq!(entry["upgrade_required"], true, "{entry}");
+    assert_eq!(entry["version"], "wecom-cli 1.2.0", "{entry}");
+    assert_eq!(
+        entry["connected"], true,
+        "an authorized below-minimum install is still connected: {entry}"
+    );
+    assert_eq!(
+        entry["ok"], true,
+        "the probe exit status must be reported, not hard-coded: {entry}"
+    );
+    assert!(
+        entry.get("note").is_none(),
+        "a healthy probe must not degrade to a note: {entry}"
+    );
+    // The human row carries both facts at once: connected AND upgrade.
+    let outcome = run(&["pinvou", "connectors", "status", "wecom"]).expect("human status");
+    assert!(
+        outcome.stdout.contains("connected=yes"),
+        "the human row must keep the live connected verdict: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("upgrade_required=yes"),
+        "the human row must still demand the upgrade: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("installed=yes(wecom-cli 1.2.0)"),
+        "the human row must name the below-minimum version: {}",
+        outcome.stdout
+    );
+
+    // The mirror case: a probe that fails reports connected:false (honest
+    // "not logged in"), never a fabricated connection either.
+    let value = run_json(&["pinvou", "connectors", "status", "tmeet"]);
+    let entry = &value["connectors"][0];
+    assert_eq!(entry["installed"], true, "{entry}");
+    assert_eq!(entry["upgrade_required"], true, "{entry}");
+    assert_eq!(
+        entry["connected"], false,
+        "a failing probe must not fabricate a connection: {entry}"
+    );
+    assert_eq!(entry["ok"], false, "{entry}");
+    assert!(entry.get("note").is_none(), "{entry}");
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+/// A vendor CLI that writes past the 8 MiB drain cap must still complete.
+/// `take(cap).read_to_end` returns EOF to the drainer at the cap while the
+/// child keeps writing, so the pipe fills, the child blocks in write(2), the
+/// probe wait expires, and a healthy exit-0 child was misreported as "timed
+/// out" and group-SIGKILLed. The drain keeps at most the cap but reads — and
+/// discards — until true EOF (the voice.rs `drain_capped` / code.rs
+/// `read_capped_to_eof` discipline). The fake prints the tmeet "Logged in"
+/// marker first (so the connected predicate has its signal) and then
+/// ~9.5 MiB of padding — cap + a pipe-buffer worth + margin — and exits 0.
+#[test]
+#[cfg(unix)]
+fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("drain-past-cap");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // `yes x | head -c 9961472` produces 9,961,472 bytes (8 MiB cap
+    // 8,388,608 + ~1.5 MiB margin, far more than a 64 KiB pipe buffer) and
+    // then exits 0 like a chatty-but-healthy vendor CLI.
+    write_fake_cli(
+        &bin,
+        "tmeet",
+        "tmeet version 1.0.18",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo \"Logged in as someone@example.com\"; yes x | head -c 9961472; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let started = std::time::Instant::now();
+    let value = run_json(&["pinvou", "connectors", "status", "tmeet"]);
+    let took = started.elapsed();
+    let entry = &value["connectors"][0];
+    assert_eq!(
+        entry["connected"], true,
+        "a child blocked mid-write must not be misreported as a probe timeout: {entry}"
+    );
+    assert_eq!(entry["installed"], true, "{entry}");
+    assert_eq!(entry["ok"], true, "{entry}");
+    assert!(
+        entry.get("note").is_none(),
+        "must not degrade to a probe-failure note: {entry}"
+    );
+    // Under the take() bug the child stalls until the 60 s probe budget
+    // burns; the fixed drain completes as fast as the child writes.
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "a 9.5 MiB write must not stall into the probe timeout: {took:?}"
+    );
+    let outcome = run(&["pinvou", "connectors", "status", "tmeet"]).expect("human status");
+    assert!(
+        outcome.stdout.contains("connected=yes"),
+        "{}",
+        outcome.stdout
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
 #[test]
 #[cfg(unix)]
 fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected() {
