@@ -290,6 +290,7 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
         // real turn, so only failure-set changes are persisted (see
         // `mcp_boot_persistence`). The memory lives per forwarder task, i.e.
@@ -313,6 +314,7 @@ pub(crate) fn spawn_event_forwarder(
                     submission_id,
                     ..
                 } => {
+                    startup_first_output_recorded = false;
                     // Publish admission from the authoritative engine event,
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
@@ -411,6 +413,10 @@ pub(crate) fn spawn_event_forwarder(
                     }
                 }
                 Event::MessageDelta { content, .. } => {
+                    if !content.is_empty() && !startup_first_output_recorded {
+                        crate::features::assistant::timing::record_first_output(&session_id);
+                        startup_first_output_recorded = true;
+                    }
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
                         crate::features::assistant::timing::record_first_message_delta(&session_id);

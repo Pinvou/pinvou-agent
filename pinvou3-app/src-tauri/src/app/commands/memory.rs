@@ -791,9 +791,19 @@ pub async fn edit_last_turn(
 
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
     // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
-    pool.edit_last_turn_reserved(&sid, full, display_message, reservation)
+    crate::features::assistant::timing::start_turn(&sid);
+    if let Err(error) = pool
+        .edit_last_turn_reserved(&sid, full, display_message, reservation)
         .await
-        .map_err(|e| format!("edit_last_turn: {e:#}"))
+    {
+        crate::features::assistant::timing::finish_turn(
+            &sid,
+            "send_error",
+            Some(&format!("{error:#}")),
+        );
+        return Err(format!("edit_last_turn: {error:#}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
