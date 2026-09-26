@@ -186,6 +186,7 @@ function injectSource() {
     var superPerm = false;
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
+    var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
@@ -292,7 +293,10 @@ function injectSource() {
         case 'set_super_permission': return Promise.reject(new Error('pkexec unavailable'));
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({ online: true, ok: true, status: 'online' });
-        case 'check_for_update': return Promise.resolve(Object.assign({}, updateResponse));
+        case 'check_for_update':
+          return updateCheckFailure
+            ? Promise.reject(new Error(updateCheckFailure))
+            : Promise.resolve(Object.assign({}, updateResponse));
         case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
@@ -341,6 +345,7 @@ function injectSource() {
       settings: function () { return settings; },
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
+      setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
@@ -598,7 +603,20 @@ async function modalWidth(page, headingText) {
       && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
 
   await clickSettingsSection(page, '更新');
+  // A failed manual check (offline, blocked request, ...) shows only the short localized hint, never the raw backend error.
   await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure('update request failed: error sending request for url');
+    await window.TauriBridge.updater.checkForUpdate();
+  });
+  await sleep(250);
+  const updateCheckFailureText = await page.evaluate(() => document.querySelector('#settings-version-update')?.innerText || '');
+  rec('update: a failed manual check shows only the short localized hint',
+    updateCheckFailureText.includes('检查失败')
+    && !updateCheckFailureText.includes('update request failed')
+    && !updateCheckFailureText.includes('error sending request'),
+    updateCheckFailureText);
+  await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure(null);
     window.__SETTINGS_TEST__.setUpdateResponse({
       available: true,
       current_version: '0.6.1',
