@@ -238,9 +238,25 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// parenthesized letters, halfwidth katakana — are NFKC's job and are
 /// deliberately absent here.
 ///
-/// Hyphens are folded here for the same reason: `U+2010 HYPHEN` and
-/// `U+2011 NON-BREAKING HYPHEN` render identically to the ASCII hyphen in
-/// `top-up` but are NFKC-stable, unlike `U+FE63`/`U+FF0D` which decompose.
+/// Hyphens are folded here for the same reason: `U+2010 HYPHEN`, `U+2011
+/// NON-BREAKING HYPHEN`, `U+2012 FIGURE DASH`, `U+2013 EN DASH` and `U+2212
+/// MINUS SIGN` all render indistinguishably from the ASCII hyphen in
+/// `top-up` (an en dash is exactly what a word processor's autocorrect
+/// substitutes) but are NFKC-stable, unlike `U+FE63`/`U+FF0D` which decompose.
+///
+/// The Latin small-capital series is folded as one family: each is
+/// NFKC-stable, and a label that spells a term with them (`ꜱᴇɴᴅ`, `ᴅᴇʟᴇᴛᴇ`)
+/// reads as the plain uppercase term to the user, so folding them is the
+/// honest match, not a false positive.
+///
+/// The accepted cost is a false-positive surface on real Cyrillic text:
+/// `р`→`p`, `а`→`a` and `у`→`y` together fold the common word `Раунд`
+/// ("round") onto `pay`, so a benign Russian label can raise a confirmation.
+/// The error direction is safe (an extra dialog, never a missed one), and
+/// the alternative — dropping `р` from the table the way the o-shaped σ/Σ
+/// are dropped — would reopen the `Pаy` evasion. Greek gets the mirror-image
+/// call where the letters differ: σ/Σ (common letter, common term letter)
+/// stay, while ω (common letter, rare term letter `w`) folds.
 ///
 /// It is a best-effort subset, not a complete confusable table: the full
 /// relation is UTS#39's, and a determined attacker can still find a glyph pair
@@ -248,12 +264,13 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// evasions; it does not make them impossible.
 fn fold_confusable(c: char) -> char {
     match c {
-        // Hyphens that render as `-` but survive NFKC.
-        '\u{2010}' | '\u{2011}' => '-',
+        // Hyphens and dashes that render as `-` but survive NFKC.
+        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2212}' => '-',
         // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
         // Latin; the caller lowercases afterwards either way).
         'а' | 'А' => 'a',
         'ԁ' => 'd',
+        'ӏ' | 'Ӏ' => 'l',
         'в' | 'В' => 'b',
         'с' | 'С' => 'c',
         'е' | 'Е' | 'ё' | 'Ё' => 'e',
@@ -269,6 +286,7 @@ fn fold_confusable(c: char) -> char {
         'т' | 'Т' => 't',
         'у' | 'У' => 'y',
         'х' | 'Х' => 'x',
+        'ѡ' | 'Ѡ' => 'w',
         // Greek look-alikes.
         'α' | 'Α' => 'a',
         'Β' => 'b',
@@ -291,11 +309,36 @@ fn fold_confusable(c: char) -> char {
         'υ' | 'Υ' => 'y',
         'χ' | 'Χ' => 'x',
         'Ζ' => 'z',
+        // The w-shaped omegas: lowercase omega is common in real Greek, but
+        // it maps to `w`, which only the Latin term `withdraw` carries — no
+        // natural Greek word folds onto it, so this stays on the mapped side
+        // of the σ/Σ decision.
+        'ω' | 'Ω' => 'w',
         // Other single-script look-alikes with no compatibility mapping.
         'ɑ' => 'a',
         'ɡ' => 'g',
         'ı' => 'i',
         'օ' => 'o',
+        // Latin small capitals (NFKC-stable, one per Latin letter).
+        'ᴀ' => 'a',
+        'ᴄ' => 'c',
+        'ᴅ' => 'd',
+        'ᴇ' => 'e',
+        'ꜰ' => 'f',
+        'ɢ' => 'g',
+        'ɪ' => 'i',
+        'ᴋ' => 'k',
+        'ʟ' => 'l',
+        'ᴍ' => 'm',
+        'ɴ' => 'n',
+        'ᴏ' => 'o',
+        'ᴘ' => 'p',
+        'ʀ' => 'r',
+        'ꜱ' => 's',
+        'ᴛ' => 't',
+        'ᴜ' => 'u',
+        'ᴡ' => 'w',
+        'ʏ' => 'y',
         other => other,
     }
 }
@@ -349,13 +392,62 @@ pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
     T3_DENYLIST.iter().any(|term| folded.contains(term))
 }
 
+/// Streams `raw` through [`fold_for_matching`] in bounded chunks and calls
+/// `observe` with each folded window (this chunk's fold plus a carry of the
+/// previous window's tail), stopping at the first window where `observe`
+/// returns `true`, which is also the return value.
+///
+/// A needle of at most [`T3_MATCH_WINDOW_CHARS`] folded characters cannot
+/// straddle a window boundary unnoticed — the carry keeps the previous
+/// window's tail — so substring checks against each window see exactly what
+/// a whole-string fold would have shown, without ever materializing it.
+/// Peak memory is proportional to the chunk, not the label, so a hostile
+/// multi-megabyte accessible name or `AXRole` buys no proportional
+/// allocation. Used by the platform denylist matcher
+/// (`platform::helpers::screening_hit`) and [`is_secure_role`], which
+/// would otherwise each need its own copy of the walk.
+pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) -> bool) -> bool {
+    /// Raw characters folded per pass: large enough that the per-chunk
+    /// overhead is irrelevant, small enough that a pathological
+    /// multi-megabyte accessible name is never copied wholesale.
+    const CHUNK_CHARS: usize = 4096;
+    let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
+    let mut folded = String::new();
+    let mut chars = raw.chars();
+    loop {
+        let chunk: String = chars.by_ref().take(CHUNK_CHARS).collect();
+        if chunk.is_empty() {
+            return false;
+        }
+        folded.push_str(&fold_for_matching(&chunk));
+        if observe(&folded) {
+            return true;
+        }
+        let count = folded.chars().count();
+        if count > carry {
+            folded = folded.chars().skip(count - carry).collect();
+        }
+    }
+}
+
 /// Whether the element role is a password/secure text field (a T3 signal;
 /// corresponds to Operator's takeover scenario). Roles that merely contain
 /// "insecure" (e.g. AXInsecureTextField) must not trip the "secure"
 /// substring.
+///
+/// The role runs through the same streaming [`fold_for_matching`] walk the
+/// denylist leg of this gate uses, rather than plain `to_lowercase()`: on
+/// macOS `AXRole`/`AXSubrole` are free-form app-supplied strings, so a
+/// fullwidth `ＰａｓｓｗｏｒｄＦｉｅｌｄ` or a homoglyph `Pаssword` would otherwise
+/// bypass the password screen while the denylist leg catches the identical
+/// trick in the name. Streaming also keeps a hostile multi-megabyte role
+/// from buying a proportional whole-string fold here. "password"/"secure"
+/// are shorter than the carry window, so a needle cannot straddle a window
+/// boundary unnoticed.
 pub fn is_secure_role(role: &str) -> bool {
-    let lower = role.to_lowercase();
-    lower.contains("password") || (lower.contains("secure") && !lower.contains("insecure"))
+    for_each_folded_window(role, |window| {
+        window.contains("password") || (window.contains("secure") && !window.contains("insecure"))
+    })
 }
 
 /// Guard rejection reasons.
@@ -1058,7 +1150,7 @@ impl ComputerUseShared {
     }
 
     /// Consumes a token previously validated by [`Self::peek_confirmation`],
-    /// making it single-use.
+    /// making it single-use. Returns whether a token was actually spent.
     ///
     /// Called once the re-screen has agreed the target is still the one the
     /// user approved, so a spend refused for naming a **different** target
@@ -1067,8 +1159,19 @@ impl ComputerUseShared {
     /// screening, a missing input capability, the backend itself failing. The
     /// split exists to make the target check non-destructive, not to defer the
     /// spend all the way to the injection call.
-    pub fn consume_confirmation(&self, confirm_id: &str) {
-        self.consent.lock().approved_tokens.remove(confirm_id);
+    ///
+    /// The return value closes the deny race: `deny_confirmation` retracts an
+    /// unspent token ("approve → changed my mind"), and the a11y queries in
+    /// the replay's re-screen give that click a real window to land between
+    /// [`Self::peek_confirmation`] and here. A blind remove would execute the
+    /// action anyway over an approval its owner had just retracted, so the
+    /// caller aborts on `false`.
+    pub fn consume_confirmation(&self, confirm_id: &str) -> bool {
+        self.consent
+            .lock()
+            .approved_tokens
+            .remove(confirm_id)
+            .is_some()
     }
 }
 
@@ -1114,7 +1217,10 @@ mod tests {
     ) -> SpendOutcome {
         match shared.peek_confirmation(id, session, summary, binding) {
             Some(_) => {
-                shared.consume_confirmation(id);
+                assert!(
+                    shared.consume_confirmation(id),
+                    "a peeked token must still be there to consume"
+                );
                 SpendOutcome::Granted
             }
             None => SpendOutcome::Unknown,
@@ -1379,6 +1485,88 @@ mod tests {
         // signal — it must not trip the secure-role screen.
         assert!(!is_secure_role("AXInsecureTextField"));
         assert!(!is_secure_role("insecure text field"));
+        // The role is a free-form AXRole on macOS, so the password screen
+        // must survive the same renders-identically tricks the denylist leg
+        // closes: fullwidth (NFKC folds it), a Cyrillic homoglyph `а`, an
+        // invisible splice, and padding — the previous plain
+        // `to_lowercase().contains` missed all four.
+        assert!(is_secure_role("ＰａｓｓｗｏｒｄＦｉｅｌｄ"));
+        assert!(is_secure_role("Pаsswοrd text"));
+        assert!(is_secure_role("Pаssword"));
+        assert!(is_secure_role("Pass\u{200B}word Text"));
+        assert!(is_secure_role(&format!(
+            "{}Password Text{}",
+            " ".repeat(500),
+            "!"
+        )));
+        assert!(!is_secure_role("ＩｎｓｅｃｕｒｅＴｅｘｔＦｉｅｌｄ"));
+    }
+
+    /// The display-side and matching-side invisible lists are documented as
+    /// kept in step (`helpers::is_invisible_formatting` ↔ this module's
+    /// `is_invisible_for_matching`). A range added to one but not the other
+    /// is silent: U+2FFC–U+2FFF sat only in the matching list, so the
+    /// render-as-nothing characters survived `sanitize_name` into consent
+    /// dialog labels and the approval-token binding. Pin the step by
+    /// requiring every enumerated range on the display side to appear
+    /// verbatim on the matching side (the matching list is a superset: it
+    /// additionally folds whitespace).
+    #[test]
+    fn invisible_lists_stay_in_step() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helpers =
+            std::fs::read_to_string(manifest.join("src/features/computer_use/platform/helpers.rs"))
+                .expect("helpers.rs readable");
+        let display = list_body(&helpers, "fn is_invisible_formatting");
+        let guard = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/guard.rs"
+        ))
+        .expect("guard.rs readable");
+        let matching = list_body(&guard, "fn is_invisible_for_matching");
+
+        for range in [
+            "'\\u{00AD}'",
+            "'\\u{034F}'",
+            "'\\u{061C}'",
+            "'\\u{115F}'..='\\u{1160}'",
+            "'\\u{17B4}'..='\\u{17B5}'",
+            "'\\u{180B}'..='\\u{180F}'",
+            "'\\u{200B}'..='\\u{200F}'",
+            "'\\u{202A}'..='\\u{202E}'",
+            "'\\u{2060}'..='\\u{2064}'",
+            "'\\u{2065}'",
+            "'\\u{2066}'..='\\u{2069}'",
+            "'\\u{3164}'",
+            "'\\u{2FFC}'..='\\u{2FFF}'",
+            "'\\u{FE00}'..='\\u{FE0F}'",
+            "'\\u{FEFF}'",
+            "'\\u{FFA0}'",
+            "'\\u{FFF9}'..='\\u{FFFB}'",
+            "'\\u{1D173}'..='\\u{1D17A}'",
+            "'\\u{E0000}'..='\\u{E0FFF}'",
+        ] {
+            assert!(display.contains(range), "display side lost {range}");
+            assert!(
+                matching.contains(range),
+                "the matching-side invisible list lost {range}; \
+                 the two lists are documented to stay in step"
+            );
+        }
+    }
+
+    /// The body (up to the closing brace) of a `fn <name>` in `source`, used
+    /// by [`invisible_lists_stay_in_step`] to compare the two enumerated
+    /// invisible-character lists without parsing Rust. The end is anchored on
+    /// the `matches!`-close-plus-`fn`-close brace pair rather than the first
+    /// `}`, because every `'\\u{XXXX}'` literal carries a `}` of its own.
+    fn list_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(name).expect("list function exists");
+        let end = start
+            + source[start..]
+                .find(")\n}")
+                .expect("list body ends with the matches! close and the fn close");
+        &source[start..end]
     }
 
     /// Every [`T3_DENYLIST`] entry must survive [`fold_for_matching`]
@@ -1467,6 +1655,23 @@ mod tests {
             "wıthdraw",             // Latin dotless i ı
             "Top\u{2011}up wallet", // non-breaking hyphen, NFKC-stable
             "Top\u{2010}up wallet", // hyphen, NFKC-stable
+            // Second review round: the same evasion class against the
+            // letters the first fold arms left unmapped.
+            "deӏete",               // Cyrillic palochka ӏ for l
+            "Pӏace order",          // Cyrillic palochka ӏ
+            "ѡithdraw",             // Cyrillic omega ѡ
+            "ωithdraw",             // Greek omega
+            "Ωithdraw",             // Greek capital omega
+            "ᴡithdraw",             // Latin small capital w
+            "sᴜbmit",               // Latin small capital u
+            "bᴜy",                  // Latin small capital u
+            "ᴅelete",               // Latin small capital d
+            "ꜱend",                 // Latin small capital s
+            "ᴅonate",               // Latin small capital d
+            "ᴀɡree",                // small capitals + script g spelling "agree"
+            "Top\u{2013}up wallet", // en dash (word-processor autocorrect)
+            "Top\u{2012}up wallet", // figure dash
+            "Top\u{2212}up wallet", // minus sign
             // Unicode 15.1 ideographic description characters are
             // default-ignorable and render as nothing.
             "支\u{2FFF}付",
@@ -1573,6 +1778,31 @@ mod tests {
         // Denying an already-spent (or unknown) id still reports false — the
         // same as "unknown/already decided".
         assert!(!shared.deny_confirmation(&id));
+    }
+
+    /// The deny race between the replay's peek and consume: a Deny landing
+    /// while the tool is between `peek_confirmation` and
+    /// `consume_confirmation` (the re-screen's a11y queries give it a real
+    /// window) must stop the spend, not silently execute over a retracted
+    /// approval. The tool aborts when consume reports the token gone.
+    #[test]
+    fn deny_during_the_spend_window_stops_the_consume() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        let summary = "left click x1 at Some((7, 8))";
+        let id = new_pending(&shared, "s1", summary);
+        assert!(shared.mint_confirmation(&id));
+        // Peeked (not consumed): the tool is re-screening the target now.
+        let label = shared.peek_confirmation(&id, "s1", summary, 0);
+        assert_eq!(label.as_deref(), Some("Buy now"));
+        // The user denies before the consume lands.
+        assert!(shared.deny_confirmation(&id));
+        // The consume must report that nothing was spent, so the caller can
+        // abort instead of executing with confirmed_t3 = true.
+        assert!(
+            !shared.consume_confirmation(&id),
+            "consuming a retracted token must fail, not silently pass"
+        );
     }
 
     /// One pending per session: a new request REPLACES the session's
@@ -2385,19 +2615,36 @@ mod tests {
             "the per-node descent must use the combined scope"
         );
         assert!(
+            windows_source.contains(".SetTreeScope(RawTreeScope(TREE_SCOPE_ELEMENT_AND_CHILDREN))"),
+            "the combined scope must actually be set on the COM cache request — \
+             a const and a match arm that never reach SetTreeScope pin nothing"
+        );
+        assert!(
             windows_source.contains("writer.next_index == 0 && error.code() == E_ACCESSDENIED"),
             "E_ACCESSDENIED on the empty-tree leg must propagate, not fold into churn"
+        );
+        // The name-screening producers: screening must run on the RAW name,
+        // not a display-truncated copy — the macOS producer has a behavioral
+        // pin, the other two can only be pinned at source level here.
+        assert!(
+            windows_source.contains("name_screening_hit: screening_hit(&name)"),
+            "Windows must screen the raw accessible name"
+        );
+
+        let linux_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/linux.rs"
+        ))
+        .expect("linux.rs readable");
+        assert!(
+            linux_source.contains("(sanitize_name(&raw, MAX_NAME_CHARS), screening_hit(&raw))"),
+            "Linux must screen the raw accessible name, not the sanitized display copy"
         );
 
         // The Linux hit test must skip undecidable non-active windows and
         // surface the remembered fault only when no window answered; the
         // active window (index 0) is the exception and propagates its own
         // fault immediately.
-        let linux_source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/features/computer_use/platform/linux.rs"
-        ))
-        .expect("linux.rs readable");
         assert!(
             linux_source.contains("if has_active && index == 0 {"),
             "the active window's undecidable extents must propagate immediately"
@@ -2405,6 +2652,23 @@ mod tests {
         assert!(
             linux_source.contains("match first_fault {"),
             "a skipped fault must surface when no window answered the point"
+        );
+
+        // The macOS `type` chunking must go through `utf16_chunks` (the
+        // helper is pinned behaviorally, but reverting only the call site to
+        // enigo's char-counted chunking would keep the suite green). The
+        // constants in the substring are NFKC-stable, so the pin is exact.
+        let macos_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/macos.rs"
+        ))
+        .expect("macos.rs readable");
+        assert!(
+            macos_source.contains(
+                "TypeRun::Text(chunk) => utf16_chunks(&chunk, MACOS_UNICODE_STRING_UTF16_UNITS)"
+            ),
+            "macOS type injection must chunk by UTF-16 width — the raw \
+             enigo chunking truncates non-BMP runs inside a surrogate pair"
         );
     }
 }

@@ -2987,7 +2987,10 @@ mod x11_live_tests {
     /// target re-screen. Returns the approved element label on success.
     fn spend(shared: &ComputerUseShared, confirm_id: &str, summary: &str) -> Option<String> {
         let label = shared.peek_confirmation(confirm_id, SESSION, summary, 0)?;
-        shared.consume_confirmation(confirm_id);
+        assert!(
+            shared.consume_confirmation(confirm_id),
+            "a peeked token must still be there to consume"
+        );
         Some(label)
     }
     use serde_json::{Value, json};
