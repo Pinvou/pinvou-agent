@@ -765,6 +765,47 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- windows-codex-runtime-test", required_gate)
 
+    def test_windows_rustup_repair_runs_in_required_native_job(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "windows_rustup_repair: ${{ steps.filter.outputs.windows_rustup_repair }}",
+            changes,
+        )
+        repair_filter = re.search(
+            r"\n            windows_rustup_repair:\n((?:              .*(?:\n|$))+)",
+            changes,
+        ).group(1)
+        for trigger in (
+            "pinvou3-app/scripts/ci/ensure-rust-toolchain.ps1",
+            "pinvou3-app/scripts/tauri/build.js",
+            "pinvou3-app/tests/windows_rustup_repair_smoke.ps1",
+            "pinvou3-app/src-tauri/rust-toolchain.toml",
+        ):
+            self.assertIn(trigger, repair_filter)
+
+        job_body = self.pr_workflow.split(
+            "\n  windows-rustup-repair-test:", maxsplit=1
+        )[1]
+        job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
+        self.assertIn("needs: changes", job)
+        self.assertIn("needs.changes.outputs.windows_rustup_repair == 'true'", job)
+        self.assertIn("runs-on: windows-latest", job)
+        self.assertIn("npm --prefix pinvou3-app run test:windows-rustup-repair", job)
+
+        # Same three-wiring rule as the other native legs: needs entry, env
+        # backfill, and summary-loop entry.
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- windows-rustup-repair-test", required_gate)
+        self.assertIn("WINDOWS_RUSTUP_REPAIR_RESULT", required_gate)
+        self.assertIn(
+            '"windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"',
+            required_gate,
+        )
+
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(

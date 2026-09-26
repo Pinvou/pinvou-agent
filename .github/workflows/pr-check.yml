@@ -31,6 +31,8 @@ name: PR Check
 #   mirrors windows-rust-test gating; the Linux leg cannot expose platform-specific type errors.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
+# - windows-rustup-repair-test: Relevant PRs corrupt a copied toolchain in an
+#   isolated RUSTUP_HOME and verify download-source fallback and reinstall.
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -155,6 +157,7 @@ jobs:
       relay: ${{ steps.filter.outputs.relay }}
       acp_runtime: ${{ steps.filter.outputs.acp_runtime }}
       windows_codex: ${{ steps.filter.outputs.windows_codex }}
+      windows_rustup_repair: ${{ steps.filter.outputs.windows_rustup_repair }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -341,6 +344,13 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
+            windows_rustup_repair:
+              - '.github/workflows/pr-check.yml'
+              - 'pinvou3-app/scripts/ci/ensure-rust-toolchain.ps1'
+              - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/tests/windows_rustup_repair_smoke.ps1'
+              - 'pinvou3-app/src-tauri/rust-toolchain.toml'
+              - 'pinvou3-app/package.json'
 
   fast-gate:
     name: fast-gate
@@ -1601,6 +1611,38 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
+  windows-rustup-repair-test:
+    name: windows-rustup-repair-test
+    needs: changes
+    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.windows_rustup_repair == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install the pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $config = Get-Content pinvou3-app/src-tauri/rust-toolchain.toml -Raw
+          $match = [regex]::Match($config, '(?m)^\s*channel\s*=\s*"([^"]+)"')
+          if (-not $match.Success) {
+            throw "Unable to read the pinned Rust toolchain."
+          }
+          rustup toolchain install $match.Groups[1].Value `
+            --profile minimal --component clippy --component rustfmt --no-self-update
+
+      # The smoke copies the account toolchain into a temporary RUSTUP_HOME,
+      # deletes cargo.exe/rustc.exe there, and requires the repair script to
+      # fail over from an unreachable source to the official source.
+      - name: Isolated toolchain repair and download-source fallback
+        run: npm --prefix pinvou3-app run test:windows-rustup-repair
+
   required-gate:
     name: required-gate
     needs:
@@ -1619,6 +1661,7 @@ jobs:
       - macos-rust-check
       - macos-codex-runtime-test
       - windows-codex-runtime-test
+      - windows-rustup-repair-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -1647,6 +1690,7 @@ jobs:
           MACOS_RUST_CHECK_RESULT: ${{ needs.macos-rust-check.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
+          WINDOWS_RUSTUP_REPAIR_RESULT: ${{ needs.windows-rustup-repair-test.result }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
             # 队列提交由 GitHub 生成，不重复校验人工 commit message；
@@ -1672,7 +1716,8 @@ jobs:
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-rust-check:$MACOS_RUST_CHECK_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
-            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
+            "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
+            "windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"
             case "$result" in

@@ -14,8 +14,10 @@
 #     命令行上限限制(大型 crate 的 rustc 命令行超限),故 Windows 用
 #     .exe 版(经 CreateProcess 直启,上限 32767 字符)。
 #
-# 本脚本是"平台选择"的单一真相源:run-dev.sh 与 CI smoke
-# (rustc-wrapper-smoke.yml)都执行它,保证正式入口与实际验证一致。
+# Shell entry points use this script for platform selection: run-dev.sh and
+# the CI smoke (rustc-wrapper-smoke.yml) both execute it. Running npm/Tauri
+# directly from PowerShell does not depend on bash; scripts/tauri/build.js
+# builds the Windows .exe wrapper natively from the same source instead.
 # 输出空时调用方不得设置 RUSTC_WRAPPER。
 #
 # 注意:Windows 分支用 cygpath -m 把 MSYS 风格路径(/c/...)转成 Windows

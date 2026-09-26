@@ -1,4 +1,5 @@
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 const { writeEffectiveArtifacts } = require("./effective-config.js");
 const {
@@ -24,6 +25,220 @@ const {
   stageWindowsOnnxRuntime,
   stageWindowsRuntime,
 } = require("./windows-runtime.js");
+
+const RUST_TOOLCHAIN_CONFIG_PATH = path.join(APP_ROOT, "src-tauri", "rust-toolchain.toml");
+const RUST_TOOLCHAIN_SCRIPT_PATH = path.join(
+  APP_ROOT,
+  "scripts",
+  "ci",
+  "ensure-rust-toolchain.ps1",
+);
+const RUSTC_STACK_WRAPPER_SCRIPTS_PATH = path.join(APP_ROOT, "src-tauri", "scripts");
+
+function pinnedRustToolchainChannel(configPath = RUST_TOOLCHAIN_CONFIG_PATH) {
+  const config = fs.readFileSync(configPath, "utf8");
+  const match = config.match(/^\s*channel\s*=\s*"([^"]+)"/mu);
+  if (!match) throw new Error(`Unable to read Rust channel from: ${configPath}`);
+  return match[1];
+}
+
+function windowsRustHostTriple(architecture = process.arch) {
+  const triples = {
+    arm64: "aarch64-pc-windows-msvc",
+    ia32: "i686-pc-windows-msvc",
+    x64: "x86_64-pc-windows-msvc",
+  };
+  const triple = triples[architecture];
+  if (!triple) throw new Error(`Unsupported Windows Rust architecture: ${architecture}`);
+  return triple;
+}
+
+// Points rustup at a workspace-scoped RUSTUP_HOME that the repair script is
+// allowed to reset. The build account's shared rustup installation is never
+// selected for destructive recovery.
+function configureIsolatedWindowsRustToolchain(
+  {
+    env = process.env,
+    architecture = process.arch,
+    appRoot = APP_ROOT,
+    configPath = RUST_TOOLCHAIN_CONFIG_PATH,
+  } = {},
+) {
+  const channel = pinnedRustToolchainChannel(configPath);
+  const hostTriple = windowsRustHostTriple(architecture);
+  const cacheName = `${channel}-${hostTriple}`.replace(/[^a-zA-Z0-9._-]/gu, "_");
+  const configuredHome = env.PINVOU3_RUSTUP_HOME?.trim();
+  const rustupHome = configuredHome
+    ? path.resolve(appRoot, configuredHome)
+    : path.join(appRoot, ".cache", "rustup", cacheName);
+  env.RUSTUP_HOME = rustupHome;
+  env.PINVOU3_MANAGED_RUSTUP = "1";
+  env.RUSTUP_TOOLCHAIN = channel;
+  return { channel, hostTriple, rustupHome };
+}
+
+function runRustToolchainScript(
+  {
+    args = [],
+    env,
+    spawnChild,
+    appRoot,
+    scriptPath,
+  },
+) {
+  const child = spawnChild(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+      ...args,
+    ],
+    { cwd: appRoot, env: { ...env }, stdio: "inherit" },
+  );
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (signal) {
+        reject(new Error(`Rust toolchain check stopped by signal: ${signal}`));
+        return;
+      }
+      resolve(Number.isInteger(code) ? code : 1);
+    });
+  });
+}
+
+// Windows build machines have failed at `cargo metadata` because the pinned
+// toolchain was only partially installed (missing cargo, rustc, clippy or
+// rustfmt). A complete account toolchain is reused read-only; otherwise the
+// build switches to an isolated, marker-protected RUSTUP_HOME and repairs it
+// there with download-source fallback. Exit code 2 from -CheckOnly means
+// "incomplete"; any other non-zero code is a hard failure.
+async function ensureWindowsRustToolchain(
+  {
+    env = process.env,
+    spawnChild = spawn,
+    architecture = process.arch,
+    appRoot = APP_ROOT,
+    configPath = RUST_TOOLCHAIN_CONFIG_PATH,
+    scriptPath = RUST_TOOLCHAIN_SCRIPT_PATH,
+    log = console.log,
+  } = {},
+) {
+  const channel = pinnedRustToolchainChannel(configPath);
+  const hostTriple = windowsRustHostTriple(architecture);
+  const accountEnv = { ...env };
+  delete accountEnv.PINVOU3_MANAGED_RUSTUP;
+  const accountExitCode = await runRustToolchainScript({
+    args: ["-CheckOnly"],
+    env: accountEnv,
+    spawnChild,
+    appRoot,
+    scriptPath,
+  });
+  if (accountExitCode === 0) {
+    env.RUSTUP_TOOLCHAIN = channel;
+    log(`[build] Reusing account Rust toolchain: ${channel} (${hostTriple})`);
+    return {
+      channel,
+      hostTriple,
+      rustupHome: env.RUSTUP_HOME?.trim() || null,
+      source: "account",
+    };
+  }
+  if (accountExitCode !== 2) {
+    throw new Error(`Account Rust toolchain check failed with exit code ${accountExitCode}`);
+  }
+
+  const toolchain = configureIsolatedWindowsRustToolchain({
+    env,
+    architecture,
+    appRoot,
+    configPath,
+  });
+  log(`[build] Account Rust toolchain is unavailable; using cache: ${toolchain.rustupHome}`);
+  const isolatedExitCode = await runRustToolchainScript({
+    env,
+    spawnChild,
+    appRoot,
+    scriptPath,
+  });
+  if (isolatedExitCode !== 0) {
+    throw new Error(`Isolated Rust toolchain repair failed with exit code ${isolatedExitCode}`);
+  }
+  return { ...toolchain, source: "isolated" };
+}
+
+// Compiling codewhale-tui with the default 2 MiB compiler thread stack
+// overflows (STATUS_STACK_OVERFLOW on Windows). run-dev.sh and CI inject the
+// rustc stack wrapper themselves, but `npm run dev` / `npm run build*` started
+// directly from PowerShell or cmd bypass them. Build (or reuse) the native .exe
+// wrapper here and inject it through RUSTC_WRAPPER so only compiler child
+// processes receive RUST_MIN_STACK; the app runtime never inherits it.
+function prepareWindowsRustcStackWrapper(
+  {
+    environment = process.env,
+    platform = process.platform,
+    scriptsPath = RUSTC_STACK_WRAPPER_SCRIPTS_PATH,
+    spawnCompiler = spawnSync,
+    log = console.log,
+  } = {},
+) {
+  if (platform !== "win32") return null;
+
+  const configuredWrapper = environment.RUSTC_WRAPPER?.trim();
+  if (configuredWrapper) {
+    environment.RUSTC_WRAPPER = configuredWrapper;
+    log(`[build] Reusing configured rustc stack wrapper: ${configuredWrapper}`);
+    return { path: configuredWrapper, source: "environment" };
+  }
+
+  const sourcePath = path.join(scriptsPath, "rustc-stack-wrapper.rs");
+  const wrapperPath = path.join(scriptsPath, "rustc-stack-wrapper.exe");
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Windows rustc stack wrapper source is missing: ${sourcePath}`);
+  }
+
+  const needsCompilation = !fs.existsSync(wrapperPath)
+    || fs.statSync(sourcePath).mtimeMs > fs.statSync(wrapperPath).mtimeMs;
+  if (needsCompilation) {
+    const result = spawnCompiler(
+      "rustc",
+      ["-O", sourcePath, "-o", wrapperPath],
+      {
+        cwd: APP_ROOT,
+        env: { ...environment },
+        stdio: "inherit",
+        windowsHide: true,
+      },
+    );
+    if (result.error) {
+      throw new Error(`Failed to compile Windows rustc stack wrapper: ${result.error.message}`);
+    }
+    // Never fall back to an unwrapped compiler: it is known to overflow.
+    if (result.status !== 0 || !fs.existsSync(wrapperPath)) {
+      throw new Error(
+        `Failed to compile Windows rustc stack wrapper (exit ${result.status ?? "unknown"})`,
+      );
+    }
+  }
+
+  environment.RUSTC_WRAPPER = wrapperPath;
+  log(
+    `[build] ${needsCompilation ? "Prepared" : "Reused"} Windows rustc stack wrapper: ${wrapperPath}`,
+  );
+  return { path: wrapperPath, source: needsCompilation ? "compiled" : "cached" };
+}
 
 function tauriCommandIndex(args) {
   return args.findIndex((argument) => argument === "build" || argument === "bundle");
@@ -106,15 +321,89 @@ function prepareTauriArgs(
   return prepared;
 }
 
-function runTauri(preparedArgs, spawn = spawnSync, environment = process.env) {
+function formatElapsed(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    hours > 0 ? `${hours}h` : null,
+    minutes > 0 || hours > 0 ? `${minutes}m` : null,
+    `${seconds}s`,
+  ].filter(Boolean).join(" ");
+}
+
+function tauriPhase(preparedArgs) {
+  const commandIndex = tauriCommandIndex(preparedArgs);
+  return commandIndex >= 0 ? preparedArgs[commandIndex] : "command";
+}
+
+// Runs the Tauri CLI asynchronously and prints a periodic heartbeat (PID,
+// phase, elapsed time) so long release compiles on CI or build machines can be
+// told apart from a hung process.
+function runTauri(
+  preparedArgs,
+  {
+    environment = process.env,
+    spawnChild = spawn,
+    heartbeatIntervalMs = 60_000,
+    now = Date.now,
+    log = console.log,
+    setIntervalFn = setInterval,
+    clearIntervalFn = clearInterval,
+  } = {},
+) {
   const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
-  const child = spawn(process.execPath, [tauriCli, ...preparedArgs], {
+  const startedAt = now();
+  const phase = tauriPhase(preparedArgs);
+  const child = spawnChild(process.execPath, [tauriCli, ...preparedArgs], {
     cwd: APP_ROOT,
     env: { ...environment, [WRAPPER_ENV]: "1" },
     stdio: "inherit",
   });
-  if (child.error) throw child.error;
-  return child.status === null ? 1 : child.status;
+  const pid = child.pid ?? "unknown";
+  log(`[build] Tauri CLI started: pid=${pid}, phase=${phase}`);
+
+  let heartbeat = null;
+  if (heartbeatIntervalMs > 0) {
+    heartbeat = setIntervalFn(() => {
+      log(
+        `[build] Tauri CLI still running: pid=${pid}, phase=${phase}, elapsed=${formatElapsed(now() - startedAt)}`,
+      );
+    }, heartbeatIntervalMs);
+    heartbeat?.unref?.();
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      if (heartbeat !== null) clearIntervalFn(heartbeat);
+    };
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const elapsed = formatElapsed(now() - startedAt);
+      if (signal) {
+        log(
+          `[build] Tauri CLI stopped by signal: pid=${pid}, phase=${phase}, elapsed=${elapsed}, signal=${signal}`,
+        );
+        resolve(1);
+        return;
+      }
+      const exitCode = Number.isInteger(code) ? code : 1;
+      log(
+        `[build] Tauri CLI finished: pid=${pid}, phase=${phase}, elapsed=${elapsed}, exit=${exitCode}`,
+      );
+      resolve(exitCode);
+    });
+  });
 }
 
 function tauriRuntimeEnvironment(runtime, environment = process.env) {
@@ -180,6 +469,9 @@ async function main() {
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
   const additionalConfigs = [];
+  if (hasTauriBuildCommand && process.platform === "win32") {
+    await ensureWindowsRustToolchain();
+  }
   // Windows 的 fastembed 使用动态 ONNX Runtime。正式包 staging 完整运行时并通过
   // resource overlay 携带 DLL；dev 只校验并展开 ONNX 组件，避免为 UI 开发准备无关工具。
   const windowsRuntime =
@@ -238,7 +530,8 @@ async function main() {
     isDev,
     tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime),
   );
-  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
+  prepareWindowsRustcStackWrapper({ environment: tauriEnvironment });
+  process.exitCode = await runTauri(preparedArgs, { environment: tauriEnvironment });
 }
 
 if (require.main === module) {
@@ -256,14 +549,19 @@ async function runBuild() {
 
 module.exports = {
   configSpecs,
+  configureIsolatedWindowsRustToolchain,
   chromeDevtoolsMcpEnvironment,
+  ensureWindowsRustToolchain,
+  formatElapsed,
   main,
+  pinnedRustToolchainChannel,
   prepareChromeDevtoolsMcp,
   prepareChromeDevtoolsMcpForPlatform,
   prepareCodexBridge,
   prepareKnowledgeHost,
   prepareLinuxAsrRuntime,
   prepareWindowsCodexBridge,
+  prepareWindowsRustcStackWrapper,
   stageWindowsInstaller,
   stageWindowsOnnxRuntime,
   stageWindowsRuntime,
@@ -273,4 +571,5 @@ module.exports = {
   tauriRuntimeEnvironment,
   tauriCommandIndex,
   windowsBundleTargets,
+  windowsRustHostTriple,
 };

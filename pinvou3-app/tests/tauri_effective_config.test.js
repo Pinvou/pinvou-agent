@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -355,18 +356,51 @@ assert.deepEqual(
 );
 let tauriInvocation = null;
 const tauriEnvironment = { PINVOU_TEST_ENV: "kept" };
-assert.equal(
-  runTauri(["--version"], (command, args, options) => {
+const tauriLogs = [];
+const fakeTauriChild = new EventEmitter();
+fakeTauriChild.pid = 4242;
+let currentTime = 0;
+let heartbeatCallback = null;
+let heartbeatCleared = false;
+const tauriResult = runTauri(["build"], {
+  environment: tauriEnvironment,
+  spawnChild: (command, args, options) => {
     tauriInvocation = { command, args, options };
-    return { status: 0 };
-  }, tauriEnvironment),
-  0,
-);
+    return fakeTauriChild;
+  },
+  heartbeatIntervalMs: 60_000,
+  now: () => currentTime,
+  log: (message) => tauriLogs.push(message),
+  setIntervalFn: (callback, interval) => {
+    assert.equal(interval, 60_000);
+    heartbeatCallback = callback;
+    return { unref() {} };
+  },
+  clearIntervalFn: () => {
+    heartbeatCleared = true;
+  },
+});
 assert.equal(tauriInvocation.command, process.execPath);
 assert.match(tauriInvocation.args[0], /@tauri-apps[\\/]cli[\\/]tauri\.js$/);
-assert.equal(tauriInvocation.args[1], "--version");
+assert.equal(tauriInvocation.args[1], "build");
 assert.equal(tauriInvocation.options.env[WRAPPER_ENV], "1");
 assert.equal(tauriInvocation.options.env.PINVOU_TEST_ENV, "kept");
+assert.match(tauriLogs[0], /pid=4242, phase=build/);
+currentTime = 61_000;
+heartbeatCallback();
+assert.match(tauriLogs[1], /phase=build, elapsed=1m 1s/);
+fakeTauriChild.emit("exit", 0, null);
+assert.equal(heartbeatCleared, true, "the heartbeat must stop once the Tauri CLI exits");
+assert.match(tauriLogs[2], /phase=build, elapsed=1m 1s, exit=0/);
+async function verifyTauriExitCode() {
+  try {
+    assert.equal(await tauriResult, 0);
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
+}
+void verifyTauriExitCode();
 const ortEnvironment = tauriRuntimeEnvironment(
   { onnxRuntimeDylib: "C:\\runtime\\onnxruntime.dll" },
   tauriEnvironment,
