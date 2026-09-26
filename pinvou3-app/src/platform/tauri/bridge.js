@@ -906,6 +906,10 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     authoritySyncBufferSnapshot, bt,
     isDefaultChatTitle,
     notify,
+    // Lazy accessor: chat is installed before the voice feature below, so the
+    // function resolves the voice feature lazily; it is only ever called at
+    // runtime, well after both features exist.
+    voice: function () { return voiceFeature; },
     runSyncOnSession: function (...args) { return runSyncOnSession(...args); },
     startThinking: function (...args) { return startThinking(...args); },
     stopThinking: function (...args) { return stopThinking(...args); },
@@ -2427,6 +2431,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       setComposerDraft,
       retryFirstTurn,
       prefillComposer,
+      restoreTaskDraft: chatFeature.restoreTaskDraft,
       removeQueued,
       prioritizeQueued,
       editQueued,
@@ -2441,6 +2446,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       closeVoiceAsrSetup,
       cancelVoiceInput,
       clearVoiceInput,
+      abandonVoiceResult: voiceFeature.abandonVoiceResult,
+      getVoiceOperationId: voiceFeature.getVoiceOperationId,
+      beginVoiceSubmission: voiceFeature.beginVoiceSubmission,
+      completeVoiceSubmission: voiceFeature.completeVoiceSubmission,
+      dismissVoiceInput: voiceFeature.dismissVoiceInput,
       setVoiceShortcutEnabled,
       syncVoiceShortcutRecording,
       appendVoiceText,

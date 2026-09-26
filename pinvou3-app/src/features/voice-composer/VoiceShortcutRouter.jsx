@@ -214,12 +214,16 @@ function VoiceShortcutRouter({ enabled = true }) {
       // usually a WebView reload/restore rebuilt the JS session while the native registration
       // stayed (native clears it only on window destroy). Clear the stale registration and
       // drop this gesture; the next press routes by focused window again. Never ghost-open
-      // the mic in the background.
-      if (payload && payload.route === 'recording' && !recording) {
+      // the mic in the background. A recording-routed event whose claim token does not
+      // match this window's active ownership token is stale the same way: drop it.
+      if (payload && payload.route === 'recording'
+        && voiceInput.ownershipToken && voiceInput.ownershipToken !== payload.recording_token) return;
+      if (payload && payload.route === 'recording' && !recording
+        && status !== 'requesting_permission') {
         const bridge = tryGetTauriBridge();
         if (bridge && bridge.available
           && typeof bridge.voice.syncVoiceShortcutRecording === 'function') {
-          bridge.voice.syncVoiceShortcutRecording(null);
+          bridge.voice.syncVoiceShortcutRecording(null, payload.recording_token);
         }
         return;
       }
