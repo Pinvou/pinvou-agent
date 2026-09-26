@@ -279,10 +279,9 @@ export function AgentServiceFailureNotice({
   );
 }
 
-// Agent 侧运行时提示（非模型服务故障）：适配器把异常写在 stderr（例如
-// 「cancel floor … wedged」），或回合看门狗判定 Agent 长时间无响应并兜底
-// 收口。两者都需要用户知情，且都可以直接继续对话，因此用中性提示而不是
-// 红色故障卡。
+// Agent-side runtime notices are not model-service failures. They cover adapter
+// stderr diagnostics and host watchdog recovery. Both inform the user while
+// allowing the conversation to continue, so they use a neutral notice card.
 export function AgentRuntimeNotice({
   notice,
   agentName,

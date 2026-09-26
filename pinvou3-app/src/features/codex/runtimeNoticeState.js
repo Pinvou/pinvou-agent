@@ -48,8 +48,8 @@ export function classifyAcpServiceFailure(envelope) {
   };
 }
 
-// Agent 侧运行时提示：适配器自己的报错原文，以及宿主回合看门狗的兜底动作。
-// 它们不是「模型服务故障」，要表达的是「知情 + 可以继续」，因此单独一层。
+// Agent-side runtime notices cover adapter diagnostics and host watchdog recovery.
+// They are informational and recoverable rather than model-service failures.
 const AGENT_RUNTIME_NOTICE_KINDS = new Set([
   'agent_stderr',
   'agent_stall',
@@ -67,14 +67,14 @@ const PRE_TERMINAL_AGENT_NOTICE_KINDS = new Set([
 ]);
 
 /**
- * 最近一条 Agent 侧运行时提示。
+ * Return the latest agent-side runtime notice.
  *
- * 过期规则按「会话是否已经证明恢复正常」而不是「用户是否又发了消息」：
- * 提示本身就可能是在新消息的处理路径里产生的（重复卡死触发的会话重启），
- * 用更新的 `turn_started` 去清会把它立刻抹掉。因此在提示之后出现一个
- * **Completed** 的回合才算恢复。`agent_stall` / `agent_stall_cancel` 是回合尚在
- * 运行时的提示，任何结束态都会清除；收口、重启和 cancel-timeout 结果则跨中断
- * 保留，继续解释回合为何结束。用户也可以手动关掉。
+ * Expiration follows proven recovery, not merely another user message: a
+ * restart notice may itself be emitted while processing the next message, so a
+ * newer `turn_started` cannot clear it. A later **Completed** turn proves
+ * recovery. Pre-terminal `agent_stall` and `agent_stall_cancel` notices clear on
+ * any terminal event; settlement, restart, and cancel-timeout outcomes survive
+ * interrupted completion to explain why the turn ended. Users may also dismiss.
  */
 export function latestAgentRuntimeNotice(events) {
   if (!Array.isArray(events)) return null;
