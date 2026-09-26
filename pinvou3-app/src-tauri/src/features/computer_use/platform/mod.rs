@@ -9,10 +9,9 @@ pub(crate) use helpers::normalize_typed_newlines;
 // lines: the backends carry raw role/name strings so screening keeps seeing
 // them untruncated, and the bound is applied where the label is rendered.
 pub(crate) use helpers::sanitize_name;
-// The denylist verdict itself is taken inside platform/; this re-export exists
-// for the tool-layer regression test that pins screening against the raw,
-// untruncated accessible name.
-#[cfg(test)]
+// `screening_hit` is also consumed by the tool layer for the role: macOS
+// carries a free-form, app-supplied AXRole, and the streaming matcher keeps
+// a hostile multi-megabyte role from costing a proportional fold allocation.
 pub(crate) use helpers::screening_hit;
 #[cfg(target_os = "linux")]
 mod linux;
