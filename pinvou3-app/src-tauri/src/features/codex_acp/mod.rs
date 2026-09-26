@@ -103,6 +103,12 @@ pub use providers::{
 // `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
 // 列表，消除手工副本漂移；行为不变。
 pub use providers::CLAUDE_MODEL_SLOTS;
+// `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
+// facade re-export: the workspace git env scrubbing in the same-repo
+// `pinvou-cli` shares the exact key list with `strip_git_override_env`,
+// eliminating hand-copied drift (the CLI-side copy had drifted by three
+// keys); behavior is unchanged.
+pub use crate::platform::process::GIT_OVERRIDE_KEYS;
 // `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
 // 同一最低版本约束，消除手工副本漂移；行为不变。
 pub use runtime::MIN_CODEX_VERSION;

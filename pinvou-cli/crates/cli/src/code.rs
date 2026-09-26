@@ -61,8 +61,8 @@ use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
     AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS, CodexWorkspaceKind,
-    MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi,
-    SessionAgentStore,
+    GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager,
+    ProviderWireApi, SessionAgentStore,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -76,14 +76,29 @@ const AGENTS_USAGE: &str =
 const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code C|--code-env VAR|--code-stdin]  \
      (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
 const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: codex|claude|kimi)";
-const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
-     [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] [--model-slot SLOT=M]... [--context-window N] \
-     (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] [--model-slot SLOT=M]... [--context-window N] \
-     (--api-key-env V|--api-key-stdin|--delete-key --yes)|remove <id> --agent A --yes \
-     |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
-     |import --agent A <PATH>|probe <provider-id> --agent A>  \
-     (claude --model-slot SLOT: opus|sonnet|haiku|fable|subagent; add requires all five, \
-     a missing slot falls back to official traffic)";
+
+/// The providers usage string formats the claude model-slot list from the
+/// imported `CLAUDE_MODEL_SLOTS` instead of spelling the slot ids out: the
+/// pre-check error below and the store it mirrors both iterate that list, so
+/// a hardcoded copy in the usage text was the one remaining place a slot
+/// added app-side would silently fail to appear.
+fn providers_usage() -> String {
+    let slots: Vec<&str> = CLAUDE_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect();
+    format!(
+        "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
+         [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] \
+         [--model-slot SLOT=M]... [--context-window N] \
+         (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] \
+         [--model-slot SLOT=M]... [--context-window N] \
+         (--api-key-env V|--api-key-stdin|--delete-key --yes)|remove <id> --agent A --yes \
+         |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
+         |import --agent A <PATH>|probe <provider-id> --agent A>  \
+         (claude --model-slot SLOT: {}; add requires every slot, a missing slot falls back to \
+         official traffic)",
+        slots.join("|"),
+    )
+}
+
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
 const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M] --yes>";
 const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session> --yes>";
@@ -399,7 +414,7 @@ fn parse_agents(rest: &[String]) -> Result<CodeCommand, CliError> {
 fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
     let action = rest
         .first()
-        .ok_or_else(|| CliError::usage(PROVIDERS_USAGE))?;
+        .ok_or_else(|| CliError::usage(providers_usage()))?;
     let rest = &rest[1..];
     const AGENT: &str = "--agent";
     match action.as_str() {
@@ -425,7 +440,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 &["--api-key-stdin"],
                 "providers add",
             )?;
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             let name = option(&options, "--name").unwrap_or_default().to_owned();
             if name.trim().is_empty() {
                 return Err(CliError::usage("code providers add requires --name"));
@@ -482,7 +497,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "code providers update accepts one provider id",
                 ));
             }
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             if let Some(wire) = option(&options, "--wire-api") {
                 parse_wire_api_value(Some(wire))?;
             }
@@ -525,7 +540,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "code providers remove accepts one provider id",
                 ));
             }
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             Ok(CodeCommand::ProvidersRemove {
                 provider_id: provider_id.to_string(),
                 agent,
@@ -533,7 +548,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
             })
         }
         "switch" => {
-            let agent = require_agent(rest.first().map(String::as_str), PROVIDERS_USAGE)?;
+            let agent = require_agent(rest.first().map(String::as_str), &providers_usage())?;
             let provider_id = rest
                 .get(1)
                 .filter(|id| !id.is_empty())
@@ -545,7 +560,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
             Ok(CodeCommand::ProvidersSwitch { agent, provider_id })
         }
         "switch-official" => {
-            let agent = require_agent(rest.first().map(String::as_str), PROVIDERS_USAGE)?;
+            let agent = require_agent(rest.first().map(String::as_str), &providers_usage())?;
             if rest.len() > 1 {
                 return Err(CliError::usage(
                     "code providers switch-official accepts no options",
@@ -555,7 +570,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
         }
         "export" => {
             let (options, _, _) = parse_flags(rest, &[AGENT, "--output"], &[], "providers export")?;
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             Ok(CodeCommand::ProvidersExport {
                 agent,
                 output: option(&options, "--output").map(PathBuf::from),
@@ -573,7 +588,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "code providers import accepts one file path",
                 ));
             }
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             Ok(CodeCommand::ProvidersImport {
                 agent,
                 path: PathBuf::from(path),
@@ -591,13 +606,13 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "code providers probe accepts one provider id",
                 ));
             }
-            let agent = require_agent(options.get(AGENT).copied(), PROVIDERS_USAGE)?;
+            let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
             Ok(CodeCommand::ProvidersProbe {
                 provider_id: provider_id.to_string(),
                 agent,
             })
         }
-        _ => Err(CliError::usage(PROVIDERS_USAGE)),
+        _ => Err(CliError::usage(providers_usage())),
     }
 }
 
@@ -1154,14 +1169,15 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             output: destination,
         } => providers_export(&agent, destination, output),
         CodeCommand::ProvidersImport { agent, path } => providers_import(&agent, &path, output),
-        CodeCommand::ProvidersProbe { provider_id, agent } => {
-            let _ = (provider_id, agent);
-            Err(CliError::failed(
-                "code_probe_requires_product_host: the model probe spawns a disposable ACP \
+        // The parse lane already validated both fields (a missing provider id
+        // or agent is a usage error before this command is constructed), and
+        // the unconditional refusal below has no use for them, so the
+        // destructure ignores them rather than binding names nothing reads.
+        CodeCommand::ProvidersProbe { .. } => Err(CliError::failed(
+            "code_probe_requires_product_host: the model probe spawns a disposable ACP \
                  session through the product host (adapter process + async protocol client); \
                  not available headless",
-            ))
-        }
+        )),
         CodeCommand::SessionsList => code_sessions_list(output),
         CodeCommand::SessionsInfo { id } => code_sessions_info(&id, output),
         CodeCommand::SessionsTimeline { id } => code_sessions_timeline(&id, output),
@@ -2079,9 +2095,14 @@ enum LoginDrainEvent {
 /// that must run over a text slice, not a line.
 ///
 /// Nothing else from the stream is streamed live — only the URL and the code
-/// — and the authorization code this process wrote to the child's stdin is
-/// stripped from every scanned slice before matching, so a vendor CLI that
-/// echoes it back cannot get it re-emitted as a "device code".
+/// — and the authorization code is never re-emitted as a "device code". For
+/// the lanes that hold their code when the CLI is invoked (`--code` /
+/// `--code-env`, passed here in `code`), each scanned slice is stripped
+/// before matching, so a vendor CLI that echoes it back cannot have it
+/// re-emitted live. The `--code-stdin` lane cannot do that — the code has
+/// not been read yet while these scans run, so `code` is `None` here — and
+/// relies on the final-transcript strip alone instead (see the exact-value
+/// `strip_login_code` at the end of `code login`).
 fn spawn_login_drain<R: Read + Send + 'static>(
     agent: String,
     stream: LoginStream,
@@ -2724,19 +2745,38 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|error| CliError::failed(format!("code logout({agent}): {error}")))?;
-    let status = match child
-        .wait_timeout(Duration::from_secs(LOGOUT_TIMEOUT_SECS))
-        .map_err(|error| CliError::failed(format!("code logout({agent}): {error}")))?
-    {
-        Some(status) => status,
-        None => {
+    // The same kill guard the login flow brackets its child with
+    // (see `code login` above): `set_process_group` put this child in its
+    // own group, and `supervise` forwards a terminal SIGINT to that group
+    // while this flow is alive so this CLI's death cannot orphan the vendor
+    // child. Every exit below pairs the registration with a forget, so the
+    // pgid is never left registered for the OS to recycle onto an unrelated
+    // process (the same bracket `support/supervise.rs` documents for spawn
+    // sites).
+    crate::support::supervise::register_child_group(child.id());
+    let status = match child.wait_timeout(Duration::from_secs(LOGOUT_TIMEOUT_SECS)) {
+        Ok(status) => status,
+        Err(error) => {
+            // The wait itself failed; the child may still be running, so it
+            // goes down with the group like every other exit path.
             crate::support::kill_process_tree(&mut child);
-            return Err(CliError::failed(format!(
-                "code_logout_failed: {agent} logout did not finish within \
-                 {LOGOUT_TIMEOUT_SECS}s (killed)"
-            )));
+            crate::support::supervise::forget_child_group(child.id());
+            return Err(CliError::failed(format!("code logout({agent}): {error}")));
         }
     };
+    let Some(status) = status else {
+        // `kill_process_tree` signals the group and then reaps the child
+        // itself, so no zombie survives this path.
+        crate::support::kill_process_tree(&mut child);
+        crate::support::supervise::forget_child_group(child.id());
+        return Err(CliError::failed(format!(
+            "code_logout_failed: {agent} logout did not finish within \
+             {LOGOUT_TIMEOUT_SECS}s (killed)"
+        )));
+    };
+    // The child has exited and the wait has reaped it, so an interrupt from
+    // here on must not signal a group the OS may have already recycled.
+    crate::support::supervise::forget_child_group(child.id());
     if !status.success() {
         return Err(CliError::failed(format!(
             "code_logout_failed: {agent} logout command exited with {}",
@@ -4046,10 +4086,19 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
     Some((name?, email?))
 }
 
-/// Ambient `GIT_*` variables that *redirect* git at another repository or at
-/// another set of configuration files. Local mirror of the app's
-/// `platform::process::GIT_OVERRIDE_KEYS` (that module is `pub(crate)` inside
-/// the app crate and cannot be reached from this crate); keep the two in step.
+// The ambient `GIT_*` redirection list is imported, not mirrored: the
+// module-level `use` pulls `features::codex_acp::GIT_OVERRIDE_KEYS` (the
+// facade re-export of `platform::process::GIT_OVERRIDE_KEYS`, the exact list
+// the GUI workspace lane's `strip_git_override_env` removes). A former local
+// copy of the list in this file had already drifted three keys behind the
+// app's (`GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS`,
+// `GIT_EXTERNAL_DIFF`); importing it makes an app-side key addition break
+// this build instead of silently diverging — the same discipline as
+// `CLAUDE_MODEL_SLOTS` and `workspace::{SEARCH_LIMIT, PREVIEW_LIMIT, DIFF_LIMIT}`.
+
+/// Removes the ambient `GIT_*` variables that *redirect* git at another
+/// repository or at another set of configuration files — the CLI-side call
+/// of the app's `strip_git_override_env`, down to the same key list.
 ///
 /// Removing `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` is
 /// what makes the *user's own* `~/.gitconfig` and `/etc/gitconfig` apply, and
@@ -4058,37 +4107,25 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
 /// and value 0 are still removed to guard against injections that bypass
 /// `COUNT`).
 ///
+/// Beyond the config group, the imported list also drops the pathspec-magic
+/// trio — `GIT_LITERAL_PATHSPECS` (an ambient `1` makes the `--` pathspecs
+/// match literally, so a path containing git's `:(...)` prefix would
+/// silently select nothing), `GIT_NOGLOB_PATHSPECS` (a `1` makes the default
+/// no-glob), and `GIT_ICASE_PATHSPECS` (only broadens matching, the safe
+/// direction, but goes with its siblings so matching rules come from the
+/// command line rather than whatever the host exported) — plus
+/// `GIT_EXTERNAL_DIFF`, which replaces the diff driver with an arbitrary
+/// command.
+///
 /// A fixed list — deliberately not a `GIT_` prefix scan over `env::vars_os()`:
 /// iterating `environ` while another thread runs `setenv`/`remove_var` can
 /// silently miss entries (glibc environ mutation is not thread-safe), which is
 /// exactly how the app lost test isolation before it moved to a fixed list.
-const GIT_REDIRECTION_KEYS: [&str; 22] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_GRAFT_FILE",
-    "GIT_SHALLOW_FILE",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_TEMPLATE_DIR",
-    // Without GIT_LITERAL_PATHSPECS stripped, an ambient `1` would make the
-    // `--` pathspecs below match literally, so a path containing git's magic
-    // `:(...)` prefix would silently select nothing.
-    "GIT_LITERAL_PATHSPECS",
-    "GIT_CONFIG",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_CONFIG_NOSYSTEM",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_KEY_0",
-    "GIT_CONFIG_VALUE_0",
-];
+fn strip_git_redirection_env(command: &mut std::process::Command) {
+    for key in GIT_OVERRIDE_KEYS {
+        command.env_remove(key);
+    }
+}
 
 /// Identity/date variables. They outrank `-c user.name=` / `-c user.email=` on
 /// the command line, so only the commit lane removes them — see
@@ -4102,19 +4139,13 @@ const GIT_IDENTITY_KEYS: [&str; 6] = [
     "GIT_COMMITTER_DATE",
 ];
 
-/// Mirror of the app's `strip_git_override_env`.
-fn strip_git_redirection_env(command: &mut std::process::Command) {
-    for key in GIT_REDIRECTION_KEYS {
-        command.env_remove(key);
-    }
-}
-
 /// Every git call of the workspace read and mutate lanes (`rev-parse`,
 /// `status`, `diff`, `branch`, `checkout`, `stash`, `add`).
 ///
 /// These commands operate on the user's *real* working tree, so they must
 /// behave exactly like the git the user would run there — which is why this
-/// mirrors the GUI workspace lane (`codex_acp::workspace::git_output` →
+/// uses the same imported `GIT_OVERRIDE_KEYS` list the GUI workspace lane
+/// removes (`codex_acp::workspace::git_output` →
 /// `platform::process::strip_git_override_env`) rather than the checkpoint
 /// lane's shadow-repository hardening. Only the ambient redirection variables
 /// are removed; `~/.gitconfig` and `/etc/gitconfig` are left to apply.

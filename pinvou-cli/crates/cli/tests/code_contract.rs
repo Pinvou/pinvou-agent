@@ -1510,6 +1510,34 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     );
 }
 
+/// The git-environment isolation behind the CLI workspace lanes is the app's
+/// `GIT_OVERRIDE_KEYS`, imported through the `features::codex_acp` facade —
+/// not a local copy. A former local mirror in `code.rs` had drifted three
+/// keys behind the app's list (`GIT_NOGLOB_PATHSPECS`,
+/// `GIT_ICASE_PATHSPECS`, `GIT_EXTERNAL_DIFF`) with nothing enforcing the
+/// "keep the two in step" comment, and the drift was invisible: the only
+/// `git diff` call sites carry `--no-ext-diff`, so the missing keys could not
+/// be observed through behavior. This contract test pins that the imported
+/// list still carries the three keys the mirror lost, so an app-side removal
+/// (which would silently reintroduce the drift) turns the build's test run
+/// red instead.
+#[test]
+fn git_override_keys_kept_in_step_with_the_app_list() {
+    use pinvou3_lib::features::codex_acp::GIT_OVERRIDE_KEYS;
+
+    for key in [
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+        "GIT_EXTERNAL_DIFF",
+    ] {
+        assert!(
+            GIT_OVERRIDE_KEYS.contains(&key),
+            "the app's strip list no longer carries {key}; the CLI workspace lanes would \
+             silently lose the isolation a former local mirror had already lost"
+        );
+    }
+}
+
 /// The workspace read and mutate lanes act on the user's real checkout, so they
 /// must see the repository the user's own git sees — the GUI's contract
 /// (`codex_acp::workspace` → `platform::process::strip_git_override_env`).
