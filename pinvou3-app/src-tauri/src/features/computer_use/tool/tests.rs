@@ -4057,6 +4057,36 @@ async fn key_chord_text_length_is_capped() {
     );
 }
 
+/// confirm_id's length cap, same shape as the chord cap above: the id is
+/// model-supplied free text and is looked up in the approval-token map as
+/// given, so an uncapped string would be pure memory abuse (round-4 review
+/// finding). Real minted ids are far below the cap; over it is rejected as a
+/// parse error whose text does not echo the string.
+#[tokio::test]
+async fn confirm_id_length_is_capped() {
+    let (fixture, _restore) = fixture();
+    let oversized = "a".repeat(MAX_CONFIRM_ID_CHARS + 1);
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "confirm_id": oversized}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let error = match result {
+        Ok(r) => panic!("an oversized confirm_id must not parse: {r:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        error.contains("confirm_id exceeds"),
+        "expected the confirm_id cap error: {error}"
+    );
+    assert!(
+        !error.contains(&oversized),
+        "the cap error must not echo the oversized string: {error}"
+    );
+}
+
 /// The bounds returned by
 /// element_at_point must be in **screenshot pixel space** — a11y element
 /// rectangles are input/screen coordinates; when the screenshot's long edge

@@ -831,4 +831,52 @@ try {
   );
 }
 
+// ── Leaving to the draft screen must run the session-less refresh ──
+// The r2/r3 session-less branch fixed the stale slice, but until the fourth
+// round it had no production caller on the actual leave transition:
+// ChatView's effect early-returned on a null activeSessionId, so
+// createNewSession / leaveSessionView / delete all left the phantom banner
+// (and any unanswered dialog) rendered on the welcome composer. Like the
+// class pins above, the wiring can only be pinned at the source level — the
+// harness stubs the DOM and never mounts ChatView.
+{
+  const chatSource = readFileSync(
+    new URL('../src/features/chat/ChatView.jsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    chatSource,
+    /if \(!activeSessionId\) \{\s*bridge\.computerUse\.refreshStatus\(null\)/,
+    'leaving to the draft screen must fire the session-less refreshStatus',
+  );
+}
+
+// ── The unreadable-target sentinel must stay in step across languages ──
+// The sentinel is part of the approval-token binding (tool.rs owns the wire
+// value) and is localized at render time by split/join on the JS constant.
+// The two constants live in different languages with no shared module; if
+// they drift, the split silently stops matching and zh/ja dialogs fall back
+// to the raw English sentinel mid-label — invisible to any test on either
+// side alone (the Rust pins never render, the JS render pins never read the
+// Rust value). Same cross-language step pattern as `invisible_lists_stay_in_step`.
+{
+  const rustSource = readFileSync(
+    new URL('../src-tauri/src/features/computer_use/tool.rs', import.meta.url),
+    'utf8',
+  );
+  const consent = readFileSync(
+    new URL('../src/features/computer-use/ComputerUseConsent.jsx', import.meta.url),
+    'utf8',
+  );
+  const rustValue = rustSource.match(/UNREADABLE_TARGET_LABEL: &str = "([^"]+)"/)?.[1];
+  const jsValue = consent.match(/const UNREADABLE_TARGET = '([^']+)'/)?.[1];
+  assert.ok(rustValue, 'the Rust sentinel constant must be found');
+  assert.ok(jsValue, 'the JS sentinel constant must be found');
+  assert.equal(
+    jsValue,
+    rustValue,
+    'the JS sentinel must stay byte-identical to the wire value the token binds',
+  );
+}
+
 console.log('computer use consent dialog UI tests passed');

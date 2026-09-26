@@ -468,7 +468,11 @@ async fn screen_extents_strict(
 /// exclusive). Pure function, easy to unit-test.
 fn extents_contain(extents: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     let (wx, wy, ww, wh) = extents;
-    x >= wx && x < wx + ww && y >= wy && y < wy + wh
+    // saturating_add: the extents are app-reported and a hostile (or broken)
+    // window can name coordinates near i32::MAX; release builds wrap instead
+    // of panicking, which would corrupt the containment test in the
+    // attacker's favor.
+    x >= wx && x < wx.saturating_add(ww) && y >= wy && y < wy.saturating_add(wh)
 }
 
 /// All application top-level windows under the registry root (active or
@@ -806,8 +810,10 @@ async fn element_at_point_async(
         return Ok(Some(info));
     }
     // No window covered the point. If some window was undecidable, the answer
-    // is "query failure", not "nothing there" — the fault is only swallowed
-    // when another window answered.
+    // is "query failure", not "nothing there" — a definitive negative from
+    // another window (`continue` above) does not clear the fault, because the
+    // undecidable window may still have covered the point and "nothing here"
+    // from one window is not proof the point is empty.
     match first_fault {
         Some(error) => Err(error),
         None => Ok(None),

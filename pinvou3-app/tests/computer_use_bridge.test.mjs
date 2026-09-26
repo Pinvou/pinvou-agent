@@ -1128,6 +1128,41 @@ function emit(harness, event, payload) {
   );
 }
 
+// ── 35d. a deleted session's parked request must not resurface ──
+// The per-session pending map is what makes switch-back resurfacing work,
+// but nothing dropped an entry when its session was deleted, so a request
+// (including its full type preview) outlived the session for the whole
+// webview lifetime. The prune rides the status refresh — the deleted-
+// session helper in the shared bridge knows nothing about this module — and
+// must leave live sessions' entries untouched (the control half below).
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.sessions = [{ id: 's1' }, { id: 's2' }];
+  emit(harness, 'computer_use:grant_required', { session_id: 's2' });
+  // Control: a live background request resurfaces on switch-back.
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  const resurfaced = harness.published().at(-1);
+  assert.ok(
+    resurfaced && resurfaced.grantRequest && resurfaced.grantRequest.sessionId === 's2',
+    `control: a live parked request must resurface: ${JSON.stringify(resurfaced)}`,
+  );
+  // Delete s2 from the frontend state, run the session-less refresh the
+  // prune rides, and switch back: the deleted session's request must be gone.
+  harness.state.sessions = [{ id: 's1' }];
+  await harness.feature.refreshStatus(null);
+  await harness.feature.refreshStatus('s2');
+  const after = harness.published().at(-1);
+  assert.equal(
+    after && after.grantRequest,
+    null,
+    'a deleted session’s parked request must not resurface',
+  );
+}
+
 // ── 36. turning the feature off must clear the latched stop ──
 // The documented resume path is "turn it off and back on". Keeping `stopped`
 // set through the off step made the settings row tell a user who had just
