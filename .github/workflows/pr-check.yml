@@ -483,6 +483,13 @@ jobs:
       - name: Vite build
         run: npm run build:ui
 
+      # Web (relay) build: the startup-bundle layer and the web index contract
+      # test (tests/vite_static_assets_contract.test.mjs) only cover the web
+      # dist when it exists, so build it unconditionally here instead of
+      # relying on the diff-selected test:webui smoke.
+      - name: Vite web build (remote relay)
+        run: npm run build:web
+
       # Dist-layer compatibility audit (a marked@16-style lookbehind parse
       # regression is caught by exactly this layer); build:ui above already
       # produced dist/, while the contract test only covers static/inline layers.

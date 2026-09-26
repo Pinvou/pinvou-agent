@@ -13,8 +13,11 @@ const sourceRoot = resolve(import.meta.dirname, 'src');
 const staticExtensions = new Set([
   '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.png', '.svg', '.webp',
 ]);
-// Exported for scripts/audit-compat.mjs: the verbatim-copied runtime scripts
-// keep one shared list so the compatibility audit always matches the copy set.
+// Exported for scripts/audit-compat.mjs: this is the Safari-14 *audit* set —
+// the compatibility audit always audits these sources regardless of how the
+// build ships them (verbatim copy or merged into a dist/startup bundle), so
+// the minified-bundle layer never re-audits what the source layer already
+// pinned.
 export const staticRuntimeScripts = new Set([
   'features/attachments/attachment-drop-controller.js',
   'features/personas/personas-i18n.js',
@@ -235,9 +238,8 @@ export const staticRuntimeAssetPrefixes = [
   'file-icons/',
 ];
 
-function assertClassicRuntimeScriptsCopied(outputRoot) {
-  const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
-  for (const relative of localClassicScriptPaths(indexHtml)) {
+function assertClassicRuntimeScriptsCopied(outputRoot, webBuild) {
+  for (const relative of requiredVerbatimRuntimeScripts(webBuild)) {
     const source = resolveContainedRuntimePath(sourceRoot, relative);
     const target = resolveContainedRuntimePath(outputRoot, relative);
     if (!existsSync(source)) {
@@ -247,6 +249,65 @@ function assertClassicRuntimeScriptsCopied(outputRoot) {
       throw new Error(`Vite build is missing local classic runtime script: ${relative}`);
     }
   }
+  for (const relative of verbatimDroppedRuntimeScripts(webBuild)) {
+    if (existsSync(join(outputRoot, relative))) {
+      throw new Error(`Vite build shipped a dead verbatim copy of ${relative}: its code is served from dist/startup or was stripped for this platform`);
+    }
+  }
+}
+
+// Any script listed here keeps its verbatim copy in both builds' dist even
+// though index.html merges it into a startup bundle: pet.html still loads
+// model-service-errors.js as its own standalone tag, so dropping the copy
+// would break the pet entry.
+const bundledButStandaloneElsewhere = new Set([
+  'shared/model-service-errors.js',
+]);
+
+// Scripts whose verbatim copy dist actually needs in this build:
+//   - standalone tags the classic-bundle layer intentionally left unbundled
+//     (fail-closed even if a tag disappears from index.html);
+//   - scripts another entry (pet.html / reader.html) references directly.
+export function requiredVerbatimRuntimeScripts(webBuild) {
+  const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
+  const platformRetained = localClassicScriptPaths(indexHtml).filter((relative) =>
+    webBuild ? !relative.startsWith('platform/tauri/') : !relative.startsWith('platform/web/'));
+  return new Set(platformRetained.filter((relative) =>
+    startupBundleExcludedScripts.has(relative) || bundledButStandaloneElsewhere.has(relative)));
+}
+
+function listSourceFilesUnder(prefix) {
+  const dir = join(sourceRoot, prefix);
+  const files = [];
+  const visit = (entryDir) => {
+    for (const entry of readdirSync(entryDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) visit(join(entryDir, entry.name));
+      else files.push(prefix + entry.name);
+    }
+  };
+  visit(dir);
+  return files;
+}
+
+// Concrete source files that must NOT keep a verbatim copy in this build's
+// dist. Anything index.html references through a classic startup tag has its
+// code inside dist/startup, so a verbatim copy would ship the same source
+// twice (~350 kB of dead bytes per build); the other platform's scripts are
+// stripped from this build's index.html entirely, so their copies are equally
+// dead. audit-compat keeps auditing all of these at the source layer, so
+// dropping the copies does not weaken the Safari 14 audit.
+export function verbatimDroppedRuntimeScripts(webBuild) {
+  const dropped = new Set(classicStartupBundlePaths(webBuild));
+  dropped.delete('shared/model-service-errors.js');
+  const otherPlatformPrefix = webBuild ? 'platform/tauri/' : 'platform/web/';
+  for (const relative of staticRuntimeScripts) {
+    if (relative.startsWith(otherPlatformPrefix)) dropped.add(relative);
+  }
+  for (const prefix of staticRuntimeScriptPrefixes) {
+    if (!prefix.startsWith(otherPlatformPrefix)) continue;
+    for (const file of listSourceFilesUnder(prefix)) dropped.add(file);
+  }
+  return dropped;
 }
 
 function normalizeWebBasePath(value) {
@@ -260,13 +321,16 @@ function normalizeWebBasePath(value) {
 
 function copyRuntimeAssets() {
   let outputRoot;
+  let webBuild;
   return {
     name: 'pinvou-copy-runtime-assets',
     apply: 'build',
     configResolved(config) {
       outputRoot = resolve(config.root, config.build.outDir);
+      webBuild = config.mode === 'web';
     },
     closeBundle() {
+      const dropped = verbatimDroppedRuntimeScripts(webBuild);
       const visit = (dir) => {
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
           const source = join(dir, entry.name);
@@ -281,6 +345,10 @@ function copyRuntimeAssets() {
             && (staticRuntimeAssetPaths.has(relative)
               || staticRuntimeAssetPrefixes.some(prefix => relative.startsWith(prefix)));
           if (!isRuntimeScript && !isStringPathAsset) continue;
+          // Dropped scripts would ship the same source twice: their index.html
+          // tag resolves to a dist/startup bundle (or the other platform's
+          // build, stripped here), so the verbatim copy is dead bytes.
+          if (dropped.has(relative)) continue;
           const containedSource = resolveContainedRuntimePath(sourceRoot, relative);
           const target = resolveContainedRuntimePath(outputRoot, relative);
           mkdirSync(resolve(target, '..'), { recursive: true });
@@ -288,7 +356,7 @@ function copyRuntimeAssets() {
         }
       };
       if (existsSync(sourceRoot)) visit(sourceRoot);
-      assertClassicRuntimeScriptsCopied(outputRoot);
+      assertClassicRuntimeScriptsCopied(outputRoot, webBuild);
     },
   };
 }

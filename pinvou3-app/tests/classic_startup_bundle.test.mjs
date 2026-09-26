@@ -8,8 +8,10 @@ import { localClassicScriptPaths } from '../scripts/vite-runtime-assets.mjs';
 import {
   classicStartupBundlePaths,
   desktopPlatformMarkerScript,
+  requiredVerbatimRuntimeScripts,
   transformIndexHtmlForClassicBundle,
   transformIndexHtmlForPlatform,
+  verbatimDroppedRuntimeScripts,
 } from '../vite.config.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -106,4 +108,44 @@ test('classic transform fails closed when a declared source tag is absent', () =
     ),
     /shared\/bridge-messages\.js/u,
   );
+});
+
+test('verbatim runtime copy set excludes everything the startup bundles serve', () => {
+  // Independent expectation, deliberately not derived from vite.config.mjs.
+  // model-service-errors.js is bundled into the index.html startup packages
+  // but pet.html still references it directly, so its copy must survive in
+  // both builds; every other bundled or cross-platform script must be absent
+  // from the copy set, or the build ships the same source twice.
+  const requiredByPetEntry = new Set(['shared/model-service-errors.js']);
+  const intentionallyCopied = new Set([
+    'shared/legacy-polyfills.js',
+    'platform/web/bootstrap.js',
+    'features/updater/update-notice-logic.js',
+    ...requiredByPetEntry,
+  ]);
+  for (const webBuild of [false, true]) {
+    const required = requiredVerbatimRuntimeScripts(webBuild);
+    const dropped = verbatimDroppedRuntimeScripts(webBuild);
+    for (const relative of required) {
+      assert.ok(
+        intentionallyCopied.has(relative),
+        `${relative} keeps a verbatim copy; if that is intended, extend this pin`,
+      );
+      assert.ok(!dropped.has(relative), `${relative} cannot be both copied and dropped`);
+    }
+    for (const excluded of ['shared/legacy-polyfills.js', 'features/updater/update-notice-logic.js']) {
+      assert.ok(required.has(excluded), `${excluded} must stay fail-closed even if its tag disappears`);
+    }
+    if (webBuild) {
+      assert.ok(required.has('platform/web/bootstrap.js'), 'web build must keep the standalone bootstrap copy');
+    } else {
+      assert.ok(dropped.has('platform/web/bootstrap.js'), 'desktop build must drop the web bootstrap copy');
+      assert.ok(dropped.has('platform/tauri/bridge.js'), 'desktop build already serves bridge.js from dist/startup');
+      assert.ok(dropped.has('platform/tauri/bridge/sessions.js'), 'desktop build must drop a bridge fragment copy');
+      assert.ok(!dropped.has('shared/model-service-errors.js'), 'pet entry still needs model-service-errors.js');
+    }
+    for (const relative of dropped) {
+      assert.ok(!required.has(relative), `${relative} cannot be both copied and dropped`);
+    }
+  }
 });

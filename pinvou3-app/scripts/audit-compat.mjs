@@ -335,6 +335,29 @@ export function runAudit({ distDir = distRoot } = {}) {
     }
   }
 
+  // The web (relay) build shares the same Safari 14 cssTarget but its output
+  // lives in a separate tree (remote-control-relay/web/dist). When the web
+  // dist exists, its CSS and minified startup bundles fall under the same
+  // inset-shorthand / ES2021 audit as the desktop artifacts.
+  const webDistDir = resolve(appRoot, '../remote-control-relay/web/dist');
+  if (webDistDir !== resolve(distDir) && existsSync(webDistDir)) {
+    const webAssetsDir = join(webDistDir, 'assets');
+    if (existsSync(webAssetsDir)) {
+      violations.push(...auditDistCss(webAssetsDir));
+    }
+    const webStartupDir = join(webDistDir, 'startup');
+    if (existsSync(webStartupDir)) {
+      for (const name of readdirSync(webStartupDir)) {
+        if (!name.endsWith('.js')) continue;
+        violations.push(...auditSource(
+          `web-dist:startup/${name}`,
+          readFileSync(join(webStartupDir, name), 'utf8'),
+          { sourceType: 'script', syntaxOnly: true },
+        ));
+      }
+    }
+  }
+
   return violations;
 }
 
@@ -364,6 +387,14 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     && readdirSync(distStartupDir).some((name) => name.endsWith('.js'));
   if (!hasStartupBundles) {
     console.error('audit-compat: no startup bundles found in dist/startup — run `npm run build:ui` first');
+    process.exitCode = 1;
+  }
+  // Same fail-closed principle for the web dist: CI builds it in the same
+  // step (build:web) before this audit runs. Absent web artifacts mean the
+  // web CSS/bundle layer was never produced, not that it is clean.
+  const webDistAssetsDir = join(resolve(appRoot, '../remote-control-relay/web/dist'), 'assets');
+  if (!existsSync(join(webDistAssetsDir, '..', 'index.html'))) {
+    console.error('audit-compat: no web dist found under remote-control-relay/web/dist — run `npm run build:web` first');
     process.exitCode = 1;
   }
   if (violations.length) {
