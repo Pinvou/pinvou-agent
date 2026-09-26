@@ -219,6 +219,16 @@
             // on the welcome page — the same stale-state defect the `stopped`
             // fix above closed.
             granted: false,
+            // Same class, one field over: a grant or confirm REQUEST left in
+            // the slice kept the previous session's dialog floating over the
+            // draft composer, and its Allow button still worked from a screen
+            // the user believes is session-less. `clearSessionRequests`
+            // cannot be reused here — it publishes to the active session, and
+            // there is none — so the fields are nulled directly; the
+            // per-session pending map is untouched, so switching back to the
+            // session still resurfaces a live request via refreshStatus.
+            grantRequest: null,
+            confirmRequest: null,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           });
           notify();
