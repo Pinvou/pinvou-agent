@@ -253,9 +253,26 @@ const settingsResult = () => {
   return result;
 };
 const unsubscribeSettings = api.state.subscribe('settings', snapshot => { settingsSnapshots.push(snapshot); });
+const settingsAndModelsSnapshots = [];
+const unsubscribeSettingsAndModels = api.state.subscribeMany(
+  ['settings', 'models'],
+  snapshot => { settingsAndModelsSnapshots.push(snapshot); },
+);
 invokeResponse = async command => command === 'web_access_update_settings' ? settingsResult() : null;
 assert.equal(await api.settings.saveSettings({ language: 'en' }), true);
+// saveSettings may publish more than once; compare the last snapshot before
+// the chat-only publication with the one it delivers.
+const settingsBeforeChat = settingsSnapshots.length;
+const settingsAndModelsBeforeChat = settingsAndModelsSnapshots.length;
 api.chat.prefillComposer('same-settings-revision');
+assert.equal(settingsSnapshots.length, settingsBeforeChat + 1,
+  'a chat-only publication must still notify single-domain subscribers');
+assert.equal(settingsAndModelsSnapshots.length, settingsAndModelsBeforeChat + 1,
+  'a chat-only publication must still notify multi-domain subscribers');
+assert.equal(settingsSnapshots.at(-2), settingsSnapshots.at(-1),
+  'a chat-only publication must preserve an unrelated single-domain snapshot identity');
+assert.equal(settingsAndModelsSnapshots.at(-2), settingsAndModelsSnapshots.at(-1),
+  'a chat-only publication must preserve an unrelated multi-domain snapshot identity');
 const firstSettings = settingsSnapshots[0];
 const repeatedSettings = settingsSnapshots[1];
 assert.ok(Object.hasOwn(firstSettings.settings, '__proto__'));
@@ -276,6 +293,7 @@ assert.equal(changedSettings.settings['__proto__'].marker, 'own-value');
 assert.equal(Object.getPrototypeOf(changedSettings.settings).marker, undefined,
   'web copy-on-write updates must not route __proto__ through the prototype setter');
 unsubscribeSettings();
+unsubscribeSettingsAndModels();
 
 const memorySources = {
   profile: { available: true }, preferences: { available: true }, work_context: { available: true },

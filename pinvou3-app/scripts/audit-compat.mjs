@@ -15,6 +15,12 @@
 //   3. Runtime member/global APIs added after Safari 14.0 (.at(), findLast,
 //      copy-methods, Object.hasOwn, structuredClone, ...; Error `cause` needs
 //      Safari 15.0): parse-time clean but a TypeError the moment a code path runs.
+//   4. Compiled CSS assets: Tailwind's JIT and hand-written rules emit the
+//      `inset: <value>` shorthand (Safari 14.1+), and only the build's
+//      target-aware lightningcss pass expands it back to physical
+//      top/right/bottom/left properties. No source-level check can prove
+//      that pass ran with `cssTarget: 'safari14'` — a config change is
+//      silent — so the built artifact itself is what gets audited.
 //
 // Inputs: built chunks under dist/assets, plus the verbatim-copied static
 // runtime scripts and the inline <script> blocks of the HTML entries (the
@@ -136,7 +142,11 @@ function propertyName(member) {
   return null;
 }
 
-function auditSource(label, code, { sourceType = 'module', isPolyfillScript = false } = {}) {
+function auditSource(label, code, {
+  sourceType = 'module',
+  isPolyfillScript = false,
+  syntaxOnly = false,
+} = {}) {
   const violations = [];
   const suppressed = suppressedLines(code);
   let ast;
@@ -176,6 +186,11 @@ function auditSource(label, code, { sourceType = 'module', isPolyfillScript = fa
       }
       return;
     }
+    // Generated classic bundles are minified from the static sources audited
+    // above. Their source-level guarded-API markers are intentionally removed
+    // by minification, so this layer verifies emitted syntax and regex support;
+    // the source layer remains authoritative for API-baseline exceptions.
+    if (syntaxOnly) return;
     const callee = calleeOf(node);
     if (!callee) return;
     if (callee.kind === 'global') {
@@ -258,6 +273,30 @@ function collectStaticRuntimeScripts() {
   return files;
 }
 
+// Minified dist CSS is one huge line, so line numbers are useless; report a
+// whitespace-collapsed excerpt around each match instead. The match must be
+// a *declaration*: anchored to a declaration start (`{`, `;`, whitespace, or
+// string start), so the `--tw-ring-inset:` custom property and the
+// `.ring-inset` class name that Tailwind emits don't phantom-match.
+// `inset(` (clip-path function) and logical properties (`inset-inline:`)
+// don't match either: in both, `inset` is not followed by `:`.
+function auditDistCss(assetsDir) {
+  const violations = [];
+  for (const name of readdirSync(assetsDir)) {
+    if (!name.endsWith('.css')) continue;
+    const code = readFileSync(join(assetsDir, name), 'utf8');
+    const pattern = /(^|[{};\s])inset\s*:/g;
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      const excerpt = code.slice(Math.max(0, match.index - 40), match.index + 50).replaceAll(/\s+/g, ' ');
+      violations.push(
+        `dist:${name}:${lineOfOffset(code, match.index).line}: inset shorthand survives the build — Safari 14.0 cannot parse it (needs 14.1); context: …${excerpt}…`,
+      );
+    }
+  }
+  return violations;
+}
+
 export function runAudit({ distDir = distRoot } = {}) {
   const violations = [];
 
@@ -281,6 +320,42 @@ export function runAudit({ distDir = distRoot } = {}) {
       if (!name.endsWith('.js')) continue;
       violations.push(...auditSource(`dist:${name}`, readFileSync(join(assetsDir, name), 'utf8')));
     }
+    violations.push(...auditDistCss(assetsDir));
+  }
+
+  const classicStartupDir = join(distDir, 'startup');
+  if (existsSync(classicStartupDir)) {
+    for (const name of readdirSync(classicStartupDir)) {
+      if (!name.endsWith('.js')) continue;
+      violations.push(...auditSource(
+        `dist:startup/${name}`,
+        readFileSync(join(classicStartupDir, name), 'utf8'),
+        { sourceType: 'script', syntaxOnly: true },
+      ));
+    }
+  }
+
+  // The web (relay) build shares the same Safari 14 cssTarget but its output
+  // lives in a separate tree (remote-control-relay/web/dist). When the web
+  // dist exists, its CSS and minified startup bundles fall under the same
+  // inset-shorthand / ES2021 audit as the desktop artifacts.
+  const webDistDir = resolve(appRoot, '../remote-control-relay/web/dist');
+  if (webDistDir !== resolve(distDir) && existsSync(webDistDir)) {
+    const webAssetsDir = join(webDistDir, 'assets');
+    if (existsSync(webAssetsDir)) {
+      violations.push(...auditDistCss(webAssetsDir));
+    }
+    const webStartupDir = join(webDistDir, 'startup');
+    if (existsSync(webStartupDir)) {
+      for (const name of readdirSync(webStartupDir)) {
+        if (!name.endsWith('.js')) continue;
+        violations.push(...auditSource(
+          `web-dist:startup/${name}`,
+          readFileSync(join(webStartupDir, name), 'utf8'),
+          { sourceType: 'script', syntaxOnly: true },
+        ));
+      }
+    }
   }
 
   return violations;
@@ -288,18 +363,45 @@ export function runAudit({ distDir = distRoot } = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const violations = runAudit();
-  if (!existsSync(join(distRoot, 'assets'))) {
+  const distAssetsDir = join(distRoot, 'assets');
+  if (!existsSync(distAssetsDir)) {
     // Fail closed: the dist layer is the one that catches a marked@16-style
     // parse-time regression, so silently green-lighting without it would
     // defeat the gate. The static/inline layers were still audited above.
     console.error('audit-compat: dist/assets not found — run `npm run build:ui` first');
+    process.exitCode = 1;
+  } else {
+    // Same fail-closed principle for the CSS layer: a dist without CSS assets
+    // predates the current build and would silently skip the inset scan.
+    const hasCssAssets = readdirSync(distAssetsDir).some((name) => name.endsWith('.css'));
+    if (!hasCssAssets) {
+      console.error('audit-compat: no CSS assets found in dist/assets — run `npm run build:ui` first');
+      process.exitCode = 1;
+    }
+  }
+  // Same fail-closed principle for the generated classic startup bundles:
+  // runAudit only audits them when dist/startup exists, so a dist built
+  // without them would otherwise green-light without the minified layer.
+  const distStartupDir = join(distRoot, 'startup');
+  const hasStartupBundles = existsSync(distStartupDir)
+    && readdirSync(distStartupDir).some((name) => name.endsWith('.js'));
+  if (!hasStartupBundles) {
+    console.error('audit-compat: no startup bundles found in dist/startup — run `npm run build:ui` first');
+    process.exitCode = 1;
+  }
+  // Same fail-closed principle for the web dist: CI builds it in the same
+  // step (build:web) before this audit runs. Absent web artifacts mean the
+  // web CSS/bundle layer was never produced, not that it is clean.
+  const webDistAssetsDir = join(resolve(appRoot, '../remote-control-relay/web/dist'), 'assets');
+  if (!existsSync(join(webDistAssetsDir, '..', 'index.html'))) {
+    console.error('audit-compat: no web dist found under remote-control-relay/web/dist — run `npm run build:web` first');
     process.exitCode = 1;
   }
   if (violations.length) {
     console.error(`audit-compat: ${violations.length} violation(s) against the Safari 14 baseline:`);
     for (const violation of violations) console.error(`  ${violation}`);
     process.exitCode = 1;
-  } else {
+  } else if (!process.exitCode) {
     console.log('audit-compat: clean against the Safari 14 baseline');
   }
 }
