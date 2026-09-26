@@ -47,6 +47,27 @@
       for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
     }
 
+    // Drops the entries of sessions that no longer exist. `applyDeletedSession`
+    // lives in the shared session helpers and knows nothing about this module,
+    // so the pruning rides the status refresh instead: a deleted session's
+    // entry (including a full confirm request with its type preview) would
+    // otherwise outlive the session for the webview's lifetime. Entries for
+    // live sessions are untouched — the switch-back resurfacing relies on
+    // them.
+    // An ARCHIVED session is also dropped here (archiving removes it from
+    // state.sessions); its still-live backend pending resurfaces through the
+    // server-truth reconciliation in refreshStatus if the session is restored
+    // and re-entered, so nothing is lost — it just does not ride this map.
+    function pruneDeletedSessionPending() {
+      const sessions = (state && state.sessions) || null;
+      if (!sessions || !Array.isArray(sessions)) return;
+      for (const key of Object.keys(pendingBySession)) {
+        if (sessions.every(function (session) { return !(session && session.id === key); })) {
+          delete pendingBySession[key];
+        }
+      }
+    }
+
     // Drops requests that belong to `sessionId` from the published slice.
     // pendingBySession is intentionally untouched: switching back to the
     // session must resurface them via refreshStatus. Pure state operation
@@ -205,6 +226,7 @@
         // (its platformSupported grey-out). A null raw means the backend
         // predates the session-less form — leave the slice untouched.
         if (raw) {
+          pruneDeletedSessionPending();
           state.computerUse = Object.assign({}, state.computerUse, {
             enabled: !!raw.enabled,
             // `stopped` is a process-global flag the backend reports for an
@@ -235,6 +257,7 @@
         }
         return raw;
       }
+      pruneDeletedSessionPending();
       reconcileServerTruth(sid, raw, snapshotAt);
       const pending = pendingBySession[sid] || null;
       publish(sid, {

@@ -134,6 +134,7 @@ fn is_invisible_formatting(c: char) -> bool {
         '\u{00AD}'
         | '\u{034F}'
         | '\u{061C}'
+        | '\u{070F}'
         | '\u{115F}'..='\u{1160}'
         | '\u{17B4}'..='\u{17B5}'
         | '\u{180B}'..='\u{180F}'
@@ -553,18 +554,27 @@ mod tests {
         assert_eq!(sanitize_name("D\u{00AD}elete", 80), "Delete");
         // The rest of the default-ignorable families: all render as nothing,
         // all used to survive. The Tag block in particular is the canonical
-        // invisible-text carrier.
+        // invisible-text carrier. The U+206A/U+FFF0-class and U+070F
+        // members are pinned behaviorally here (not only by the source-level
+        // step test) because the round-3 mutation check showed the sanitize
+        // suite stayed green under a display-side range removal.
         for invisible in [
             '\u{034F}',
+            '\u{070F}',
             '\u{115F}',
             '\u{1160}',
             '\u{180B}',
             '\u{2065}',
+            '\u{206A}',
+            '\u{206F}',
             '\u{3164}',
             '\u{FE00}',
             '\u{FE0F}',
             '\u{FFA0}',
+            '\u{FFF0}',
+            '\u{FFF8}',
             '\u{FFF9}',
+            '\u{1BCA0}',
             '\u{1D173}',
             '\u{E0001}',
             '\u{E0041}',

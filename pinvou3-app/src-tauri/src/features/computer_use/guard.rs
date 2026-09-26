@@ -212,6 +212,13 @@ pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
 /// default-ignorable range both this list and its display-side twin in
 /// `platform::helpers` need the arm (`invisible_lists_stay_in_step` keeps the
 /// two in step but cannot see a family missing from both).
+///
+/// One deliberate non-default-ignorable member: `U+070F SYRIAC ABBREVIATION
+/// MARK` is category Cf and renders with zero advance through font fallback
+/// (CoreText falls back to a Syriac font and the mark measures 0), so
+/// `De⟨U+070F⟩lete` displays as plain "Delete" while splitting the term. It
+/// is not `Default_Ignorable_Code_Point`, which is why a coverage diff
+/// against that property misses it.
 fn is_invisible_for_matching(c: char) -> bool {
     c.is_control()
         || c.is_whitespace()
@@ -219,6 +226,7 @@ fn is_invisible_for_matching(c: char) -> bool {
             '\u{00AD}'
             | '\u{034F}'
             | '\u{061C}'
+            | '\u{070F}'
             | '\u{115F}'..='\u{1160}'
             | '\u{17B4}'..='\u{17B5}'
             | '\u{180B}'..='\u{180F}'
@@ -243,6 +251,16 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// Maps a character to the Latin letter it is visually indistinguishable
 /// from.
 ///
+/// Every arm is a **lowercase** character: the pipeline lowercases before
+/// folding (see [`fold_for_matching`]), so the uppercase sibling of an armed
+/// character is covered by construction. The arms used to sit before the
+/// lowercase and enumerated each case by hand — every round-3 addition
+/// (`ш ԝ Ь ү հ ց ɩ ւ ℮ þ ƿ γ`) shipped lowercase-only, which left the
+/// uppercase siblings (`paҮ`, `Ьuy` was caught but `paҮ`-class arms like
+/// `buҮ`'s capital were not, `Þay`, `Шithdraw`, `Ԝithdraw`, `dՕnate`,
+/// `witՀdraw`, `aՑree`, `TopⲺup`) screening Clear while rendering as the
+/// plain ASCII label.
+///
 /// This covers only the homoglyphs that have no Unicode compatibility
 /// decomposition and therefore survive the NFKC pass in
 /// [`fold_for_matching`]: the Cyrillic, Greek and same-script Latin letters
@@ -261,7 +279,9 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// The Latin small-capital series is folded as one family: each is
 /// NFKC-stable, and a label that spells a term with them (`ꜱᴇɴᴅ`, `ᴅᴇʟᴇᴛᴇ`)
 /// reads as the plain uppercase term to the user, so folding them is the
-/// honest match, not a false positive.
+/// honest match, not a false positive. Every plain-letter member of the
+/// series is armed (`ʙ`/`ᴃ`, `ʜ`, `ᴊ`, `ᴎ`, `ᴠ`, `ᴢ` included, which carry no
+/// current term but keep the family claim true).
 ///
 /// The accepted cost is a false-positive surface on real Cyrillic text:
 /// `р`→`p`, `а`→`a` and `у`→`y` together fold the common word `Раунд`
@@ -274,7 +294,15 @@ fn is_invisible_for_matching(c: char) -> bool {
 ///
 /// It is a best-effort subset, not a complete confusable table: the full
 /// relation is UTS#39's, and a determined attacker can still find a glyph pair
-/// this misses. It raises the cost of the demonstrated single-substitution
+/// this misses. Deliberately unmapped remainders: the o-shaped σ/Σ (and the
+/// mathematical sigma variants NFKC folds onto them), the `I`/`l` split
+/// (Latin `I`, `Ι`, fullwidth and mathematical `I` all lowercase to `i`, so
+/// `deΙete` is defended while `deΙete`-for-`delete`'s `l` is not — one glyph
+/// serves two term letters and `i` defends more terms), the digit `1`/`l`
+/// dilemma, `υ` (armed to `y` with `Υ`, not to the `u` UTS#39 also assigns
+/// it), and the letters of living scripts whose real text would
+/// false-positive (Arabic, Hebrew, Hangul, the Indic digits' `0`→`o` class).
+/// It raises the cost of the demonstrated single-substitution
 /// evasions; it does not make them impossible.
 fn fold_confusable(c: char) -> char {
     match c {
@@ -283,62 +311,72 @@ fn fold_confusable(c: char) -> char {
         // Same class against `top-up`: UTS#39 maps each of these to a bare
         // hyphen, and NFKC leaves every one alone.
         '\u{02D7}' | '\u{06D4}' | '\u{2043}' | '\u{2CBB}' => '-',
-        // Cyrillic look-alikes (lowercase and uppercase folded to lowercase
-        // Latin; the caller lowercases afterwards either way).
-        'а' | 'А' => 'a',
+        // Cyrillic look-alikes (lowercase; uppercase siblings arrive here
+        // already lowercased by the pipeline).
+        'а' => 'a',
         'ԁ' => 'd',
         'ӏ' | 'Ӏ' => 'l',
-        'в' | 'В' => 'b',
-        'с' | 'С' => 'c',
-        'е' | 'Е' | 'ё' | 'Ё' => 'e',
-        'һ' | 'Һ' => 'h',
-        'н' | 'Н' => 'h',
-        'і' | 'І' => 'i',
-        'ј' | 'Ј' => 'j',
-        'к' | 'К' => 'k',
-        'м' | 'М' => 'm',
-        'о' | 'О' => 'o',
-        'р' | 'Р' => 'p',
-        'ѕ' | 'Ѕ' => 's',
-        'т' | 'Т' => 't',
-        'у' | 'У' => 'y',
-        'х' | 'Х' => 'x',
-        'ѡ' | 'Ѡ' => 'w',
+        'в' => 'b',
+        // The soft sign: UTS#39 assigns both cases to `b` (`Ьuy`); the arm
+        // sits on the lowercase the pipeline actually delivers.
+        'ь' => 'b',
+        'с' => 'c',
+        'е' | 'ё' => 'e',
+        'һ' => 'h',
+        'н' => 'h',
+        'і' => 'i',
+        'ј' => 'j',
+        'к' => 'k',
+        'м' => 'm',
+        'о' => 'o',
+        'р' => 'p',
+        'ѕ' => 's',
+        'т' => 't',
+        'у' => 'y',
+        'х' => 'x',
+        'ѡ' => 'w',
         // More Cyrillic look-alikes whose UTS#39 skeleton is a single Latin
         // letter (third review round): sha ш and we ԝ both render as `w`
-        // (`шithdraw`, `ԝithdraw`), soft sign Ь as `b` (`Ьuy`), and straight
-        // u ү as `y` (`pүy`).
+        // (`шithdraw`, `ԝithdraw`), and straight u ү as `y` (`pүy`).
         'ш' => 'w',
         'ԝ' => 'w',
-        'Ь' => 'b',
         'ү' => 'y',
-        // Greek look-alikes.
-        'α' | 'Α' => 'a',
-        'Β' => 'b',
-        'ε' | 'Ε' => 'e',
-        'Η' => 'h',
-        'ι' | 'Ι' => 'i',
-        'κ' | 'Κ' => 'k',
-        'Μ' => 'm',
-        'Ν' => 'n',
-        'ο' | 'Ο' => 'o',
-        'ρ' | 'Ρ' => 'p',
+        // Greek look-alikes. `β`/`η`/`μ`/`ν`/`ζ` arm the lowercase forms of
+        // the capitals this table always caught (`Βuy`, `witΗdraw`,
+        // `suΜmit`, `seΝd`); UTS#39 assigns only the capitals a Latin
+        // skeleton, but after the pipeline's lowercase only the small forms
+        // arrive, and dropping them would have reopened those payloads. No
+        // natural Greek word folds onto a denylist term through them: every
+        // term needs a letter Greek cannot supply unaccented (`d`/`s`-class)
+        // or two c-shaped sigmas, and a mid-word ς does not occur.
+        'β' => 'b',
+        'η' => 'h',
+        'μ' => 'm',
+        'ν' => 'n',
+        'ζ' => 'z',
+        'α' => 'a',
+        'ε' => 'e',
+        'ι' => 'i',
+        'κ' => 'k',
+        'ο' => 'o',
+        'ρ' => 'p',
         // The c-shaped sigmas: U+03F2 (lunate) NFKC-composes to U+03C2
-        // (final sigma, NFKC-stable — the form this match sees), and both
-        // render as `c` in sans-serif fonts. The o-shaped σ/Σ are left
-        // alone: mapping them would false-positive on every real Greek
-        // word, and NFKC has already merged the capital lunate sigma (Ϲ)
-        // into Σ, so it is not separable.
+        // (final sigma, NFKC-stable), and both render as `c` in sans-serif
+        // fonts. The capital lunate Ϲ lowers to U+03F2 before NFKC (the
+        // pipeline lowercases first), so `aϹϹept` lands on this arm too —
+        // under the old fold-then-lowercase order NFKC merged it into the
+        // o-shaped Σ and the payload screened Clear. The o-shaped σ/Σ stay
+        // unmapped: mapping them would false-positive on every real Greek
+        // word.
         '\u{03C2}' | '\u{03F2}' => 'c',
-        'τ' | 'Τ' => 't',
-        'υ' | 'Υ' => 'y',
-        'χ' | 'Χ' => 'x',
-        'Ζ' => 'z',
+        'τ' => 't',
+        'υ' => 'y',
+        'χ' => 'x',
         // The w-shaped omegas: lowercase omega is common in real Greek, but
         // it maps to `w`, which only the Latin term `withdraw` carries — no
         // natural Greek word folds onto it, so this stays on the mapped side
         // of the σ/Σ decision.
-        'ω' | 'Ω' => 'w',
+        'ω' => 'w',
         // Greek gamma: renders as `y` (`pγy`). Natural Greek words do not
         // fold onto a denylist term through it — only `pay`/`buy` carry a
         // `y`, and no Greek word is "p" or "b" + gamma.
@@ -351,6 +389,17 @@ fn fold_confusable(c: char) -> char {
         // Latin iota and Armenian yiwn: `i`-shaped (`submɩt`, `submիt`).
         'ɩ' => 'i',
         'ւ' => 'i',
+        // Armenian completion: UTS#39 maps these to `w`, `n`, `n`, `u` and
+        // `f` (`աithdraw`, `seոd`, `seռd`, `pսrchase`, `քormat`). With the
+        // already-armed հ/ց/ւ/օ the Armenian set is {w h n u f g i o}; no
+        // denylist term is spellable from those letters alone — every term
+        // needs at least one of a/e/d/t/s/m/p/k — so real Armenian text
+        // cannot fold onto one.
+        'ա' => 'w',
+        'ո' => 'n',
+        'ռ' => 'n',
+        'ս' => 'u',
+        'ք' => 'f',
         // Armenian ho and co: `h`- and `g`-shaped (`witհdraw`, `purcհase`,
         // `aցree`). Armenian text does not fold onto a denylist term: the
         // mapped letters only ever appear inside Latin terms.
@@ -364,34 +413,81 @@ fn fold_confusable(c: char) -> char {
         // vowel, which no denylist `p` term is.
         'þ' => 'p',
         'ƿ' => 'p',
-        // Latin small capitals (NFKC-stable, one per Latin letter).
+        // Latin small capitals (NFKC-stable, one per plain Latin letter).
         'ᴀ' => 'a',
+        'ʙ' => 'b',
+        'ᴃ' => 'b',
         'ᴄ' => 'c',
         'ᴅ' => 'd',
         'ᴇ' => 'e',
         'ꜰ' => 'f',
         'ɢ' => 'g',
+        'ʜ' => 'h',
         'ɪ' => 'i',
+        'ᴊ' => 'j',
         'ᴋ' => 'k',
         'ʟ' => 'l',
         'ᴍ' => 'm',
+        // U+0274 and U+1D0E are two encodings of the same small capital N.
         'ɴ' => 'n',
+        'ᴎ' => 'n',
         'ᴏ' => 'o',
         'ᴘ' => 'p',
         'ʀ' => 'r',
         'ꜱ' => 's',
         'ᴛ' => 't',
         'ᴜ' => 'u',
+        'ᴠ' => 'v',
         'ᴡ' => 'w',
         'ʏ' => 'y',
+        'ᴢ' => 'z',
+        // Cherokee syllabary letters UTS#39 maps to a single term letter —
+        // whole-letterform substitutions (`ꮟuy`, `witꮒdraw`, `ꮷelete`). The
+        // arms sit on the **small** syllabary forms: the capitals (Ꮟ-class)
+        // lowercase to them before the fold, Cherokee renders as plain
+        // Latin-grade glyphs through the platform's fallback fonts, and no
+        // Cherokee word folds onto a denylist term — the armed set
+        // {i h b d r w s c} is missing at least one letter of every term
+        // (a/e/t/u/n/o/m/f/p/y/g/k/l).
+        'ꭵ' => 'i',
+        'ꮒ' => 'h',
+        'ꮟ' => 'b',
+        'ꮷ' => 'd',
+        'ꮁ' => 'r',
+        'ꮃ' => 'w',
+        'ꮤ' => 'w',
+        'ꮪ' => 's',
+        'ꮯ' => 'c',
+        // Coptic letters UTS#39 maps to a single term letter (`ⲣay`,
+        // `aⲥcept`, `ⲟrder now`). Coptic is liturgical and its fallback
+        // rendering is a plain letter; no Coptic word folds onto a term for
+        // the same missing-letter reason as Cherokee above.
+        'ϭ' => 'o',
+        'ⲅ' => 'r',
+        'ⲓ' => 'i',
+        'ⲟ' => 'o',
+        'ⲣ' => 'p',
+        'ⲥ' => 'c',
+        'ⲩ' => 'y',
+        'ⲽ' => 'w',
+        'ⳏ' => 'p',
+        // Canadian syllabics and Lisu letters UTS#39 maps to a single term
+        // letter (`ᑲuy`, `ᖯuy`, `ꓒiscard`, `deꓲete`) — the same
+        // whole-letterform class as Cherokee, with the same missing-letter
+        // argument ({d b} and {d l} alone spell no term).
+        'ᑯ' => 'd',
+        'ᑲ' => 'b',
+        'ᖯ' => 'b',
+        'ꓒ' => 'd',
+        'ꓲ' => 'l',
         other => other,
     }
 }
 
 /// Folds text for denylist matching: drops everything invisible (controls,
-/// whitespace, zero-width, bidi and default-ignorable formatting), applies
-/// NFKC, maps the remaining cross-script confusables to Latin, then
-/// lowercases.
+/// whitespace, zero-width, bidi and default-ignorable formatting), lowercases,
+/// applies NFKC, maps the remaining cross-script confusables to Latin, and
+/// finally drops the invisible characters that only case folding can produce.
 ///
 /// Each step closes a demonstrated evasion of the plain `to_lowercase()` match
 /// this replaces. A hostile `aria-label` only had to carry a zero-width space
@@ -401,6 +497,32 @@ fn fold_confusable(c: char) -> char {
 /// folding them to a space also closes the inverse hole, where space-folding a
 /// C0 character split a term the matcher would have found.
 ///
+/// The lowercase runs **before** NFKC and the fold: an arm that sits before
+/// the lowercase only ever fires for the exact case it was written for, which
+/// is how every round-3 fold arm shipped lowercase-only and left its
+/// uppercase sibling unarmed (`paҮ` folded to `paү` — the armed character —
+/// *after* the fold had passed). Lowercasing first makes every arm
+/// case-agnostic by construction; the small arms the capitals now need
+/// (`β η μ ν ζ ь`) are the lowercase forms of characters the table always
+/// caught, and the capital lunate sigma Ϲ now lowers to the c-shaped ϲ before
+/// NFKC can merge it into the o-shaped Σ, so `aϹϹept` is caught instead of
+/// screening Clear.
+///
+/// Both the lowercase and the NFKC run **twice**, because each order alone
+/// loses a family:
+///
+/// - Rust's `char::to_lowercase` leaves the astral Math Alphanumeric capitals
+///   alone (`𝐃` lowercases to `𝐃`, not `𝐝`), so a single lowercase-first
+///   pass hands NFKC an uppercase `D` and `𝐃𝐞𝐥𝐞𝐭𝐞` — pinned since the
+///   first round — folded to `Delete` and screened Clear. The first NFKC
+///   brings the compatibility capitals down to ASCII, and the second
+///   lowercase maps them.
+/// - A single NFKC-first pass instead merges Ϲ into Σ before any lowercase
+///   sees it, which is precisely the `aϹϹept` hole above.
+///
+/// Both operations are idempotent, so doubling them changes nothing for text
+/// that needed only one pass.
+///
 /// NFKC runs **after** the invisible filter so a spliced default-ignorable
 /// cannot block a compatibility composition, and it is what collapses the
 /// whole-block substitutions a per-character table would have to enumerate
@@ -408,21 +530,48 @@ fn fold_confusable(c: char) -> char {
 /// (fullwidth), `Ⓓⓔⓛⓔⓣⓔ` (circled), `ﾌｫｰﾏｯﾄ` (halfwidth katakana) and the
 /// CJK compatibility ideographs all fold to their ordinary forms.
 ///
+/// The final [`is_post_composition_invisible`] pass is matching-side only:
+/// the user still sees the mark, so the consent dialog names what their eyes
+/// see while the matcher reads through it (the safe divergence — an extra
+/// dialog, never a missed one).
+///
 /// This is not a complete confusable defence and is not meant to be read as
 /// one: combining marks are left in place (they are *visible*, so they change
-/// what the user sees rather than hiding from them), and the cross-script
-/// table in [`fold_confusable`] is a subset of UTS#39's relation. The
-/// guarantee is that the demonstrated evasion families cost more than one
-/// code point, not that no glyph substitution can succeed.
+/// what the user sees rather than hiding from them — the one exception is the
+/// İ-dot below), and the cross-script table in [`fold_confusable`] is a
+/// subset of UTS#39's relation. The guarantee is that the demonstrated
+/// evasion families cost more than one code point, not that no glyph
+/// substitution can succeed.
 pub fn fold_for_matching(text: &str) -> String {
     use unicode_normalization::UnicodeNormalization as _;
 
     text.chars()
         .filter(|c| !is_invisible_for_matching(*c))
+        .flat_map(char::to_lowercase)
+        .nfkc()
+        .flat_map(char::to_lowercase)
         .nfkc()
         .map(fold_confusable)
-        .flat_map(char::to_lowercase)
+        .filter(|c| !is_post_composition_invisible(*c))
         .collect()
+}
+
+/// Characters that only a case fold or a compatibility composition can
+/// produce and that render as (near-)nothing: currently just `U+0307
+/// COMBINING DOT ABOVE`.
+///
+/// `İ` (U+0130) lowercases to `i` + `U+0307`, and the same expansion is what
+/// NFKC leaves behind for the decomposed forms, so without this pass
+/// `submİt`/`submi̇t` folded to `submi̇t` — an undeletable dot splitting the
+/// term at exactly the position the dotless-ı arm had closed. The dot cannot
+/// go into the shared invisible lists: it is a *visible* combining mark that
+/// real text uses (NFD Lithuanian `ė`, Turkish labels), and the display side
+/// must keep it so the consent dialog shows the label as the user sees it.
+/// Stripping it on the matching side only is the safe divergence: screening
+/// reads `submit` and raises the dialog, the dialog still shows the dotted
+/// label the user decides on.
+fn is_post_composition_invisible(c: char) -> bool {
+    matches!(c, '\u{0307}')
 }
 
 /// Whether a label hits the T3 consequential denylist.
@@ -508,7 +657,7 @@ pub enum GuardRejection {
     /// deny/stop/disable/expiry all clear the pending and unblock.
     ///
     /// The block is process-wide rather than per-session because the dialog
-    /// is a process-global window and physical input is a process-global
+    /// occupies the shared screen and physical input is a process-global
     /// device: a per-session block left a second granted session free to
     /// click the first session's "Allow this once" and mint its approval,
     /// which is the same self-approval hole one indirection further out.
@@ -895,10 +1044,12 @@ impl ComputerUseShared {
     /// TTL'd-out dialog cannot block input until some other path happens to
     /// clear it.
     ///
-    /// Deliberately not scoped to the calling session: the consent dialog is
-    /// a process-global window and physical input is a process-global device,
-    /// so a per-session block let a second granted session click the first
-    /// session's approve control (see [`GuardRejection::ConfirmationPending`]).
+    /// Deliberately not scoped to the calling session: the consent dialog
+    /// occupies the shared screen (it renders in the owning session's view,
+    /// but physical input is a process-global device any session's model can
+    /// steer), so a per-session block let a second granted session click the
+    /// first session's approve control (see
+    /// [`GuardRejection::ConfirmationPending`]).
     fn has_outstanding_pending(&self) -> bool {
         let mut consent = self.consent.lock();
         let now = Instant::now();
@@ -1007,6 +1158,36 @@ impl ComputerUseShared {
     /// before the tool emits `grant_required`).
     pub fn mark_grant_requested(&self, session_id: &str) {
         self.grant_requests.lock().insert(session_id.to_string());
+    }
+
+    /// [`Self::mark_grant_requested`], serialized against in-flight
+    /// injections: the caller runs on the executor thread **outside** the
+    /// physical-input lock, so a bare mark could pop the "Allow control"
+    /// dialog in the middle of another session's multi-event injection —
+    /// whose keystrokes are model-chosen, whose Tab/Return land as real key
+    /// events, and whose gate checks all happened before the dialog existed.
+    /// A granted session's own already-screened `type` could thus walk onto
+    /// the dialog and accept it — the same self-approval hole the global
+    /// gate exists to close, reached from underneath it.
+    ///
+    /// Holding the lock for the mark gives the grant gate the same invariant
+    /// the confirmation gate already has (a pending can only be minted from
+    /// inside the lock, so no dialog can appear under an in-flight
+    /// injection). Acquisition is the bounded [`Self::lock_physical_input`];
+    /// a legitimate action finishes far inside the bound, so the mark lands
+    /// between actions, where the gate's re-checks see it. A pathological
+    /// one (a maximum-length `type` against a slow injection backend) can
+    /// outrun the bound, in which case the mark lands mid-injection anyway —
+    /// the deliberate fail-safe, since an unanswered request must never be
+    /// withheld because the lock stayed busy.
+    pub fn mark_grant_requested_serialized(&self, session_id: &str) {
+        match self.lock_physical_input() {
+            // The guard lives to the end of the arm: the mark happens under
+            // the lock. A timed-out acquisition falls through — the dialog
+            // must never be withheld because the lock stayed busy.
+            Ok(_input) => self.mark_grant_requested(session_id),
+            Err(_) => self.mark_grant_requested(session_id),
+        }
     }
 
     /// Server truth for the consent UI: whether this session's grant
@@ -1565,6 +1746,7 @@ mod tests {
             "'\\u{00AD}'",
             "'\\u{034F}'",
             "'\\u{061C}'",
+            "'\\u{070F}'",
             "'\\u{115F}'..='\\u{1160}'",
             "'\\u{17B4}'..='\\u{17B5}'",
             "'\\u{180B}'..='\\u{180F}'",
@@ -1748,6 +1930,62 @@ mod tests {
             "De\u{1BCA0}lete", // shorthand format letter overlap
             "支\u{1BCA0}付",
             "初\u{206E}期化",
+            // Fourth review round: the Syriac abbreviation mark is Cf but not
+            // default-ignorable, so it slipped past every coverage diff
+            // against that property; through font fallback it renders with
+            // zero advance.
+            "De\u{070F}lete",
+            "支\u{070F}付",
+            // Fourth review round: the pipeline lowercases before NFKC and
+            // the fold now, so the uppercase sibling of every armed
+            // character is covered by construction — each of these screened
+            // Clear while folding ran first.
+            "pa\u{04AE}y", // Cyrillic capital straight u (Ү)
+            "bu\u{04AE}y",
+            "a\u{03F9}\u{03F9}ept", // capital lunate sigma (Ϲ) — NFKC used to merge it into the o-shaped Σ
+            "\u{044C}uy",           // Cyrillic small soft sign (Ь's lowercase)
+            "\u{00DE}ay",           // capital thorn (Þ)
+            "\u{01F7}ay",           // capital wynn (Ƿ)
+            "\u{0428}ithdraw",      // capital sha (Ш)
+            "\u{0500}elete",        // capital Komi de (Ԁ)
+            "\u{051C}ithdraw funds", // capital we (Ԝ)
+            "d\u{0555}nate",        // capital Armenian ho (Օ)
+            "wit\u{0540}draw",      // capital Armenian ho (Հ)
+            "a\u{0551}ree",         // capital Armenian co (Ց)
+            "Top\u{2CBA}up wallet", // capital Coptic dialect-p (Ⲻ; lowers to the armed ⲻ)
+            // Fourth review round: small-capital series completion and the
+            // letterform scripts UTS#39 maps to term letters.
+            "\u{1D03}uy", // small capital b (ᴃ) — the series doc claimed one per letter
+            "\u{0299}uy", // small capital b (ʙ)
+            "wit\u{029C}draw", // small capital h (ʜ)
+            "order\u{1D0E}ow", // small capital n (ᴎ)
+            "\u{13CF}uy", // Cherokee si (Ꮟ) for b
+            "wit\u{13C2}draw", // Cherokee ni (Ꮒ) for h
+            "\u{13E7}elete", // Cherokee tsu (Ꮷ) for d
+            "subscr\u{13A5}be", // Cherokee v (Ꭵ) for i
+            "\u{AB83}ithdraw", // Cherokee small la (ꮃ) for w
+            "\u{ABAA}ubscribe", // Cherokee small du (ꮪ) for s
+            "\u{ABAF}heckout", // Cherokee small tli (ꮯ) for c
+            "o\u{AB81}dernow", // Cherokee small hu (ꮁ) for r
+            "\u{1472}uy", // Canadian syllabics ka (ᑲ) for b
+            "\u{15AF}uy", // Canadian syllabics aivilik b (ᖯ)
+            "\u{146F}elete", // Canadian syllabics ko (ᑯ) for d
+            "\u{A4D2}iscard", // Lisu pha (ꓒ) for d
+            "de\u{A4F2}ete", // Lisu i (ꓲ) for l
+            "se\u{0578}d", // Armenian vo (ո) for n
+            "se\u{057C}d", // Armenian ra (ռ) for n
+            "p\u{057D}rchase", // Armenian seh (ս) for u
+            "\u{0561}ithdraw", // Armenian ayb (ա) for w
+            "\u{0584}ormat", // Armenian keh (ք) for f
+            "ꜱᴇɴᴅ",       // whole small-capital term
+            "ᴅᴇʟᴇᴛᴇ",     // whole small-capital term
+            // Fourth review round: the İ dot. Lowercasing İ produces i +
+            // U+0307, and NFKC leaves the sequence; without the
+            // post-composition pass the undeletable dot split every i-term.
+            "submi\u{0307}t",
+            "subm\u{0130}t",
+            "d\u{0130}scard",
+            "w\u{0130}thdraw",
             // Splitting and padding.
             "支 付",
             "D\u{0001}elete",
@@ -1755,6 +1993,74 @@ mod tests {
             assert!(
                 matches_t3_denylist(label),
                 "fold must see through this evasion: {label:?}"
+            );
+        }
+    }
+
+    /// Benign labels in the scripts the fold table arms letters from must
+    /// stay Clear — the fold's own documented false-positive posture
+    /// (`Раунд` is the one accepted Russian collision, via р→p а→a у→y).
+    /// Nothing here may match a denylist term; if a future arm breaks one of
+    /// these, that is a real false-positive surface change and the arm needs
+    /// the same kind of justification paragraph the table's comments carry.
+    #[test]
+    fn benign_foreign_labels_stay_clear() {
+        for label in [
+            "Начало работы", // Russian — О folds to o, but no term hides here
+            "Оплата услуги", // Russian "payment" — О armed, п/л are not
+            "Επιβεβαίωση",   // Greek "confirmation"
+            "Ρυθμίσεις",     // Greek "settings"
+            "հայերեն տեքստ", // Armenian text with the newly armed letters
+            "결제하기",      // Korean "pay" — Hangul never folds
+            "設定を開く",    // Japanese "open settings"
+            "確認",          // Chinese "confirm" — not 支付/提交 class
+        ] {
+            assert!(
+                !matches_t3_denylist(label),
+                "benign label must stay clear: {label:?}"
+            );
+        }
+    }
+
+    /// Every plain-letter Latin small capital folds to its ASCII letter: the
+    /// fold table's doc claims the series is armed one per letter, and a
+    /// missing member (`ᴃ` was, until the fourth round) both reopens the
+    /// `ᴃuy` evasion and makes that claim false. Letters with no denylist
+    /// term (`j v x z`-class) are armed to keep the claim true.
+    #[test]
+    fn small_capital_series_folds_to_its_letter() {
+        for (small, plain) in [
+            ('ᴀ', 'a'),
+            ('ʙ', 'b'),
+            ('ᴃ', 'b'),
+            ('ᴄ', 'c'),
+            ('ᴅ', 'd'),
+            ('ᴇ', 'e'),
+            ('ꜰ', 'f'),
+            ('ɢ', 'g'),
+            ('ʜ', 'h'),
+            ('ɪ', 'i'),
+            ('ᴊ', 'j'),
+            ('ᴋ', 'k'),
+            ('ʟ', 'l'),
+            ('ᴍ', 'm'),
+            ('ɴ', 'n'),
+            ('ᴎ', 'n'),
+            ('ᴏ', 'o'),
+            ('ᴘ', 'p'),
+            ('ʀ', 'r'),
+            ('ꜱ', 's'),
+            ('ᴛ', 't'),
+            ('ᴜ', 'u'),
+            ('ᴠ', 'v'),
+            ('ᴡ', 'w'),
+            ('ʏ', 'y'),
+            ('ᴢ', 'z'),
+        ] {
+            assert_eq!(
+                fold_for_matching(&small.to_string()),
+                plain.to_string(),
+                "small capital {small} must fold to '{plain}'"
             );
         }
     }
@@ -2498,7 +2804,7 @@ mod tests {
     /// A pending confirmation blocks input from **every** session, not only
     /// the one that raised it.
     ///
-    /// The dialog is a process-global window and its approve control is an
+    /// The dialog occupies the shared screen and its approve control is an
     /// ordinary clickable element whose label screens Clear, so a per-session
     /// block left a second granted session free to click "Allow this once"
     /// and mint the first session's approval — the same self-approval hole
@@ -2571,6 +2877,76 @@ mod tests {
         );
         shared.revoke_session("s1");
         assert!(shared.begin_input_action("s2").is_ok());
+    }
+
+    /// The grant-request mark serializes with in-flight injections: while
+    /// another session's action holds the physical-input lock, the "Allow
+    /// control" dialog must not pop — a granted session's already-screened
+    /// multi-event `type` emits real Tab/Return keystrokes, and its gate
+    /// checks all ran before the dialog existed, so a dialog appearing
+    /// mid-injection is exactly the surface the global gate exists to close,
+    /// reached from underneath it. With the lock free the mark lands
+    /// immediately; a timed-out acquisition still marks (the dialog is never
+    /// withheld because the lock stayed busy).
+    #[test]
+    fn grant_dialog_marking_waits_for_in_flight_input() {
+        // Panic-safe restore (same drop-guard pattern as
+        // `physical_input_lock_times_out_with_the_test_override`): an assert
+        // failure here must not leak the override into unrelated tests.
+        struct RestoreTimeout;
+        impl Drop for RestoreTimeout {
+            fn drop(&mut self) {
+                set_physical_input_lock_timeout_for_tests(Duration::ZERO);
+            }
+        }
+        let _restore = RestoreTimeout;
+        // The acquisition bound must comfortably outlive the probe sleep so
+        // a slow runner cannot turn the mid-wait assertion into a flake.
+        set_physical_input_lock_timeout_for_tests(Duration::from_secs(2));
+
+        let shared = std::sync::Arc::new(enabled_shared());
+        let _in_flight = shared
+            .physical_input_lock
+            .try_lock()
+            .expect("a free lock must be acquirable");
+        let marker = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || shared.mark_grant_requested_serialized("s1"))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !shared.grant_request_pending("s1"),
+            "the grant dialog must not be marked while an injection holds the input lock"
+        );
+        drop(_in_flight);
+        marker.join().expect("marker thread finishes");
+        assert!(
+            shared.grant_request_pending("s1"),
+            "the mark must land once the injection is done"
+        );
+    }
+
+    /// The GrantRequired path in the tool must use the serialized marking.
+    /// The behavioral pin above covers the guard method; mutating the tool's
+    /// call site back to the bare mark kept that test green (the method was
+    /// still correct — the tool just stopped calling it), which is the same
+    /// report-side/consumer-side false-pin shape the third round found. The
+    /// call site runs on the async executor behind the gate rejection, which
+    /// the test harness cannot drive against a held input lock
+    /// deterministically, so — like the platform fault legs — it is pinned at
+    /// source level.
+    #[test]
+    fn grant_marking_is_serialized_at_the_tool_call_site() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/tool.rs"
+        ))
+        .expect("tool.rs readable");
+        assert!(
+            source.contains(".mark_grant_requested_serialized(&self.parts.session_id);"),
+            "the GrantRequired path must mark under the physical-input lock \
+             (mark_grant_requested_serialized), not race a live injection"
+        );
     }
 
     /// Server truth for the consent UI: `pending_payload_for_session` serves
@@ -2695,6 +3071,13 @@ mod tests {
         assert!(
             windows_source.contains("writer.next_index == 0 && error.code() == E_ACCESSDENIED"),
             "E_ACCESSDENIED on the empty-tree leg must propagate, not fold into churn"
+        );
+        // The condition alone pins nothing: swallowing the error inside the
+        // arm (`return Ok(())`) used to keep the pin green while the whole
+        // leg regressed to the silently-empty tree this exists to prevent.
+        assert!(
+            windows_source.contains("return Err(map_uia_err(\"ui_tree node fetch\", error));"),
+            "the empty-tree E_ACCESSDENIED arm must propagate the error, not swallow it"
         );
         // The name-screening producers: screening must run on the RAW name,
         // not a display-truncated copy — the macOS producer has a behavioral

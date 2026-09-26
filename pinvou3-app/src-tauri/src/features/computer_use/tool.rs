@@ -66,6 +66,12 @@ pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
 /// finding). Legal chords (e.g. "ctrl+shift+alt+delete") are far below this
 /// value; over the cap is rejected as a parse error.
 pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
+/// `confirm_id` length cap (characters), same shape as the chord cap: the id
+/// is model-supplied free text and is looked up in the approval-token map as
+/// given, so an uncapped string would be pure memory abuse. Real minted ids
+/// (`cu-<hex>`) are far below this; over the cap is rejected as a parse
+/// error.
+pub const MAX_CONFIRM_ID_CHARS: usize = 128;
 /// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
 /// properties (`minimum: 1`, maximums = these constants); the parser rejects
 /// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
@@ -379,7 +385,18 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         .ok_or_else(|| ToolError::missing_field("action"))?;
     let confirm_id = match input.get("confirm_id") {
         None | Some(Value::Null) => None,
-        Some(Value::String(id)) => Some(id.clone()),
+        Some(Value::String(id)) => {
+            // Cap mirrors the other raw-text fields: the id is model-supplied
+            // and would otherwise ride into the peek lookup at any size.
+            // Real ids (`cu-<hex>`) are far below the cap; over it is
+            // rejected as a parse error.
+            if id.chars().count() > MAX_CONFIRM_ID_CHARS {
+                return Err(invalid(format!(
+                    "confirm_id exceeds {MAX_CONFIRM_ID_CHARS} characters"
+                )));
+            }
+            Some(id.clone())
+        }
         Some(_) => return Err(field_type_error("confirm_id", "a string")),
     };
 
@@ -2416,9 +2433,12 @@ impl ToolSpec for ComputerUseTool {
                 // Server truth for the consent UI: mark the request before
                 // broadcasting so a get_status in any window already sees
                 // the pending grant (cleared by grant/revoke/stop/disable).
+                // The serialized variant keeps the dialog from appearing
+                // under another session's in-flight injection (see the
+                // guard method's doc).
                 self.parts
                     .shared
-                    .mark_grant_requested(&self.parts.session_id);
+                    .mark_grant_requested_serialized(&self.parts.session_id);
                 self.parts.events.emit(
                     EVENT_GRANT_REQUIRED,
                     json!({ "session_id": self.parts.session_id }),
