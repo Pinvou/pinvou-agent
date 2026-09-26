@@ -1710,7 +1710,11 @@ fn index_finished(state: &IndexState, output: OutputMode) -> Result<CliOutcome, 
             true,
         ),
         "cancelled" => ("index cancelled", true),
-        "done_with_errors" => ("index completed with errors", true),
+        "done_with_errors" => (
+            "index completed with errors (see `pinvou knowledge index failed <job-id>` \
+             or `index retry <job-id> <item-id>`)",
+            true,
+        ),
         _ => ("index completed", false),
     };
     let human = format!("{header}\n{}", render_index_state(state));

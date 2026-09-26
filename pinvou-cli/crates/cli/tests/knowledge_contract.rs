@@ -939,7 +939,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
 }
 
 /// A second `add-sources` behind a job that is still preparing/running must
-/// refuse with exit 2 (the round-18/19 stranding fix): no CLI lane runs boot
+/// refuse with exit 1 (the round-18/19 stranding fix): no CLI lane runs boot
 /// recovery anymore, so the second enqueue cannot "recover" the stranded job
 /// into resumable — it must see it running (it cannot tell a live desktop-app
 /// owner from a dead process's orphan; the store carries no owner heartbeat)

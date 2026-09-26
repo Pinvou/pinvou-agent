@@ -137,6 +137,18 @@ impl ImportJobStore {
             return Ok(());
         }
         let now = now();
+        // The promotion carries the same state guard as `resume`: a job that a
+        // concurrent interrupt (e.g. the CLI's stall timeout) or cancel pulled
+        // out of the pre-item walk must never be resurrected to `running`.
+        let promoted = tx.execute(
+            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 \
+             WHERE id=?1 AND state IN ('preparing','running')",
+            params![job_id, now],
+        )?;
+        if promoted == 0 {
+            tx.commit()?;
+            return Ok(());
+        }
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO knowledge_import_items(job_id,path,name,state,updated_at) \
@@ -151,10 +163,6 @@ impl ImportJobStore {
                 stmt.execute(params![job_id, path_str.as_ref(), name, now])?;
             }
         }
-        tx.execute(
-            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 WHERE id=?1",
-            params![job_id, now],
-        )?;
         tx.commit()
     }
 
@@ -691,5 +699,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item_state, "failed", "重试被拒时失败项状态不得变动");
+    }
+
+    #[test]
+    fn interrupt_landing_during_prepare_is_not_promoted_back() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        // The CLI's stall-timeout interrupt can land while the import thread
+        // is still in the pre-item walk: the job is already `interrupted` by
+        // the time the prepare transaction runs.
+        jobs.interrupt(&job_id);
+        jobs.prepare_items(
+            &job_id,
+            &[PathBuf::from("/tmp/a.md"), PathBuf::from("/tmp/b.md")],
+        )
+        .unwrap();
+
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "prepare must not resurrect an interrupted job to running"
+        );
+        assert_eq!(
+            jobs.item_count(&job_id).unwrap(),
+            0,
+            "the refused prepare must not stage any items"
+        );
     }
 }
