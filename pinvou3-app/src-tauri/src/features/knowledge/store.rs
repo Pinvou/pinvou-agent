@@ -301,12 +301,26 @@ impl Store {
         // A store written by a NEWER binary must never be deleted by a
         // downgrade: refuse with a clear error and leave every file intact.
         if let Some(version) = current_version {
+            // A damaged header is refused like a newer store: never migrated
+            // in place, never deleted (see `schema_is_disposable` — a bit
+            // flip in the signed 32-bit `user_version` field reads back
+            // negative but is not an old schema).
             if version > SCHEMA_VERSION {
                 return Err(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
                     Some(format!(
                         "knowledge store was written by a newer version (schema v{version} \
                          > v{SCHEMA_VERSION}); upgrade pinvou"
+                    )),
+                ));
+            }
+            if version < 0 {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                    Some(format!(
+                        "knowledge store has a damaged header (schema v{version} < 0); \
+                         restore it from a backup or delete it manually after verifying \
+                         nothing else needs it"
                     )),
                 ));
             }
@@ -1073,5 +1087,164 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// A negative `user_version` is a damaged header (it is read back
+    /// negative only when the signed 32-bit field was corrupted — see
+    /// `schema_is_disposable`), so it must be REFUSED like a newer store:
+    /// never migrated in place (which would stamp over the damage) and never
+    /// deleted. Pins the refusal at the `Store::open` dispatch level; the
+    /// predicate test below only pins `schema_is_disposable`.
+    #[test]
+    fn negative_user_version_store_is_refused_without_migration_or_deletion() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_negative_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // Build a valid store, then damage the version field exactly the way
+        // a bit flip in header bytes 60..=63 would read back.
+        drop(Store::open(&path).unwrap());
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("PRAGMA user_version = -1;").unwrap();
+        drop(c);
+
+        let error = match Store::open(&path) {
+            Ok(_) => panic!("negative user_version must be refused, not self-healed"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("damaged header"),
+            "the refusal must name the damage: {message}"
+        );
+        // The refusal happens before any destructive step AND before the
+        // migration branch: the file keeps its damaged version (not stamped
+        // to the current schema) and stays on disk.
+        assert!(path.exists(), "store file must survive the refusal");
+        let c = Connection::open(&path).unwrap();
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        drop(c);
+        assert_eq!(
+            version, -1,
+            "the damaged header must not be stamped to v{SCHEMA_VERSION} by a refusal-path open"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// Every connection a file-backed open creates must carry the 5 s
+    /// `busy_timeout`: the two-process contention case (a headless `agent
+    /// run` and the GUI, or two headless runs) is exactly what the timeout
+    /// exists for, and the steady-state no-DDL open only stays lock-free if
+    /// a contended `BEGIN` waits instead of failing immediately. Pinning the
+    /// pragma value on both connections catches a dropped `busy_timeout`
+    /// without having to construct real cross-process contention in a test.
+    #[test]
+    fn file_backed_open_sets_busy_timeout_on_both_connections() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_busy_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        let store = Store::open(&path).unwrap();
+        let write_timeout: i64 = store
+            .conn
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        // `read` is query_only; reading a pragma is allowed there.
+        let read_timeout: i64 = store
+            .read
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            write_timeout, 5_000,
+            "the write connection must keep its 5s busy_timeout"
+        );
+        assert_eq!(
+            read_timeout, 5_000,
+            "the read-only connection must keep its 5s busy_timeout"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// The search limit is clamped to [`SEARCH_LIMIT_CAP`] rather than cast
+    /// raw: a `usize::MAX` caller limit must not become an unbounded query
+    /// (the old bare `as i64` wrapped to -1, which SQLite reads as no limit
+    /// at all) — the headless search surface takes caller-provided limits,
+    /// so the clamp is load-bearing, not cosmetic.
+    #[test]
+    fn search_limit_is_clamped_to_the_cap_by_seed() {
+        let store = Store::open_in_memory().unwrap();
+        // Seed more than the cap through the same upsert path the scanner
+        // uses; one distinct file per record.
+        let records: Vec<FileRecord> = (0..SEARCH_LIMIT_CAP + 40)
+            .map(|i| FileRecord {
+                path: format!("/clamp/docs/file_{i}.md"),
+                name: format!("file_{i}.md"),
+                ext: Some("md".into()),
+                size: 16,
+                mtime: 1_700_000_000 + i as i64,
+                is_dir: false,
+            })
+            .collect();
+        store.upsert_many(&records).unwrap();
+
+        // A below-cap explicit limit is honored exactly.
+        let hits = store
+            .search(&SearchQuery {
+                text: None,
+                exts: Vec::new(),
+                mtime_after: None,
+                mtime_before: None,
+                min_size: None,
+                max_size: None,
+                limit: 5,
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 5, "an explicit below-cap limit is honored");
+
+        // A cap-exceeding limit is clamped, and a usize::MAX limit (the raw
+        // cast regression shape) is clamped too — never unbounded.
+        for limit in [SEARCH_LIMIT_CAP, SEARCH_LIMIT_CAP + 1, usize::MAX] {
+            let hits = store
+                .search(&SearchQuery {
+                    text: None,
+                    exts: Vec::new(),
+                    mtime_after: None,
+                    mtime_before: None,
+                    min_size: None,
+                    max_size: None,
+                    limit,
+                })
+                .unwrap();
+            assert_eq!(
+                hits.len(),
+                SEARCH_LIMIT_CAP,
+                "limit {limit} must clamp to SEARCH_LIMIT_CAP ({SEARCH_LIMIT_CAP}), \
+                 never wrap to unbounded"
+            );
+        }
     }
 }

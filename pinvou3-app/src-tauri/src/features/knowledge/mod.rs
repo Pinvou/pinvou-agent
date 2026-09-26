@@ -590,12 +590,14 @@ impl KnowledgeService {
     }
 
     /// Request cancellation of an in-progress scan. The GUI's lazy scan has
-    /// no frontend cancel entry, and the intended consumer is a
-    /// `knowledge scan cancel` subcommand in the stacked CLI families PR —
-    /// which does not exist in this tree (the in-tree `pinvou-cli` exposes
-    /// `benchmark` and `agent` only), so this is pre-landed surface, not a
-    /// wired-up entry point. In-process one-shot signal: the scan thread's
-    /// cancel branch wraps up early on it (semantics unchanged).
+    /// no frontend cancel entry, and the stacked CLI families PR decided its
+    /// `scan cancel` subcommand must NOT call this: the flag is an in-process
+    /// one-shot signal, and a one-shot CLI process can never reach a live
+    /// desktop-app scan with it — a command reporting success that cannot
+    /// cancel anything would be dishonest, so the stacked PR refuses instead.
+    /// The signal itself stays (the GUI may gain a cancel entry; the scan
+    /// thread's cancel-branch semantics are unchanged), but treat this as
+    /// signal surface without a caller in any current tree.
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }

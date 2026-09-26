@@ -2209,7 +2209,7 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 /// the same wall-clock second (fast retry loops, racing processes) must not
 /// destroy each other's evidence. Returns the quarantine path; the caller
 /// owns the refuse/log semantics.
-pub fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
     let now = chrono::Utc::now();
     let stem = path
         .file_name()

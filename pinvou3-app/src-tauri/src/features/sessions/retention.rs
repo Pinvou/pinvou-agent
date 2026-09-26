@@ -184,7 +184,22 @@ impl SessionStore {
                 // yields `None`, which we treat as "still protected").
                 match self.durable_pinned_sessions() {
                     Some(fresh) if fresh.contains(&metadata.id) => continue,
-                    None => continue,
+                    None => {
+                        // The pin file became unreadable MID-sweep (it was
+                        // readable at sweep start). Skipping the delete is
+                        // the fail-safe direction, but the operator must not
+                        // see a silently truncated sweep — the initial-read
+                        // failure warns, so this arm must too. `break` stops
+                        // the sweep (every later over-cap delete would hit
+                        // the same unknown-state read) without failing it:
+                        // deletions already committed stay committed.
+                        log::warn!(
+                            "[sessions] retention sweep stopped early: the pin file became \
+                             unreadable mid-sweep, so the keep-forever set is unknown and no \
+                             further sessions were evicted"
+                        );
+                        break;
+                    }
                     Some(_) => {}
                 }
                 let id = metadata.id;

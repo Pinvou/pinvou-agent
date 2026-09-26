@@ -232,6 +232,42 @@ mod tests {
         );
     }
 
+    /// The per-turn tool-call cap is gone everywhere (claim: benchmark-hooks
+    /// pin of 8, `PINVOU3_MAX_TOOL_CALLS`, eval arming, and the GAIA
+    /// reminder's 8-call sentence). The removal of the reminder sentence is
+    /// pinned as an ABSENCE here — the old presence-assert was deleted
+    /// without a replacement, so re-adding any call-budget wording to an
+    /// eval reminder would otherwise regress silently. "tool call" alone is
+    /// not forbidden wording: the final-answer policy legitimately says
+    /// "do not request or describe a tool call" (tools are disabled there,
+    /// no budget is involved).
+    #[test]
+    fn no_eval_model_reminder_couples_to_a_tool_call_budget() {
+        for policy in [
+            EvalToolPolicy::ProductV1,
+            EvalToolPolicy::GaiaPublicWebV1,
+            EvalToolPolicy::GaiaOfflineV1,
+            EvalToolPolicy::GaiaFinalAnswerOnlyV1,
+        ] {
+            let reminder = policy.model_reminder();
+            for forbidden in [
+                "never exceed 8 total tool calls",
+                "at most 8",
+                "no more than",
+                "call budget",
+                "tool-call budget",
+                "tool calls remaining",
+                "budget of",
+            ] {
+                assert!(
+                    !reminder.to_lowercase().contains(forbidden),
+                    "{policy:?} reminder must not couple to a per-turn tool-call budget \
+                     (found {forbidden:?}): {reminder}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn profile_snapshots_are_unique_and_exist_in_the_product_catalog() {
         let catalog = verified_product_catalog_snapshot();

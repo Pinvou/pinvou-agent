@@ -63,11 +63,12 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     f();
 }
 
-/// 取 crate 唯一 env 锁并一步完成一组 env 的快照（原各文件私有的
-/// `locked_env` 配对形式的单一实现）：
+/// 取 crate 唯一 env 锁并一步完成一组 env 的快照：
 /// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
 /// 不可重入——已持 ENV_LOCK 时不得再调。guard 在作用域退出（含 panic 路径）
 /// 释放锁并恢复 env。
+/// （`bridge.rs` 的测试模块仍保留一个私有 `locked_env`/`EnvGuard` 配对，
+/// 上百个调用点未收敛至此；新代码一律使用本实现，不再扩散旧配对。）
 #[cfg(test)]
 pub(crate) fn locked_env(
     vars: &[&'static str],
@@ -184,43 +185,5 @@ impl Drop for UnreadableDirForTest {
         {
             let _ = &self.dir;
         }
-    }
-}
-
-/// POSIX mode bits of `path`, or `None` where the platform has none.
-///
-/// Permission assertions belong to the platform layer: a feature test that
-/// writes its own `#[cfg(unix)]` block puts an OS conditional outside an
-/// adapter (architecture guard `rust_target_cfg_outside_adapter`), and every
-/// such copy drifts on its own. Callers assert `Some(0o600)` and skip on
-/// `None`.
-#[cfg(test)]
-pub(crate) fn permission_bits(path: &std::path::Path) -> Option<u32> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        Some(std::fs::metadata(path).ok()?.permissions().mode() & 0o777)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        None
-    }
-}
-
-/// Loosens `path` to 0644 the way a pre-hardening build's umask left it, so a
-/// test can prove the next write tightens it. No-op (and reports `false`)
-/// where the platform has no mode bits.
-#[cfg(test)]
-pub(crate) fn loosen_to_world_readable_for_test(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).is_ok()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
     }
 }

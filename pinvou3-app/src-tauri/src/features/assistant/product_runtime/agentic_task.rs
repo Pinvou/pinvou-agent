@@ -47,6 +47,63 @@ use crate::features::sessions::{
 };
 use crate::platform::prefs::UserPrefs;
 
+/// The engine-facing half of the run teardown, as a contract. The runner uses
+/// it to distinguish "reclaim an inspectable session's engine" from "delete
+/// the session record"; tests drive the SAME orchestration `run_agentic_task`
+/// executes (instead of re-implementing it) by supplying an instrumented
+/// implementation. The production implementation is [`EnginePoolRuntime`];
+/// pooling in `EnginePool` requires a Tauri `AppHandle` (no mock runtime
+/// exists in this repo), which is why the KEEP_SESSION disposition cascade
+/// had no reachable test entry before this contract existed.
+///
+/// Implementations must stay one-line delegations — no behavior may live
+/// here, or the contract stops testing the production path:
+/// - `teardown_turn_active` → `EnginePoolRuntime::is_turn_active`
+/// - `teardown_delete` → `EnginePoolRuntime::close_eval_session_result`
+///   (turn gate → engine evict → `store.delete` → forget; the durable delete
+///   happens INSIDE this call)
+/// - `teardown_schedule_delete` → `schedule_eval_cleanup` (timing unregister
+///   + background late sweeps) followed by the same awaited durable delete
+///   the runner's `log_cleanup_delete` performed
+/// - `teardown_evict` → `EnginePool::evict` (in-memory engine only; the
+///   durable record stays)
+pub(crate) trait AgenticTeardownExecutor {
+    /// Whether an engine turn is running for the session right now.
+    fn teardown_turn_active(&self, session_id: &str) -> bool;
+    /// Delete the session (record + directory), returning best-effort errors.
+    async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error>;
+    /// Delete the session through the cleanup lane (scheduled sweeps plus the
+    /// awaited durable delete), returning best-effort errors.
+    async fn teardown_schedule_delete(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<(), anyhow::Error>;
+    /// Reclaim the in-memory engine; the durable session record stays.
+    async fn teardown_evict(&self, session_id: &str);
+}
+
+impl AgenticTeardownExecutor for EnginePoolRuntime {
+    fn teardown_turn_active(&self, session_id: &str) -> bool {
+        self.is_turn_active(session_id)
+    }
+
+    async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error> {
+        self.close_eval_session_result(session_id).await
+    }
+
+    async fn teardown_schedule_delete(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<(), anyhow::Error> {
+        self.schedule_eval_cleanup(session_id);
+        self.close_eval_session_result(session_id).await
+    }
+
+    async fn teardown_evict(&self, session_id: &str) {
+        self.pool.evict(session_id).await;
+    }
+}
+
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 /// Upper bound for `timeout_secs`, mirroring the CLI parse cap: an unclamped
 /// `u64` would overflow the internal `Instant + Duration` and panic before any
@@ -275,17 +332,11 @@ pub async fn run_agentic_task(
     };
     let session_id = match request.session_id.as_deref() {
         Some(session_id) => session_id.to_owned(),
-        // Fresh ids persist for good now, so a recycled pid replaying the
-        // same counter must not silently overwrite a kept session's record
-        // (transcript loss, and the old pin would transfer to the new stub):
-        // regenerate until the id is free.
-        None => {
-            let mut session_id = fresh_session_id();
-            while store.chat_session_record_exists(&session_id) {
-                session_id = fresh_session_id();
-            }
-            session_id
-        }
+        // Regenerate until the id is free (see `mint_fresh_session_id`).
+        None => mint_fresh_session_id(
+            |id| store.chat_session_record_exists(id),
+            fresh_session_id(),
+        ),
     };
 
     // Execution root binding: the closure only matches this run's session id
@@ -340,28 +391,7 @@ pub async fn run_agentic_task(
     store.set_execution_root_resolver(resolver);
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
-    // Retention-eviction observation: the prepare-time save inside the turn
-    // lands in the same 50-session store the GUI reads, and a fresh save at
-    // the cap evicts the oldest unpinned headless session(s) (pinned sessions are
-    // exempt from retention). The store reports its real sweep deletions into
-    // this receiver, so the warning keys on the eviction event itself: a run
-    // that errors after the save (attachment staging, submit) must still
-    // surface the eviction, and a run that fails before saving evicts nothing
-    // and stays silent — a count sampled around the run cannot see mid-run
-    // forwarder evictions, and the store's own deletions can.
-    let evictions = Arc::new(Mutex::new(Vec::new()));
-    if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
-        // Single-flight normally guarantees the slot is empty here; a stale
-        // observer means an earlier run skipped its disarm (an unwind between
-        // arm and disarm would do it). Its record was never reported (and may
-        // be empty) — say so instead of silently adopting a dead receiver.
-        drop(stale);
-        eprintln!(
-            "[pinvou agent run] warning: replaced a stale retention-eviction \
-             observer; any eviction record the previous run left unreported \
-             was discarded"
-        );
-    }
+    let evictions = arm_retention_eviction_observer(&store);
     let (submitted, outcome) = run_turn(
         &runtime,
         &store,
@@ -373,32 +403,57 @@ pub async fn run_agentic_task(
     )
     .await;
 
-    // Session lifecycle after the turn: sessions persist by default (GUI
-    // parity — the 50-session retention cap applies), so the engine is
-    // reclaimed while the transcript, artifacts and timeline stay under the
-    // sessions root for later continuation through the request's `session_id`
-    // (a library surface; the one-shot CLI keeps its defaults today). Only an
-    // explicit `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` restores the
-    // old one-shot cleanup for harnesses that want a clean sandbox (the
-    // legacy truthy values "1"/"true"/"yes"/"on" keep meaning keep).
-    //
-    // A fresh session whose turn never started (attachment staging, submit,
-    // or the setup timeout) carries no transcript to inspect: keeping it
-    // would litter the shared store — and the GUI history — with zero-message
-    // stubs, one eviction apiece in a failing batch. Those runs clean up
-    // after themselves regardless of `KEEP_SESSION` — where "never started"
-    // is decided on the durable record: a stub that already carries admitted
-    // messages is a started transcript and stays inspectable instead (see
-    // the cleanup branch below).
-    //
-    // A caller-provided `session_id` is never auto-deleted by THIS run, but
-    // it is an ordinary chat session in the store: the 50-session retention
-    // sweep can still evict it later exactly like any GUI chat session.
-    // Only this run's eval observation mark is dropped, and the session is
-    // left in place for the caller.
+    // Session lifecycle after the turn — full contract documented on
+    // [`run_session_lifecycle`].
+    run_session_lifecycle(&runtime, &store, &session_id, existing_session, submitted).await;
+    // Disarm before reporting: the prepare-time save happened before any setup
+    // fault could surface, so the evictions are real regardless of the final
+    // outcome — the report may carry an error, and the run may have cleaned
+    // its own session up afterwards.
+    if let Some(warning) = disarm_retention_eviction_observer(&store, &evictions) {
+        eprintln!("{warning}");
+    }
+    outcome
+}
+
+/// Session lifecycle after the turn — the KEEP_SESSION disposition cascade.
+/// Sessions persist by default (GUI parity — the 50-session retention cap
+/// applies), so the engine is reclaimed while the transcript, artifacts and
+/// timeline stay under the sessions root for later continuation through the
+/// request's `session_id` (a library surface; the one-shot CLI keeps its
+/// defaults today). Only an explicit
+/// `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` restores the old one-shot
+/// cleanup for harnesses that want a clean sandbox (the legacy truthy values
+/// "1"/"true"/"yes"/"on" keep meaning keep).
+///
+/// A fresh session whose turn never started (attachment staging, submit, or
+/// the setup timeout) carries no transcript to inspect: keeping it would
+/// litter the shared store — and the GUI history — with zero-message stubs,
+/// one eviction apiece in a failing batch. Those runs clean up after
+/// themselves regardless of `KEEP_SESSION` — where "never started" is decided
+/// on the durable record: a stub that already carries admitted messages is a
+/// started transcript and stays inspectable instead (see
+/// [`never_started_disposition`]).
+///
+/// A caller-provided `session_id` (existing_session) is never auto-deleted by
+/// THIS run, but it is an ordinary chat session in the store: the 50-session
+/// retention sweep can still evict it later exactly like any GUI chat
+/// session. Only this run's eval observation mark is dropped, and the session
+/// is left in place for the caller.
+///
+/// Extracted behind [`AgenticTeardownExecutor`] so the disposition matrix is
+/// pinned by tests driving this exact orchestration (`run_agentic_task`
+/// itself needs an `EnginePool`, which needs a Tauri `AppHandle`).
+async fn run_session_lifecycle(
+    executor: &impl AgenticTeardownExecutor,
+    store: &SessionStore,
+    session_id: &str,
+    existing_session: bool,
+    submitted: bool,
+) {
     let keep_session = keep_session_from_env();
     if existing_session {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
         // Reclaim the engine like the fresh+keep branch below. The process
         // exits right after this (`run_windowless_host` calls `exit(0)`), and
         // without the reclaim there is no shell-scope finalize, no Shutdown
@@ -406,64 +461,62 @@ pub async fn run_agentic_task(
         // orphaned onto the user's machine, and a pending ledger/artifact
         // write is dropped mid-flight. The session record is untouched —
         // eviction only tears down the in-memory engine.
-        runtime.pool.evict(&session_id).await;
-    } else if !submitted {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // The submit boundary is not atomic with transcript admission: the
-        // engine lazily spawns on submit and can durably admit the user
-        // message before the fault surfaces (a submit error, or the setup
-        // timeout landing right after admission). A record that carries
-        // messages has therefore started — its transcript is the only copy,
-        // so it stays inspectable like any submitted run unless the caller
-        // explicitly opted back into the legacy one-shot cleanup. Only a
-        // truly zero-message stub is cleanup-eligible regardless of
-        // `KEEP_SESSION`; an unloadable record also keeps (deleting on
-        // unknown state is the unsafe direction).
+        executor.teardown_evict(session_id).await;
+        return;
+    }
+    // The submit boundary is not atomic with transcript admission: the engine
+    // lazily spawns on submit and can durably admit the user message before
+    // the fault surfaces (a submit error, or the setup timeout landing right
+    // after admission). A record that carries messages has therefore started
+    // — its transcript is the only copy, so it stays inspectable like any
+    // submitted run unless the caller explicitly opted back into the legacy
+    // one-shot cleanup. Only a truly zero-message stub is cleanup-eligible
+    // regardless of `KEEP_SESSION`; an unloadable record also keeps (deleting
+    // on unknown state is the unsafe direction).
+    if !submitted {
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
         match never_started_disposition(
-            store.chat_session_has_messages(&session_id).map_err(|_| ()),
-            runtime.is_turn_active(&session_id),
+            store.chat_session_has_messages(session_id).map_err(|_| ()),
+            executor.teardown_turn_active(session_id),
             keep_session,
         ) {
-            NeverStartedDisposition::CleanupStub => {
-                runtime.schedule_eval_cleanup(&session_id);
-                log_cleanup_delete(&runtime, &session_id).await;
+            NeverStartedDisposition::CleanupStub
+            | NeverStartedDisposition::LegacyCleanupStarted => {
+                // Best-effort delete: a failure must not mask the run's own
+                // outcome, but silently stranding the session hides it from
+                // the operator. Only the root cause is printed — the full
+                // `{error:#}` chain would carry the session id into
+                // persistent logs (CodeQL cleartext-logging gate); the
+                // store's own error chain already names the session.
+                if let Err(error) = executor.teardown_schedule_delete(session_id).await {
+                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                }
             }
-            NeverStartedDisposition::KeepInspectable => runtime.pool.evict(&session_id).await,
-            NeverStartedDisposition::LegacyCleanupStarted => {
-                runtime.schedule_eval_cleanup(&session_id);
-                log_cleanup_delete(&runtime, &session_id).await;
+            NeverStartedDisposition::KeepInspectable => {
+                executor.teardown_evict(session_id).await;
             }
         }
-    } else if keep_session {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        runtime.pool.evict(&session_id).await;
-    } else {
-        runtime.schedule_eval_cleanup(&session_id);
-        log_cleanup_delete(&runtime, &session_id).await;
+        return;
     }
-    // Disarm before reporting: the prepare-time save happened before any setup
-    // fault could surface, so the evictions are real regardless of the final
-    // outcome — the report may carry an error, and the run may have cleaned
-    // its own session up afterwards.
-    store.take_retention_eviction_observer();
-    if let Some(warning) = retention_eviction_warning(&evictions.lock()) {
-        eprintln!("{warning}");
-    }
-    outcome
-}
-
-/// Best-effort cleanup delete: a failed delete must not mask the run's own
-/// outcome, but silently stranding the session in the shared store hides the
-/// failure from the operator — log it instead of discarding the result.
-/// The session id stays out of the message (boot logs persist to disk and
-/// the CodeQL cleartext-logging gate flags ids on stderr): the store's own
-/// error chain names the session (`delete_session({id})`), so only the root
-/// cause (the underlying io/serialization error) is printed — the full
-/// `{error:#}` chain would carry the id right back into the log.
-async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
-    if let Err(error) = runtime.close_eval_session_result(session_id).await {
+    crate::features::assistant::timing::unregister_eval_observation(session_id);
+    if keep_session {
+        executor.teardown_evict(session_id).await;
+    } else if let Err(error) = executor.teardown_schedule_delete(session_id).await {
         eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
     }
+}
+
+/// Mint a headless session id that is free in `exists`'s store. Fresh ids
+/// persist for good now, so a recycled pid replaying the same counter must
+/// not silently overwrite a kept session's record (transcript loss, and the
+/// old pin would transfer to the new stub): regenerate until the id is free.
+/// The seed id comes from [`fresh_session_id`].
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn mint_fresh_session_id(exists: impl Fn(&str) -> bool, mut session_id: String) -> String {
+    while exists(&session_id) {
+        session_id = fresh_session_id();
+    }
+    session_id
 }
 
 /// `PINVOU3_AGENT_TASK_KEEP_SESSION`: sessions are kept by default; only the
@@ -569,6 +622,45 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
             evicted.len()
         )
     })
+}
+
+/// Arm the store's retention-eviction observer for one run: the prepare-time
+/// save lands in the same 50-session store the GUI reads, and a fresh save at
+/// the cap evicts the oldest unpinned headless session(s) (pinned sessions
+/// are exempt). The store reports its real sweep deletions into the returned
+/// receiver, so the warning keys on the eviction event itself — a run that
+/// errors after the save (attachment staging, submit) still surfaces the
+/// eviction, and a run that fails before saving evicts nothing and stays
+/// silent. A count sampled around the run cannot see mid-run forwarder
+/// evictions; the store's own deletions can.
+fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<Vec<String>>> {
+    let evictions = Arc::new(Mutex::new(Vec::new()));
+    if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
+        // Single-flight normally guarantees the slot is empty here; a stale
+        // observer means an earlier run skipped its disarm (an unwind between
+        // arm and disarm would do it). Its record was never reported (and may
+        // be empty) — say so instead of silently adopting a dead receiver.
+        drop(stale);
+        eprintln!(
+            "[pinvou agent run] warning: replaced a stale retention-eviction \
+             observer; any eviction record the previous run left unreported \
+             was discarded"
+        );
+    }
+    evictions
+}
+
+/// Disarm the observer and decide the warning for the recorded evictions.
+/// Deliberately outcome-independent (see [`retention_eviction_warning`]):
+/// extraction keeps the arm/disarm pairing and the warn-on-nonempty-decision
+/// pinned separately from `run_agentic_task`, which cannot enter tests (it
+/// needs an `EnginePool` → Tauri `AppHandle`). The caller owns printing.
+fn disarm_retention_eviction_observer(
+    store: &SessionStore,
+    evictions: &Arc<Mutex<Vec<String>>>,
+) -> Option<String> {
+    store.take_retention_eviction_observer();
+    retention_eviction_warning(&evictions.lock())
 }
 
 /// Validate the static attachment limits of an agentic request: at most
@@ -2040,5 +2132,311 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // Behavior-level pins for the run teardown. `run_agentic_task` itself
+    // needs an `EnginePool` (→ Tauri `AppHandle`, no mock runtime in this
+    // repo), so these tests drive the extracted orchestration directly with
+    // a real `SessionStore` and a recording executor that mirrors the
+    // production delegations. They pin what the 2026-09-25/26 reviews found
+    // unprotected: the disposition→action WIRING (the enum was pinned, the
+    // cascade was not), the default-keep teardown, and the stub cleanup.
+    // -----------------------------------------------------------------------
+
+    /// Mirrors [`AgenticTeardownExecutor for EnginePoolRuntime`]: deletes go
+    /// to the real store (so assertions see durable state, not just calls),
+    /// evictions/liveness are instrumented.
+    #[derive(Default)]
+    struct RecordingTeardown {
+        store: parking_lot::Mutex<Option<SessionStore>>,
+        turn_active: parking_lot::Mutex<bool>,
+        deletes: parking_lot::Mutex<Vec<String>>,
+        evictions: parking_lot::Mutex<Vec<String>>,
+    }
+
+    impl RecordingTeardown {
+        fn new(store: &SessionStore) -> Self {
+            Self {
+                store: parking_lot::Mutex::new(Some(store.clone())),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl super::AgenticTeardownExecutor for RecordingTeardown {
+        fn teardown_turn_active(&self, _session_id: &str) -> bool {
+            *self.turn_active.lock()
+        }
+
+        async fn teardown_delete(&self, session_id: &str) -> anyhow::Result<()> {
+            self.deletes.lock().push(session_id.to_owned());
+            self.store
+                .lock()
+                .as_ref()
+                .expect("store present")
+                .delete(session_id)
+        }
+
+        async fn teardown_schedule_delete(&self, session_id: &str) -> anyhow::Result<()> {
+            // schedule_eval_cleanup only unregisters timing and schedules
+            // background sweeps in production; the durable delete is the
+            // awaited half, so mirroring it here is faithful.
+            self.teardown_delete(session_id).await
+        }
+
+        async fn teardown_evict(&self, session_id: &str) {
+            self.evictions.lock().push(session_id.to_owned());
+        }
+    }
+
+    fn lifecycle_home(tag: &str) -> (SessionStore, std::path::PathBuf) {
+        // The caller holds ENV_LOCK via `locked_env` and has already set
+        // PINVOU3_HOME to the scratch home — `boot_inner_with` resolves
+        // `paths::sessions_root()` from it at boot, so the store and every
+        // seeded record land inside the scratch home. SAFETY: ENV_LOCK held;
+        // env writes are serialized across tests.
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-lifecycle-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store =
+            SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot store");
+        (store, tmp)
+    }
+
+    fn seed_record(store: &SessionStore, id: &str, messages: &[deepseek_tui::models::Message]) {
+        let mut session = deepseek_tui::session_manager::create_saved_session_with_id_and_mode(
+            id.to_owned(),
+            messages,
+            "lifecycle-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = chrono::Utc::now();
+        store
+            .save_session_atomic(&session)
+            .expect("seed record without eager retention");
+    }
+
+    fn user_text(text: &str) -> deepseek_tui::models::Message {
+        deepseek_tui::models::Message {
+            role: "user".into(),
+            content: vec![deepseek_tui::models::ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn set_keep_session(value: Option<&str>) {
+        // SAFETY: ENV_LOCK held via locked_env in the caller; env writes are
+        // serialized across tests.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value),
+                None => std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION"),
+            }
+        }
+    }
+
+    /// The KEEP_SESSION matrix for a SUBMITTED run (the headline breaking
+    /// change): the session stays by default; only the explicit falsy opt-in
+    /// restores the legacy one-shot delete.
+    #[tokio::test]
+    async fn submitted_run_keeps_session_by_default_and_deletes_on_falsy_opt_in() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
+        let (store, tmp) = lifecycle_home("submitted");
+
+        // Default (unset) → keep: engine reclaimed, record survives.
+        set_keep_session(None);
+        seed_record(&store, "agentic_matrix_default", &[user_text("hi")]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_matrix_default", false, true)
+            .await;
+        assert!(
+            store.chat_session_record_exists("agentic_matrix_default"),
+            "default keep: the run's session record must stay for continuation"
+        );
+        assert_eq!(executor.evictions.lock().len(), 1, "engine reclaimed");
+        assert!(
+            executor.deletes.lock().is_empty(),
+            "default keep: nothing may be deleted"
+        );
+
+        // Explicit falsy → legacy one-shot cleanup: the record is deleted,
+        // whether the run completed or errored (the report carries the
+        // outcome; the teardown does not consult it).
+        for falsy in ["0", "false", "no", "off", "FALSE"] {
+            set_keep_session(Some(falsy));
+            seed_record(&store, "agentic_matrix_falsy", &[user_text("hi")]);
+            let executor = RecordingTeardown::new(&store);
+            super::run_session_lifecycle(&executor, &store, "agentic_matrix_falsy", false, true)
+                .await;
+            assert!(
+                !store.chat_session_record_exists("agentic_matrix_falsy"),
+                "KEEP_SESSION={falsy}: the legacy one-shot cleanup must delete the record"
+            );
+            assert!(
+                executor.evictions.lock().is_empty(),
+                "KEEP_SESSION={falsy}: no engine reclaim on the delete lane"
+            );
+            store.delete("agentic_matrix_falsy").ok();
+        }
+
+        // Truthy legacy values still mean keep.
+        set_keep_session(Some("0-nope"));
+        seed_record(&store, "agentic_matrix_truthy", &[user_text("hi")]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_matrix_truthy", false, true).await;
+        assert!(
+            store.chat_session_record_exists("agentic_matrix_truthy"),
+            "a non-falsy KEEP_SESSION keeps the session"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The never-started matrix: a zero-message stub is cleaned up regardless
+    /// of KEEP_SESSION; a started-untracked transcript (durable messages, or
+    /// the engine still running) stays inspectable unless the falsy opt-in;
+    /// an unloadable record keeps (deleting on unknown state is unsafe).
+    #[tokio::test]
+    async fn never_started_stub_matrix_cleans_stubs_and_keeps_started_transcripts() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
+        let (store, tmp) = lifecycle_home("unsubmitted");
+
+        // Zero-message stub + default keep → deleted anyway (CleanupStub):
+        // a stub has no transcript to inspect and becomes eviction bait.
+        set_keep_session(None);
+        seed_record(&store, "agentic_stub_keep", &[]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_stub_keep", false, false).await;
+        assert!(
+            !store.chat_session_record_exists("agentic_stub_keep"),
+            "a zero-message stub must clean up after itself even under default keep"
+        );
+
+        // Zero-message stub + falsy → same delete (already covered by
+        // CleanupStub before KEEP_SESSION is even consulted).
+        seed_record(&store, "agentic_stub_falsy", &[]);
+        set_keep_session(Some("0"));
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_stub_falsy", false, false).await;
+        assert!(
+            !store.chat_session_record_exists("agentic_stub_falsy"),
+            "a zero-message stub is cleanup-eligible regardless of KEEP_SESSION"
+        );
+
+        // Started transcript (durable record carries admitted messages) +
+        // default → stays inspectable.
+        seed_record(&store, "agentic_started_keep", &[user_text("hi")]);
+        set_keep_session(None);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_started_keep", false, false).await;
+        assert!(
+            store.chat_session_record_exists("agentic_started_keep"),
+            "a started-but-unsubmitted transcript is the only copy — it stays"
+        );
+        assert_eq!(executor.evictions.lock().len(), 1, "engine reclaimed");
+
+        // Same started transcript + falsy → legacy cleanup deletes it.
+        seed_record(&store, "agentic_started_falsy", &[user_text("hi")]);
+        set_keep_session(Some("off"));
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(&executor, &store, "agentic_started_falsy", false, false)
+            .await;
+        assert!(
+            !store.chat_session_record_exists("agentic_started_falsy"),
+            "the falsy opt-in restores legacy cleanup for started-but-unsubmitted runs"
+        );
+
+        // Engine-activity override: zero durable messages yet the engine is
+        // mid-turn → started, not a stub (the file write may lag admission).
+        seed_record(&store, "agentic_engine_live", &[]);
+        set_keep_session(None);
+        let executor = RecordingTeardown::new(&store);
+        *executor.turn_active.lock() = true;
+        super::run_session_lifecycle(&executor, &store, "agentic_engine_live", false, false).await;
+        assert!(
+            store.chat_session_record_exists("agentic_engine_live"),
+            "engine liveness overrides a stale zero-message snapshot"
+        );
+
+        // Unloadable record (no record at all) → keep: unknown state must
+        // not be deleted, even under the falsy opt-in.
+        set_keep_session(Some("0"));
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_ghost_never_seeded",
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            executor.deletes.lock().is_empty(),
+            "an unloadable/missing record must keep — deleting on unknown state is unsafe"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A caller-provided session is never auto-deleted by this run — even
+    /// under the falsy opt-in, only the engine is reclaimed.
+    #[tokio::test]
+    async fn existing_session_is_never_auto_deleted() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
+        let (store, tmp) = lifecycle_home("existing");
+        seed_record(&store, "agentic_caller_session", &[user_text("hi")]);
+        for falsy in [None, Some("0")] {
+            set_keep_session(falsy);
+            let executor = RecordingTeardown::new(&store);
+            super::run_session_lifecycle(
+                &executor,
+                &store,
+                "agentic_caller_session",
+                true,  // existing (caller-provided) session
+                false, // and even a never-started outcome must not delete it
+            )
+            .await;
+            assert!(
+                store.chat_session_record_exists("agentic_caller_session"),
+                "a caller-provided session is never auto-deleted by this run"
+            );
+            assert!(
+                executor.deletes.lock().is_empty(),
+                "no delete may be issued for a caller-provided session"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Fresh ids regenerate while the id is taken; a free seed is accepted
+    /// unchanged (no busy regeneration loop on the happy path).
+    #[test]
+    fn mint_fresh_session_id_regenerates_while_taken() {
+        let taken = "agentic_recycled_pid_0";
+        let minted = super::mint_fresh_session_id(|id| id == taken, taken.to_owned());
+        assert_ne!(
+            minted, taken,
+            "a taken id must be regenerated, never returned (PID-reuse overwrite)"
+        );
+        assert!(
+            minted.starts_with("agentic_"),
+            "regeneration mints real headless ids: {minted}"
+        );
+        // The free-seed path returns the seed itself — the run keeps using
+        // the caller-visible counter, not a different id mid-run.
+        let free = "agentic_free_seed_0";
+        let minted = super::mint_fresh_session_id(|_| false, free.to_owned());
+        assert_eq!(minted, free);
     }
 }

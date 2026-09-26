@@ -179,9 +179,12 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
 /// download runs: the flag resets when the next download starts, so one
 /// cancel never poisons the process's later downloads.
 ///
-/// Headless caller (the CLI families stack): the base tree had removed the
-/// cancel entry point along with the `kb_model_cancel` command; this pub
-/// surface restores it for the stacked CLI only — no in-tree caller.
+/// Signal surface without a caller in any current tree: the stacked CLI
+/// families PR deliberately refuses to call this from its `model cancel`
+/// subcommand — this process-local flag can never reach a download running
+/// in the desktop-app process, and a command reporting success that cannot
+/// cancel anything would be dishonest. It stays for a possible GUI entry
+/// point, same rationale as `KnowledgeService::cancel_scan`.
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
