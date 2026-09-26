@@ -14,7 +14,6 @@ import { AcpAgentLogo } from '../features/codex/AcpAgentLogo.jsx';
 import { CodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { PinvouLogo } from '../components/PinvouLogo.jsx';
 import { MobileMoreSheet, MobileTabBar, MobileTopBar } from '../components/layout/MobileShell.jsx';
-import { VllmSetupProgress } from '../components/VllmSetupProgress.jsx';
 import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shouldShowApiKeyGate } from '../hooks/useBridge.js';
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
@@ -961,13 +960,6 @@ const NAV_PREFETCH = {
       }, [currentView]);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
       useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
-      // 厂商预装本地大模型首屏检测:仅启动一次,检测「预装但未启用」本地大模型环境(后端短路保证普通机零开销)。
-      useEffect(() => {
-        if (bridge.available && platformCapabilities.localVllmSupported) {
-          bridge.vllm.detectLocalVllmSetup();
-        }
-      }, [platformCapabilities.localVllmSupported]);
-      const [vllmDeclineConfirm, setVllmDeclineConfirm] = useState(false); // 引导框「不再提醒」二次确认子态
       const [language, setLanguage] = useState(() => {
         const systemLanguage = initialSystemLanguage();
         if (!isWeb) return systemLanguage;
@@ -2894,13 +2886,6 @@ const NAV_PREFETCH = {
       }), [t, beginTearOff]);
       const openSearchOverlay = useCallback(() => setSearchOverlayOpen(true), []);
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
-      const vllmSetupModalOpen = !!(
-        can('localModelSetup')
-        && bs
-        && bs.vllmSetup
-        && bs.vllmSetup.eligible
-        && !bs.vllmSetupDismissed
-      );
       const browserOverlayIntent = [
         archiveConfirm ? 'archive-confirm' : '',
         searchOverlayOpen ? 'search' : '',
@@ -2908,7 +2893,6 @@ const NAV_PREFETCH = {
         savedConfirm ? 'saved-confirm' : '',
         can('webAccessAdmin') && webAccessOpen ? 'web-access' : '',
         apiKeyGateOpen ? 'api-key' : '',
-        vllmSetupModalOpen ? 'vllm-setup' : '',
         bs && bs.pinvouModal ? 'pinvou-review' : '',
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
@@ -3811,70 +3795,6 @@ const NAV_PREFETCH = {
                     <button type="button" onClick={() => openSettingsSection('model')}
                       className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.apiKeyGateBtn}</button>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {/* 厂商预装本地大模型一键引导 —— 全局首屏弹窗;引导中禁止背景关窗 */}
-            {vllmSetupModalOpen && browserOverlayPublicationReady && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
-              // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
-              <div className="fixed inset-0 z-[56] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,.5)' }}
-                   onClick={() => { if (!bs.vllmBootstrapping) bridge.vllm.dismissVllmSetup(); }}>
-                {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the dialog */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-                <div className="w-full max-w-[440px] rounded-2xl p-6 ts-modal-in" onClick={(e) => e.stopPropagation()}
-                     style={{ background: activeTheme === 'dark' ? '#1E1F20' : '#FFFFFF', color: activeTheme === 'dark' ? '#E3E3E3' : '#1F1F1F', boxShadow: '0 12px 48px rgba(0,0,0,.35)' }}>
-                  <div className="flex items-center gap-2 mb-3">
-                    <PinvouLogo className="h-[22px] w-[22px] select-none" />
-                    <div className="text-[17px] font-semibold">{vllmDeclineConfirm && !bs.vllmBootstrapping && !bs.vllmBootstrapDone && !bs.vllmBootstrapError ? t.vllmDeclineTitle : t.vllmSetupTitle}</div>
-                  </div>
-                  {bs.vllmBootstrapping ? (
-                    <VllmSetupProgress phase={bs.vllmSetupPhase} attempt={bs.vllmSetupAttempt} isDark={activeTheme === 'dark'} t={t} />
-                  ) : bs.vllmBootstrapDone ? (
-                    <div>
-                      <div className="text-[14px] leading-relaxed mb-4">{t.vllmSetupDone}</div>
-                      <div className="flex justify-end">
-                        <button type="button" onClick={() => bridge.available && bridge.updater.restartApp()}
-                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.restartNow}</button>
-                      </div>
-                    </div>
-                  ) : bs.vllmBootstrapError ? (
-                    <div>
-                      <div className="text-[14px] font-medium mb-1" style={{ color: '#E5484D' }}>{t.vllmSetupFailed}</div>
-                      <div className="text-[13px] leading-relaxed mb-4 break-words" style={{ opacity: .75 }}>{bs.vllmBootstrapError}</div>
-                      <div className="flex justify-end gap-2">
-                        <button type="button" onClick={() => bridge.vllm.dismissVllmSetup()}
-                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                        <button type="button" onClick={() => bridge.vllm.bootstrapLocalVllm()}
-                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupRetry}</button>
-                      </div>
-                    </div>
-                  ) : vllmDeclineConfirm ? (
-                    <div>
-                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmDeclineDesc}</div>
-                      <div className="flex justify-end gap-2">
-                        <button type="button" onClick={() => setVllmDeclineConfirm(false)}
-                          className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmDeclineReconsider}</button>
-                        <button type="button" onClick={() => { setVllmDeclineConfirm(false); bridge.vllm.declineVllmSetup(); }}
-                          className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#E5484D' }}>{t.vllmDeclineConfirm}</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="text-[14px] leading-relaxed mb-4" style={{ opacity: .85 }}>{t.vllmSetupDesc}</div>
-                      <div className="flex items-center justify-between gap-2">
-                        <button type="button" onClick={() => setVllmDeclineConfirm(true)}
-                          className="h-9 px-3 rounded-lg text-[13px] hover:underline" style={{ color: activeTheme === 'dark' ? '#8E8E8E' : '#757575' }}>{t.vllmSetupNever}</button>
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => bridge.vllm.dismissVllmSetup()}
-                            className="h-9 px-4 rounded-lg text-[14px]" style={{ background: activeTheme === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)' }}>{t.vllmSetupSkip}</button>
-                          <button type="button" onClick={() => bridge.vllm.bootstrapLocalVllm()}
-                            className="h-9 px-4 rounded-lg text-[14px] font-medium text-white" style={{ background: '#0A84FF' }}>{t.vllmSetupEnable}</button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             )}

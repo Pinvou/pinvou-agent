@@ -73,7 +73,6 @@ function injectSource() {
       check_for_update:function(){return {available:false};},
       get_mode_state:function(){return {mode:'yolo',plan_phase:'none'};},
       get_super_permission_status:function(){return false;},
-      detect_local_vllm_setup:function(){return {eligible:false};},
       list_marketplace_tools:function(){return tools.slice();},
       // 卸载后工具从后端列表消失(真实后端语义:自定义 MCP 卸载删登记,不再列出)。
       uninstall_marketplace_tool:function(args){

@@ -1219,8 +1219,9 @@ pub async fn test_image_input_capability(
     Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
 }
 
-/// 通用设置字段补丁。搜索、桌宠、模型列表和本地模型初始化状态由专用命令管理，
-/// 不进入这个协议，避免调用方携带旧的完整快照覆盖其他操作刚写入的值。
+/// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
+/// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
+/// another operation just wrote.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralSettingsPatch {
@@ -1274,11 +1275,10 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
         current.sidebar = sidebar;
     }
     if let Some(mut advanced) = patch.advanced {
-        // 这些字段有各自的专用写命令。即使高级设置来自旧快照，也无权覆盖它们。
+        // The model list and active model have dedicated write commands; an advanced-settings patch built from a
+        // stale snapshot must not overwrite them.
         advanced.saved_models = current.advanced.saved_models.clone();
         advanced.active_model_id = current.advanced.active_model_id.clone();
-        advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
-        advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
         current.advanced = advanced;
     }
 }

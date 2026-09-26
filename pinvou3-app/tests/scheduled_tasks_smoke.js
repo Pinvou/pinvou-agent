@@ -95,7 +95,6 @@ function injectSource() {
         case 'get_session_persona_events': return Promise.resolve([]);
         case 'get_session_pinvou_reviews': return Promise.resolve([]);
         case 'get_memory_overview': return Promise.resolve({});
-        case 'detect_local_vllm_setup': return Promise.resolve({ eligible: false });
         case 'read_scheduled_task':
           return Promise.resolve(TASKS.find(function(task) { return task.id === args.id; }) || null);
         case 'list_scheduled_task_runs':

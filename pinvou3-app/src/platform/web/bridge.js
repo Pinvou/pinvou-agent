@@ -296,14 +296,6 @@ function pinvouSharedweb() {
     depsInstallError: null,   // 安装失败原因(apt stderr 透传/取消/pkexec 不可用)
     // Same-shape desktop-slice stub: install progress events occur only during a desktop one-click install; always null on the web.
     depsInstallProgress: null,
-    // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:'stopped' in community (sole enum variant; vendor builds may extend), ...}
-    vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // 阶段:'authorizing'|'waiting'|'ready'(引导开始时本地置 'authorizing')
-    vllmSetupAttempt: 0,      // waiting 阶段第几次探测(后端报)
-    vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
-    vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
-    vllmSetupDismissed: false,// 本次会话内点了「跳过」,不再弹(不写持久标记)
     voiceInput: {
       status: "idle",         // idle | requesting_permission | recording | transcribing | completed | cancelled | failed
       message: "",
