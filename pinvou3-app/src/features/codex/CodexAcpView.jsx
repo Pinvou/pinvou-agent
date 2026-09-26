@@ -17,7 +17,6 @@ import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
   latestAgentRuntimeNotice,
-  runtimeOperationFor,
 } from './runtimeNoticeState.js';
 import {
   AgentRuntimeNotice,
