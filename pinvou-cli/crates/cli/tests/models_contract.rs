@@ -1080,6 +1080,11 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
         "--set-active",
     ]);
     assert!(stdout.starts_with("id: "), "{stdout}");
+    let broken_id = stdout
+        .strip_prefix("id: ")
+        .expect("prints the new id")
+        .trim()
+        .to_owned();
     let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
     assert_eq!(
         code,
@@ -1094,6 +1099,40 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     // the classification follows where the url came from, not its shape.
     let (_, code) = run_err(&["pinvoy", "models", "probe-local", "--url", "not a url"]);
     assert_eq!(code, ExitCode::Usage);
+
+    // Channel pinning (round-20 finding M-MINOR-a): the exact same defect —
+    // a malformed stored base_url — surfaces through two channels by design.
+    // `models test` renders it as a RESULT payload on stdout (every `models
+    // test` outcome is a probe row, so scripts branch on stdout + exit 1);
+    // `probe-local` refuses it up front as a host error on stderr (its URL
+    // guard classifies the stored value before any probe request can run).
+    // The two commands agree on the code and the exit code; only the
+    // channel differs, which docs/pinvou-cli.md discloses.
+    let (stdout, code) = run_outcome(&["pinvoy", "--output", "json", "models", "test", &broken_id]);
+    assert_eq!(
+        code,
+        ExitCode::Failed,
+        "models test's invalid_url is an exit-1 outcome"
+    );
+    let row: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
+    assert_eq!(row["ok"], false);
+    assert_eq!(row["code"], "invalid_url");
+    assert!(
+        row["detail"]
+            .as_str()
+            .is_some_and(|detail| !detail.is_empty()),
+        "the parse error itself is the detail: {stdout}"
+    );
+    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    assert_eq!(
+        code,
+        ExitCode::Failed,
+        "probe-local's malformed stored url is a host failure too: {message}"
+    );
+    assert!(
+        message.contains("invalid_url"),
+        "same code, different channel (stderr CliError, not a stdout row): {message}"
+    );
 }
 
 /// An empty value for a valued option is a missing value in the `models`
@@ -1329,10 +1368,17 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
 /// `--yes` the command must refuse with the family's confirmation-refusal
 /// shape (usage error naming `--yes`), with `--yes` it must proceed.
 ///
-/// Both cases drive the real store under a sandboxed `PINVOU3_HOME`. The
-/// model is never configured, so the clear path runs end to end without
-/// touching any keyring entry (the keyring deletion is gated on the model's
-/// stored `credential_ref`).
+/// Both cases drive `execute` under a sandboxed `PINVOU3_HOME`. The model is
+/// never configured, so the with-`--yes` leg performs NO keyring operation:
+/// the keyring deletion is gated on the model's stored `credential_ref` —
+/// a round-20 fix; before it, this leg asked the REAL OS keyring to delete
+/// the `model:default` reference `credential_reference()` synthesizes,
+/// which errors on most keyrings. The gate itself is behaviourally pinned in
+/// the crate's unit lane tests through the injected `RecordingStore`
+/// (`edit_clear_without_a_stored_reference_never_deletes_from_the_keyring`):
+/// a model with no stored reference never issues a `delete`, even with
+/// `--yes`. This execute-level test cannot observe the store, so it pins the
+/// observable end of the contract (exit codes, settings.json, output).
 #[test]
 fn models_edit_clear_api_key_requires_yes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

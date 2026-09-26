@@ -1356,7 +1356,10 @@ fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
 ///   closure and the keyring `.delete()` is DEFERRED to after the commit
 ///   (`save_model_inner`/`delete_model_inner`'s ordering contract — deleting
 ///   first would leave a configured-but-secretless model if the save failed;
-///   an orphaned entry is the benign direction).
+///   an orphaned entry is the benign direction). The delete targets only the
+///   model's stored `credential_ref`: a never-configured model has no keyring
+///   entry, so there is nothing to delete (the same gate `models remove` and
+///   `search set --clear` apply).
 #[allow(clippy::too_many_arguments)]
 fn edit<S: CredentialStore>(
     store: &S,
@@ -1419,12 +1422,17 @@ fn edit<S: CredentialStore>(
                 updated.mark_configured(reference);
             }
             // Delete: the record is cleared now, the keyring entry after the
-            // commit.
+            // commit — gated on the model actually holding a stored
+            // `credential_ref`. A never-configured model has no keyring
+            // entry, and deleting the `model:{id}` reference
+            // `credential_reference()` would synthesize anyway errors on
+            // most keyrings — a spurious warning for a no-op. The same gate
+            // `models remove` (its `credential_ref` lookup with no fallback)
+            // and `search set --clear` (a never-configured provider has no
+            // keyring entry) already apply; all three deletion lanes share
+            // one contract.
             (_, true) => {
-                reference_to_delete = updated
-                    .credential_ref
-                    .clone()
-                    .or_else(|| Some(updated.credential_reference()));
+                reference_to_delete = updated.credential_ref.clone();
                 updated.mark_missing();
             }
             // KeepExisting: the clone already carries the stored credential
@@ -4432,6 +4440,98 @@ mod tests {
             store.operations()
         );
         assert!(store.entries().is_empty(), "the key must be gone");
+        assert_eq!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model kept")
+                .credential_state,
+            CredentialState::Missing,
+            "the cleared model must be marked missing, not configured"
+        );
+    }
+
+    /// Round-20 review finding (M1): the `--clear-api-key` deletion lane used
+    /// to synthesize a `model:{id}` reference when the model had no stored
+    /// `credential_ref` (`or_else(|| Some(updated.credential_reference()))`),
+    /// then called the keyring's `delete` on it after the commit. A
+    /// never-configured model has no keyring entry, and deleting a
+    /// never-written reference errors on most keyrings — a spurious warning
+    /// for a no-op — and through `execute` that delete reached the REAL OS
+    /// keyring. The lane now gates exactly like `models remove` and
+    /// `search set --clear` (stored `credential_ref` only, no fallback).
+    /// Red-style: against the pre-fix code this test fails, because the
+    /// injected store records a `delete:` for a model that never stored
+    /// anything under any reference.
+    #[test]
+    fn edit_clear_without_a_stored_reference_never_deletes_from_the_keyring() {
+        let _home = TempHome::new("edit-clear-no-ref");
+        let store = RecordingStore::new();
+
+        // A model added without a key: nothing is ever written, so
+        // `credential_ref` stays None (`apply_new_model_credential` runs
+        // `mark_missing` without touching the store).
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "NoKey",
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            &None,
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        assert!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model persisted")
+                .credential_ref
+                .is_none(),
+            "the fixture must be a model with no stored credential reference"
+        );
+        assert!(
+            store.operations().is_empty(),
+            "a keyless add must not touch the store: {:?}",
+            store.operations()
+        );
+
+        // clear with --yes through the same seam: the command succeeds, the
+        // prefs record flips to missing, and the store sees NO operation —
+        // in particular no `delete:` against a synthesized reference.
+        let outcome = edit(
+            &store,
+            &id,
+            &ModelEdit::default(),
+            &None,
+            false,
+            true,
+            true,
+            false,
+            OutputMode::Human,
+        )
+        .expect("edit succeeds");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        assert!(
+            outcome.stdout.contains("credential: cleared"),
+            "the clear must still report itself: {}",
+            outcome.stdout
+        );
+        assert!(
+            store.operations().is_empty(),
+            "a model without a stored credential_ref must never issue a keyring delete: {:?}",
+            store.operations()
+        );
         assert_eq!(
             UserPrefs::load()
                 .model_by_id(&id)
