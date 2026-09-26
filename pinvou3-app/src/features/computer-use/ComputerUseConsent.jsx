@@ -122,6 +122,13 @@ export function ComputerUseDialogs({ slice, copy }) {
   const { pendingAction, actionError, clearActionError, run } = useConsentAction(copy);
   const grantRequest = view.grantRequest;
   const confirmRequest = view.confirmRequest;
+  // The backend names an unreadable screening slot with the canonical
+  // "(no readable target)" sentinel (it is also the approval-token binding,
+  // so it must stay locale-independent on the wire); the dialog localizes it
+  // for the user at render time.
+  const UNREADABLE_TARGET = '(no readable target)';
+  const localizeTarget = (element) =>
+    element === UNREADABLE_TARGET ? copy.unreadableTarget : element;
   // Focus the safe (deny) button of whichever dialog is up; effects may read
   // refs, render may not, so the refs are per-dialog and never spread around.
   const grantDenyRef = useRef(null);
@@ -303,7 +310,7 @@ export function ComputerUseDialogs({ slice, copy }) {
             {confirmRequest.element && (
               <div className="flex gap-2">
                 <span className="shrink-0 opacity-60">{copy.confirmElementLabel}</span>
-                <span className="min-w-0 break-words">{confirmRequest.element}</span>
+                <span className="min-w-0 break-words">{localizeTarget(confirmRequest.element)}</span>
               </div>
             )}
           </div>
