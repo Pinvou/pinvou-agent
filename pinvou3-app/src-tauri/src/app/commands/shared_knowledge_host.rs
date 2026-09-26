@@ -191,7 +191,7 @@ pub async fn shared_kb_host_backup(
         .path()
         .resource_dir()
         .map_err(|error| error.to_string())?;
-    let manifest = shared_knowledge_host::backup_host(
+    shared_knowledge_host::backup_host(
         packaged_resources(&resource_dir),
         destination,
         local_identity.to_public().to_string(),
@@ -199,7 +199,6 @@ pub async fn shared_kb_host_backup(
     )
     .await?;
     Ok(shared_knowledge_host::HostBackupResult {
-        manifest,
         recovery_code: recovery_identity.to_string().expose_secret().to_string(),
     })
 }
@@ -247,7 +246,6 @@ pub async fn shared_kb_host_restore(
         content_only,
     )
     .await?;
-    let _ = restored.manifest;
     if content_only {
         let claim = restored
             .owner_claim

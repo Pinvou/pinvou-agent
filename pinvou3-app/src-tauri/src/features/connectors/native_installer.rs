@@ -452,7 +452,7 @@ mod tests {
 
             fs::create_dir_all(&bin_dir).unwrap();
             fs::write(&legacy, b"fake-cli-binary").unwrap();
-            let sha = crate::platform::connector_lock::file_sha256_hex(&legacy).unwrap();
+            let sha = crate::platform::hashing::sha256_file(&legacy).unwrap();
             fs::create_dir_all(old_version_exe.parent().unwrap()).unwrap();
             fs::write(&old_version_exe, b"older").unwrap();
 

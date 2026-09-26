@@ -25,6 +25,8 @@ pub(super) enum EventSource {
     Frontend,
 }
 
+/// Bridge-generation replay actions. Also returned by
+/// `prepare_bridge_generation`, which never needs the `None` variant.
 pub(super) enum RpcRequestAction {
     None,
     Respond(RelaySender, Value),
@@ -79,15 +81,10 @@ pub(super) fn prepare_new_rpc_admission(
     Ok(NewRpcAdmission::Durable(next_ledger))
 }
 
-pub(super) enum RpcReadyAction {
-    Respond(RelaySender, Value),
-    Dispatch(RpcDispatch),
-}
-
 pub(super) fn prepare_bridge_generation(
     inner: &mut Inner,
     generation: &str,
-) -> Vec<RpcReadyAction> {
+) -> Vec<RpcRequestAction> {
     let generation_changed = inner.bridge_generation.as_deref() != Some(generation);
     inner.bridge_generation = Some(generation.to_string());
 
@@ -114,7 +111,7 @@ pub(super) fn prepare_bridge_generation(
                 },
             );
             if let Some((endpoint_id, sender)) = &response_target {
-                actions.push(RpcReadyAction::Respond(
+                actions.push(RpcRequestAction::Respond(
                     sender.clone(),
                     rpc_response(endpoint_id, &lease_id, &request_id, &completion),
                 ));
@@ -133,7 +130,7 @@ pub(super) fn prepare_bridge_generation(
             continue;
         };
         pending.dispatched_generation = Some(generation.to_string());
-        actions.push(RpcReadyAction::Dispatch(RpcDispatch {
+        actions.push(RpcRequestAction::Dispatch(RpcDispatch {
             request_id,
             command,
             args,

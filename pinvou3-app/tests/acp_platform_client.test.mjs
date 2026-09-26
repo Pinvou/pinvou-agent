@@ -78,6 +78,7 @@ globalThis.__TAURI__ = {
 };
 
 await import(`../src/shared/chunked-file-upload.js?test=${Date.now()}`);
+const attachmentLimits = globalThis.window.PinvouChunkedFileUpload;
 const acp = await import(`../src/features/codex/acpClient.js?test=${Date.now()}`);
 
 {
@@ -264,17 +265,17 @@ function mockFile(name, size) {
 
 {
   invocations.length = 0;
-  const file = mockFile('two-chunks.txt', acp.acpAttachmentLimits.chunkBytes + 9);
+  const file = mockFile('two-chunks.txt', attachmentLimits.CHUNK_BYTES + 9);
   const progress = [];
   const result = await acp.uploadAcpDeviceAttachment(file, {
     onProgress(value) { progress.push(value); },
   });
   const chunks = invocations.filter(item => item.command === 'web_access_upload_attachment_chunk');
   assert.equal(chunks.length, 2);
-  assert.deepEqual(chunks.map(item => item.args.offset), [0, acp.acpAttachmentLimits.chunkBytes]);
+  assert.deepEqual(chunks.map(item => item.args.offset), [0, attachmentLimits.CHUNK_BYTES]);
   assert.deepEqual(chunks.map(item => item.args.commit), [false, true]);
   assert.ok(chunks.every(item => Buffer.from(item.args.dataBase64, 'base64').length
-    <= acp.acpAttachmentLimits.chunkBytes));
+    <= attachmentLimits.CHUNK_BYTES));
   assert.equal(result.handle.startsWith('attachment_'), true);
   assert.equal(progress.at(-1), 100);
 }
@@ -283,7 +284,7 @@ function mockFile(name, size) {
   invocations.length = 0;
   cancelAfterFirstChunk = true;
   cancelled = false;
-  const file = mockFile('cancel.txt', acp.acpAttachmentLimits.chunkBytes + 1);
+  const file = mockFile('cancel.txt', attachmentLimits.CHUNK_BYTES + 1);
   await assert.rejects(
     acp.uploadAcpDeviceAttachment(file, { isCancelled: () => cancelled }),
     error => error.code === 'device_upload_cancelled',
@@ -304,7 +305,7 @@ function mockFile(name, size) {
 
 {
   invocations.length = 0;
-  const oversized = mockFile('oversized.bin', acp.acpAttachmentLimits.maxBytes + 1);
+  const oversized = mockFile('oversized.bin', attachmentLimits.MAX_FILE_BYTES + 1);
   await assert.rejects(
     acp.uploadAcpDeviceAttachment(oversized),
     error => error.code === 'device_upload_too_large',

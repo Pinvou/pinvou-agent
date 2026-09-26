@@ -510,15 +510,18 @@ fn display_chat_message(
     if attachments.is_empty() {
         return message.to_string();
     }
-    let names = attachments
-        .iter()
-        .map(|attachment| attachment.basename.as_str())
-        .collect::<Vec<_>>();
     // Persist a JSON array after the human-readable marker. Unlike the legacy
     // `name · name` format, this preserves every legal filename exactly.
-    // Serializing a Vec<&str> to a JSON array cannot fail (no map keys, no
-    // non-string types).
-    let names = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
+    // The array is assembled from `Value::String` directly, so producing it is
+    // infallible by construction: there is no serializer that can fail here and
+    // therefore no fallback value that could misrepresent the attachment list.
+    let names = serde_json::Value::Array(
+        attachments
+            .iter()
+            .map(|attachment| serde_json::Value::String(attachment.basename.clone()))
+            .collect(),
+    )
+    .to_string();
     if message.trim().is_empty() {
         format!("📎 {names}")
     } else {

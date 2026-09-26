@@ -3190,6 +3190,36 @@ fn ignore_pending_memory_never_clobbers_a_confirmed_item() {
     );
 }
 
+/// The deliberate asymmetry to the test above: `never` has no automated caller,
+/// so a confirmed candidate must still be blacklisted when the user explicitly
+/// asks for it. An `ignore`-style decided guard here would turn the click into a
+/// silent no-op that the command still reports to the user as success.
+#[test]
+fn never_pending_memory_blacklists_even_a_confirmed_item() {
+    let _home = IsolatedPinvouHome::new("pending-never-vs-confirm");
+    enable_memory_for_tests();
+    let candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "answer_style".to_string(),
+        content: "回答保持简洁分点".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&candidate.id).unwrap();
+
+    let event = never_pending_memory(&candidate.id, Some("user_selected".to_string()))
+        .unwrap()
+        .expect("an explicit never click must report the write it performed");
+    assert_eq!(event.action, "never");
+    assert!(
+        load_never_memory()
+            .unwrap()
+            .iter()
+            .any(|item| item.pattern == "回答保持简洁分点"),
+        "the content the user asked never to see again must reach the never list"
+    );
+}
+
 #[test]
 fn organize_validation_drops_out_of_scope_and_sensitive_actions() {
     let _home = IsolatedPinvouHome::new("organize-guards");

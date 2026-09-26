@@ -95,8 +95,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints, map_scroll,
+    normalize_typed_newlines, sanitize_name, screening_name, split_type_runs,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -1599,7 +1599,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
                 self.post_mouse_event(up, cg_button, dest, click_state)
                     .map_err(|retry| {
-                        ComputerUseError::failed(format!(
+                        // same_kind, not ::failed: a TCC revocation mid-click surfaces as
+                        // Unavailable, and re-wrapping it as `failed` would destroy exactly
+                        // the classification combine_drag_errors exists to preserve.
+                        error.same_kind(format!(
                             "click release failed twice ({error}; {retry}); \
                              the mouse button may still be pressed"
                         ))
@@ -1699,23 +1702,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         if release.is_ok() {
             self.held_buttons.retain(|held| *held != MouseButton::Left);
         }
-        match (result, release) {
-            (Ok(()), Ok(())) => {}
-            // Only the path move failed and the release succeeded: report the
-            // move error unchanged.
-            (Err(move_error), Ok(())) => return Err(move_error),
-            (Ok(()), Err(release)) => {
-                return Err(ComputerUseError::failed(format!(
-                    "drag release failed ({release}); the mouse button may still be pressed"
-                )));
-            }
-            (Err(move_error), Err(release)) => {
-                return Err(ComputerUseError::failed(format!(
-                    "drag move failed ({move_error}); its release also failed ({release}); \
-                     the mouse button may still be pressed"
-                )));
-            }
-        }
+        combine_drag_errors(result, release)?;
         // The drag endpoint is where the cursor lands; refresh the trusted
         // landing point (the start move does not change it).
         self.pending_move_target = Some(to);

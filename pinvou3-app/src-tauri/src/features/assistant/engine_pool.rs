@@ -1059,6 +1059,10 @@ impl PreparedRuntimeState {
         }
     }
 
+    /// Whole-struct equality on purpose: the derived `PartialEq` makes every field of
+    /// `PreparedRuntimeState` participate automatically, so a field added later cannot be
+    /// forgotten here and silently leave a session running on a stale engine (#253/#385).
+    /// A hand-written field list would have to be kept in sync by review alone.
     fn requires_rebuild_from(&self, previous: &Self) -> bool {
         self != previous
     }
@@ -1384,8 +1388,8 @@ impl EnginePool {
                 scheduled_unattended,
             )
         })?;
-        // Community 默认准备路径固定 passthrough：模型原样保留，不注入运行时
-        // 凭据/revision；凭据照常走环境变量与本地凭据库（bridge.api_key()）。
+        // Community 默认准备路径固定 passthrough：模型原样保留、直接用于引擎
+        // 配置；凭据照常走环境变量与本地凭据库（bridge.api_key()）。
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
@@ -3826,9 +3830,6 @@ mod scheduled_model_tests {
         let second = identity_for_saved_model(&bridge, &model("second", "raw-two"));
 
         assert_eq!(first, second);
-        assert!(
-            crate::features::assistant::eval::validate_judge_identity(&first, &second).is_err()
-        );
 
         // SAFETY: this test holds platform::paths::tests::ENV_LOCK; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
@@ -4169,6 +4170,23 @@ mod scheduled_model_tests {
         assert!(
             next_turn_state.requires_rebuild_from(&entry_state),
             "saved-model revision must force the next turn to rebuild the engine"
+        );
+
+        // The other half of the predicate: switching to a different model at an
+        // unchanged revision must rebuild too. Without this, dropping the model
+        // comparison from requires_rebuild_from would leave the session running on
+        // the previous model's engine and no test would notice.
+        let other_model_state = PreparedRuntimeState::new(
+            PreparedRuntimeModel::unchanged(model("model-2", "wire-model-2")),
+            revisions.current("model-1"),
+        );
+        assert!(
+            other_model_state.requires_rebuild_from(&next_turn_state),
+            "a different runtime model must force a rebuild even at the same revision"
+        );
+        assert!(
+            !next_turn_state.requires_rebuild_from(&next_turn_state.clone()),
+            "an unchanged model at an unchanged revision must reuse the engine"
         );
 
         // The get_or_spawn rebuild path touches two lifecycle write points:

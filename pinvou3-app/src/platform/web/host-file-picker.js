@@ -39,6 +39,15 @@
     return node;
   }
 
+  // The ParentNode bulk-replace API lands in Safari 14.1, above the declared Safari
+  // 14.0 baseline (macOS 11 WKWebView), and is pinned against by
+  // tests/macos_phase2_contract.test.js. textContent is universally supported and
+  // drops element, text and comment children in a single operation.
+  function clearChildren(node, replacement) {
+    node.textContent = "";
+    if (replacement) node.append(replacement);
+  }
+
   function entryIsDirectory(entry) {
     return entry && (entry.is_dir === true || entry.isDir === true || entry.kind === "directory" || entry.kind === "root");
   }
@@ -172,7 +181,7 @@
       }
 
       function renderEntries(entries, preserveOrder) {
-        body.replaceChildren();
+        clearChildren(body);
         entries = entries.filter(function (entry) { return allowedByFilters(entry, options.filters); });
         if (!preserveOrder) {
           entries.sort(function (a, b) {
@@ -263,7 +272,7 @@
         rootsButton.disabled = rootEntries.length === 0;
         up.disabled = true;
         confirm.disabled = true;
-        body.replaceChildren(element("div", "pinvou-host-picker-status", labels.loadingPath));
+        clearChildren(body, element("div", "pinvou-host-picker-status", labels.loadingPath));
         client.invoke("web_access_list_host_files", {
           path: path || null,
           // Grants are minted only for the directory the user finally
@@ -282,7 +291,7 @@
             return;
           }
           rootsButton.disabled = rootEntries.length === 0;
-          body.replaceChildren(element("div", "pinvou-host-picker-error",
+          clearChildren(body, element("div", "pinvou-host-picker-error",
             labels.loadFailed(localizedPickerError(error))));
         });
       }
@@ -327,7 +336,7 @@
             if (disposed || confirmedGeneration !== loadGeneration) return;
             mintInFlight = false;
             confirm.disabled = false;
-            body.replaceChildren(element("div", "pinvou-host-picker-error",
+            clearChildren(body, element("div", "pinvou-host-picker-error",
               labels.loadFailed(localizedPickerError(error))));
           });
         } else if (directoryMode) finish(currentPath);

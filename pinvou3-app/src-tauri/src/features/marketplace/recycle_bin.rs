@@ -225,7 +225,7 @@ impl RecycleBin {
             id: pkg_id.to_string(),
             display_name: display_name.to_string(),
             kind: kind.to_string(),
-            recycled_at: now_iso8601(),
+            recycled_at: super::store::now_iso8601(),
             record: record_snapshot,
             extra: serde_json::Map::new(),
         });
@@ -568,11 +568,6 @@ fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
         .map_err(|e| format!("序列化 recycle-bin.json 失败: {e}"))?;
     deepseek_tui::utils::write_atomic(path, json.as_bytes())
         .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
-}
-
-/// 回收时间戳：RFC3339/ISO8601 UTC，对齐 store.rs 的 chrono 惯例。
-fn now_iso8601() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]

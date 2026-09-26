@@ -568,48 +568,6 @@ html.pet-window #root {
   max-width: 100%;
 }
 
-/* 等比例缩放手柄：锚定人物自身右下角，默认隐藏，悬停时出现。 */
-.pet-resize-grip {
-  position: absolute;
-  bottom: 4px;
-  z-index: 8;
-  width: 18px;
-  height: 18px;
-  cursor: nwse-resize;
-  opacity: 0;
-  pointer-events: none;
-  touch-action: none;
-  transition: opacity 0.14s ease;
-}
-.pet-character-slot > .pet-resize-grip {
-  left: auto;
-  right: 6px;
-  bottom: 0;
-}
-.pet-resize-grip-icon {
-  position: absolute;
-  right: 1px;
-  bottom: 1px;
-  width: 16px;
-  height: 16px;
-  overflow: visible;
-  fill: none;
-  stroke: rgba(57, 63, 70, 0.9);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  pointer-events: none;
-}
-.pet-root:hover .pet-resize-grip,
-.pet-resize-grip:active {
-  opacity: 0.68;
-  pointer-events: auto;
-}
-.pet-root:hover .pet-resize-grip:hover,
-.pet-resize-grip:active {
-  opacity: 1;
-}
-
 /* 活动卡收起徽标：锚在人物头部右上（百分比定位，随缩放自适应——
    精灵帧四周有透明留白，不能贴槽的边缘）。展开态是毛玻璃"−"小圆钮，
    与活动卡同一视觉语言；收起态换蓝底数字。 */

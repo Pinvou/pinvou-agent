@@ -2,7 +2,7 @@
 //!
 //! 职责边界——本模块只管「向 upstream 探一次模型健康 + 拉本地 vLLM `/metrics`」，
 //! 不涉及系统自指标采集（CPU/GPU/内存见 [`super::self_metrics`]）。
-//! 入口：[`active_model_snapshot`] / [`vllm_snapshot`] / [`snapshot_for_model_config`]。
+//! 入口：[`active_model_snapshot`] / [`snapshot_for_model_config`]。
 //! 对外类型：[`VllmSnapshot`] / [`VllmStatus`]。
 
 use std::time::Duration;
@@ -112,21 +112,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         preset,
         api_key.as_deref(),
         configured_context,
-    )
-    .await
-}
-
-/// 兼容旧调用。优先用于本地 vLLM 探测；active-model 面板走 `active_model_snapshot()`。
-pub async fn vllm_snapshot(
-    upstream: &str,
-    configured_model: Option<String>,
-) -> Option<VllmSnapshot> {
-    snapshot_for_model_config(
-        upstream,
-        configured_model,
-        ModelPreset::LocalVllm,
-        None,
-        None,
     )
     .await
 }
@@ -645,36 +630,6 @@ pub async fn resolve_served_model(
 /// extra condition complexity is added for that corner.
 pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
     follows_served_name || served == configured
-}
-
-/// 当前 monitor/探测应使用的 vLLM base_url。
-/// 优先级：环境变量 `DEEPSEEK_BASE_URL` > settings.json `custom_base_url` > 默认值。
-/// 与 Engine 使用的逻辑保持一致（见 `bridge::Pinvou3Bridge::base_url`）。
-pub fn vllm_base_url() -> String {
-    if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
-        return v;
-    }
-    let prefs = crate::platform::prefs::UserPrefs::load();
-    prefs
-        .active_model()
-        .map(|m| m.base_url.clone())
-        .unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string())
-}
-
-/// 用户配置的模型名（用于 monitor 显示"配置目标"）。
-/// 优先级：环境变量 `DEEPSEEK_MODEL` > settings.json `custom_model_name` > None。
-pub fn vllm_configured_model() -> Option<String> {
-    if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
-        return Some(v);
-    }
-    let prefs = crate::platform::prefs::UserPrefs::load();
-    match prefs.active_model() {
-        // 本地 vLLM 动态跟随实际 served name(见 EnginePool::fresh_bridge_for),
-        // 不声明固定配置目标 → 监控不做 mismatch 误报,只显示 vLLM 实际名字。
-        Some(m) if m.preset == crate::platform::prefs::ModelPreset::LocalVllm => None,
-        Some(m) => Some(m.model.clone()),
-        None => None,
-    }
 }
 
 #[cfg(test)]

@@ -158,6 +158,12 @@ pub fn bundled_node() -> Option<PathBuf> {
     crate::platform::paths::bundled_connector_node()
 }
 
+/// `command_exists` is spawn-faithful here even though it also scans
+/// `extra_lookup_dirs()`: `lib.rs` `ensure_release_env` prepends every one of those
+/// dirs (Homebrew bin + the cask app's MacOS dir) to the *process* PATH during
+/// single-threaded startup, so a bare "soffice" that passes the preflight is also
+/// resolvable by the later spawn. The absolute cask path stays as the fallback that
+/// feeds the "dependency missing" diagnostics.
 pub fn libreoffice_tool_path() -> PathBuf {
     if command_exists("soffice") {
         PathBuf::from("soffice")

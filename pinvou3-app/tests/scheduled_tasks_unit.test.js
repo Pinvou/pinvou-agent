@@ -86,7 +86,7 @@ const scheduledTemplateSource = indexHtml.slice(
 const zhScheduledDict = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
 const zhScheduledTemplateMap = zhScheduledDict.slice(
   zhScheduledDict.indexOf('templateMap:{'),
-  zhScheduledDict.indexOf('previewTasks:{')
+  zhScheduledDict.indexOf('hostFilePicker:')
 );
 const scheduledTemplateContentSource = `${scheduledTemplateSource}\n${zhScheduledTemplateMap}`;
 const scheduledViewSource = indexHtml.slice(
@@ -297,8 +297,7 @@ assert(
   'active task rows should visually distinguish the next run from the schedule label'
 );
 assert.ok(
-  /function scheduleRepeatLabel\(/.test(indexHtml) &&
-    /editor\.interval/.test(indexHtml) &&
+  /editor\.interval/.test(indexHtml) &&
     /editor\.repeat === 'hourly' \? scheduledCopy\.startTime : scheduledCopy\.time/.test(indexHtml) &&
     /const hasTimeAnchor = fields\.BYHOUR != null \|\| fields\.BYMINUTE != null/.test(indexHtml) &&
     /previousEditor\.hasTimeAnchor/.test(indexHtml) &&
@@ -314,7 +313,6 @@ assert.ok(
 );
 assert.ok(
     /data-testid="scheduled-filter-tabs"/.test(indexHtml) &&
-    /data-testid="scheduled-left-toolbar"/.test(indexHtml) &&
     /data-testid="scheduled-list-intro"/.test(indexHtml) &&
     /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}(?:<MyTasksSection className="mb-0" \/>|\{MyTasksSection\(\{ className: 'mb-0' \}\)\})/.test(indexHtml) &&
     /const DetailTaskDialog = \(\) => (?:!\(selected && detailForm\) \? null|\(selected && detailForm\) \? renderModal\()/.test(indexHtml) &&

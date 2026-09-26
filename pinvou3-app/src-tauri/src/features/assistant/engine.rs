@@ -1811,27 +1811,31 @@ impl AppEngine {
         })
     }
 
-    /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
-    ///
-    /// `mode` + `phase` 由 commands::chat 从 SessionStore 取当前 session 的
-    /// mode_state，注入 Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
-    /// M1 弱模型加固:bridge 按 phase 在 user content 前 prepend `<system-reminder>`。
-    pub async fn send_user_message(
+    /// Turn submission for headless harnesses (L1 integration harness, live
+    /// tests). Mirrors the production path: reserve the turn slot first, then
+    /// submit through `Self::send_reserved_user_message`, the same shape as
+    /// `EnginePool::send_user_message`. Production session turns call the
+    /// reservation API through `EnginePool` instead; the reservation types are
+    /// `pub(crate)`, so the integration-test process goes through this wrapper.
+    #[allow(dead_code)] // headless harnesses are the only callers; no production caller
+    pub async fn send_headless_user_message(
         &self,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
+        let reservation = self.turn_lifecycle.reserve()?;
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
-        let op = self.build_interactive_send_message_op(
+        self.send_reserved_user_message(
             content,
             mode,
             persona_reminder,
             restrict_tools,
             expert_snapshot,
-        )?;
-        self.send_turn_op(op).await
+            reservation,
+        )
+        .await
     }
 
     pub(crate) async fn send_reserved_user_message(
@@ -3879,17 +3883,12 @@ mod live_tests {
         let _lock = crate::bridge::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let _restore = EnvRestore::capture(&[
-            "DEEPSEEK_ALLOW_INSECURE_HTTP",
-            "DEEPSEEK_FORCE_HTTP1",
-            "PINVOU3_SKIP_WARMUP",
-        ]);
+        let _restore =
+            EnvRestore::capture(&["DEEPSEEK_ALLOW_INSECURE_HTTP", "DEEPSEEK_FORCE_HTTP1"]);
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_SKIP_WARMUP", "1") };
 
         let bridge = Pinvou3Bridge::boot().expect("boot bridge");
         let engine = AppEngine::spawn_headless(bridge)
@@ -3900,16 +3899,17 @@ mod live_tests {
         let sid = "live-test";
         let prompts = ["用一句话介绍你自己。", "再用一句话讲个冷笑话。"];
 
-        // 跑两轮:首轮 = 冷/warmup(A 跳过 TTFT/TPS),二轮 = 暖(记)。
+        // 跑两轮:首轮冷启,二轮暖。两轮都记 TTFT/TPS —— 早年的「首轮跳过」
+        // 分支连同它读的 warmed_sessions 集合早已下线,这里不能再假设它存在。
         engine
-            .send_user_message(
+            .send_headless_user_message(
                 prompts[0].to_string(),
                 SerializableMode::Yolo.to_app_mode(),
                 None,
                 false,
             )
             .await
-            .expect("send_user_message #1");
+            .expect("send_headless_user_message #1");
 
         let mut rx = engine.handle.rx_event.write().await;
         let mut turns_done = 0usize;
@@ -3948,14 +3948,14 @@ mod live_tests {
                     turns_done += 1;
                     if turns_done == 1 {
                         engine
-                            .send_user_message(
+                            .send_headless_user_message(
                                 prompts[1].to_string(),
                                 SerializableMode::Yolo.to_app_mode(),
                                 None,
                                 false,
                             )
                             .await
-                            .expect("send_user_message #2");
+                            .expect("send_headless_user_message #2");
                     } else {
                         break;
                     }
@@ -3979,7 +3979,7 @@ mod live_tests {
         );
         if s.ttft_count > 0 {
             eprintln!(
-                "[live] → 稳态 TTFT={:.3}s  TPS={:.1} tok/s (已排除首轮冷启)",
+                "[live] → 平均 TTFT={:.3}s  TPS={:.1} tok/s (含首轮冷启)",
                 s.ttft_sum_s / s.ttft_count as f64,
                 if s.tps_time_s > 0.0 {
                     s.tps_tokens as f64 / s.tps_time_s
@@ -3994,12 +3994,9 @@ mod live_tests {
             s.gen_tokens_total > 0,
             "无 output token 累加(usage 空?) seq={seq:?}"
         );
-        // 二轮纯文本(无工具)才断言:首轮已被 A 跳过,TTFT 应只来自二轮。
+        // 二轮纯文本(无工具)才断言:两轮各记一次 TTFT。
         if !tool_in_turn2 {
-            assert_eq!(
-                s.ttft_count, 1,
-                "二轮应恰好记 1 次 TTFT(首轮跳过) seq={seq:?}"
-            );
+            assert_eq!(s.ttft_count, 2, "两轮应各记 1 次 TTFT seq={seq:?}");
             assert!(s.tps_time_s > 0.0, "TPS 时长未记 seq={seq:?}");
         }
     }

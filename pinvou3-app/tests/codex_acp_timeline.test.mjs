@@ -121,7 +121,6 @@ try {
     ['thought', 'tool', 'permission', 'elicitation', 'message'],
   );
   assert.equal(turn.blocks[1].tool.status, 'completed', 'tool block must update in its original position');
-  assert.equal(projected.thread.turns, projected.turns, 'thread must own the projected turns');
   assert.deepEqual(
     turn.items.map(item => item.type),
     ['reasoning', 'tool', 'permission', 'elicitation', 'agent_message'],

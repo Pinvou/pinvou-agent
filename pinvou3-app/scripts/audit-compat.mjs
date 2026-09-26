@@ -54,6 +54,7 @@ const MEMBER_API_BASELINE = Object.assign(Object.create(null), {
   any: { note: 'AbortSignal.any — Safari 17.4', hostObject: 'AbortSignal' },
   timeout: { note: 'AbortSignal.timeout — Safari 15.4', hostObject: 'AbortSignal' },
   randomUUID: { note: 'crypto.randomUUID — Safari 15.4', hostObject: 'crypto' },
+  replaceChildren: { note: 'Element.replaceChildren — Safari 14.1' },
 });
 // Constructor/identifier globals requiring newer engines than Safari 14.0.
 const GLOBAL_API_BASELINE = Object.assign(Object.create(null), {

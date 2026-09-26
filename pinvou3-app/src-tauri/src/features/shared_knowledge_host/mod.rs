@@ -13,7 +13,6 @@ const LOCAL_ENDPOINT: &str = "https://127.0.0.1:3210";
 pub struct SharedKnowledgeHostStatus {
     pub supported: bool,
     pub installed: bool,
-    pub running: bool,
     pub endpoint: String,
     pub service_version: Option<String>,
     pub app_version: String,
@@ -73,13 +72,11 @@ pub struct HostOwnerClaim {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostBackupResult {
-    pub manifest: serde_json::Value,
     pub recovery_code: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct HostRestoreResult {
-    pub manifest: serde_json::Value,
     pub owner_claim: Option<HostOwnerClaim>,
 }
 
@@ -112,7 +109,6 @@ mod tests {
         SharedKnowledgeHostStatus {
             supported: true,
             installed: true,
-            running: true,
             endpoint: LOCAL_ENDPOINT.to_string(),
             service_version: Some("0.10.0".to_string()),
             app_version: "0.9.9".to_string(),

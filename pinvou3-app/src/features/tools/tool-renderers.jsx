@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, Wrench } from '../../components/icons.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
+import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
 import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
@@ -14,17 +15,6 @@ import {
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
-
-const isShellExecutionTool = name => [
-  'bash',
-  'exec_shell',
-  'exec_shell_wait',
-  'exec_wait',
-  'task_shell_start',
-  'task_shell_wait',
-  'shell',
-  'Bash',
-].includes(name);
 
 // P1-C：专家卡是桌面能力。Web 构建没有 multiAgent bridge（capability 关闭），
 // 强行渲染专家卡会吞掉原生 agent 工具的输出、点开只得空面板——capability

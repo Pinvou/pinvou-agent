@@ -170,8 +170,18 @@ pub(super) fn publish_kb_mount_change_with_remote(
         "revision": snapshot.revision,
     });
     if let Some(remote_collections) = remote_collections {
-        payload["remote_collections"] =
-            serde_json::to_value(remote_collections).unwrap_or(serde_json::Value::Null);
+        match serde_json::to_value(remote_collections) {
+            Ok(value) => {
+                payload["remote_collections"] = value;
+            }
+            // Omit the key rather than substituting `[]`/`null`: an empty array would
+            // claim "no remote collections are mounted", which is a different fact.
+            // A payload without the key is the same shape the local-mount path emits,
+            // and listeners already fall back to re-reading the authoritative snapshot.
+            Err(error) => log::warn!(
+                "[knowledge] failed to serialize mounted remote collections for session {session_id}: {error}"
+            ),
+        }
     }
     if let Err(error) = app.emit("remote_control:kb_mount_changed", payload.clone()) {
         // The invoking client still receives the authoritative snapshot (including revision), and

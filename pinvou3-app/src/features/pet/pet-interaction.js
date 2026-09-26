@@ -535,31 +535,3 @@ export function clampPetDragToBounds(state, bounds = state.bounds) {
     stopped: !state.holding,
   };
 }
-
-const MIN_SCALE = 0.5;
-const MAX_SCALE = 1.2;
-const BASE_WIDTH = 240;
-const BASE_HEIGHT = 330;
-
-export function scaleFromResizeDrag(current, deltaX, deltaY) {
-  const base = Number.isFinite(current) ? current : 1;
-  const scaleDelta = (
-    deltaX * BASE_WIDTH + deltaY * BASE_HEIGHT
-  ) / (BASE_WIDTH * BASE_WIDTH + BASE_HEIGHT * BASE_HEIGHT);
-  const next = base + scaleDelta;
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(next * 100) / 100));
-}
-
-export function petScreenAnchorFromRect({ position, rect, scaleFactor }) {
-  if (!position || !rect) return null;
-  const x = Number(position && position.x);
-  const y = Number(position && position.y);
-  const left = Number(rect && rect.left);
-  const top = Number(rect && rect.top);
-  const dpr = Number(scaleFactor);
-  if (![x, y, left, top, dpr].every(Number.isFinite) || dpr <= 0) return null;
-  return {
-    x: x + left * dpr,
-    y: y + top * dpr,
-  };
-}

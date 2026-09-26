@@ -46,10 +46,65 @@ pub struct DisabledBundlesFile {
     /// 未知键原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Set only on the synthetic fail-closed snapshot returned when the persisted
+    /// file could not be read or parsed. Never serialized: it exists so read-modify-write
+    /// callers can tell "this is the user's governance state" from "this is a guess
+    /// standing in for state we could not read", and refuse to persist the latter.
+    #[serde(skip)]
+    pub degraded: bool,
 }
 
 fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
+}
+
+/// Synthetic over-deny snapshot used when `disabled_bundles.json` exists but cannot be
+/// read or parsed. It is a *guess*, not the user's state: `hidden_scopes`, `extra` and
+/// `project_skills_enabled` are defaults rather than the persisted values, so it carries
+/// `degraded` and must never be written back (see `save_disabled_bundles_file_unless_degraded`).
+fn fail_closed_defaults() -> DisabledBundlesFile {
+    let mut ids = MarketplaceManager::new().installed_ids();
+    ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+    ids.extend(SkillMarketplaceManager::preset_skill_ids().map(|id| skill_owner_package(&id)));
+    ids.extend(
+        SkillMarketplaceManager::new()
+            .uploaded_skill_ids()
+            .iter()
+            .map(|id| skill_owner_package(id)),
+    );
+    ids.sort();
+    ids.dedup();
+
+    let mut file = DisabledBundlesFile {
+        degraded: true,
+        ..DisabledBundlesFile::default()
+    };
+    // SessionMode::ALL rather than a literal list: a mode added later must participate in
+    // the fail-closed default, otherwise it silently falls through to its pack default —
+    // which for an AllowAll mode is exactly the fail-open behaviour this guards against.
+    for mode in SessionMode::ALL {
+        file.initialized.insert(mode.as_str().to_string());
+        file.scopes.insert(mode.as_str().to_string(), ids.clone());
+    }
+    file
+}
+
+/// Persist a read-modify-write result, refusing to commit a degraded snapshot.
+///
+/// Writers read the current file, mutate it, and write it back. When the read
+/// degraded to `fail_closed_defaults`, committing would overwrite a possibly
+/// recoverable file with a synthetic over-deny set and erase `hidden_scopes`,
+/// `project_skills_enabled` and forward-compatible `extra` keys — turning a
+/// transient read error into permanent, irreversible data loss.
+fn save_disabled_bundles_file_unless_degraded(file: &DisabledBundlesFile) -> Result<(), String> {
+    if file.degraded {
+        return Err(
+            "disabled_bundles.json could not be read; refusing to overwrite it with fail-closed \
+             defaults. Fix or remove the file, then retry."
+                .to_string(),
+        );
+    }
+    save_disabled_bundles_file(file)
 }
 
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
@@ -70,19 +125,33 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                if let Err(error) = save_disabled_bundles_file(&file) {
+                if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
                     eprintln!("[scope] write disabled_bundles.json failed: {error}");
                 }
             }
             return file;
         }
+        Err(error) => {
+            eprintln!(
+                "[scope] read disabled_bundles.json failed; using fail-closed defaults: {error}"
+            );
+            return fail_closed_defaults();
+        }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "[scope] parse disabled_bundles.json failed; using fail-closed defaults: {error}"
+            );
+            return fail_closed_defaults();
+        }
+    };
     if strip_skill_prefixes(&mut file) {
-        if let Err(error) = save_disabled_bundles_file(&file) {
+        if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
         }
     }
@@ -139,14 +208,22 @@ fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
 /// layout in a later cycle).
 fn migrate_from_legacy_files() -> DisabledBundlesFile {
     let mut file = DisabledBundlesFile::default();
-    merge_connector_scopes_into(&mut file);
-    merge_skill_scopes_into(&mut file);
+    let connectors_unreadable = merge_connector_scopes_into(&mut file);
+    let skills_unreadable = merge_skill_scopes_into(&mut file);
+    if connectors_unreadable || skills_unreadable {
+        // Same rule as the new file: governance state that is present but unreadable must
+        // not silently become "nothing was disabled". Without this, one unreadable legacy
+        // file would migrate to a half state — and because the migration persists its
+        // result, the other half would be erased permanently.
+        eprintln!("[scope] legacy scope file unreadable; using fail-closed defaults");
+        return fail_closed_defaults();
+    }
     file
 }
 
 /// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
-/// （scope 条目按旧文件**覆盖写**）。
-fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
+/// （scope 条目按旧文件**覆盖写**）。返回该旧文件是否「存在但读不动」。
+fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_connectors.json"),
@@ -154,18 +231,18 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
             file.scopes.insert(key.to_string(), ids);
         },
         false,
-    );
+    )
 }
 
 /// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。
-fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
+/// 并继承 `project_skills_enabled`。返回该旧文件是否「存在但读不动」。
+fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_skills.json"),
         |file, key, ids| merge_ids_into_scope(file, key, ids),
         true,
-    );
+    )
 }
 
 /// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
@@ -175,14 +252,22 @@ fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
 ///
 /// `merge_ids` 决定 scope 条目的落库语义（连接器文件 = 覆盖写，技能文件 = 并集
 /// 合并）；`inherit_project_flag` 为真时继承 `project_skills_enabled`（仅技能文件）。
+///
+/// 返回 `true` 表示该旧文件**存在但无法消费**（读失败或结构不可解析）。缺文件是
+/// 迁移的常态，返回 `false`；两者必须分开，否则读失败会被当成"本来就没禁用过"。
 fn merge_legacy_scope_file_into(
     file: &mut DisabledBundlesFile,
     path: &std::path::Path,
     merge_ids: impl Fn(&mut DisabledBundlesFile, &str, Vec<String>),
     inherit_project_flag: bool,
-) {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
+) -> bool {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            eprintln!("[scope] read {} failed: {error}", path.display());
+            return true;
+        }
     };
     // 裸数组 → plain scope
     if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
@@ -190,13 +275,15 @@ fn merge_legacy_scope_file_into(
         if !ids.is_empty() {
             merge_ids(file, SessionMode::Plain.as_str(), ids);
         }
-        return;
+        return false;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
+        eprintln!("[scope] parse {} failed", path.display());
+        return true;
     };
     let Some(obj) = value.as_object() else {
-        return;
+        eprintln!("[scope] {} is not a JSON object", path.display());
+        return true;
     };
     if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
         for (key, arr) in scopes {
@@ -242,6 +329,7 @@ fn merge_legacy_scope_file_into(
             file.project_skills_enabled = enabled;
         }
     }
+    false
 }
 
 /// 并集合并到某 scope（去重、保序）。
@@ -358,7 +446,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     let key = scope.as_str().to_string();
     file.scopes.insert(key.clone(), normalized);
     file.initialized.insert(key);
-    save_disabled_bundles_file(&file)
+    save_disabled_bundles_file_unless_degraded(&file)
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -392,7 +480,7 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
     let mut file = load_disabled_bundles_file_locked();
     file.hidden_scopes
         .insert(scope.as_str().to_string(), normalized);
-    save_disabled_bundles_file(&file)
+    save_disabled_bundles_file_unless_degraded(&file)
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -452,7 +540,7 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
         }
     }
     if changed {
-        if let Err(error) = save_disabled_bundles_file(&file) {
+        if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
         }
     }
@@ -482,7 +570,7 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
         changed |= ids.len() != before;
     }
     if changed {
-        if let Err(error) = save_disabled_bundles_file(&file) {
+        if let Err(error) = save_disabled_bundles_file_unless_degraded(&file) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
         }
     }
@@ -506,7 +594,7 @@ pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
         return Ok(());
     }
     file.project_skills_enabled = enabled;
-    save_disabled_bundles_file(&file)
+    save_disabled_bundles_file_unless_degraded(&file)
 }
 
 #[cfg(test)]
@@ -969,6 +1057,94 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()],
                 "an initialized scope sticks to its persisted list, unaffected by degradation"
+            );
+        });
+    }
+
+    /// An unparseable governance file must not fall back to "everything enabled":
+    /// `DisabledBundlesFile::default()` hands the Plain (AllowAll) scope an empty deny
+    /// list, silently re-enabling every bundle the user had switched off.
+    #[test]
+    fn corrupt_disabled_bundles_file_denies_instead_of_reenabling() {
+        with_temp_home("pinvou3-scope-corrupt-file", || {
+            install_upload_skill("my-weather");
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            std::fs::write(disabled_bundles_path(), "{not json").unwrap();
+
+            let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                !denied.is_empty(),
+                "a corrupt governance file must fail closed, not re-enable everything"
+            );
+            assert!(
+                denied.contains(&"pptx".to_string()),
+                "the fail-closed set must cover preset skill owners: {denied:?}"
+            );
+        });
+    }
+
+    /// The fail-closed snapshot is a guess that drops `hidden_scopes`, `extra` and
+    /// `project_skills_enabled`. Committing it through a read-modify-write writer would
+    /// turn one transient read error into permanent loss of the user's real governance
+    /// state, so writers must refuse rather than overwrite.
+    #[test]
+    fn writers_refuse_to_persist_fail_closed_defaults() {
+        with_temp_home("pinvou3-scope-degraded-write", || {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            let original = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            std::fs::write(disabled_bundles_path(), "{not json").unwrap();
+
+            let error = save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()])
+                .expect_err("a degraded read must not be committed");
+            assert!(
+                error.contains("refusing to overwrite"),
+                "the refusal must say why: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(disabled_bundles_path()).unwrap(),
+                "{not json",
+                "the unreadable file must be left untouched so it stays recoverable"
+            );
+            assert!(
+                set_project_skills_enabled(true).is_err(),
+                "every read-modify-write writer must refuse, not just the toggle write"
+            );
+
+            // Restoring the file restores normal writes: the refusal tracks the failed
+            // read, it is not a latched state.
+            std::fs::write(disabled_bundles_path(), original).unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// The first-boot migration reads the two legacy files. One of them being present
+    /// but unreadable must fail closed exactly like the new file does — and must not be
+    /// persisted, or the half that *was* readable would overwrite the user's real state
+    /// for good, since the legacy files are never read again afterwards.
+    #[test]
+    fn unreadable_legacy_file_fails_closed_and_is_not_migrated() {
+        with_temp_home("pinvou3-scope-legacy-unreadable", || {
+            let home = paths::pinvou3_home();
+            std::fs::write(
+                home.join("disabled_skills.json"),
+                r#"{"scopes":{"plain":["pptx"]}}"#,
+            )
+            .unwrap();
+            std::fs::write(home.join("disabled_connectors.json"), "{not json").unwrap();
+
+            let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                denied.contains(&"visualizer".to_string()),
+                "an unreadable legacy file must fail closed over the full known set, not just \
+                 migrate the half it could read: {denied:?}"
+            );
+            assert!(
+                !disabled_bundles_path().exists(),
+                "the fail-closed guess must not be migrated onto disk"
             );
         });
     }

@@ -26,7 +26,6 @@ assert.strictEqual(typeof drag.stepPetDrag, 'function', 'stepPetDrag must be exp
 assert.strictEqual(typeof drag.clampPetDragToBounds, 'function');
 assert.strictEqual(typeof drag.attachPetDragGeometry, 'function', 'attachPetDragGeometry must be exported');
 assert.strictEqual(typeof drag.releasePetDrag, 'function', 'releasePetDrag must be exported');
-assert.strictEqual(typeof drag.scaleFromResizeDrag, 'function', 'scaleFromResizeDrag must be exported');
 assert.strictEqual(typeof drag.dragAnimationFromMotion, 'function', 'dragAnimationFromMotion must be exported');
 assert.strictEqual(typeof drag.petWindowBounds, 'function', 'visible-pet bounds must be exported');
 assert.strictEqual(
@@ -39,11 +38,6 @@ assert.strictEqual(
   typeof drag.clampPetDragToDesktop,
   'function',
   'desktop-hole rejection must be exported',
-);
-assert.strictEqual(
-  typeof drag.petScreenAnchorFromRect,
-  'function',
-  'resize screen-anchor calculation must be exported',
 );
 assert.strictEqual(
   typeof drag.petAlignmentAtDragEdge,
@@ -189,22 +183,6 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
   closeTo(consumed.vy, 0);
   assert.strictEqual(consumed.stopped, true);
   assert.strictEqual(pending.x, 0, 'attachPetDragGeometry must not mutate input');
-}
-
-{
-  assert.deepStrictEqual(
-    drag.petScreenAnchorFromRect({
-      position: { x: 850, y: 400 },
-      rect: { left: 230, top: 119 },
-      scaleFactor: 1.25,
-    }),
-    { x: 1137.5, y: 548.75 },
-    'the resize anchor must be the visible character top-left in physical screen pixels',
-  );
-  assert.strictEqual(
-    drag.petScreenAnchorFromRect({ position: null, rect: null, scaleFactor: 1 }),
-    null,
-  );
 }
 
 {
@@ -363,14 +341,6 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e
 {
   const next = drag.stepPetDrag({ ...base, holding: false, tx: 0, vx: 0.2, vy: -0.2 });
   assert.strictEqual(next.stopped, true);
-}
-
-{
-  assert.strictEqual(drag.scaleFromResizeDrag(1, 2.4, 3.3), 1.01);
-  assert.strictEqual(drag.scaleFromResizeDrag(1, 24, 33), 1.1);
-  assert.strictEqual(drag.scaleFromResizeDrag(1, 240, 330), 1.2);
-  assert.strictEqual(drag.scaleFromResizeDrag(1, -240, -330), 0.5);
-  assert.strictEqual(drag.scaleFromResizeDrag(Number.NaN, 24, 33), 1.1);
 }
 
 {
@@ -1102,14 +1072,12 @@ assert.match(
 );
 assert.match(viewCode, /rebasePetDragForAlignment\(/);
 assert.doesNotMatch(viewCode, /win\.currentMonitor\(/);
-assert.match(viewCode, /scaleFromResizeDrag\(/);
 assert.match(
   viewCode,
-  /function PetWindow\(\{[\s\S]{0,160}?allowResize = true,[\s\S]{0,160}?configuredScale = null,[\s\S]{0,160}?configuredVerticalAlignment = 'bottom'/,
+  /function PetWindow\(\{[\s\S]{0,160}?configuredScale = null,[\s\S]{0,160}?configuredVerticalAlignment = 'bottom'/,
 );
 assert.match(viewCode, /Number\.isFinite\(configuredScale\)/);
 assert.match(viewCode, /invokeTauri\('set_pet_scale',[\s\S]{0,120}?scale:\s*startupScale/);
-assert.match(viewCode, /\{allowResize && \(\s*<div\s+className="pet-resize-grip"/);
 // 右键菜单为窗口内 DOM 浮层(不再 invoke 原生菜单窗口:统一内存设备/WebKitGTK 下
 // 新起第二个透明窗口会 malloc 堆损坏闪退)。
 assert.match(viewCode, /onContextMenu=\{onCharacterContextMenu\}/);
@@ -1120,13 +1088,7 @@ assert.match(viewCode, /invoke\('set_pet_enabled',\s*\{\s*enabled:\s*false\s*\}\
 assert.match(viewCode, /if \(event\.button !== 0\) return;/);
 assert.doesNotMatch(viewCode, /invoke\('show_pet_context_menu'/);
 assert.doesNotMatch(viewCode, /invoke\('hide_pet_context_menu'/);
-assert.match(viewCode, /petScreenAnchorFromRect\(/);
-assert.match(viewCode, /anchor:\s*hasCharacterAnchor\s*\?\s*'character_top_left'/);
-assert.match(viewCode, /anchorX:\s*hasCharacterAnchor\s*\?\s*drag\.anchorX/);
 assert.match(viewCode, /ref=\{characterSlotRef\}/);
-assert.match(viewCode, /persist:\s*pending\.persist/);
-assert.match(viewCode, /queueResizeScale\(drag, next, false\)/);
-assert.match(viewCode, /queueResizeScale\(drag, drag\.currentScale, true\)/);
 assert.doesNotMatch(
   viewCode,
   /await\s+setPetWindowPosition/,
@@ -1142,13 +1104,6 @@ const activeMonitorIndex = viewCode.indexOf('const activeMonitor = petMonitorAtP
 assert.ok(
   stepPhysicsIndex >= 0 && activeMonitorIndex >= 0 && stepPhysicsIndex < activeMonitorIndex,
   'the latest release-tail position must be consumed before selecting the active monitor',
-);
-assert.match(viewCode, /className="pet-resize-grip-icon"/);
-assert.match(viewCode, /d="M2 14H14V2"/);
-assert.match(
-  viewCode,
-  /className="pet-character-slot"[\s\S]{0,3200}?\{allowResize && \([\s\S]{0,240}?className="pet-resize-grip"/,
-  'the optional resize grip must live inside the scaled character slot',
 );
 assert.doesNotMatch(viewCode, /onWheel=/);
 
@@ -1167,17 +1122,4 @@ assert.match(
   /\.pet-character:focus-visible\s+\.pet-sprite\s*\{[\s\S]{0,120}?drop-shadow/,
   'keyboard focus should remain visible without a rectangular frame',
 );
-assert.match(
-  cssCode,
-  /\.pet-character-slot\s*>\s*\.pet-resize-grip\s*\{[\s\S]{0,140}?right:\s*6px;[\s\S]{0,80}?bottom:\s*0;/,
-  'the grip should sit inside the transparent frame padding near the visible character edge',
-);
-assert.match(cssCode, /opacity:\s*0/);
-assert.match(cssCode, /\.pet-root:hover\s+\.pet-resize-grip/);
-assert.match(
-  cssCode,
-  /\.pet-resize-grip-icon\s*\{[\s\S]{0,220}?width:\s*16px;[\s\S]{0,100}?height:\s*16px;/,
-  'the resize grip must render a complete inline SVG icon',
-);
-
 console.log('pet_interaction_logic: all assertions passed');

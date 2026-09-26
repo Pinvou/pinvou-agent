@@ -39,9 +39,17 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// lark-cli 是否已在 PATH(快速,~秒级)。
+/// lark-cli 是否已在 PATH(快速,~秒级)。与钉钉 `dws_cli_present` 同构:
+/// 复用下方三态探测并把两类失败都折叠为「不可用」。
 fn lark_cli_present() -> bool {
-    matches!(cc::run(lark(&["--version"])), Ok((true, _, _)))
+    lark_cli_probe().unwrap_or(false)
+}
+
+/// `--version` 三态探测,与钉钉 `dws_cli_probe` 同构:`Ok(true)` 已安装可用;
+/// `Ok(false)` 已安装但版本探测退出非零;`Err(ProbeError)` 按 Spawn/Timeout/Other
+/// 分型。断开登录路径必须经 [`cc::logout_probe_verdict`] 裁决后才允许按未安装降级。
+fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
+    cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
 
 /// `auth status` 里用户身份是否 ready(已授权)。
@@ -285,14 +293,26 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// 断开飞书:`lark-cli auth logout`(清 token)。
+/// 断开飞书:`lark-cli auth logout`(清 token)。探测裁决与钉钉/tmeet 统一走
+/// [`cc::logout_probe_verdict`]:真未安装按 `installed:false` 降级并清 bundle
+/// store;凭据状态未确认时原样上抛,绝不谎报「已断开」。
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
-        if ok {
+        let not_installed = || {
             cc::bundle_store_on_disconnected(ID);
+            Ok::<Value, String>(json!({ "ok": true, "installed": false }))
+        };
+        match cc::logout_probe_verdict("飞书", lark_cli_probe()) {
+            cc::LogoutProbeVerdict::Installed => {}
+            cc::LogoutProbeVerdict::NotInstalled => return not_installed(),
+            cc::LogoutProbeVerdict::Unconfirmed(message) => return Err(message),
         }
-        Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
+        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
+        if !ok {
+            return Err("飞书 CLI 退出登录失败，请重试".to_string());
+        }
+        cc::bundle_store_on_disconnected(ID);
+        Ok::<Value, String>(json!({ "ok": true, "installed": true, "stdout": so, "stderr": se }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?

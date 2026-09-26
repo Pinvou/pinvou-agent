@@ -108,7 +108,12 @@ pub fn allowed_tool_names() -> Vec<String> {
         .collect()
 }
 
+/// Test-only allowlist check. Production gating hands `allowed_tool_names()` to the
+/// foundation, whose matcher additionally expands policy aliases; this local
+/// reimplementation does not, so it is kept for the allowlist contract tests only and
+/// must not be used as the production predicate.
 #[must_use]
+#[cfg(test)]
 pub fn is_pinvou3_allowed(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     PINVOU3_ALLOWED_TOOLS.iter().any(|rule| {

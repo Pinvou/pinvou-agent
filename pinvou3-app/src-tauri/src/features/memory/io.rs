@@ -1409,6 +1409,14 @@ pub fn never_pending_memory(
     let Some(item) = items.iter_mut().find(|item| item.id == id) else {
         return Ok(None);
     };
+    // Deliberately *not* mirroring ignore_pending_memory's decided short-circuit.
+    // That guard exists because `ignore` has an automated caller (organize delete)
+    // that can act on a snapshot taken before the user confirmed. `never` has no
+    // automated caller — both hosts reach it only from an explicit user click
+    // (`reason: "user_selected"`) — and blacklisting the content is precisely what
+    // that click asks for, confirmed or not. Short-circuiting here would return
+    // Ok(None), which the command maps to the same success payload as a real write,
+    // so the user would be shown "不再提示" while nothing was blacklisted.
     let now = Utc::now().to_rfc3339();
     item.status = PENDING_STATUS_IGNORED.to_string();
     item.updated_at = now.clone();

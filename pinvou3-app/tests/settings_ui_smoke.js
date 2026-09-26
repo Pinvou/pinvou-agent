@@ -235,9 +235,6 @@ function injectSource() {
         case 'update_settings':
           settings = Object.assign({}, settings, args.patch || {});
           return Promise.resolve(settings);
-        case 'save_settings_and_restart':
-          settings = Object.assign({}, settings, args.patch || {});
-          return Promise.resolve(null);
         case 'update_search_settings':
           settings = Object.assign({}, settings, { search: args.search });
           return Promise.resolve(settings);
@@ -666,18 +663,27 @@ async function modalWidth(page, headingText) {
 
   await clickRowAction(page, 'deepseek-v4-flash', '编辑');
   await sleep(250);
-  const maskedSavedKey = await page.evaluate(() => ({
-    maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
-    noConfiguredText: !document.body.innerText.includes('已配置'),
-  }));
+  const maskedSavedKey = await page.evaluate(() => {
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
+    return {
+      maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
+      noConfiguredText: !document.body.innerText.includes('已配置'),
+      // 掩码不变量:输入框是 type=text,遮挡完全来自 -webkit-text-security。
+      // 没有这条断言,删掉那行 style 就会让 Key 明文渲染而所有门禁照样全绿。
+      maskedByTextSecurity: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'disc',
+    };
+  });
   await clickExact(page, '显示');
   await sleep(350);
   const editModelBehavior = await page.evaluate(() => {
     const text = document.body.innerText;
     const input = [...document.querySelectorAll('input')].find(node => node.value === 'sk-saved-deepseek');
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
     return {
       revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
       keyRevealed: !!input,
+      // 「显示」必须真正撤掉掩码,而不仅仅是把值取回来。
+      unmaskedAfterReveal: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'none',
       sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
       // 带 provider_kind 的官方模型必须仍能找到目录组,配置区与测试连接不被隐藏。
       testConnectionVisible: text.includes('测试连接'),
@@ -1615,8 +1621,10 @@ async function modalWidth(page, headingText) {
     return { text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
   });
   rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
-  // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
-  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] input[type="password"]');
+  // 表单值变化后上一次测试结果应清除(恢复提示文案)。按 testid 选择:API Key 输入框
+  // 统一为 type=text + WebkitTextSecurity 掩码(消除 WebView2 自带的第二个眼睛图标),
+  // 已存 Key 时占位符也是掩码,按 type 或 placeholder 选择都会落空。
+  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
   await imageTestKeyInput.type('k');
   await sleep(200);
   const imageTestCleared = await page.evaluate(() => {

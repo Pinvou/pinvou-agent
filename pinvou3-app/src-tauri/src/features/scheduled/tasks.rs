@@ -1359,9 +1359,6 @@ fn build_create_request(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode)?;
-    // Kind is allow-listed at creation time (create_task owns the normalized result and
-    // persists it to the sidecar).
-    canonical_scheduled_kind(input.kind)?;
     // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
     let status = paused_to_status(input.paused.unwrap_or(false));
     Ok(CreateAutomationRequest {

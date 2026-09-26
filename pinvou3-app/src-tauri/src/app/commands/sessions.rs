@@ -800,7 +800,8 @@ pub async fn save_session_pinvou_scene_events(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取用户消息专业场景标签。旧版本或损坏 sidecar 按空数组处理，不影响会话正文。
+/// 读取用户消息专业场景标签。缺少 sidecar 表示该会话尚未写入标签；已存在但
+/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
 #[tauri::command]
 pub async fn get_session_pinvou_scene_events(
     session_id: String,
@@ -808,13 +809,16 @@ pub async fn get_session_pinvou_scene_events(
 ) -> Result<serde_json::Value, String> {
     ensure_chat_session(&store, &session_id, "get_session_pinvou_scene_events")?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);
-    let Ok(payload) = std::fs::read(&path) else {
-        return Ok(serde_json::json!([]));
+    let payload = match std::fs::read(&path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!([]));
+        }
+        Err(error) => return Err(format!("failed to read session scene sidecar: {error}")),
     };
-    let Ok(events) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-        return Ok(serde_json::json!([]));
-    };
-    Ok(normalize_pinvou_scene_events(events).unwrap_or_else(|_| serde_json::json!([])))
+    let events = serde_json::from_slice::<serde_json::Value>(&payload)
+        .map_err(|error| format!("failed to parse session scene sidecar: {error}"))?;
+    normalize_pinvou_scene_events(events)
 }
 
 fn normalize_steered_messages(events: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -851,7 +855,8 @@ pub async fn save_session_steered_messages(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取 mid-turn steer 消息的位置标记。旧版本或损坏 sidecar 按空数组处理。
+/// 读取 mid-turn steer 消息的位置标记。缺少 sidecar 表示该会话尚未写入标记；已存在但
+/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
 #[tauri::command]
 pub async fn get_session_steered_messages(
     session_id: String,
@@ -859,13 +864,16 @@ pub async fn get_session_steered_messages(
 ) -> Result<serde_json::Value, String> {
     ensure_chat_session(&store, &session_id, "get_session_steered_messages")?;
     let path = crate::platform::paths::session_steered_messages(&session_id);
-    let Ok(payload) = std::fs::read(&path) else {
-        return Ok(serde_json::json!([]));
+    let payload = match std::fs::read(&path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!([]));
+        }
+        Err(error) => return Err(format!("failed to read session steer sidecar: {error}")),
     };
-    let Ok(events) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-        return Ok(serde_json::json!([]));
-    };
-    Ok(normalize_steered_messages(events).unwrap_or_else(|_| serde_json::json!([])))
+    let events = serde_json::from_slice::<serde_json::Value>(&payload)
+        .map_err(|error| format!("failed to parse session steer sidecar: {error}"))?;
+    normalize_steered_messages(events)
 }
 
 #[cfg(test)]

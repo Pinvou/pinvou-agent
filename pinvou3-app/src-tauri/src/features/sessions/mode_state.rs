@@ -459,6 +459,9 @@ impl SessionStore {
         }
     }
 
+    /// Test-only granular setter; production paths must publish through the
+    /// atomic `set_persona` so persona id and one-shot body never tear.
+    #[cfg(test)]
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
         Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode).active_persona =
@@ -478,6 +481,9 @@ impl SessionStore {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
 
+    /// Test-only granular setter; production paths must publish through the
+    /// atomic `set_persona` so persona id and one-shot body never tear.
+    #[cfg(test)]
     pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
         Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
