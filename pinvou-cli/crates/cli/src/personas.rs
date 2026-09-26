@@ -31,10 +31,14 @@
 //! `agent run --session <id>` prepends the staged body to the turn's prompt
 //! at the same injection point the GUI chat send uses (chat.rs
 //! `take_pending_turn_injections`), consumes it one-shot, and keeps the
-//! `persona_id` so `active` keeps reporting the card until `unequip`. The
-//! two equip states stay separate by design: the desktop app never reads
-//! `persona_equipped.json` (the name appears nowhere in `pinvou3-app`), so a
-//! GUI equip and a CLI equip are invisible to each other's turns.
+//! `persona_id` so `active` keeps reporting the card until `unequip`. Like
+//! the GUI send — which re-checks the card pool before injecting — the lane
+//! resolves the staged id against the pool first: a body whose card was
+//! deleted elsewhere is discarded (consumed one-shot, disclosed on stderr),
+//! never injected. The two equip states stay separate by design: the desktop
+//! app never reads `persona_equipped.json` (the name appears nowhere in
+//! `pinvou3-app`), so a GUI equip and a CLI equip are invisible to each
+//! other's turns.
 //!
 //! One-sided sweep, disclosed: the GUI's own persona delete never touches
 //! `persona_equipped.json` (the file is a CLI concept and the name appears
@@ -42,8 +46,9 @@
 //! CLI's sidecars behind, and the CLI cannot sweep them afterwards either —
 //! `delete` gates on the card existing. The CLI therefore makes that state
 //! reachable from its own side: `active` reports the orphaned sidecar instead
-//! of degrading to "none", and `unequip` clears it without consulting the card
-//! pool.
+//! of degrading to "none", `unequip` clears it without consulting the card
+//! pool, and the turn lane discards a staged orphan body instead of ever
+//! injecting it (see `staged_persona_turn`).
 //!
 //! Field note (headless deviation): `create`/`update` expose only the GUI
 //! dialog's name/description/body fields — the department is fixed to
@@ -703,24 +708,59 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
 // sidecar with nothing on any lane reading it. The GUI consumes its own
 // (memory-only) equip state in the chat send; the headless `agent run
 // --session` lane now consumes the sidecar at the same injection point. The
-// two helpers below are that seam. They ride the feature with their only
+// items below are that seam. They ride the feature with their only
 // consumers (agent_task.rs's featureful run path): a featureless build has
 // no `agent run` and no equip, and the helpers would be dead names there.
-#[cfg(feature = "product-backend")]
 
-/// The staged one-shot persona injection for the session's next
-/// `agent run --session` turn: the `pending_body` this module's `equip` wrote
-/// (the `equip_body_injection` text, frozen at equip time). Nothing staged,
-/// or a missing/unreadable/corrupt sidecar (the same tolerance
+/// A staged one-shot body together with the persona id it was staged from —
+/// the pair the sidecar carries. The turn lane needs the id to re-check the
+/// card pool before injecting (see [`staged_persona_turn`]).
+#[cfg(feature = "product-backend")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedPersonaInjection {
+    pub(crate) persona_id: String,
+    pub(crate) body: String,
+}
+
+/// What the next `agent run --session` turn should do with the session's
+/// staged one-shot persona body.
+#[cfg(feature = "product-backend")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StagedPersonaTurn {
+    /// The referenced card still resolves in the pool: inject the staged body
+    /// verbatim (frozen at equip time, never recomputed from the card).
+    Inject(String),
+    /// The referenced card no longer resolves in the pool — it was deleted
+    /// elsewhere (the GUI's `remove_persona_from_all` cascade cannot reach
+    /// this CLI sidecar file). Inject nothing; the caller discloses and
+    /// consumes the sidecar exactly like a spent one-shot.
+    Orphaned { persona_id: String },
+}
+
+/// Resolves the session's staged one-shot persona injection for the next
+/// `agent run --session` turn. The staged text is returned as-is rather than
+/// recomputed from the card, because the GUI's one-shot semantics freeze the
+/// body at equip time: editing the card afterwards must not retroactively
+/// change what the promised turn injects.
+///
+/// The pool re-check mirrors the GUI chat send, which runs
+/// `unequip_persona_deleted_elsewhere` → `remove_persona_from_all` before its
+/// own injection so a staged body whose card was deleted elsewhere never
+/// reaches a turn; this lane must answer the same state the same way instead
+/// of prepending a deleted card's full frozen body once. Nothing staged, or a
+/// missing/unreadable/corrupt sidecar (the same tolerance
 /// [`equipped_persona_id`] applies) → `None`, and the turn's prompt is passed
 /// through verbatim.
-///
-/// The staged text is returned as-is rather than recomputed from the card,
-/// because the GUI's one-shot semantics freeze the body at equip time:
-/// editing the card afterwards must not retroactively change what the
-/// promised turn injects.
-pub(crate) fn pending_persona_injection(session_id: &str) -> Option<String> {
-    staged_persona_injection_at(&equip_state_path(session_id).ok()?)
+#[cfg(feature = "product-backend")]
+pub(crate) fn staged_persona_turn(session_id: &str) -> Option<StagedPersonaTurn> {
+    let staged = staged_persona_injection_at(&equip_state_path(session_id).ok()?)?;
+    Some(if get(&staged.persona_id).is_some() {
+        StagedPersonaTurn::Inject(staged.body)
+    } else {
+        StagedPersonaTurn::Orphaned {
+            persona_id: staged.persona_id,
+        }
+    })
 }
 
 /// Clears the staged one-shot body after the turn that consumed it, keeping
@@ -735,17 +775,26 @@ pub(crate) fn consume_pending_persona_injection(session_id: &str) -> Result<(), 
     consume_staged_persona_injection_at(&equip_state_path(session_id)?)
 }
 
-/// Path-resolved core of [`pending_persona_injection`] (and its unit tests:
-/// the path is handed in so the read needs no `PINVOU3_HOME` dance).
+/// Path-resolved core of [`staged_persona_turn`] (and its unit tests: the
+/// path is handed in so the read needs no `PINVOU3_HOME` dance). A sidecar
+/// whose `persona_id` is missing or blank has nothing that can be
+/// pool-checked, so it reads as "nothing staged" and the turn passes through
+/// verbatim.
 #[cfg(feature = "product-backend")]
-fn staged_persona_injection_at(path: &std::path::Path) -> Option<String> {
+fn staged_persona_injection_at(path: &std::path::Path) -> Option<StagedPersonaInjection> {
     let raw = crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run").ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    value
+    let persona_id = value
+        .get("persona_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)?;
+    let body = value
         .get("pending_body")
         .and_then(serde_json::Value::as_str)
         .filter(|body| !body.trim().is_empty())
-        .map(str::to_owned)
+        .map(str::to_owned)?;
+    Some(StagedPersonaInjection { persona_id, body })
 }
 
 /// Path-resolved core of [`consume_pending_persona_injection`].
@@ -865,7 +914,7 @@ fn persist_equipped_persona(
 /// the session sidecar and return the summary. The staged body is consumed by
 /// the CLI's own headless lane — the next `agent run --session <id>` turn
 /// prepends it to the prompt at the same injection point the GUI chat send
-/// uses (see [`pending_persona_injection`]) — while the desktop app keeps its
+/// uses (see [`staged_persona_turn`]) — while the desktop app keeps its
 /// own memory-only equip state and never reads this sidecar, so a GUI equip
 /// and a CLI equip are invisible to each other's turns.
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1263,14 +1312,61 @@ mod tests {
 
     // ── agent-run consumption seam ─────────────────────────────────────
 
+    /// The credential-lane rule from models.rs applies here too: the turn
+    /// resolution below steers the process-global card pool
+    /// (`personas::get` syncs from `PINVOU3_HOME`), so tests that drive it
+    /// hold the lib binary's shared env lock and point `PINVOU3_HOME` at a
+    /// throwaway directory for their whole lifetime.
+    use crate::support::ENV_LOCK;
+
+    /// Points `PINVOU3_HOME` at a fresh temp dir for one test and restores
+    /// the previous value on drop, holding [`ENV_LOCK`] throughout — the
+    /// same RAII rule the integration suites' `HomeGuard` and the models
+    /// unit tests' `TempHome` apply.
+    struct TempHome(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+        std::path::PathBuf,
+    );
+
+    impl TempHome {
+        fn new(label: &str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-cli-personas-unit-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create temp home");
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self(Some(guard), previous, root)
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            if let Some(value) = self.1.take() {
+                unsafe { std::env::set_var("PINVOU3_HOME", value) };
+            } else {
+                unsafe { std::env::remove_var("PINVOU3_HOME") };
+            }
+            drop(self.0.take());
+            let _ = std::fs::remove_dir_all(&self.2);
+        }
+    }
+
     /// The round-18 wiring this seam exists for: `equip` stages
     /// `equip_body_injection` on the sidecar, `agent run --session` reads it
     /// back, and the two must stay in lockstep. Pin the read (verbatim
-    /// round-trip of the staged text) and the consume (one-shot body
-    /// clearance that keeps the persona_id, mirroring
-    /// `take_pending_turn_injections`' split between `pending_persona_body`
-    /// and `active_persona`) at the unit level, path-resolved so no
-    /// `PINVOU3_HOME` dance is needed.
+    /// round-trip of the staged text, plus the persona id the pool check
+    /// needs) and the consume (one-shot body clearance that keeps the
+    /// persona_id, mirroring `take_pending_turn_injections`' split between
+    /// `pending_persona_body` and `active_persona`) at the unit level,
+    /// path-resolved so no `PINVOU3_HOME` dance is needed.
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_returns_the_equip_staged_body_verbatim() {
@@ -1305,11 +1401,13 @@ mod tests {
         )
         .unwrap();
         // Read side: the staged text comes back exactly as written (frozen at
-        // equip time, not recomputed from the card).
+        // equip time, not recomputed from the card), with the id it was
+        // staged from.
         let staged =
             staged_persona_injection_at(&sidecar).expect("a staged sidecar must yield its body");
+        assert_eq!(staged.persona_id, "user-seam");
         assert_eq!(
-            staged, injection,
+            staged.body, injection,
             "the staged body must round-trip verbatim"
         );
         // Consume side: the body is cleared (one-shot) while the persona_id
@@ -1354,5 +1452,56 @@ mod tests {
         consume_staged_persona_injection_at(&corrupt)
             .expect("a corrupt sidecar must consume as a no-op");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The pool re-check behind [`staged_persona_turn`]: a staged body
+    /// injects only while its card still resolves. This is the same gate the
+    /// GUI chat send applies (`unequip_persona_deleted_elsewhere` →
+    /// `remove_persona_from_all` before `take_pending_turn_injections`):
+    /// without it, a sidecar outliving its card — the GUI delete cannot reach
+    /// this CLI file — made the next `agent run --session` turn prepend a
+    /// deleted card's full frozen body exactly once. The orphan case deletes
+    /// the card through the GUI's own API, so the resolution cannot pass by
+    /// accident.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn the_turn_injects_only_while_the_staged_card_is_live() {
+        let _home = TempHome::new("turn-pool-check");
+        let session_id = "turn-pool-check";
+
+        // A live card stages into an injectable turn: the embedded pool
+        // resolves without any fixture card.
+        persist_equipped_persona(session_id, "pinvou-card-creator", "staged body").unwrap();
+        assert!(get("pinvou-card-creator").is_some(), "embedded pool");
+        match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Inject(body)) => assert_eq!(body, "staged body"),
+            other => panic!("a live card must stage an injection, got {other:?}"),
+        }
+
+        // A card deleted through the GUI's own cascade leaves the sidecar
+        // behind, and the turn must refuse to inject it.
+        let card = PersonaCard {
+            id: String::new(),
+            dept: "specialized".to_owned(),
+            name: "Turn Orphan".to_owned(),
+            description: String::new(),
+            emoji: "🃏".to_owned(),
+            color: "#7C3AED".to_owned(),
+            body: "# Ghost\n\nnever inject this".to_owned(),
+            source: "user".to_owned(),
+            conversational_only: false,
+        };
+        let summary = create_user_persona(card).expect("fixture user card");
+        let persona_id = summary.id.clone();
+        persist_equipped_persona(session_id, &persona_id, "ghost body").unwrap();
+        assert!(get(&persona_id).is_some(), "the fixture card must resolve");
+        delete_user_persona(&persona_id).expect("the GUI-side delete");
+        assert!(get(&persona_id).is_none(), "the card must be gone");
+        match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Orphaned { persona_id: orphan }) => {
+                assert_eq!(orphan, persona_id, "the note must be able to name the id");
+            }
+            other => panic!("a deleted card's staged body must be an orphan, got {other:?}"),
+        }
     }
 }

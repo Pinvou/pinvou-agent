@@ -932,3 +932,48 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
 
     std::fs::remove_file(&body_path).unwrap();
 }
+
+/// The 4 MiB stdin body cap (`read_body`'s `--stdin` lane) is a content
+/// error (exit 1), not a usage error, and must refuse before anything is
+/// persisted: an oversized body leaves no card behind. Driven through the
+/// real binary because the body arrives on stdin, which the in-process
+/// helpers cannot pipe.
+#[test]
+fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("stdin-over-cap");
+
+    // One byte past the cap, so the refusal is exactly the over-cap case and
+    // an off-by-one in the cap cannot pass.
+    let body = "a".repeat(4 * 1024 * 1024 + 1);
+    let body_path = std::env::temp_dir().join(format!(
+        "pinvou-cli-personas-stdin-over-cap-{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&body_path, &body).unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["personas", "create", "--name", "Too Big", "--stdin"])
+        .env("PINVOU3_HOME", &home.root)
+        .stdin(std::fs::File::open(&body_path).unwrap())
+        .output()
+        .expect("the pinvou binary must run");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an oversized stdin body is a content error, not a usage error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("personas create") && stderr.contains("4 MiB stdin limit"),
+        "the refusal must name the command and the cap: {stderr}"
+    );
+
+    // Nothing persisted: no user card file anywhere in the pool.
+    let persisted = std::fs::read_dir(home.user_personas_dir())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(persisted, 0, "a refused body must not persist a card");
+
+    std::fs::remove_file(&body_path).unwrap();
+}

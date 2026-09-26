@@ -5,8 +5,11 @@
 //! `PINVOU3_HOME` (serialized through ENV_LOCK, following cli_contract.rs) and
 //! assert through the same `pinvou3_lib::features::memory` io functions the
 //! GUI uses; they never touch the network or a model (AGENTS.md rule). The
-//! only host/model path, `memory organize`, is covered by an `#[ignore]`d
-//! documentation test.
+//! one host/model path, `memory organize`, has no executable coverage here —
+//! the real pass needs a display and a configured, active model, so it is
+//! exercised manually; what the tests pin is its host-free contract: the
+//! disabled-memory refusal, the busy-lock refusal, and the empty
+//! organize-history surface.
 
 use pinvou_cli::{CliCommand, ExitCode, OutputMode, execute, parse_args};
 use std::path::{Path, PathBuf};
@@ -586,7 +589,7 @@ fn memory_archive_marks_recent_work_fixture_archived() {
 #[test]
 fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let _home = TempHome::new("overview");
+    let home = TempHome::new("overview");
 
     // one materialized preference
     let preference = enqueue_fixture("preference", "Prefer concise answers");
@@ -639,6 +642,36 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     assert!(
         human.contains("Recent work: 1"),
         "overview should count recent work sources"
+    );
+
+    // The one mutation overview performs is disclosed on both output
+    // channels: the JSON flag is true (this CLI context always writes the
+    // snapshot without a runtime section) and the human summary carries the
+    // same note.
+    assert_eq!(
+        value["snapshot_rewritten_without_runtime"],
+        serde_json::json!(true),
+        "overview must disclose that it rewrote snapshot.md without a runtime section"
+    );
+    assert!(
+        human.contains("rewrote snapshot.md without"),
+        "the human output must carry the rewrite note: {human}"
+    );
+
+    // The stderr note fires for the caller who reads neither channel.
+    // `note!` writes to the process's own stderr, which the in-process
+    // helpers cannot capture, so it is asserted through the real binary
+    // (same rule as code_contract.rs's stderr assertions).
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["memory", "overview"])
+        .env("PINVOU3_HOME", home.path())
+        .output()
+        .expect("the pinvou binary must run");
+    assert!(output.status.success(), "overview must still succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[memory] snapshot_rewritten_without_runtime"),
+        "the stderr rewrite note must fire alongside the output disclosure: {stderr}"
     );
 }
 
@@ -1156,6 +1189,136 @@ fn memory_add_work_context_over_the_cap_reports_the_truncation() {
     assert!(
         human.contains("exceed the 120-character cap") && human.contains("only the first 120"),
         "the human output must disclose the truncation: {human}"
+    );
+}
+
+/// A preference update of 130 characters must never silently lose its tail —
+/// the exact loss class the add lane above was fixed to disclose, one lane
+/// over.
+///
+/// Every editable store's update writer normalizes the patch text with
+/// `clean_candidate_sentence` and hard-truncates it to the store's own cap;
+/// the preferences writer's cap is 120 (`PREFERENCE_TEXT_MAX_CHARS`), so a
+/// 130-character `--content` stores 120 characters and exits 0. Before the
+/// fix the update emitted no `truncated`/`submitted_characters`/
+/// `stored_characters` fields and no stderr note — only `add` disclosed the
+/// loss, so the identical silent truncation survived one command over.
+///
+/// This pins all three halves of the fix: the stored length against the
+/// store itself (so the update lane's documented 120 literal cannot drift
+/// from the feature writer), the disclosure fields on the command's own
+/// output, and the stderr note fired at measurement time.
+#[test]
+fn memory_update_preferences_over_the_cap_reports_the_truncation() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("update-over-cap");
+
+    // Seed one preference through the add pipeline; its id is what the
+    // updates below address.
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+    let id = pinvou3_lib::features::memory::list_preferences()
+        .unwrap()
+        .last()
+        .map(|item| item.id.clone())
+        .expect("the seeded preference must be listed");
+
+    // 130 single-byte characters, no whitespace runs and no leading or
+    // trailing punctuation, so the only normalization that can change the
+    // text is the cap itself (same body as the add-lane test above).
+    let content: String = std::iter::repeat_n("abcdefghij", 13).collect();
+    assert_eq!(content.chars().count(), 130);
+
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        &id,
+        "--content",
+        &content,
+        "--output",
+        "json",
+    ]))
+    .expect("single-line JSON output");
+
+    assert_eq!(
+        json["truncated"],
+        serde_json::json!(true),
+        "an over-cap update must disclose the truncation: {json}"
+    );
+    assert_eq!(
+        json["submitted_characters"],
+        serde_json::json!(130),
+        "{json}"
+    );
+    assert_eq!(json["stored_characters"], serde_json::json!(120), "{json}");
+
+    // The store itself is the authority on where the cut fell: the update
+    // writer's cap (`PREFERENCE_TEXT_MAX_CHARS`) is 120, so the literal in
+    // memory.rs is a checked fact rather than a comment.
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    let item = stored
+        .iter()
+        .find(|item| content.starts_with(&item.text))
+        .unwrap_or_else(|| panic!("the truncated text must be stored: {stored:?}"));
+    assert_eq!(
+        item.text.chars().count(),
+        120,
+        "the update writer caps at 120 (PREFERENCE_TEXT_MAX_CHARS), not at \
+         WORK_CONTEXT_TEXT_MAX_CHARS (160)"
+    );
+
+    // The human rendering carries the same disclosure, for the interactive
+    // caller who never looks at JSON. The preferences store is
+    // replace-per-topic, so this second over-cap update rewrites the same
+    // bucket item the first one created.
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        json["id"].as_str().unwrap(),
+        "--content",
+        &content,
+    ]);
+    assert!(
+        human.contains("exceed the 120-character cap") && human.contains("only the first 120"),
+        "the human output must disclose the truncation: {human}"
+    );
+
+    // The stderr note fires at measurement time, before the write — even for
+    // an update that then fails. `note!` writes to the process's own stderr,
+    // which the in-process helpers cannot capture, so it is asserted through
+    // the real binary (same rule as the overview stderr assertion above).
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args([
+            "memory",
+            "update",
+            "preferences",
+            json["id"].as_str().unwrap(),
+            "--content",
+            &content,
+        ])
+        .env("PINVOU3_HOME", home.path())
+        .output()
+        .expect("the pinvou binary must run");
+    assert!(
+        output.status.success(),
+        "an over-cap update still succeeds: {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("memory update: content is 130 characters")
+            && stderr.contains("exceeds the 120-character cap"),
+        "the stderr note must fire at measurement time: {stderr}"
     );
 }
 

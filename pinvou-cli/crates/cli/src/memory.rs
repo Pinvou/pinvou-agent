@@ -1064,6 +1064,50 @@ fn clean_text_like_feature(value: &str, max_chars: usize) -> String {
         .collect()
 }
 
+/// The stderr half of the truncation disclosure shared by `memory add` and
+/// `memory update`, emitted at measurement time — before the store write — so
+/// even a command that fails later has already named the loss. One formatter
+/// for both lanes so the wording cannot drift.
+fn note_truncation(lane: &str, submitted_chars: usize, cap_chars: usize, cap_clause: &str) {
+    crate::note!(
+        "memory {lane}: content is {submitted_chars} characters and exceeds the \
+         {cap_chars}-character cap {cap_clause}; the tail was truncated"
+    );
+}
+
+/// The output half of the same disclosure, appended after the command
+/// succeeded: stderr notes vanish into `2>/dev/null` and are invisible to a
+/// JSON consumer, so a truncating add or update also reports the loss on the
+/// command's own output channel — the item IS stored, just shortened, but
+/// neither a human nor a script can miss it. Fields: `truncated`,
+/// `submitted_characters`, `stored_characters`, top-level like every other
+/// item field.
+fn disclose_truncation(
+    value: &mut serde_json::Value,
+    human: &mut String,
+    submitted_chars: usize,
+    stored_chars: usize,
+    cap_chars: usize,
+    cap_clause: &str,
+) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("truncated".to_owned(), serde_json::json!(true));
+        object.insert(
+            "submitted_characters".to_owned(),
+            serde_json::json!(submitted_chars),
+        );
+        object.insert(
+            "stored_characters".to_owned(),
+            serde_json::json!(stored_chars),
+        );
+    }
+    human.push_str(&format!(
+        "\nNote: the submitted {submitted_chars} characters exceed the \
+         {cap_chars}-character cap {cap_clause}; only the first {stored_chars} \
+         characters were stored"
+    ));
+}
+
 /// The exact text `memory add` will store for `content`, derived from the
 /// ORIGINAL user input by replaying the feature pipeline stage by stage.
 ///
@@ -1249,11 +1293,11 @@ normalization (task-like or punctuation-only text is not stored)",
     let collapsed = clean_text_like_feature(&content, usize::MAX);
     let truncated = collapsed.chars().count() > ADD_PIPELINE_TEXT_MAX_CHARS;
     if truncated {
-        crate::note!(
-            "memory add: content is {} characters and exceeds the \
-             {ADD_PIPELINE_TEXT_MAX_CHARS}-character cap applied when the candidate is \
-             queued; the tail was truncated",
-            collapsed.chars().count()
+        note_truncation(
+            "add",
+            collapsed.chars().count(),
+            ADD_PIPELINE_TEXT_MAX_CHARS,
+            "applied when the candidate is queued",
         );
     }
     // The preference and work-context stores are replace-per-topic: a new
@@ -1364,24 +1408,14 @@ memory profile instead",
     // own output channel: the add still succeeds (the item IS stored, just
     // shortened), but neither a human nor a script can miss it.
     if truncated {
-        if let Some(object) = value.as_object_mut() {
-            object.insert("truncated".to_owned(), serde_json::json!(true));
-            object.insert(
-                "submitted_characters".to_owned(),
-                serde_json::json!(collapsed.chars().count()),
-            );
-            object.insert(
-                "stored_characters".to_owned(),
-                serde_json::json!(expected.chars().count()),
-            );
-        }
-        human.push_str(&format!(
-            "\nNote: the submitted {} characters exceed the \
-             {ADD_PIPELINE_TEXT_MAX_CHARS}-character cap applied when the candidate is \
-             queued; only the first {} characters were stored",
+        disclose_truncation(
+            &mut value,
+            &mut human,
             collapsed.chars().count(),
-            expected.chars().count()
-        ));
+            expected.chars().count(),
+            ADD_PIPELINE_TEXT_MAX_CHARS,
+            "applied when the candidate is queued",
+        );
     }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {
@@ -1423,6 +1457,62 @@ fn replaced_entries(before: &[(String, String)], after: &[(String, String)]) -> 
         .collect()
 }
 
+/// The text cap the `memory update` writer applies to the patch text, per
+/// store — the `clean_candidate_sentence` cap at each write site
+/// (`features/memory/io.rs`: `update_preference_unlocked`,
+/// `update_work_context_unlocked`, `update_timed_memory_unlocked`). The
+/// preference and timed constants are `pub(super)` to the app crate, so they
+/// are documented literals here; the update truncation contract test reads
+/// the stored length back from the store itself, so a drifting literal fails
+/// loudly. `None` for the two stores `parse_update` refuses: they have no
+/// writer, so there is nothing to predict.
+fn update_writer_cap(store: MemoryStore) -> Option<usize> {
+    match store {
+        // PREFERENCE_TEXT_MAX_CHARS.
+        MemoryStore::Preferences => Some(120),
+        MemoryStore::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
+        // TIMED_TEXT_MAX_CHARS, shared by both timed stores.
+        MemoryStore::CurrentFocus | MemoryStore::RecentActivity => Some(180),
+        MemoryStore::RecentWork | MemoryStore::Pending => None,
+    }
+}
+
+/// The `memory update` truncation measurement, captured before the write: the
+/// target store's writer cap plus the submitted-versus-stored character
+/// counts, everything the two disclosure channels need.
+struct UpdateTruncation {
+    cap_chars: usize,
+    cap_clause: String,
+    submitted_chars: usize,
+    stored_chars: usize,
+}
+
+impl UpdateTruncation {
+    /// Predicts, from the ORIGINAL `--content`, what the store's writer will
+    /// keep. The submitted side is measured whitespace-collapsed — the exact
+    /// measurement the add lane warns against, so input padded with newlines
+    /// or runs of spaces cannot manufacture a disclosure — and the stored
+    /// side is the writer's own `clean_candidate_sentence(text, cap)`, the
+    /// same normalization the empty check above replays (there against the
+    /// exported work-context constant, which cannot change the emptiness
+    /// outcome; here the per-store cap is the whole point).
+    fn measure(store: MemoryStore, content: &str) -> Option<Self> {
+        let cap_chars = update_writer_cap(store)?;
+        Some(Self {
+            submitted_chars: clean_text_like_feature(content, usize::MAX).chars().count(),
+            cap_clause: format!("applied when the {} item is written", store.as_str()),
+            cap_chars,
+            stored_chars: feature::clean_candidate_sentence(content, cap_chars)
+                .chars()
+                .count(),
+        })
+    }
+
+    fn is_truncated(&self) -> bool {
+        self.stored_chars < self.submitted_chars
+    }
+}
+
 fn update(
     store: MemoryStore,
     id: &str,
@@ -1457,6 +1547,23 @@ fn update(
 (prefix-only or punctuation-only text is not stored)",
             store.as_str()
         )));
+    }
+    // Truncation honesty, the same disclosure `add` performs for the same
+    // loss class: every editable store's writer truncates the patch text to
+    // its own `clean_candidate_sentence` cap with a hard `chars().take`, so
+    // an over-cap `--content` stores fewer characters than submitted and
+    // still exits 0 — with nothing anywhere saying so. Predicted before the
+    // write, mirroring `add`: the stderr note fires even when the write later
+    // fails (an unknown id), and the JSON fields and human note ride the
+    // successful output at the bottom of this function.
+    let truncation = UpdateTruncation::measure(store, content);
+    if let Some(truncation) = truncation.as_ref().filter(|t| t.is_truncated()) {
+        note_truncation(
+            "update",
+            truncation.submitted_chars,
+            truncation.cap_chars,
+            &truncation.cap_clause,
+        );
     }
     support::sandbox_home()?;
     let patch = MemoryTextPatch {
@@ -1513,14 +1620,14 @@ work-context, current-focus, recent-activity)",
             )));
         }
     };
-    let human = match &warning {
+    let mut human = match &warning {
         Some(warning) => format!("{human}\nwarning: {warning}"),
         None => human,
     };
     // Item fields stay top-level with `warning` appended (mirroring `add`):
     // nesting the item under a key only when a warning exists would change
     // the JSON shape exactly when a consumer is least likely to re-check it.
-    let value = match warning {
+    let mut value = match warning {
         Some(warning) => {
             let mut object = match value {
                 serde_json::Value::Object(map) => map,
@@ -1531,6 +1638,20 @@ work-context, current-focus, recent-activity)",
         }
         None => value,
     };
+    // The command succeeded, but "succeeded" can still mean "stored fewer
+    // characters than submitted" — the same disclosure `add` appends for its
+    // own truncations, on both output channels (the stderr note already fired
+    // at measurement time above).
+    if let Some(truncation) = truncation.as_ref().filter(|t| t.is_truncated()) {
+        disclose_truncation(
+            &mut value,
+            &mut human,
+            truncation.submitted_chars,
+            truncation.stored_chars,
+            truncation.cap_chars,
+            &truncation.cap_clause,
+        );
+    }
     Ok(success(render(output, human, &value)))
 }
 
@@ -1715,22 +1836,24 @@ fn organize_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 /// calls the LLM and applies delete/update/merge actions to every store, then
 /// refreshes the snapshot.md device document like the GUI command does.
 ///
-/// Cross-process single-flight, CLI side only: the feature layer's
-/// `ORGANIZE_IN_FLIGHT` guard is process-local
+/// Cross-process single-flight, now closed where every surface meets: the
+/// feature layer's `ORGANIZE_IN_FLIGHT` guard is process-local
 /// (`features/memory/organize.rs`: "the two passes would interleave
 /// destructive actions based on their own (up to 75-second-old) snapshots"),
 /// so it serializes the GUI's own two triggers but says nothing about a
-/// second CLI process. Two `pinvou memory organize` runs would interleave
-/// exactly the destructive actions that comment names, from two processes
-/// the in-memory mutex cannot see — so this command takes a file lock in the
-/// shared `$PINVOU3_HOME/locks` directory (the same primitive as
-/// `voice asr-install`'s install lock and `code.rs`'s session locks) and
-/// refuses with `memory_organize_busy` instead. `try_write` rather than a
-/// blocking wait, mirroring those siblings' immediate refusal. Residual,
-/// disclosed: the GUI's own in-memory guard still cannot see this file lock,
-/// so a CLI pass racing a GUI-triggered pass remains last-writer-wins —
-/// closing that half needs the feature layer to take the same file lock
-/// (reported upstream; see the docs row).
+/// second CLI process. That half no longer depends on this command's lock:
+/// `organize_memory_with_llm` itself now takes the feature layer's
+/// cross-process `.organize.lock` (`io.rs` `try_lock_organize_pass`) around
+/// the whole pass, and every surface — the GUI button, the scheduled
+/// executor, and this CLI host lane — goes through it. So a GUI-triggered
+/// organize now fails busy while a CLI pass runs and vice versa, and the
+/// destructive-apply phases can no longer interleave across processes.
+/// Residual, disclosed: the post-pass `snapshot.md` refresh runs after
+/// `organize_memory_with_llm` returns — outside the `.organize.lock` — so
+/// two passes' snapshot refreshes can still interleave; the store mutations
+/// the lock exists for are inside it on every surface. This command's own
+/// earlier `memory-organize.lock` remains as the CLI-vs-CLI gate covering
+/// the host-boot window the feature lock does not see.
 fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     if !feature::memory_enabled() {

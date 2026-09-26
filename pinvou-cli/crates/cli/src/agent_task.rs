@@ -236,13 +236,18 @@ fn run_agent(
     // session staged a one-shot persona body on the per-session sidecar
     // `persona_equipped.json`; this lane now delivers it through
     // [`prompt_with_persona_injection`] — the same injection point the GUI
-    // chat send uses. No staged persona → the prompt passes through
-    // verbatim, byte for byte (the hard no-behavior-change requirement).
-    // Fresh sessions never consult the sidecar (nothing can be equipped on a
-    // session that does not exist yet).
+    // chat send uses, including its pool re-check: a staged body whose card
+    // was deleted elsewhere is discarded, never injected (see
+    // [`persona_turn_injection`]). No staged persona → the prompt passes
+    // through verbatim, byte for byte (the hard no-behavior-change
+    // requirement). Fresh sessions never consult the sidecar (nothing can be
+    // equipped on a session that does not exist yet).
     let prompt = prompt_with_persona_injection(
         prompt,
-        session.and_then(crate::personas::pending_persona_injection),
+        session.and_then(|session_id| {
+            crate::personas::staged_persona_turn(session_id)
+                .and_then(|turn| persona_turn_injection(session_id, turn))
+        }),
     );
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
@@ -379,6 +384,39 @@ fn prompt_with_persona_injection(prompt: String, injection: Option<String>) -> S
     match injection {
         Some(injection) => format!("{injection}\n\n---\n\n{prompt}"),
         None => prompt,
+    }
+}
+
+#[cfg(feature = "product-backend")]
+/// Turns the pool-checked resolution ([`crate::personas::staged_persona_turn`])
+/// into this turn's injection. A live card's staged body passes through
+/// verbatim; an orphaned body — the staged card was deleted elsewhere (the
+/// GUI's `remove_persona_from_all` cascade cannot reach this CLI sidecar) —
+/// is disclosed on stderr, naming the id, and consumed exactly like a spent
+/// one-shot so it cannot linger and re-trigger on every later run. The GUI
+/// chat send drops the same body after `remove_persona_from_all`, so a
+/// deleted card's text can reach neither surface's turns.
+///
+/// Mirrors the post-turn consumption below: the clear is best-effort, warned
+/// on stderr and never fatal.
+fn persona_turn_injection(
+    session_id: &str,
+    turn: crate::personas::StagedPersonaTurn,
+) -> Option<String> {
+    match turn {
+        crate::personas::StagedPersonaTurn::Inject(body) => Some(body),
+        crate::personas::StagedPersonaTurn::Orphaned { persona_id } => {
+            crate::note!(
+                "warning: agent run: the staged persona card '{persona_id}' was deleted; the \
+                 staged injection was discarded and this turn runs without it"
+            );
+            if let Err(error) = crate::personas::consume_pending_persona_injection(session_id) {
+                crate::note!(
+                    "warning: agent run: could not clear the discarded persona sidecar: {error}"
+                );
+            }
+            None
+        }
     }
 }
 
@@ -729,6 +767,119 @@ mod tests {
         let passthrough = prompt_with_persona_injection(prompt.to_owned(), None);
         assert_eq!(passthrough, prompt);
         assert_eq!(passthrough.len(), prompt.len());
+    }
+
+    /// The turn lane tests steer the process-global product root (`persona
+    /// sidecars` resolve under `PINVOU3_HOME`), so they hold the lib binary's
+    /// shared env lock and point it at a throwaway directory for the whole
+    /// test — the same rule the models unit tests' `TempHome` and the
+    /// gaia tests' `RestoreHomeGuard` apply.
+    #[cfg(feature = "product-backend")]
+    use crate::support::ENV_LOCK;
+
+    #[cfg(feature = "product-backend")]
+    struct TempHome(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+        std::path::PathBuf,
+    );
+
+    #[cfg(feature = "product-backend")]
+    impl TempHome {
+        fn new(label: &str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-cli-agent-unit-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create temp home");
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self(Some(guard), previous, root)
+        }
+
+        fn sessions_root(&self) -> std::path::PathBuf {
+            self.2.join("sessions")
+        }
+    }
+
+    #[cfg(feature = "product-backend")]
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            if let Some(value) = self.1.take() {
+                unsafe { std::env::set_var("PINVOU3_HOME", value) };
+            } else {
+                unsafe { std::env::remove_var("PINVOU3_HOME") };
+            }
+            drop(self.0.take());
+            let _ = std::fs::remove_dir_all(&self.2);
+        }
+    }
+
+    /// The orphan half of the injection path: a staged body whose card was
+    /// deleted elsewhere must reach no turn, and its sidecar must be consumed
+    /// exactly like a spent one-shot — body cleared, `persona_id` retained —
+    /// so the orphan cannot linger and re-trigger the same discard on every
+    /// later run. This is the CLI twin of the GUI chat send's
+    /// `unequip_persona_deleted_elsewhere` → `remove_persona_from_all`
+    /// sequence, which drops the same body before injecting. The live arm is
+    /// the passthrough the pool check protects: the staged body itself,
+    /// untouched, ready for `prompt_with_persona_injection`.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn an_orphaned_staged_injection_is_discarded_and_cleared() {
+        let home = TempHome::new("orphan-injection");
+        let session_id = "orphan-injection";
+        let sidecar = home
+            .sessions_root()
+            .join(session_id)
+            .join("persona_equipped.json");
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        crate::artifacts::atomic_write(
+            &sidecar,
+            serde_json::json!({ "persona_id": "user-gone", "pending_body": "GHOST BODY" })
+                .to_string()
+                .as_bytes(),
+            crate::artifacts::WriteVisibility::OwnerOnly,
+        )
+        .unwrap();
+
+        // Live arm: the resolved body passes through untouched.
+        assert_eq!(
+            persona_turn_injection(
+                session_id,
+                crate::personas::StagedPersonaTurn::Inject("LIVE BODY".to_owned())
+            ),
+            Some("LIVE BODY".to_owned()),
+            "a live card's staged body must reach the prompt verbatim"
+        );
+
+        // Orphan arm: nothing to inject, sidecar consumed one-shot.
+        assert_eq!(
+            persona_turn_injection(
+                session_id,
+                crate::personas::StagedPersonaTurn::Orphaned {
+                    persona_id: "user-gone".to_owned()
+                }
+            ),
+            None,
+            "a deleted card's staged body must never inject"
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(
+            value["pending_body"],
+            serde_json::Value::Null,
+            "the staged body must be cleared: {value}"
+        );
+        assert_eq!(
+            value["persona_id"], "user-gone",
+            "the persona id stays, exactly like a spent one-shot: {value}"
+        );
     }
 
     #[test]
