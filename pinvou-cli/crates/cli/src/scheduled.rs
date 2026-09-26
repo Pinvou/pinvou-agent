@@ -2,63 +2,60 @@
 //! GUI writes (`pinvou3-app/src-tauri/src/app/commands/scheduled.rs` ->
 //! `features::scheduled::tasks`), mapped onto the same persisted files.
 //!
-//! Why a store-level mirror: `features::scheduled` is `pub(crate)` to
-//! `pinvou3_lib` (features/mod.rs) and the automation registry lives in the
-//! CodeWhale `codewhale-tui` crate (`AutomationManager`), which is not a CLI
-//! dependency, so neither `ScheduledTaskState` nor `AutomationManager` can be
-//! constructed from the CLI. Following the `sessions` family precedent, this
-//! module operates on the exact same JSON stores the GUI/foundation use:
-//! - task definitions: `~/.pinvou3/automations/automations/{id}.json`
-//!   (`AutomationRecord`, schema 2, `AutomationManager::open(root)` layout)
-//! - run records: `~/.pinvou3/automations/runs/{task_id}/{stamp}-{run}.json`
-//! - sidecars: `model-bindings.json`, `task-kinds.json`,
-//!   `task-ui-metadata.json` (under `automations/`), read state under
-//!   `scheduled-runs/read-state.json`, history archive under
-//!   `automations/history-archive.json` (same schemas as
-//!   `features::scheduled::stores`)
+//! Definitions and run records go through the foundation's pub
+//! automation-manager API (`AutomationManager`, `AutomationSchedule::parse_rrule`
+//! and the record types, reached through the app crate's
+//! `pinvou3_lib::automation_foundation` facade — the architecture guard
+//! requires the CLI to consume the foundation through the pinvou3_lib
+//! surface, not past it) — the same calls the GUI feature layer makes —
+//! instead of a CLI-local mirror of that module; a mirror cannot see
+//! upstream fixes (that is how this family ended up writing
+//! `next_run_at: null` on create where the foundation resolves the
+//! slot eagerly, silently pausing past one-shots). What stays CLI-local:
+//! - atomic JSON writes with a per-pid/nanos-unique staging file
+//!   (`write_json_atomic`); the foundation writer still stages under a
+//!   fixed `.json.tmp` sibling name shared by all concurrent writers.
+//! - run-record persistence for terminal CLI runs (`save_run` is private in
+//!   the foundation; the CLI stores the identical record shape under the
+//!   identical sortable file name, so the GUI's `list_runs` co-reads them).
+//! - the app-owned sidecar registries (`model-bindings.json`,
+//!   `task-kinds.json`, `task-ui-metadata.json`, read state, history
+//!   archive; `features::scheduled::stores` domain), read-modify-written
+//!   under the shared store lock.
 //! - run sessions: `pinvou3_lib::features::sessions::SessionStore` (public),
 //!   the same calls the GUI mapper makes (`scheduled_profile`, `is_pinned`,
 //!   `pinned_at`, `is_hidden`, `list_scheduled`).
 //!
-//! Disclosed deviations from the GUI (all deferred to the foundation, never
-//! duplicated half-way here):
-//! - `next_run_at` is left unset for non-once schedules on
-//!   create/rrule-update/resume; the foundation's scheduler sweep initializes
-//!   a missing `next_run_at` on its next tick
-//!   (`automation_manager::collect_due_runs`). For `FREQ=ONCE` the AT anchor
-//!   is persisted eagerly instead (create/rrule-update while active, and
-//!   every resume): the sweep's lazy initialization runs
-//!   `next_after_with_anchor(now, now)` and errors with "no future run" for a
-//!   one-shot whose AT already elapsed, which silently pauses the task
-//!   instead of firing late the way a GUI-created one-shot (persisted with
-//!   `next_run_at = AT`) does.
-//! - Run-status reconciliation needs the foundation `TaskManager`; runs are
-//!   reported exactly as persisted.
-//! - `scheduled run` executes only `memory_organize` tasks (app-side, no
-//!   engine conversation; same wiring as `memory organize` in this crate,
-//!   minus the session-bound bridge which is `pub(crate)` to `pinvou3_lib`).
-//!   Chat-kind run-now drives the GUI's `ScheduledChatExecutor` +
-//!   `TaskManager`, which are not exposed headlessly, and is refused with a
-//!   stable error instead of being faked. A run whose outcome status is
-//!   `failed` still prints the same output body but exits 1: the
-//!   completed-command-failed-result convention the `models` family
-//!   established for `probe-local` — an exit-0 would tell scripts the run
-//!   succeeded.
-//! - `update` cannot change a task's model: the GUI's `update_task` applies
-//!   `input.model`, while `--model-id` here only re-binds the pin for the
-//!   definition's existing wire model (the GUI's model pinning call — a raw
-//!   registry write, no store lookup). `create --model-id`, unlike update,
-//!   resolves the id against the saved models store and persists the
-//!   *selected* record's wire name — exactly the pair the executor's
-//!   `resolve_scheduled_model` later checks — so an unknown id is refused
-//!   with exit 2 before anything is persisted instead of writing a binding
-//!   that fails on every later run. Edit the model in the GUI, or delete and
-//!   recreate the task from the CLI.
+//! Disclosed deviation from the GUI: run-status reconciliation needs the
+//! foundation `TaskManager`; runs are reported exactly as persisted.
+//!
+//! `scheduled run` executes only `memory_organize` tasks (app-side, no
+//! engine conversation; same wiring as `memory organize` in this crate,
+//! minus the session-bound bridge which is `pub(crate)` to `pinvou3_lib`).
+//! Chat-kind run-now drives the GUI's `ScheduledChatExecutor` +
+//! `TaskManager`, which are not exposed headlessly, and is refused with a
+//! stable error instead of being faked.
+//! A run whose outcome status is `failed` exits 1 with the same output
+//! body — the completed-command-failed-result convention the `models`
+//! family established for `probe-local`; an exit-0 would tell scripts
+//! the run succeeded.
+//!
+//! `update --model-id X` re-binds the model pin AND the definition's model
+//! wire name as one pair, exactly like the GUI's update (`model:
+//! selected.model, modelId: selected.id`) — the executor rejects any other
+//! combination (`resolve_scheduled_model`). An unknown X is refused before
+//! anything is persisted. Changing only the wire name (no id) is not
+//! offered: the CLI has no flag that names a bare wire model — edit the
+//! model in the GUI, or delete and recreate the task.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use pinvou3_lib::automation_foundation::{
+    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedule, AutomationStatus,
+    CreateAutomationRequest, UpdateAutomationRequest,
+};
 use pinvou3_lib::features::memory as memory_feature;
 use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
@@ -342,10 +339,16 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
             )
         })?
         .to_owned();
-    // Read `--paused` before validating: a past `FREQ=ONCE;AT=` is only a
-    // usage error for a task that starts active (see `validate_rrule`).
+    // Syntactic gate at parse time; the past-ONCE/next-slot resolution for
+    // an ACTIVE task is the foundation `create_automation`'s own eager
+    // policy (the CLI used to defer it and a past one-shot ended up Paused
+    // by the first sweep, never running) — the exit-code classes are the
+    // same usage (2), so the split pins the grammar here and the calendar
+    // truth in the layer that owns the rule.
     let paused = flags.contains(&"--paused");
-    validate_rrule(&rrule, !paused)?;
+    if !paused {
+        validate_rrule(&rrule)?;
+    }
     let kind = match option(&options, "--kind") {
         Some(value) => TaskKind::parse_value(value)?,
         None => TaskKind::Chat,
@@ -390,11 +393,11 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     let prompt_file = option(&options, "--prompt-file").map(PathBuf::from);
     let rrule = match option(&options, "--rrule") {
         Some(value) => {
-            // Unconditionally future-checked: `update` cannot see the stored
+            // Unconditionally active-grammar: `update` cannot see the stored
             // status from the parser, and the strict reading is the safe
             // default here — `resume` on an active-again task would otherwise
             // meet a one-shot the sweep can never schedule.
-            validate_rrule(value, true)?;
+            validate_rrule(value)?;
             Some(value.to_owned())
         }
         None => None,
@@ -454,41 +457,69 @@ fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, Cl
     crate::support::parse_family_positive::<usize>(options, name, "scheduled")
 }
 
-// ---- rrule validation (mirror of codewhale-tui AutomationSchedule::parse_rrule) ----
+// ---- rrule validation ----
+// The grammar belongs to the foundation (`AutomationSchedule::parse_rrule`,
+// pub in codewhale-tui): the CLI validates by CALLING it, not by mirroring
+// it. Mirrors drift — the previous copy had already diverged in the cron
+// atom iteration (an added `next <= current` overflow guard the foundation
+// later grew for negative steps), the weekly BYDAY emptiness rule and the
+// ONCE AT loose-width acceptance (chrono `%H:%M` accepts 1-digit fields the
+// old CLI mirror rejected). A failure here is a usage error (exit 2): the
+// rrule string is argv, invalid at parse time, same class as the families'
+// other input validation.
 
-/// Upper bound for `FREQ=HOURLY;INTERVAL`. The CLI persists
-/// `next_run_at: null` (disclosed deviation) and the foundation sweep
-/// computes the first slot lazily in `collect_due_runs`; its unanchored
-/// branch does plain `DateTime + Duration::hours(interval)` (up to
-/// `MAX_HOURLY_SEARCH_STEPS` = 504 iterations under a BYDAY filter), so an
-/// absurd INTERVAL overflows chrono's date range and panics the scheduler
-/// task — or, on the anchored branch, errors out the entire sweep, stalling
-/// every GUI automation until the record is removed by hand. The GUI can
-/// never persist such a record (it evaluates the first slot eagerly at
-/// create), so this bound restores the guard the deferred evaluation
-/// removed. 1e6 hours (~114 years) per step keeps the worst-case 504-step
-/// reach (~57k years) far inside chrono's ±262k-year range.
+/// Upper bound for `FREQ=HOURLY;INTERVAL`. The foundation's unanchored
+/// sweep branch does `DateTime + Duration::hours(interval)` for up to
+/// `MAX_HOURLY_SEARCH_STEPS` iterations under a BYDAY filter; an absurd
+/// INTERVAL overflows chrono's date range and errors out the entire sweep,
+/// stalling every GUI automation until the record is removed by hand — and
+/// the round-17 tree even observed it panic the scheduler task. The GUI
+/// can never persist such a record (it evaluates the first slot eagerly at
+/// create), so this pre-check keeps the guard for the records the CLI
+/// itself writes. 1e6 hours (~114 years) per step keeps the worst-case
+/// 504-step reach (~57k years) far inside chrono's ±262k-year range.
 const MAX_HOURLY_INTERVAL: u32 = 1_000_000;
 
-/// Validates an rrule with the same grammar the foundation scheduler applies:
-/// FREQ=ONCE (AT), FREQ=HOURLY (INTERVAL, BYDAY, BYHOUR, BYMINUTE),
-/// FREQ=WEEKLY (BYDAY, BYHOUR, BYMINUTE), FREQ=CRON (EXPR, 5 fields).
-/// Minute-level recurrences have no FREQ and are rejected here, exactly like
-/// the GUI. ONCE AT stamps are additionally resolved through the local
-/// timezone so a DST gap is rejected here (the foundation sweep would fail
-/// on the record every tick); the remaining next-run evaluation stays with
-/// the foundation's scheduler sweep.
-///
-/// `active` says whether the record will be created in the active state, and
-/// gates exactly one rule: the past-ONCE refusal. The foundation resolves the
-/// schedule only for an active record (`create_automation`:
-/// `if matches!(status, Active) { schedule.next_after_with_anchor(now, now)? }`),
-/// so a paused one-shot with an elapsed AT is a record the GUI creates without
-/// complaint — refusing it here would make `--paused` stricter than the
-/// surface it mirrors. Every other rule stays unconditional: a grammar error,
-/// an unknown field, a calendar overflow or a DST gap is a record the GUI can
-/// never write and that stalls its whole sweep once present, paused or not.
-fn validate_rrule(rrule: &str, active: bool) -> Result<(), CliError> {
+/// Validates an rrule through the foundation parser and converts its
+/// failure into the CLI usage-error class. The per-field pre-checks below
+/// duplicate nothing the parser already does — they keep only the guards
+/// that must fire BEFORE a record can be created at all (the
+/// scheduler-breaking INTERVAL bound and the fields the parser itself does
+/// not bound).
+fn validate_rrule(rrule: &str) -> Result<(), CliError> {
+    let parts = parse_rrule_pairs(rrule)?;
+    for (key, _) in &parts {
+        if key == "INTERVAL" {
+            // Only for the HOURLY grammar, where the sweep does interval
+            // arithmetic; ONCE/WEEKLY/CRON ignore the field.
+            if matches!(freq_of(&parts).as_deref(), Some("HOURLY")) {
+                let interval = parts
+                    .iter()
+                    .find(|(name, _)| name == "INTERVAL")
+                    .and_then(|(_, value)| value.parse::<u32>().ok())
+                    .unwrap_or(1);
+                if interval > MAX_HOURLY_INTERVAL {
+                    return Err(CliError::usage(format!(
+                        "INTERVAL must be <= {MAX_HOURLY_INTERVAL} for HOURLY schedules (a larger \
+                         step cannot be evaluated by the scheduler without overflowing its \
+                         date range)"
+                    )));
+                }
+            }
+        }
+    }
+    match AutomationSchedule::parse_rrule(rrule) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(CliError::usage(format!(
+            "invalid rrule '{rrule}': {error:#}"
+        ))),
+    }
+}
+
+/// KEY=VALUE pairs of an rrule (uppercased keys), the shape
+/// `AutomationSchedule::parse_rrule` reads; also used by the
+/// human-readable schedule label.
+fn parse_rrule_pairs(rrule: &str) -> Result<Vec<(String, String)>, CliError> {
     let mut parts: Vec<(String, String)> = Vec::new();
     for raw in rrule.split(';') {
         let item = raw.trim();
@@ -507,130 +538,18 @@ fn validate_rrule(rrule: &str, active: bool) -> Result<(), CliError> {
             parts.push((key, value.trim().to_string()));
         }
     }
-    let value = |name: &str| {
-        parts
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
-    };
-    let unsupported = |key: &str, allowed: &str| {
-        CliError::usage(format!(
-            "unsupported rrule field '{key}' (allowed: {allowed})"
-        ))
-    };
-    // The foundation uppercases the FREQ value before matching
-    // (parse_rrule: `value.trim().to_ascii_uppercase()`).
-    match value("FREQ")
-        .map(|freq| freq.to_ascii_uppercase())
-        .as_deref()
-    {
-        None => Err(CliError::usage(
-            "rrule must include FREQ (valid: ONCE, HOURLY, WEEKLY, CRON)",
-        )),
-        Some("ONCE") => {
-            for (key, _) in &parts {
-                if key != "FREQ" && key != "AT" {
-                    return Err(unsupported(key, "FREQ,AT for FREQ=ONCE"));
-                }
-            }
-            let at = value("AT").ok_or_else(|| {
-                CliError::usage(
-                    "ONCE rrules require AT (local \
-YYYY-MM-DDTHH:MM[:SS] or RFC3339)",
-                )
-            })?;
-            validate_once_at(&at, active)
-        }
-        Some("HOURLY") => {
-            const ALLOWED: &str = "FREQ,INTERVAL,BYDAY,BYHOUR,BYMINUTE";
-            for (key, _) in &parts {
-                if key != "FREQ"
-                    && key != "INTERVAL"
-                    && key != "BYDAY"
-                    && key != "BYHOUR"
-                    && key != "BYMINUTE"
-                {
-                    return Err(unsupported(key, ALLOWED));
-                }
-            }
-            if let Some(interval) = value("INTERVAL") {
-                let interval = parse_number(&interval, "INTERVAL")?;
-                if interval == 0 {
-                    return Err(CliError::usage(
-                        "INTERVAL must be >= 1 for HOURLY schedules",
-                    ));
-                }
-                if interval > MAX_HOURLY_INTERVAL {
-                    return Err(CliError::usage(format!(
-                        "INTERVAL must be <= {MAX_HOURLY_INTERVAL} for HOURLY schedules (a \
-                         larger step cannot be evaluated by the scheduler)"
-                    )));
-                }
-            }
-            if let Some(byday) = value("BYDAY") {
-                parse_byday(&byday)?;
-            }
-            if let Some(hour) = value("BYHOUR") {
-                if parse_number(&hour, "BYHOUR")? > 23 {
-                    return Err(CliError::usage("BYHOUR must be between 0 and 23"));
-                }
-            }
-            if let Some(minute) = value("BYMINUTE") {
-                if parse_number(&minute, "BYMINUTE")? > 59 {
-                    return Err(CliError::usage("BYMINUTE must be between 0 and 59"));
-                }
-            }
-            Ok(())
-        }
-        Some("WEEKLY") => {
-            const ALLOWED: &str = "FREQ,BYDAY,BYHOUR,BYMINUTE";
-            for (key, _) in &parts {
-                if key != "FREQ" && key != "BYDAY" && key != "BYHOUR" && key != "BYMINUTE" {
-                    return Err(unsupported(key, ALLOWED));
-                }
-            }
-            let byday = value("BYDAY")
-                .ok_or_else(|| CliError::usage("WEEKLY rrules require BYDAY (e.g. MO,WE)"))?;
-            parse_byday(&byday)?;
-            let hour = value("BYHOUR")
-                .ok_or_else(|| CliError::usage("WEEKLY rrules require BYHOUR (0-23)"))?;
-            if parse_number(&hour, "BYHOUR")? > 23 {
-                return Err(CliError::usage("BYHOUR must be between 0 and 23"));
-            }
-            let minute = value("BYMINUTE")
-                .ok_or_else(|| CliError::usage("WEEKLY rrules require BYMINUTE (0-59)"))?;
-            if parse_number(&minute, "BYMINUTE")? > 59 {
-                return Err(CliError::usage("BYMINUTE must be between 0 and 59"));
-            }
-            Ok(())
-        }
-        Some("CRON") => {
-            for (key, _) in &parts {
-                if key != "FREQ" && key != "EXPR" {
-                    return Err(unsupported(key, "FREQ,EXPR for FREQ=CRON"));
-                }
-            }
-            let expr = value("EXPR").ok_or_else(|| {
-                CliError::usage(
-                    "CRON rrules require EXPR (minute hour day-of-month month day-of-week)",
-                )
-            })?;
-            validate_cron_expr(&expr)
-        }
-        Some(other) => Err(CliError::usage(format!(
-            "unsupported rrule FREQ '{other}' (valid: ONCE, HOURLY, WEEKLY, CRON; \
-minute-level recurrences such as FREQ=MINUTELY are not supported)"
-        ))),
-    }
+    Ok(parts)
 }
 
-fn parse_number(value: &str, field: &str) -> Result<u32, CliError> {
-    value
-        .parse::<u32>()
-        .map_err(|_| CliError::usage(format!("failed to parse rrule {field} '{value}'")))
+fn freq_of(parts: &[(String, String)]) -> Option<String> {
+    parts
+        .iter()
+        .find(|(key, _)| key == "FREQ")
+        .map(|(_, value)| value.trim().to_ascii_uppercase())
 }
 
-fn parse_byday(value: &str) -> Result<Vec<&'static str>, CliError> {
+fn parse_byday(value: &str) -> Vec<&'static str> {
+    // Parser is the foundation's; this renders the label (best effort).
     let mut days = Vec::new();
     for token in value.split(',') {
         let day = match token.trim().to_ascii_uppercase().as_str() {
@@ -641,523 +560,35 @@ fn parse_byday(value: &str) -> Result<Vec<&'static str>, CliError> {
             "FR" => "FR",
             "SA" => "SA",
             "SU" => "SU",
-            other => {
-                return Err(CliError::usage(format!(
-                    "invalid BYDAY value '{other}' (valid: MO, TU, WE, TH, FR, SA, SU)"
-                )));
-            }
+            _ => continue,
         };
         if !days.contains(&day) {
             days.push(day);
         }
     }
-    Ok(days)
+    days
 }
 
-/// Structural mirror of `parse_once_at`: RFC3339 with offset, or a naive
-/// local `YYYY-MM-DDTHH:MM[:SS]` stamp. Day-in-month is validated here too:
-/// the foundation parser rejects calendar-overflow stamps, and the GUI
-/// scheduler's whole sweep fails while even one unparseable record exists —
-/// the CLI must not be able to create such a record. `active` gates only the
-/// past-stamp refusal; see [`validate_rrule`].
-fn validate_once_at(at: &str, active: bool) -> Result<(), CliError> {
-    let bytes = at.as_bytes();
-    let digits = |range: std::ops::Range<usize>| {
-        bytes
-            .get(range.clone())
-            .map(|slice| std::str::from_utf8(slice).unwrap_or(""))
-            .unwrap_or("")
-            .parse::<u32>()
-            .ok()
-    };
-    if parse_rfc3339(at).is_some() {
-        // `parse_rfc3339` range-checks every field but only bounds the day
-        // at 31; the foundation parser (chrono) rejects day-overflows like
-        // `02-30` on both channels, and one unparseable record stalls the
-        // GUI scheduler's whole sweep — so the RFC3339 channel applies the
-        // same day-in-month rule as the naive channel below.
-        let year = digits(0..4).unwrap_or(0) as i64;
-        let month = digits(5..7).unwrap_or(0);
-        let day = digits(8..10).unwrap_or(0);
-        if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) {
-            return Err(CliError::usage(format!(
-                "ONCE AT '{at}' is not a valid calendar time"
-            )));
-        }
-        // The GUI resolves ONCE through `next_after_with_anchor(now, now)`
-        // and refuses a stamp with no future run; mirror that so a
-        // CLI-created task does not linger until the first sweep tick pauses
-        // it instead. Only for an active record: the GUI skips that
-        // resolution entirely when the task is created paused.
-        let (secs, nanos) = parse_rfc3339(at).expect("parse_rfc3339 checked above");
-        if active && (secs, nanos) <= now_epoch() {
-            return Err(CliError::usage(format!(
-                "ONCE AT '{at}' is in the past; a one-shot needs a future run"
-            )));
-        }
-        return Ok(());
-    }
-    // Deliberate strictness: the naive channel accepts only the canonical
-    // fixed-width `YYYY-MM-DDTHH:MM[:SS]` shape. The foundation's chrono
-    // parse (`parse_once_at`) also accepts looser 1-digit month/day/hour
-    // forms through its `%Y-%m-%dT%H:%M` formats, but the GUI prompt
-    // documents exactly this canonical shape and the fixed offsets keep the
-    // field slicing below unambiguous, so the CLI refuses spellings the two
-    // surfaces would not render identically.
-    let numeric = |range: std::ops::Range<usize>| digits(range).is_some();
-    let shape_ok = bytes.len() == 16 || bytes.len() == 19;
-    let separators = bytes.len() > 15
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes[10] == b'T'
-        && bytes[13] == b':'
-        && (bytes.len() == 16 || (bytes.len() == 19 && bytes[16] == b':'));
-    let valid = shape_ok
-        && separators
-        && numeric(0..4)
-        && numeric(5..7)
-        && numeric(8..10)
-        && numeric(11..13)
-        && numeric(14..16)
-        && (bytes.len() == 16 || numeric(17..19));
-    if !valid {
-        return Err(CliError::usage(format!(
-            "failed to parse ONCE AT '{at}'. Use local YYYY-MM-DDTHH:MM[:SS] or RFC3339"
-        )));
-    }
-    let year = digits(0..4).unwrap_or(0) as i64;
-    let month = digits(5..7).unwrap_or(0);
-    let day = digits(8..10).unwrap_or(0);
-    let hour = digits(11..13).unwrap_or(0);
-    let minute = digits(14..16).unwrap_or(0);
-    let second = digits(17..19).unwrap_or(0);
-    if !(1..=12).contains(&month)
-        || hour > 23
-        || minute > 59
-        || second > 59
-        || day == 0
-        || day > days_in_month(year, month)
-    {
-        return Err(CliError::usage(format!(
-            "ONCE AT '{at}' is not a valid calendar time"
-        )));
-    }
-    // The foundation resolves naive stamps through the system timezone and
-    // fails on spring-forward gaps ("ONCE local time does not exist"); one
-    // unparseable record stalls the GUI scheduler's whole sweep. Resolve the
-    // same way (`Local.from_local_datetime(...).earliest()` is None exactly
-    // for a nonexistent local time) so the CLI refuses to create such a
-    // record.
-    let naive = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
-        .and_then(|date| date.and_hms_opt(hour, minute, second));
-    let resolved = naive.and_then(|naive| {
-        use chrono::TimeZone as _;
-        chrono::Local.from_local_datetime(&naive).earliest()
-    });
-    let resolved = match resolved {
-        Some(resolved) => resolved,
-        None => {
-            return Err(CliError::usage(format!(
-                "ONCE AT '{at}' does not exist in the local timezone (DST gap)"
-            )));
-        }
-    };
-    // Same active-only gate as the RFC3339 channel above.
-    if active && (resolved.timestamp(), resolved.timestamp_subsec_nanos()) <= now_epoch() {
-        return Err(CliError::usage(format!(
-            "ONCE AT '{at}' is in the past; a one-shot needs a future run"
-        )));
-    }
-    Ok(())
-}
-
-/// The eager next-run stamp for a one-shot: a `FREQ=ONCE` record is persisted
-/// with `next_run_at` already set to its AT anchor, because the foundation
-/// schedule sweep never can. Its lazy initialization is
-/// `next_after_with_anchor(now, now)` — for an elapsed AT it fails with
-/// "no future run", which silently pauses the one-shot (and, through the
-/// error-returning sweep, stalls the whole family) instead of firing late
-/// the way a GUI-created one-shot (persisted with `next_run_at = AT`) does.
-///
-/// This is a rendering, not a parse: `validate_rrule` proved the anchor's
-/// calendar validity (and future-ness where the entry point requires it) on
-/// the same channel just before, so here the anchor only needs to be
-/// converted to the persisted `DateTime<Utc>` rendering the GUI writes for
-/// its own one-shots (`record.next_run_at.to_rfc3339()`), truncated to
-/// milliseconds like every stamp here. Uppercase is enough — rrules are
-/// stored uppercased by `create`/`update`, and this helper normalizes for
-/// lookups.
-///
-/// Returns None for a missing AT (a malformed rrule the caller validated
-/// elsewhere): callers deny the write, they never guess.
-fn once_anchor(rrule: &str) -> Option<String> {
-    let at = rrule.split(';').find_map(|part| {
-        let part = part.trim();
-        part.strip_prefix("AT=")
-            .or_else(|| part.strip_prefix("at="))
-            .map(str::trim)
-    })?;
-    let (secs, nanos) = match parse_rfc3339(at) {
-        Some(instant) => instant,
-        None => {
-            // Naive-local channel: the foundation resolves the stamp through
-            // the system timezone (`Local`); `validate_once_at` has already
-            // proved it exists there (a DST gap was refused).
-            let number = |start: usize, end: usize| {
-                std::str::from_utf8(at.as_bytes().get(start..end)?)
-                    .ok()?
-                    .parse::<u32>()
-                    .ok()
-            };
-            // The naive channel is either YYYY-MM-DDTHH:MM or
-            // YYYY-MM-DDTHH:MM:SS (validated in `validate_once_at`; seconds
-            // default to 0 for the 16-char shape).
-            let second = if at.len() == 19 { number(17, 19)? } else { 0 };
-            let resolved = {
-                use chrono::TimeZone as _;
-                chrono::Local
-                    .from_local_datetime(
-                        &chrono::NaiveDate::from_ymd_opt(
-                            number(0, 4)? as i32,
-                            number(5, 7)?,
-                            number(8, 10)?,
-                        )?
-                        .and_hms_opt(
-                            number(11, 13)?,
-                            number(14, 16)?,
-                            second,
-                        )?,
-                    )
-                    .earliest()?
-            };
-            (resolved.timestamp(), resolved.timestamp_subsec_nanos())
-        }
-    };
-    Some(format_rfc3339_millis(secs, nanos))
-}
-
-/// Structural mirror of the foundation `ParsedCronExpr` grammar: five
-/// whitespace-separated fields with `*`, lists, `a-b` ranges, `/step`, and
-/// month/weekday names.
-fn validate_cron_expr(expr: &str) -> Result<(), CliError> {
-    const MONTH_NAMES: &[(&str, u32)] = &[
-        ("JAN", 1),
-        ("FEB", 2),
-        ("MAR", 3),
-        ("APR", 4),
-        ("MAY", 5),
-        ("JUN", 6),
-        ("JUL", 7),
-        ("AUG", 8),
-        ("SEP", 9),
-        ("OCT", 10),
-        ("NOV", 11),
-        ("DEC", 12),
-    ];
-    const WEEKDAY_NAMES: &[(&str, u32)] = &[
-        ("SUN", 0),
-        ("MON", 1),
-        ("TUE", 2),
-        ("WED", 3),
-        ("THU", 4),
-        ("FRI", 5),
-        ("SAT", 6),
-    ];
-    let fields: Vec<&str> = expr.split_whitespace().collect();
-    if fields.len() != 5 {
-        return Err(CliError::usage(
-            "CRON EXPR must have exactly 5 fields: minute hour day-of-month month day-of-week",
-        ));
-    }
-    let specs = [
-        (fields[0], 0, 59, &[] as &[(&str, u32)], "minute"),
-        (fields[1], 0, 23, &[], "hour"),
-        (fields[2], 1, 31, &[], "day-of-month"),
-        (fields[3], 1, 12, MONTH_NAMES, "month"),
-        (fields[4], 0, 7, WEEKDAY_NAMES, "day-of-week"),
-    ];
-    let mut day_of_month_wildcard = false;
-    let mut day_of_month_values: Vec<u32> = Vec::new();
-    let mut month_values = Vec::new();
-    for (index, (raw, min, max, names, field)) in specs.iter().enumerate() {
-        let mut values = Vec::new();
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(CliError::usage(format!(
-                "CRON {field} field must not be empty"
-            )));
-        }
-        let wildcard = trimmed == "*";
-        if index == 2 {
-            day_of_month_wildcard = wildcard;
-        }
-        for part in trimmed.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                return Err(CliError::usage(format!(
-                    "CRON {field} field contains an empty list item"
-                )));
-            }
-            let (base, step) = match part.split_once('/') {
-                Some((base, step)) => {
-                    let step = step.trim().parse::<u32>().map_err(|_| {
-                        CliError::usage(format!("failed to parse CRON {field} step '{step}'"))
-                    })?;
-                    if step == 0 {
-                        return Err(CliError::usage(format!("CRON {field} step must be >= 1")));
-                    }
-                    (base.trim(), step)
-                }
-                None => (part, 1),
-            };
-            let range = if base == "*" {
-                (*min, *max)
-            } else if let Some((start, end)) = base.split_once('-') {
-                let start = cron_atom(start.trim(), *min, *max, names, field)?;
-                let end = cron_atom(end.trim(), *min, *max, names, field)?;
-                if start > end {
-                    return Err(CliError::usage(format!(
-                        "CRON {field} range start must be <= end"
-                    )));
-                }
-                (start, end)
-            } else {
-                let start = cron_atom(base, *min, *max, names, field)?;
-                if part.contains('/') {
-                    (start, *max)
-                } else {
-                    (start, start)
-                }
-            };
-            let mut current = range.0;
-            while current <= range.1 {
-                if !values.contains(&current) {
-                    values.push(current);
-                }
-                match current.checked_add(step) {
-                    Some(next) => current = next,
-                    None => break,
-                }
-            }
-        }
-        if index == 2 {
-            day_of_month_values = values.clone();
-        }
-        if index == 3 {
-            month_values = values;
-        }
-    }
-    // Mirror of validate_date_space: the day/month combination must be able
-    // to produce at least one realizable date (leap February included via the
-    // 2024 probe) — per value, so `15,31 2 *` (valid on Feb 15) is accepted
-    // exactly like the foundation.
-    if !day_of_month_wildcard {
-        let valid = month_values.iter().any(|month| {
-            let common = days_in_month(2025, *month);
-            let leap = days_in_month(2024, *month);
-            day_of_month_values
-                .iter()
-                .any(|day| *day <= common || *day <= leap)
-        });
-        if !valid {
-            return Err(CliError::usage(
-                "CRON EXPR day-of-month/month combination can never occur",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn cron_atom(
-    raw: &str,
-    min: u32,
-    max: u32,
-    names: &[(&str, u32)],
-    field: &str,
-) -> Result<u32, CliError> {
-    let value = names
-        .iter()
-        .find(|(name, _)| *name == raw.trim().to_ascii_uppercase())
-        .map(|(_, value)| *value)
-        .or_else(|| raw.trim().parse::<u32>().ok())
-        .ok_or_else(|| CliError::usage(format!("invalid CRON {field} value '{raw}'")))?;
-    if !(min..=max).contains(&value) {
-        return Err(CliError::usage(format!(
-            "CRON {field} value {value} is out of range {min}-{max}"
-        )));
-    }
-    Ok(value)
-}
-
-fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-            if leap { 29 } else { 28 }
-        }
-        _ => 0,
-    }
-}
-
-// ---- wall-clock helpers ----
-// Hand-rolled (chrono IS a dependency) so record ordering and past-checks
-// reproduce the foundation's chrono-based arithmetic on GUI-written stamps
-// exactly, independent of chrono's parse-mode changes.
-
-fn now_epoch() -> (i64, u32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    (now.as_secs() as i64, now.subsec_nanos())
-}
-
-/// Days-to-civil conversion (Howard Hinnant's algorithm), sufficient to
-/// render UTC timestamps without a date-time crate.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        if month <= 2 { year + 1 } else { year },
-        month as u32,
-        day as u32,
-    )
-}
-
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let year_of_era = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 } as i64;
-    era * 146_097 + year_of_era * 365 + year_of_era / 4 - year_of_era / 100
-        + (153 * mp + 2) / 5
-        + day as i64
-        - 1
-        - 719_468
-}
-
-fn format_rfc3339_millis(secs: i64, nanos: u32) -> String {
-    let millis = nanos / 1_000_000;
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-/// `{sortable-created-at}` stamp for run file names, mirroring the
-/// foundation's `%Y%m%dT%H%M%S%3fZ` format so directory listings stay
-/// chronologically sorted next to GUI-created runs.
-fn run_file_stamp(secs: i64, nanos: u32) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    format!(
-        "{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}{:03}Z",
-        nanos / 1_000_000
-    )
-}
-
-/// Parses `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` into epoch seconds plus
-/// subsecond nanos; returns None for anything else — including a stamp
-/// without an offset, because the foundation's chrono parser requires one
-/// and only then falls back to the naive-local channel. Used to order
-/// records and to pick the ONCE AT channel, mirroring the foundation's
-/// chrono-based sorts.
-fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
-    let trimmed = value.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let num = |range: std::ops::Range<usize>| {
-        std::str::from_utf8(bytes.get(range)?)
-            .ok()?
-            .parse::<i64>()
-            .ok()
-    };
-    if bytes[4] != b'-'
-        || bytes[7] != b'-'
-        // RFC3339 §5.6 NOTE lets the date/time separator be lowercase; the
-        // foundation parses through chrono, which accepts it, so the CLI
-        // must not reject a stamp the GUI can create.
-        || (bytes[10] != b'T' && bytes[10] != b't')
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-    {
-        return None;
-    }
-    let year = num(0..4)?;
-    let month = num(5..7)? as u32;
-    let day = num(8..10)? as u32;
-    let hour = num(11..13)? as u32;
-    let minute = num(14..16)? as u32;
-    let second = num(17..19)? as u32;
-    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    let mut rest = &trimmed[19..];
-    let mut nanos = 0u32;
-    if let Some(fractional) = rest.strip_prefix('.') {
-        let digits_end = fractional
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(fractional.len());
-        if digits_end == 0 {
-            return None;
-        }
-        let mut scaled = fractional[..digits_end].to_owned();
-        while scaled.len() < 9 {
-            scaled.push('0');
-        }
-        nanos = scaled[..9].parse().ok()?;
-        rest = &fractional[digits_end..];
-    }
-    let offset_secs = match rest {
-        // RFC3339 requires an offset. An offset-less stamp must fall through
-        // to the naive-local channel (validate_once_at), where the DST-gap
-        // rule applies — the foundation parses such stamps as local time,
-        // never as UTC, and one unresolvable record stalls the GUI
-        // scheduler's whole sweep.
-        "Z" | "z" => 0,
-        "" => return None,
-        offset => {
-            let offset = offset.as_bytes();
-            if offset.len() != 6 || (offset[0] != b'+' && offset[0] != b'-') || offset[3] != b':' {
-                return None;
-            }
-            let sign: i64 = if offset[0] == b'-' { -1 } else { 1 };
-            let hours: i64 = std::str::from_utf8(&offset[1..3]).ok()?.parse().ok()?;
-            let minutes: i64 = std::str::from_utf8(&offset[4..6]).ok()?.parse().ok()?;
-            if hours > 23 || minutes > 59 {
-                return None;
-            }
-            sign * (hours * 3600 + minutes * 60)
-        }
-    };
-    let epoch = days_from_civil(year, month, day) * 86_400
-        + i64::from(hour) * 3600
-        + i64::from(minute) * 60
-        + i64::from(second)
-        - i64::from(offset_secs);
-    Some((epoch, nanos))
-}
-
-fn record_time(value: &serde_json::Value, field: &str) -> (i64, u32) {
+/// Record ordering key from a JSON field: the foundation sorts by chrono
+/// `DateTime<Utc>`; the CLI reads the same stamps through the foundation's
+/// own parser semantics via `AutomationRecord`-equivalent decode — a value
+/// that is not an RFC3339 instant sorts last (it can only be hand-edited
+/// storage; every CLI writer writes chrono-rendered stamps and all read
+/// gates refuse undecodable records before ordering runs).
+fn record_time(value: &serde_json::Value, field: &str) -> chrono::DateTime<chrono::Utc> {
+    // Sorting floor for undecodable stamps: the smallest chrono can
+    // represent (year -262143 overflows for many chrono versions, so
+    // MIN_DATETIME safe bound via from_timestamp at its documented
+    // boundary). Real records never reach this — every read gate refuses
+    // undecodable stamps first; only the lossy archive lane orders
+    // untrusted data, and there it must sort LAST.
+    const FLOOR_SECS: i64 = -62_135_596_800; // 0001-01-01T00:00:00Z
     value
         .get(field)
         .and_then(|value| value.as_str())
-        .and_then(parse_rfc3339)
-        .unwrap_or((i64::MIN, 0))
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|stamp| stamp.with_timezone(&chrono::Utc))
+        .unwrap_or(chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor"))
 }
 
 // ---- store layout (mirrors AutomationManager::open(root) + app sidecars) ----
@@ -1175,6 +606,26 @@ fn safe_storage_id(kind: &str, value: &str) -> Result<(), CliError> {
             "{kind} must be a single path component: {value}"
         ))),
     }
+}
+
+/// Defense in depth, kept from the pre-port read gate: the decoded record's
+/// id doubles as the on-disk workspace directory name (`workspace_dir`,
+/// `ensure_workspace`), so a hand-edited definition carrying a
+/// non-component id must be refused on read instead of flowing into a
+/// directory join. The typed `AutomationRecord` decode accepts any string
+/// id, so this check rides alongside it, in the same malformed-definition
+/// refusal class ("Failed to parse …"): the store is broken and only its
+/// fix is user-actionable, never a usage error — the id came from the file,
+/// not from argv.
+fn require_safe_record_id(record: &AutomationRecord) -> Result<(), CliError> {
+    if safe_storage_id("scheduled task id", &record.id).is_err() {
+        return Err(CliError::failed(format!(
+            "Failed to parse scheduled task definition: its stored id '{}' is not a single \
+             path component; fix or remove the definition file manually",
+            record.id
+        )));
+    }
+    Ok(())
 }
 
 /// Task store rooted at the sandbox home, mirroring
@@ -1234,214 +685,108 @@ impl TaskStore {
         pinvou3_lib::platform::paths::scheduled_task_workspace_dir(id)
     }
 
+    /// The foundation manager over the same root. Its `open` creates the
+    /// directory layout (idempotent); all typed reads and writes of
+    /// definitions and run listings go through it.
+    fn manager(&self) -> Result<AutomationManager, CliError> {
+        AutomationManager::open(self.root()).map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot open the automation store {}: {error:#}",
+                self.root().display()
+            ))
+        })
+    }
+
     /// One task definition; a missing file maps to the stable
     /// `scheduled_task_not_found` failure, like the GUI command errors.
+    /// Typed decode: the foundation `AutomationRecord` deserialization, so
+    /// a wrong-shaped or undecodable definition is refused exactly like the
+    /// app's typed reader refuses it (instead of rendering a phantom task).
     fn read_def(&self, id: &str) -> Result<serde_json::Value, CliError> {
         let path = self.def_path(id)?;
-        let raw = std::fs::read_to_string(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                CliError::failed(format!("scheduled_task_not_found: {id}"))
-            } else {
-                CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot read {}: {error}",
-                    path.display()
-                ))
-            }
-        })?;
-        let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        if !path.exists() {
+            return Err(CliError::failed(format!("scheduled_task_not_found: {id}")));
+        }
+        let record = self.manager()?.get_automation(id).map_err(|error| {
             CliError::failed(format!(
-                "scheduled_storage_unavailable: cannot parse {}: {error}",
-                path.display()
+                "scheduled_storage_unavailable: cannot read scheduled task {id}: {error:#}"
             ))
         })?;
-        // A valid-JSON but non-object definition (hand-edited store) must be
-        // refused by every command uniformly: read-only `show` would
-        // otherwise render a phantom empty task with exit 0 while `list`
-        // died on the record's missing id field.
-        require_object_definition(id, &value)?;
-        ensure_supported_schema(&value, 2, "record")?;
-        Ok(value)
+        require_safe_record_id(&record)?;
+        Ok(def_to_value(&record))
     }
 
     /// Every task definition, newest `updated_at` first, like
     /// `AutomationManager::list_automations`.
     fn list_defs(&self) -> Result<Vec<serde_json::Value>, CliError> {
-        let dir = self.defs_dir();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot read {}: {error}",
-                    dir.display()
-                )));
-            }
-        };
-        let mut defs = Vec::new();
-        for entry in entries {
-            let path = entry
-                .map_err(|error| {
-                    CliError::failed(format!(
-                        "scheduled_storage_unavailable: cannot list {}: {error}",
-                        dir.display()
-                    ))
-                })?
-                .path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            let raw = std::fs::read_to_string(&path).map_err(|error| {
+        let records = self.manager()?.list_automations().map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot list scheduled tasks: {error:#}"
+            ))
+        })?;
+        let mut defs = Vec::with_capacity(records.len());
+        for record in &records {
+            require_safe_record_id(record).map_err(|error| {
                 CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot read {}: {error}",
-                    path.display()
+                    "scheduled_storage_unavailable: cannot list scheduled tasks: {error:#}"
                 ))
             })?;
-            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
-                CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot parse {}: {error}",
-                    path.display()
-                ))
-            })?;
-            // Same uniform non-object refusal as read_def; the file name is
-            // the task id.
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("");
-            require_object_definition(id, &value)?;
-            ensure_supported_schema(&value, 2, "record")?;
-            defs.push(value);
+            defs.push(def_to_value(record));
         }
-        defs.sort_by(|a, b| record_time(b, "updated_at").cmp(&record_time(a, "updated_at")));
         Ok(defs)
     }
 
-    /// Atomic pretty-JSON write, same shape as the foundation's
-    /// `write_json_atomic` (`.json.tmp` sibling + rename).
+    /// Typed write through the foundation manager (same normalization and
+    /// serialization the GUI's writes go through).
     fn write_def(&self, def: &serde_json::Value) -> Result<(), CliError> {
-        let id = def
-            .get("id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| CliError::failed("scheduled_storage_unavailable: task id missing"))?
-            .to_owned();
-        write_json_atomic(&self.def_path(&id)?, def)
+        let record = def_from_value(def)?;
+        self.manager()?.save_automation(&record).map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot write scheduled task: {error:#}"
+            ))
+        })
     }
 
-    /// Run records for one task, newest first (created_at, ties broken by the
-    /// sortable file name), legacy `{run_id}.json` files merged in — the same
-    /// ordering rules as `AutomationManager::list_runs`.
+    /// Run records for one task, newest first, legacy `{run_id}.json` files
+    /// merged in — the foundation `AutomationManager::list_runs`, which is
+    /// bounded: sortable files are truncated to `limit` BEFORE reading when
+    /// the limit is set.
     fn list_runs(
         &self,
         id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>, CliError> {
-        let dir = self.runs_dir_for(id)?;
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot read {}: {error}",
-                    dir.display()
-                )));
-            }
-        };
-        let mut sortable = Vec::new();
-        let mut legacy = Vec::new();
-        for entry in entries {
-            let path = entry
-                .map_err(|error| {
-                    CliError::failed(format!(
-                        "scheduled_storage_unavailable: cannot list {}: {error}",
-                        dir.display()
-                    ))
-                })?
-                .path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            match path.file_stem().and_then(|stem| stem.to_str()) {
-                Some(stem) if has_sortable_run_stem(stem) => sortable.push(path),
-                _ => legacy.push(path),
-            }
-        }
-        sortable.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-        // No early truncate here: dedup happens after the created_at re-sort
-        // (a legacy duplicate may not be adjacent), so truncating before
-        // reading could drop records that dedup would have kept.
-        let mut runs = Vec::new();
-        for path in sortable.into_iter().chain(legacy) {
-            let raw = std::fs::read_to_string(&path).map_err(|error| {
-                CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot read {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let run: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
-                CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot parse {}: {error}",
-                    path.display()
-                ))
-            })?;
-            ensure_supported_schema(&run, 1, "run record")?;
-            // Same honest-refusal rule as definitions, extended to the same
-            // type-checked required fields: `AutomationRunRecord` deserializes
-            // id/automation_id/scheduled_for/status/created_at without
-            // defaults, so the GUI's typed reader rejects the whole record —
-            // a valid-JSON object missing them (or carrying a non-string one)
-            // must not render as a phantom run with empty fields and exit 0.
-            require_object_run_record(&run, &path)?;
-            runs.push(run);
-        }
-        runs.sort_by(|a, b| record_time(b, "created_at").cmp(&record_time(a, "created_at")));
-        runs.dedup_by(|a, b| a.get("id") == b.get("id"));
-        if let Some(limit) = limit {
-            runs.truncate(limit);
-        }
-        Ok(runs)
+        let runs = self.manager()?.list_runs(id, limit).map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot list runs for scheduled task {id}: \
+                     {error:#}"
+            ))
+        })?;
+        Ok(runs.iter().map(run_to_value).collect())
     }
 
-    /// Persist one run record under its sortable name, mirroring
-    /// `AutomationManager::save_run`.
+    /// Persist one terminal CLI run record. `AutomationManager::save_run` is
+    /// private, so the CLI writes the same record through the same JSON
+    /// shim to the same sortable file name (foundation
+    /// `{stamp}-{run_id}.json`, chrono-based) and drops a legacy-named twin,
+    /// mirroring `save_run`'s migration step.
     fn save_run(&self, run: &serde_json::Value) -> Result<(), CliError> {
-        let id = run
-            .get("id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| CliError::failed("scheduled_storage_unavailable: run id missing"))?
-            .to_owned();
-        let automation_id = run
-            .get("automation_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| {
-                CliError::failed("scheduled_storage_unavailable: run automation id missing")
-            })?
-            .to_owned();
-        let dir = self.runs_dir_for(&automation_id)?;
+        let record = run_from_value(run)?;
+        let dir = self.runs_dir_for(&record.automation_id)?;
         std::fs::create_dir_all(&dir).map_err(|error| {
             CliError::failed(format!(
                 "scheduled_storage_unavailable: cannot create {}: {error}",
                 dir.display()
             ))
         })?;
-        let (secs, nanos) = record_time(run, "created_at");
-        if secs == i64::MIN {
-            // The sentinel from `record_time` would flow into
-            // `run_file_stamp` as an unsortable year-(-...) name, and the
-            // legacy-name cleanup below would leave the run on disk twice.
-            // Only hand-edited storage can produce this; refuse instead of
-            // writing it.
-            return Err(CliError::failed(format!(
-                "scheduled_storage_unavailable: run {id} carries an unparseable \
-                 created_at; refusing to store it under an unsortable name"
-            )));
-        }
-        let path = dir.join(format!("{}-{id}.json", run_file_stamp(secs, nanos)));
+        let stamp = record.created_at.format("%Y%m%dT%H%M%S%3fZ").to_string();
+        let path = dir.join(format!("{stamp}-{}.json", record.id));
         write_json_atomic(&path, run)?;
         // Mirror the foundation: rewrites of a legacy-named run migrate it
         // to the sortable name; drop the old file so the run never exists
         // twice on disk (list dedups by id, but the twin still leaks stale
         // content to direct readers).
-        let legacy = dir.join(format!("{id}.json"));
+        let legacy = dir.join(format!("{}.json", record.id));
         if legacy != path && legacy.exists() {
             std::fs::remove_file(&legacy).map_err(|error| {
                 CliError::failed(format!(
@@ -1454,171 +799,34 @@ impl TaskStore {
     }
 }
 
-fn ensure_supported_schema(
-    value: &serde_json::Value,
-    supported: u32,
-    what: &str,
-) -> Result<(), CliError> {
-    let Some(raw_version) = value.get("schema_version") else {
-        // Legacy files carry no version; every CLI writer adds one.
-        return Ok(());
-    };
-    // A present-but-wrong-typed version would pass this gate as 0 while the
-    // GUI's typed deserialization fails on the file — refuse it instead of
-    // reporting success on a record the app cannot read.
-    let version = raw_version.as_u64().ok_or_else(|| {
+/// JSON <-> `AutomationRecord` shims. The wire JSON is the record's own
+/// serde shape (`schema_version: 2`, snake_case fields, chrono RFC3339
+/// stamps), so the mapping is a typed round-trip: a def carrying a missing
+/// or wrong-typed required field fails the typed decode inside the shim
+/// instead of rendering as a phantom task — the same class the previous
+/// hand-rolled `require_object_definition` gate covered.
+fn def_from_value(def: &serde_json::Value) -> Result<AutomationRecord, CliError> {
+    serde_json::from_value(def.clone()).map_err(|error| {
         CliError::failed(format!(
-            "scheduled_storage_unavailable: {what} schema_version is malformed (expected a \
-             number); fix or remove the file manually"
+            "scheduled_storage_unavailable: task definition is malformed: {error}"
         ))
-    })?;
-    if version > u64::from(supported) {
-        return Err(CliError::failed(format!(
-            "scheduled_storage_unavailable: {what} schema v{version} is newer than supported \
-             v{supported}; upgrade pinvou to edit it"
-        )));
-    }
-    Ok(())
-}
-
-/// The `AutomationRunStatus` variants as the foundation serializes them
-/// (`#[serde(rename_all = "snake_case")]` in
-/// `codewhale-tui::automation_manager`). The field is an enum there, not a
-/// free string, so any other value fails its typed read.
-const RUN_STATUS_VALUES: [&str; 5] = ["queued", "running", "completed", "failed", "canceled"];
-
-/// The `AutomationStatus` variants, same source and same snake_case rule.
-const TASK_STATUS_VALUES: [&str; 2] = ["active", "paused"];
-
-/// The run-record twin of [`require_object_definition`]: type-checks the
-/// fields `AutomationRunRecord` deserializes without defaults, so a
-/// valid-JSON-but-wrong-shaped run file fails honestly instead of
-/// rendering as a phantom run with empty fields.
-fn require_object_run_record(
-    run: &serde_json::Value,
-    path: &std::path::Path,
-) -> Result<(), CliError> {
-    let malformed = || {
-        CliError::failed(format!(
-            "scheduled_storage_unavailable: {} is not a well-formed run record; fix or remove \
-             the file manually",
-            path.display()
-        ))
-    };
-    if !run.is_object() {
-        return Err(malformed());
-    }
-    for field in [
-        "id",
-        "automation_id",
-        "scheduled_for",
-        "status",
-        "created_at",
-    ] {
-        if run.get(field).map(serde_json::Value::is_string) != Some(true) {
-            return Err(malformed());
-        }
-    }
-    // Being a string is not enough for the three fields the foundation does
-    // not type as one: `status` is an `AutomationRunStatus` enum and both
-    // stamps are `DateTime<Utc>`. A record that is well-typed-but-undecodable
-    // here is precisely the class that hard-stops the GUI — `read_run_file`
-    // fails to deserialize it and `collect_due_runs` propagates that failure,
-    // aborting the due-run sweep for *every* automation — while this listing
-    // would otherwise print a garbage status and, through `record_time`'s
-    // `i64::MIN` fallback, silently sort the unreadable stamp last.
-    if !RUN_STATUS_VALUES.contains(&str_field(run, "status").unwrap_or_default()) {
-        return Err(malformed());
-    }
-    for stamp in ["scheduled_for", "created_at"] {
-        if str_field(run, stamp).and_then(parse_rfc3339).is_none() {
-            return Err(malformed());
-        }
-    }
-    Ok(())
-}
-
-/// A definition file that is valid JSON but not an object (hand-edited
-/// store) must fail honestly: `read_def` and `list_defs` apply this check so
-/// every command refuses uniformly, with the same stable message — read-only
-/// `show`/`list` would otherwise render a phantom empty task, and the
-/// `IndexMut` writes in the mutating commands would panic (exit 101, outside
-/// the CLI's exit-code contract). The required-field check mirrors the
-/// GUI's typed `AutomationRecord` (serde fails the whole store there):
-/// a def missing one of its required fields must not render as a phantom
-/// task either.
-fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
-    let malformed = || {
-        CliError::failed(format!(
-            "scheduled task {id} is malformed; fix or remove its definition file manually"
-        ))
-    };
-    if !def.is_object() {
-        return Err(malformed());
-    }
-    // Required by `AutomationRecord` without #[serde(default)]/Option.
-    // Type-checked, not just presence-checked: a non-string `name`/`id` (or a
-    // numeric timestamp) would slip past the gate and render as a phantom
-    // task with empty strings, the exact shape the GUI's serde rejects the
-    // whole record for.
-    for field in [
-        "id",
-        "name",
-        "prompt",
-        "rrule",
-        "status",
-        "created_at",
-        "updated_at",
-    ] {
-        if def.get(field).map(serde_json::Value::is_string) != Some(true) {
-            return Err(malformed());
-        }
-    }
-    // Same value-level gate as `require_object_run_record`, for the fields
-    // `AutomationRecord` does not type as strings either: `status` is an
-    // `AutomationStatus` enum and both stamps are `DateTime<Utc>`. A def the
-    // foundation cannot decode must not reach a listing — `list` would render
-    // a task whose status the GUI will never agree with, and every mutating
-    // command would happily write the record back.
-    if !TASK_STATUS_VALUES.contains(&str_field(def, "status").unwrap_or_default()) {
-        return Err(malformed());
-    }
-    for stamp in ["created_at", "updated_at"] {
-        if str_field(def, stamp).and_then(parse_rfc3339).is_none() {
-            return Err(malformed());
-        }
-    }
-    // Defense in depth: the id doubles as the on-disk workspace directory
-    // name, so a file-supplied id must be a single path component even when
-    // the caller reached this def without an id argument check. A component
-    // violation is the same malformed-file failure as above (the store is
-    // broken; only its fix is user-actionable), not a usage error.
-    let id = def
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let mut components = std::path::Path::new(id).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(malformed());
-    }
-    Ok(())
-}
-
-fn has_sortable_run_stem(stem: &str) -> bool {
-    const RUN_STAMP_LEN: usize = "20260705T142530123Z".len();
-    let Some((stamp, rest)) = stem.split_at_checked(RUN_STAMP_LEN) else {
-        return false;
-    };
-    if !rest.starts_with('-') || rest.len() < 2 {
-        return false;
-    }
-    stamp.char_indices().all(|(index, ch)| match index {
-        8 => ch == 'T',
-        18 => ch == 'Z',
-        _ => ch.is_ascii_digit(),
     })
+}
+
+fn def_to_value(record: &AutomationRecord) -> serde_json::Value {
+    serde_json::to_value(record).expect("AutomationRecord serializes")
+}
+
+fn run_from_value(run: &serde_json::Value) -> Result<AutomationRunRecord, CliError> {
+    serde_json::from_value(run.clone()).map_err(|error| {
+        CliError::failed(format!(
+            "scheduled_storage_unavailable: run record is malformed: {error}"
+        ))
+    })
+}
+
+fn run_to_value(record: &AutomationRunRecord) -> serde_json::Value {
+    serde_json::to_value(record).expect("AutomationRunRecord serializes")
 }
 
 fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliError> {
@@ -1630,35 +838,76 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
             ))
         })?;
     }
-    let content = serde_json::to_string_pretty(value).map_err(|error| {
+    let content = serde_json::to_vec_pretty(value).map_err(|error| {
         CliError::failed(format!("scheduled_storage_unavailable: serialize: {error}"))
     })?;
-    // Unique tmp suffix: two concurrent writers sharing the fixed
-    // `*.json.tmp` name could rename each other's content.
+    // Unique per-pid/nanos staging name (round-16 fix, kept): two concurrent
+    // writers sharing a fixed `*.json.tmp` name could rename each other's
+    // content. Hidden sibling in the target's own directory: same filesystem
+    // (so the rename is atomic) and never surfaced as a stray visible file.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
-    std::fs::write(&tmp, content).map_err(|error| {
-        CliError::failed(format!(
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: {} has no usable file name",
+                path.display()
+            ))
+        })?;
+    let tmp = path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+    write_json_atomic_staged(path, &tmp, &content)
+}
+
+/// [`write_json_atomic`] with the staging path supplied by the caller.
+///
+/// Split out for the same reason the round-16 `artifacts::atomic_write_staged`
+/// exists: the real staging name embeds a nanosecond timestamp, which makes
+/// the `create_new` guarantee — the one the previous non-`O_EXCL` copy
+/// lacked — untestable through the public entry point.
+fn write_json_atomic_staged(path: &Path, tmp: &Path, content: &[u8]) -> Result<(), CliError> {
+    let stage = (|| -> std::io::Result<()> {
+        // create_new (O_EXCL): never truncate, and never follow a symlink
+        // someone planted at the staging path — the non-O_EXCL pattern the
+        // artifacts writer documented as removed (round-18 review).
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)?;
+        std::io::Write::write_all(&mut file, content)?;
+        // Propagated, not discarded: this is the step that makes the rename
+        // safe to perform at all.
+        file.sync_all()
+    })();
+    if let Err(error) = stage {
+        // Only clean up staging failures that are NOT "something was already
+        // there": removing a path we refused to open would delete exactly the
+        // file (or symlink) `create_new` protected.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(tmp);
+        }
+        return Err(CliError::failed(format!(
             "scheduled_storage_unavailable: cannot write {}: {error}",
             tmp.display()
-        ))
-    })?;
-    // Best-effort fsync: a power loss must not rename through an
-    // empty/truncated staging file into the registry.
-    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
-    std::fs::rename(&tmp, path).map_err(|error| {
-        // The staging file is garbage once the move fails; leaving it behind
-        // would accumulate (mirror of the personas writer's cleanup).
-        let _ = std::fs::remove_file(&tmp);
-        CliError::failed(format!(
+        )));
+    }
+    if let Err(error) = std::fs::rename(tmp, path) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(CliError::failed(format!(
             "scheduled_storage_unavailable: cannot move {} to {}: {error}",
             tmp.display(),
             path.display()
-        ))
-    })
+        )));
+    }
+    // Best-effort like the artifacts writer: the data is already durable,
+    // this only shortens the window in which the directory entry is not.
+    if let Ok(dir) = std::fs::File::open(path.parent().unwrap_or_else(|| Path::new("."))) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 /// Cross-process write serialization for the scheduled store: every mutating
@@ -1739,8 +988,7 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// whether or not the file could be moved aside — silently resetting e.g. the
 /// user's viewed-run state looks like success.
 fn quarantine_unreadable(path: &Path) {
-    let (secs, nanos) = now_epoch();
-    let stamp = format_rfc3339_millis(secs, nanos).replace([':', '.'], "-");
+    let stamp = quarantine_stamp();
     let mut target = path.as_os_str().to_owned();
     target.push(format!(".invalid-{stamp}"));
     let target = PathBuf::from(target);
@@ -1788,7 +1036,7 @@ fn registry_tasks_mut<'a>(
     // merged and written back (the GUI's VersionedJsonStore quarantines the
     // same situation); the version check only gates objects that carry one.
     if registry.is_object() {
-        ensure_supported_schema(registry, schema_version, "registry")?;
+        ensure_sidecar_schema(registry, schema_version as u64, "registry")?;
     }
     if !registry.is_object() {
         *registry = serde_json::json!({ "schema_version": schema_version, "tasks": {} });
@@ -1809,6 +1057,54 @@ fn registry_tasks_mut<'a>(
         .expect("tasks normalized to an object above"))
 }
 
+/// Current instant in the RFC3339 shape the foundation writes
+/// (`to_rfc3339()` on chrono stamps renders fractional seconds when the
+/// nanosecond part is non-zero; the previous hand-rolled renderer emitted
+/// fixed milliseconds — both decode identically through every reader, so
+/// the foundation's own renderer is the parity choice now).
+fn now_string() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// Quarantine stamp: sortable, separator-free version of the same instant.
+fn quarantine_stamp() -> String {
+    chrono::Utc::now().to_rfc3339().replace([':', '.'], "-")
+}
+
+/// Registry schema gate for the CLI-owned sidecar registries (schema
+/// 2 read-state/history archive, schema 1 bindings/kinds/ui-metadata): a
+/// registry written by a newer app version must be refused, never merged
+/// and written back (the GUI's VersionedJsonStore quarantines the same
+/// situation); a present-but-wrong-typed version would pass as 0 while the
+/// GUI's typed deserialization fails on the file, so it is refused too.
+fn ensure_sidecar_schema(
+    registry: &serde_json::Value,
+    supported: u64,
+    what: &str,
+) -> Result<(), CliError> {
+    if !registry.is_object() {
+        return Ok(());
+    }
+    match registry.get("schema_version") {
+        None => Ok(()), // legacy files carry no version; every CLI writer adds one
+        Some(version) => {
+            let version = version.as_u64().ok_or_else(|| {
+                CliError::failed(format!(
+                    "scheduled_storage_unavailable: {what} schema_version is malformed \
+                     (expected a number); fix or remove the file manually"
+                ))
+            })?;
+            if version > supported {
+                return Err(CliError::failed(format!(
+                    "scheduled_storage_unavailable: {what} schema v{version} is newer than \
+                     supported v{supported}; upgrade pinvou to edit it"
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn registry_tasks_view<'a>(
     registry: &'a serde_json::Value,
 ) -> &'a serde_json::Map<String, serde_json::Value> {
@@ -1818,11 +1114,6 @@ fn registry_tasks_view<'a>(
         .get("tasks")
         .and_then(|value| value.as_object())
         .unwrap_or_else(|| EMPTY.get_or_init(serde_json::Map::new))
-}
-
-fn now_string() -> String {
-    let (secs, nanos) = now_epoch();
-    format_rfc3339_millis(secs, nanos)
 }
 
 /// Random task/run id — the same UUIDv4 generator as the foundation's
@@ -1851,17 +1142,9 @@ fn status_label(value: &serde_json::Value) -> String {
 /// English schedule label for human output; JSON `scheduleLabel` carries the
 /// same value (the GUI renders Chinese labels; the CLI is an English tool).
 fn humanize_rrule(rrule: &str) -> String {
-    let mut parts: Vec<(String, String)> = Vec::new();
-    for raw in rrule.split(';') {
-        if let Some((key, value)) = raw.trim().split_once('=') {
-            let key = key.trim().to_ascii_uppercase();
-            if let Some(existing) = parts.iter_mut().find(|(name, _)| *name == key) {
-                existing.1 = value.trim().to_string();
-            } else {
-                parts.push((key, value.trim().to_string()));
-            }
-        }
-    }
+    let Ok(parts) = parse_rrule_pairs(rrule) else {
+        return rrule.to_owned();
+    };
     let value = |name: &str| {
         parts
             .iter()
@@ -1905,17 +1188,17 @@ fn with_days(byday: Option<&str>, label: &str) -> String {
     let Some(byday) = byday else {
         return label.to_owned();
     };
-    match parse_byday(byday) {
-        Ok(days) if !days.is_empty() => {
-            let workdays = ["MO", "TU", "WE", "TH", "FR"];
-            let days_label = if days == workdays {
-                "workdays".to_owned()
-            } else {
-                days.join(",")
-            };
-            format!("{days_label} {label}")
-        }
-        _ => label.to_owned(),
+    let days = parse_byday(byday);
+    if days.is_empty() {
+        label.to_owned()
+    } else {
+        let workdays = ["MO", "TU", "WE", "TH", "FR"];
+        let days_label = if days == workdays {
+            "workdays".to_owned()
+        } else {
+            days.join(",")
+        };
+        format!("{days_label} {label}")
     }
 }
 
@@ -2343,48 +1626,6 @@ fn default_automation_model() -> String {
         .unwrap_or_else(|| "default-model".to_owned())
 }
 
-/// The wire name `--model-id <id>` binds to: the saved record X's own
-/// `model`, never the active model's. The pair persisted for a binding is
-/// exactly what the executor's `resolve_scheduled_model` later checks — any
-/// other pairing (including a dangling unknown id) fails every run at
-/// startup ("此任务绑定的 AI 模型配置已变更"), so the id is resolved here and
-/// an unknown one is refused as a usage error (exit 2): the id is invalid
-/// at the moment it is named, the same class as `--kind`/`--mode` checks.
-/// The lookup goes through the same saved-models store `UserPrefs` migrates
-/// and normalizes on load (`models list` / the model picker read).
-fn resolve_saved_model_wire_name(model_id: &str) -> Result<String, CliError> {
-    let model_id = model_id.trim();
-    if model_id.is_empty() {
-        return Ok(default_automation_model());
-    }
-    UserPrefs::load()
-        .model_by_id(model_id)
-        .map(|model| model.model.clone())
-        .ok_or_else(|| {
-            CliError::usage(format!(
-                "unknown model id '{model_id}' (saved models: {}); a task bound to a \
-                 nonexistent model fails on every run at the model resolution check",
-                saved_models_for_usage()
-            ))
-        })
-}
-
-/// Compact listing of saved models for `--model-id`'s unknown-id error, built
-/// from the same store `UserPrefs::load` migrates and normalizes.
-fn saved_models_for_usage() -> String {
-    let models: Vec<String> = UserPrefs::load()
-        .advanced
-        .saved_models
-        .iter()
-        .map(|model| format!("[{}] {} ({})", model.name, model.model, model.id))
-        .collect();
-    if models.is_empty() {
-        "(no saved models; add one from the app's settings)".to_owned()
-    } else {
-        models.join(", ")
-    }
-}
-
 /// Mirrors `Pinvou3Bridge::allow_shell_for_prefs` (crate-private in
 /// `pinvou3_lib`): env > prefs.advanced > default true.
 fn current_allow_shell() -> bool {
@@ -2427,32 +1668,77 @@ fn create(
             "scheduled create requires a non-empty prompt file",
         ));
     }
+    // The model wire name and the saved-model pin are resolved as ONE pair,
+    // exactly like the GUI's create (`model: selected.model, modelId:
+    // selected.id`): the executor's `resolve_scheduled_model` rejects a task
+    // whose binding's wire name does not match the id's current wire name,
+    // so pinning X while persisting the ACTIVE model's wire name (the old
+    // CLI behavior) produced a task that fails on every run. With
+    // `--model-id` the definition carries the named model's own wire name;
+    // without it, the active model's (the GUI's `current_automation_model`).
+    // An unknown `--model-id` is refused before anything is persisted: it
+    // names a saved model that does not exist, the same state-dependent
+    // refusal class the family's conventions dictate (exit 1, like `models
+    // ... model not found:`).
+    let (model, validated_model_id) = match model_id.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => {
+            let prefs = UserPrefs::load();
+            let selected = prefs
+                .model_by_id(raw)
+                .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
+            (selected.model.clone(), Some(raw.to_owned()))
+        }
+        _ => (default_automation_model(), None),
+    };
     if kind == TaskKind::MemoryOrganize && !memory_feature::memory_enabled() {
         return Err(CliError::failed(
             "scheduled_memory_organize_disabled: memory organize tasks require memory to be \
 enabled in settings",
         ));
     }
-    // Model resolution mirrors the GUI's pairing (`selected.model` with
-    // `selected.modelId` and nothing else): with `--model-id` the selected
-    // record's wire name is the definition's model, and the same pair is
-    // persisted as the binding. Writing the active model's name against
-    // another record's id would fail every later run at
-    // `resolve_scheduled_model`, so the unknown-id check happens here, before
-    // anything is persisted.
-    let model = match model_id.as_deref() {
-        Some(model_id) => resolve_saved_model_wire_name(model_id)?,
-        None => default_automation_model(),
-    };
+    // Foundation create: same id allocation, normalization and serialization
+    // as the GUI, and — the reason this replaces the hand-rolled writer —
+    // an ACTIVE record gets its `next_run_at` resolved EAGERLY
+    // (`schedule.next_after_with_anchor(now, now)`). The CLI used to persist
+    // `next_run_at: null` and rely on the app's sweep to fill it in; for a
+    // one-shot whose AT had passed by the time the app opened, the sweep's
+    // resolution fails with "no future run" and PAUSES the task — a
+    // CLI-created one-shot could silently never run. A `paused` create keeps
+    // `next_run_at` unset, matching the foundation for paused records.
+    let created = store_holder
+        .manager()?
+        .create_automation(CreateAutomationRequest {
+            name: name.to_owned(),
+            prompt: prompt.to_owned(),
+            rrule: rrule.to_owned(),
+            cwds: Vec::new(),
+            model: Some(model.clone()),
+            // Pinvou's exact saved-model id is persisted in
+            // model-bindings.json after the id exists; the CodeWhale
+            // provider fields address a different registry and are not
+            // interchangeable with that id (same as the GUI's request).
+            model_provider: None,
+            model_provider_id: None,
+            mode: Some(mode.unwrap_or_default().persisted().to_owned()),
+            allow_shell: Some(current_allow_shell()),
+            trust_mode: Some(true),
+            // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
+            auto_approve: Some(true),
+            delivery_mode: None,
+            status: Some(if paused {
+                AutomationStatus::Paused
+            } else {
+                AutomationStatus::Active
+            }),
+        })
+        .map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_create_failed: cannot create the scheduled task: {error:#}"
+            ))
+        })?;
+    let id = created.id.clone();
     // The workspace is allocated from the automation id exactly like the GUI
     // (`ensure_automation_workspace`); clients cannot provide a path.
-    let id = new_storage_id();
-    // One clock reading for both stamps: two separate reads straddle the
-    // workspace creation below, so a slow mkdir could publish a task whose
-    // created_at is *after* its updated_at — an ordering the GUI (a single
-    // `Utc::now()` in `create_automation`) can never produce.
-    let (secs, nanos) = now_epoch();
-    let now = format_rfc3339_millis(secs, nanos);
     let workspace = store_holder.workspace_dir(&id);
     std::fs::create_dir_all(&workspace).map_err(|error| {
         CliError::failed(format!(
@@ -2460,44 +1746,22 @@ enabled in settings",
             workspace.display()
         ))
     })?;
-    // A one-shot is persisted with `next_run_at` already at its AT anchor in
-    // the active branch: the sweep resolves a missing anchor through
-    // `next_after_with_anchor(now, now)`, which fails with "no future run"
-    // for an elapsed AT and silently pauses the task instead of firing late
-    // the way a GUI-created one-shot (persisted with the anchor) does. Every
-    // other schedule keeps the deferred-schedule deviation (module docs).
-    let next_run_at = if paused {
-        serde_json::Value::Null
+    let def = if created.cwds.first().is_some_and(|cwd| cwd == &workspace) {
+        def_to_value(&created)
     } else {
-        once_anchor(rrule)
-            .map(serde_json::Value::String)
-            .unwrap_or(serde_json::Value::Null)
+        let mut def = def_to_value(&created);
+        def["cwds"] = serde_json::json!([workspace.display().to_string()]);
+        store_holder.write_def(&def)?;
+        def
     };
-    let def = serde_json::json!({
-        "schema_version": 2,
-        "id": id,
-        "name": name,
-        "prompt": prompt,
-        "rrule": rrule.trim().to_ascii_uppercase(),
-        "cwds": [workspace.display().to_string()],
-        "model": model,
-        "mode": mode.unwrap_or_default().persisted(),
-        "allow_shell": current_allow_shell(),
-        "trust_mode": true,
-        "auto_approve": true,
-        "status": if paused { "paused" } else { "active" },
-        "created_at": now,
-        "updated_at": now,
-        "next_run_at": next_run_at,
-        "last_run_at": serde_json::Value::Null,
-    });
-    store_holder.write_def(&def)?;
     // Only touch the shared bindings sidecar when a binding was actually
     // requested: an unconditional write widens the last-writer-wins window
     // against a concurrently persisting GUI and turns a sidecar-write
-    // failure into a failed create where the GUI would succeed.
-    if model_id.as_deref().is_some() {
-        if let Err(error) = persist_model_binding(&store_holder, &id, model_id.as_deref()) {
+    // failure into a failed create where the GUI would succeed. The pair
+    // written matches the definition's model by construction (resolved
+    // together above), so the executor accepts it.
+    if validated_model_id.as_deref().is_some() {
+        if let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref()) {
             // Roll back the just-created task so no kind-less/binding-less task
             // lingers, mirroring the GUI create rollback.
             if let Ok(path) = store_holder.def_path(&id) {
@@ -2516,8 +1780,8 @@ enabled in settings",
             // A binding written above must not outlive the rolled-back task:
             // clear it so no binding for a nonexistent id lingers in the
             // shared registry.
-            if model_id.as_deref().is_some() {
-                let _ = persist_model_binding(&store_holder, &id, None);
+            if validated_model_id.as_deref().is_some() {
+                let _ = write_model_binding(&store_holder, &id, None);
             }
             return Err(error);
         }
@@ -2552,8 +1816,32 @@ fn update(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
-    let mut def = store_holder.read_def(id)?;
-    let mut schedule_changed = false;
+    // The foundation update reads the current record itself; this pre-read
+    // keeps the CLI's unknown-id contract stable (scheduled_task_not_found
+    // for a missing task, before any sidecar is touched).
+    store_holder.read_def(id)?;
+    // Same pair-resolution rule as create (see there): `--model-id` X
+    // re-binds the pin to X AND the definition to X's wire name — the GUI
+    // sends `model: selected.model, modelId: selected.id`, and the executor
+    // rejects any other combination. Unknown ids are refused before any
+    // write. (Changing the model wire name without an id is not offered:
+    // the GUI's update applies input.model, and the CLI has no flag that
+    // names a bare wire model — the docs say to edit the model in the GUI
+    // or recreate the task.)
+    let mut model_update: Option<String> = None;
+    let mut validated_model_id: Option<String> = None;
+    match model_id.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => {
+            let prefs = UserPrefs::load();
+            let selected = prefs
+                .model_by_id(raw)
+                .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
+            model_update = Some(selected.model.clone());
+            validated_model_id = Some(raw.to_owned());
+        }
+        _ => {}
+    }
+    let mut request = UpdateAutomationRequest::default();
     if let Some(name) = name {
         let name = name.trim();
         if name.is_empty() {
@@ -2561,7 +1849,7 @@ fn update(
                 "scheduled update requires a non-empty --name",
             ));
         }
-        def["name"] = serde_json::json!(name);
+        request.name = Some(name.to_owned());
     }
     if let Some(prompt_file) = prompt_file {
         let prompt = crate::support::read_text_file_capped(
@@ -2575,29 +1863,31 @@ fn update(
                 "scheduled update requires a non-empty prompt file",
             ));
         }
-        def["prompt"] = serde_json::json!(prompt);
+        request.prompt = Some(prompt.to_owned());
     }
-    if let Some(rrule) = rrule.as_deref() {
-        def["rrule"] = serde_json::json!(rrule.trim().to_ascii_uppercase());
-        schedule_changed = true;
+    if let Some(rrule) = rrule {
+        request.rrule = Some(rrule.to_owned());
     }
-    if schedule_changed {
-        // Same eager-anchor rule as create: an active one-shot carries its AT
-        // from the start (the parser future-checked this rrule), nothing else
-        // gets a value — the sweep fills in the first slot for the rest.
-        def["next_run_at"] = if str_field(&def, "status") == Some("active") {
-            once_anchor(rrule.as_deref().unwrap_or(""))
-                .map(serde_json::Value::String)
-                .unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
-        };
+    if let Some(model) = model_update.clone() {
+        request.model = Some(model);
     }
-    def["updated_at"] = serde_json::json!(now_string());
+    let updated = store_holder
+        .manager()?
+        .update_automation(id, request)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_update_failed: cannot update scheduled task {id}: {error:#}"
+            ))
+        })?;
+    // `update_automation` recomputed next_run_at for the final status when
+    // the schedule or status changed (paused keeps it unset, active resolves
+    // the slot eagerly — including the past-one-shot failure, mirroring the
+    // GUI's own update refusal for a one-shot with no future run). Workspace
+    // pinning follows the GUI's ensure_automation_workspace.
+    let mut def = def_to_value(&updated);
     ensure_workspace(&store_holder, &mut def)?;
-    store_holder.write_def(&def)?;
-    if model_id.is_some() {
-        persist_model_binding(&store_holder, id, model_id.as_deref())?;
+    if validated_model_id.is_some() {
+        write_model_binding(&store_holder, id, validated_model_id.as_deref())?;
     }
     // Enrichment is best-effort: the update is committed above, so a
     // sessions store boot failure must not report the update as failed.
@@ -2636,7 +1926,13 @@ fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Re
     Ok(())
 }
 
-fn persist_model_binding(
+/// Persist one (model_id, wire model) pair in the bindings sidecar. The
+/// pair is the executor's acceptance contract (`resolve_scheduled_model`
+/// rejects a task whose bound wire model diverges from the saved model id's
+/// current wire name), so callers resolve BOTH halves together from the same
+/// saved model before calling (see `create`/`update`); the wire name is
+/// re-read from the definition only as a consistency fallback.
+fn write_model_binding(
     store_holder: &TaskStore,
     id: &str,
     model_id: Option<&str>,
@@ -2696,28 +1992,32 @@ fn persist_task_kind(
 
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
-    let mut def = store_holder.read_def(id)?;
-    let action = if pause { "paused" } else { "resumed" };
-    def["status"] = serde_json::json!(if pause { "paused" } else { "active" });
-    // Pause clears the next slot in both branches; resume of a once task
-    // instead restores its AT anchor: the sweep initializes a missing anchor
-    // through `next_after_with_anchor(now, now)`, which errors ("no future
-    // run") for an elapsed AT and silently pauses the task instead of firing
-    // late the way a GUI resume (recomputed slot, anchor preserved) does.
-    // Every other resumed schedule keeps the deferred-schedule deviation
-    // (module docs).
-    def["next_run_at"] = if pause {
-        serde_json::Value::Null
+    let manager = store_holder.manager()?;
+    // Foundation pause/resume: `update_automation` under the hood, which
+    // recomputes `next_run_at` for the FINAL status — resume resolves the
+    // next slot eagerly (`next_after_with_anchor(now, created_at)`), so a
+    // resumed one-shot whose AT already passed fails HERE with "no future
+    // run" instead of being paused by the first sweep and silently never
+    // running (the round-18 blocker). Pause clears the slot so nothing
+    // fires.
+    let updated = if pause {
+        manager.pause_automation(id)
     } else {
-        once_anchor(str_field(&def, "rrule").unwrap_or(""))
-            .map(serde_json::Value::String)
-            .unwrap_or(serde_json::Value::Null)
-    };
-    def["updated_at"] = serde_json::json!(now_string());
+        manager.resume_automation(id)
+    }
+    .map_err(|error| {
+        CliError::failed(format!(
+            "scheduled_update_failed: cannot {} scheduled task {id}: {error:#}",
+            if pause { "pause" } else { "resume" }
+        ))
+    })?;
+    let mut def = def_to_value(&updated);
+    let action = if pause { "paused" } else { "resumed" };
     if !pause {
+        // Same GUI step as create/update: the durable workspace stays pinned
+        // to the id-derived path.
         ensure_workspace(&store_holder, &mut def)?;
     }
-    store_holder.write_def(&def)?;
     // Enrichment is best-effort: the status flip is committed above, so a
     // sessions store boot failure must not report the command as failed.
     let sessions = open_sessions_for_enrichment();
@@ -2843,7 +2143,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // restores the provisional pause like every other blocked path — a
     // caller retrying after upgrading must not find the task paused.
     if archive.is_object() {
-        if let Err(error) = ensure_supported_schema(&archive, 2, "history archive") {
+        if let Err(error) = ensure_sidecar_schema(&archive, 2, "history archive") {
             restore_status(&def, &previous_status);
             return Err(error);
         }
@@ -3043,8 +2343,7 @@ enabled in settings",
     // killed CLI therefore leaves no record; the reconcile above remains for
     // records written by earlier builds.
     let run_id = new_storage_id();
-    let (secs, nanos) = now_epoch();
-    let now = format_rfc3339_millis(secs, nanos);
+    let now = now_string();
     let organize = organize_headless();
     let (status, error) = match &organize {
         Ok(_) => ("completed", serde_json::Value::Null),
@@ -3093,6 +2392,26 @@ enabled in settings",
         str_field(&def, "name"),
         str_field(&def, "model"),
     );
+    if !matches!(error, serde_json::Value::Null) {
+        let error = error.as_str().unwrap_or("unknown failure");
+        // Exit/reporting contract: a completed outcome (exit 0) asserts the
+        // run succeeded. The organize pass FAILED here — the record says
+        // `failed` — so exit 0 would report a successful command over a
+        // failed run. The run itself is not retryable through this command
+        // (memory organize is not transactional), but the honest verdict
+        // still matters: scripts gating on the exit code would retry or
+        // alert on a failure that was reported as success. The record is
+        // durable either way; the payload is reported on stderr (the human
+        // line names the run id and the error, redacted by organize_headless
+        // upstream) and the command takes the failure class (exit 1), like
+        // every other executing family.
+        note!("pinvou: run {} (task {}) failed: {error}", run_id, id);
+        let human = format!("Run failed: {}\nTask: {}\nError: {error}", run_id, id);
+        let _ = render(output, human, &value);
+        return Err(CliError::failed(format!(
+            "scheduled_run_failed: the memory-organize run {run_id} failed: {error}"
+        )));
+    }
     let human = format!(
         "Run: {}\nTask: {}\nSession: -\nStatus: {}",
         run_id, id, status
@@ -3115,22 +2434,46 @@ enabled in settings",
 /// One memory-organize pass through the windowless product host, the same
 /// wiring as `memory organize` in this crate and the GUI scheduled executor's
 /// shared-bridge fallback: requires a display and a configured active model.
+/// The host bootstrap panics (tauri's EventLoop refuses a non-main thread)
+/// rather than returning Err in some embedded environments — a panic here
+/// would take the whole process down with exit 101, outside the exit-code
+/// contract, so the boot is catch_unwind-wrapped and downgraded to the
+/// command's ordinary failure lane.
 fn organize_headless() -> Result<(), String> {
-    pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
-        let mut bridge = pool.bridge.clone();
-        bridge.prefs = UserPrefs::load();
-        bridge.session_model = None;
-        memory_feature::organize_memory_with_llm(&bridge, None)
-            .await
-            .map(|_| ())
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "{}",
-                    pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"))
-                )
-            })
-    })
-    .map_err(|error| pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}")))
+    let result = std::panic::catch_unwind(|| {
+        pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = UserPrefs::load();
+            bridge.session_model = None;
+            // The work-closure bound (`WorkFuture: Future<Output =
+            // anyhow::Result<T>>`) pins the error type by inference, exactly
+            // like `memory organize`'s closure — so anyhow is never named
+            // here and the `--no-default-features` build (no `dep:anyhow` in
+            // the CLI) stays clean. Redaction happens once, in the
+            // `Ok(Err(error))` arm below.
+            memory_feature::organize_memory_with_llm(&bridge, None)
+                .await
+                .map(|_| ())
+        })
+    });
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(pinvou3_lib::platform::credential_store::redact_secret(
+            &format!("{error:#}"),
+        )),
+        Err(panic) => {
+            let reason = panic
+                .downcast_ref::<&str>()
+                .map(|reason| (*reason).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| {
+                    "the product host could not boot in this environment".to_owned()
+                });
+            Err(format!(
+                "scheduled_host_unavailable: {reason} (a display and an active model are required; run this task from the Pinvou app if the host cannot start here)"
+            ))
+        }
+    }
 }
 
 fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -3184,16 +2527,16 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
             });
             if let Some(runs) = archived.get("runs").and_then(|value| value.as_array()) {
                 for run in runs {
-                    // Archived runs get the same shape gate as the active lane
-                    // (`require_object_run_record`), but a failure skips the
-                    // record instead of failing the command: that is what the
-                    // GUI does with the same bytes
-                    // (`deserialize_archived_runs_lossy` warns and drops), and
-                    // one hand-edited entry in the shared archive must not be
-                    // able to hide every healthy task's runs. Pushing it
-                    // unchecked is the option that is not available — `map_run`
-                    // renders it as a phantom row of empty fields.
-                    if require_object_run_record(run, &archive_path).is_err() {
+                    // Archived runs get the same typed gate as the active
+                    // lane (`AutomationRunRecord` decode through the shim),
+                    // but a failure skips the record instead of failing the
+                    // command: that is what the GUI does with the same bytes
+                    // (`deserialize_archived_runs_lossy` warns and drops),
+                    // and one hand-edited entry in the shared archive must
+                    // not be able to hide every healthy task's runs. Pushing
+                    // it unchecked is the option that is not available —
+                    // `map_run` renders it as a phantom row of empty fields.
+                    if run_from_value(run).is_err() {
                         note!(
                             "pinvou: warning: ignoring invalid run in the scheduled history \
                              archive for task {task_id}"
@@ -3271,7 +2614,7 @@ viewed"
     // Same newer-schema refusal as registry_tasks_mut: a read-state file
     // written by a newer app version must not be merged and written back.
     if read_state.is_object() {
-        ensure_supported_schema(&read_state, 2, "read-state")?;
+        ensure_sidecar_schema(&read_state, 2, "read-state")?;
     }
     // A wrong-shaped but valid payload (hand-edited or partially written
     // file) normalizes to the default like the parse-failure path instead of
@@ -3532,10 +2875,14 @@ mod tests {
             "FREQ=CRON;EXPR=30 8 * * MON-FRI",
             "FREQ=CRON;EXPR=*/15 0 * JAN,DEC SUN",
         ] {
-            if let Err(error) = validate_rrule(valid, true) {
+            if let Err(error) = validate_rrule(valid) {
                 panic!("rejected valid rrule '{valid}': {error}");
             }
         }
+        // The cron atom loop iterated with `checked_add` under a step that
+        // parsed as u32 but the mirror had already made negative steps
+        // unreachable — the foundation's own `next <= current` guard is the
+        // authority now, so this stays a pure foundation-grammar pin.
         for invalid in [
             "",
             "INTERVAL=6",
@@ -3561,48 +2908,33 @@ mod tests {
             "FREQ=CRON;EXPR=* * * * * /5",
             "NOT-A-PAIR",
         ] {
-            let error = validate_rrule(invalid, true).expect_err(invalid);
+            let error = validate_rrule(invalid).expect_err(invalid);
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{invalid}");
         }
-        // The paused channel relaxes exactly one rule — an elapsed ONCE AT,
-        // which the GUI also accepts for a paused record — and nothing else.
-        assert!(validate_rrule("FREQ=ONCE;AT=2020-01-01T00:00:00Z", false).is_ok());
-        for still_invalid in [
-            "FREQ=ONCE;AT=never",
-            "FREQ=ONCE;AT=2026-13-01T08:30",
-            "FREQ=MINUTELY;INTERVAL=5",
-            "FREQ=HOURLY;INTERVAL=0",
+    }
+
+    #[test]
+    fn hourly_intervals_beyond_the_scheduler_range_are_refused_before_the_foundation() {
+        // The pre-check bound from the previous mirror, kept: the foundation
+        // parser itself accepts any u32 INTERVAL; the scheduler's interval
+        // arithmetic is what overflows. 1e6 passes both layers, 1e6+1 and
+        // u32-overflow values are usage errors.
+        assert!(validate_rrule("FREQ=HOURLY;INTERVAL=1000000").is_ok());
+        for refused in [
+            "FREQ=HOURLY;INTERVAL=1000001",
+            "FREQ=HOURLY;INTERVAL=4000000000",
         ] {
-            let error = validate_rrule(still_invalid, false).expect_err(still_invalid);
-            assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{still_invalid}");
+            let error = validate_rrule(refused).expect_err(refused);
+            assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{refused}");
+            assert!(
+                error.to_string().contains("INTERVAL must be <="),
+                "{refused}"
+            );
         }
     }
 
     #[test]
-    fn wall_clock_helpers_round_trip_utc_timestamps() {
-        // 2026-09-10T12:34:56.123Z == epoch 1789118096.123
-        let (secs, nanos) = parse_rfc3339("2026-09-10T12:34:56.123Z").unwrap();
-        assert_eq!(
-            format_rfc3339_millis(secs, nanos),
-            "2026-09-10T12:34:56.123Z"
-        );
-        assert_eq!(run_file_stamp(secs, nanos), "20260910T123456123Z");
-        // Offset normalization: +02:00 means the UTC instant is two hours earlier.
-        let (offset_secs, _) = parse_rfc3339("2026-09-10T14:34:56+02:00").unwrap();
-        assert_eq!(offset_secs, secs);
-        // Sort ordering: later instants compare greater.
-        let later = parse_rfc3339("2026-09-10T12:34:57Z").unwrap();
-        assert!(later > (secs, nanos));
-        assert!(parse_rfc3339("not-a-date").is_none());
-        assert!(parse_rfc3339("2026-09-10 12:34:56").is_none());
-        // RFC3339 requires an offset; an offset-less stamp is the
-        // foundation's naive-local channel, not a UTC instant.
-        assert!(parse_rfc3339("2026-09-10T12:34:56").is_none());
-        assert!(parse_rfc3339("2026-09-10T12:34:56.123").is_none());
-    }
-
-    #[test]
-    fn schedule_labels_stay_english_and_sorted_run_stems_match_the_foundation() {
+    fn schedule_labels_stay_english_and_storage_ids_stay_single_components() {
         assert_eq!(
             humanize_rrule("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30"),
             "every 6 hours from 08:30"
@@ -3619,13 +2951,106 @@ mod tests {
             humanize_rrule("FREQ=ONCE;AT=2035-09-10T08:30"),
             "FREQ=ONCE;AT=2035-09-10T08:30"
         );
-        assert!(has_sortable_run_stem("20260910T123456123Z-run-1"));
-        assert!(!has_sortable_run_stem("run-1"));
-        assert!(!has_sortable_run_stem("20260910T123456123-run-1"));
         // Storage ids must be single path components (the foundation's
         // ensure_safe_storage_id rule).
         assert!(safe_storage_id("task id", "abc-def").is_ok());
         assert!(safe_storage_id("task id", "../escape").is_err());
         assert!(safe_storage_id("task id", "").is_err());
+    }
+
+    #[test]
+    fn record_ordering_uses_the_foundation_chrono_semantics() {
+        // record_time sorts by the foundation's own parser (chrono
+        // RFC3339): offsets normalize, anything undecodable floors to the
+        // epoch minimum so it sorts last — the read gates have already
+        // refused such records before ordering runs; this pins the floor
+        // for the archive lane, which skips instead of failing.
+        let value = serde_json::json!({
+            "a": "2026-09-10T12:34:56.123Z",
+            "b": "2026-09-10T14:34:56.123+02:00",
+        });
+        // Offsets normalize to the same instant; compare timestamps, not
+        // rendered strings (trailing fractional digits differ in display).
+        assert_eq!(
+            record_time(&value, "a").timestamp_nanos_opt(),
+            record_time(&value, "b").timestamp_nanos_opt()
+        );
+        let later = serde_json::json!({ "t": "2026-09-10T12:34:57Z" });
+        assert!(record_time(&later, "t") > record_time(&value, "a"));
+        let undecodable = serde_json::json!({ "t": "not-a-date" });
+        assert!(record_time(&undecodable, "t") < record_time(&value, "a"));
+        let offsetless = serde_json::json!({ "t": "2026-09-10T12:34:56" });
+        assert!(record_time(&offsetless, "t") < record_time(&value, "a"));
+    }
+
+    /// S9 (round-18 review): `write_json_atomic` used the staging pattern the
+    /// round-16 `artifacts::atomic_write` documented as removed
+    /// (`O_CREAT|O_TRUNC`, no `O_EXCL`). It is now aligned with that hardened
+    /// writer — `create_new` staging, propagated `sync_all`, parent-directory
+    /// fsync — while keeping the per-pid/nanos staging name: the foundation
+    /// writer stages under a fixed `.json.tmp` sibling shared by all concurrent
+    /// writers, and the CLI keeps the unique name so two CLI processes writing
+    /// the same registry never rename each other's content. The staging path's
+    /// nanos token makes the occupied-path guarantee untestable through the
+    /// plain entry point, so this pins the stage lane directly.
+    #[test]
+    fn write_json_atomic_refuses_an_occupied_staging_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-scheduled-atomic-occupied-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("model-bindings.json");
+        std::fs::write(&target, b"old").unwrap();
+        let tmp = dir.join(".model-bindings.json.tmp-fixed");
+        std::fs::write(&tmp, b"leftover").unwrap();
+        let error = write_json_atomic_staged(&target, &tmp, br#"{"staged":true}"#)
+            .map(|_unit| ())
+            .expect_err("an occupied staging path must fail the write");
+        assert!(
+            error.to_string().contains(&tmp.display().to_string()),
+            "the failure must name the staging path: {error}"
+        );
+        // The occupied staging file and the target's old content survive:
+        // the cleanup must not delete the path create_new protected.
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"leftover");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The happy path through the same writer: payload lands, no staging file
+    /// is left behind. Reverting the `create_new` staging to `std::fs::write`
+    /// fails the occupied-path test above; this one additionally catches a
+    /// regressed rename/cleanup leaking a visible `.tmp` sibling.
+    #[test]
+    fn write_json_atomic_lands_the_payload_and_leaves_no_staging_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-scheduled-atomic-landed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("task-kinds.json");
+        std::fs::write(&target, br#"{"old":true}"#).unwrap();
+        write_json_atomic(&target, &serde_json::json!({ "tasks": {} })).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            serde_json::to_string_pretty(&serde_json::json!({ "tasks": {} })).unwrap()
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

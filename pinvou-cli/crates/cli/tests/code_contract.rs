@@ -912,6 +912,56 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     );
 }
 
+/// The 32 MiB journal cap must be enforced at the boundary: at exactly
+/// MAX_TIMELINE_BYTES the journal still reads, one byte more is the explicit
+/// "too large" failure. The read is bounded (`File::take`), so the second
+/// run also proves the CLI never slurped the oversized file to decide.
+#[test]
+fn sessions_timeline_cap_is_enforced_at_the_boundary() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("timeline-cap-boundary");
+    let project = home.root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+    let session_dir = home.sessions_root().join(&id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    const MAX_TIMELINE_BYTES: u64 = 32 * 1024 * 1024;
+    // One envelope whose size we pad to exactly the cap with a spacing
+    // comment on the data line (malformed-after-prefix lines are skipped only
+    // if they fail to parse — a valid JSON line still counts, so the padding
+    // must itself parse. A single huge valid line is the simplest form.)
+    let prefix = format!(
+        "{{\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"t-1\",\"event\":{{\"type\":\"turn_started\",\"data\":{{\"pad\":\""
+    );
+    // Closes the pad string, then the data, event, and envelope objects.
+    let suffix = "\"}}}\n";
+    let pad_len = MAX_TIMELINE_BYTES as usize - prefix.len() - suffix.len();
+    let journal = format!("{prefix}{}{suffix}", "p".repeat(pad_len));
+    assert_eq!(
+        journal.len() as u64,
+        MAX_TIMELINE_BYTES,
+        "fixture must sit exactly at the cap"
+    );
+    std::fs::write(session_dir.join("acp-timeline.jsonl"), &journal).unwrap();
+
+    // At exactly the cap: a full parse, all events rendered.
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
+    assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    let outcome =
+        run(&["pinvou", "code", "sessions", "timeline", &id]).expect("at-cap journal still reads");
+    assert_eq!(outcome.stdout.lines().count(), 1);
+
+    // One byte more: the explicit runaway-journal failure, not a slurp.
+    let over = format!("{journal}x");
+    std::fs::write(session_dir.join("acp-timeline.jsonl"), &over).unwrap();
+    let error = run(&["pinvou", "code", "sessions", "timeline", &id])
+        .expect_err("an over-cap journal must fail explicitly");
+    assert!(
+        error.to_string().contains("journal too large"),
+        "the runaway-journal failure must be named: {error}"
+    );
+}
+
 /// A session whose persisted JSON model is an ACP model name but whose
 /// session-agents sidecar record is missing (the sidecar-loss fallback) must
 /// be accepted everywhere `code sessions list` accepts it: listed with the
@@ -2230,7 +2280,7 @@ fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
 
 #[test]
 #[cfg(unix)]
-fn providers_export_tightens_permissions_on_an_existing_file() {
+fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     use std::os::unix::fs::PermissionsExt;
     struct KeyVar(Option<std::ffi::OsString>);
     impl Drop for KeyVar {
@@ -2242,7 +2292,7 @@ fn providers_export_tightens_permissions_on_an_existing_file() {
         }
     }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("export-perms");
+    let _home = HomeGuard::new("export-refuse");
     let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_EXPORT_KEY"));
     unsafe {
         std::env::set_var(
@@ -2251,7 +2301,7 @@ fn providers_export_tightens_permissions_on_an_existing_file() {
         );
     }
 
-    let value = run_json(&[
+    let added = run_json(&[
         "pinvou",
         "code",
         "providers",
@@ -2269,15 +2319,16 @@ fn providers_export_tightens_permissions_on_an_existing_file() {
         "--api-key-env",
         "PINVOU_CLI_TEST_EXPORT_KEY",
     ]);
-    assert_eq!(value["action"], "added");
+    assert_eq!(added["action"], "added");
 
-    // A pre-existing world-readable destination (an earlier 0644 export, a
-    // shell redirect) must be tightened before plaintext keys land in it —
-    // `OpenOptions::mode` alone only applies at create time.
+    // Round-18 finding: an existing destination used to be truncated with
+    // plaintext keys and exit 0 (the only overwrite-permitting export in the
+    // CLI). The family now matches `sessions export` / `plugins export`:
+    // an exclusive create, so a pre-existing file is refused untouched and
+    // the refusal carries the family's Failed exit class.
     let target = _home.root.join("pre-existing-export.json");
-    std::fs::write(&target, "stale").unwrap();
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let value = run_json(&[
+    std::fs::write(&target, "do not destroy me\n").unwrap();
+    let error = run(&[
         "pinvou",
         "code",
         "providers",
@@ -2286,10 +2337,47 @@ fn providers_export_tightens_permissions_on_an_existing_file() {
         "codex",
         "--output",
         target.to_str().unwrap(),
+    ])
+    .expect_err("an existing destination must be refused, not overwritten");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("refusing to overwrite"),
+        "the refusal must say what it refused to do: {error}"
+    );
+    assert!(
+        error.to_string().contains(&target.display().to_string()),
+        "the refusal must name the destination: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "do not destroy me\n",
+        "the refused destination must be byte-for-byte untouched"
+    );
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644, "a refused destination keeps its mode");
+
+    // The fresh-create lane still lands 0600: `create_new` guarantees the
+    // open is the create, so `mode` applies to exactly this file.
+    let fresh = _home.root.join("fresh-export.json");
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "export",
+        "--agent",
+        "codex",
+        "--output",
+        fresh.to_str().unwrap(),
     ]);
     assert_eq!(value["containsPlaintextKeys"], true);
-    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600, "exported key file must be 0600");
+    let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "an exported key file must be 0600");
+    assert!(
+        std::fs::read_to_string(&fresh)
+            .unwrap()
+            .contains("Exported relay"),
+        "the fresh export must carry the provider payload"
+    );
 }
 
 #[test]
@@ -2547,6 +2635,64 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
     }
 }
 
+/// The vendor login transcript is echoed once, redacted — and a short,
+/// non-secret-shaped code the vendor CLI echoes back must not survive the
+/// echo. `redact_secret`'s heuristic alone would leave it in (the value is
+/// not key-shaped); the exact-value strip is what removes it. Driven through
+/// the real binary because the echo goes to the process's own stderr, in
+/// human mode.
+#[test]
+#[cfg(unix)]
+fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-login-echo-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // The fake claude answers the version gate, consumes the stdin code, and
+    // echoes it back on stdout — the exact shape the strip exists for: the
+    // value is too short and un-shaped for `redact_secret` to catch.
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = root.join("claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  echo \"auth code received: $line\"\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // A short, plain code: un-shaped for the secret heuristic (the echoed
+    // copy under the strip must read [REDACTED] instead).
+    const CODE: &str = "SRCRT-SHORT-99";
+    let output = std::process::Command::new(bin)
+        .args(["code", "login", "claude", "--code", CODE])
+        .env("PINVOU3_HOME", &root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU3_CLAUDE_CLI_PATH", &script)
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("the pinvou binary must run");
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let stdout_text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr_text.contains("[REDACTED]"),
+        "the echoed transcript must carry the stripped form: {stderr_text}"
+    );
+    assert!(
+        !stderr_text.contains(CODE) && !stdout_text.contains(CODE),
+        "the raw code must not survive anywhere: stderr={stderr_text:?} stdout={stdout_text:?}"
+    );
+}
+
 /// The authorize link and the device code must reach the terminal WHILE the
 /// vendor CLI is still running. kimi's flow is the motivating case: the child
 /// deliberately stays alive until the user opens
@@ -2712,12 +2858,113 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
         message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
         "the error must make the slot set discoverable: {message}"
     );
-    // The whole point of the pre-check is that the store's non-English message
-    // never reaches the user; ASCII-only is the language-agnostic proof.
+}
+
+/// The store's other user-reachable validation rules also fail with Chinese
+/// text; the English mirrors in `providers_save` keep every one of them off
+/// the terminal. Each case here used to surface the lib's message through
+/// `store_error`.
+#[test]
+fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("providers-english-mirrors");
+
+    // Refined model slots are claude-only (`--model-slot` on codex/kimi).
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "codex",
+        "--name",
+        "Relay",
+        "--base-url",
+        "https://api.example.com",
+        "--model-slot",
+        "sonnet=claude-sonnet-4",
+    ])
+    .expect_err("--model-slot must be refused for non-claude agents");
+    let message = error.to_string();
     assert!(
-        message.is_ascii(),
-        "the claude slot error must stay English: {message}"
+        message.contains("only supported for the claude agent"),
+        "must name the claude-only rule: {message}"
     );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // A blank --name on the update lane (the add lane rejects it at parse
+    // time; the store trims it into an invalid empty name).
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "codex",
+        "--name",
+        "Relay",
+        "--base-url",
+        "https://api.example.com",
+    ]);
+    let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        &added_id,
+        "--agent",
+        "codex",
+        "--name",
+        "   ",
+    ])
+    .expect_err("a blank --name must be refused in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("--name must not be blank"),
+        "must name the blank-name rule: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // A --base-url that is not a full http(s) address.
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        &added_id,
+        "--agent",
+        "codex",
+        "--base-url",
+        "ftp://relay.example.com",
+    ])
+    .expect_err("a non-http(s) base URL must be refused in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("--base-url must be a full http(s):// address"),
+        "must name the base URL rule: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // remove of an unknown id: the store's delete path fails with a Chinese
+    // "not found" message.
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "remove",
+        "pv-nonexistent",
+        "--agent",
+        "codex",
+        "--yes",
+    ])
+    .expect_err("removing an unknown provider must fail in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("provider_not_found"),
+        "must use the stable not-found discriminator: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
 }
 
 /// `--message` is the one flag allowed a `--`-prefixed value, which let
@@ -2761,4 +3008,443 @@ fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
         "--yes",
     ])
     .expect("a --prefixed commit message that is not a boolean flag must still parse");
+}
+
+// ---- round-18 fixes: login kill guard, --code-stdin ordering ----
+
+/// Round-18 finding 2: `code login` put its vendor child in a dedicated
+/// process group (`support::set_process_group`) and installed no kill guard,
+/// so a Ctrl-C that killed this CLI orphaned a kimi login that can
+/// legitimately run to 1800 s. The fix brackets the child's lifetime with
+/// `support::supervise::register_child_group` / `forget_child_group`.
+///
+/// Observed through the real binary, the same seam
+/// `login_streams_the_link_and_device_code_before_the_child_exits` uses —
+/// the guard only exists in a process whose `main` installed
+/// `install_signal_cleanup`, which the in-process `run()` helpers never do.
+/// The fake kimi prints the authorize link (so the wait loop starts), then
+/// parks a grandchild `sleep` in the same group (`sleep 30 & wait`) — the
+/// group is what the orphan hazard is about, not just the lead process —
+/// and the test interrupts the CLI with a real SIGINT.
+#[test]
+#[cfg(unix)]
+fn login_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
+    use std::io::BufRead as _;
+
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-login-guard-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // kimi resolves its override (`PINVOU3_KIMI_ACP_BIN`) without a version
+    // gate. The fake prints the link so the CLI enters its bounded wait, then
+    // stays alive with a grandchild — exactly the shape a terminal interrupt
+    // used to orphan. Only the CLI's failure returns early; the fake always
+    // records the pids so the test can police leftovers on any path.
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = root.join("kimi");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo $$ > {vendor}\n  sleep 30 &\n  echo $! > {grandchild}\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=GUARD-9911 to authorize\"\n  wait $!\n  exit 0\nfi\nexit 1\n",
+            vendor = root.join("vendor.pid").display(),
+            grandchild = root.join("grandchild.pid").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = std::process::Command::new(bin)
+        .args(["code", "login", "kimi", "--output", "json"])
+        .env("PINVOU3_HOME", &root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU3_KIMI_ACP_BIN", &script)
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the pinvou binary must spawn");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // The link on stderr means the CLI is inside its wait loop with a live
+    // vendor child — the only state in which the guard has anything to do.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut seen: Vec<String> = Vec::new();
+    let mut saw_url = false;
+    while !saw_url && std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                saw_url |= line.starts_with("login link: https://www.kimi.com/");
+                seen.push(line);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if !saw_url {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the login link must be live before the interrupt; saw: {seen:?}");
+    }
+    let vendor: u32 = std::fs::read_to_string(root.join("vendor.pid"))
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .expect("the fake vendor must record its pid");
+    let grandchild: u32 = std::fs::read_to_string(root.join("grandchild.pid"))
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .expect("the fake vendor must record its grandchild pid");
+    let alive = |pid: u32| {
+        // SAFETY: kill(2) with signal 0 is a pure existence probe.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    };
+    assert!(
+        alive(vendor),
+        "the vendor child must be live at interrupt time"
+    );
+    assert!(
+        alive(grandchild),
+        "the grandchild must be live at interrupt time"
+    );
+
+    // The interrupt itself: SIGINT to the CLI process only. The vendor is in
+    // its own group, so nothing about this signal reaches it unless the CLI
+    // forwards it — which is the entire finding.
+    // SAFETY: kill(2) delivering SIGINT to the process this test spawned.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    let _status = child.wait().expect("the interrupted CLI must be waitable");
+    // How the CLI itself reports the interrupt is a race the module owns, not
+    // this wiring: the watcher keeps the conventional 128+N re-raise for the
+    // case where nothing else ends the process first, but the login loop's
+    // own 100 ms `try_wait` poll may observe the SIGTERM'd vendor dying first
+    // and return its `code_login_failed` outcome (exit 1) while the watcher
+    // is still inside its grace. Either way the CLI ends here — the promise
+    // this test pins is the one the finding names: the vendor group does not
+    // survive the CLI.
+
+    // The guard's actual promise: the whole vendor group goes down with the
+    // CLI (SIGTERM at forward time; the module's SIGKILL escalation only
+    // matters for a child that traps SIGTERM — this fake's `sh` and `sleep`
+    // do not), instead of being orphaned to run out its 30 s park. The
+    // SIGTERM forward happens in the watcher's first phase, before any
+    // grace, so the group is expected dead well inside this bound.
+    let gone_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while (alive(vendor) || alive(grandchild)) && std::time::Instant::now() < gone_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let verdict = (!alive(vendor), !alive(grandchild));
+    if !verdict.0 || !verdict.1 {
+        // Red leftovers: the orphaned members must not outlive the test.
+        // SAFETY: cleanup-only SIGKILLs of processes this test planted.
+        unsafe {
+            libc::kill(vendor as libc::pid_t, libc::SIGKILL);
+            libc::kill(grandchild as libc::pid_t, libc::SIGKILL);
+        }
+        panic!(
+            "an interrupt that killed the CLI must take the vendor group with it; \
+             vendor gone: {}, grandchild gone: {}",
+            verdict.0, verdict.1
+        );
+    }
+}
+
+/// Round-18 finding 3, verified real and fixed (not the round-17 lateness
+/// fix, which only made the URL stream at child exit): `--code-stdin` used
+/// to collect the code at the top of `login`, i.e. strictly before the child
+/// existed — before the CLI could print the authorize URL — and then close
+/// the child's stdin after one write. The fix is two-phase like the GUI's
+/// `submit_agent_login_code`: the CLI reads its own stdin only after the
+/// login link has been announced on stderr, forwards the code once, and
+/// keeps the child's stdin open for the rest of the flow.
+///
+/// Driven through the real binary with a fake claude (`auth status` → 0 for
+/// the post-login probe, `auth login` → prints the link). The test holds the
+/// CLI's stdin itself: it sends nothing until the link is on stderr, so a
+/// pre-spawn reader would deadlock on an empty pipe and never print the
+/// link — the ordering claim is exactly what the first assertion pins. The
+/// fake then reads the code line off its own stdin, records it, and runs a
+/// bounded second read: an immediate EOF there would mean stdin was closed
+/// after the write (the finding's second half).
+#[test]
+#[cfg(unix)]
+fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
+    use std::io::{BufRead as _, Write as _};
+
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-login-code-stdin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = root.join("claude");
+    let marker = root.join("received.txt");
+    // The fake's `auth login` prints the link, reads one code line off its
+    // stdin, and records it. An EOF watcher then parks on the CLI↔vendor
+    // pipe and records an EOF the instant one arrives: that watcher IS the
+    // close-after-write assertion. A plain `( read … ) &` cannot do this —
+    // a POSIX shell points every background job's stdin at /dev/null, so
+    // the watcher would report an instant EOF no matter what the CLI does —
+    // hence `exec 3<&0` in the foreground first: fd 3 is inherited by the
+    // background job untouched, and it is the real pipe.
+    //
+    // A healthy run writes `code:`, then (nothing from the watcher while the
+    // CLI holds claude's stdin open), then `vendor-exit` when the 2.5 s park
+    // ends, and only then `stdin-eof` — the CLI releases the held-open pipe
+    // after its loop observes this exit. A close-after-write CLI emits
+    // `stdin-eof` immediately after `code:`, well before `vendor-exit`.
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  echo \"Open https://claude.com/cai/oauth/authorize?state=fake to authorize\"\n  read line\n  printf 'code:%s\\n' \"$line\" > {marker}\n  exec 3<&0\n  ( read second <&3 || printf 'stdin-eof\\n' >> {marker} ) &\n  sleep 2.5\n  echo vendor-exit >> {marker}\n  exit 0\nfi\nexit 1\n",
+            marker = marker.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "code",
+            "login",
+            "claude",
+            "--code-stdin",
+            "--output",
+            "json",
+        ])
+        .env("PINVOU3_HOME", &root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU3_CLAUDE_CLI_PATH", &script)
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the pinvou binary must spawn");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let tail_reader = tail.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    tail_reader
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(line.clone());
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    // parked on an empty pipe here, so this deadline receiving nothing IS
+    // the red outcome (HEAD collected the code before the child existed).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut seen: Vec<String> = Vec::new();
+    let mut saw_url = false;
+    while !saw_url && std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                saw_url |= line.starts_with("login link: https://claude.com/");
+                seen.push(line);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if !saw_url {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the link must be live before the invoker's stdin is consumed \
+             (the code was collected before the child could print it); saw: {seen:?}"
+        );
+    }
+
+    // Only now, with the link visible, does the invoker hold a code at all.
+    {
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin
+            .write_all(b"fake-authorize-code-4711\n")
+            .expect("the test must deliver the code after the link");
+        // EOF: the CLI's `--*-stdin` lanes read to EOF like every other
+        // secret lane (`--api-key-stdin`); dropping the write end is the
+        // terminal user's Ctrl-D.
+    }
+    let output = child
+        .wait_with_output()
+        .expect("the CLI must finish the login");
+    let tail = tail
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("single-line JSON login result: {stdout}");
+    assert_eq!(
+        value["status"], "completed",
+        "the two-phase flow must complete: {stdout}"
+    );
+    assert_eq!(
+        value["login_url"], "https://claude.com/cai/oauth/authorize?state=fake",
+        "the JSON must still capture the link"
+    );
+
+    let received = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        received.starts_with("code:fake-authorize-code-4711"),
+        "the code delivered after the link must be forwarded to the child: {received:?}\
+         \n--- CLI stderr events ---\n{tail:?}\
+         \n--- CLI stderr raw ---\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // Strict marker order: stdin-eof must come AFTER vendor-exit — the CLI
+    // holds claude's stdin open through the whole wait and releases it only
+    // once its loop has observed the vendor's exit. An EOF earlier than
+    // vendor-exit is the close-after-write defect still present.
+    let position = |needle: &str| received.lines().position(|line| line.trim() == needle);
+    let vendor_exit = position("vendor-exit").expect("the vendor must record its exit");
+    assert!(
+        position("stdin-eof").is_none_or(|eof| eof > vendor_exit),
+        "the child's stdin must stay open for the whole wait: an EOF arrived before the \
+         vendor exited (close-after-write, the finding's second half); marker: {received:?}\
+         \n--- CLI stderr events ---\n{tail:?}\
+         \n--- CLI stderr raw ---\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+// ── round-18: providers update --delete-key requires --yes ─────────────────
+//
+// A stored credential's deletion is a destructive one-way action: the family
+// already gates `providers remove` behind `--yes`, and the round-18 review
+// found `update --delete-key` running ungated. The gate must refuse BEFORE
+// any secret resolution or store mutation (the usage exit must not depend on
+// stdin or network), mirroring `models edit --clear-api-key`'s ordering.
+#[test]
+fn providers_update_delete_key_requires_yes() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-key-gate");
+
+    // Seed one provider with a key, so `--delete-key` has a real target.
+    // SAFETY: the suite's ENV_LOCK is held for the whole test (same contract
+    // as every other env-mutating lane in this file); no threads are racing,
+    // and the variable is process-local to this test binary.
+    unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "codex",
+        "--name",
+        "Gate A",
+        "--base-url",
+        "https://api.example.com/v1/",
+        "--wire-api",
+        "openai",
+        "--model",
+        "gpt-test",
+        "--context-window",
+        "128000",
+        "--api-key-env",
+        "PINVOU_TEST_DELETE_KEY_SECRET",
+    ]);
+    let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    let home_path = home.root.clone();
+    let _ = home_path; // HomeGuard drops last, resetting PINVOU3_HOME itself.
+
+    // Refusal without --yes: exit 2-style usage error, store untouched.
+    let outcome = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        added_id.as_str(),
+        "--agent",
+        "codex",
+        "--delete-key",
+    ])
+    .unwrap_err();
+    assert_eq!(
+        outcome.exit_code(),
+        ExitCode::Usage,
+        "must be a usage error"
+    );
+    let refusal = outcome.to_string();
+    assert!(
+        refusal.contains("--yes"),
+        "the refusal must name --yes: {refusal}"
+    );
+
+    // The refusal persisted nothing: the credential is still configured.
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    let entry = providers
+        .iter()
+        .find(|entry| entry["id"] == added_id.as_str())
+        .expect("the refused update must not have removed the provider");
+    assert_eq!(
+        entry["hasCredential"], true,
+        "the refused update must not have dropped the key"
+    );
+
+    // With --yes the deletion proceeds.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        added_id.as_str(),
+        "--agent",
+        "codex",
+        "--delete-key",
+        "--yes",
+    ]);
+    assert_eq!(value["action"], "updated");
+
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    let entry = providers
+        .iter()
+        .find(|entry| entry["id"] == added_id.as_str())
+        .expect("the provider row must survive a key deletion");
+    assert_eq!(entry["hasCredential"], false, "key gone after --yes");
 }

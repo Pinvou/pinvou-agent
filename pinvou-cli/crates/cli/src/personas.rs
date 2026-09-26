@@ -703,7 +703,10 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
 // sidecar with nothing on any lane reading it. The GUI consumes its own
 // (memory-only) equip state in the chat send; the headless `agent run
 // --session` lane now consumes the sidecar at the same injection point. The
-// two helpers below are that seam.
+// two helpers below are that seam. They ride the feature with their only
+// consumers (agent_task.rs's featureful run path): a featureless build has
+// no `agent run` and no equip, and the helpers would be dead names there.
+#[cfg(feature = "product-backend")]
 
 /// The staged one-shot persona injection for the session's next
 /// `agent run --session` turn: the `pending_body` this module's `equip` wrote
@@ -727,12 +730,14 @@ pub(crate) fn pending_persona_injection(session_id: &str) -> Option<String> {
 /// active` keeps reporting the card until `unequip`). A missing/corrupt
 /// sidecar or one without a staged body is already in the target state and
 /// succeeds without touching the file.
+#[cfg(feature = "product-backend")]
 pub(crate) fn consume_pending_persona_injection(session_id: &str) -> Result<(), CliError> {
     consume_staged_persona_injection_at(&equip_state_path(session_id)?)
 }
 
 /// Path-resolved core of [`pending_persona_injection`] (and its unit tests:
 /// the path is handed in so the read needs no `PINVOU3_HOME` dance).
+#[cfg(feature = "product-backend")]
 fn staged_persona_injection_at(path: &std::path::Path) -> Option<String> {
     let raw = crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run").ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -744,6 +749,7 @@ fn staged_persona_injection_at(path: &std::path::Path) -> Option<String> {
 }
 
 /// Path-resolved core of [`consume_pending_persona_injection`].
+#[cfg(feature = "product-backend")]
 fn consume_staged_persona_injection_at(path: &std::path::Path) -> Result<(), CliError> {
     let raw = match crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run") {
         Ok(raw) => raw,
@@ -1265,6 +1271,7 @@ mod tests {
     /// `take_pending_turn_injections`' split between `pending_persona_body`
     /// and `active_persona`) at the unit level, path-resolved so no
     /// `PINVOU3_HOME` dance is needed.
+    #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_returns_the_equip_staged_body_verbatim() {
         let card = PersonaCard {
@@ -1325,6 +1332,7 @@ mod tests {
     /// of the seam: `None` on the read side (turn prompt passes through
     /// verbatim), `Ok(())` on the consume side (nothing verifiably staged to
     /// clear).
+    #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_tolerates_missing_and_corrupt_sidecars() {
         let dir = std::env::temp_dir().join(format!(

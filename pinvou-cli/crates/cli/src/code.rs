@@ -60,8 +60,8 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
-    AcpPool, AcpProvidersView, AgentBackend, CodexWorkspaceKind, ProviderManager, ProviderWireApi,
-    SessionAgentStore,
+    AcpPool, AcpProvidersView, AgentBackend, CodexWorkspaceKind, MIN_CLAUDE_VERSION,
+    MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -78,7 +78,7 @@ const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: cod
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
      [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] [--model-slot SLOT=M]... [--context-window N] \
      (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] [--model-slot SLOT=M]... [--context-window N] \
-     (--api-key-env V|--api-key-stdin|--delete-key)|remove <id> --agent A --yes \
+     (--api-key-env V|--api-key-stdin|--delete-key --yes)|remove <id> --agent A --yes \
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>  \
      (claude --model-slot SLOT: opus|sonnet|haiku|fable|subagent; add requires all five, \
@@ -91,28 +91,18 @@ const PERMISSIONS_USAGE: &str = "usage: pinvou code permissions <session>";
 const RESPOND_USAGE: &str = "usage: pinvou code respond <session> <request-id> <allow|deny>";
 
 /// Minimum agent CLI versions enforced by the GUI runtime probes
-/// (`features::codex_acp`): codex via `MIN_CODEX_VERSION`, claude/kimi via
-/// `MIN_CLAUDE_VERSION` / `MIN_KIMI_VERSION`.
+/// (`features::codex_acp`): codex via `runtime::MIN_CODEX_VERSION`, claude/kimi
+/// via `codex_acp::{MIN_CLAUDE_VERSION, MIN_KIMI_VERSION}`.
 ///
-/// MIRROR, not a reference — the three app constants are unreachable from
-/// this crate, so these values are a hand-kept copy that must be bumped in
-/// the same change as the originals:
-/// - `MIN_CODEX_VERSION` is `pub` but lives in the private module
-///   `pinvou3-app/src-tauri/src/features/codex_acp/runtime.rs`, and
-///   `codex_acp/mod.rs` re-imports it with a private `use`, so it does not
-///   leave the app crate;
-/// - `MIN_CLAUDE_VERSION` / `MIN_KIMI_VERSION` are private consts in
-///   `pinvou3-app/src-tauri/src/features/codex_acp/mod.rs`.
-///
-/// Unlike `workspace::{SEARCH_LIMIT, PREVIEW_LIMIT, DIFF_LIMIT}` — which this
-/// file references directly (see the `use` above `WORKSPACE_DIFF_FILE_CAP`)
-/// precisely so drift breaks the build — a bump on the app side here fails
-/// nothing: the CLI would silently keep gating installs and login on a stale
-/// minimum. Making the app constants `pub` and importing them is the real
-/// fix; until then, treat an app-side bump as requiring this table to change
-/// with it.
-const MIN_VERSIONS: [(&str, &str); 3] =
-    [("codex", "0.144.6"), ("claude", "2.0.0"), ("kimi", "0.9.0")];
+/// Direct references, not a mirror — the CLI consumes the same `pub` constants
+/// the app's runtime probes and install gates use, so an app-side bump breaks
+/// this build instead of silently diverging (the same discipline as
+/// `workspace::{SEARCH_LIMIT, PREVIEW_LIMIT, DIFF_LIMIT}`).
+const MIN_VERSIONS: [(&str, &str); 3] = [
+    ("codex", MIN_CODEX_VERSION),
+    ("claude", MIN_CLAUDE_VERSION),
+    ("kimi", MIN_KIMI_VERSION),
+];
 
 /// Mirror of `providers::CLAUDE_MODEL_SLOTS`
 /// (`pinvou3-app/src-tauri/src/features/codex_acp/providers/mod.rs`), slot ids
@@ -187,6 +177,7 @@ pub enum CodeCommand {
         api_key_env: Option<String>,
         api_key_stdin: bool,
         delete_key: bool,
+        yes: bool,
     },
     ProvidersRemove {
         provider_id: String,
@@ -477,7 +468,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "--context-window",
                     "--api-key-env",
                 ],
-                &["--api-key-stdin", "--delete-key"],
+                &["--api-key-stdin", "--delete-key", "--yes"],
                 "providers update",
             )?;
             let provider_id = positionals
@@ -517,6 +508,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 api_key_env: option(&options, "--api-key-env").map(str::to_owned),
                 api_key_stdin: flags.contains(&"--api-key-stdin"),
                 delete_key: flags.contains(&"--delete-key"),
+                yes: flags.contains(&"--yes"),
             })
         }
         "remove" => {
@@ -1112,6 +1104,10 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             api_key_env,
             api_key_stdin,
             false,
+            // `add` never deletes a key (delete_key=false above), so the
+            // update-lane --yes gate would never fire; pass false and let
+            // require_yes see a non-destructive call.
+            false,
             output,
         ),
         CodeCommand::ProvidersUpdate {
@@ -1126,6 +1122,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             api_key_env,
             api_key_stdin,
             delete_key,
+            yes,
         } => providers_save(
             &agent,
             Some(&provider_id),
@@ -1138,6 +1135,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             api_key_env,
             api_key_stdin,
             delete_key,
+            yes,
             output,
         ),
         CodeCommand::ProvidersRemove {
@@ -2216,6 +2214,38 @@ fn apply_login_event(
     }
 }
 
+/// Reads the `--code-stdin` authorization code, once the wait loop has
+/// signalled that the login URL is on this terminal (the interactive lane's
+/// deferred read). Identical cap and validation to the pre-spawn read the
+/// `--code`/`--code-env` lanes perform up front: bounded like
+/// `resolve_secret`, an unbounded stdin read lets `yes | pinvou code login
+/// claude --code-stdin` exhaust memory before the 4096-char validity check
+/// ever runs. Runs inside the stdin writer thread, so its errors are
+/// reported as a note the way the drains report theirs — there is no
+/// outcome left to fail by then; the login either completes on the
+/// already-known code or times out like any other stuck flow.
+fn read_deferred_login_code() -> Option<String> {
+    let mut raw = String::new();
+    {
+        use std::io::Read;
+        let mut bounded = std::io::stdin().take(64 * 1024 + 1);
+        if let Err(error) = bounded.read_to_string(&mut raw) {
+            note!("code login: cannot read code from stdin: {error}");
+            return None;
+        }
+    }
+    if raw.len() > 64 * 1024 {
+        note!("code login: stdin authorization code exceeds the 64 KiB read cap");
+        return None;
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+        note!("code login: invalid claude authorization code");
+        return None;
+    }
+    Some(raw)
+}
+
 fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
     resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
         CliError::failed(format!(
@@ -2245,18 +2275,50 @@ fn login_args(agent: &str) -> &'static [&'static str] {
 /// those two artefacts stream live; the rest of the transcript is still
 /// echoed once, redacted, at the end. A timeout still surfaces the login link
 /// captured so far — the URL is the only actionable part of the transcript.
-/// The claude authorization
-/// code is accepted via `--code-env VAR` / `--code-stdin` (plaintext argv is
-/// deliberately not offered — argv leaks through shell history and process
-/// listings; `--code C` remains for callers that already hold it in argv) and
-/// is written to the child's stdin; the child reads it when it prompts.
+///
+/// The claude authorization code is accepted via `--code-env VAR` /
+/// `--code-stdin` (plaintext argv is deliberately not offered — argv leaks
+/// through shell history and process listings; `--code C` remains for callers
+/// that already hold it in argv) and is written to the child's stdin; the
+/// child reads it when it prompts.
+///
+/// The two `--code`/`--code-env` lanes are for callers that already hold the
+/// code, so their value is validated before anything is spawned. The
+/// `--code-stdin` lane is the interactive one, and it waits: in a real claude
+/// flow the user can only hold the code after this CLI has printed the
+/// authorize URL (round-18 finding: the code used to be read before the child
+/// even existed — before any URL could be visible — and stdin was closed
+/// right after). The wait loop therefore signals the stdin writer thread the
+/// moment it announces the URL on stderr; only then is the invoker's stdin
+/// read (same 64 KiB cap, same shape validation) and forwarded to the child.
+/// The child's stdin stays open for its whole lifetime after that one write —
+/// the GUI keeps the login child's stdin open through the entire login
+/// (`login_inputs` is only cleared when the login future finishes), instead
+/// of delivering an EOF mid-flow.
+///
+/// The login child runs in its own process group (see
+/// `support::set_process_group`), and its group is registered with
+/// `support::supervise` for the child's whole lifetime so an interrupt that
+/// kills this CLI takes the login child down with it instead of orphaning a
+/// kimi login that can legitimately run to 1800 s; the group is forgotten
+/// once this flow has waited for (or killed) the child, the same bracket
+/// every supervised spawn site uses.
 fn login(
     agent: &str,
     code: Option<LoginCodeSource>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let code = match code {
-        Some(LoginCodeSource::Arg(raw)) => Some(raw),
+    // Resolve the code lane as far as it can be before the child exists.
+    // `--code`/`--code-env` are for callers that already hold the code, so
+    // their value resolves (and is validated) up front — a missing or empty
+    // env var must fail before spawning anything. `--code-stdin` is the
+    // interactive lane: the user cannot hold the code before the child has
+    // printed the authorize URL (round-18 finding: the pre-spawn read
+    // consumed the invoker's stdin before any URL existed), so its value
+    // stays deferred — the wait loop below hands it to the stdin writer
+    // thread only after the URL has been announced on stderr.
+    let (code, stdin_code_deferred): (Option<String>, bool) = match code {
+        Some(LoginCodeSource::Arg(raw)) => (Some(raw), false),
         Some(LoginCodeSource::Env(var)) => {
             let value = std::env::var(&var).map_err(|_| {
                 CliError::failed(format!(
@@ -2268,36 +2330,26 @@ fn login(
                     "code login: authorization code environment variable {var} is empty"
                 )));
             }
-            Some(value)
+            (Some(value), false)
         }
         Some(LoginCodeSource::Stdin) => {
-            // Bounded like `resolve_secret`: an unbounded stdin read lets
-            // `yes | pinvou code login --code-stdin` exhaust memory before
-            // the 4096-byte validity check ever runs.
-            let mut raw = String::new();
-            {
-                use std::io::Read;
-                let mut bounded = std::io::stdin().take(64 * 1024 + 1);
-                bounded.read_to_string(&mut raw).map_err(|error| {
-                    CliError::failed(format!("code login: cannot read code from stdin: {error}"))
-                })?;
-            }
-            if raw.len() > 64 * 1024 {
-                return Err(CliError::usage(
-                    "code login: stdin authorization code exceeds the 64 KiB read cap",
-                ));
-            }
-            Some(raw)
+            // Deferred: no byte of the invoker's stdin may be consumed before
+            // the URL artifact has been announced on stderr. The read (same
+            // 64 KiB cap, same validation) then runs inside the stdin writer
+            // thread, so the deadline loop below is never parked by it — the
+            // same unbounded-read hazard the pre-spawn version posed to the
+            // `yes | …` case, just relocated.
+            (None, true)
         }
-        None => None,
+        None => (None, false),
     };
+    if (code.is_some() || stdin_code_deferred) && agent != "claude" {
+        return Err(CliError::usage(format!(
+            "code login {agent} does not accept an authorization code; only the claude \
+             login flow consumes one"
+        )));
+    }
     if let Some(code) = code.as_deref() {
-        if agent != "claude" {
-            return Err(CliError::usage(format!(
-                "code login {agent} does not accept an authorization code; only the claude \
-                 login flow consumes one"
-            )));
-        }
         let trimmed = code.trim();
         if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
             return Err(CliError::usage("invalid claude authorization code"));
@@ -2313,6 +2365,15 @@ fn login(
     let mut child = command.spawn().map_err(|error| {
         CliError::failed(format!("code login({agent}): cannot spawn CLI: {error}"))
     })?;
+    // The kill guard: `set_process_group` above put the child in its own
+    // group, and that is exactly what orphans it if this CLI dies without
+    // this flow's own exit paths running (kimi can legitimately run to
+    // 1800 s; round-18 finding) — `supervise` forwards a terminal SIGINT to
+    // the group while this login flow is alive. Every exit below pairs the
+    // registration with a forget, so the pgid is never left registered for
+    // the OS to recycle onto an unrelated process (the same bracket
+    // `support/supervise.rs` documents for spawn sites).
+    crate::support::supervise::register_child_group(child.id());
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // The drains report through a channel instead of join handles: a
@@ -2341,26 +2402,83 @@ fn login(
         code.clone(),
         events_tx,
     );
-    // The stdin write runs on its own thread so it can never park the
+    // The stdin writer runs on its own thread so it can never park the
     // deadline loop below: the code is up to the GUI's 4096-char max, which
     // exceeds the 4 KiB Windows pipe buffer, so a child that never reads
     // stdin would block the write indefinitely. The thread is deliberately
     // not joined — if the write is still parked when the deadline (or the
     // child's own exit) closes the pipe, the write fails with EPIPE and the
-    // thread exits on its own. Closing stdin here also makes non-code flows
-    // fail fast instead of waiting on a pipe that never fills.
+    // thread exits on its own.
+    //
+    // With a `--code`/`--code-env` value the write happens immediately (the
+    // caller already held the code when it invoked the CLI). The
+    // `--code-stdin` lane instead parks on `code_gate` until the wait loop
+    // has announced the URL on stderr (two-phase semantics, the same order
+    // the GUI's `submit_agent_login_code` enforces): the user cannot hold
+    // the code before seeing the URL, so the child's stdin sees bytes only
+    // after the URL is on this terminal. The gate's channel — not the
+    // invoker's stdin — is what the writer waits on, so an invoker that
+    // never sends the code stalls in the deadline like every other stuck
+    // flow instead of blocking a pipe read the deadline cannot bound.
+    //
+    // stdin EOF timing is agent-scoped like the GUI's, whose `run_agent_login`
+    // drops the child's stdin immediately for every backend except claude
+    // and holds claude's open through the whole login (round-18 finding's
+    // "stdin is closed afterwards" half: a writer thread that returns after
+    // the write delivers an EOF mid-flow). So claude's writer parks on
+    // `stdin_park` after its write and the wait loop below releases it only
+    // once the waiting is over — deadline, failure or completion — at the
+    // same point the child's group is forgotten. Every other agent keeps the
+    // old immediate-EOF behavior, vendor flows that fail fast on EOF
+    // included.
+    let (code_gate_tx, code_gate_rx) = std::sync::mpsc::channel::<()>();
+    let (stdin_park_tx, stdin_park_rx) = std::sync::mpsc::channel::<()>();
+    // Where the deferred lane parks its value for the transcript redaction
+    // below: the immediate lanes carry theirs in `code`, and either value
+    // must be stripped from the echoed transcript for the same reason — a
+    // short, non-secret-shaped code the vendor CLI echoed back would survive
+    // `redact_secret` alone.
+    let deferred_code_slot: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     {
-        use std::io::Write;
+        use std::io::Write as _;
         let stdin = child.stdin.take();
         let code = code.as_deref().map(str::to_owned);
+        let hold_stdin_open = agent == "claude";
+        let deferred_code_slot = deferred_code_slot.clone();
         std::thread::spawn(move || {
             let Some(mut stdin) = stdin else {
                 return;
             };
-            if let Some(code) = code {
-                let _ = writeln!(stdin, "{}", code.trim());
-                let _ = stdin.flush();
+            if !stdin_code_deferred {
+                if let Some(code) = code {
+                    let _ = writeln!(stdin, "{}", code.trim());
+                    let _ = stdin.flush();
+                }
+            } else {
+                // --code-stdin: wait for the URL announcement before reading.
+                // The child stays alive through the whole wait; a gate closed
+                // without the URL (deadline, drains gone, CLI exit paths)
+                // unwinds this thread without reading or writing anything.
+                if code_gate_rx.recv().is_err() {
+                    return;
+                }
+                let code = read_deferred_login_code();
+                if let Some(code) = code {
+                    *deferred_code_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(code.clone());
+                    let _ = writeln!(stdin, "{}", code.trim());
+                    let _ = stdin.flush();
+                }
             }
+            if !hold_stdin_open {
+                return;
+            }
+            // claude: hold the pipe open until the wait loop is done with the
+            // child; `stdin_park` closes (drop or send) only at that point,
+            // and the drop of `stdin` below is the EOF the vendor sees.
+            let _ = stdin_park_rx.recv();
         });
     }
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
@@ -2381,6 +2499,7 @@ fn login(
                 // The wait itself failed; the child may still be running, so
                 // it goes down with the group like every other exit path.
                 crate::support::kill_process_tree(&mut child);
+                crate::support::supervise::forget_child_group(child.id());
                 return Err(CliError::failed(format!("code login({agent}): {error}")));
             }
         }
@@ -2397,13 +2516,22 @@ fn login(
         // child deliberately stays alive until the user opens the link, so
         // anything published only after it exits is published too late.
         match events_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => apply_login_event(
-                event,
-                &mut streamed_url,
-                &mut streamed_code,
-                (&mut out_text, &mut err_text),
-                &mut finished_streams,
-            ),
+            Ok(event) => {
+                let url_arrived = matches!(event, LoginDrainEvent::Artifact(LoginArtifact::Url(_)))
+                    && streamed_url.is_none();
+                apply_login_event(
+                    event,
+                    &mut streamed_url,
+                    &mut streamed_code,
+                    (&mut out_text, &mut err_text),
+                    &mut finished_streams,
+                );
+                if url_arrived {
+                    // First URL announcement: the user can go get the code
+                    // now, so the deferred stdin read may start.
+                    let _ = code_gate_tx.send(());
+                }
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             // Both drains are gone (pipes closed early, or a reader died).
             // Keep the poll cadence so the deadline and `try_wait` above
@@ -2420,6 +2548,18 @@ fn login(
     // captured — the readers die with this process and cannot reach the
     // transcript. Both streams share the one budget (it used to be 5 s each,
     // sequentially) because they now report on one channel.
+    // The waiting is over (status, timeout kill, or failure kill). Release
+    // the held-open claude stdin BEFORE the drain grace below: the vendor's
+    // own descendants can inherit the pipe's read end (a helper the CLI
+    // spawned and left behind), and until this end closes they also hold the
+    // write ends of the transcript pipes the drains are waiting on — the
+    // grace would expire with empty transcripts otherwise. The park drop is
+    // the end-of-login EOF, the same release the GUI's login future performs.
+    drop(stdin_park_tx);
+    // A deferred stdin read that never got its URL is likewise over: the
+    // gate close unwinds the writer thread without touching the invoker's
+    // stdin.
+    drop(code_gate_tx);
     let grace = Instant::now() + Duration::from_secs(5);
     while finished_streams < 2 {
         let remaining = grace.saturating_duration_since(Instant::now());
@@ -2437,11 +2577,20 @@ fn login(
             Err(_) => break,
         }
     }
+    // The child's exit paths have taken it down, so an interrupt from here on
+    // must not signal a group the OS may have already recycled.
+    crate::support::supervise::forget_child_group(child.id());
     let combined = format!("{out_text}\n{err_text}");
     // Exact-value strip of the authorization code this process wrote to the
     // child's stdin before the heuristic pass: a short, non-secret-shaped
     // code the vendor CLI echoed back would survive `redact_secret` alone.
-    let combined = strip_login_code(&combined, code.as_deref());
+    // Whichever lane carried it — the immediate lanes in `code`, the
+    // deferred lane's post-URL read in its slot — redacts the same way.
+    let deferred_code = deferred_code_slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    let combined = strip_login_code(&combined, code.as_deref().or(deferred_code.as_deref()));
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
@@ -2714,9 +2863,16 @@ fn providers_save(
     api_key_env: Option<String>,
     api_key_stdin: bool,
     delete_key: bool,
+    yes: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
+    // A key deletion is a destructive one-way credential action: mirror the
+    // family's remove/require_yes convention so an unattended run cannot
+    // drop stored keys (round-18 --yes gap).
+    if delete_key {
+        require_yes(yes)?;
+    }
     // Mirror the lib store's statically reachable validation in English
     // before any secret resolution (--api-key-stdin blocks on stdin): the
     // store's own messages for these two rules are Chinese, the same
@@ -2726,6 +2882,12 @@ fn providers_save(
             "the kimi wire protocol only applies to the kimi agent",
         ));
     }
+    // Lane label for the English mirrors below and the store pre-checks.
+    let lane = if provider_id.is_none() {
+        "add"
+    } else {
+        "update"
+    };
     if provider_id.is_none() && agent == "claude" {
         // The store does not merely reject an EMPTY slot set: it requires a
         // non-empty model for every id in `CLAUDE_MODEL_SLOTS` and fails the
@@ -2746,11 +2908,39 @@ fn providers_save(
             .collect();
         if !missing.is_empty() {
             return Err(CliError::failed(format!(
-                "code providers add: claude requires --model-slot SLOT=MODEL for every Claude \
+                "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
                  model slot (a missing slot falls back to official traffic); missing: {} \
                  (valid slots: {})",
                 missing.join(", "),
                 CLAUDE_MODEL_SLOTS.join(", "),
+            )));
+        }
+    }
+    // The store's other user-reachable validation rules fail with Chinese
+    // text that `store_error` would surface, so they are mirrored in English
+    // here as well (the lib re-checks authoritatively): refined model slots
+    // are claude-only, a user-supplied blank --name would be trimmed into an
+    // invalid empty store name, and the base URL must be a full http(s)
+    // address. Only the user-supplied value is gated; a merged update keeps
+    // the existing record's already-valid values.
+    if agent != "claude" && !model_slots.is_empty() {
+        return Err(CliError::failed(format!(
+            "code providers {lane}: --model-slot is only supported for the claude agent \
+             (refined model slots); these agents take --model only"
+        )));
+    }
+    if let Some(name) = name.as_deref() {
+        if name.trim().is_empty() {
+            return Err(CliError::failed(format!(
+                "code providers {lane}: --name must not be blank"
+            )));
+        }
+    }
+    if let Some(url) = base_url.as_deref() {
+        let trimmed = url.trim();
+        if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+            return Err(CliError::failed(format!(
+                "code providers {lane}: --base-url must be a full http(s):// address"
             )));
         }
     }
@@ -2847,6 +3037,14 @@ fn providers_remove(
     require_provider_agent(agent)?;
     require_yes(yes)?;
     let manager = open_providers()?;
+    // Pre-check in English, mirroring the update and switch lanes: the
+    // store's delete path fails an unknown id with a Chinese "not found"
+    // message that `store_error` would otherwise surface.
+    if manager.store().get(agent, provider_id).is_none() {
+        return Err(CliError::failed(format!(
+            "provider_not_found: no provider '{provider_id}' for agent {agent}"
+        )));
+    }
     let removed = manager
         .delete(agent, provider_id)
         .map_err(|error| store_error("providers remove", provider_id, error))?;
@@ -2924,56 +3122,74 @@ fn providers_export(
         "warning: the export contains plaintext API keys; store the file in a safe place";
     match destination {
         Some(path) => {
+            // An existing destination is refused, not overwritten: the export
+            // carries plaintext API keys, and a silent truncate could destroy
+            // an unrelated file the user pointed at (an earlier export, a
+            // shell redirect) with exit 0 — the same policy as `sessions
+            // export` / `plugins export`, which reserve the destination with
+            // an exclusive create. `create_new` makes the check and the write
+            // one atomic step, so a destination swapped onto the path after
+            // a plain exists() probe can no longer be truncated, and it also
+            // refuses a pre-planted symlink to a file this caller may not
+            // own. `mode(0o600)` applies at create time, and `create_new`
+            // guarantees this call is the create — a pre-existing destination
+            // is refused below instead of being reused — so no follow-up
+            // `set_permissions` is needed (the old tighten-existing-file
+            // dance existed only to make the then-permitted overwrite of a
+            // world-readable file safe; with the overwrite refused, a fresh
+            // 0600 create is the only write that can happen).
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt as _;
-                use std::os::unix::fs::PermissionsExt as _;
                 // Plaintext keys land in a 0600 file (the GUI hands the same
                 // content to a save dialog; a default-permission file would
-                // be readable by every local user). `mode` creates the file
-                // 0600 from the start; it only applies at create time, so a
-                // pre-existing (world-readable) file is tightened explicitly
-                // before the keys are written. The open follows a symlinked
-                // destination like any std write would — exporting onto a
-                // path the user controls is the documented contract, not an
-                // attack surface.
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path)
-                {
-                    Ok(mut file) => {
-                        let result = file
-                            .set_permissions(std::fs::Permissions::from_mode(0o600))
-                            .and_then(|()| {
-                                std::io::Write::write_all(&mut file, content.as_bytes())
-                            });
-                        result.map_err(|error| {
-                            CliError::failed(format!(
-                                "code providers export: cannot write {}: {error}",
-                                path.display()
-                            ))
-                        })?;
-                    }
-                    Err(error) => {
-                        return Err(CliError::failed(format!(
-                            "code providers export: cannot write {}: {error}",
-                            path.display()
-                        )));
-                    }
-                }
+                // be readable by every local user).
+                options.mode(0o600);
             }
             // Non-unix: no POSIX mode bits — ACL tightening is a follow-up
-            // (docs/pinvou-cli.md scopes the 0600 claim to unix).
-            #[cfg(not(unix))]
-            std::fs::write(&path, &content).map_err(|error| {
-                CliError::failed(format!(
+            // (docs/pinvou-cli.md scopes the 0600 claim to unix). The
+            // exclusive create and the overwrite refusal apply on every
+            // platform; only the 0600 mode is unix-gated.
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    // `AlreadyExists` is the unix refusal; Windows `CREATE_NEW`
+                    // against an existing DIRECTORY reports ERROR_ACCESS_DENIED
+                    // (`PermissionDenied`), so "the path is already there"
+                    // decides the refusal, with the raw error only in the
+                    // cannot-create branch (same classification as `sessions
+                    // export`).
+                    let already_there =
+                        error.kind() == std::io::ErrorKind::AlreadyExists || path.exists();
+                    return Err(CliError::failed(if already_there {
+                        format!(
+                            "code providers export({agent}): refusing to overwrite {}; choose a \
+                             destination that does not exist yet",
+                            path.display()
+                        )
+                    } else {
+                        format!(
+                            "code providers export({agent}): cannot create {}: {error}",
+                            path.display()
+                        )
+                    }));
+                }
+            };
+            // The body write is kept a separate failure from the create:
+            // only a create this call performed may be cleaned up below.
+            if let Err(error) = std::io::Write::write_all(&mut file, content.as_bytes()) {
+                // The exclusive create DID succeed, so this call owns the
+                // destination: a partial file (ENOSPC, quota) must not be
+                // left behind posing as an export.
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+                return Err(CliError::failed(format!(
                     "code providers export({agent}): cannot write {}: {error}",
                     path.display()
-                ))
-            })?;
+                )));
+            }
             note!("{PLAINTEXT_WARNING}");
             let value = serde_json::json!({
                 "agent": agent,
@@ -3554,6 +3770,12 @@ fn workspace_list(
         .entries
         .iter()
         .map(|entry| {
+            // RAW by intent (mirror claim): `entry.name` goes to the terminal
+            // exactly as the GUI panel receives it. Neither side sanitizes
+            // control characters, and only a real filename can reach here —
+            // a name with a tab/newline in it breaks this row's column
+            // contract on both surfaces equally, so collapsing it here would
+            // diverge from the GUI for the same filename.
             format!(
                 "{}\t{}\t{}\t{}",
                 entry.kind, entry.name, entry.size, entry.modified
@@ -4904,6 +5126,35 @@ fn resolve_undo_state(
     })))
 }
 
+/// Failure report for the transcript-restore step of `checkpoints undo`, when
+/// the working tree has already been restored. `condition_broken` says whether
+/// the undo precondition no longer holds (new turns, edits, or the bound
+/// checkpoint vanished): that failure is not retryable, every other one is.
+/// Selected by the re-derived undo state, never by the store's message text.
+fn undo_restore_failure(
+    condition_broken: bool,
+    session: &str,
+    checkpoint_id: Option<&str>,
+    detail: &str,
+) -> CliError {
+    let rollback_point = checkpoint_id.unwrap_or("-");
+    if condition_broken {
+        CliError::failed(format!(
+            "code_checkpoints_undo_condition_changed({session}): the working tree was already \
+             restored to rollback point {rollback_point}, but restoring the transcript failed: \
+             {detail}. This is not retryable; the rewind record was not consumed but the \
+             truncated messages remain in the rewind backup — handle manually (new turns or \
+             edits landed after the rewind)"
+        ))
+    } else {
+        CliError::failed(format!(
+            "code checkpoints undo({session}): the working tree was already restored to \
+             rollback point {rollback_point}, but restoring the transcript failed: {detail}. \
+             The rewind record was not consumed, so `checkpoints undo` can be retried"
+        ))
+    }
+}
+
 /// `code checkpoints undo <session>`: headless mirror of `undo_last_rewind`.
 /// Restores the working tree and rewrites the transcript, so it requires
 /// `--yes` like `rewind`.
@@ -4931,31 +5182,26 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
         let detail = format!("{error:#}");
         // The store fails *non-retryably* when the transcript changed after
-        // the rewind (new turns produced or turn content edited —
-        // features/sessions/rewind.rs bails with "不可反悔" on exactly those
-        // precondition violations). Retrying cannot succeed and would steer
+        // the rewind (new turns produced, turn content edited, or the bound
+        // checkpoint vanished). Retrying cannot succeed and would steer
         // the user wrong, so mirror the GUI's condition_broken classification
         // (app/commands/checkpoints.rs undo_last_rewind): report that the
         // record was NOT left consumable-by-retry and the truncated messages
-        // remain in the rewind backup for manual handling. Every other
-        // failure (IO etc.) leaves the record unconsumed and retryable.
-        if detail.contains("不可反悔") {
-            CliError::failed(format!(
-                "code_checkpoints_undo_condition_changed({session}): the working tree was already \
-                 restored to rollback point {}, but restoring the transcript failed: {detail}. \
-                 This is not retryable; the rewind record was not consumed but the truncated \
-                 messages remain in the rewind backup — handle manually (new turns or edits \
-                 landed after the rewind)",
-                checkpoint_id.as_deref().unwrap_or("-")
-            ))
-        } else {
-            CliError::failed(format!(
-                "code checkpoints undo({session}): the working tree was already restored to \
-                 rollback point {}, but restoring the transcript failed: {detail}. The rewind \
-                 record was not consumed, so `checkpoints undo` can be retried",
-                checkpoint_id.as_deref().unwrap_or("-")
-            ))
-        }
+        // remain in the rewind backup for manual handling.
+        //
+        // The discriminator is the re-derived undo state, never the store's
+        // message text (the GUI's `detail.contains("不可反悔")` breaks the
+        // moment the store's copy changes; an arbitrary rewording must not
+        // reclassify an IO failure as non-retryable or vice versa).
+        // `resolve_undo_state` re-validates exactly the preconditions the
+        // store guards — kept turn count, truncated revision, and the bound
+        // PreRestore checkpoint — so `Ok(None)` on the retry means the
+        // precondition genuinely no longer holds; `Ok(Some(_))` means the
+        // state is still undoable and the failure is something else (IO
+        // etc.), which leaves the record unconsumed and retryable. Every
+        // other failure falls to the retryable branch, matching the GUI.
+        let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
+        undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
     })?;
     let value = serde_json::json!({
         "session": session,
@@ -5004,6 +5250,44 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_failure_classification_is_independent_of_the_store_message_text() {
+        // The condition_broken branch is selected by the re-derived undo
+        // state, never by the store's message. Prove the classification
+        // cannot change when the copy does: the two messages below carry
+        // identical failure semantics under arbitrarily different text —
+        // one phrased as the store's current precondition violation, one
+        // reworded beyond recognition (and, in the negative case, phrased
+        // exactly like a precondition violation while the state says
+        // retryable). Only the branch flag may decide, so the reports must
+        // come out the same within each row no matter the wording.
+        let condition_changed = "回退后已产生新轮次，不可反悔";
+        let reworded = "the operator declined: cannot proceed (totally different copy)";
+        for detail in [condition_changed, reworded] {
+            let broken = undo_restore_failure(true, "s-1", Some("cp-9"), detail);
+            let message = broken.to_string();
+            assert!(
+                message.contains("code_checkpoints_undo_condition_changed"),
+                "condition broken must say so regardless of wording: {message}"
+            );
+            assert!(
+                message.contains("This is not retryable"),
+                "condition broken must not invite a retry regardless of wording: {message}"
+            );
+
+            let retryable = undo_restore_failure(false, "s-1", Some("cp-9"), detail);
+            let message = retryable.to_string();
+            assert!(
+                !message.contains("condition_changed"),
+                "a retryable failure must not be labelled condition_changed: {message}"
+            );
+            assert!(
+                message.contains("can be retried"),
+                "a retryable failure must say so regardless of wording: {message}"
+            );
+        }
+    }
 
     #[test]
     fn strip_login_code_removes_the_exact_value_before_the_heuristic() {

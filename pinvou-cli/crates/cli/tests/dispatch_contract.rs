@@ -71,6 +71,89 @@ fn every_family_token_dispatches_to_its_module() {
     }
 }
 
+/// The discriminator the exact-match test below asserts on. Exhaustive over
+/// `CliCommand`, so adding a family forces this test to decide its token —
+/// the union test above cannot notice a family routed into another
+/// family's variant.
+fn family_token(command: &CliCommand) -> &'static str {
+    match command {
+        CliCommand::Version => "version",
+        CliCommand::Help => "help",
+        CliCommand::Benchmark(_) => "benchmark",
+        CliCommand::Agent(_) => "agent",
+        CliCommand::Sessions(_) => "sessions",
+        CliCommand::Models(_) => "models",
+        CliCommand::Memory(_) => "memory",
+        CliCommand::Knowledge(_) => "knowledge",
+        CliCommand::Scheduled(_) => "scheduled",
+        CliCommand::Plugins(_) => "plugins",
+        CliCommand::Connectors(_) => "connectors",
+        CliCommand::Personas(_) => "personas",
+        CliCommand::Code(_) => "code",
+        CliCommand::Files(_) => "files",
+        CliCommand::Voice(_) => "voice",
+        CliCommand::Deps(_) => "deps",
+        CliCommand::Feedback(_) => "feedback",
+        CliCommand::Monitor(_) => "monitor",
+        CliCommand::Artifacts(_) => "artifacts",
+        CliCommand::Projects(_) => "projects",
+    }
+}
+
+/// The dispatch contract, strengthened from the union test above: each
+/// family token must parse into ITS OWN command variant — not merely into
+/// "some family's variant". The union shape let a mis-routed token pass
+/// (e.g. the `settings` alias accidentally answering as `Sessions`, or a
+/// duplicated match arm in `parse_args` sending two tokens to one family),
+/// and reverting the `outcome.is_err()`-style routing in the shared parser
+/// would not have been caught by it either. Mutating the shared dispatch
+/// (any single family's match arm) fails exactly that family's row here.
+///
+/// Rows carry an explicit expected family, because two tokens legitimately
+/// land in another family ON PURPOSE: `settings` is an alias for the models
+/// family (pinned by `settings_alias_routes_into_the_models_family`), and
+/// the agent/benchmark rows join so the exact-match contract covers every
+/// remaining top-level surface token.
+#[test]
+fn family_tokens_dispatch_to_their_exact_module() {
+    let tokens = [
+        ("sessions", "list", "sessions"),
+        ("models", "list", "models"),
+        ("settings", "get", "models"),
+        ("memory", "overview", "memory"),
+        ("knowledge", "stats", "knowledge"),
+        ("scheduled", "list", "scheduled"),
+        ("plugins", "readiness", "plugins"),
+        ("connectors", "status", "connectors"),
+        ("personas", "list", "personas"),
+        ("code", "agents list", "code"),
+        ("files", "ingest /tmp/a.md", "files"),
+        ("voice", "asr-status", "voice"),
+        ("deps", "check", "deps"),
+        (
+            "feedback",
+            "submit --type issue --title t --body-file /tmp/b.md",
+            "feedback",
+        ),
+        ("monitor", "status", "monitor"),
+        ("artifacts", "list", "artifacts"),
+        ("projects", "list", "projects"),
+        ("agent", "run --prompt-file /tmp/prompt.txt", "agent"),
+        ("benchmark", "list", "benchmark"),
+    ];
+    for (token, subcommand, expected) in tokens {
+        let mut argv = vec!["pinvou".to_string(), token.to_string()];
+        argv.extend(subcommand.split_whitespace().map(str::to_string));
+        let parsed = parse_args(&argv)
+            .unwrap_or_else(|error| panic!("family {token} did not dispatch: {error}"));
+        assert_eq!(
+            family_token(parsed.command()),
+            expected,
+            "{token} must dispatch to {expected}'s own module, not another family's"
+        );
+    }
+}
+
 #[test]
 fn settings_alias_routes_into_the_models_family() {
     let parsed = parse_args(["pinvou", "settings", "get"]).unwrap();

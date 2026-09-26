@@ -14,6 +14,58 @@ use std::path::{Path, PathBuf};
 
 use crate::{CliError, CliOutcome, ExitCode};
 
+/// The one lock for every test in this crate's LIBRARY test binary that
+/// mutates process-global environment variables (`PINVOU3_HOME`, secret
+/// variables). The lib's `#[cfg(test)]` tests run in parallel threads in one
+/// process, and the env has no in-process synchronization of its own, so two
+/// modules steering it at once race each other's fixtures: the gaia tests in
+/// `lib.rs` point `PINVOU3_HOME` at per-fixture temp roots while the models
+/// credential tests in `models.rs` do the same for their stores, and the two
+/// groups were reproduced failing 4/5 in combined runs while both were green
+/// in isolation. The fix is one lock shared by both groups — a per-module
+/// static would serialize inside its own module and still race the other's.
+///
+/// Test-only: integration tests link the library WITHOUT `cfg(test)`, so this
+/// static does not exist there and cannot be dead code in a normal build.
+/// Each integration binary keeps its own local `ENV_LOCK` instead — separate
+/// processes have no shared address space, so there is nothing to serialize
+/// between them.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Decodes raw `argv` into the UTF-8 strings the parse layer consumes.
+///
+/// The program slot (`argv[0]`) is loss-converted when it is not UTF-8:
+/// `parse_args` discards it, and odd launchers/execve paths can legitimately
+/// carry a byte path — that must not lock the user out of every command.
+/// Every later argument must instead be valid UTF-8 or the CLI refuses
+/// loudly: the previous behavior silently loss-converted them all, so
+/// `pinvou sessions show $'/tmp/\xff-session'` turned an undecodable id into
+/// a look-alike name and reported "not found" for an id the user never
+/// typed. Per the family exit-code convention this is argv-decidable, so the
+/// caller reports it as a usage error (exit 2; see [`read_text_file_capped`]
+/// for the other half of the rule, where content-dependent failures exit 1).
+///
+/// Split out of `main` (a bin crate the integration tests never execute)
+/// so the refusal can be unit-pinned; the caller decides how an offending
+/// index is rendered.
+pub fn decode_arguments(raw: Vec<std::ffi::OsString>) -> Result<Vec<String>, usize> {
+    let mut arguments = Vec::with_capacity(raw.len());
+    for (index, argument) in raw.into_iter().enumerate() {
+        if index == 0 {
+            // The program slot is exempt (see the doc comment above); keep
+            // the loop shape so every later argument goes through one path.
+            arguments.push(argument.to_string_lossy().into_owned());
+            continue;
+        }
+        let Some(text) = argument.to_str() else {
+            return Err(index);
+        };
+        arguments.push(text.to_owned());
+    }
+    Ok(arguments)
+}
+
 /// Writes the run's report to `out` and returns the process exit code.
 ///
 /// Rust ignores SIGPIPE, so a closed pipe (`pinvou ... | head`) turns the write
@@ -591,8 +643,8 @@ fn json_failure_payload(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collapse_control_characters, emit_report, json_failure_payload, resolve_secret,
-        validate_sandbox_home,
+        collapse_control_characters, decode_arguments, emit_report, json_failure_payload,
+        resolve_secret, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};
@@ -792,11 +844,56 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&payload).expect("the failure payload must be valid JSON");
         assert_eq!(parsed["ok"], serde_json::Value::Bool(false));
-        assert_eq!(parsed["error"], "bad \"quote\" \\ and \n newline");
+        assert_eq!(
+            parsed["error"],
+            serde_json::json!("bad \"quote\" \\ and \n newline")
+        );
         assert!(
             !payload.contains('\n'),
             "the payload stays a single line: {payload}"
         );
+    }
+
+    /// A UTF-8 argv decodes unchanged, so nothing else in this contract can
+    /// regress ordinary invocations.
+    #[test]
+    fn decode_arguments_accepts_a_utf8_argv_unchanged() {
+        let raw: Vec<std::ffi::OsString> = ["pinvou", "sessions", "show", "s-1"]
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect();
+        let decoded = decode_arguments(raw).expect("a UTF-8 argv decodes");
+        assert_eq!(decoded, ["pinvou", "sessions", "show", "s-1"]);
+    }
+
+    /// A non-UTF-8 program slot (`argv[0]`) is loss-converted instead of
+    /// refused — `parse_args` discards that slot, and a launcher carrying a
+    /// byte path must not lock the user out of every command — while the
+    /// same bytes as a real argument are refused with its index. The
+    /// pre-fix `to_string_lossy` produced a look-alike session id and a
+    /// "not found" for an id the user never typed; that is the mutation this
+    /// test pins against (a lossy decode returns `Ok` and never `Err`, so
+    /// both asserts below fail without the refusal).
+    #[cfg(unix)]
+    #[test]
+    fn decode_arguments_refuses_non_utf8_arguments_but_keeps_the_program_slot() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let program = std::ffi::OsStr::from_bytes(b"/opt/\xff/pinvou").to_owned();
+        let raw = vec![
+            program,
+            std::ffi::OsString::from("sessions"),
+            std::ffi::OsStr::from_bytes(b"show\xff").to_owned(),
+        ];
+        let error = decode_arguments(raw).expect_err("a non-UTF-8 argument must be refused");
+        assert_eq!(error, 2, "the offending index is the third argv slot");
+        // The same non-UTF-8 bytes are fine in the program slot.
+        let raw = vec![
+            std::ffi::OsStr::from_bytes(b"/opt/\xff/pinvou").to_owned(),
+            std::ffi::OsString::from("--version"),
+        ];
+        let decoded = decode_arguments(raw).expect("argv[0] is loss-converted, not refused");
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[1], "--version");
     }
 }
 

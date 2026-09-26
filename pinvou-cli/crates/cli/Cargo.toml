@@ -48,10 +48,10 @@ fd-lock = "4"
 # manager (already in the graph via pinvou3-tauri). Platform-independent —
 # `scheduled` generates ids on every target.
 uuid = { version = "1", features = ["v4"] }
-# ONCE AT validation resolves naive local stamps through the system timezone
-# exactly like the foundation's `parse_once_at` (same major as pinvou3-tauri,
-# already in the graph), so a spring-forward gap is rejected at the CLI
-# instead of wedging the GUI scheduler sweep with an unparseable record.
+# Record ordering/stamps read and write chrono `DateTime<Utc>` values in the
+# foundation's own semantics (`record_time`, `now_string`, the sortable
+# run-file stamp), same major as pinvou3-tauri (already in the graph), so a
+# CLI-rendered stamp is byte-compatible with a GUI-rendered one.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Process-group tree kill for timed-out vendor CLI children; Windows uses
@@ -63,6 +63,11 @@ libc = "0.2"
 # Contract tests hold the same advisory lock files a second CLI process would
 # hold, pinning the busy-path contract.
 fd-lock = "4"
+# The round-18 login guard test probes its fake vendor processes with real
+# kill(2) calls (signal-0 existence checks, the interrupt, red leftovers
+# cleanup) — pure standard-library std has no way to express any of those.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [[bin]]
 name = "pinvou"

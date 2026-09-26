@@ -2499,7 +2499,6 @@ async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
     );
 }
 
-
 /// Cross-process half of the single-flight guard: the ORGANIZE_IN_FLIGHT
 /// mutex above only covers this process, so a second organize from another
 /// process (the CLI while the GUI's scheduled task is organizing) is fenced
@@ -2529,7 +2528,9 @@ async fn organize_memory_rejects_second_pass_while_pass_lock_is_held() {
         started.elapsed()
     );
     assert!(
-        error.to_string().contains("another organize pass is already running"),
+        error
+            .to_string()
+            .contains("another organize pass is already running"),
         "unexpected error: {error:#}"
     );
     assert!(load_organize_history().is_empty());
@@ -2566,7 +2567,9 @@ async fn organize_memory_releases_pass_lock_after_mid_pass_failure() {
     let failing_bridge = FakeOrganizeModel {
         base_url: spawn_chat_completions_stub(format!("not json {{")),
     };
-    let error = organize_memory_with_llm(&failing_bridge, None).await.unwrap_err();
+    let error = organize_memory_with_llm(&failing_bridge, None)
+        .await
+        .unwrap_err();
     assert!(
         error.to_string().contains("parse"),
         "unexpected error: {error:#}"

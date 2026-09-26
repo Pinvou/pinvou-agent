@@ -1679,11 +1679,58 @@ fn pending(
     Ok(success(render(output, human, &value)))
 }
 
+/// Cross-process single-flight lock for `memory organize` — see [`organize`]
+/// for why the feature layer's in-memory guard is not enough for two CLI
+/// processes. Same `$PINVOU3_HOME/locks` directory and same fd-lock primitive
+/// as `voice asr-install`'s install lock. The caller must keep the returned
+/// lock alive alongside its write guard.
+fn organize_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    // `sandbox_home` already ran in `execute`, so the lock cannot land in a
+    // cwd-relative directory.
+    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "memory organize: cannot create {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join("memory-organize.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "memory organize: cannot open {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
 /// Runs one full memory organize pass through the windowless product host —
 /// the same wiring as the scheduled memory-organize executor. Requires a
 /// display (xvfb on headless Linux) and a configured, active model; organize
 /// calls the LLM and applies delete/update/merge actions to every store, then
 /// refreshes the snapshot.md device document like the GUI command does.
+///
+/// Cross-process single-flight, CLI side only: the feature layer's
+/// `ORGANIZE_IN_FLIGHT` guard is process-local
+/// (`features/memory/organize.rs`: "the two passes would interleave
+/// destructive actions based on their own (up to 75-second-old) snapshots"),
+/// so it serializes the GUI's own two triggers but says nothing about a
+/// second CLI process. Two `pinvou memory organize` runs would interleave
+/// exactly the destructive actions that comment names, from two processes
+/// the in-memory mutex cannot see — so this command takes a file lock in the
+/// shared `$PINVOU3_HOME/locks` directory (the same primitive as
+/// `voice asr-install`'s install lock and `code.rs`'s session locks) and
+/// refuses with `memory_organize_busy` instead. `try_write` rather than a
+/// blocking wait, mirroring those siblings' immediate refusal. Residual,
+/// disclosed: the GUI's own in-memory guard still cannot see this file lock,
+/// so a CLI pass racing a GUI-triggered pass remains last-writer-wins —
+/// closing that half needs the feature layer to take the same file lock
+/// (reported upstream; see the docs row).
 fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     if !feature::memory_enabled() {
@@ -1691,6 +1738,19 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             "memory_organize_disabled: memory is disabled in settings",
         ));
     }
+    let mut organize_lock = organize_lock()?;
+    let _organize_guard = organize_lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            CliError::failed(
+                "memory_organize_busy: another pinvou process is organizing memory; retry after \
+                 it finishes",
+            )
+        } else {
+            CliError::failed(format!(
+                "memory organize: cannot acquire the organize lock: {error}"
+            ))
+        }
+    })?;
     let report = pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
         // Same shared-bridge fallback as the GUI command and the scheduled
         // executor; fresh_bridge_for is crate-private to pinvou3_lib, so the

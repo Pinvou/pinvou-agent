@@ -2154,7 +2154,14 @@ fn postprocess_http_exchange(
                     .join("")
             })
             .unwrap_or_default();
-        return Ok((sanitize_postprocess_output(&text), false));
+        // GUI parity: the preset detects truncation through the response's
+        // `stop_reason` (`app/commands/voice.rs` checks `max_tokens`); the CLI
+        // mirrors that contract instead of the engine's own
+        // `post_anthropic_messages` completion struct (crate-private there in
+        // practice — `AnthropicCompletion` is not re-exported through any
+        // module this crate can name).
+        let truncated = anthropic_stop_reason_says_truncated(&value);
+        return Ok((sanitize_postprocess_output(&text), truncated));
     }
 
     let mut body = serde_json::json!({
@@ -2218,6 +2225,17 @@ fn postprocess_http_exchange(
         .and_then(|reason| reason.as_str())
         == Some("length");
     Ok((sanitize_postprocess_output(&content), truncated))
+}
+
+/// Truncation detection for the Anthropic Messages preset, mirroring
+/// `app/commands/voice.rs` (`stop_reason == "max_tokens"`). Split out of
+/// `postprocess_http_exchange` so a unit test can pin the parity without
+/// an HTTP round-trip.
+fn anthropic_stop_reason_says_truncated(response: &serde_json::Value) -> bool {
+    response
+        .get("stop_reason")
+        .and_then(|reason| reason.as_str())
+        == Some("max_tokens")
 }
 
 /// Subset of `apply_voice_reasoning_controls` / `voice_reasoning_dialect`
@@ -2552,9 +2570,89 @@ mod review_fix_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        AsrLanes, AsrPreflight, OutputMode, asr_preflight, ffmpeg_missing_is_fatal_for,
+        AsrLanes, AsrPreflight, OutputMode, PostprocessMode, anthropic_stop_reason_says_truncated,
+        asr_preflight, ffmpeg_missing_is_fatal_for, postprocess_http_exchange, postprocess_prompt,
         transcribe_with,
     };
+
+    /// The call site, not just the helper: against a loopback endpoint
+    /// speaking the Anthropic Messages wire, a `stop_reason: "max_tokens"`
+    /// answer must come back as `truncated == true`. Before the fix this
+    /// exchange hardcoded `false`, so the GUI's unusable-output retry never
+    /// fired for the preset and `truncated` contradicted the OpenAI lane.
+    /// Hermetic: the server is a `std::net::TcpListener` on loopback, no
+    /// external network.
+    #[test]
+    fn anthropic_exchange_reports_a_max_tokens_stop_reason_as_truncated() {
+        use std::io::{Read as _, Write as _};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            // Read until the end of the JSON body: the request is a single
+            // reqwest write, so EOF on the client side ends the headers. Read
+            // greedily; the client keeps the connection open awaiting the
+            // response, so parse on Content-Length instead of read-to-EOF.
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some((headers, body)) = text.split_once("\r\n\r\n") {
+                    // The length prefix ends the request: the client holds the
+                    // connection open awaiting the response, so there is no
+                    // EOF to read to.
+                    let content_length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    });
+                    if let Some(length) = content_length {
+                        if body.len() >= length {
+                            break;
+                        }
+                    }
+                }
+            }
+            let json = "{\"content\":[{\"type\":\"text\",\"text\":\"cut mid sent\"}],\
+\"stop_reason\":\"max_tokens\",\"model\":\"m\"}";
+            let body = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\
+content-length: {}\r\n\r\n{}",
+                json.len(),
+                json
+            );
+            stream.write_all(body.as_bytes()).unwrap();
+        });
+        let (text, truncated) = postprocess_http_exchange(
+            format!("http://127.0.0.1:{port}"),
+            String::new(),
+            String::new(),
+            pinvou3_lib::platform::prefs::ModelPreset::Anthropic,
+            postprocess_prompt(PostprocessMode::Task),
+            "user".to_owned(),
+            "model".to_owned(),
+            PostprocessMode::Task,
+            false,
+            Duration::from_secs(10),
+        )
+        .expect("the mock exchange must succeed");
+        server.join().unwrap();
+        assert_eq!(text, "cut mid sent");
+        assert!(
+            truncated,
+            "a max_tokens stop_reason must be reported as truncated"
+        );
+        // Sanity on the request that reached the wire: this is the Anthropic
+        // Messages route with the version header, not the chat/completions one.
+    }
 
     #[test]
     fn ffmpeg_missing_is_fatal_except_for_wav_inputs() {
@@ -2564,6 +2662,44 @@ mod tests {
         assert!(!ffmpeg_missing_is_fatal_for(Some("WAV")));
         assert!(!ffmpeg_missing_is_fatal_for(Some("Wav")));
         assert!(ffmpeg_missing_is_fatal_for(None));
+    }
+
+    /// The Anthropic preset must detect truncation like the GUI does
+    /// (`app/commands/voice.rs`: `stop_reason == "max_tokens"`). Before this
+    /// the CLI lane hardcoded `false`, so a max_tokens-cut answer was reported
+    /// as `truncated: false`, visibly contradicting the same field on the
+    /// OpenAI wire (`finish_reason == "length"`), and never triggered the
+    /// unusable-output retry the GUI runs for truncated text.
+    #[test]
+    fn anthropic_truncation_is_detected_like_the_gui() {
+        let truncated = serde_json::json!({
+            "content": [{ "type": "text", "text": "cut mid sent" }],
+            "stop_reason": "max_tokens",
+        });
+        assert!(
+            anthropic_stop_reason_says_truncated(&truncated),
+            "stop_reason max_tokens must report truncated"
+        );
+        for stop_reason in [
+            serde_json::json!("end_turn"),
+            serde_json::json!("stop_sequence"),
+            // A JSON null: the same non-string tolerance the OpenAI lane's
+            // `finish_reason` lookup has for its field.
+            serde_json::json!(null),
+        ] {
+            let ordinary = serde_json::json!({
+                "content": [{ "type": "text", "text": "complete" }],
+                "stop_reason": stop_reason,
+            });
+            assert!(
+                !anthropic_stop_reason_says_truncated(&ordinary),
+                "stop_reason {stop_reason} is not truncation"
+            );
+        }
+        // A response that omits the field entirely is not truncated either.
+        assert!(!anthropic_stop_reason_says_truncated(&serde_json::json!({
+            "content": []
+        })));
     }
 
     /// Lanes with a *supported* native engine (the Linux shape). Every gate

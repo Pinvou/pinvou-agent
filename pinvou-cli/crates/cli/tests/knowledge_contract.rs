@@ -11,28 +11,31 @@
 //! through a completed `scan start` (still offline) and asserts the NL-rule
 //! merge ("上周的 pdf" → ext + mtime filter + residual text) indirectly.
 //!
-//! Import-job semantics (round-19 fix): `add-sources`/`resume`/`retry` WAIT
-//! for their job to finish inside the invocation (a one-shot process kills
-//! its import thread at exit, which used to strand the job `running` with no
-//! owner), report the final state, and fail unless it ended `done`. The
+//! Import-job semantics: `add-sources`/`resume`/`retry` WAIT for their job
+//! to finish inside the invocation (a one-shot process kills its import
+//! thread at exit, which used to strand the job `running` with no owner),
+//! report the final state with a phase-honest exit code, and a stall past
+//! the no-progress bound INTERRUPTS the job first
+//! (`PINVOU_KB_IMPORT_STALL_MILLIS` overrides the bound for automation)
+//! so it is left `interrupted`/resumable, not `running`-with-no-owner. The
 //! stranded-job scenarios are driven by SIGKILLing a real `add-sources`
 //! child mid-import (`strand_running_job`): the surviving DB row is exactly
 //! what a hard-killed process leaves behind, and no CLI lane may pretend to
-//! reconcile it — re-enqueue/resume/retry refuse with exit 2
-//! (`knowledge_index_job_busy`), read lanes leave it untouched, and only
-//! `index cancel` (a real, targeted, DB-level cancel of the named job) and
-//! `collections delete` of its own collection may act on it. The
-//! desktop-app-only boot recovery is mirrored in-process by opening
-//! `KnowledgeService::new` (the recovering constructor the CLI never calls),
-//! which is what turns a stranded job into the `interrupted` state
-//! `index resume` legitimately continues.
+//! reconcile it — re-enqueue/resume/retry refuse with exit 1 naming the
+//! running job, read lanes leave it untouched, and only `index cancel` (a
+//! real, targeted, DB-level cancel of the named job) and `collections
+//! delete` of its own collection may act on it. The desktop-app-only boot
+//! recovery is mirrored in-process by opening `KnowledgeService::new` (the
+//! recovering constructor the CLI never calls), which is what turns a
+//! stranded job into the `interrupted` state `index resume` legitimately
+//! continues.
 //!
-//! `scan cancel` and `model cancel` no longer exist: `scan start` blocks
-//! until the scan finishes, so nothing is ever running in a CLI process when
-//! it could take a cancel, and model downloads only ever run inside the
-//! desktop app process (process-local cancel channels) — a subcommand that
-//! could only report a no-op signal is placeholder capability (AGENTS.md
-//! §4) and was removed. The session-mount surface refuses honestly
+//! `scan cancel` and `model cancel` refuse honestly with exit 1
+//! (`knowledge_{scan,model}_cancel_requires_product_host`): the only scan
+//! this process could signal is always already over (`scan start` blocks),
+//! and model downloads only ever run inside the desktop app process
+//! (process-local cancel channels) — a subcommand that could only report a
+//! no-op signal is placeholder capability (AGENTS.md §4). The session-mount surface refuses honestly
 //! (per-process app memory), and `collections delete` never boots the
 //! session store (the mount sweep was always empty in a one-shot process;
 //! the boot would run the 50-sessions-per-kind retention). Paths that need
@@ -45,6 +48,7 @@
 use pinvou_cli::{ExitCode, execute, parse_args};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
 /// variable, preventing data races when the parallel test runner executes them
@@ -212,6 +216,51 @@ fn strand_running_job(home: &TempHome, id: i64, sources: &[PathBuf]) -> String {
     job_id
 }
 
+/// Seeds a real import job through the feature service inside THIS process
+/// (its import thread runs here, exactly like an add-sources invocation's
+/// would) — the "some other owner" position a CLI lane must refuse to race.
+/// The file count sets the import's lower time bound; returns (collection
+/// id, job id).
+fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String) {
+    let db = pinvou3_lib::features::knowledge::default_db_path();
+    let service = pinvou3_lib::features::knowledge::KnowledgeService::new_without_recovery(&db)
+        .expect("seed service");
+    let collection = service
+        .l1()
+        .create_collection(label, None, None)
+        .expect("seed collection");
+    let dir = home.path().join(format!("{label}-src"));
+    std::fs::create_dir_all(&dir).unwrap();
+    for index in 0..files {
+        std::fs::write(
+            dir.join(format!("item-{index:03}.txt")),
+            "seed prose for the importer to parse and chunk. ".repeat(64),
+        )
+        .unwrap();
+    }
+    let state = service.start_index(collection, vec![dir]);
+    let job = state.job_id.expect("seed job id").to_owned();
+    (collection, job)
+}
+
+/// Polls `knowledge index status` (read-only, non-recovering) until the
+/// phase is one of `phases`, failing after `timeout_secs`.
+fn poll_index_phase(phases: &[&str], timeout_secs: u64) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
+        if phases.contains(&phase.as_str()) {
+            return state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "index job never reached {phases:?} (last state: {state})"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 // ---- parse-level coverage ----
 
 #[test]
@@ -223,10 +272,13 @@ fn knowledge_parses_every_subcommand() {
             r#"Knowledge(ScanStart { root: Some("/tmp/docs") })"#.into(),
         ),
         (&["pinvou", "knowledge", "scan", "status"], "Knowledge(ScanStatus)".into()),
-        // `scan cancel` no longer exists (removed with round-19): scan start
-        // blocks until the scan finishes, so nothing is ever running in a
-        // CLI process that could take a cancel — see the usage test.
-        (&["pinvou", "knowledge", "stats"], "Knowledge(Stats)".into()),
+        // `scan cancel` is kept as an honest exit-1 refusal: the only scan
+        // this process could signal is always already over (scan start
+        // blocks), so its parse shape survives like every other subcommand.
+        (
+            &["pinvou", "knowledge", "scan", "cancel"],
+            "Knowledge(ScanCancel)".into(),
+        ),        (&["pinvou", "knowledge", "stats"], "Knowledge(Stats)".into()),
         (&["pinvou", "knowledge", "type-counts"], "Knowledge(TypeCounts)".into()),
         (&["pinvou", "knowledge", "collections", "list"], "Knowledge(CollectionsList)".into()),
         (
@@ -330,10 +382,11 @@ fn knowledge_parses_every_subcommand() {
         ),
         (&["pinvou", "knowledge", "model", "status"], "Knowledge(ModelStatus)".into()),
         (&["pinvou", "knowledge", "model", "download"], "Knowledge(ModelDownload)".into()),
-        // `model cancel` no longer exists (removed with round-19): downloads
-        // only ever run inside the desktop app process, and its cancel
-        // channel is a process-local static a one-shot CLI can never aim at
-        // a real download — see the usage test.
+        // `model cancel` is kept as an honest exit-1 refusal: the download
+        // cancel flag is process-local to the desktop app's orchestration,
+        // so a one-shot CLI can never aim it at a real download — see the
+        // refusal test.
+        (&["pinvou", "knowledge", "model", "cancel"], "Knowledge(ModelCancel)".into()),
         (
             &["pinvou", "knowledge", "mounts", "s-1"],
             r#"Knowledge(Mounts { session_id: "s-1" })"#.into(),
@@ -373,14 +426,10 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
         vec!["pinvou", "knowledge", "scan", "start", "--bogus", "x"],
         vec!["pinvou", "knowledge", "scan", "start", "--root"],
         vec!["pinvou", "knowledge", "scan", "status", "--extra"],
-        // The removed cancels (round-19) are usage errors, not silent
-        // no-ops: `scan cancel` could never signal anything (scan start
-        // blocks until the scan finishes, so nothing is running by the time
-        // the CLI returns) and `model cancel` could never reach a download
-        // (they run in the desktop app process).
-        vec!["pinvou", "knowledge", "scan", "cancel"],
+        // `scan cancel`/`model cancel` stay PARSEABLE subcommands (their
+        // honest exit-1 refusals are execute-level, pinned below); malformed
+        // shapes of them remain usage errors.
         vec!["pinvou", "knowledge", "scan", "cancel", "--extra"],
-        vec!["pinvou", "knowledge", "model", "cancel"],
         vec!["pinvou", "knowledge", "stats", "--extra"],
         vec!["pinvou", "knowledge", "type-counts", "--extra"],
         vec!["pinvou", "knowledge", "collections"],
@@ -915,7 +964,7 @@ fn add_sources_refuses_to_race_a_running_job() {
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
 
-    // The second enqueue must refuse (exit 2) naming the stranded running
+    // The second enqueue must refuse (exit 1) naming the stranded running
     // job, and must not turn it into anything else.
     let extra = home.path().join("second.txt");
     std::fs::write(
@@ -931,10 +980,10 @@ fn add_sources_refuses_to_race_a_running_job() {
         &id.to_string(),
         extra.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     let message = error.to_string();
     assert!(
-        message.contains("knowledge_index_job_busy") && message.contains(&job_id),
+        message.contains("still running") && message.contains(&job_id),
         "the refusal must name the running job it refused to race: {message}"
     );
 
@@ -1021,19 +1070,19 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
         );
     }
 
-    // resume/retry on the NAMED stranded job refuse with exit 2
-    // (knowledge_index_job_busy): the job may be owned by a live process,
-    // and there is no cross-process owner heartbeat that could prove
-    // otherwise. No boot recovery may run to wedge it into interrupted.
+    // resume/retry on the NAMED stranded job refuse with exit 1: the job
+    // may be owned by a live process, and there is no cross-process owner
+    // heartbeat that could prove otherwise. No boot recovery may run to
+    // wedge it into interrupted.
     for arguments in [
         vec!["pinvou", "knowledge", "index", "resume", &job_id],
         vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
     ] {
         let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
         let message = error.to_string();
         assert!(
-            message.contains("knowledge_index_job_busy") && message.contains(&job_id),
+            message.contains("still running") && message.contains(&job_id),
             "{arguments:?}: {message}"
         );
     }
@@ -1142,14 +1191,18 @@ fn index_failed_names_an_unknown_job() {
 /// `add-sources` child is SIGKILLed mid-import (the hard-crash shape), then
 /// the DESKTOP APP's own boot recovery is replayed in-process through the
 /// recovering constructor the CLI never calls (`KnowledgeService::new`) —
-/// that, not a CLI lane, is what owns reconciling an orphaned job. The
-/// recovery turns the stranded job `interrupted`; the CLI `index resume`
-/// then re-arms it and, like `scan start`/`add-sources`, WAITS inside the
-/// invocation for the job to reach its terminal phase (a one-shot process
-/// that returned immediately would strand the re-armed job running again).
+/// that, not a CLI lane, is what owns reconciling an orphaned job. While
+/// the job is still stranded `running`, every re-arm lane (resume/retry,
+/// and a second add-sources behind it) must REFUSE (exit 1) without
+/// flipping it — the CLI cannot tell a live owner from a dead process's
+/// orphan. The recovery turns the stranded job `interrupted` with its
+/// staged per-item progress preserved; the CLI `index resume` then re-arms
+/// it and, like `scan start`/`add-sources`, WAITS inside the invocation
+/// for the job to reach its terminal phase (a one-shot process that
+/// returned immediately would strand the re-armed job running again).
 /// Asserted through the real binary.
 #[test]
-fn index_resume_rearms_a_recovered_job_and_waits_for_completion() {
+fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-resume-roundtrip");
     let bin = env!("CARGO_BIN_EXE_pinvou");
@@ -1177,9 +1230,68 @@ fn index_resume_rearms_a_recovered_job_and_waits_for_completion() {
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
 
+    // While the job still reads `running`, resume must refuse honestly: the
+    // CLI cannot distinguish a dead owner from a live desktop-app import
+    // (no cross-process owner heartbeat), and the app's next boot — not a
+    // CLI lane — is what relabels it.
+    let refused = run(&["knowledge", "index", "resume", &job_id]);
+    assert!(
+        !refused.status.success(),
+        "resume on a running stranded job must refuse"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("still running"), "{stderr}");
+    assert!(stderr.contains("index resume"), "{stderr}");
+
+    // A second add-sources against ANOTHER collection is refused the same
+    // way while the store's latest job is running, and the new sources must
+    // not be silently enqueued (the upstream short-circuit would drop them
+    // behind the unfinished job while reporting success).
+    let other = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "other",
+    ]);
+    let other_id = other["id"].as_i64().expect("other collection id");
+    let extra = home.path().join("second.txt");
+    std::fs::write(&extra, "must not be enqueued.").unwrap();
+    let refused_enqueue = run(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &other_id.to_string(),
+        extra.to_str().unwrap(),
+    ]);
+    assert!(
+        !refused_enqueue.status.success(),
+        "add-sources behind a running latest job must refuse"
+    );
+    let enqueue_stderr = String::from_utf8_lossy(&refused_enqueue.stderr);
+    assert!(
+        enqueue_stderr.contains("still running") && enqueue_stderr.contains("NOT enqueued"),
+        "{enqueue_stderr}"
+    );
+    let other_documents = run_json(&["pinvou", "knowledge", "documents", &other_id.to_string()]);
+    assert_eq!(
+        other_documents["documents"],
+        serde_json::json!([]),
+        "refused sources must not be enqueued"
+    );
+
+    // The refusals must not have flipped the strand: it still reads running
+    // and not resumable exactly as the killed child left it.
+    let stranded = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(stranded["jobId"], serde_json::json!(job_id));
+    assert_eq!(stranded["phase"], serde_json::json!("running"));
+    assert_eq!(stranded["resumable"], serde_json::json!(false));
+
     // The GUI's startup recovery, replayed exactly as the desktop app boots
     // it (the recovering constructor) — the orphaned running job becomes
-    // interrupted/resumable. The CLI itself must never do this.
+    // interrupted/resumable with its staged per-item progress preserved.
+    // The CLI itself must never do this.
     {
         let db = pinvou3_lib::features::knowledge::default_db_path();
         let service = pinvou3_lib::features::knowledge::KnowledgeService::new(&db).expect("boot");
@@ -1187,6 +1299,13 @@ fn index_resume_rearms_a_recovered_job_and_waits_for_completion() {
         assert!(
             state.resumable,
             "boot recovery must turn the orphaned job interrupted (got {:?})",
+            state
+        );
+        // The item completed before the kill survives the recovery:
+        // `interrupt` re-claims only in-flight items, never finished ones.
+        assert!(
+            state.done >= 1,
+            "staged progress must survive the kill (got {:?})",
             state
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1209,6 +1328,11 @@ fn index_resume_rearms_a_recovered_job_and_waits_for_completion() {
     );
     assert_eq!(final_state["running"], serde_json::json!(false));
     assert_eq!(final_state["resumable"], serde_json::json!(false));
+    assert_eq!(
+        final_state["total"].as_u64().unwrap_or(0),
+        final_state["done"].as_u64().unwrap_or(1),
+        "the resume must finish every item"
+    );
 
     // Document-level end state: the resumed import really completed — the
     // item finished before the kill and the one still pending both parsed.
@@ -1229,6 +1353,162 @@ fn index_resume_rearms_a_recovered_job_and_waits_for_completion() {
             .all(|document| document["parseStatus"] == serde_json::json!("parsed")),
         "every resumed item must have completed: {documents:?}"
     );
+}
+
+/// A running latest job must not be re-armed — not by `add-sources` (a
+/// second import would run items concurrently against the same store) nor
+/// by `index resume`/`index retry` (re-arming a job its owner still
+/// executes). The running job is seeded through the real feature service
+/// in-process (its import thread runs in this test process, which is
+/// precisely the "some other owner" position the CLI must refuse); the
+/// refusals must arrive without flipping the job or enqueueing the new
+/// sources. Complements the SIGKILL-driven strand tests with an
+/// owner that is genuinely LIVE while the refusals land.
+#[test]
+fn running_jobs_refuse_resume_retry_and_second_add_sources() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("running-job-refusal");
+    let (_collection, job_id) = seed_running_job(&home, "guarded", 400);
+
+    // The CLI sees the in-flight job as the (running) latest one and must
+    // refuse both re-arming commands with the owner explanation.
+    for arguments in [
+        vec!["pinvou", "knowledge", "index", "resume", &job_id],
+        vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("still running") && message.contains("another process"),
+            "{arguments:?}: {message}"
+        );
+    }
+
+    // A second add-sources against a DIFFERENT collection is likewise
+    // refused while the store's latest job is running, and the new sources
+    // must not be enqueued.
+    let other = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "other",
+    ]);
+    let other_id = other["id"].as_i64().expect("other collection id");
+    let second_source = home.path().join("second.txt");
+    std::fs::write(&second_source, "must not be enqueued.").unwrap();
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &other_id.to_string(),
+        second_source.to_str().unwrap(),
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("still running") && message.contains("NOT enqueued"),
+        "{message}"
+    );
+
+    // The refused commands must not have flipped the seeded job: it stays
+    // on its active progression (interrupted would mean something ran the
+    // boot-recovery UPDATE against a live owner).
+    let state = poll_index_phase(&["running", "done", "done_with_errors"], 180);
+    assert_eq!(state["jobId"], serde_json::json!(job_id));
+    assert_ne!(
+        state["phase"],
+        serde_json::json!("interrupted"),
+        "no refusal may run boot recovery against a live owner"
+    );
+
+    let documents = run_json(&["pinvou", "knowledge", "documents", &other_id.to_string()]);
+    assert_eq!(
+        documents["documents"],
+        serde_json::json!([]),
+        "refused sources must not be enqueued"
+    );
+}
+
+/// The import-owning commands' no-progress timeout leaves the job
+/// `interrupted` (immediately resumable), not `running`-with-no-owner: the
+/// timeout path interrupts through the feature layer's `interrupt_index`
+/// before failing. The stall is driven for real: the source "tree" is 110k
+/// empty directories, so the import thread spends seconds in the pre-item
+/// WALK phase (nothing indexed, no counters moving, no DB lock held), while
+/// the invoking child runs with `PINVOU_KB_IMPORT_STALL_MILLIS=300` — the
+/// test/automation override knob. The child must exit 1, report the
+/// interrupted/resumable remedy, and leave the job `interrupted` on disk
+/// for a fresh invocation to read back.
+#[test]
+fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("stall-timeout");
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "stall",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    // A wide-and-deep tree of EMPTY directories: every entry is traversed
+    // by the importer's walk (with the excluder's per-entry name checks)
+    // but yields zero files, so the observable job signature stays frozen
+    // at (done 0, total 0, failed 0, no current item) until long past the
+    // injected 300 ms bound.
+    let root = home.path().join("stall-tree");
+    for a in 0..100 {
+        let band = root.join(format!("a{a:03}"));
+        for b in 0..100 {
+            let cell = band.join(format!("b{b:03}"));
+            std::fs::create_dir_all(&cell).expect("create cell dir");
+            for c in 0..10 {
+                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
+            }
+        }
+    }
+
+    // The add-sources child owns the import, stalls on the bound during the
+    // walk, and must interrupt its own job before failing.
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args([
+            "knowledge",
+            "collections",
+            "add-sources",
+            &id.to_string(),
+            root.to_str().unwrap(),
+        ])
+        .env("PINVOU3_HOME", home.path())
+        .env("PINVOU_NO_COLOR", "1")
+        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "300");
+    let outcome = command.output().expect("stalled add-sources child runs");
+    assert!(
+        !outcome.status.success(),
+        "the stalled import must exit 1, got {:?} with stdout {}",
+        outcome.status.code(),
+        String::from_utf8_lossy(&outcome.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        stderr.contains("no progress") && stderr.contains("resumable now"),
+        "the timeout must report the interrupted/resumable remedy: {stderr}"
+    );
+
+    // The job on disk is interrupted (resumable), not stranded running:
+    // read from a fresh invocation. The stalled job is the only one (fresh
+    // store), so the latest-job read names it.
+    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert!(settled["jobId"].is_string(), "stalled job missing its id");
+    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
+    assert_eq!(settled["resumable"], serde_json::json!(true));
 }
 
 /// `scan start` waits for the scan to finish inside the invocation (a
@@ -1263,6 +1543,17 @@ fn scan_start_persists_its_completion_marker() {
     let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
     assert_eq!(state["phase"], serde_json::json!("done"));
     assert!(state["finishedAt"].as_i64().unwrap_or(0) > 0);
+
+    // `scan cancel` refuses honestly: the only scan this process could
+    // signal is always already over (`scan start` blocks), and an app-side
+    // scan lives in the app's process.
+    let error = execute_error(&["pinvou", "knowledge", "scan", "cancel"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_scan_cancel_requires_product_host"),
+        "{message}"
+    );
 }
 
 /// A missing or non-directory `--root` is refused before the scan starts: a
@@ -1571,7 +1862,7 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
 }
 
 #[test]
-fn model_status_reports_disk_state() {
+fn model_status_reports_disk_state_and_model_cancel_refuses_honestly() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::new("model-status");
 
@@ -1593,6 +1884,19 @@ fn model_status_reports_disk_state() {
     assert!(
         normalized.ends_with("knowledge/models/bge-m3"),
         "{model_dir}"
+    );
+
+    // `model cancel` refuses honestly: the cancel flag is process-local to
+    // the desktop app's download orchestration and a CLI process never has
+    // a download of its own in flight, so the old `{"cancelled":true}` was
+    // a no-op reported as success.
+    let error = execute_error(&["pinvou", "knowledge", "model", "cancel"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_model_cancel_requires_product_host")
+            && message.contains("nothing in this process"),
+        "{message}"
     );
 }
 

@@ -504,6 +504,112 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
         )
 
+    def test_macos_cli_check_configures_the_sibling_restorable_cache(self):
+        # Round-17 close-out, fixed in round 18: the job header claimed "no
+        # macOS cache exists in this workflow that a refs/pull/N/merge run
+        # could restore", which was false — macos-rust-check configures
+        # exactly one, saved only on main, restorable by every PR through
+        # rust-cache's prefix fallback (the workflow header's own documented
+        # warm-cache design). This leg must keep that restorable treatment:
+        # it is the long pole of the serialized macOS runner queue and every
+        # uncached run pays a cold compile of the whole workspace.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15", macos_cli)
+        cache_step = _without_yaml_comments(macos_cli).split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("- name: pinvou-cli macOS compile check", maxsplit=1)[0]
+        self.assertIn("uses: Swatinem/rust-cache@v2", cache_step)
+        self.assertIn("workspaces: pinvou-cli", cache_step)
+        self.assertIn("shared-key: macos-cli-check", cache_step)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cache_step,
+            "PR-side runs must stay read-only on the 10GB quota; main is the "
+            "sole writer of every warm cache in this workflow (same policy as "
+            "macos-rust-check and cli-test)",
+        )
+        # The sibling-policy half of the round-18 decision, pinned so a future
+        # "consolidation" cannot silently alias the keys: macOS artifacts are
+        # not interchangeable with the Linux legs' (cli-test compiles the same
+        # workspace but its cache is ~/.cargo-only under the standing incident
+        # directive, and clippy artifacts differ from rustc ones anyway).
+        self.assertNotIn("shared-key: macos-rust-check", cache_step)
+        self.assertNotIn("shared-key: cli-test", cache_step)
+        # Unlike the Linux legs this cache keeps the target directory: the
+        # cache-targets: false directive exists because RESTORED target/
+        # entries that needed linking took runners down, and a check-only leg
+        # links nothing (rmeta-size artifacts). Regressing to false would
+        # silently re-introduce the cold compile this round removed.
+        self.assertNotIn("cache-targets:", cache_step)
+
+    def test_cli_lint_job_is_wired_into_required_gate(self):
+        # Round-18 review §3: "The CI leg doesn't lint the CLI" — no clippy on
+        # any lane for ~50k lines while the src-tauri [lints] bans do not
+        # apply to the pinvou-cli workspace. The new lint leg must satisfy the
+        # same three-wiring rule as every other gate job (needs entry, env
+        # backfill, summary-loop entry); removing the job or unwiring it from
+        # required-gate must turn this suite red.
+        body = _without_yaml_comments(self.pr_workflow)
+        cli_lint = body.split("\n  cli-lint:", maxsplit=1)[1].split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[0]
+        self.assertIn("needs: changes", cli_lint)
+        self.assertIn("runs-on: ubuntu-22.04", cli_lint)
+        # The trigger set must mirror cli-test exactly: main push (cumulative,
+        # paths-filter independent), the Merge Queue combined tree gated by
+        # cli_rust/rust_full, and ready non-draft PRs (drafts skip the heavy
+        # leg).
+        self.assertIn("github.event_name == 'push' ||", cli_lint)
+        self.assertIn("github.event_name == 'merge_group'", cli_lint)
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'", cli_lint
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'", cli_lint
+        )
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            cli_lint,
+            "draft PRs must skip the lint leg like the other heavy CLI jobs",
+        )
+        # Fail-closed on compile errors and nothing else may soften it: the
+        # warn-visible clippy policy (debt cleanup pending the [lints] table,
+        # see the job comment) must never grow a bypass here.
+        self.assertNotIn("continue-on-error", cli_lint)
+        self.assertIn("components: clippy", cli_lint)
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+            "the CLI lint leg must run clippy via the same --manifest-path "
+            "convention as every other CLI leg",
+        )
+        # --all-targets: tests are linted too; --no-deps: dependencies and the
+        # CodeWhale submodule are never linted; --locked like every CLI build.
+        self.assertIn("--workspace --all-targets --no-deps --locked", cli_lint)
+        # Independent cache keyed to the compiler mode (clippy-driver
+        # artifacts are not reusable by the rustc test compilers — same
+        # parallel-job split as rust-lint vs rust-test).
+        self.assertIn("shared-key: cli-lint", cli_lint)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cli_lint,
+        )
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- cli-lint", required_gate)
+        self.assertIn("CLI_LINT_RESULT: ${{ needs.cli-lint.result }}", required_gate)
+        self.assertIn(
+            '"cli-lint:$CLI_LINT_RESULT"',
+            required_gate,
+            "cli-lint must enter the failure loop like cli-test "
+            "(success|skipped accepted so path-filtered skips do not "
+            "false-fail)",
+        )
+
     def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
         # The workflow header states this policy in prose ("三项均无
         # continue-on-error") with nothing enforcing it, and it is the cheapest
@@ -564,6 +670,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust-test",
             "rust-lint",
             "cli-test",
+            "cli-lint",
             "windows-rust-test",
             "macos-rust-check",
             "macos-cli-check",

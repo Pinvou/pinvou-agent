@@ -69,9 +69,7 @@ use crate::support::{render, require_yes, resolve_secret, sandbox_home, success}
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
-use pinvou3_lib::platform::connector_lock::{
-    artifact_pin, executable_name, file_sha256_hex, locked_cli_path,
-};
+use pinvou3_lib::platform::connector_lock::{executable_name, file_sha256_hex, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
@@ -988,16 +986,6 @@ fn scope_state_disabled(kind: ConnectorKind) -> bool {
         .any(|id| id == &package_id || id == kind.as_str())
 }
 
-/// Whether the connector reports as switched off in `status`: the plain-scope
-/// state (the GUI toggle's own persistence, so a connector the user disabled
-/// in the desktop app reports disabled here too) or a legacy marker (which
-/// the app's gate really does honor). This is the STATUS read only; the
-/// on-disk skill gate (`gui_skill_gate_shows`) mirrors the GUI's
-/// `skills_should_show` and deliberately does NOT consult the scope state.
-fn is_disabled(kind: ConnectorKind) -> bool {
-    scope_state_disabled(kind) || legacy_disabled_marker(kind)
-}
-
 /// The on-disk skill gate, mirroring `features/connectors/skill_gate.rs::
 /// ConnectorGate::skills_should_show` exactly: `!legacy_marker && ready_probe`
 /// — the LEGACY `<id>_disabled` marker plus the connection state. The
@@ -1100,26 +1088,19 @@ fn bundle_store_on_disconnected(id: &str) {
 }
 
 /// Mirror of `connector_cli::bundle_store_on_connected`: register the CLI
-/// package (`source=Builtin`) pinned to the lock-table version/SHA-256 and
-/// clear `degraded`. Mirror-write failures never fail the main operation
-/// (the GUI only logs them).
+/// package and clear `degraded` (reconnect repairs the record). Mirror-write
+/// failures never fail the main operation (the GUI only logs them).
 fn bundle_store_on_connected(id: &str) {
-    use pinvou3_lib::features::marketplace::bundle::cli_bundle_bin;
-    use pinvou3_lib::features::marketplace::store::{ASSET_KIND_CLI, AssetEntry, AssetRef};
-    let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
-    // The lock table is keyed by CLI binary name ("feishu" → "lark-cli"), the
-    // same resolution `connector_cli::bundle_store_on_connected` performs.
-    if let Some(bin) = cli_bundle_bin(id) {
-        if let Some(pin) = artifact_pin(bin) {
-            record.assets.push(AssetEntry::Ref(AssetRef {
-                kind: ASSET_KIND_CLI.to_owned(),
-                name: bin.to_owned(),
-                version: pin.version,
-                sha256: pin.binary_sha256,
-                extra: Default::default(),
-            }));
-        }
-    }
+    // Byte-for-byte the app's own write: `installed_now` with
+    // `source=Builtin` and NO asset pins. The GUI never writes `assets` on a
+    // connect — pins only exist via the first-boot import path
+    // (`store::legacy_cli_records`), which reads the real files on disk
+    // rather than trusting a record — and `upsert_preserving` keeps an
+    // existing record's `assets` verbatim, so pins written here would (a)
+    // create first-connect records the GUI would never create and (b) be
+    // silently dropped on every reconnect anyway. Content integrity on this
+    // lane is the download's own SHA-256 verification, same as the GUI.
+    let record = BundleRecord::installed_now(id, BundleSource::Builtin);
     let _ = BundleStore::new().upsert_preserving(record);
 }
 
@@ -1721,7 +1702,7 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
         let value = json!({ "ok": true, "id": spec.id, "already": true });
         return success_or_render(output, spec.id, "already installed", value);
     }
-    let installed = match spec.id {
+    match spec.id {
         // Mirror `install_tmeet_cli`: npm global install of the pinned spec.
         "tmeet" => {
             if !run_npm_install(spec)? {
@@ -1730,16 +1711,28 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
                     spec.display_name
                 )));
             }
-            true
         }
         // Mirror `native_installer::ensure_native_cli`: download the pinned
         // archive, verify both hashes, stage the executable into the
         // versioned asset directory.
-        _ => ensure_native_cli(spec)?,
+        _ => {
+            ensure_native_cli(spec)?;
+        }
     };
-    if installed && !cli_installed(spec) {
+    // The user-facing claim of this command is "the CLI is present and
+    // executes", not "some bytes landed": a hash-matched destination that
+    // the OS refuses to execute (a staged file losing its exec bit through a
+    // filesystem that ignores the 0755, a quarantine attribute, a shim
+    // resolving to a broken interpreter) must surface here instead of the
+    // next status probe. `cli_installed` runs the real `--version`, and the
+    // check is NOT skipped when `ensure_native_cli` reports the hash already
+    // matched: that means the file verified without this call installing
+    // anything, so an unexecutable pre-existing binary is caught on the
+    // repair path too — exactly the state a user runs `ensure-cli` to fix.
+    if !cli_installed(spec) {
         return Err(CliError::failed(format!(
-            "{} CLI install finished but the binary will not execute; retry",
+            "{} CLI is present on disk but will not execute; retry with `connectors ensure-cli` \
+             after repairing the file's permissions",
             spec.display_name
         )));
     }
@@ -2068,17 +2061,37 @@ const MAX_MEMBER_BYTES: u64 = 128 * 1024 * 1024;
 /// file name inside a nested layout, so the same rejection is applied
 /// explicitly — a member path that walks upwards must never be handed to
 /// `tar` as an extraction target.
+///
+/// Windows-style separators deserve their own rule on non-Windows hosts:
+/// `Path::components` on unix treats `C:\Windows` as ONE Normal component
+/// (backslash is not a separator there), so the components check alone
+/// would pass a Windows-shaped traversal through. Refuse any member
+/// carrying a backslash or a drive-letter prefix outright — connector
+/// archives never use either form (their members are unix-style paths or
+/// bare file names), so nothing legitimate is excluded.
 fn member_path_is_safe(entry: &str) -> bool {
-    !entry.is_empty()
-        && Path::new(entry)
-            .components()
-            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+    if entry.is_empty() || entry.contains('\\') {
+        return false;
+    }
+    Path::new(entry)
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
+    // `--` ends option parsing on every tar the CLI runs on (bsdtar and GNU
+    // tar alike): without it, a member name that begins with a dash would be
+    // parsed as tar options. The wanted name comes from the listing and the
+    // archive path from a staging name the CLI itself built, but the
+    // convention is enforced unconditionally so the lane cannot depend on
+    // those two facts — `-xOf` is the one flag-taking-operand form where a
+    // misplaced `--` changes the parse (`-xOf -- archive member` opens an
+    // archive named "--"), so it is placed as a separator after the archive
+    // operand in both child constructions (see `tar_separated_operands`).
     let mut list = Command::new("tar");
     list.arg("-tf")
         .arg(archive)
+        .arg("--")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -2119,6 +2132,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     extract
         .arg("-xOf")
         .arg(archive)
+        .arg("--")
         .arg(entry)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2180,6 +2194,29 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
 /// the CLI runs them in the foreground, prints the login URL(s) (no QR
 /// image render — spec: GUI-bound), and polls the connected predicate until
 /// success or `--timeout`.
+/// Both halves the GUI performs the moment a connection lands, so the CLI
+/// must not stop at the first:
+/// - the bundle-store mirror write (`bundle_store_on_connected`) — both
+///   surfaces' connect flows call it inline;
+/// - the DenyAll code-scope sync (`sync_deny_all_scopes_after_install`).
+///   The GUI runs it through the `*_apply_skills` command the frontend
+///   invokes right after `connected` fires (`ToolStoreView.jsx` calls
+///   `cfg.commands.applySkills` on the connect-completion handler), whose
+///   `show` branch performs exactly this sync (`skill_gate.rs::
+///   apply_skills_command`, fail-closed). Skipping it here meant a fresh
+///   connect never re-applied the "code sessions default external
+///   capabilities off" policy, so a newly connected connector stayed usable
+///   from code sessions until the next GUI-side apply-skills happened to
+///   run.
+fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
+    bundle_store_on_connected(spec.id);
+    // Best-effort, exactly like the GUI entry point the follow-up runs
+    // (`skill_gate.rs::apply_skills_command`): a failed consent write is
+    // logged by the scope layer there, not failed here.
+    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
+    Ok(())
+}
+
 fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
     let deadline = Instant::now() + Duration::from_secs(timeout);
@@ -2271,7 +2308,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     deadline,
                 );
                 if cli_connected(spec)? {
-                    bundle_store_on_connected(spec.id);
+                    finish_connect_side_effects(spec)?;
                     break;
                 }
             }
@@ -2345,7 +2382,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 }
                 return Err(error);
             }
-            bundle_store_on_connected(spec.id);
+            finish_connect_side_effects(spec)?;
             let _ = std::fs::remove_dir_all(&qr_dir);
         }
         "dingtalk" | "tmeet" => {
@@ -2387,7 +2424,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     vendor_output_tail(spec, &tail)
                 )));
             }
-            bundle_store_on_connected(spec.id);
+            finish_connect_side_effects(spec)?;
         }
         _ => return Err(CliError::usage("unknown connector")),
     }
@@ -3259,6 +3296,111 @@ mod tests {
         assert_eq!(logs.len(), 3, "{logs:?}");
         assert_eq!(logs[0], "noise");
         drain.join().expect("drainer thread must not panic");
+    }
+
+    /// `member_path_is_safe` is the tar lane's one gatekeeper: every
+    /// non-normal component must be refused so a traversal- or root-shaped
+    /// member name can never reach `tar` as an extraction target, while
+    /// ordinary nested and `.`-relative names stay selectable (the connector
+    /// archives lay the binary out in nested directories).
+    #[test]
+    fn member_path_is_safe_rejects_every_non_normal_component() {
+        // Selectable: normal components, nesting, and `.`-relative names.
+        assert!(member_path_is_safe("payload/spool/wecom-cli"));
+        assert!(member_path_is_safe("wecom-cli"));
+        assert!(member_path_is_safe("./payload/wecom-cli"));
+        assert!(member_path_is_safe("payload/./wecom-cli"));
+        // Refused: parent traversal in every position, absolute roots,
+        // Windows drive prefixes (backslash check: unix `Path` parses
+        // `C:\Windows` as one Normal component, so the components check
+        // alone would pass Windows-shaped names through), and an empty
+        // name. (`~` is NOT refused: it is a Normal component that tar
+        // receives as a literal operand — no shell expansion happens on
+        // this path, so it cannot steer extraction anywhere.)
+        for entry in [
+            "../../etc/passwd",
+            "a/../../b",
+            "payload/..",
+            "../x",
+            "/abs/wecom-cli",
+            "C:\\Windows\\system32\\wecom-cli",
+            "\\\\server\\share\\wecom-cli",
+            "",
+        ] {
+            assert!(
+                !member_path_is_safe(entry),
+                "`{entry}` must never be handed to tar as an extraction target"
+            );
+        }
+    }
+
+    /// The listing feed skips (not merely unselects) traversal-shaped member
+    /// lines — the wanted file name could otherwise be reached through a
+    /// `..` chain on an archive that also carries a same-named nested file.
+    /// This is the selection loop's own filter, pinned independently of the
+    /// helper above so removing either refusal shows up as a failure here.
+    #[test]
+    fn listing_selection_prefers_a_safe_member_over_traversal_shaped_ones() {
+        let listing = "a/../../wecom-cli\n../../wecom-cli\nsafe/dir/wecom-cli\n";
+        // Same predicate chain as `extract_member`'s find: the safe line wins
+        // even though the traversal lines also end in the wanted file name.
+        let selected = listing
+            .lines()
+            .map(str::trim)
+            .filter(|entry| member_path_is_safe(entry))
+            .find(|entry| {
+                Path::new(entry)
+                    .file_name()
+                    .map(|name| name.to_string_lossy() == "wecom-cli")
+                    .unwrap_or(false)
+            });
+        assert_eq!(selected, Some("safe/dir/wecom-cli"));
+    }
+
+    /// Both tar child constructions must carry the `--` operator separator
+    /// before any operand the archive controls, so a member whose name begins
+    /// with a dash is treated as an operand, not parsed as options. Runs the
+    /// REAL `extract_member` (both production children: the `-tf` listing and
+    /// the `-xOf` extraction) against a hand-built archive whose wanted
+    /// member is dash-prefixed — the exact shape that flips from extracted
+    /// to option-parsed without the separator, verified live against bsdtar:
+    /// `-xOf a.tar -- -dashmember.txt` extracts, `-xOf a.tar -dashmember.txt`
+    /// prints a usage screen and exits 1.
+    #[test]
+    fn tar_children_carry_the_operand_separator_after_the_archive() {
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-tar-sep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&workspace).expect("test workspace");
+        let archive = workspace.join("a.tar");
+        let member = "-dashmember.txt";
+        let contents = b"separator-works";
+        std::fs::write(workspace.join(member), contents).expect("seed the member file");
+        // Create with a separator (same reason: tar -c would parse the
+        // dash-prefixed name as options without one).
+        let create = Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("--")
+            .arg(member)
+            .current_dir(&workspace)
+            .output()
+            .expect("tar create must run");
+        assert!(create.status.success(), "tar create: {create:?}");
+        let target = workspace.join("out");
+        std::fs::create_dir_all(&target).expect("target dir");
+        extract_member(&archive, member, &target)
+            .expect("the dash-prefixed member must extract through the production argv with `--`");
+        assert_eq!(
+            std::fs::read(target.join(member)).expect("extracted member lands under target"),
+            contents
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     /// The tail must never carry credential material: the redaction mirrors

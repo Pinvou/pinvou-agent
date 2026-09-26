@@ -57,8 +57,9 @@ pub(crate) enum WriteVisibility {
     OwnerOnly,
 }
 
-/// Stage-then-rename write shared by every CLI lane that persists a file
-/// (`artifacts write`, `feedback submit`, `personas equip`).
+/// Stage-then-rename write shared by the CLI lanes that persist a file
+/// (`artifacts write`, `feedback submit`; the dropped `personas equip` lane
+/// was its third consumer).
 ///
 /// **Why a local copy.** The app already owns a hardened version of this
 /// (`platform::filesystem::atomic_write` / `atomic_write_private`), but

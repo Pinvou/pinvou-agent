@@ -7,7 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{CliError, CliOutcome, ExitCode, OutputMode};
+use crate::{CliError, CliOutcome, OutputMode};
+
+/// Exit code for the success exit of the featureful run path; the import
+/// lives under the feature with its only consumer so the featureless lib
+/// target does not carry an unused name (tests import their own).
+#[cfg(feature = "product-backend")]
+use crate::ExitCode;
 
 /// Parse-time cap for `agent run --timeout-secs` (7 days): an unbounded u64
 /// would overflow `Instant + Duration`, exiting 101 with no report. Must stay
@@ -18,6 +24,10 @@ const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
 /// Byte cap for `--prompt-file`. The read is bounded (`Read::take`) so an
 /// unbounded source cannot be pulled into memory before the engine ever sees
 /// it; 4 MiB is far above any real task prompt and far below an OOM.
+/// Feature-gated with the capped read that enforces it; the featureless
+/// stub never reads the file, so the usage text below carries the "4 MiB"
+/// figure and the usage test asserts the same literal.
+#[cfg(feature = "product-backend")]
 const PROMPT_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// The family's own usage text. It spells out the two input rules the parse
@@ -411,6 +421,7 @@ mod tests {
 
     /// The report renderer is pure; pin its human layout and its JSON round
     /// trip (the only execution-path piece testable without an engine).
+    #[cfg(feature = "product-backend")]
     #[test]
     fn agent_report_renders_human_layout_and_json_envelope() {
         let report = pinvou_product_backend::AgenticTaskReport {
@@ -571,7 +582,15 @@ mod tests {
     /// and this test keeps the two from drifting apart.
     #[test]
     fn agent_run_usage_states_the_prompt_file_input_rules() {
-        assert_eq!(PROMPT_FILE_MAX_BYTES, 4 * 1024 * 1024);
+        // The figure is stated twice on purpose: as the featureful path's
+        // enforced cap (PROMPT_FILE_MAX_BYTES) and here, so the usage text
+        // cannot drift from the cap either way. Featureless builds see the
+        // same literal; the cap itself rides the feature with its reader.
+        #[cfg(feature = "product-backend")]
+        let enforced_cap = PROMPT_FILE_MAX_BYTES;
+        #[cfg(not(feature = "product-backend"))]
+        let enforced_cap: usize = 4 * 1024 * 1024;
+        assert_eq!(enforced_cap, 4 * 1024 * 1024);
         assert!(RUN_USAGE.contains("4 MiB"), "{RUN_USAGE}");
         assert!(RUN_USAGE.contains("regular file"), "{RUN_USAGE}");
         assert!(RUN_USAGE.contains("/dev/stdin"), "{RUN_USAGE}");

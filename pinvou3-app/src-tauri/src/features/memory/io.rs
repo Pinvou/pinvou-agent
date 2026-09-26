@@ -155,13 +155,13 @@ pub(crate) fn try_lock_organize_pass() -> io::Result<OrganizePassLock> {
         .open(&path)?;
     match file.try_lock() {
         Ok(()) => Ok(OrganizePassLock { file }),
-        Err(TryLockError::WouldBlock) => {
-            Err(io::Error::new(io::ErrorKind::WouldBlock, ORGANIZE_LOCK_BUSY))
-        }
+        Err(TryLockError::WouldBlock) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            ORGANIZE_LOCK_BUSY,
+        )),
         Err(TryLockError::Error(error)) => Err(error),
     }
 }
-
 
 pub(crate) fn never_memory_path() -> PathBuf {
     paths::user_memory_never()

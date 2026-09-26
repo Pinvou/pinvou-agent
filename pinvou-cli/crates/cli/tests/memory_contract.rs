@@ -679,6 +679,54 @@ fn memory_organize_refuses_when_memory_is_disabled() {
     );
 }
 
+/// `memory organize` takes a cross-process single-flight lock BEFORE the
+/// windowless host boots: the feature layer's `ORGANIZE_IN_FLIGHT` guard is
+/// process-local (`features/memory/organize.rs` — "the two passes would
+/// interleave destructive actions based on their own up-to-75-second-old
+/// snapshots"), so a second CLI process would interleave exactly those
+/// actions. This test holds the lock in the test process — the exact state
+/// "another pinvou process is organizing" produces — and requires the
+/// command to refuse with `memory_organize_busy` rather than start a second
+/// pass. Reachable without a display or a model because the lock precedes
+/// the host boot, so the default no-host/no-model test policy holds.
+#[test]
+fn memory_organize_refuses_when_another_process_holds_the_lock() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("organize-busy");
+
+    // Enable memory so the command gets past the disabled check and reaches
+    // the lock (the refusal under test is the busy one, not the disabled
+    // one). The language must be zh-Hans: the memory locale policy forces
+    // `memory_enabled` back to false for any other language
+    // (`platform::prefs` `enforce_memory_locale_policy`).
+    let settings = home.path().join("settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
+    )
+    .unwrap();
+
+    // Hold the lock the way a concurrent organize would.
+    let dir = home.path().join("locks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("memory-organize.lock"))
+        .unwrap();
+    let mut lock = fd_lock::RwLock::new(file);
+    let _held = lock.write().unwrap();
+
+    let error = expect_usage_error(&["pinvou", "memory", "organize", "--yes"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("memory_organize_busy"),
+        "a second concurrent organize must be refused, not interleaved: {error}"
+    );
+}
+
 #[test]
 fn memory_add_accepts_ordinary_punctuated_work_context() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());

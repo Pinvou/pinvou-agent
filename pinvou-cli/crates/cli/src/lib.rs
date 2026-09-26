@@ -1918,20 +1918,40 @@ mod tests {
     /// Panic-safe `PINVOU3_HOME` restore: a failing assert must not leak the
     /// temp home into sibling unit tests (the same RAII rule the
     /// integration tests' `RestoreHome` guard applies).
-    struct RestoreHomeGuard(Option<std::ffi::OsString>);
+    ///
+    /// The guard also holds [`crate::support::ENV_LOCK`] for its whole
+    /// lifetime: these gaia tests steer the process-global `PINVOU3_HOME`
+    /// with no lock of their own and used to race the models credential
+    /// tests' `TempHome` fixtures in the same test binary (reproduced 4/5 in
+    /// combined runs, both green in isolation). The lock is taken in
+    /// `set_home`, before the env write, and released in `Drop` only after
+    /// the previous value has been restored, so every other env-steering
+    /// test in the binary (models included) observes either the untouched
+    /// environment or this test's finished fixture, never a half-set one.
+    struct RestoreHomeGuard(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+    );
     impl RestoreHomeGuard {
         fn set_home(path: &std::path::Path) -> Self {
+            let guard = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var_os("PINVOU3_HOME");
             unsafe { std::env::set_var("PINVOU3_HOME", path) };
-            Self(previous)
+            Self(Some(guard), previous)
         }
     }
     impl Drop for RestoreHomeGuard {
         fn drop(&mut self) {
-            match self.0.take() {
+            match self.1.take() {
                 Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
                 None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
+            // Release the shared lock only after the environment is back:
+            // a sibling test waking up on the unlock must never observe the
+            // fixture value this test is about to undo.
+            drop(self.0.take());
         }
     }
 
@@ -2027,6 +2047,7 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    #[cfg(feature = "product-backend")]
     #[test]
     fn new_smoke_manifests_record_the_canonical_read_only_web_policy_id() {
         use adapter_smoke::{SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};
@@ -2044,6 +2065,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "product-backend")]
     #[test]
     fn smoke_resume_still_accepts_manifests_stored_with_the_deprecated_policy_id() {
         use adapter_smoke::{SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};

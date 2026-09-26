@@ -378,6 +378,20 @@ impl KnowledgeService {
         Ok(())
     }
 
+    /// 将**点名**的导入任务退回 `interrupted`（可续跑）。CLI 等待超时路径的收口
+    /// 入口：导入线程已死/卡住时把任务留在 interrupted（而非 running），下次
+    /// `resume_index` 无需等桌面端启动恢复即可续跑。与 [`Self::cancel_index`]
+    /// 的防御查表同构——先点名读状态，未知任务按错误上报（而不是静默 no-op）；
+    /// 状态迁移完全委托 `ImportJobStore::interrupt`：仅对 preparing/running
+    /// 生效（SQL WHERE 兜底），已完结/interrupted 的任务是幂等 no-op。
+    pub fn interrupt_index(&self, job_id: &str) -> Result<(), String> {
+        let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
+        if state.running {
+            self.imports.interrupt(job_id);
+        }
+        Ok(())
+    }
+
     pub fn failed_index_files(
         &self,
         job_id: &str,

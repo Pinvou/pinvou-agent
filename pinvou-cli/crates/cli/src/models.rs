@@ -959,12 +959,28 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
 }
 
 pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    execute_with_store(command, output, &SystemCredentialStore::new())
+}
+
+/// `execute` with an injectable credential backend — the CLI's spelling of
+/// what the app buys by passing `&dyn CredentialStore` into
+/// `save_model_inner`/`delete_model_inner` (`app/commands/settings.rs`
+/// exists as `*_inner` functions for exactly this reason). The production
+/// entry point ([`execute`]) supplies `SystemCredentialStore`; tests supply a
+/// recording store so the credential lane (store/roll back/reveal/delete)
+/// has behavioural coverage instead of only the OS keyring, which no test in
+/// this crate is allowed to touch.
+pub fn execute_with_store<S: CredentialStore>(
+    command: ModelsCommand,
+    output: OutputMode,
+    store: &S,
+) -> Result<CliOutcome, CliError> {
     // Every subcommand reads or writes the settings store / credential store
     // under the product data root; a relative PINVOU3_HOME would silently
     // resolve against the cwd.
     crate::support::sandbox_home()?;
     match command {
-        ModelsCommand::List => list(output),
+        ModelsCommand::List => list(store, output),
         ModelsCommand::Add {
             preset,
             name,
@@ -978,6 +994,7 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             metadata,
             set_active,
         } => add(
+            store,
             preset,
             &name,
             &model,
@@ -1000,6 +1017,7 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             yes,
             set_active,
         } => edit(
+            store,
             &id,
             &changes,
             &api_key_env,
@@ -1009,30 +1027,31 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             set_active,
             output,
         ),
-        ModelsCommand::Remove { id, yes } => remove(&id, yes, output),
+        ModelsCommand::Remove { id, yes } => remove(store, &id, yes, output),
         ModelsCommand::Use { id } => use_model(&id, output),
-        ModelsCommand::Show { id, reveal_key } => show(&id, reveal_key, output),
-        ModelsCommand::Test { id } => test_connection(&id, output),
+        ModelsCommand::Show { id, reveal_key } => show(store, &id, reveal_key, output),
+        ModelsCommand::Test { id } => test_connection(store, &id, output),
         ModelsCommand::ProbeLocal {
             url,
             api_key_env,
             model_id,
         } => probe_local(
+            store,
             url.as_deref(),
             api_key_env.as_deref(),
             model_id.as_deref(),
             output,
         ),
-        ModelsCommand::SettingsGet { key } => settings_get(key, output),
+        ModelsCommand::SettingsGet { key } => settings_get(store, key, output),
         ModelsCommand::SettingsSet { key, value } => settings_set(key, value, output),
-        ModelsCommand::SearchList => search_list(output),
+        ModelsCommand::SearchList => search_list(store, output),
         ModelsCommand::SearchSet {
             provider,
             api_key_env,
             clear,
             yes,
-        } => search_set(provider, &api_key_env, clear, yes, output),
-        ModelsCommand::SearchTest { provider } => search_test(provider, output),
+        } => search_set(store, provider, &api_key_env, clear, yes, output),
+        ModelsCommand::SearchTest { provider } => search_test(store, provider, output),
     }
 }
 
@@ -1040,10 +1059,10 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
 /// normalize metadata, re-read credential states from the credential store
 /// and strip plaintext keys before anything is rendered. Models without a
 /// `credential_ref` never touch the credential backend.
-fn safe_prefs() -> UserPrefs {
+fn safe_prefs<S: CredentialStore>(store: &S) -> UserPrefs {
     let mut prefs = UserPrefs::load();
     prefs.normalize_saved_model_metadata();
-    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
+    prefs.refresh_credential_states_with_store(store);
     prefs.sanitize_plaintext_api_keys();
     prefs
 }
@@ -1071,8 +1090,8 @@ fn optional_u32(value: Option<u32>) -> String {
     value.map_or_else(|| "none".to_owned(), |tokens| tokens.to_string())
 }
 
-fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let prefs = safe_prefs();
+fn list<S: CredentialStore>(store: &S, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let prefs = safe_prefs(store);
     let active_id = prefs.active_model().map(|model| model.id.as_str());
     let models = &prefs.advanced.saved_models;
     let entries: Vec<serde_json::Value> = models
@@ -1169,13 +1188,16 @@ fn secret_for_storage(raw: &str) -> &str {
 /// (`mark_missing`), a non-empty key is stored under the model's credential
 /// reference in the platform credential store and marked configured. The
 /// plaintext key never reaches settings.json (`clear_plaintext_key`).
-fn apply_new_model_credential(mut model: SavedModel) -> Result<SavedModel, String> {
+fn apply_new_model_credential<S: CredentialStore>(
+    store: &S,
+    mut model: SavedModel,
+) -> Result<SavedModel, String> {
     let key = secret_for_storage(&model.api_key).to_owned();
     if key.is_empty() {
         model.mark_missing();
     } else {
         let reference = model.credential_reference();
-        SystemCredentialStore::new()
+        store
             .set(&reference, &key)
             .map_err(|error| error.user_message())?;
         model.mark_configured(reference);
@@ -1184,7 +1206,8 @@ fn apply_new_model_credential(mut model: SavedModel) -> Result<SavedModel, Strin
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add(
+fn add<S: CredentialStore>(
+    store: &S,
     preset: ModelPreset,
     name: &str,
     model: &str,
@@ -1232,9 +1255,9 @@ fn add(
     let active_id = id.clone();
     let transaction = UserPrefs::update_transaction(|prefs| {
         require_known_vision_model(prefs, saved.vision_model_id.as_deref())?;
-        let saved = apply_new_model_credential(saved.clone())
+        let stored = apply_new_model_credential(store, saved.clone())
             .map_err(|error| format!("credential store unavailable: {error}"))?;
-        prefs.upsert_model(saved);
+        prefs.upsert_model(stored);
         if set_active {
             prefs.advanced.active_model_id = Some(active_id.clone());
         }
@@ -1245,7 +1268,7 @@ fn add(
         // failed; roll it back so no orphaned entry outlives the model.
         if stores_secret {
             let reference = saved.credential_reference();
-            let _ = SystemCredentialStore::new().delete(&reference);
+            let _ = store.delete(&reference);
         }
         return Err(prefs_error(error));
     }
@@ -1335,7 +1358,8 @@ fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
 ///   first would leave a configured-but-secretless model if the save failed;
 ///   an orphaned entry is the benign direction).
 #[allow(clippy::too_many_arguments)]
-fn edit(
+fn edit<S: CredentialStore>(
+    store: &S,
     id: &str,
     changes: &ModelEdit,
     api_key_env: &Option<String>,
@@ -1387,7 +1411,6 @@ fn edit(
             // closure so the save that follows either commits both or neither.
             (Some(key), _) if !key.is_empty() => {
                 let reference = updated.credential_reference();
-                let store = SystemCredentialStore::new();
                 let previous = store.get(&reference).map_err(|error| error.user_message());
                 written = Some((reference.clone(), previous));
                 store
@@ -1418,7 +1441,6 @@ fn edit(
     });
     if let Err(error) = transaction {
         if let Some((reference, previous)) = written {
-            let store = SystemCredentialStore::new();
             match previous {
                 // The rotation destroyed the old secret: put it back.
                 Ok(Some(old)) => {
@@ -1437,7 +1459,7 @@ fn edit(
         return Err(prefs_error(error));
     }
     if let Some(reference) = reference_to_delete
-        && let Err(error) = SystemCredentialStore::new().delete(&reference)
+        && let Err(error) = store.delete(&reference)
     {
         note!(
             "pinvou: warning: model {id} api key cleared from settings, but its keyring \
@@ -1482,7 +1504,12 @@ fn prefs_error(error: String) -> CliError {
 const REMOVE_LAST_MODEL_MESSAGE: &str =
     "cannot remove the last remaining model; add another model first";
 
-fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn remove<S: CredentialStore>(
+    store: &S,
+    id: &str,
+    yes: bool,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     // Structural min-1 classification: load the prefs through the same
     // `UserPrefs::load` path the transaction uses and reject up front, so
@@ -1517,7 +1544,7 @@ fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     })
     .map_err(prefs_error)?;
     if let Some(reference) = reference_to_delete {
-        if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+        if let Err(error) = store.delete(&reference) {
             note!(
                 "pinvou: warning: model {id} removed, but its keyring secret could not be \
                  deleted: {}",
@@ -1562,17 +1589,23 @@ fn find_model(prefs: &UserPrefs, id: &str) -> Result<SavedModel, CliError> {
 /// `resolve_saved_model_key`: read the reference out of the saved model and
 /// fetch it from the credential store. A model without `credential_ref` has
 /// no stored secret.
-fn resolve_saved_model_key(model: &SavedModel) -> Result<Option<String>, String> {
+fn resolve_saved_model_key<S: CredentialStore>(
+    store: &S,
+    model: &SavedModel,
+) -> Result<Option<String>, String> {
     let Some(reference) = &model.credential_ref else {
         return Ok(None);
     };
-    SystemCredentialStore::new()
-        .get(reference)
-        .map_err(|error| error.user_message())
+    store.get(reference).map_err(|error| error.user_message())
 }
 
-fn show(id: &str, reveal_key: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let prefs = safe_prefs();
+fn show<S: CredentialStore>(
+    store: &S,
+    id: &str,
+    reveal_key: bool,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let prefs = safe_prefs(store);
     let model = find_model(&prefs, id)?;
     let active_id = prefs.active_model().map(|active| active.id.as_str());
     // The only path where a secret value is ever printed; --reveal-key mirrors
@@ -1583,7 +1616,7 @@ fn show(id: &str, reveal_key: bool, output: OutputMode) -> Result<CliOutcome, Cl
             if model.credential_state == CredentialState::EnvOverride {
                 None
             } else {
-                Some(resolve_saved_model_key(&model).map_err(|error| {
+                Some(resolve_saved_model_key(store, &model).map_err(|error| {
                     CliError::failed(format!("credential_unavailable: {error}"))
                 })?)
             }
@@ -1739,8 +1772,12 @@ fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
 /// `models test <id>`: GET `{base_url}/models` with the saved credential,
 /// exactly like the GUI "test connection" button (8s timeout; Anthropic
 /// official endpoints authenticate with x-api-key + anthropic-version).
-fn test_connection(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let prefs = safe_prefs();
+fn test_connection<S: CredentialStore>(
+    store: &S,
+    id: &str,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let prefs = safe_prefs(store);
     let model = find_model(&prefs, id)?;
     // A keychain failure is a probe RESULT, not a crash: like every other
     // `models test` outcome it renders a single-line JSON row on stdout
@@ -1748,7 +1785,7 @@ fn test_connection(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     // of parsing stderr text. Parity by design: the GUI's connection test
     // resolves the stored key identically, so env-overridden keys (e.g.
     // DEEPSEEK_API_KEY) are not honored here either.
-    let key = match resolve_saved_model_key(&model) {
+    let key = match resolve_saved_model_key(store, &model) {
         Ok(key) => key.unwrap_or_default(),
         Err(error) => {
             let probe = connection_result(
@@ -1794,10 +1831,7 @@ fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
             return connection_result(false, "invalid_url", Some(error.to_string()), None);
         }
     };
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-    else {
+    let Some(client) = connection_client() else {
         return connection_result(false, "client_error", None, None);
     };
     let mut request = client.get(parsed_url.clone());
@@ -1881,32 +1915,56 @@ fn strip_v1_suffix(url: &str) -> String {
         .map_or_else(|| trimmed.to_owned(), str::to_owned)
 }
 
-/// The process-wide probe client, built once and reused — the CLI's
-/// equivalent of `core/model_endpoint.rs`'s `shared_probe_client`.
-///
-/// This is called from inside `get_json`, i.e. once per candidate request.
-/// Building a fresh `reqwest::blocking::Client` there threw away the
-/// connection pool AND spun up a new internal runtime thread for every one of
-/// the eight probe requests `probe-local` issues, so the mirror had strictly
-/// worse connection behaviour than the GUI it mirrors. A `OnceLock` keeps the
-/// same client (and therefore the same keep-alive pool) for the whole
-/// process; `reqwest::blocking::Client` is `Send + Sync`, so the parallel
-/// candidates in [`probe_candidates`] share it safely.
+/// One process-wide blocking client per probe lane, mirroring how the GUI
+/// reuses its `shared_probe_client`. Every network lane in this module runs
+/// through one of these ([`probe_client`], [`connection_client`],
+/// [`search_probe_client`]); constructing a `reqwest::blocking::Client` per
+/// call — as the sequential mirror did on `models test` and `settings search
+/// test` — threw away the connection pool AND spun up a new internal runtime
+/// thread for every request. The lanes differ only in timeout (and, for the
+/// local-server probes, redirects); a `OnceLock` per lane keeps each client
+/// (and its keep-alive pool) for the whole process, so the concurrent
+/// candidates in [`probe_candidates`] share one client safely
+/// (`reqwest::blocking::Client` is `Send + Sync`).
+fn singleton_client(
+    cell: &'static std::sync::OnceLock<Option<reqwest::blocking::Client>>,
+    configure: impl FnOnce(reqwest::blocking::ClientBuilder) -> reqwest::blocking::ClientBuilder,
+) -> Option<&'static reqwest::blocking::Client> {
+    cell.get_or_init(|| configure(reqwest::blocking::Client::builder()).build().ok())
+        .as_ref()
+}
+
+/// The local-server probe client (`models probe-local`), used from inside
+/// `get_json` by up to eight concurrent candidate requests.
 fn probe_client() -> Option<&'static reqwest::blocking::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
         std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(3))
-                // Local model servers have no business redirecting; following
-                // a 302 would let a loopback service turn the probe into an
-                // arbitrary remote request.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .ok()
-        })
-        .as_ref()
+    singleton_client(&CLIENT, |builder| {
+        builder
+            .timeout(Duration::from_secs(3))
+            // Local model servers have no business redirecting; following
+            // a 302 would let a loopback service turn the probe into an
+            // arbitrary remote request.
+            .redirect(reqwest::redirect::Policy::none())
+    })
+}
+
+/// The model-connection client (`models test`): 8 s timeout, matching the
+/// GUI's connection-test button.
+fn connection_client() -> Option<&'static reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
+        std::sync::OnceLock::new();
+    singleton_client(&CLIENT, |builder| builder.timeout(Duration::from_secs(8)))
+}
+
+/// The `settings search test` client: [`SEARCH_PROBE_TIMEOUT`] (15 s, the
+/// product's own search timeout) — the 8 s of `models test` is too tight for
+/// these endpoints, and a premature `timeout` on a perfectly good key would
+/// be a false negative.
+fn search_probe_client() -> Option<&'static reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
+        std::sync::OnceLock::new();
+    singleton_client(&CLIENT, |builder| builder.timeout(SEARCH_PROBE_TIMEOUT))
 }
 
 fn apply_bearer(
@@ -2151,7 +2209,7 @@ const LOCAL_KIND_UNKNOWN_AUTHENTICATED: &str = "unknown_authenticated";
 /// One round of candidate probes, as facts rather than as a decision.
 /// Mirrors `core/model_endpoint.rs`'s `ProbeCandidateHits` so the priority
 /// rule below can be exercised without a network.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct ProbeCandidateHits {
     docker_mgmt_shape: bool,
     ollama: bool,
@@ -2265,7 +2323,8 @@ fn select_local_server_kind(base_url: &str, bearer: Option<&str>) -> &'static st
 /// own comment warns that resolving a credential the caller did not name
 /// sends one model's key to an arbitrary endpoint. Naming the model is
 /// therefore required, and no credential stays the default.
-fn probe_local(
+fn probe_local<S: CredentialStore>(
+    store: &S,
     url: Option<&str>,
     api_key_env: Option<&str>,
     model_id: Option<&str>,
@@ -2290,7 +2349,7 @@ fn probe_local(
             None
         }
         None => {
-            let prefs = safe_prefs();
+            let prefs = safe_prefs(store);
             let model = prefs
                 .active_model()
                 .cloned()
@@ -2334,9 +2393,9 @@ fn probe_local(
     // misclassification this flag exists to prevent comes back.
     let named_model_key = match model_id {
         Some(id) => {
-            let prefs = safe_prefs();
+            let prefs = safe_prefs(store);
             let model = find_model(&prefs, id)?;
-            let key = resolve_saved_model_key(&model)
+            let key = resolve_saved_model_key(store, &model)
                 .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
                 .filter(|key| !key.trim().is_empty());
             if key.is_none() {
@@ -2364,7 +2423,7 @@ fn probe_local(
                     // Swallowing a keychain failure here would turn every
                     // signed request into a 401 and classify a working
                     // server as `generic` — surface it instead.
-                    resolve_saved_model_key(&model)
+                    resolve_saved_model_key(store, &model)
                         .map_err(|error| {
                             CliError::failed(format!("credential_unavailable: {error}"))
                         })?
@@ -2454,9 +2513,13 @@ fn optional_bool_str(value: Option<bool>) -> String {
 /// nested `UserPrefs` document, which has no `key = value` rendering, so it is
 /// always JSON. That is stated in `SETTINGS_USAGE` rather than left for a
 /// caller to discover from output that did not change.
-fn settings_get(key: Option<SettingsKey>, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn settings_get<S: CredentialStore>(
+    store: &S,
+    key: Option<SettingsKey>,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     let Some(key) = key else {
-        let prefs = safe_prefs();
+        let prefs = safe_prefs(store);
         // Serialized straight to the output string. The previous shape went
         // through `to_value` and then `to_string(...).unwrap_or_default()`,
         // which converted a serialization failure into an EMPTY stdout with
@@ -2468,7 +2531,7 @@ fn settings_get(key: Option<SettingsKey>, output: OutputMode) -> Result<CliOutco
             .map_err(|error| CliError::failed(format!("settings serialization failed: {error}")))?;
         return Ok(success(text));
     };
-    let prefs = safe_prefs();
+    let prefs = safe_prefs(store);
     let (human_value, json_value) = match key {
         SettingsKey::Theme => {
             let value = theme_str(prefs.theme);
@@ -2642,8 +2705,8 @@ fn search_prefs_json(prefs: &UserPrefs) -> serde_json::Value {
     })
 }
 
-fn search_list(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let prefs = safe_prefs();
+fn search_list<S: CredentialStore>(store: &S, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let prefs = safe_prefs(store);
     let json = search_prefs_json(&prefs);
     let credentials = prefs
         .search
@@ -2691,7 +2754,8 @@ fn search_list(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// `--clear` deletes the stored credential, so it requires `--yes` exactly
 /// like the model family's credential deletions (`models edit
 /// --clear-api-key`) and `models remove` (`require_yes`).
-fn search_set(
+fn search_set<S: CredentialStore>(
+    store: &S,
     provider: SearchProvider,
     api_key_env: &Option<String>,
     clear: bool,
@@ -2729,7 +2793,7 @@ fn search_set(
     // exist and still be referenced by prefs.
     let previous_secret = stored_reference
         .as_ref()
-        .map(|reference| SystemCredentialStore::new().get(reference));
+        .map(|reference| store.get(reference));
     let transaction = UserPrefs::update_transaction(|prefs| {
         // Only a caller actually SELECTING a provider switches the active
         // one. `--clear` is a credential operation: clearing a non-active
@@ -2747,7 +2811,7 @@ fn search_set(
             // a trailing newline was stored with it and every search request
             // 401'd while `settings search test` still reported
             // `configured` — see `secret_for_storage`.
-            SystemCredentialStore::new()
+            store
                 .set(&reference, secret_for_storage(key))
                 .map_err(|error| error.user_message())?;
             prefs
@@ -2776,7 +2840,6 @@ fn search_set(
             // outlives the prefs record (same standard as models add). An
             // overwrite restores the previous secret; a fresh store deletes.
             if let Some(reference) = stored_reference.as_ref() {
-                let store = SystemCredentialStore::new();
                 match previous_secret {
                     // A previous secret existed: the overwrite destroyed it,
                     // so the rollback must put it back.
@@ -2808,7 +2871,7 @@ fn search_set(
         // succeeds like `models remove`, instead of reporting a failure
         // whose only remedy (rerun) has nothing left to do.
         if let Some(reference) = reference_to_delete {
-            if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+            if let Err(error) = store.delete(&reference) {
                 note!(
                     "pinvou: warning: credential cleared from settings, but the keyring entry \
                      could not be deleted: {}",
@@ -2860,11 +2923,15 @@ fn search_set(
 /// The four API lanes are built from the request shapes the product's own
 /// search tool sends (`CodeWhale/crates/tui/src/tools/web_search.rs`), not
 /// from an invented API contract — see [`search_api_request`].
-fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn search_test<S: CredentialStore>(
+    store: &S,
+    provider: SearchProvider,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     let probe = if provider == SearchProvider::Bing {
         run_bing_probe()
     } else {
-        match resolve_search_key(provider) {
+        match resolve_search_key(store, provider) {
             Ok(Some(key)) if !key.trim().is_empty() => run_search_api_probe(provider, key.trim()),
             Ok(_) => SearchProbe {
                 ok: false,
@@ -2973,7 +3040,10 @@ fn search_api_endpoint(provider: SearchProvider) -> Option<&'static str> {
 /// `CodeWhale/crates/tui/src/tools/web_search.rs`: Tavily carries the key in
 /// the JSON body (`api_key`), Bocha, Metaso and Baidu carry it as
 /// `Authorization: Bearer <key>`. Bing has no API-key form and never reaches
-/// this function.
+/// this function. Test-only since the round-18 merge: the live probe lanes
+/// build through the parameterized `_at` forms; this fixed-endpoint wrapper
+/// survives for the unit tests that pin the per-provider shapes.
+#[cfg(test)]
 fn search_api_request(
     client: &reqwest::blocking::Client,
     provider: SearchProvider,
@@ -3057,10 +3127,7 @@ fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
 /// without network access — including the canned-body cases that cannot be
 /// pointed at a real provider's 200-with-error-code answer.
 fn run_search_api_probe_at(provider: SearchProvider, key: &str, endpoint: &str) -> SearchProbe {
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(SEARCH_PROBE_TIMEOUT)
-        .build()
-    else {
+    let Some(client) = search_probe_client() else {
         return SearchProbe {
             ok: false,
             code: "client_error",
@@ -3224,10 +3291,11 @@ fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static s
 }
 
 fn run_bing_probe() -> SearchProbe {
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-    else {
+    // Same lane client as the API providers: `settings search test` is one
+    // command, so its Bing and API lanes share one (15 s) timeout and one
+    // connection pool instead of the 8 s per-request client this lane used
+    // to build on every call.
+    let Some(client) = search_probe_client() else {
         return SearchProbe {
             ok: false,
             code: "client_error",
@@ -3284,7 +3352,10 @@ fn run_bing_probe() -> SearchProbe {
 /// CLI can load it is unconditionally `None`. Mirroring it would add a tier
 /// that can never fire and imply the CLI reads a plaintext key out of
 /// settings.json, which it must never do.
-fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
+fn resolve_search_key<S: CredentialStore>(
+    store: &S,
+    provider: SearchProvider,
+) -> Result<Option<String>, String> {
     for name in provider.env_key_names() {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim();
@@ -3294,7 +3365,7 @@ fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String
         }
     }
     let mut prefs = UserPrefs::load();
-    prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
+    prefs.refresh_credential_states_with_store(store);
     let Some(credential) = prefs.search.credentials.get(&provider) else {
         return Ok(None);
     };
@@ -3304,7 +3375,7 @@ fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String
     // A keychain failure is a credential-store problem, not "no key":
     // swallowing it here would degrade every signed request into a
     // misleading no_api_key report.
-    let value = SystemCredentialStore::new()
+    let value = store
         .get(&reference)
         .map_err(|error| error.user_message())?
         .map(|value| value.trim().to_owned())
@@ -3315,6 +3386,7 @@ fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinvou3_lib::platform::credential_store::CredentialError;
 
     /// The single normalization both credential lanes write through.
     ///
@@ -3495,6 +3567,25 @@ mod tests {
             mock.hits_for("/models"),
             0,
             "401 is an auth problem; switching paths cannot help, no retry"
+        );
+    }
+
+    /// The 4 MiB probe body cap ([`PROBE_BODY_CAP_BYTES`]) had no test: a
+    /// regression to an unbounded read would have passed CI. Over-cap is a
+    /// `Miss` like any other unusable answer, never a parse of the truncation.
+    #[test]
+    fn fetch_v1_models_over_the_body_cap_is_a_miss() {
+        let oversized = format!("{{\"data\":\"{}\"}}", "A".repeat(PROBE_BODY_CAP_BYTES + 1));
+        let mock = spawn_probe_mock(&[("/v1/models", 200, &oversized)]);
+        assert_eq!(
+            fetch_v1_models(&mock.base_url, None),
+            V1ModelsProbe::Miss,
+            "a body over PROBE_BODY_CAP_BYTES must be a Miss"
+        );
+        assert_eq!(
+            mock.hits_for("/v1/models"),
+            1,
+            "the request itself was fine; only the body was over the cap"
         );
     }
 
@@ -3690,8 +3781,14 @@ mod tests {
     #[test]
     fn probe_local_refuses_to_classify_an_endpoint_that_401s_everything() {
         let mock = spawn_probe_mock(&[("/v1/models", 401, "{}")]);
-        let outcome = probe_local(Some(&mock.base_url), None, None, OutputMode::Json)
-            .expect("a completed probe is a result, not a command failure");
+        let outcome = probe_local(
+            &SystemCredentialStore::new(),
+            Some(&mock.base_url),
+            None,
+            None,
+            OutputMode::Json,
+        )
+        .expect("a completed probe is a result, not a command failure");
         assert_eq!(
             outcome.exit_code,
             ExitCode::Failed,
@@ -3711,10 +3808,10 @@ mod tests {
         );
     }
 
-    /// One client for the whole process: the GUI memoizes `shared_probe_client`
-    /// and the mirror rebuilt a `reqwest::blocking::Client` — pool, internal
-    /// runtime thread and all — inside `get_json`, i.e. once per candidate
-    /// request.
+    /// One client per lane for the whole process: the GUI memoizes
+    /// `shared_probe_client` and the mirror rebuilt a
+    /// `reqwest::blocking::Client` — pool, internal runtime thread and all —
+    /// inside `get_json`, i.e. once per candidate request.
     #[test]
     fn probe_client_is_a_process_wide_singleton() {
         let first = probe_client().expect("probe client builds");
@@ -3723,6 +3820,92 @@ mod tests {
             std::ptr::eq(first, second),
             "every caller must share one client, not rebuild one per request"
         );
+    }
+
+    /// Every probe lane now reuses a process-wide singleton, not per-request
+    /// clients: `models test` and the api-key lanes of
+    /// `settings search test` used to construct a new client (connection
+    /// pool + internal runtime thread) on every call.
+    #[test]
+    fn every_probe_lane_reuses_one_client() {
+        assert!(std::ptr::eq(
+            connection_client().expect("connection client builds"),
+            connection_client().expect("connection client rebuilds")
+        ));
+        assert!(std::ptr::eq(
+            search_probe_client().expect("search client builds"),
+            search_probe_client().expect("search client rebuilds")
+        ));
+        // Different lanes have different timeouts, so they must be distinct
+        // clients; if two lanes shared one, one of the two timeouts would
+        // silently win.
+        assert!(!std::ptr::eq(
+            connection_client().expect("connection client"),
+            probe_client().expect("local probe client")
+        ));
+    }
+
+    /// Bounds the wall time of one `probe-local` round against HUNG local
+    /// listeners (bind, never accept, never answer): a probe request hangs
+    /// until the per-probe 3 s timeout fires. The seven candidates are
+    /// independent requests, so the concurrent fan-out in
+    /// `probe_candidates` is bounded by ONE timeout window (plus at most one
+    /// extra for `fetch_v1_models`'s path fallback); the sequential loop the
+    /// module had before cost 7 windows. The assertions therefore fail if
+    /// the probes regress to running one after another.
+    ///
+    /// Uses only loopback TCP listeners the test process itself binds — no
+    /// external network (the same rule the other probe tests follow).
+    #[test]
+    fn probe_candidates_round_is_bounded_by_one_timeout_window() {
+        /// One listener that accepts nothing: the request connects (kernel
+        /// backlog) and then waits for a response that never arrives, which
+        /// is exactly what a hung endpoint looks like to the client.
+        struct HungListener(std::net::TcpListener);
+        impl HungListener {
+            fn spawn() -> Self {
+                let listener =
+                    std::net::TcpListener::bind("127.0.0.1:0").expect("bind hung listener");
+                Self(listener)
+            }
+            fn base_url(&self) -> String {
+                format!(
+                    "http://{}",
+                    self.0.local_addr().expect("hung listener addr")
+                )
+            }
+        }
+        // Dropping the listener closes the backlog sockets, releasing the
+        // probe threads.
+
+        let hung = HungListener::spawn();
+        // The DMR probe fires only on port 12434; it will miss (refused) and
+        // return false, which is fine — every other candidate hangs its full
+        // timeout window against the listener.
+        let url = hung.base_url();
+        let started = std::time::Instant::now();
+        let hits = probe_candidates(&url, None);
+        let elapsed = started.elapsed();
+        // One timeout window is ~3 s. The fan-out must stay comfortably
+        // under TWO windows even on a loaded CI machine (an extra window is
+        // the floor for `fetch_v1_models`'s 404 fallback), while the
+        // sequential lower bound is 7 windows. Asserting < 5 s fails only
+        // when probes actually serialize (7 x 3 s = 21 s).
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "one probe round took {elapsed:?} against a hung endpoint; the candidates \
+             must share one timeout window, not run one after another"
+        );
+        // And the round must still have waited for the slowest single probe:
+        // a result that came back instantly would mean the probes failed for
+        // the wrong reason (e.g. an immediate error), not a timeout run.
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "the round returned in {elapsed:?}; the hung endpoint means nothing can \
+             answer before the timeout window"
+        );
+        assert_eq!(hits, ProbeCandidateHits::default());
+        drop(hung);
     }
 
     /// The four API providers send a REAL request built from the product's
@@ -3912,5 +4095,588 @@ mod tests {
                 "{url} is not loopback"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // The injectable credential store. The app passes `&dyn
+    // CredentialStore` into `save_model_inner`/`delete_model_inner` so the
+    // lane is testable against something other than the OS keyring
+    // (`RecordingCredentialStore` in the app's credential_store tests is the
+    // same idea); `execute_with_store` is this module's spelling of that
+    // seam. These tests exercise it with a recording store so the whole
+    // credential lane (store, roll back, reveal, clear, delete) finally has
+    // behavioural coverage — previously every call site inlined
+    // `SystemCredentialStore`, so nothing could observe any of it without
+    // touching the real keyring, which no test in this crate does.
+    // -------------------------------------------------------------------
+
+    /// A `CredentialStore` that answers `get` from an in-memory map, accepts
+    /// every write, and records each operation in a log a test can assert on.
+    struct RecordingStore {
+        state: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingStore {
+        fn new() -> Self {
+            Self {
+                state: std::sync::Mutex::new(std::collections::HashMap::new()),
+                log: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn entries(&self) -> Vec<String> {
+            let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.values().cloned().collect()
+        }
+
+        fn operations(&self) -> Vec<String> {
+            self.log.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
+    }
+
+    impl CredentialStore for RecordingStore {
+        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            self.log
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(format!("get:{}/{}", reference.service, reference.account));
+            Ok(self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&(reference.service.clone(), reference.account.clone()))
+                .cloned())
+        }
+
+        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            self.log
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(format!(
+                    "set:{}/{}={}",
+                    reference.service, reference.account, value
+                ));
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.insert(
+                (reference.service.clone(), reference.account.clone()),
+                value.to_owned(),
+            );
+            Ok(())
+        }
+
+        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+            self.log
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(format!(
+                    "delete:{}/{}",
+                    reference.service, reference.account
+                ));
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.remove(&(reference.service.clone(), reference.account.clone()));
+            Ok(())
+        }
+    }
+
+    /// The credential-lane tests all steer the product through the
+    /// process-wide environment (`PINVOU3_HOME`, the `--api-key-env`
+    /// variable), so they run one at a time under this lock — the same rule
+    /// the integration suites' `ENV_LOCK` enforces. Guards are held by
+    /// `TempHome`/`TempEnv` for their whole lifetime, so the lock covers the
+    /// full body of every test that constructs either.
+    ///
+    /// This is the lib test binary's SHARED env lock (the gaia tests in
+    /// `lib.rs` hold the same one through their `RestoreHomeGuard`), not a
+    /// models-local static: a per-module lock would serialize inside this
+    /// module and still race the gaia fixtures' `PINVOU3_HOME` swaps.
+    use crate::support::ENV_LOCK;
+
+    /// Points `PINVOU3_HOME` at a fresh temp dir for one test and restores
+    /// the previous value on drop — the RAII rule the integration tests'
+    /// `SandboxHome` applies; engine tests need the same isolation because
+    /// `UserPrefs::load` resolves the product root from the environment.
+    /// Holding `ENV_LOCK` for the lifetime serializes the whole test against
+    /// every other env-mutating test in this module.
+    struct TempHome(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+        std::path::PathBuf,
+    );
+
+    impl TempHome {
+        fn new(label: &str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-cli-models-unit-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create temp home");
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self(Some(guard), previous, root)
+        }
+
+        /// The root this test's `PINVOU3_HOME` points at, for tests that
+        /// need to shape the product data dir itself (e.g. force a commit
+        /// failure).
+        fn root(&self) -> &std::path::Path {
+            &self.2
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            if let Some(value) = self.1.take() {
+                unsafe { std::env::set_var("PINVOU3_HOME", value) };
+            } else {
+                unsafe { std::env::remove_var("PINVOU3_HOME") };
+            }
+            drop(self.0.take());
+            let _ = std::fs::remove_dir_all(&self.2);
+        }
+    }
+
+    /// Sets one environment variable for one test and restores it on drop.
+    /// Takes the `ENV_LOCK` for its lifetime like `TempHome`; constructing
+    /// one `TempHome` THEN a `TempEnv` (the common order) therefore works
+    /// with a single lock — `TempEnv` assumes the caller already holds it.
+    struct TempEnv(&'static str, Option<std::ffi::OsString>);
+
+    impl TempEnv {
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(name);
+            unsafe { std::env::set_var(name, value) };
+            Self(name, previous)
+        }
+    }
+
+    impl Drop for TempEnv {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => unsafe { std::env::set_var(self.0, value) },
+                None => unsafe { std::env::remove_var(self.0) },
+            }
+        }
+    }
+
+    /// A `RecordingStore` whose `set` fails from the first `set` on. Used to
+    /// pin the rollback arms for failures that happen AFTER the old secret
+    /// was destroyed by an overwrite — the only reachable "saved failed"
+    /// ordering in `add`/`edit`/`search_set`, since their in-closure
+    /// validations all run before any store write.
+    struct FailingSetStore {
+        inner: RecordingStore,
+    }
+
+    impl FailingSetStore {
+        fn new() -> Self {
+            Self {
+                inner: RecordingStore::new(),
+            }
+        }
+    }
+
+    impl CredentialStore for FailingSetStore {
+        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            self.inner.get(reference)
+        }
+
+        fn set(
+            &self,
+            _reference: &CredentialReference,
+            _value: &str,
+        ) -> Result<(), CredentialError> {
+            Err(CredentialError::new("keyring unavailable".to_owned()))
+        }
+
+        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+            self.inner.delete(reference)
+        }
+    }
+
+    /// The store / read-back / delete cycle the lane had NO coverage for:
+    /// `add` stores the secret trimmed, `show --reveal-key` reads it back
+    /// through the same seam, `edit --clear-api-key` deletes it after the
+    /// commit, and the persisted model is marked missing, not configured.
+    #[test]
+    fn credential_lane_stores_reveals_and_clears_through_the_injected_store() {
+        let _home = TempHome::new("lane");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-lane\n");
+        let store = RecordingStore::new();
+
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Lane",
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        // Stored trimmed (the trailing newline must not survive
+        // `secret_for_storage`), exactly one entry.
+        assert_eq!(store.entries(), vec!["sk-lane".to_owned()]);
+        assert_eq!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model persisted")
+                .credential_state,
+            CredentialState::Configured,
+            "a stored secret must mark the model configured"
+        );
+
+        // show --reveal-key reads back through the same injected store.
+        let outcome = show(&store, &id, true, OutputMode::Human).expect("show succeeds");
+        assert!(
+            outcome.stdout.contains("api_key: sk-lane"),
+            "reveal must read through the injected store: {}",
+            outcome.stdout
+        );
+        assert!(
+            outcome.stdout.contains("api_key_source: credential_store"),
+            "and name the store as its source: {}",
+            outcome.stdout
+        );
+
+        // clear: the keyring delete runs after the commit, through the seam.
+        let outcome = edit(
+            &store,
+            &id,
+            &ModelEdit::default(),
+            &None,
+            false,
+            true,
+            true,
+            false,
+            OutputMode::Human,
+        )
+        .expect("edit succeeds");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        assert!(
+            store
+                .operations()
+                .iter()
+                .any(|op| op.starts_with("delete:")),
+            "the clear path must delete through the injected store: {:?}",
+            store.operations()
+        );
+        assert!(store.entries().is_empty(), "the key must be gone");
+        assert_eq!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model kept")
+                .credential_state,
+            CredentialState::Missing,
+            "the cleared model must be marked missing, not configured"
+        );
+    }
+
+    /// The rollback `add` documents: a save that fails AFTER the secret was
+    /// stored must delete the just-stored secret. The in-closure validations
+    /// (`require_known_vision_model`, the store write itself) all run BEFORE
+    /// `apply_new_model_credential` stores, so the only reachable
+    /// "stored, then failed" ordering is a COMMIT failure in
+    /// `UserPrefs::update_transaction`'s `save_unlocked`. Forced
+    /// deterministically here: a directory named `settings.json` makes the
+    /// atomic write's rename fail (EISDIR/enotempty) while the closure —
+    /// which loads from a missing file into defaults — still succeeds and
+    /// stores the secret.
+    #[test]
+    fn add_rollback_deletes_the_orphaned_secret() {
+        let home = TempHome::new("add-rollback");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-rollback");
+        let store = RecordingStore::new();
+        // settings.json as a DIRECTORY: reads fall back to defaults (the path
+        // holds no file), but the commit's tmp->rename cannot replace a
+        // non-empty directory target, so `save_unlocked` fails after the
+        // closure already stored the secret.
+        std::fs::create_dir_all(home.root().join("settings.json"))
+            .expect("place the commit blocker");
+
+        let error = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Roll",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect_err("must fail: the settings commit fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let operations = store.operations();
+        let set_at = operations
+            .iter()
+            .position(|op| op.starts_with("set:"))
+            .expect("the key was stored before the failure");
+        assert!(
+            operations[set_at..]
+                .iter()
+                .any(|op| op.starts_with("delete:")),
+            "a failed save must roll the stored secret back: {operations:?}"
+        );
+        assert!(
+            store.entries().is_empty(),
+            "no orphaned credential may outlive the failed add"
+        );
+    }
+
+    /// A `store.set` that fails mid-rotation must fail the command (exit 1)
+    /// without rolling prefs back to a state that no longer matches the
+    /// keyring, and without the rollback being able to write either — the
+    /// failure stays honest instead of half-applied.
+    #[test]
+    fn edit_rotation_store_failure_fails_the_save_cleanly() {
+        let _home = TempHome::new("edit-store-failure");
+        let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
+        let store = RecordingStore::new();
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Fragile",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        let _new = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-new");
+
+        // The rotation's store write fails: the failure surfaces as a save
+        // error, the prefs record is untouched, and the old secret survives.
+        let failing = FailingSetStore::new();
+        let error = edit(
+            &failing,
+            &id,
+            &ModelEdit::default(),
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            false,
+            false,
+            false,
+            OutputMode::Human,
+        )
+        .expect_err("must fail: the keyring write fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("credential store unavailable"),
+            "the rotation failure is reported as a keyring failure: {error}"
+        );
+        // The old secret is intact and the model still points at it.
+        assert_eq!(store.entries(), vec!["sk-old".to_owned()]);
+        assert_eq!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model kept")
+                .credential_state,
+            CredentialState::Configured
+        );
+    }
+
+    /// The rotate-on-edit rollback: `--api-key-env` writes over the reference
+    /// that held the OLD secret, so a failed save must RESTORE the previous
+    /// value — deleting would destroy a secret prefs still references. The
+    /// rotation happens inside the closure and succeeds; the failure that
+    /// leaves the overwrite stranded is the COMMIT (`save_unlocked`), forced
+    /// here by making the product data dir non-writable: the closure still
+    /// reads settings.json fine, while the commit's `create_new` tmp write
+    /// fails. Unix-only (chmod), the same pattern as the code family's
+    /// undiffable-file test; the portable variant of commit failure is pinned
+    /// by `add_rollback_deletes_the_orphaned_secret` (EISDIR needs no
+    /// permissions).
+    #[cfg(unix)]
+    #[test]
+    fn edit_rotation_rollback_restores_the_previous_secret() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _home = TempHome::new("edit-rollback");
+        let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
+        let store = RecordingStore::new();
+
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Rot",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        let _new = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-new");
+        // The commit must fail while the load still succeeds: read-only on
+        // the product data dir blocks the atomic write's staging (`create_new`
+        // tmp file) without touching settings.json's readability.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+            .expect("make the data dir read-only");
+
+        // The rotation wrote the new key over the old one; the commit then
+        // fails, so the rollback must put the OLD value back.
+        let result = edit(
+            &store,
+            &id,
+            &ModelEdit::default(),
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            false,
+            false,
+            false,
+            OutputMode::Human,
+        );
+        // Restore write permission first so TempHome's cleanup can delete.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore the data dir");
+        let error = result.expect_err("must fail: the settings commit fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert_eq!(
+            store.entries(),
+            vec!["sk-old".to_owned()],
+            "rollback must RESTORE the previous secret, not delete it"
+        );
+    }
+
+    /// `remove --yes` deletes the model's key through the same seam after the
+    /// prefs save — the ordering the module documents and the app's
+    /// `delete_model_inner` implements identically.
+    #[test]
+    fn remove_deletes_the_key_through_the_injected_store() {
+        let _home = TempHome::new("remove-key");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-remove");
+        let store = RecordingStore::new();
+
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Bye",
+            "M",
+            "https://api.deepseek.com",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+
+        let outcome = remove(&store, &id, true, OutputMode::Human).expect("remove succeeds");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        assert!(
+            store
+                .operations()
+                .iter()
+                .any(|op| op.starts_with("delete:")),
+            "remove must delete the key through the injected store"
+        );
+        assert!(store.entries().is_empty(), "the key must be gone");
+        assert!(
+            UserPrefs::load().model_by_id(&id).is_none(),
+            "the model must be removed from prefs before the keyring delete"
+        );
+    }
+
+    /// `settings search set` stores through the seam with the same
+    /// normalization as `models add` (the round-16 finding stored the raw env
+    /// value, trailing newline and all), and `--clear` deletes afterwards.
+    #[test]
+    fn search_set_stores_and_clears_through_the_injected_store() {
+        let _home = TempHome::new("search-key");
+        let _key = TempEnv::set("METASO_API_KEY", "sk-search\n");
+        let store = RecordingStore::new();
+
+        let outcome = search_set(
+            &store,
+            SearchProvider::Metaso,
+            &Some("METASO_API_KEY".to_owned()),
+            false,
+            false,
+            OutputMode::Human,
+        )
+        .expect("set succeeds");
+        assert!(
+            outcome.stdout.contains("credential: configured"),
+            "{}",
+            outcome.stdout
+        );
+        assert_eq!(
+            store.entries(),
+            vec!["sk-search".to_owned()],
+            "the stored key must be trimmed like every other credential write"
+        );
+
+        let outcome = search_set(
+            &store,
+            SearchProvider::Metaso,
+            &None,
+            true,
+            true,
+            OutputMode::Human,
+        )
+        .expect("clear succeeds");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        assert!(
+            store
+                .operations()
+                .iter()
+                .any(|op| op.starts_with("delete:")),
+            "clear must delete through the injected store"
+        );
+        assert!(store.entries().is_empty(), "the search key must be gone");
     }
 }
