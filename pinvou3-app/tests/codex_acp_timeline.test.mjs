@@ -1059,7 +1059,7 @@ try {
     && codexView.includes('composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing')
     && codexView.includes('if (composerSendBlockers.noSendTarget) return false;')
     && !/pendingAttachment/.test((codexView.match(/function canSendNativeVoiceTask\(outgoing\) \{[\s\S]*?\n {2}\}/) || [''])[0])
-    && codexView.includes('sendTask: async outgoing => send(outgoing)'),
+    && codexView.includes("sendTask: async (outgoing, context) => send(outgoing, { voiceOperationId: context?.operationId })"),
   'Codex voice task mode must go through the shared hook, code-lane risk gate, and real send result before reporting success; pending attachments must reach send() so the failure is reported instead of faking success');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。

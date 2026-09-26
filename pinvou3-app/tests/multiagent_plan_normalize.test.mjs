@@ -799,17 +799,32 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     '澄清卡在 Web 只读会话呈现为锁定说明，不留"能点但必败"的按钮（复核 P2）',
   );
   const sessionsBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+  const rollbackStart = sessionsBridgeSource2.indexOf('catch (toggleError)');
+  const rollbackEnd = sessionsBridgeSource2.indexOf('await syncModeState();', rollbackStart);
+  assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart, '定位多智能体开关失败的物化回滚分支');
+  const rollback = sessionsBridgeSource2.slice(rollbackStart, rollbackEnd);
+  const cleanup = rollback.indexOf('await invoke("delete_session", { id: meta.id })');
+  const navigationGuard = rollback.indexOf('if (navToken !== sessionSwitchRequestToken || state.activeSessionId !== meta.id) return null;');
+  const reenterDraft = rollback.indexOf('enterDraft();');
+  const preserveIntent = rollback.indexOf('state.pendingDraftMultiAgent = true;');
+  assert.ok(cleanup >= 0 && navigationGuard > cleanup && reenterDraft > navigationGuard && preserveIntent > reenterDraft,
+    '必须先清理物化会话、确认没有真实导航，再回到同一草稿并保留多智能体意图');
   assert.match(
-    sessionsBridgeSource2,
-    /delete_session[\s\S]{0,400}enterDraft\(\)[\s\S]{0,200}pendingDraftMultiAgent = true/,
+    rollback.slice(preserveIntent),
+    /return null;/,
     '草稿开关落盘失败必须中止物化并保留意图——首条消息不得静默退化成普通对话（复核 P1）',
   );
   const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
+  const materializationStart = chatBridgeSource2.indexOf('const materialized = await ensureSession(draftOwner);');
+  const materializationEnd = chatBridgeSource2.indexOf('const sid = state.activeSessionId;', materializationStart);
+  assert.ok(materializationStart >= 0 && materializationEnd > materializationStart, '定位首条消息的物化及恢复分支');
+  const materialization = chatBridgeSource2.slice(materializationStart, materializationEnd);
   assert.match(
-    chatBridgeSource2,
-    /prefillComposer\(text,\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
-    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
+    materialization,
+    /restoreTaskDraft\(text, draftOwner\);[\s\S]*?return "restored";/,
+    '物化中止必须按原草稿或已创建会话恢复，返回 restored 阻止调用方二次恢复（issue #406）',
   );
+  assert.doesNotMatch(materialization, /prefillComposer\(/, '物化中止不得绕过归属校验直接向当前输入框追加');
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
     personasBridgeSource,
