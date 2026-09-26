@@ -677,13 +677,21 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &value)))
 }
 
+/// Progress sink `install_dependencies` calls for each adapter line. `deps.rs`
+/// keeps its identical alias private, so the shape is spelled out again here:
+/// `(package, index, total, line)`.
+type AsrInstallProgress = dyn Fn(&str, usize, usize, Option<&str>) + Sync;
+
 /// Linux install lane: gated behind `--yes` like `deps install` because it
 /// mutates the system — missing ffmpeg goes through the same public
 /// `features::dependencies::install_dependencies` call the GUI platform
-/// adapter makes (pkexec/apt), then the SenseVoice model is downloaded from
-/// the primary URL with the mirror as fallback (a `PINVOU3_ASR_MODEL_URL`
-/// override wins, like the app's `model_download_urls`). The download is
-/// staged, size-capped, and sha256-verified against the pinned digest.
+/// adapter makes (pkexec/apt), with the installer's progress hook wired to
+/// stderr `note!` lines exactly like `deps install` (a multi-minute `pkexec`
+/// run must not be indistinguishable from a hang), then the SenseVoice model
+/// is downloaded from the primary URL with the mirror as fallback (a
+/// `PINVOU3_ASR_MODEL_URL` override wins, like the app's
+/// `model_download_urls`). The download is staged, size-capped, and
+/// sha256-verified against the pinned digest.
 fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Platform check first so macOS/Windows keep their unsupported exit-1
     // message; the consent gate precedes every probe, install, and download
@@ -720,13 +728,43 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     })?;
     let mut steps: Vec<String> = Vec::new();
     if !ffmpeg_available() {
-        pinvou3_lib::features::dependencies::install_dependencies(vec!["ffmpeg".to_owned()], None)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "voice asr-install: ffmpeg: {}",
-                    crate::deps::translate_deps_error(&error.to_string())
-                ))
-            })?;
+        // The installer's second argument is the progress hook the GUI wires to
+        // `deps:install_progress`; passing `None` here made the whole ffmpeg
+        // step silent while `deps install` streams its progress — a `pkexec`
+        // run can block for minutes (or indefinitely waiting on a polkit agent
+        // that is not running), and silence makes that indistinguishable from
+        // a hang. Same closure shape as `deps.rs`, with the `[asr-install]`
+        // tag naming this lane.
+        //
+        // stderr, not stdout: `--output json` must stay a single serde_json
+        // line, and progress is not part of the result.
+        let progress = |package: &str, current: usize, total: usize, detail: Option<&str>| {
+            match detail {
+                // Vendor lines are third-party process output the CLI did not
+                // compose, so they get the same heuristic scrub every other
+                // lane applies to external command output before showing it.
+                Some(line) => crate::note!(
+                    "[asr-install] ({current}/{total}) {package}: {}",
+                    pinvou3_lib::platform::credential_store::redact_secret(line)
+                ),
+                None => crate::note!("[asr-install] ({current}/{total}) installing {package}"),
+            }
+        };
+        // Spelled out rather than inferred, like `deps.rs`: the adapter takes a
+        // trait object with a `Sync` bound, and the annotation makes the unsize
+        // coercion explicit. The closure captures nothing, so `Sync` holds
+        // trivially.
+        let progress: &AsrInstallProgress = &progress;
+        pinvou3_lib::features::dependencies::install_dependencies(
+            vec!["ffmpeg".to_owned()],
+            Some(progress),
+        )
+        .map_err(|error| {
+            CliError::failed(format!(
+                "voice asr-install: ffmpeg: {}",
+                crate::deps::translate_deps_error(&error.to_string())
+            ))
+        })?;
         steps.push("installed ffmpeg".to_owned());
     }
     if !model_available() {
@@ -963,6 +1001,24 @@ enum AsrPreflight {
     Reject(&'static str),
 }
 
+/// The `asr_engine_missing` message for a host left without any recognition
+/// lane. Shared by the pre-flight gate and the recognition dispatcher so the
+/// wording cannot drift. The remediation is platform-specific: on macOS the
+/// CLI has no install route at all (`asr-install` is Linux-only and macOS
+/// Speech is GUI-only), so the only lane it can ever gain is the external ASR
+/// CLI — the message names the same remediation the `asr-status` note does
+/// instead of pointing at an installer that does not exist for that host.
+fn asr_engine_missing_message() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "asr_engine_missing: local speech recognition is not installed \
+         (hint: `voice transcribe` needs the external ASR CLI (PINVOU3_ASR_CMD or \
+         `pinvou-asr` on PATH); macOS Speech is GUI-only; run `pinvou voice asr-status`)"
+    } else {
+        "asr_engine_missing: local speech recognition is not installed \
+         (hint: run `pinvou voice asr-status`)"
+    }
+}
+
 /// Decides whether the installed components give `transcribe` a lane at all.
 ///
 /// Kept pure and out of [`transcribe`] because the decisive combination
@@ -996,10 +1052,7 @@ fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
         }
         return AsrPreflight::RunOnRawWav;
     }
-    AsrPreflight::Reject(
-        "asr_engine_missing: local speech recognition is not installed \
-         (hint: run `pinvou voice asr-status`)",
-    )
+    AsrPreflight::Reject(asr_engine_missing_message())
 }
 
 fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1157,10 +1210,7 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
             "asr_engine_error: the local recognition engine failed and no external ASR CLI \
              is configured (hint: run `pinvou voice asr-status`)",
         )),
-        None => Err(CliError::failed(
-            "asr_engine_missing: local speech recognition is not installed \
-             (hint: run `pinvou voice asr-status`)",
-        )),
+        None => Err(CliError::failed(asr_engine_missing_message())),
     }
 }
 
@@ -2045,7 +2095,9 @@ fn postprocess(
 /// resolved into owned data first and the HTTP exchange itself runs on a
 /// dedicated OS thread with no runtime context. Same endpoints, same body
 /// (system+user messages, temperature 0, max_tokens, and the per-provider
-/// thinking controls for the common vendors).
+/// thinking controls for the deterministic vendor set: vllm, deepseek, kimi
+/// (model-gated), qwen, doubao, glm, mimo, minimax — the same presets the
+/// GUI's `voice_reasoning_dialect` decides without URL sniffing).
 #[allow(clippy::too_many_arguments)]
 fn call_postprocess_model(
     bridge: &pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge,
@@ -2238,10 +2290,17 @@ fn anthropic_stop_reason_says_truncated(response: &serde_json::Value) -> bool {
         == Some("max_tokens")
 }
 
-/// Subset of `apply_voice_reasoning_controls` / `voice_reasoning_dialect`
-/// covering the deterministic vendor branches (vllm, deepseek, qwen by model
-/// name); URL-sniffing lanes need crate-private helpers and are skipped
-/// (disclosed in the module docs).
+/// Deterministic subset of `apply_voice_reasoning_controls` /
+/// `voice_reasoning_dialect` (`app/commands/voice.rs`), covering every vendor
+/// the GUI decides from the preset alone: vllm, deepseek, kimi (model-gated),
+/// doubao, glm, mimo, minimax, and qwen (preset, provider, or model name).
+/// The GUI's remaining URL-sniffing lanes need the crate-private
+/// `core::reasoning_dialect` helpers and stay skipped (disclosed on
+/// [`call_postprocess_model`]); without them the qwen model-name fallback here is the
+/// last-resort arm, exactly where the GUI puts its sniffing fallback.
+///
+/// Branch order mirrors the GUI dispatch: a preset the GUI handles
+/// deterministically must never fall through to the model-name fallback.
 fn apply_postprocess_reasoning_controls(
     body: &mut serde_json::Value,
     preset: pinvou3_lib::platform::prefs::ModelPreset,
@@ -2256,6 +2315,32 @@ fn apply_postprocess_reasoning_controls(
         body["thinking"] = serde_json::json!({ "type": "disabled" });
         return;
     }
+    if preset == pinvou3_lib::platform::prefs::ModelPreset::Kimi {
+        // Same model gate as the GUI (`kimi_supports_disabled_thinking`):
+        // only kimi-k2.5/k2.6 accept the disable body; the thinking variants
+        // and k2.7 get no reasoning control at all.
+        if kimi_supports_disabled_thinking(model) {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+        return;
+    }
+    if matches!(
+        preset,
+        pinvou3_lib::platform::prefs::ModelPreset::Doubao
+            | pinvou3_lib::platform::prefs::ModelPreset::Glm
+            | pinvou3_lib::platform::prefs::ModelPreset::Mimo
+    ) {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+        return;
+    }
+    if preset == pinvou3_lib::platform::prefs::ModelPreset::Minimax {
+        // Same pair of fields as the GUI's `ReasoningDialect::Minimax`: the
+        // disable body plus the split marker that keeps reasoning out of
+        // `content`.
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+        body["reasoning_split"] = serde_json::json!(true);
+        return;
+    }
     let lower = model.to_ascii_lowercase();
     if provider == "qwen"
         || preset == pinvou3_lib::platform::prefs::ModelPreset::Qwen
@@ -2263,6 +2348,18 @@ fn apply_postprocess_reasoning_controls(
     {
         body["enable_thinking"] = serde_json::json!(false);
     }
+}
+
+/// Mirror of the app's
+/// `core::reasoning_dialect::kimi_supports_disabled_thinking` (`mod core` is
+/// private to the app crate, so the helper is replicated here and must track
+/// it): kimi-k2.5 / kimi-k2.6 accept disabled thinking; the thinking variants
+/// and k2.7 do not.
+fn kimi_supports_disabled_thinking(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
+        && !model.contains("thinking")
+        && !model.contains("k2.7")
 }
 
 #[cfg(test)]
@@ -2571,8 +2668,8 @@ mod review_fix_tests {
 mod tests {
     use super::{
         AsrLanes, AsrPreflight, OutputMode, PostprocessMode, anthropic_stop_reason_says_truncated,
-        asr_preflight, ffmpeg_missing_is_fatal_for, postprocess_http_exchange, postprocess_prompt,
-        transcribe_with,
+        apply_postprocess_reasoning_controls, asr_preflight, ffmpeg_missing_is_fatal_for,
+        postprocess_http_exchange, postprocess_prompt, transcribe_with,
     };
 
     /// The call site, not just the helper: against a loopback endpoint
@@ -2652,6 +2749,178 @@ content-length: {}\r\n\r\n{}",
         );
         // Sanity on the request that reached the wire: this is the Anthropic
         // Messages route with the version header, not the chat/completions one.
+    }
+
+    /// The postprocess lane must suppress thinking for the same deterministic
+    /// vendor presets the GUI does
+    /// (`app/commands/voice.rs::voice_reasoning_dialect`). Before this only
+    /// vllm/deepseek/qwen were covered, so a Kimi/Doubao/GLM/Minimax user
+    /// could get reasoning text past the single leading `<think>` strip
+    /// (`sanitize_postprocess_output`) in CLI output where the GUI suppresses
+    /// it at the source.
+    #[test]
+    fn reasoning_controls_cover_the_deterministic_vendor_presets() {
+        use pinvou3_lib::platform::prefs::ModelPreset;
+        let disabled = serde_json::json!({ "type": "disabled" });
+        // Doubao, GLM, and MiMo all get the plain thinking-disable body.
+        for preset in [ModelPreset::Doubao, ModelPreset::Glm, ModelPreset::Mimo] {
+            let mut body = serde_json::json!({ "model": "m" });
+            apply_postprocess_reasoning_controls(&mut body, preset, "openai_compatible", "m");
+            assert_eq!(
+                body["thinking"], disabled,
+                "{preset:?} must disable thinking"
+            );
+            assert!(
+                body.get("enable_thinking").is_none()
+                    && body.get("chat_template_kwargs").is_none()
+                    && body.get("reasoning_split").is_none(),
+                "{preset:?} must send the plain disable body only: {body}"
+            );
+        }
+        // Minimax sends the disable body plus the split marker, like the
+        // GUI's `ReasoningDialect::Minimax`.
+        let mut body = serde_json::json!({ "model": "m" });
+        apply_postprocess_reasoning_controls(
+            &mut body,
+            ModelPreset::Minimax,
+            "openai_compatible",
+            "m",
+        );
+        assert_eq!(body["thinking"], disabled);
+        assert_eq!(body["reasoning_split"], serde_json::json!(true));
+        // Kimi is model-gated like the GUI (`kimi_supports_disabled_thinking`):
+        // k2.5/k2.6 disable, thinking variants and k2.7 get no control.
+        for model in ["kimi-k2.6", "kimi-k2.5"] {
+            let mut body = serde_json::json!({ "model": model });
+            apply_postprocess_reasoning_controls(
+                &mut body,
+                ModelPreset::Kimi,
+                "openai_compatible",
+                model,
+            );
+            assert_eq!(body["thinking"], disabled, "{model} must disable thinking");
+        }
+        for model in ["kimi-k2.6-thinking", "kimi-k2.7", "moonshot-v1-8k"] {
+            let mut body = serde_json::json!({ "model": model });
+            apply_postprocess_reasoning_controls(
+                &mut body,
+                ModelPreset::Kimi,
+                "openai_compatible",
+                model,
+            );
+            assert!(
+                body.get("thinking").is_none() && body.get("enable_thinking").is_none(),
+                "{model} must send no reasoning control: {body}"
+            );
+        }
+        // Branch order mirrors the GUI dispatch: a preset the GUI handles
+        // deterministically never falls through to the qwen model-name arm.
+        let mut body = serde_json::json!({ "model": "doubao-qwen-tuned" });
+        apply_postprocess_reasoning_controls(
+            &mut body,
+            ModelPreset::Doubao,
+            "openai_compatible",
+            "doubao-qwen-tuned",
+        );
+        assert_eq!(
+            body["thinking"], disabled,
+            "a Doubao preset must not reach the qwen model-name fallback"
+        );
+        assert!(body.get("enable_thinking").is_none());
+        // The pre-existing arms are unchanged: the qwen fallback still fires
+        // for a custom preset fronting a qwen model name.
+        let mut body = serde_json::json!({ "model": "qwen3-32b" });
+        apply_postprocess_reasoning_controls(
+            &mut body,
+            ModelPreset::OpenaiCompatible,
+            "openai_compatible",
+            "qwen3-32b",
+        );
+        assert_eq!(body["enable_thinking"], serde_json::json!(false));
+    }
+
+    /// Wire-level parity for one new preset: on the OpenAI-compatible route a
+    /// Minimax request must carry `thinking: {"type":"disabled"}` and
+    /// `reasoning_split: true`, the exact fields the GUI's
+    /// `ReasoningDialect::Minimax` writes. Hermetic: the server is a
+    /// `std::net::TcpListener` on loopback, no external network.
+    #[test]
+    fn minimax_exchange_sends_the_gui_thinking_disable_fields() {
+        use std::io::{Read as _, Write as _};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            // Same read loop as the Anthropic test: the client holds the
+            // connection open awaiting the response, so parse on
+            // Content-Length instead of read-to-EOF.
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some((headers, body)) = text.split_once("\r\n\r\n") {
+                    let content_length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    });
+                    if let Some(length) = content_length {
+                        if body.len() >= length {
+                            break;
+                        }
+                    }
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let body = text.split_once("\r\n\r\n").expect("headers then body").1;
+            tx.send(serde_json::from_str(body).expect("the request body is JSON"))
+                .unwrap();
+            let json =
+                "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\
+content-length: {}\r\n\r\n{}",
+                json.len(),
+                json
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let (text, truncated) = postprocess_http_exchange(
+            format!("http://127.0.0.1:{port}"),
+            String::new(),
+            "openai_compatible".to_owned(),
+            pinvou3_lib::platform::prefs::ModelPreset::Minimax,
+            postprocess_prompt(PostprocessMode::Task),
+            "user".to_owned(),
+            "model".to_owned(),
+            PostprocessMode::Task,
+            false,
+            Duration::from_secs(10),
+        )
+        .expect("the mock exchange must succeed");
+        server.join().unwrap();
+        assert_eq!(text, "ok");
+        assert!(!truncated);
+        let body = rx.recv().expect("the server captured the request");
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({ "type": "disabled" }),
+            "Minimax must disable thinking on the wire like the GUI: {body}"
+        );
+        assert_eq!(
+            body["reasoning_split"],
+            serde_json::json!(true),
+            "Minimax must send the reasoning split marker: {body}"
+        );
     }
 
     #[test]
