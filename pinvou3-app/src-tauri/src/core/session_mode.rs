@@ -28,6 +28,12 @@ pub enum SessionMode {
 /// feature 依赖环（见 marketplace/scope.rs 头注释）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackDefaultPolicy {
+    /// Allow-all. Every mode has converged on DenyAll; this variant is kept
+    /// only for potential future modes (review #455) and is unreachable from
+    /// current code paths. Reintroduction criteria live in
+    /// docs/capability-governance.md §3.2 (round-11 m13): a future mode must
+    /// justify the default-allow consent model there and provide a DenyAll
+    /// migration path before any mode may use this variant again.
     AllowAll,
     DenyAll,
 }
@@ -80,10 +86,14 @@ impl SessionMode {
     }
 
     /// 该模式能力开关未初始化时的包默认策略（见 [`PackDefaultPolicy`]）。
-    /// plain 默认全开，code 默认全禁已装条目（外部能力显式开启）。
+    /// Deny-all: every mode disables installed packs by default (external
+    /// capabilities are always explicitly enabled; plain flipped from AllowAll
+    /// to DenyAll by the tool-switch convergence — existing users keep their
+    /// pre-upgrade switch state via scope.rs's read-time migration seeding, and
+    /// newly installed packs no longer enter any session by default).
     pub fn pack_default_policy(self) -> PackDefaultPolicy {
         match self {
-            Self::Plain => PackDefaultPolicy::AllowAll,
+            Self::Plain => PackDefaultPolicy::DenyAll,
             Self::Code => PackDefaultPolicy::DenyAll,
         }
     }
@@ -113,13 +123,16 @@ mod tests {
 
     #[test]
     fn pack_default_policy_per_mode() {
-        assert_eq!(
-            SessionMode::Plain.pack_default_policy(),
-            PackDefaultPolicy::AllowAll
-        );
-        assert_eq!(
-            SessionMode::Code.pack_default_policy(),
-            PackDefaultPolicy::DenyAll
-        );
+        // Every mode is DenyAll: external capabilities are default-off and
+        // explicitly enabled. Plain's existing installs keep their pre-upgrade
+        // switch state via scope.rs's read-time migration (see
+        // load_disabled_bundles_file_locked).
+        for mode in SessionMode::ALL {
+            assert_eq!(
+                mode.pack_default_policy(),
+                PackDefaultPolicy::DenyAll,
+                "{mode:?} must default to fully disabled"
+            );
+        }
     }
 }

@@ -55,6 +55,11 @@ pub async fn set_bundle_visibility(
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
+    // The visibility write shares the fail-loud contract restored by round-19
+    // MAJOR 1: a save failure propagates via `??` (the frontend rolls the
+    // toggle back and alerts) instead of degrading to a log line. The
+    // cross-process RMW and stale-snapshot concerns stay with the #515 rework
+    // (the caller-visible failure shape is unchanged).
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
@@ -70,6 +75,89 @@ pub async fn set_bundle_visibility(
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
     Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+}
+
+/// Outcome of `enable_marketplace_packages` (round-11 m11): an explicit
+/// shape replaces the previous `Ok(blocked)` overload where a non-empty Ok
+/// doubled as "refused, nothing enabled, hot-refresh skipped" — an implicit
+/// contract that held only because both JS callers checked the payload.
+#[derive(serde::Serialize)]
+pub struct EnablePackagesOutcome {
+    /// The batch was applied and persisted (hot-refresh followed).
+    pub enabled: bool,
+    /// Non-empty = refused: these ids sit in the scope's **explicit** user
+    /// switch state (install-default offs lift freely, round-11 B2); nothing
+    /// was enabled and no hot-refresh ran. The caller must surface the ids.
+    pub blocked: Vec<String>,
+    /// Non-empty (round-13 m3) = requested ids that matched no entry in the
+    /// DenyAll expansion — likely a concurrent install that had not committed
+    /// when the expansion snapshotted, or an unknown id. Everything else in
+    /// the batch may still have applied; the caller must not present the
+    /// opt-in of these ids as done.
+    ///
+    /// State-space caveat (round-20 minor 2): only the uninitialized
+    /// (expansion) arm can detect these. In an **initialized** scope an
+    /// unknown id is treated as already-on and is NOT reported — both lists
+    /// come back empty and `enabled` reads true while the id matched nothing.
+    /// Fail-closed in effect (an uninstalled pack is off by default anyway);
+    /// do not cite an empty `not_applied` as coverage evidence there.
+    pub not_applied: Vec<String>,
+}
+
+// Round-16 minor 9: the IPC shape carries `enabled`; the domain shape
+// (`features::marketplace::scope::EnablePackagesOutcome`) does not. The
+// mapping lives in this single conversion so the two structs cannot drift:
+// `enabled` is honest about coverage — a refused batch or any id that matched
+// nothing (not_applied) means the batch did not fully apply, so it is not
+// reported as a plain success; the caller surfaces blocked/not_applied. The
+// initialized-arm caveat on `not_applied` applies here unchanged: an empty
+// `not_applied` from an initialized scope is "no signal", not "coverage
+// proven".
+impl From<crate::features::marketplace::scope::EnablePackagesOutcome> for EnablePackagesOutcome {
+    fn from(value: crate::features::marketplace::scope::EnablePackagesOutcome) -> Self {
+        let blocked = value.blocked;
+        let not_applied = value.not_applied;
+        Self {
+            enabled: blocked.is_empty() && not_applied.is_empty(),
+            blocked,
+            not_applied,
+        }
+    }
+}
+
+/// Batch package enabling for user actions such as scene opt-in (review #455
+/// R7-M3): the backend performs "read the currently effective disabled set →
+/// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
+/// single critical section; the frontend no longer does a whole-table
+/// read-modify-write (a cross-IPC compound operation would overwrite a
+/// concurrent composer toggle with a stale snapshot, and fail-open would
+/// resurrect a package the user explicitly turned off). After persisting, it
+/// hot-refreshes on the same path as `set_disabled_connectors`: rewrite
+/// online session composite skills directories + the tool allowlist +
+/// execpolicy rulesets, taking effect in the current conversation turn.
+#[tauri::command]
+pub async fn enable_marketplace_packages(
+    package_ids: Vec<String>,
+    scope: Option<String>,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<EnablePackagesOutcome, String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    // The inner `?` is the persist failure (round-12 review): the command must
+    // fail rather than report `enabled: true` for state that never reached
+    // disk — the frontend renders its failure notice from the rejected invoke.
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
+    })
+    .await
+    .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
+    if outcome.blocked.is_empty() {
+        // Identical finalization to the other switch writers (round-16 minor
+        // 9: previously re-inlined the same seven statements). Skipped only
+        // when the batch was refused (round-10 Major 2) and no state changed.
+        refresh_tools_and_broadcast(&app, pool.inner()).await;
+    }
+    Ok(outcome.into())
 }
 
 // ---------------------------------------------------------------------------

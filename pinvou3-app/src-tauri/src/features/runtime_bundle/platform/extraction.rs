@@ -496,7 +496,20 @@ impl Pinvou3Bundle {
                 // 两段式同型)。uninstall 成功时其内部清理已覆盖本步,这次幂等复扫是
                 // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
                 // 留着会让未来同名重装被误隐藏(#522)。
-                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
+                //
+                // Fail-visible (round-17 minor 1): the helper propagates persist
+                // failures (#571) — a stale entry would resurrect the retired
+                // tool inside the scope. This cleanup segment as a whole stays
+                // best-effort (the outer signature is io::Error and the
+                // surroundings are `let _ =`), so a failure is logged loudly
+                // instead of aborting the retirement.
+                if let Err(e) =
+                    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id)
+                {
+                    log::warn!(
+                        "[runtime-bundle] persisting the post-retirement switch/visibility cleanup for {tool_id} failed (a stale entry would resurrect the retired tool in the scope): {e}"
+                    );
+                }
                 if let Some(error) = uninstall_error {
                     // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
                     // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。

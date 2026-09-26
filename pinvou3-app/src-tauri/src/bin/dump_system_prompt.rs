@@ -18,8 +18,17 @@ use deepseek_tui::prompts::{self, PromptSessionContext};
 use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 fn main() -> Result<()> {
-    // session id 走临时值,避免污染真实 sessions/
+    // The session id is a throwaway value; note (review #455 R16 minor 5) that
+    // the bridge's ensure_dirs still writes sessions/__dump_system_prompt__/workspace
+    // into the real home, which is upgrade-signal evidence for a fresh home — the
+    // first-read freeze below must therefore run BEFORE the boot.
     let sid = "__dump_system_prompt__";
+
+    // Same order as the GUI/windowless hosts: freeze the fresh-vs-upgraded
+    // migration verdict before bridge.boot()'s first-boot self-writes
+    // (ensure_dirs/default settings.json), so the dev tool's first touch of a
+    // fresh home cannot persist a polluted verdict (review #455 blocking item 3).
+    let _ = pinvou3_lib::features::marketplace::load_disabled_bundles();
 
     let bridge = Pinvou3Bridge::boot()?;
     let cfg = bridge.build_engine_config_for_session(sid);

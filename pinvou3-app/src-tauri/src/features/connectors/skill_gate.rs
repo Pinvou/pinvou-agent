@@ -69,7 +69,18 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
+            // Fail-visible persist (review #455 R13-B3, preserved through the
+            // round-19 merge): swallowing the error would let the connector go
+            // live with zero consent; the error text carries recovery guidance.
+            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
+                |e| {
+                    log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
+                    format!(
+                        "{} connected, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
+                        self.id
+                    )
+                },
+            )?;
         }
         Ok(json!({ "visible": show }))
     }

@@ -265,8 +265,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // credential_store.get is a keyring/file short read with no long IO
         // or await).
         let mut values = secret_values_write();
+        // Round-13 m4: an unreadable installed.json must not clear the
+        // registry — every `${ENV}` placeholder would stay unresolved for the
+        // whole process lifetime after a transient permissions hiccup (the
+        // swallowing `installed_ids()` class). Keep the previous values on
+        // Err; the next bridge boot (or a successful write) rebuilds.
+        let installed = match self.try_installed_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!(
+                    "[marketplace] {error}; keeping the previous secret registry instead of clearing it"
+                );
+                return Ok(());
+            }
+        };
         values.clear();
-        for tool_id in self.installed_ids() {
+        for tool_id in installed {
             let Some(manifest) = self.load_manifest(&tool_id) else {
                 continue;
             };

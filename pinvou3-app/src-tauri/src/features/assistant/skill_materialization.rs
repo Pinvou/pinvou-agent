@@ -149,9 +149,13 @@ fn collect_source_skills(
 /// 禁用集的技能**目录名**（execpolicy 硬拦截与物化排除共用口径）。
 ///
 /// scope 收敛后：单一禁用集是**包 id**（`disabled_bundles.json`），companion 联动
-/// 不再借道 `companion_skills` 跨查询——包模型（`bundle::skill_owner_package`）按
-/// 条件认领把 companion 技能归属到其 MCP/CLI 包（所属包已装才归包，否则归技能
-/// 自身；与迁移层同口径，见 skill_marketplace），禁用包即排除其全部技能目录。
+/// no longer routes through `companion_skills` cross-queries — disabled/hidden
+/// entries are normalized via `to_package_id` on both write and read (the
+/// gating mapping `bundle::skill_gating_owner` since R17-MAJOR1: conditional
+/// claim plus physical-layout fallback; an undeclared nested skill must
+/// resolve to its physical owner pack, else it enters every scope with zero
+/// consent and no row to turn it off). A disabled pack excludes its full
+/// skill-dir set.
 /// 因此这里枚举所有技能来源目录，凡属主包在禁用集内的目录名纳入排除集。
 pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String> {
     // 不可用集 = 开关关(disabled) + 不可见(hidden)：两套门控对物化/execpolicy 都是排除。
@@ -171,7 +175,7 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            let owner = crate::features::marketplace::bundle::skill_owner_package(&name);
+            let owner = crate::features::marketplace::bundle::skill_gating_owner(&name);
             if disabled_packages.contains(&owner) {
                 names.insert(name);
             }
@@ -395,6 +399,11 @@ mod tests {
     #[test]
     fn standalone_companion_named_skill_survives_uninstalled_connector() {
         with_temp_home("pinvou3-skillscope", || {
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test pins the conditional-claim shape (a companion whose
+            // connector is not installed stays a standalone pure-skill pack),
+            // so plain is explicitly initialized to all-on.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             write_tool_manifest(
                 "gongwen",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
@@ -412,6 +421,7 @@ mod tests {
             assert!(
                 crate::features::marketplace::MarketplaceManager::new()
                     .unavailable_companion_skills()
+                    .unwrap()
                     .contains(&"government-writing".to_string())
             );
 
@@ -453,14 +463,53 @@ mod tests {
         });
     }
 
-    /// code scope 未初始化「默认全禁」覆盖 CLI 连接器技能：lark-* 不注册在
-    /// 技能市场清单（连接门控直接解包），仍被 code 默认禁用兜住；plain 不受影响。
+    /// With neither plain nor code scope initialized, the deny-all default
+    /// (the every-mode DenyAll convergence) covers CLI connector skills too:
+    /// lark-* are not registered in the skill-marketplace listing (the
+    /// connection gate unpacks them directly) yet are still held by the
+    /// default-disable fallback; explicitly initializing the scope restores them.
+    #[test]
+    fn uninitialized_scopes_default_disable_cli_connector_skills() {
+        with_temp_home("pinvou3-skillscope", || {
+            for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
+                write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
+            }
+
+            for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+                let enabled = enabled_skills_for(scope, None);
+                assert!(
+                    !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                    "lark-* skills must be fully denied by default while {scope:?} is uninitialized"
+                );
+            }
+            // plain explicitly initialized to all-on → lark-* restored.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
+            assert_eq!(
+                enabled_plain
+                    .iter()
+                    .filter(|(n, _)| n.starts_with("lark-"))
+                    .count(),
+                crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
+                "the plain scope must be unaffected"
+            );
+        });
+    }
+
+    /// Main's #563 test, adapted to the DenyAll default (round-17 merge): the
+    /// code scope uninitialized disables the CLI connector skills; plain
+    /// admits them once the user opts in (empty disable list). On the
+    /// pre-DenyAll tree plain needed no opt-in; here the contrast is
+    /// explicit-opt-in vs default-off.
     #[test]
     fn code_scope_default_disables_cli_connector_skills() {
         with_temp_home("pinvou3-skillscope", || {
             for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
+            // The user opts plain in (empty disable list); code stays
+            // uninitialized (DenyAll default).
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
 
             let enabled = enabled_skills_for(ConnectorScope::Code, None);
             assert!(
@@ -474,7 +523,7 @@ mod tests {
                     .filter(|(n, _)| n.starts_with("lark-"))
                     .count(),
                 crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
-                "plain scope 不应受影响"
+                "all lark-* skills must be included once plain is explicitly enabled"
             );
         });
     }
@@ -564,6 +613,10 @@ mod tests {
     fn enabled_skills_respect_first_wins_and_scope_disabled() {
         with_temp_home("pinvou3-skillscope", || {
             seed_sources();
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test focuses on first-wins and switch semantics, so plain is
+            // explicitly initialized to all-on.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             // 默认（无禁用）：user 覆盖 bundle 同名 + 手放技能入集
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             let names: HashSet<&str> = enabled.iter().map(|(n, _)| n.as_str()).collect();
@@ -591,6 +644,10 @@ mod tests {
     fn materialize_then_rewrite_is_idempotent() {
         with_temp_home("pinvou3-skillscope", || {
             seed_sources();
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test focuses on materialization idempotence, so plain is
+            // explicitly initialized to all-on.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
             let sid = "session-test-1";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
             let dir = paths::session_skills_dir(sid);

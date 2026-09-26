@@ -532,7 +532,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
+    // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
     assert!(
         !load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
@@ -540,11 +540,15 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         "卸载应从禁用集清除残留 id"
     );
     install_marketplace_skill_sync("visualizer").unwrap();
+    // With every mode DenyAll (tool switches default-off), a reinstall counts
+    // as a fresh install: initialized scopes keep it off by default until the
+    // user explicitly enables it (matching the connectors' fresh-install
+    // default-off semantics).
     assert!(
-        sm::enabled_skills_for(ConnectorScope::Plain, None)
+        crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
-            .any(|(n, _)| n == "visualizer"),
-        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
+            .any(|id| id == "visualizer"),
+        "after reinstall the plain scope is disabled by default (DenyAll convergence semantics)"
     );
 
     match previous {

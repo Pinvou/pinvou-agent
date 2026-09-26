@@ -661,10 +661,11 @@ impl Pinvou3Bridge {
         // the incoming value itself, no replacement needed). Scope follows
         // mode — a plain session with a bound
         // working directory still belongs to the plain scope and never borrows the
-        // code scope. Note that on this fork an uninitialized plain scope = AllowAll
-        // (connectors/bundles on by default): bound sessions compensate with
-        // Plan-first plus a one-shot YOLO confirm card; DenyAll tightening is
-        // tracked separately.
+        // code scope. An uninitialized plain scope falls back to DenyAll (after
+        // the review #455 full convergence it matches the code posture: external
+        // capabilities off by default, enabled explicitly); plain sessions with
+        // a bound working directory still layer Plan-first plus a one-shot YOLO
+        // confirm card as the execution-plane defense.
         let scope = policy.mode();
         if scope != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::unavailable_tool_names();
@@ -3020,8 +3021,8 @@ mod tests {
         bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
 
         // Mode identity stays Plain; connector/skill scopes follow the mode (no
-        // borrowing the code scope; on this fork uninitialized plain = AllowAll,
-        // DenyAll tightening tracked separately).
+        // borrowing the code scope; uninitialized plain falls back to DenyAll —
+        // same posture as code since the #455 convergence).
         assert_eq!(
             bridge.session_policy("sess-plain-bound").mode(),
             SessionMode::Plain
@@ -3613,12 +3614,13 @@ mod tests {
     }
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
-    /// Binary deny rules generated for scope-disabled CLI connectors — with code
-    /// uninitialized, all 4 built-in CLI binaries are denied by default (external
-    /// capability must be enabled explicitly); plain is allow-by-default and only
-    /// explicitly disabled ones remain denied. Also pins the base execution
-    /// semantics: deny hard-blocks direct, chained, and wrapper forms (even
-    /// AskForApproval::Never is intercepted).
+    /// CLI connectors generate binary deny rules — an uninitialized plain scope
+    /// falls back to DenyAll (all off by default; same posture as code after
+    /// the review #455 convergence); uninitialized code denies all 4 built-in
+    /// CLI binaries by default; once enabled explicitly, only the disabled
+    /// ones remain. Also pins the base execution semantics: deny hard-blocks
+    /// direct, chained, and wrapper forms (even AskForApproval::Never is
+    /// intercepted).
     #[test]
     fn cli_deny_ruleset_follows_scope_disabled_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3635,24 +3637,55 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain 无禁用 → 无规则。
-        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-        assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
+        // Deny command list when all 4 built-in CLI binaries are denied (bare
+        // name plus one .exe/.cmd variant each, R4).
+        let all_four_cli_denied = [
+            "dws",
+            "dws.cmd",
+            "dws.exe",
+            "lark-cli",
+            "lark-cli.cmd",
+            "lark-cli.exe",
+            "tmeet",
+            "tmeet.cmd",
+            "tmeet.exe",
+            "wecom-cli",
+            "wecom-cli.cmd",
+            "wecom-cli.exe",
+        ];
+        fn denied_bins(rs: &codewhale_execpolicy::Ruleset) -> Vec<&str> {
+            let mut bins: Vec<&str> = rs
+                .ask_rules
+                .iter()
+                .filter_map(|r| r.command.as_deref())
+                .collect();
+            bins.sort_unstable();
+            bins
+        }
 
-        // plain 禁 feishu → 仅 lark-cli deny（裸名 + .exe/.cmd 变体各一条，R4）。
+        // plain uninitialized → after the DenyAll convergence, same semantics as
+        // code: all 4 built-in CLIs denied by default. Goes through the
+        // production composition entry (review: `cli_deny_ruleset` was deleted
+        // as a test-facing helper); the empty safety injection plus an empty
+        // temp home (no installed bundle skills) leaves CLI rules only.
+        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
+        assert_eq!(
+            denied_bins(&rs),
+            all_four_cli_denied,
+            "an uninitialized plain denies the built-in CLI packs by default (the DenyAll convergence)"
+        );
+
+        // plain explicitly disables only feishu → just the lark-cli deny remains.
         crate::features::marketplace::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
         )
         .unwrap();
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-        let mut cmds: Vec<&str> = rs
-            .ask_rules
-            .iter()
-            .filter_map(|r| r.command.as_deref())
-            .collect();
-        cmds.sort_unstable();
-        assert_eq!(cmds, ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]);
+        assert_eq!(
+            denied_bins(&rs),
+            ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]
+        );
         assert!(
             rs.ask_rules
                 .iter()
@@ -3662,29 +3695,7 @@ mod tests {
         // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
         // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
-        let mut bins: Vec<&str> = rs
-            .ask_rules
-            .iter()
-            .filter_map(|r| r.command.as_deref())
-            .collect();
-        bins.sort_unstable();
-        assert_eq!(
-            bins,
-            [
-                "dws",
-                "dws.cmd",
-                "dws.exe",
-                "lark-cli",
-                "lark-cli.cmd",
-                "lark-cli.exe",
-                "tmeet",
-                "tmeet.cmd",
-                "tmeet.exe",
-                "wecom-cli",
-                "wecom-cli.cmd",
-                "wecom-cli.exe"
-            ]
-        );
+        assert_eq!(denied_bins(&rs), all_four_cli_denied);
         assert!(
             rs.ask_rules
                 .iter()
@@ -3851,11 +3862,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Channel 3 data source: script directories of scope-disabled skills generate
-    /// deny rules (code uninitialized denies all by default; on this fork
-    /// uninitialized plain = AllowAll, producing no deny rules — DenyAll tightening
-    /// is tracked separately); rules disappear once the skill is enabled; shares one
-    /// ruleset with the CLI binary deny.
+    /// Channel 3 data source: script directories of scope-disabled skills
+    /// (plain/code uninitialized both deny all by default) generate deny
+    /// rules; the rules disappear once the skill is enabled; they coexist with
+    /// the CLI binary deny in the same ruleset.
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3902,32 +3912,40 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // With no scope disablement: no CLI binary rules, no skill script
-        // rules (`run.py` style). Safety-net rules (command-only since the
-        // v3 rollback removed the File path face) are always present;
-        // covered by the safety_deny_rules tests.
-        let plain_ruleset = bridge.scope_deny_ruleset("sess-plain");
+        // After the all-mode DenyAll convergence, plain's disabled-skill →
+        // script deny rules match the code semantics. Drive it here with
+        // explicit initialization (expanding the uninitialized DenyAll
+        // fallback depends on when the process env is read, which is
+        // non-deterministic under the parallel suite; the fallback semantics
+        // themselves are covered by the marketplace plain_deny_all_* tests).
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            ConnectorScope::Plain,
+            &["my-skill".to_string()],
+        )
+        .unwrap();
+        let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
-            plain_ruleset
-                .ask_rules
+            rs.ask_rules
                 .iter()
-                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
+            "after plain disables an installed skill, the script deny ruleset must be present"
         );
+        // Since the v3 rollback, safety-net rules are command-only (the File
+        // path face was removed): mkfs-style fallback denies are always
+        // present, coexisting with the script rules in the same ruleset.
         assert!(
-            plain_ruleset.ask_rules.iter().any(|r| r.path.is_none()
+            rs.ask_rules.iter().any(|r| r.path.is_none()
                 && r.action == codewhale_execpolicy::PermissionAction::Deny
                 && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
             "safety-net command rules should always be present"
         );
-        // The same ruleset must also carry the safety face on the promoted
-        // (denied_prefixes) channel — the channel that actually matches the
-        // wildcard/flag rules at runtime. Pins rule presence AND promotion
-        // independently, so a promotion regression gets its own signal here.
+        // The promotion channel (denied_prefixes) must carry the safety-net
+        // rules too — it is the channel that actually matches wildcard/flag
+        // rules at runtime; rule presence and promotion are each pinned
+        // separately so a promotion regression gets an independent signal
+        // (assertions kept from the #445 version, review #455 R9 nit).
         assert!(
-            plain_ruleset
-                .denied_prefixes
-                .iter()
-                .any(|p| p.starts_with("mkfs")),
+            rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
             "safety-net rules should be promoted into denied_prefixes"
         );
 

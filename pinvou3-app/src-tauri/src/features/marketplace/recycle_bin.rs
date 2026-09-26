@@ -1,3 +1,12 @@
+// architecture-guard: allow-target-cfg -- the unix regression tests in this
+// file (restore_consent_gate_persist_failure_is_retryable, the round-13 B2
+// restore rollback, corrupt_recovery_pins_no_sibling_rule_and_memo,
+// restore_secrets_pack_into_uninitialized_scope_persists_consent) need
+// read-only-home (0o555 directory) fixtures; test-only
+// inline cfg(unix)+PermissionsExt, same exemption precedent as
+// package_export.rs / marketplace/mod.rs (review #455 R9-M5). A write probe
+// guards against running as root (loud ROOT-SKIP marker, round-11 m12);
+// Windows is covered by the POSIX-independent restore paths.
 //! 插件中心回收站 —— Upload 来源包卸载的软删除层（marketplace-unification §4 修订）。
 //!
 //! 背景：上传包是用户唯一副本（不可重释放）。此前两条卸载路径行为割裂：
@@ -322,8 +331,28 @@ impl RecycleBin {
             ));
         }
         let entry = file.entries.remove(index);
-        // 目录已搬回，清单移除失败不搬回目录（恢复主操作已成功），fail loud 到错误。
-        save_locked(&self.file, &file)?;
+        // A failed manifest persist must be compensated (round-19 MAJOR 3): the
+        // directory has already moved back to bundles_root while the bin entry is
+        // not yet consumed — without the rename-back this is an unretryable
+        // half-restore ("directory at the root, no record, entry stuck in the
+        // bin": a retry hits the src.is_dir() guard, and the suggested purge
+        // only clears the stuck entry, leaving a recordless live directory
+        // behind). The on-disk manifest never changed, so the dst→src rename
+        // restores consistency exactly.
+        if let Err(e) = save_locked(&self.file, &file) {
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                log::error!(
+                    "[recycle-bin] restoring {pkg_id}: the compensation rollback after the failed manifest persist failed too ({} may be in a half-restored state): {re}",
+                    dst.display()
+                );
+                return Err(format!(
+                    "restoring {pkg_id}: the manifest persist failed and the compensation rollback failed too: {e}; rollback error: {re}"
+                ));
+            }
+            return Err(format!(
+                "restoring {pkg_id}: the manifest persist failed (fully rolled back to the recycle bin, retry is safe): {e}"
+            ));
+        }
         log::info!("[recycle-bin] 已取回包 {pkg_id} → {}", dst.display());
         Ok(entry.record)
     }
@@ -441,16 +470,40 @@ pub(crate) fn recycle_upload_package(
 ///    修复后从回收站重试，不残留「记录已安装、无供给面、回收站条目已消费、无从
 ///    重试」的半恢复态；
 /// 4. 技能组件随包目录搬回 + 登记恢复即回到安装态（技能无独立供给管线）；
-/// 5. scope 禁用集兜底清理（卸载时命令层已清，恢复后不应残留禁用）。有意为之：
-///    恢复是对用户既有安装的撤销回退，不是新装——新装的 DenyAll 默认禁用同意门
-///    （`sync_deny_all_scopes_after_install`）不适用于恢复，恢复的包回到卸载前的
-///    启用态（评审确认，见 marketplace-unification §4）。
+/// 5. The scope disabled set is handled in two cases (review #455 R5-m5 fixes
+///    a consent gate hole):
+///    - Uninitialized scope (the DenyAll on-the-fly expansion already covers
+///      the package): fallback cleanup only, nothing written to disk (same
+///      non-persisting policy as the disable arm) — the restored package
+///      stays default-off in such scopes;
+///    - Initialized scope (an explicit switch state existed before
+///      uninstall): restore as **disabled** (re-added to the persisted list)
+///      rather than enabled — uninstall wiped the persisted entry, so
+///      restoring as enabled would bring a "package the user explicitly
+///      turned off before uninstall" back online via the restore button with
+///      zero consent, violating the "external capabilities require explicit
+///      opt-in" consent model. The cost is that packages that were **on**
+///      before uninstall must also be manually re-enabled once after restore
+///      (the record leans to the safe side). The hidden set is only cleared,
+///      never written (restored packages must stay visible to the user).
 ///
-/// 并发契约：全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁；
-/// 锁序 import → recycle → store，与卸载路径一致，无死锁面），恢复整链路
-/// （取回 → 重建登记 → 供给）对并发的同 id 重导入/再卸载串行——取回前抢锁，
-/// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
-/// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
+/// Concurrency contract: holds the per-id `import_lock_for` for the whole
+/// restore (the same lock as import/display editing; lock order
+/// import → recycle → store), serializing the entire restore chain (take_back
+/// → registration rebuild → supply) against concurrent same-id
+/// re-imports/uninstalls — the lock is taken before take_back so a concurrent
+/// import's "rename → backup re-baseline" cannot interleave; `install_upload`
+/// takes only the global transaction lock and does not re-enter this one.
+/// Symmetric with the uninstall side's recycle preflight: lock first, then
+/// touch directories.
+/// Boundary note (review R14-minor #9, stated honestly): this function holds
+/// import_lock across `install_upload` → the global transaction lock, while
+/// the uninstall side's companion cleanup takes import_lock INSIDE the
+/// transaction lock — the TRANSACTION↔import_lock pair has **no global
+/// ordering** (the theoretical same-instance crossing is documented on
+/// `MARKETPLACE_TRANSACTION_LOCK`; the second crossing, `import_plugin_package`,
+/// is named there too — round-21 minor 4). Only this function's internal
+/// order is claimed here, not global consistency with the uninstall path.
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -473,6 +526,66 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             super::skill_marketplace::ensure_skill_restorable(name)?;
         }
     }
+    // Consent gate BEFORE take_back (round-11 M3): if its persist fails, the
+    // bin entry is still intact and "retry the restore" is a real remedy (the
+    // round-10 placement consumed the entry first, making the failure
+    // unretryable and leaving the pack enabled). Skill ids are enumerated from
+    // the bin-side package dir — the bundles-side dir only exists after
+    // take_back. A later install_upload failure still rolls the entry back
+    // with the gate already written (consistent: bin + disabled).
+    let mut consent_ids = vec![pkg_id.to_string()];
+    if let Ok(rd) = std::fs::read_dir(recycled_skills_dir.as_path()) {
+        for entry in rd.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                consent_ids.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    // Secrets-declaring packs take the supply-skipped branch below (install_upload
+    // never runs), so their id never re-enters installed.json — one of the three
+    // DenyAll expansion inputs — and combination packs have no `skills/<pack-id>/`
+    // dir for `list_skills` (a second input). At round-16 that made the gate's
+    // "the expansion covers the pack" premise false for uninitialized scopes:
+    // directory-scan materialization enabled the pack with zero consent (review
+    // #455 R16-MAJOR1). The round-19 disk-derived arm has since closed that
+    // recordless gap (a restored pack's skills re-enter the expansion via the
+    // bundles_root walk), so the force pass below survives as fail-closed
+    // redundancy rather than the only barrier. Detect the declaration from the
+    // bin-side manifest copy now (before take_back, so a gate persist failure
+    // stays retryable) and let the gate force-materialize uninitialized scopes
+    // anyway.
+    // Round-17 minor 2: an MCP entry whose bin-side manifest EXISTS but cannot
+    // be read or parsed must fail TOWARD force — the live read below still
+    // skips supply on the same failure, so the entry would land recordless with
+    // its supply state unverifiable; keeping the strictest consent treatment
+    // for exactly this entry is cheap and fail-closed (the zero-consent shape
+    // that motivated it is itself closed by the disk leg — this direction is
+    // retained as redundancy). A skill-only entry has no manifest by design
+    // and takes the normal gate: after take_back the pack dir lands in
+    // bundles_root, where the disk-derived skill arm of the DenyAll expansion
+    // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
+    // normalizes to the physical owner via skill_gating_owner.
+    let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
+    let secrets_declared = if manifest_path.exists() {
+        std::fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<super::types::ToolManifest>(&content).ok())
+            .map(|m| !super::secrets::manifest_secret_targets(&m).is_empty())
+            .unwrap_or(true)
+    } else {
+        false
+    };
+    let gate = if secrets_declared {
+        super::scope::apply_restore_consent_gate_secrets_pack(&consent_ids)
+    } else {
+        super::scope::apply_restore_consent_gate(&consent_ids)
+    };
+    gate.map_err(|save_error| {
+        format!(
+            "restoring {pkg_id}: the pre-check failed (bin entry untouched, retry is safe): persisting the re-disabled state failed: {save_error}"
+        )
+    })?;
+
     let record = bin.take_back(pkg_id)?;
     let mgr = super::MarketplaceManager::new();
     let pkg_dir = paths::bundles_root().join(pkg_id);
@@ -480,9 +593,41 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 
     // 重建登记：快照即原记录（installed_at/source/extra 原样保留）。upsert_preserving
     // 在记录已被卸载移除的常态下等价 upsert；并发重装写了新记录时保留其首装元数据。
+    // A failed registration rebuild must roll back to the recycle bin (review
+    // #455 R13-B2, same shape as the supply-failure branch below): at this
+    // point the directory has moved back to bundles_root while no record
+    // exists — record-driven enumeration (installed_ids, list_skills' upload
+    // leg) cannot see the pack, and the bin entry is already consumed so a
+    // "retry" would always fail. The round-19 disk-derived arm keeps the
+    // pack's skills gated in uninitialized scopes, but the half-restored state
+    // itself persists without the rollback (unmanaged, unretryable); a rollback
+    // failure of its own must be logged loudly and reported honestly. The
+    // registration was never written (upsert returned Err), so no remove is
+    // needed; a concurrent reinstall's record, if any, must NOT be deleted by
+    // this path.
     let mut restored = record.clone();
     restored.installed = true;
-    BundleStore::new().upsert_preserving(restored)?;
+    if let Err(e) = BundleStore::new().upsert_preserving(restored) {
+        let rollback_display = match &record.source {
+            super::store::BundleSource::Upload(zip) => zip.clone(),
+            _ => pkg_id.to_string(),
+        };
+        let rollback_kind = package_kind(&pkg_dir);
+        if let Err(re) =
+            bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
+        {
+            log::error!(
+                "[recycle-bin] restoring {pkg_id}: the registration rebuild failed ({e}) and the rollback to the recycle bin failed too: the package directory is still at {}, unregistered, with no bin entry: {re}",
+                pkg_dir.display()
+            );
+            return Err(format!(
+                "restoring {pkg_id} failed: {e}; the rollback to the recycle bin failed too (the package directory is still in place, unregistered, safe to delete manually): {re}"
+            ));
+        }
+        return Err(format!(
+            "restoring {pkg_id} failed (rolled back to the recycle bin, retry is safe): {e}"
+        ));
+    }
 
     let mut credentials_required = false;
     if has_mcp {
@@ -523,18 +668,13 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         }
     }
 
-    // scope 禁用集：包 id + 包内技能目录名一并兜底清理。恢复有意跳过新装的
-    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。
-    super::scope::remove_bundle_from_disabled_scopes(pkg_id);
-    if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
-        for entry in rd.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                super::scope::remove_bundle_from_disabled_scopes(
-                    &entry.file_name().to_string_lossy(),
-                );
-            }
-        }
-    }
+    // Consent-gate rationale (review #455 R5-m5 / R9-M2, hoisted above
+    // take_back in round-11 M3): uninstall wiped the stored entries, so
+    // "explicitly off before uninstall" and "on before uninstall" are
+    // indistinguishable — restore converges to disabled (conservative), with
+    // install-like default markers so later user gestures can lift them;
+    // uninitialized scopes stay unwritten (the DenyAll expansion already
+    // covers the pack); hidden sets are cleared, never written.
     Ok(RestoreRecycledResult {
         credentials_required,
     })
@@ -558,8 +698,19 @@ fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
     }
 }
 
+/// Test-only failpoint (the mod.rs `FAIL_NEXT_INSTALLED_WRITE` convention):
+/// once armed, the next `save_locked` fails with an injected error and the flag
+/// self-resets; pins take_back's compensation rollback (round-19 MAJOR 3).
+#[cfg(test)]
+pub(crate) static FAIL_NEXT_RECYCLE_SAVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试）。
 fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_RECYCLE_SAVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err("injected recycle-bin save failure (test failpoint)".to_string());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
@@ -579,6 +730,40 @@ fn now_iso8601() -> String {
 mod tests {
     use super::*;
     use crate::features::marketplace::store::BundleSource;
+    // Unix-gated: the only callers are the #[cfg(unix)] regression tests, so
+    // on Windows this import would be unused (denied by `-D unused-imports`).
+    #[cfg(unix)]
+    use crate::features::marketplace::scope::load_disabled_bundles_file;
+
+    /// Points PINVOU3_HOME at a clean temp dir for the closure, serializing via
+    /// ENV_LOCK with the other env-mutating tests (repo convention: scope.rs /
+    /// mod.rs each keep their own same-named test helper; no cross-module
+    /// sharing). Unix-only: currently used only by the read-only-permission
+    /// fixture regressions.
+    #[cfg(unix)]
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("pinvou3-recyclebin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // The write-failure memos are keyed by home path and this harness
+        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
+        // bleed into the next one (same shape as scope.rs's harness).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
+        f();
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn fresh_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -759,6 +944,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Restore consent gate (review #455 R5-m5): in initialized scopes a
+    /// restored package comes back **disabled** rather than enabled —
+    /// uninstall wiped the persisted entry, so "on before uninstall" and
+    /// "off before uninstall" are indistinguishable; restore uniformly as
+    /// disabled, never bringing a package back online via the restore button
+    /// with zero consent. Uninitialized scopes are not written (the DenyAll
+    /// on-the-fly expansion already covers them).
+    #[test]
+    fn restore_redisables_in_initialized_scopes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-redisable");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("my-skill-rr");
+        std::fs::create_dir_all(pkg.join("skills/my-skill-rr")).unwrap();
+        std::fs::write(
+            pkg.join("skills/my-skill-rr/SKILL.md"),
+            "---\nname: my-skill-rr\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("my-skill-rr")).unwrap();
+
+        // Before uninstall: plain is initialized and the package is
+        // explicitly off (a disabled entry is left in storage).
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["my-skill-rr".to_string()],
+        )
+        .unwrap();
+        assert!(
+            crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr")
+        );
+
+        // Simulate a full uninstall: registry removal + whole-package
+        // recycle + command-layer disabled-set cleanup.
+        let record = store.get("my-skill-rr").unwrap().unwrap();
+        store.remove("my-skill-rr").unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill-rr", KIND_SKILL, "my-skill-rr.zip", record)
+            .unwrap();
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes("my-skill-rr")
+            .unwrap();
+        assert!(
+            !crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr"),
+            "the disabled entries must be cleaned up after uninstall"
+        );
+
+        let result = restore_plugin("my-skill-rr").unwrap();
+        assert!(!result.credentials_required);
+        // After restore it must be re-disabled: plain is initialized and the
+        // persisted list contains the package id again — the DenyAll
+        // "explicit opt-in" consent gate still holds on the restore path.
+        assert!(
+            crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr"),
+            "after restore, an initialized scope must be back in the disabled set (the consent gate)"
+        );
+        // The uninitialized scope (code) is not written: the DenyAll
+        // on-the-fly expansion already covers it; user state is not persisted.
+        let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+        assert!(
+            !file.initialized.contains("code"),
+            "restore must not initialize an uninitialized scope: {file:?}"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// 损坏清单 fail loud：读取报错且绝不回写（与 bundles.json 同一纪律）。
     #[test]
     fn corrupt_manifest_fails_loud_without_overwrite() {
@@ -883,6 +1155,214 @@ mod tests {
         );
         assert!(foreign.join("SKILL.md").is_file(), "他包同名副本不得受影响");
         assert!(store.get("my-skill").unwrap().is_none(), "不得重建登记");
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-11 M3 regression (parameterized over both gate variants per
+    /// round-17 minor 10): the consent gate runs BEFORE take_back, so a gate
+    /// persist failure leaves the bin entry untouched and "retry the restore"
+    /// is a real remedy (the round-10 placement consumed the entry first: the
+    /// failure was unretryable and the pack stayed enabled with zero
+    /// consent). Fixture: an initialized plain scope (the gate has state to
+    /// persist) + a read-only home (the persist fails). Variants: no bin-side
+    /// manifest (unreadable → fail-toward-force, round-17 minor 2) exercises
+    /// the force gate; a secrets-free manifest exercises the normal gate.
+    #[cfg(unix)]
+    #[test]
+    fn restore_consent_gate_persist_failure_is_retryable() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (tag, manifest_json) in [
+            // Valid manifest declaring a secret: supply skips (credentials
+            // required) and the gate takes the FORCE variant (the pack never
+            // re-enters installed.json, so the expansion cannot cover it).
+            (
+                "force-gate-secrets",
+                Some(
+                    r#"{"id":"gate-skill","name":"gate","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["t1"],"command":"python","args":["s.py"],"secret_env":[{"key":"API_KEY","provider":"builtin"}]}"#,
+                ),
+            ),
+            // Valid manifest without secrets: the normal gate runs and the
+            // retry completes through the regular supply path.
+            (
+                "normal-gate-no-secrets",
+                Some(
+                    r#"{"id":"gate-skill","name":"gate","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["t1"],"command":"python","args":["s.py"]}"#,
+                ),
+            ),
+        ] {
+            let prev = std::env::var("PINVOU3_HOME").ok();
+            let tmp = fresh_dir("restore-gate-retry");
+            unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+            let restore_env = |prev: &Option<String>| match prev {
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            };
+
+            // Package in the bin; the optional mcp/manifest.json selects the
+            // gate variant (absent → unreadable → force; no-secrets → normal).
+            let pkg = paths::bundles_root().join("gate-skill");
+            std::fs::create_dir_all(pkg.join("skills/gate-skill")).unwrap();
+            std::fs::write(
+                pkg.join("skills/gate-skill/SKILL.md"),
+                "---\nname: gate-skill\n---\n",
+            )
+            .unwrap();
+            if let Some(json) = manifest_json {
+                std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+                std::fs::write(pkg.join("mcp/manifest.json"), json).unwrap();
+            }
+            let store = BundleStore::new();
+            store.upsert(upload_record("gate-skill")).unwrap();
+            let record = store.get("gate-skill").unwrap().unwrap();
+            store.remove("gate-skill").unwrap();
+            RecycleBin::new()
+                .recycle_package("gate-skill", KIND_SKILL, "gate-skill.zip", record)
+                .unwrap();
+
+            // An initialized plain scope gives the consent gate state to persist.
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+                &[],
+            )
+            .unwrap();
+
+            // Read-only home: the gate's save must fail. Root probe first (mode
+            // bits are no-ops for root) — loud skip per round-11 m12.
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = tmp.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[restore_consent_gate_persist_failure_is_retryable]: running as root - read-only home fixture stays writable; NOT exercised ({tag})"
+                );
+                restore_env(&prev);
+                let _ = std::fs::remove_dir_all(&tmp);
+                continue;
+            }
+
+            let err = restore_plugin("gate-skill").unwrap_err();
+            assert!(
+                err.contains("retry"),
+                "the failure must name retry as the remedy ({tag}): {err}"
+            );
+            assert_eq!(
+                RecycleBin::new().list().unwrap().len(),
+                1,
+                "the bin entry survives the gate failure (retryable, {tag})"
+            );
+            assert!(
+                tmp.join("marketplace/recycle-bin/gate-skill/skills/gate-skill/SKILL.md")
+                    .is_file(),
+                "the package directory stays in the bin ({tag})"
+            );
+            assert!(!pkg.exists(), "take_back must not have run ({tag})");
+            assert!(
+                store.get("gate-skill").unwrap().is_none(),
+                "no registration was rebuilt ({tag})"
+            );
+
+            // Fix the environment and retry: the restore succeeds end to end and
+            // the consent gate holds (restored pack disabled in plain, marked as
+            // install-default so a user gesture can lift it, round-11 B2).
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            restore_plugin("gate-skill")
+                .expect("retry after fixing the persist failure must succeed");
+            assert!(pkg.join("skills/gate-skill/SKILL.md").is_file());
+            assert!(store.get("gate-skill").unwrap().unwrap().installed);
+            assert!(RecycleBin::new().list().unwrap().is_empty());
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            let plain_disabled = file.scopes.get("plain").cloned().unwrap_or_default();
+            assert!(
+                plain_disabled.iter().any(|id| id == "gate-skill"),
+                "consent gate: restored pack disabled in plain ({tag}): {plain_disabled:?}"
+            );
+            let plain_defaults = file
+                .default_off_scopes
+                .get("plain")
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                plain_defaults.iter().any(|id| id == "gate-skill"),
+                "gate-written off is install-default (liftable), not a user verdict ({tag}): {plain_defaults:?}"
+            );
+
+            restore_env(&prev);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Round-17 minor 2: an MCP bin entry whose manifest EXISTS but cannot be
+    /// parsed fails TOWARD force — the gate runs the FORCE variant (which
+    /// materializes uninitialized scopes) even though the declaration is
+    /// unreadable, because the live supply read skips on the same failure and
+    /// the pack would otherwise re-enter none of the three expansion inputs
+    /// (the R16-MAJOR1 shape). The supply itself still fails on the corrupt
+    /// manifest and rolls the entry back (retryable), while the gate's
+    /// persisted consent survives.
+    #[test]
+    fn restore_unreadable_bin_manifest_fails_toward_force() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-force-unreadable");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("broken-combo");
+        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+        std::fs::write(pkg.join("mcp/manifest.json"), "not-json{{{").unwrap();
+        std::fs::create_dir_all(pkg.join("skills/nested")).unwrap();
+        std::fs::write(
+            pkg.join("skills/nested/SKILL.md"),
+            "---\nname: nested\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("broken-combo")).unwrap();
+        let record = store.get("broken-combo").unwrap().unwrap();
+        store.remove("broken-combo").unwrap();
+        RecycleBin::new()
+            .recycle_package("broken-combo", KIND_MCP, "broken-combo.zip", record)
+            .unwrap();
+
+        // The home is writable, so the gate's force pass persists BEFORE
+        // take_back even though the manifest cannot be parsed.
+        let err = restore_plugin("broken-combo").unwrap_err();
+        // This assertion pins MAIN's pre-existing Chinese error text (the
+        // non-translated return in the rollback tail below) — the message is
+        // main-authored, outside this PR's diff sweep; re-translate both
+        // together when main sweeps it.
+        assert!(
+            err.contains("回滚"),
+            "supply must fail on the corrupt manifest and roll back: {err}"
+        );
+
+        let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+        assert!(
+            file.initialized.contains("plain"),
+            "the unreadable manifest must select the force gate: {file:?}"
+        );
+        assert!(
+            file.scopes
+                .get("plain")
+                .map(|ids| ids.iter().any(|id| id == "broken-combo"))
+                .unwrap_or(false),
+            "the pack is stored-off while its declaration is unreadable: {file:?}"
+        );
+        assert_eq!(
+            RecycleBin::new().list().unwrap().len(),
+            1,
+            "the rollback leaves the bin entry retryable"
+        );
 
         match prev {
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
@@ -1250,6 +1730,383 @@ mod tests {
             }
         }
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A failed registration rebuild must roll back to the recycle bin (review
+    /// #455 R13-B2, same shape as the supply-failure branch): an upsert_preserving
+    /// failure after take_back (injected here via an unreadable bundles.json)
+    /// leaves the half-restored state "directory in bundles_root, no record, bin
+    /// entry consumed" — record-driven enumeration cannot see the pack, and the
+    /// consumed entry makes "retry" always fail (the round-19 disk leg keeps the
+    /// skills gated, but the pack stays unmanaged). Rollback = directory moved
+    /// back + manifest entry restored.
+    #[cfg(unix)]
+    #[test]
+    fn restore_registration_rebuild_failure_rolls_back_to_bin() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-upsert-fail");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("my-skill");
+        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("my-skill")).unwrap();
+        let record = store.get("my-skill").unwrap().unwrap();
+        store.remove("my-skill").unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
+            .unwrap();
+
+        // Failure injection: bundles.json exists but is unreadable → upsert_preserving errors on read.
+        let store_path = tmp.join("marketplace").join("bundles.json");
+        std::fs::write(&store_path, "{}").unwrap();
+        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&store_path).is_ok() {
+            std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            eprintln!(
+                "ROOT-SKIP[restore_registration_rebuild_failure_rolls_back_to_bin]: running as root - chmod-000 fixture stays readable; NOT exercised"
+            );
+            match prev {
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let err = restore_plugin("my-skill").unwrap_err();
+        assert!(
+            err.contains("rolled back"),
+            "the failure must honestly report the rollback to the recycle bin (retry is a real remedy): {err}"
+        );
+        assert!(
+            !pkg.exists(),
+            "the package directory must be moved back to the recycle bin, never left as a recordless half-restore"
+        );
+        assert!(
+            RecycleBin::new()
+                .list()
+                .unwrap()
+                .iter()
+                .any(|e| e.id == "my-skill"),
+            "the recycle bin entry must be restored"
+        );
+        // bundles.json is still unreadable at this point: the registration query itself must error (fail loud, never fabricate).
+        assert!(
+            store.get("my-skill").is_err(),
+            "an unreadable store file must make get error"
+        );
+
+        // Cleanup: restore permissions, then assert the store really was not half-written, and clean the temp dir.
+        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            store.get("my-skill").unwrap().is_none(),
+            "a failed registration rebuild must not leave a half-written record"
+        );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-16 minor 3, restructured after the round-2 review (the previous
+    /// form passed with the memo AND the no-sibling rule deleted — every
+    /// quarantine write failed under the read-only home, so "one sidecar" was
+    /// true coincidentally). Two distinguishable pins:
+    /// - Part 1 (writable home) pins the no-sibling rule: a second corrupt
+    ///   read must not add a second sidecar (deleting the rule → count 2).
+    /// - Part 2 (read-only home) pins `PENDING_CORRUPT_RECOVERY`: a read
+    ///   after the home becomes writable must return the memo WITHOUT
+    ///   touching disk — the corrupt bytes are still on file (deleting the
+    ///   memo → the read's self-heal overwrites them). A successful writer
+    ///   then clears the memo and the file becomes the truth again.
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_recovery_pins_no_sibling_rule_and_memo() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Part 1 — writable home: the no-sibling rule caps sidecar copies.
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "fail-closed recovered state: {file:?}"
+            );
+            assert_eq!(
+                quarantine_copy_count(),
+                1,
+                "first corrupt read quarantines once"
+            );
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("plain_defaults_migrated"),
+                "a writable home self-heals on the same read"
+            );
+
+            // Corrupt again: the sibling from the first read must suppress the
+            // second quarantine (the overwrite itself succeeds and heals).
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "second recovery: {file:?}"
+            );
+            assert_eq!(
+                quarantine_copy_count(),
+                1,
+                "the no-sibling rule must cap the sidecar at one"
+            );
+        });
+
+        // Part 2 — read-only home: the memo carries the recovery and defers
+        // to the next writer without touching disk.
+        with_temp_home(|| {
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, b"not-json{{{").unwrap();
+            // Pre-seed the single sidecar the no-sibling rule allows: the
+            // quarantine is then skipped (Ok) while the overwrite still fails.
+            let sidecar = path.with_file_name("disabled_bundles.json.corrupt.1");
+            std::fs::write(&sidecar, b"not-json{{{").unwrap();
+
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let probe = home.join(".root-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[corrupt_recovery_pins_no_sibling_rule_and_memo]: running as root - read-only home fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            // First read: quarantine skipped (sibling kept), overwrite fails,
+            // the in-memory fail-closed state carries the recovery.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "fail-closed recovered state: {file:?}"
+            );
+            assert_eq!(quarantine_copy_count(), 1, "no sibling may accumulate");
+
+            // Second read reuses the memo: still exactly one sidecar copy.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "memo hit must reuse the recovery: {file:?}"
+            );
+
+            // The memo is load-bearing: with the home writable again, a READ
+            // (not a writer) must not touch disk — the corrupt bytes survive.
+            // Without the memo, this read's fail-closed reset would overwrite
+            // the file and self-heal it, a distinguishable on-disk state.
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = load_disabled_bundles_file();
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                b"not-json{{{".to_vec(),
+                "the memo-hit read must not rewrite the corrupt file"
+            );
+
+            // A successful writer clears the memo: the file is the truth
+            // again. The composer write always transitions (uninitialized →
+            // initialized), unlike the install-sync — a no-op for
+            // uninitialized scopes, so it would never persist here.
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+                &[],
+            )
+            .unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                content.contains("plain_defaults_migrated"),
+                "the file is valid JSON again: {content}"
+            );
+            // The memo is gone: the read now follows the file (plain
+            // initialized by the composer write), not the in-memory recovery.
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "the read follows the file again: {file:?}"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    fn quarantine_copy_count() -> usize {
+        let parent = crate::platform::paths::pinvou3_home().to_path_buf();
+        std::fs::read_dir(parent)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with("disabled_bundles.json.corrupt.")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Round-19 MAJOR 3 regression: `take_back`'s manifest-save failure must
+    /// compensate (dst→src rename) instead of leaving the recordless
+    /// half-restore — directory in bundles_root, no record, stale bin entry:
+    /// unretryable (retry hits the src.is_dir() guard), and uninitialized
+    /// scopes would zero-consent materialize its skills. Driven by the test
+    /// failpoint; the retry then succeeds end to end.
+    #[test]
+    fn take_back_save_failure_compensates_and_stays_retryable() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("take-back-compensate");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = paths::bundles_root().join("compensated");
+        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
+        std::fs::write(
+            pkg.join("skills/member/SKILL.md"),
+            "---\nname: member\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("compensated")).unwrap();
+        let record = store.get("compensated").unwrap().unwrap();
+        store.remove("compensated").unwrap();
+        RecycleBin::new()
+            .recycle_package("compensated", KIND_SKILL, "compensated.zip", record)
+            .unwrap();
+
+        // Inject the save failure at exactly take_back's manifest persist
+        // (round-20 minor 6: via the shared arm_failpoint guard — a bare
+        // store(true) leaks the failpoint into an unrelated test's next
+        // recycle save when this test fails before consuming it, which
+        // falsifies the "all injection points share this guard" claim).
+        let _fail = crate::features::marketplace::arm_failpoint(&FAIL_NEXT_RECYCLE_SAVE);
+        let err = restore_plugin("compensated").unwrap_err();
+        assert!(
+            err.contains("fully rolled back"),
+            "the compensation must report the rollback: {err}"
+        );
+        assert!(
+            tmp.join("marketplace/recycle-bin/compensated/skills/member/SKILL.md")
+                .is_file(),
+            "the package directory must be back in the bin"
+        );
+        assert!(!pkg.exists(), "bundles_root must not keep the live dir");
+        assert_eq!(
+            RecycleBin::new().list().unwrap().len(),
+            1,
+            "the bin entry must survive (retry is real)"
+        );
+
+        // Retry without the failpoint: the restore succeeds end to end.
+        let result = restore_plugin("compensated").expect("retry must succeed");
+        assert!(!result.credentials_required);
+        assert!(pkg.join("skills/member/SKILL.md").is_file());
+        assert!(RecycleBin::new().list().unwrap().is_empty());
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-16 MAJOR 1 regression: restoring a secrets-declaring combination
+    /// pack (skills inside the package, supply skipped because credentials were
+    /// wiped) into an **uninitialized** scope must not rely on the DenyAll
+    /// expansion — the pack id is in none of the three expansion inputs (no
+    /// `installed.json` re-entry, no builtin CLI id, no `skills/<pack-id>/` dir
+    /// for `list_skills`), while directory-scan materialization still sees the
+    /// on-disk skills. The gate's force pass materializes the scope so the pack
+    /// is explicitly off with install-default markers.
+    #[cfg(unix)]
+    #[test]
+    fn restore_secrets_pack_into_uninitialized_scope_persists_consent() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-secrets-uninit");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Combination pack: mcp manifest declaring a secret + in-package skills.
+        let pkg = paths::bundles_root().join("combo-pack");
+        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+        std::fs::write(
+            pkg.join("mcp").join("manifest.json"),
+            r#"{"id":"combo-pack","name":"combo","description":"d","version":"1","icon":"x","category":"c","mcp_tools":["t1"],"command":"python","args":["s.py"],"secret_env":[{"key":"API_KEY","provider":"builtin"}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(pkg.join("skills/combo-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills/combo-skill/SKILL.md"),
+            "---\nname: combo-skill\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("combo-pack")).unwrap();
+        let record = store.get("combo-pack").unwrap().unwrap();
+        store.remove("combo-pack").unwrap();
+        RecycleBin::new()
+            .recycle_package("combo-pack", KIND_MCP, "combo-pack.zip", record)
+            .unwrap();
+
+        let result = restore_plugin("combo-pack").unwrap();
+        assert!(result.credentials_required, "secrets pack skips supply");
+
+        // The consent gate force-materialized the uninitialized plain scope:
+        // the pack id is explicitly stored-off with an install-default marker,
+        // so directory-scan materialization cannot enable it without consent.
+        let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+        assert!(
+            file.initialized.contains("plain"),
+            "the secrets cohort must materialize uninitialized scopes: {file:?}"
+        );
+        assert!(
+            file.scopes
+                .get("plain")
+                .map(|ids| ids.iter().any(|id| id == "combo-pack"))
+                .unwrap_or(false),
+            "the pack id must be stored-off: {file:?}"
+        );
+        assert!(
+            file.default_off_scopes
+                .get("plain")
+                .map(|ids| ids.iter().any(|id| id == "combo-pack"))
+                .unwrap_or(false),
+            "the gate-written off carries an install-default marker: {file:?}"
+        );
+        let outcome = crate::features::marketplace::scope::enable_packages_in_scope(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["combo-pack".to_string()],
+        )
+        .unwrap();
+        assert!(
+            outcome.blocked.is_empty(),
+            "an install-default off lifts freely: {outcome:?}"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

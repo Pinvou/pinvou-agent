@@ -156,6 +156,7 @@ import {
   pinvouSceneTag,
 } from './scene-registry.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
+import { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn } from './welcome-optin.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -306,7 +307,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  {t.uiChat.ready}
+                  {/* The install path deliberately keeps the switch off (DenyAll
+                      convergence), so "Ready" would be a lie; describe it truthfully
+                      and complete the opt-in on the first question (review #455 R7-M4). */}
+                  {t.uiChat.installedReady}
                 </div>
               </div>
             </div>
@@ -1340,6 +1344,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      // sendChatMessage's useCallback must not depend on welcomeToolId (avoids
+      // identity-churn rebuilds); the free-input path consumes the current
+      // welcome pack through this ref (review #455 R8-2).
+      const welcomeToolIdRef = useRef(null);
+      // Round-16 minor 13: in-flight welcome opt-in attempt ({ toolId,
+      // promise } | null) shared across concurrent sends — a send arriving
+      // during the first enable's await window joins it instead of no-op'ing
+      // and later clearing the first send's failure banner.
+      const welcomeOptInAttemptRef = useRef(null);
       const welcomeSessionKeyRef = useRef(null);
       // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
@@ -1557,6 +1570,35 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
+        // Both welcome-card send paths (sample-question click / free input)
+        // complete the opt-in here (review #455 R8-2; logic extracted into
+        // welcome-optin.js for direct testing): failure must not block the
+        // send but must stay fail-visible — banner notice + console trace
+        // (review #455 R9-M4); the tool's absence is likewise visible in the reply.
+        const welcomeOptIn = await runSharedWelcomeOptIn(welcomeOptInAttemptRef, {
+          toolId: welcomeToolIdRef.current,
+          run: () => consumeWelcomeOptIn({
+            getToolId: () => welcomeToolIdRef.current,
+            consume: () => {
+              welcomeToolIdRef.current = null;
+              setWelcomeToolId(null);
+            },
+            invoke: invokeTauri,
+          }),
+        });
+        if (welcomeOptIn.failed) {
+          console.warn("[pinvou3][chat-ui] welcome-card opt-in failed:", welcomeOptIn.error);
+        }
+        if (welcomeOptIn.blocked && welcomeOptIn.blocked.length) {
+          // The welcome pack was explicitly switched off by the user: abort the
+          // send with guidance (same contract as the scene blocked path,
+          // round-10 Major 2) instead of sending a reply without the tool.
+          setSceneCapabilityStatus({
+            kind: 'error',
+            text: t.uiChatScenes.switchedOffPacks(welcomeOptIn.blocked.join(', ')),
+          });
+          return false;
+        }
         const outgoing = String(text || '').trim();
         const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
         const templateId = personalWorkbenchTemplateIdRef.current
@@ -1574,6 +1616,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
+        // The scene block resolves its status into a local; the single
+        // setSceneCapabilityStatus below combines it with the welcome opt-in
+        // result — an earlier welcome-error set would be batched away by any
+        // later synchronous set in the same run (round-10 Major 1).
+        let sceneStatus = null;
+        let readyAutoClear = false;
         if (requirements) {
           const sceneCopy = t.uiChatScenes[requirements.key];
           if (canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
@@ -1581,34 +1629,69 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
               if (!prepared.ok) {
-                const missing = prepared.missing && prepared.missing.length
-                  ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
-                  : '';
-                throw new Error(missing || sceneCopy.failure);
+                // Round-11 m8: the banner carries translated copy only — raw
+                // backend/IPC error strings are diagnostics, traced to the
+                // console instead of rendered untranslated to the user.
+                if (prepared.error) {
+                  console.warn('[pinvou3][chat-ui] scene capability prepare failed:', prepared.error);
+                }
+                // Round-16 minor 13: notApplied (installed but matched no
+                // expansion entry) gets its own retry-inviting copy — the
+                // missingCapabilities branch would invite a reinstall that
+                // cannot help.
+                const detail = prepared.blocked && prepared.blocked.length
+                  ? t.uiChatScenes.switchedOffPacks(prepared.blocked.join(', '))
+                  : (prepared.notApplied && prepared.notApplied.length
+                    ? t.uiChatScenes.notAppliedPacks(prepared.notApplied.join(', '))
+                    : (prepared.missing && prepared.missing.length
+                      ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
+                      : ''));
+                // Round-13 m2: the welcome card is one-shot — if its opt-in
+                // failed, a later resend never re-attempts it, so the welcome
+                // failure must win over the scene failure copy here (the
+                // scene preflight re-runs and resurfaces on the next send;
+                // the welcome failure otherwise never surfaces at all).
+                setSceneCapabilityStatus({
+                  kind: 'error',
+                  text: welcomeOptIn.failed
+                    ? t.uiChat.welcomeOptInFailed
+                    : (detail || sceneCopy.failure),
+                });
+                return false;
               }
-              // 自动安装与自动就地开启（隐藏/禁用 → 可用）都是对用户治理状态
-              // 的变更：必须给 ready 提示，不得静默改写。
-              if (prepared.installed || prepared.reEnabled) {
-                setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
-                window.setTimeout(() => setSceneCapabilityStatus((current) => (
-                  current && current.kind === 'ready' ? null : current
-                )), 1800);
-              } else {
-                setSceneCapabilityStatus(null);
+              // Post-DenyAll, ready means installed or explicitly opted back
+              // in: a pack gated off by default completes its opt-in here and
+              // gets the same enabled toast (#455 R5-B3).
+              if (prepared.installed || prepared.optedIn) {
+                sceneStatus = { kind: 'ready', text: sceneCopy.ready };
+                readyAutoClear = true;
               }
+              // else: leave the local null — nothing to show.
             } catch (error) {
-              const message = error && error.message ? error.message : String(error || '');
+              // Unexpected invoke/transport failure: same rule (m8) — the raw
+              // error goes to the console, the banner gets translated copy.
+              // Round-13 m2: welcome failure wins here too (same rationale as
+              // the prepared-not-ok branch above).
+              console.warn('[pinvou3][chat-ui] scene capability prepare raised:', error);
               setSceneCapabilityStatus({
                 kind: 'error',
-                text: message ? `${sceneCopy.failure} ${message}` : sceneCopy.failure,
+                text: welcomeOptIn.failed
+                  ? t.uiChat.welcomeOptInFailed
+                  : sceneCopy.failure,
               });
               return false;
             }
-          } else {
-            setSceneCapabilityStatus(null);
           }
-        } else {
-          setSceneCapabilityStatus(null);
+        }
+        setSceneCapabilityStatus(resolveSendCapabilityStatus({
+          welcomeFailed: welcomeOptIn.failed,
+          welcomeText: t.uiChat.welcomeOptInFailed,
+          sceneStatus,
+        }));
+        if (readyAutoClear) {
+          window.setTimeout(() => setSceneCapabilityStatus((current) => (
+            current && current.kind === 'ready' ? null : current
+          )), 1800);
         }
         if (!activeSessionId) {
           pendingModeScopeMigrationRef.current = {
@@ -1752,16 +1835,26 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (justInstalledTool) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);
+          welcomeToolIdRef.current = justInstalledTool;
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
         } else if (welcomeSessionKeyRef.current && welcomeSessionKeyRef.current !== sessionKey) {
           setWelcomeToolId(null);
+          welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
+          // Round-2 review: drop any in-flight opt-in attempt slot from the
+          // previous session — a send in a new card-less session must never
+          // join it (it would inherit the previous pack's failure banner).
+          welcomeOptInAttemptRef.current = null;
         }
-        // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
-        // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
-        // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
-        // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+        // justInstalledTool stays in the deps (a one-shot directive; parent
+        // rerenders do not retrigger: the effect clears it immediately via
+        // setJustInstalledTool(null), and re-entry takes the else branch, which
+        // only clears the card on session-key change). Deps: activeSessionId
+        // (session switch) + draftEpoch (incremented per "New chat" click) — the
+        // latter forces re-evaluation even when "New chat" is clicked again
+        // while already in draft state (activeSessionId stays null→null);
+        // otherwise a leftover tool card would displace the "Hello" greeting.
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: setJustInstalledTool is a parent one-shot directive callback; adding it would retrigger clearing on parent rerenders
       }, [justInstalledTool, activeSessionId, draftEpoch]);
 
@@ -2523,11 +2616,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   toolId={welcomeToolId}
                   t={t}
                   onSend={(q) => {
-                    setWelcomeToolId(null);
-                    // sendChatMessage's failure path re-throws (the current
-                    // implementation never rejects, but stay consistent with
-                    // handleSend's defense so it cannot become a floating
-                    // rejection later).
+                    // opt-in is unified inside sendChatMessage (R8-2: chip and
+                    // free input share one path); this handler only sends, with
+                    // failure handling matching handleSend.
                     Promise.resolve(sendChatMessage(q)).catch((err) => {
                       console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
                     });
@@ -2858,7 +2949,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         ? 'bg-[#34A853]'
                         : 'bg-[#1A73E8] animate-pulse'
                   }`} />
-                  <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
+                  {/* Round-11 m14: no truncate — blocked id lists must stay
+                      fully readable (the actionable part was ellipsized). */}
+                  <span className="min-w-0 break-words">{sceneCapabilityStatus.text}</span>
                 </div>
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (

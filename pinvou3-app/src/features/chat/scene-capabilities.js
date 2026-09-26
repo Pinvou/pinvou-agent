@@ -16,6 +16,48 @@ function isInstalled(items, id) {
   return (items || []).some((item) => itemId(item) === wanted && item.installed !== false);
 }
 
+// With switches defaulting to off (DenyAll), installed no longer means usable:
+// the scene flow must read the plain scope's effective disabled set and
+// explicitly move the scene packs out of it (the user-initiated scene action
+// is itself the opt-in, review #455 R5-B3); otherwise the model receives no
+// tools, the scene silently degrades, and the UI lies about being enabled.
+// The pre-read is load-bearing on two legs: besides the UI enabled flag, it
+// decides WHETHER the enable invocation runs at all (a pack already outside
+// the disabled set skips it), so a stale read skips a needed enable — the
+// write itself still goes through enable_marketplace_packages, the backend's
+// single-critical-section RMW (review #455 R7-M3) — a whole-list
+// read-modify-write across IPC is not lock protected, and a concurrent
+// composer toggle's write would be overwritten by a stale snapshot.
+async function listDisabledConnectors(invoke) {
+  const disabled = await invoke('get_disabled_connectors', { scope: 'plain' });
+  return new Set(Array.isArray(disabled) ? disabled.map((id) => String(id || '').trim()) : []);
+}
+
+// Availability is disabled ∪ hidden (round-11 m9): a switch-ON-but-hidden
+// pack would otherwise skip the enable call — the only hidden-set cleaner on
+// this path — and the send would proceed with the model never seeing the
+// tool while the UI reports ready.
+async function listHiddenBundles(invoke) {
+  const hidden = await invoke('get_bundle_visibility', { scope: 'plain' });
+  return new Set(Array.isArray(hidden) ? hidden.map((id) => String(id || '').trim()) : []);
+}
+
+// Returns the explicit outcome shape (round-11 m11, extended round-13 m3):
+// blocked non-empty = the plain scope is initialized and those ids sit in the
+// user's explicit switch state — the backend enabled nothing and the caller
+// must surface them (round-10 Major 2). not_applied non-empty = those ids
+// matched no entry in the DenyAll expansion (concurrent install not yet
+// committed, or unknown id) — nothing was applied for them; the caller must
+// not present their opt-in as done. Install-default offs lift freely
+// (round-11 B2); a deliberate opt-out is never silently overridden.
+async function enablePackagesInPlainScope(invoke, packageIds) {
+  const outcome = await invoke('enable_marketplace_packages', { packageIds, scope: 'plain' });
+  return {
+    blocked: Array.isArray(outcome && outcome.blocked) ? outcome.blocked : [],
+    notApplied: Array.isArray(outcome && outcome.not_applied) ? outcome.not_applied : [],
+  };
+}
+
 async function listMarketplaceTools(invoke) {
   const tools = await invoke('list_marketplace_tools');
   return Array.isArray(tools) ? tools : [];
@@ -62,63 +104,9 @@ function canPrepareSceneCapabilities({ isWebHost, dependencyInstallAvailable } =
   return !isWebHost && dependencyInstallAvailable === true;
 }
 
-// 场景子标签只存在于普通会话（work 车道；bridge 侧非 code 会话一律映射 plain
-// scope），因此可用性检查与显式开启都固定落在 plain scope。
-const SCENE_SCOPE = 'plain';
-
-// companion 技能 → 所属包 id 由 shared/companion-packages.js 单一真源提供
-// （与 ToolStoreView 的技能卡路由同源）。
-
-// 场景要求 id（含 companion 映射后的包 id）落在开关禁用集或可见性隐藏集里 →
-// 会话侧组合目录与工具白名单都会把它排除（unavailable = disabled ∪ hidden），
-// 强制场景路由必然落空。用户在场景子标签里主动发送即显式选择该能力，与安装
-// 同一口径就地开启：从两个集合移除后整集写回（后端命令是整集覆盖语义）。
-// 返回是否实际改写了用户的开关/可见性集合——这是对用户治理状态的变更，
-// 调用方必须给出可见提示，不得静默改写。
-async function ensureSceneAvailability(requirements, tools, invoke) {
-  const map = companionPackageMap(tools);
-  const wanted = new Set();
-  const add = (id) => {
-    const raw = String(id || '').trim();
-    if (!raw) return;
-    wanted.add(raw);
-    const pkg = map[raw];
-    if (pkg) wanted.add(pkg);
-  };
-  requirements.tools.forEach(add);
-  requirements.skills.forEach(add);
-  if (!wanted.size) return false;
-
-  const [disabled, hidden] = await Promise.all([
-    invoke('get_disabled_connectors', { scope: SCENE_SCOPE }),
-    invoke('get_bundle_visibility', { scope: SCENE_SCOPE }),
-  ]);
-  const disabledList = Array.isArray(disabled) ? disabled : [];
-  const hiddenList = Array.isArray(hidden) ? hidden : [];
-  const blockedIn = (list) => list.filter((id) => wanted.has(id));
-  const nextDisabled = blockedIn(disabledList);
-  const nextHidden = blockedIn(hiddenList);
-  if (!nextDisabled.length && !nextHidden.length) return false;
-
-  // 未被场景点名的条目原样保留，避免整集覆盖语义误伤用户其他开关配置。
-  if (nextDisabled.length) {
-    await invoke('set_disabled_connectors', {
-      connectorIds: disabledList.filter((id) => !wanted.has(id)),
-      scope: SCENE_SCOPE,
-    });
-  }
-  if (nextHidden.length) {
-    await invoke('set_bundle_visibility', {
-      bundleIds: hiddenList.filter((id) => !wanted.has(id)),
-      scope: SCENE_SCOPE,
-    });
-  }
-  return true;
-}
-
 async function prepareSceneCapabilities(meta, invoke) {
   const requirements = requiredCapabilitiesForMeta(meta);
-  if (!requirements) return { ok: true, requirements: null, installed: false, reEnabled: false };
+  if (!requirements) return { ok: true, requirements: null, installed: false };
 
   let installed = false;
   let tools = await listMarketplaceTools(invoke);
@@ -145,9 +133,11 @@ async function prepareSceneCapabilities(meta, invoke) {
     skills = await listMarketplaceSkills(invoke);
   }
 
-  // 装上 ≠ 会话可见：开关/可见性任一关闭都会让会话侧排除该包，强制场景
-  // 路由因此必然失败（PPT 场景实测：pptx 在 plain 隐藏集残留，装了也调不到）。
-  const reEnabled = await ensureSceneAvailability(requirements, tools, invoke);
+  // Installed ≠ session-visible: either the switch or the visibility set
+  // excludes the pack on the session side (observed in the PPT scene: pptx
+  // lingered in the plain hidden set and stayed unreachable after install) —
+  // the availability pre-read plus the explicit enable below
+  // (enable_marketplace_packages) clear both the disabled and hidden sets.
 
   const missingTools = requirements.tools.filter((toolId) => !isInstalled(tools, toolId));
   const missingSkills = requirements.skills.filter((skillId) => !isInstalled(skills, skillId));
@@ -156,12 +146,79 @@ async function prepareSceneCapabilities(meta, invoke) {
       ok: false,
       requirements,
       installed,
-      reEnabled,
       missing: [...missingTools, ...missingSkills],
     };
   }
 
-  return { ok: true, requirements, installed, reEnabled };
+  // Installed ≠ switched on: when the plain scope's effective disabled set —
+  // or the hidden set (availability is disabled ∪ hidden, round-11 m9) —
+  // contains the scene packs, the user-initiated scene action is the explicit
+  // opt-in — enable_marketplace_packages persists it (and un-hides) and
+  // hot-refreshes the running session's tool allowlist and skill-composition
+  // directory, taking effect on the current turn.
+  // Round-16 minor 13, closed by the shared companion map (main's #563
+  // extracted it so the scene path and ToolStoreView cannot drift): the
+  // backend's disabled/hidden sets and the DenyAll expansion carry OWNER pack
+  // ids, so a bare companion skill id must opt in for its owner pack.
+  const ownerMap = companionPackageMap(tools);
+  const requiredPackages = [...new Set([
+    ...requirements.tools,
+    ...requirements.skills,
+    ...requirements.skills.flatMap((id) => (ownerMap[id] ? [ownerMap[id]] : [])),
+  ])];
+  // Naming per R8 nit: true = a scene pack was default-gated (or hidden) and
+  // this send completed the opt-in; future consumers must not misread it as
+  // availability.
+  let optedIn;
+  try {
+    const [disabledIds, hiddenIds] = await Promise.all([
+      listDisabledConnectors(invoke),
+      listHiddenBundles(invoke),
+    ]);
+    optedIn = requiredPackages.some((packageId) => disabledIds.has(packageId) || hiddenIds.has(packageId));
+    if (optedIn) {
+      const { blocked, notApplied } = await enablePackagesInPlainScope(invoke, requiredPackages);
+      if (blocked.length) {
+        // Explicit user opt-out(s): refuse like the missing-install path —
+        // the user re-enables from the composer tools list and resends.
+        return {
+          ok: false,
+          requirements,
+          installed,
+          missing: [],
+          blocked,
+          error: String(blocked.join(', ')),
+        };
+      }
+      if (notApplied.length) {
+        // Round-13 m3: those ids matched nothing in the expansion (likely a
+        // concurrent install that had not committed) — abort the send, but
+        // NOT under the missing-install copy (round-16 minor 13): the packs
+        // are installed, so a reinstall invitation would not help. The
+        // dedicated notApplied shape renders the retry-inviting copy instead.
+        return {
+          ok: false,
+          requirements,
+          installed,
+          missing: [],
+          blocked: [],
+          notApplied: [...notApplied],
+          error: String(notApplied.join(', ')),
+        };
+      }
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      requirements,
+      installed,
+      missing: [],
+      enableFailed: true,
+      error: String((error && error.message) || error || ''),
+    };
+  }
+
+  return { ok: true, requirements, installed, optedIn };
 }
 
 export {

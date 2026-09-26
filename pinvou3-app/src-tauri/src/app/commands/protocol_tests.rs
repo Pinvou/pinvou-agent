@@ -106,6 +106,7 @@ command_protocol!(
         "get_disabled_connectors",
         "set_bundle_visibility",
         "get_bundle_visibility",
+        "enable_marketplace_packages",
         "set_project_skills_enabled",
         "get_project_skills_enabled",
         "refresh_connector_auth_gates",

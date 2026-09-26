@@ -272,9 +272,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     //   qrStepsExtra   Feishu's QR event additionally marks the connect step done (two-stage stage one already finished).
     //   qrPayloadExtra Extra fields on the QR event: dingtalk user_code; tmeet browserAuth flag.
     //   openAuthUrl    When tmeet's QR event carries a url, open the browser directly (embedded-QR render fallback).
-    //   connectedMode  apply=fire-and-forget skill write (feishu/wecom); applyAwait=await the skill write,
-    //                  turning failure into a flow error (dingtalk); readinessAwait=re-verify the real login
-    //                  state via bundle_readiness before writing skills (tmeet).
+    //   skill write     every connector awaits its skill write and turns failure into a
+    //                  flow error (apply_skills_command / readiness re-verify for tmeet);
+    //                  the fire-and-forget 'apply' mode was retired (round-17 minor 7).
     /* eslint-disable unicorn/no-this-outside-of-class -- module-level connection store singleton; object-literal methods reference itself via this, and converting to a class would just move the same complexity */
     const createFlowStore = () => ({
       flow: null,
@@ -329,14 +329,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             };
           });
         });
-        ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
-          conn.stopTick();
-          conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
-          // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
-          invokeTauri(cfg.commands.applySkills).catch(() => {});
-          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
-          setTimeout(() => conn.setFlow(null), 1800);
-        } : async () => {
+        ev.listen(cfg.events.connected, async () => {
           conn.stopTick();
           try {
             if (cfg.readiness) {
@@ -425,7 +418,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       events: { qr: 'feishu:qr', connected: 'feishu:connected', error: 'feishu:error' },
       commands: { ensureCli: 'feishu_ensure_cli', begin: 'feishu_connect_begin', cancel: 'feishu_cancel', logout: 'feishu_logout', applySkills: 'feishu_apply_skills' },
       qrStepsExtra: { connect: 'done' },
-      connectedMode: 'apply',
+      skillsFailedCopyKey: 'feishuSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.feishu),
     });
     const ensureFeishuListeners = feishuFlowApi.ensureListeners;
@@ -434,7 +428,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       key: 'wecom', conn: wecomConn, twoStep: false,
       events: { qr: 'wecom:qr', connected: 'wecom:connected', error: 'wecom:error' },
       commands: { ensureCli: 'wecom_ensure_cli', begin: 'wecom_connect_begin', cancel: 'wecom_cancel', logout: 'wecom_logout', applySkills: 'wecom_apply_skills' },
-      connectedMode: 'apply',
+      skillsFailedCopyKey: 'wecomSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.wecom),
     });
     const ensureWecomListeners = wecomFlowApi.ensureListeners;
@@ -444,7 +439,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       events: { qr: 'dingtalk:qr', connected: 'dingtalk:connected', error: 'dingtalk:error' },
       commands: { ensureCli: 'dingtalk_ensure_cli', begin: 'dingtalk_connect_begin', cancel: 'dingtalk_cancel', logout: 'dingtalk_logout', applySkills: 'dingtalk_apply_skills' },
       qrPayloadExtra: p => ({ userCode: p.user_code }),
-      connectedMode: 'applyAwait',
       skillsFailedCopyKey: 'dingtalkSkillsFailed',
       applyErrorMessage: (e, h) => h.skillsFailed(String(e).slice(0, 220)),
       disconnectedTitle: ({ storeCopy }) => storeCopy.disconnectedTool(storeCopy.toolNames.dingtalk),
@@ -457,10 +451,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       commands: { ensureCli: 'tmeet_ensure_cli', begin: 'tmeet_connect_begin', cancel: 'tmeet_cancel', logout: 'tmeet_logout', applySkills: 'tmeet_apply_skills' },
       qrPayloadExtra: () => ({ browserAuth: true }),
       openAuthUrl: true,
-      connectedMode: 'readinessAwait',
       readiness: { bundleId: 'tmeet' },
       authIncompleteCopyKey: 'tmeetAuthIncomplete',
-      applyErrorMessage: e => String(e && e.message ? e.message : e).slice(0, 220),
+      skillsFailedCopyKey: 'tmeetSkillsFailed',
+      applyErrorMessage: (e, h) => h.skillsFailed(String(e && e.message ? e.message : e).slice(0, 220)),
       disconnectedTitle: ({ detailCopy }) => detailCopy.actions.disconnectedTmeet,
     });
     const ensureTmeetListeners = tmeetFlowApi.ensureListeners;
@@ -980,8 +974,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           await loadBackendState();
           loadRecycledPlugins();
           const name = item.display_name || item.id;
-          // isInstall:true → TsAlert 默认副标题为 installHint（「新工具需要在新会话中生效」），
-          // 与「恢复为已安装」语义一致；false 会落到 removeHint（「已移除…」），语义相反。
+          // isInstall:true → the TsAlert subtitle defaults to installHint
+          // ("tool switches are off by default; enable in the composer tools
+          // list"): restored-as-installed ≠ switched on — after the DenyAll
+          // convergence a restored pack comes back disabled in initialized
+          // scopes (recycle_bin::restore_plugin), and the copy tells the user
+          // to enable it from the tools list; false would fall through to
+          // removeHint ("removed…"), the opposite semantics.
           setAlert({
             visible: true, loading: false,
             title: res && res.credentials_required ? storeCopy.recycleRestoredCredentials(name) : storeCopy.recycleRestored(name),
