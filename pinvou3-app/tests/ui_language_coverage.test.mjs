@@ -5,7 +5,6 @@ import { errorCode, localizedErrorMessage } from '../src/shared/user-facing-erro
 import {
   applyConnectorFailure,
   connectorErrorCodeForStep,
-  connectorErrorDetail,
   connectorFailure,
   connectorUiStep,
 } from '../src/features/tools/connector-ui-state.js';
@@ -303,8 +302,9 @@ for (const language of ['zh', 'en', 'ja']) {
 }
 
 // Connector flow-card failures: stored as error codes and localized at render
-// time, so en/ja users never see raw (often Chinese) backend text as the
-// headline. The raw diagnostic survives only as an opt-in detail block.
+// time, so en/ja users never see raw (often Chinese) backend text. The raw
+// backend diagnostic is never rendered in the flow card (same border as the
+// Official repo's PR #442: the localized category message is the only copy).
 const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'unknown'];
 for (const language of ['zh', 'en', 'ja']) {
   for (const code of connectorErrorCodes) {
@@ -333,9 +333,6 @@ assert.equal(connectorErrorCodeForStep('qr'), 'auth_failed');
 assert.equal(connectorErrorCodeForStep('bogus'), 'unknown');
 assert.deepEqual(connectorFailure({ code: 'auth_failed', message: 'raw backend diagnostic' }, 'qr'), { errorCode: 'auth_failed' });
 assert.deepEqual(connectorFailure(new Error('raw install diagnostic'), 'cli'), { errorCode: 'cli_install_failed' });
-assert.equal(connectorErrorDetail(new Error('raw install diagnostic')), 'raw install diagnostic');
-assert.equal(connectorErrorDetail('x'.repeat(400)).length, 300);
-assert.equal(connectorErrorDetail(null), '');
 assert.equal(connectorUiStep({ active: 'cli' }, 'authorize'), 'qr');
 assert.equal(connectorUiStep({ active: 'connect' }, 'register'), 'connect');
 assert.equal(connectorUiStep({ active: 'qr' }, 'register'), 'qr');
@@ -349,20 +346,22 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
   );
   assert.equal(failed.phase, 'error');
   assert.equal(failed.errorCode, 'auth_failed');
-  assert.equal(failed.detail, 'raw backend diagnostic');
   assert.equal(failed.errStep, 'qr');
   assert.equal(failed.steps.cli, 'done');
   assert.equal(failed.steps.qr, 'error');
   assert.equal(Object.hasOwn(failed.steps, 'authorize'), false);
+  // The raw diagnostic must not be carried on the flow state at all.
   assert.equal(Object.hasOwn(failed, 'err'), false);
+  assert.equal(Object.hasOwn(failed, 'detail'), false);
 }
 {
   const toolStore = source('features/tools/ToolStoreView.jsx');
   assert.match(toolStore, /errors=\{storeCopy\.connectorErrors\}/);
-  assert.match(toolStore, /localizedErrorMessage\(\{ code: flow\.errorCode \}, errors/);
+  assert.match(toolStore, /errors\[flow\.errorCode\] \|\| errors\.unknown \|\| copy\.connectionIncomplete/);
   assert.match(toolStore, /applyConnectorFailure\(f, p, p\.phase\)/);
   assert.doesNotMatch(toolStore, /\berr:\s*String\(/);
   assert.doesNotMatch(toolStore, /flow\.err\b/);
+  assert.doesNotMatch(toolStore, /flow\.detail\b/);
   assert.doesNotMatch(toolStore, /console\.error\([^\n]*connect failed:[^\n]*,\s*e\)/);
   const tauriSource = relative => readFileSync(new URL(`../src-tauri/src/${relative}`, import.meta.url), 'utf8');
   const feishu = tauriSource('features/connectors/feishu.rs');

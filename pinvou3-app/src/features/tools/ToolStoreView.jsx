@@ -13,7 +13,6 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { localizedErrorMessage } from '../../shared/user-facing-error.js';
 import { applyConnectorFailure, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
@@ -182,7 +181,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const EMPTY_STEPS = [];
     const EMPTY_COPY = {};
     const NOOP = () => {};
-    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, errors = EMPTY_COPY, showDetail = false, onBrowserOpenError = NOOP }) => {
+    const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, errors = EMPTY_COPY, onBrowserOpenError = NOOP }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';
       return (
@@ -252,11 +251,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-3">
                 <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">{copy.connectionIncomplete}</div>
                 <div className="text-[12px] leading-relaxed text-rose-800/80 dark:text-rose-200/70">
-                  {localizedErrorMessage({ code: flow.errorCode }, errors, errors.unknown || copy.connectionIncomplete)}
+                  {errors[flow.errorCode] || errors.unknown || copy.connectionIncomplete}
                 </div>
-                {showDetail && flow.detail && (
-                  <pre className="mt-1.5 text-[11.5px] leading-relaxed text-rose-800/70 dark:text-rose-200/60 whitespace-pre-wrap max-h-28 overflow-auto font-mono">{flow.detail}</pre>
-                )}
                 <div className="flex gap-2 mt-3 justify-end">
                   <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">{copy.close}</button>
                   <button type="button" onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[13px]">{copy.retry}</button>
@@ -369,9 +365,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
             setTimeout(() => conn.setFlow(null), 1800);
           } catch (e) {
-            // applyAwait (dingtalk): the skill write failed after a successful sign-in → skills_enable_failed, keeping the raw
-            // error as detail. readinessAwait (tmeet): pass the error through (auth_failed when the readiness re-check failed).
-            const failure = cfg.connectedMode === 'applyAwait' ? { code: 'skills_enable_failed', message: String((e && e.message) || e || '') } : e;
+            // applyAwait (dingtalk) reports a fixed skills_enable_failed; readinessAwait (tmeet) passes the error
+            // through (auth_failed when the readiness re-check failed) — both render localized copy only.
+            const failure = cfg.connectedMode === 'applyAwait' ? { code: 'skills_enable_failed' } : e;
             reportConnectorFailure(cfg.key, failure, 'qr');
             conn.setFlow(f => applyConnectorFailure(f, failure, 'qr'));
           }
@@ -2545,16 +2541,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   {externalAuthAvailable && selectedTool.feishuCli && feishuFlow && (
-                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} errors={storeCopy.connectorErrors} showDetail={!!detailCopy.showRawErrors} onRetry={() => connectConnector('feishu')} onCancel={() => resetConnectorFlow('feishu')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={feishuFlow} steps={storeCopy.feishuSteps} name={storeCopy.toolNames.feishu} copy={detailCopy.flow} errors={storeCopy.connectorErrors} onRetry={() => connectConnector('feishu')} onCancel={() => resetConnectorFlow('feishu')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.wecomCli && wecomFlow && (
-                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} errors={storeCopy.connectorErrors} showDetail={!!detailCopy.showRawErrors} twoStep={false} onRetry={() => connectConnector('wecom')} onCancel={() => resetConnectorFlow('wecom')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={wecomFlow} steps={storeCopy.wecomSteps} name={storeCopy.toolNames.wecom} copy={detailCopy.flow} errors={storeCopy.connectorErrors} twoStep={false} onRetry={() => connectConnector('wecom')} onCancel={() => resetConnectorFlow('wecom')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.dingtalkCli && dingtalkFlow && (
-                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} errors={storeCopy.connectorErrors} showDetail={!!detailCopy.showRawErrors} twoStep={false} onRetry={() => connectConnector('dingtalk')} onCancel={() => resetConnectorFlow('dingtalk')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={dingtalkFlow} steps={storeCopy.dingtalkSteps} name={storeCopy.toolNames.dingtalk} copy={detailCopy.flow} errors={storeCopy.connectorErrors} twoStep={false} onRetry={() => connectConnector('dingtalk')} onCancel={() => resetConnectorFlow('dingtalk')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {externalAuthAvailable && selectedTool.tmeetCli && tmeetFlow && (
-                    <FeishuFlowCard flow={tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} errors={storeCopy.connectorErrors} showDetail={!!detailCopy.showRawErrors} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={() => connectConnector('tmeet')} onCancel={() => resetConnectorFlow('tmeet')} onBrowserOpenError={browserOpenFailed} />
+                    <FeishuFlowCard flow={tmeetFlow} steps={detailCopy.tmeetSteps} name={detailCopy.tools.tmeet.title} copy={detailCopy.flow} errors={storeCopy.connectorErrors} twoStep={false} browserAuth={!!tmeetFlow.browserAuth} onRetry={() => connectConnector('tmeet')} onCancel={() => resetConnectorFlow('tmeet')} onBrowserOpenError={browserOpenFailed} />
                   )}
                   {connectedBanners.filter(b => b.show).map((banner, i) => (
                     <div key={`connected-banner-${i}`} className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
