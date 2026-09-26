@@ -1592,14 +1592,33 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                 // simply spent.
                 T3Screening::Clear => {
                     if let Some((id, _)) = &approved {
-                        parts.shared.consume_confirmation(id);
+                        // consume_confirmation returning false means the token
+                        // was retracted between peek and spend — a Deny
+                        // ("approve → changed my mind") landing during the
+                        // re-screen's a11y queries. Stop rather than execute
+                        // over a retracted approval.
+                        if !parts.shared.consume_confirmation(id) {
+                            return Err(
+                                "the confirmation was denied by the user before this action ran. \
+                                 Ask the user to confirm again."
+                                    .to_string(),
+                            );
+                        }
                         confirmed_t3 = true;
                     }
                 }
                 T3Screening::Blocked(hit) => match approved {
                     // Approved, and still the same target: spend and execute.
                     Some((id, label)) if label == hit.element_label => {
-                        parts.shared.consume_confirmation(&id);
+                        // Same deny race as the Clear arm: false means the
+                        // user retracted the approval while the re-screen ran.
+                        if !parts.shared.consume_confirmation(&id) {
+                            return Err(
+                                "the confirmation was denied by the user before this action ran. \
+                                 Ask the user to confirm again."
+                                    .to_string(),
+                            );
+                        }
                         confirmed_t3 = true;
                     }
                     // Either no token at all, or a token approved for a
@@ -2240,10 +2259,13 @@ impl ToolSpec for ComputerUseTool {
          and injection cannot be detected; on Linux a target whose accessibility role \
          cannot be read may still require confirmation as a precaution. An approved \
          confirmation is bound to the exact action content AND to the target the user \
-         was shown, and the target is re-screened when you spend the confirm_id: if it \
-         no longer names what the user approved, the action does not run and a fresh \
-         confirmation is raised for whatever is there now (your unspent confirm_id \
-         stays valid for a correct retry). The CONTENT you type is never screened, and \
+         was shown, and the target is re-screened when you spend the confirm_id. If the \
+         target is now a DIFFERENT consequential control, the action does not run and a \
+         fresh confirmation is raised for whatever is there now (your unspent confirm_id \
+         stays valid for a correct retry). If the re-screen comes back clear — nothing \
+         consequential under the target — the action executes and the confirm_id is \
+         spent, because an unapproved run of the same action would have executed \
+         without any dialog. The CONTENT you type is never screened, and \
          key chords are not screened for destructiveness. On macOS and Windows the \
          accessibility tree walk is additionally capped below the max_depth/max_nodes \
          arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \

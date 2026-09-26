@@ -4,7 +4,7 @@
 //! inlined twice). No OS handles here: everything is a plain function so it
 //! stays unit-testable on every target.
 
-use super::super::guard::{T3_MATCH_WINDOW_CHARS, fold_for_matching, matches_t3_denylist_folded};
+use super::super::guard::{self, for_each_folded_window};
 use super::super::types::ScrollDirection;
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -92,7 +92,10 @@ fn is_line_breaking(c: char) -> bool {
 /// category Cc and lets every one of these through.
 ///
 /// Kept in step with the matching-side list in `guard::is_invisible_for_matching`
-/// (that one additionally folds whitespace, which display must keep).
+/// (that one additionally folds whitespace, which display must keep). The
+/// `invisible_lists_stay_in_step` test pins the step by asserting every
+/// enumerated range below appears verbatim in the matching-side list too,
+/// so adding a range to one but not the other reddens.
 fn is_invisible_formatting(c: char) -> bool {
     matches!(c,
         '\u{00AD}'
@@ -107,6 +110,7 @@ fn is_invisible_formatting(c: char) -> bool {
         | '\u{2065}'
         | '\u{2066}'..='\u{2069}'
         | '\u{3164}'
+        | '\u{2FFC}'..='\u{2FFF}'
         | '\u{FE00}'..='\u{FE0F}'
         | '\u{FEFF}'
         | '\u{FFA0}'
@@ -131,28 +135,11 @@ fn is_invisible_formatting(c: char) -> bool {
 /// characters across the boundary so a term straddling two chunks is still
 /// found. Length therefore no longer buys an evasion, while peak memory stays
 /// proportional to the chunk rather than to the label.
+/// The walk itself is [`guard::for_each_folded_window`], shared with the
+/// password-role screen so a hostile multi-megabyte role buys no
+/// proportional fold there either.
 pub(crate) fn screening_hit(raw: &str) -> bool {
-    /// Raw characters folded per pass: large enough that the per-chunk
-    /// overhead is irrelevant, small enough that a pathological
-    /// multi-megabyte accessible name is never copied wholesale.
-    const CHUNK_CHARS: usize = 4096;
-    let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
-    let mut folded = String::new();
-    let mut chars = raw.chars();
-    loop {
-        let chunk: String = chars.by_ref().take(CHUNK_CHARS).collect();
-        if chunk.is_empty() {
-            return false;
-        }
-        folded.push_str(&fold_for_matching(&chunk));
-        if matches_t3_denylist_folded(&folded) {
-            return true;
-        }
-        let count = folded.chars().count();
-        if count > carry {
-            folded = folded.chars().skip(count - carry).collect();
-        }
-    }
+    for_each_folded_window(raw, guard::matches_t3_denylist_folded)
 }
 
 /// Normalize CR/CRLF line breaks to `'\n'` for typed text, shared by the
