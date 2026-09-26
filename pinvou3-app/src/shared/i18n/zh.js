@@ -341,6 +341,7 @@ export const dictZh = {
           grantDeny:'拒绝',
           confirmTitle:'确认本次操作',
           confirmActionLabel:'操作',
+          unreadableTarget:'（无可读取的目标）',
           confirmElementLabel:'目标元素',
           confirmOnce:'仅允许本次',
           confirmDeny:'拒绝',

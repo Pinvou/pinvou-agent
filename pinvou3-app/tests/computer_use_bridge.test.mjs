@@ -1077,6 +1077,26 @@ function emit(harness, event, payload) {
   );
 }
 
+// ── 35b. a session-less refresh must clear a stale per-session grant ──
+// The draft screen has no session, so no grant can describe what the user is
+// looking at. The session-less branch never touched `granted`, so leaving a
+// granted session for the draft kept the control banner (and its Stop
+// button) on the welcome page — the same stale-state class as the stop flag
+// above, in the same branch.
+{
+  const harness = createHarness({
+    initialState: { enabled: true, granted: true, stopped: false },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.granted,
+    false,
+    'a session-less refresh must clear the stale per-session grant',
+  );
+}
+
 // ── 36. turning the feature off must clear the latched stop ──
 // The documented resume path is "turn it off and back on". Keeping `stopped`
 // set through the off step made the settings row tell a user who had just

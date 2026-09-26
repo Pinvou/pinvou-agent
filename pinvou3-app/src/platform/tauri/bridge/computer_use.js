@@ -212,6 +212,13 @@
             // showing the "turn it off and back on" hint on the draft screen
             // long after a successful resume.
             stopped: !!raw.stopped,
+            // The draft screen has no session, so no grant can be active for
+            // what the user is looking at. A session-less refresh previously
+            // left a previous session's `granted: true` in place, keeping the
+            // "agent is controlling your machine" banner and its Stop button
+            // on the welcome page — the same stale-state defect the `stopped`
+            // fix above closed.
+            granted: false,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           });
           notify();

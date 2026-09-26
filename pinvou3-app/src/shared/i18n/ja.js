@@ -339,6 +339,7 @@ const jaBase = {
           grantDeny:'拒否',
           confirmTitle:'この操作を確認',
           confirmActionLabel:'操作',
+          unreadableTarget:'（読み取れる対象がありません）',
           confirmElementLabel:'対象要素',
           confirmOnce:'今回のみ許可',
           confirmDeny:'拒否',
