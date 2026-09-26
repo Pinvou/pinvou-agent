@@ -63,7 +63,7 @@ pub(crate) fn strip_all_git_env(command: &mut Command) {
 /// `pub` so the same-repo `pinvou-cli` workspace lanes can import it through
 /// the `features::codex_acp` facade re-export instead of mirroring the list
 /// (a CLI-side mirror had already drifted by three keys); the GUI's own
-/// callers keep using it through [`strip_git_override_env`].
+/// callers keep using it through the crate-private strip_git_override_env.
 pub const GIT_OVERRIDE_KEYS: [&str; 25] = [
     "GIT_DIR",
     "GIT_WORK_TREE",

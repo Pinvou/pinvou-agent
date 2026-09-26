@@ -388,7 +388,7 @@ impl KnowledgeService {
     ///
     /// A named-job entry point isomorphic to [`Self::interrupt_index`] (the
     /// only difference is the transition: this method goes through
-    /// [`ImportJobStore::cancel`], applies to preparing/running/interrupted
+    /// ImportJobStore::cancel, applies to preparing/running/interrupted
     /// and commits synchronously). The headless CLI's `index cancel
     /// <job-id>` uses it instead of [`Self::cancel_index`]'s "latest job"
     /// re-derivation: the CLI validates `active == job_id` before calling,
