@@ -1453,6 +1453,15 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml
           --workspace --all-targets --locked
 
+      # dataset_contract is gated behind `required-features = ["test-support"]`
+      # and is silently skipped by the workspace-wide run above; the Linux
+      # cli-test leg executes it, so the Windows compile leg must at least
+      # compile it.
+      - name: pinvou-cli Windows compile check (adapter-gaia test-support)
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          -p adapter-gaia --features test-support --locked
+
       - name: Windows Rust 单元测试链接检查
         shell: pwsh
         run: |
@@ -1868,6 +1877,15 @@ jobs:
         run: >-
           cargo check --manifest-path pinvou-cli/Cargo.toml
           --workspace --all-targets --locked
+
+      # dataset_contract is gated behind `required-features = ["test-support"]`
+      # and is silently skipped by the workspace-wide run above; the Linux
+      # cli-test leg executes it, so the macOS compile leg must at least
+      # compile it.
+      - name: pinvou-cli macOS compile check (adapter-gaia test-support)
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          -p adapter-gaia --features test-support --locked
 
   required-gate:
     name: required-gate
