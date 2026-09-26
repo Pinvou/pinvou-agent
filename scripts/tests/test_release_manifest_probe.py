@@ -27,6 +27,23 @@ class CommunityReleaseContractTests(unittest.TestCase):
                 self.assertNotIn("rsync ", source)
                 self.assertNotIn("pinvou.com", source)
 
+    def test_release_scripts_take_the_version_from_the_VERSION_authority(self):
+        """Cross-comparing the packaging files passes when all of them are stale."""
+        for script in RELEASE_SCRIPTS:
+            source = script.read_text(encoding="utf-8")
+            with self.subTest(script=script.name):
+                self.assertIn('scripts/sync-version.mjs" --check', source)
+                self.assertIn('< "$REPO_ROOT/VERSION"', source)
+                self.assertNotIn("V_TAURI", source)
+                self.assertNotIn("Version mismatch", source)
+
+    def test_deb_script_reads_the_architecture_off_the_built_artifact(self):
+        """dpkg's `|| echo amd64` default guessed, then failed on a name never built."""
+        source = (REPO_ROOT / "scripts" / "release-deb.sh").read_text(encoding="utf-8")
+        self.assertNotIn("dpkg --print-architecture", source)
+        self.assertIn('BUILT=("$DEB_DIR/pinvou3_${VERSION}_"*.deb)', source)
+        self.assertIn('[ "${#BUILT[@]}" -ne 1 ]', source)
+
 
 if __name__ == "__main__":
     unittest.main()

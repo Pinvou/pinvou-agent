@@ -10,6 +10,8 @@
  *   ⑤ session 内未发送的 composer 草稿在跳转其他页面后仍能恢复。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
+ * 缺依赖分支必须在 exit 2 之前打印一行以 SKIP: 开头的说明(必须在行首);
+ * scripts/run-user-journey-tests.sh 只在退出码 2 且有该行时才算 skip,否则算失败。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');

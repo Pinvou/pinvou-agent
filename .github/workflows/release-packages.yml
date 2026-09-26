@@ -8,10 +8,11 @@ name: release-packages
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
-# scripts/sync-version.mjs --check 校验 VERSION 引用的版本文件(tauri.conf.json /
-# pinvou3-app/src-tauri 的 Cargo.toml / pinvou-knowledge 的 Cargo.toml+Cargo.lock /
-# package.json / package-lock.json;除 package-lock.json 存在才纳入外,其余均为必需)与 VERSION 一致;构建 job 构建前再跑 sync-version.mjs 同步,
-# 保证打进包里的任何版本号都来自 VERSION。
+# scripts/sync-version.mjs --check,把该脚本登记的每个版本文件逐一与 VERSION 比对
+# (打进安装包的是 pinvou3-app 的 tauri.conf.json / Cargo.toml / Cargo.lock /
+# package.json / package-lock.json,以及 pinvou-knowledge 的 Cargo.toml+Cargo.lock;
+# 完整清单以脚本 repoPaths() 为准,其中少数文件存在才纳入,不在此重复枚举以免漂移)。
+# 构建 job 只消费已校验的版本文件,保证打进包里的任何版本号都来自 VERSION。
 #
 # 与其他 workflow 的分工:
 # - pr-check:PR 快速门禁与发布契约验证(不产出安装包)。
@@ -184,11 +185,6 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      # 版本号同步:把 VERSION 写入 tauri.conf.json / Cargo.toml / package.json /
-      # package-lock.json,保证打进 deb 的版本号来自单一事实来源。
-      - name: 同步版本号
-        run: node scripts/sync-version.mjs
-
       # build.js 自动注入 config/platforms/linux overlay,并自动准备 codex bridge。
       # 只打 deb(config overlay 的 targets 也只列了 deb)。
       - name: 构建 deb
@@ -318,9 +314,6 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      - name: 同步版本号
-        run: node scripts/sync-version.mjs
-
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
@@ -427,9 +420,6 @@ jobs:
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
-      - name: 同步版本号
-        run: node scripts/sync-version.mjs
-
       - name: 构建 nsis
         working-directory: pinvou3-app
         run: npm run build:nsis
@@ -534,9 +524,6 @@ jobs:
       - name: 安装前端依赖
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
-
-      - name: 同步版本号
-        run: node scripts/sync-version.mjs
 
       - name: 构建 dmg
         working-directory: pinvou3-app

@@ -5,6 +5,8 @@
  * 文件管理、本地知识库与远程知识库三个 subtab，以及本地知识库的导入和索引流程。
  * 重点抓运行时 ReferenceError。
  * 用法: node pinvou3-app/tests/kb_smoke.js  (全 PASS→0 / FAIL→1 / 缺依赖→2)
+ * 缺依赖分支必须在 exit 2 之前打印一行以 SKIP: 开头的说明(必须在行首),
+ * 否则 scripts/run-user-journey-tests.sh 会把这次跳过判为失败。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
