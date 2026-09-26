@@ -879,9 +879,15 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     // backend would have missed, but it means a backend that forgets to set
     // the flag degrades to the old, narrower screening instead of silently
     // disabling name screening altogether.
+    //
+    // The role goes through the streaming matcher (`screening_hit`) rather
+    // than the whole-string fold: on macOS it is a free-form app-supplied
+    // AXRole, and a hostile multi-megabyte role must not buy a proportional
+    // fold allocation on every screening pass. The verdict is identical —
+    // same fold, same denylist, chunked.
     if element.name_screening_hit
         || matches_t3_denylist(&element.name)
-        || matches_t3_denylist(&element.role)
+        || platform::screening_hit(&element.role)
     {
         return T3Screening::Blocked(T3Hit {
             element_label: element_label(element),
@@ -2447,6 +2453,7 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
         GuardRejection::Stopped => "stopped",
         GuardRejection::GrantRequired => "grant-required",
         GuardRejection::ConfirmationPending => "confirmation-pending",
+        GuardRejection::GrantDialogPending => "grant-dialog-pending",
         GuardRejection::InputBusy => "input-busy",
     }
 }
