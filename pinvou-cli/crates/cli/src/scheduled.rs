@@ -2404,7 +2404,18 @@ enabled in settings",
         if latest.is_object() {
             latest["updated_at"] = serde_json::json!(now_string());
             latest["last_run_at"] = record["ended_at"].clone();
-            let _ = store_holder.write_def(&latest);
+            // Best-effort like the enrichment below, but not silent: unlike
+            // the rollback `let _ =` lanes (where the unwritten state dies
+            // with the failed command), a failed refresh here leaves a
+            // user-visible stale "last run" behind while the command still
+            // succeeds, so the loss is disclosed on stderr instead.
+            if let Err(error) = store_holder.write_def(&latest) {
+                note!(
+                    "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
+                     definition could not be refreshed ({error}); the task still shows the \
+                     previous last-run time"
+                );
+            }
         }
     }
     // Enrichment is best-effort: the organize pass already ran and its run
