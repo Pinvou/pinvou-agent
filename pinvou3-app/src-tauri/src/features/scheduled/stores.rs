@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use parking_lot::RwLock;
 
 use super::*;
+use crate::platform::filesystem::{FileIdentity, metadata_file_identity};
 
 fn scheduled_run_read_state_schema_version() -> u32 {
     SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION
@@ -275,12 +276,22 @@ pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
 /// Cheap change detector for the registry file: a `stat` is orders of
 /// magnitude cheaper than read + parse + lock swap, and every writer of these
 /// files (this handle and the `pinvou` CLI) goes through an atomic
-/// write-and-rename, so a new payload always lands as a new inode with a fresh
-/// mtime and length.
+/// write-and-rename, so a new payload always lands as a new inode with a
+/// fresh mtime. On Unix the stamp carries that file identity: a foreign write
+/// can preserve the byte length (same-shape payload) and, on coarse-mtime
+/// filesystems, the timestamp, and only `dev`/`ino` tells the two files
+/// apart, so it must take part in the equality check. Non-Unix keeps the
+/// plain len+mtime behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileStamp {
     len: u64,
     modified: Option<SystemTime>,
+    /// File identity: an atomic rename always replaces the inode, so equal
+    /// len+mtime on a different inode is still a different write. `None` on
+    /// platforms without a portable identity — those compare len+mtime only
+    /// (the `cfg` lives in `platform::filesystem`, keeping this file
+    /// unconditionally compiled).
+    identity: Option<FileIdentity>,
 }
 
 impl FileStamp {
@@ -291,8 +302,33 @@ impl FileStamp {
         Some(Self {
             len: meta.len(),
             modified: meta.modified().ok(),
+            identity: metadata_file_identity(&meta),
         })
     }
+}
+
+/// The stamp to record after this handle wrote `payload` to `path`, or `None`
+/// when the file on disk cannot be proven to carry it.
+///
+/// The proof cannot come from the stamp alone: a foreign write landing
+/// between our `deepseek_tui::utils::write_atomic` and the stat replaces the
+/// path with its own inode, and a same-length foreign payload is
+/// indistinguishable from ours by length (and, within one mtime tick, by
+/// timestamp) — recording it as "ours" would freeze this handle's stale
+/// memory until the file changed again, which is exactly the state
+/// `reload_if_changed` exists to repair. Reading the bytes back closes that
+/// window: only a file whose content is our payload is recorded, and the
+/// recorded stamp carries the file identity, so a same-length foreign write
+/// is detected as changed by the next check and re-read. Any doubt — failed
+/// stat, failed read, different bytes — records "unknown", which forces the
+/// re-read that merges the foreign payload in instead of dropping it.
+fn stamp_of_our_write(path: &Path, payload: &[u8]) -> Option<FileStamp> {
+    let stamp = FileStamp::of(path)?;
+    if stamp.len != payload.len() as u64 {
+        // Different length: definitely not our payload, no read needed.
+        return None;
+    }
+    (std::fs::read(path).ok().as_deref() == Some(payload)).then_some(stamp)
 }
 
 /// Outcome of one disk read of a store's file.
@@ -471,27 +507,16 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         }
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
-        let record_len = payload.len() as u64;
         deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
             .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))?;
         // Record what we just wrote so `reload_if_changed` does not mistake
-        // this handle's own write for a foreign one and re-read it. The stamp
-        // is taken from the file on disk *now* rather than derived from the
-        // write itself: a foreign process going through `write_atomic` in the
-        // same instant replaces the path with its own inode, and mtime
-        // granularity cannot separate the two writes — a length check can. If
-        // the current stamp does not describe our own payload, skip the
-        // update: memory behind the file under a matching stamp is exactly
-        // the state `reload_if_changed` exists to repair.
-        let stamp = FileStamp::of(self.path.as_ref());
-        let recorded = match stamp {
-            Some(stamp) if stamp.len == record_len => Some(stamp),
-            // Overwritten by a foreign writer (or unstat'able): "unknown"
-            // forces the next check to re-read, which merges in the foreign
-            // payload — never drops it.
-            _ => None,
-        };
-        *self.seen.write() = recorded;
+        // this handle's own write for a foreign one and re-read it — and so
+        // a foreign write that DID land in the window is never recorded in
+        // its place. See `stamp_of_our_write`: only a file proven (by
+        // content) to carry our payload is recorded, identity included;
+        // anything else stays "unknown" and forces the next check to
+        // re-read, which merges the foreign payload in — never drops it.
+        *self.seen.write() = stamp_of_our_write(self.path.as_ref(), &payload);
         Ok(())
     }
 
@@ -1396,6 +1421,132 @@ mod foreign_writer_tests {
             ScheduledTaskKindLookup::MemoryOrganize,
             "the stale recorded stamp must force a re-read, not a skip"
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (d) 相同字节长度的外部写不能被漏掉:同一 handle 两次 reload 之间,
+    /// 外部写者连续落盘两个等长不同内容的 payload,下一次 lookup miss 必须
+    /// 重读并看到第二个写的内容 —— stamp 比较必须覆盖身份(Unix dev/ino),
+    /// 不能只看长度。
+    #[test]
+    fn two_same_length_foreign_writes_between_reloads_are_both_seen() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // v1 seeds the handle's stamp: {t1}.
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        // 无身份平台(长度+mtime 是唯一信号)无法确定性区分等长同刻的两次
+        // 写,本用例只对提供身份的平台有意义(Windows 测试仅编译不执行)。
+        let seeded_identity = std::fs::metadata(&path)
+            .ok()
+            .and_then(|meta| metadata_file_identity(&meta));
+        if seeded_identity.is_none() {
+            return;
+        }
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Two foreign writes, equal byte length, different key: renaming the
+        // key keeps the payload shape (and thus length) identical while the
+        // content differs.
+        write_kind_registry(&path, serde_json::json!({ "ta": kind_entry_json() }));
+        write_kind_registry(&path, serde_json::json!({ "tb": kind_entry_json() }));
+
+        // The next miss must re-read and land on the SECOND write, not skip
+        // because every version shares the same byte length.
+        assert_eq!(
+            store.kind_lookup_for("tb"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the second same-length foreign write must be visible"
+        );
+        assert_eq!(
+            store.kind_lookup_for("ta"),
+            ScheduledTaskKindLookup::Chat,
+            "memory must reflect the second write, not the first"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (e) len+mtime 相同而身份(dev/ino)不同的 stamp 不得被视为"未变化"
+    /// —— 原子重命名必然换 inode,身份必须参与相等比较;粗粒度 mtime 文件
+    /// 系统上等长同刻的两次写只有身份能区分。直接伪造 seen 的身份字段,
+    /// 因此在有/无身份的平台上同样可执行(无身份平台真实 stamp 恒为 None,
+    /// 身份比较天然不触发)。
+    #[test]
+    fn file_identity_participates_in_stamp_comparison() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+
+        // Foreign rewrite (a new inode via the same atomic-rename shape every
+        // writer uses), then forge a `seen` that matches the new file's
+        // len+mtime but carries a different identity — exactly what a
+        // coarse-mtime filesystem would hand a len+mtime-only comparison.
+        write_kind_registry(&path, serde_json::json!({ "t2": kind_entry_json() }));
+        let current = FileStamp::of(&path).expect("stat the rewritten file");
+        let forged_identity = current.identity.unwrap_or(FileIdentity {
+            device: 0,
+            inode: 0,
+        });
+        *store.seen.write() = Some(FileStamp {
+            len: current.len,
+            modified: current.modified,
+            identity: Some(FileIdentity {
+                device: forged_identity.device.wrapping_add(1),
+                inode: forged_identity.inode,
+            }),
+        });
+        assert_ne!(*store.seen.read(), Some(current));
+
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "an identity mismatch must force the re-read even at equal len+mtime"
+        );
+        // The reload records the real stamp, so the next check skips again.
+        assert_eq!(*store.seen.read(), Some(current));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (f) persist 的"盘上是我们的写吗"判定:披露的冻结场景是同长度外部写
+    /// 恰好落在 write_atomic 与记录 stamp 之间 —— 长度(甚至 mtime)都无法
+    /// 识破,只有内容比对可以。只记录被证实为我们的 stamp;不一致或无法
+    /// stat 一律记 unknown,下一次检查重读,绝不当作"未变化"。
+    #[test]
+    fn persist_records_only_a_proven_own_write() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // A clean write records its own stamp.
+        let ours = b"{\n  \"payload\": ours\n}";
+        std::fs::write(&path, ours).expect("seed our payload");
+        assert!(
+            stamp_of_our_write(&path, ours).is_some(),
+            "a file carrying our payload must be recorded as ours"
+        );
+
+        // The disclosed race, driven manually: our write lands, then a
+        // same-length foreign payload replaces it before the stamp is
+        // recorded. The length check alone would bless the foreign file.
+        let foreign = b"{\n  \"payload\": user\n}";
+        assert_eq!(foreign.len(), ours.len(), "fixture must be same-length");
+        std::fs::write(&path, foreign).expect("foreign same-length clobber");
+        assert!(
+            stamp_of_our_write(&path, ours).is_none(),
+            "a same-length foreign clobber must not be recorded as ours"
+        );
+
+        // Unstat'able stays "unknown", never "unchanged" (existing
+        // semantics).
+        std::fs::remove_file(&path).expect("remove the file");
+        assert!(stamp_of_our_write(&path, ours).is_none());
 
         let _ = std::fs::remove_dir_all(dir);
     }

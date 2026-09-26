@@ -389,6 +389,34 @@ pub(crate) fn permission_bits(path: &Path) -> io::Result<Option<u32>> {
     }
 }
 
+/// 文件的稳定身份（device/inode）；平台无可移植等价物时返回 `None`，
+/// 调用方须回退到更弱的变更信号（长度 + mtime）。原子重命名必然换 inode，
+/// 因此身份能区分"等长同刻的不同写"。与 [`permission_bits`] 同理：
+/// `cfg(unix)` 留在本层，feature 层保持无条件编译
+/// （architecture-guard: rust_target_cfg_outside_adapter）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
+/// 从已取到的 metadata 提取身份（复用同一次 stat，不额外加系统调用）。
+pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Some(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 /// Open a private append-only data file without introducing a world-readable
 /// creation window on Unix. `mode(0o600)` only applies at creation — an
 /// existing file left loose by an earlier revision or external tooling would
