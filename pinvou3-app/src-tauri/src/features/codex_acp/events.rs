@@ -174,10 +174,11 @@ fn project_acp_event_data_for_web(event_type: &str, value: Value) -> Value {
         "turn_started" | "turn_completed" => {
             project_allowed_fields(value, &["status", "error", "message", "recoveryReason"])
         }
-        // 回合看门狗/适配器自述的运行时提示：只投影宿主自己的协议字段。
-        // `detail` 是适配器 stderr 原文（现场就含绝对路径，理论上还可能带网关
-        // 响应体或凭据），按本函数的既定边界留在本机——本地卡片与
-        // `codex-acp.log` 都能看到，Relay 不放行外来文本。
+        // Turn-watchdog and adapter runtime notices expose host-owned protocol
+        // fields only. `detail` contains raw adapter stderr, including absolute
+        // paths in field evidence and potentially gateway bodies or credentials.
+        // Keep it local for the desktop card and `codex-acp.log`; Relay must not
+        // forward untrusted text.
         "runtime_notice" => project_allowed_fields(value, &["kind"]),
         // runtime_ready is a signal; the Web client fetches the authoritative
         // session info separately and does not need adapter capabilities here.
@@ -771,12 +772,12 @@ impl EventBridge {
         &self.pinvou_session_id
     }
 
-    /// 会话活动时钟句柄（与 [`super::stall::ActivityClock`] 共享同一个计数器）。
+    /// Session activity handle sharing the same clock as [`super::stall::ActivityClock`].
     pub fn activity(&self) -> super::stall::ActivityClock {
         self.activity.clone()
     }
 
-    /// 当前回合 id（回合收口方用于认领，见 [`EventBridge::finish_turn_once`]）。
+    /// Current turn ID, claimed by the closer through [`EventBridge::finish_turn_once`].
     pub fn current_turn_id(&self) -> Option<String> {
         self.current_turn.read().clone()
     }
@@ -786,10 +787,10 @@ impl EventBridge {
         super::stall::mark_activity(&self.activity);
     }
 
-    /// 幂等收口：只在该回合仍被本 bridge 认领时发出 `turn_completed`。
+    /// Idempotent settlement: emit `turn_completed` only while this bridge owns the turn.
     ///
-    /// prompt 响应返回与看门狗本地收口是两条独立路径，晚到的一方必须让位，
-    /// 否则同一回合会写出第二个 `turn_completed`（前端会多渲染一次结束态）。
+    /// Prompt response and watchdog settlement are independent paths. The late
+    /// path must yield or the same turn would get two terminal events.
     pub fn finish_turn_once(
         &self,
         turn_id: &str,
@@ -837,7 +838,7 @@ impl EventBridge {
     /// 会让前端永久停在“处理中”，而恢复后的 session/cancel 也没有旧 turn 可取消。
     ///
     /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
-    /// `prompt()` 返回后调用 `finish_turn_once()` 收口。
+    /// `prompt()` settles the turn through `finish_turn_once()` when it returns.
     pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
         // Orphan detection must pair turn_started/turn_completed events that
         // can live arbitrarily far apart, so this scan is inherently over the
@@ -871,7 +872,7 @@ impl EventBridge {
     }
 
     pub fn handle(&self, notification: SessionNotification) {
-        // Agent 每推送一条会话更新都算「还活着」，供回合静默看门狗使用。
+        // Every inbound session update proves the agent is alive for the silence watchdog.
         self.note_agent_activity();
         let meta = serde_json::to_value(notification.meta).unwrap_or(Value::Null);
         match notification.update {
@@ -1918,8 +1919,8 @@ mod tests {
         );
     }
 
-    /// `runtime_notice` 只把宿主自己的协议字段放行到 Web/Relay：
-    /// `detail` 是适配器 stderr 原文（现场含绝对路径），按本模块既定边界留在本机。
+    /// `runtime_notice` projects host-owned protocol fields to Web/Relay only.
+    /// `detail` is raw adapter stderr and remains local by this module's boundary.
     #[test]
     fn forkguard_runtime_notice_web_projection_keeps_only_host_fields() {
         let mut notice = event(3, Some("turn-1"), "runtime_notice");
@@ -1937,11 +1938,11 @@ mod tests {
         );
         assert!(
             projected.get("detail").is_none(),
-            "适配器 stderr 原文不得跨 Relay: {projected}"
+            "raw adapter stderr must not cross Relay: {projected}"
         );
         assert!(
             projected.get("agent").is_none(),
-            "Web 端标题取自当前 Agent 名，不需要载荷里的 agent 字段"
+            "Web derives the title from the active agent and needs no agent payload field"
         );
     }
 

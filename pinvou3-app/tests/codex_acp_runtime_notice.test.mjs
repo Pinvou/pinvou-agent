@@ -227,8 +227,8 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(notices, /managed_download|managedDownload|downloadManaged/);
 
-// Agent 侧运行时提示：适配器 stderr 与回合看门狗的兜底动作都必须能浮到界面，
-// 并在后续回合成功完成后自动过期。
+// Adapter stderr and watchdog recovery notices must reach the UI, then expire
+// after a later turn completes successfully.
 const envelope = (seq, type, data) => ({ seq, timestamp: `t${seq}`, event: { type, data } });
 assert.equal(latestAgentRuntimeNotice([]), null, 'no events means no notice');
 assert.equal(

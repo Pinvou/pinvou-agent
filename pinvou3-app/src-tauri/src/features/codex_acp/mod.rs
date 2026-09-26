@@ -117,10 +117,10 @@ const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
 /// Bundled codex-acp adapter pin. Kept separate from the legacy managed
 /// runtime directory schema above so session diagnostics report the truth.
 const CODEX_ACP_ADAPTER_VERSION: &str = "1.6.2";
-/// 随包 claude-agent-acp 的版本。必须与
-/// `scripts/codex-bridge-runtime/package.json`（及其锁文件）里的 pin 一致：
-/// 这个值会写进会话的 `acp-state.json` 作为声明的适配器版本，
-/// `forkguard_declared_adapter_versions_match_the_bridge_pin` 钉住一致性。
+/// Bundled `claude-agent-acp` version. It must match the pin in
+/// `scripts/codex-bridge-runtime/package.json` and its lockfile because this
+/// value is written to session `acp-state.json` as the declared adapter version.
+/// `forkguard_declared_adapter_versions_match_the_bridge_pin` pins the invariant.
 pub const CLAUDE_ACP_VERSION: &str = "0.79.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
 const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
@@ -843,22 +843,22 @@ struct AcpSession {
     /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
     /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
     last_activity: parking_lot::Mutex<Instant>,
-    /// Agent 侧活动时钟（与 event bridge 共享）：回合静默看门狗据此判断
-    /// 「Agent 是否还在动」，与上面的空闲回收时钟刻意分开。
+    /// Agent-side activity clock shared with the event bridge. The turn-silence
+    /// watchdog uses it independently from the idle-reaping clock above.
     activity: stall::ActivityClock,
-    /// 会话级待决权限/询问表（与池共享同一个 map）：用户正在被询问时，
-    /// 静默属于人的思考时间，看门狗不得据此判定 Agent 卡死。
+    /// Session-level pending permission and elicitation maps shared by the pool.
+    /// While a user is answering, silence is human think time, not an agent stall.
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
-    /// 本会话的 stall 收口历史：窗口内反复卡死才升级为重启运行时。
+    /// Stall-settlement history; repeated stalls in the window trigger a runtime restart.
     stall_settles: parking_lot::Mutex<stall::StallSettleTracker>,
-    /// 上一次 stall 收口判定「该换会话了」；由 `get_or_spawn` 在下一次会话
-    /// 访问时执行 evict + 重新 spawn（会话上下文经 session/load 恢复）。
+    /// A previous settlement requested replacement. `get_or_spawn` evicts and
+    /// respawns on the next access, restoring context through `session/load`.
     restart_requested: AtomicBool,
-    /// 本次 spawn 是否成功恢复了既有 ACP 会话（见 `spawn_session`）。
+    /// Whether this spawn resumed an existing ACP session; see `spawn_session`.
     resumed_session: bool,
-    /// 正在等待停止宽限期的回合。只按同一 turn 去重；前一回合的轮询不能
-    /// 阻止后一回合安装自己的兜底任务。
+    /// Turns awaiting the Stop grace period. Deduplicate per turn so an older
+    /// poller cannot prevent the next turn from installing its own fallback.
     cancel_settle_turns: parking_lot::Mutex<HashSet<String>>,
 }
 
@@ -912,8 +912,8 @@ impl AcpSession {
                     StopReason::Refusal => "Refused",
                     _ => "Completed",
                 };
-                // 看门狗可能已把该回合本地收口（Agent 长时间无响应）：此时不再
-                // 补发，timing 与 busy 也由赢得认领的那一方负责。
+                // The watchdog may already have settled this silent turn.
+                // The winning claimant owns timing and busy as well.
                 self.settle_turn_once(&turn_id, status, None, None);
                 false
             }
@@ -925,11 +925,12 @@ impl AcpSession {
         }
     }
 
-    /// 在 timeline 赢得回合认领后，同源关闭 timing 并最后放开 busy。
+    /// After claiming the timeline turn, close timing and release busy last.
     ///
-    /// 任何输掉认领的迟到路径都不能触碰 timing 或 busy：用户可能已经开启了
-    /// 新回合，而这两个槽都是 session 级的。所有响应、看门狗和停止兜底都必须
-    /// 走这一顺序，避免开放准入后才认领旧回合的永久转圈竞态。
+    /// A late path that loses the claim must not touch session-level timing or
+    /// busy because the user may already have started another turn. Responses,
+    /// watchdogs, and Stop fallbacks all use this order to prevent reopening
+    /// admission before the old turn is claimed.
     fn settle_turn_once(
         &self,
         turn_id: &str,
@@ -946,14 +947,15 @@ impl AcpSession {
         })
     }
 
-    /// 等待 `session/prompt` 响应，并兜底「Agent 不回响应」。
+    /// Wait for `session/prompt` and guard against an agent that never responds.
     ///
-    /// 宿主只认这条响应来结束回合；上游适配器在「后台任务通知自启回合 +
-    /// 宿主 prompt 被 `absorbed_mid_turn` 吸收」时会漏掉它（见
-    /// `agentclientprotocol/claude-agent-acp#896` 等），届时界面会永久停在
-    /// 「处理中」，只有重启应用才会被孤儿回合收口。这里按静默分级兜底：
-    /// 超阈值先提示、再请求取消、宽限期后本地收口；SDK 请求本身始终继续等待
-    /// （丢弃它会让 ACP 请求被取消，反而制造 "response never received" 噪音）。
+    /// This response is the host's only terminal signal. An upstream adapter can
+    /// omit it when a background notification starts a turn and absorbs the host
+    /// prompt as `absorbed_mid_turn` (for example, claude-agent-acp#896), leaving
+    /// the UI running until application restart. Escalate silence from notice to
+    /// cancellation and then local settlement after a grace period. Keep the SDK
+    /// request alive because dropping it cancels ACP and creates misleading
+    /// "response never received" noise.
     async fn await_prompt_with_stall_guard(
         &self,
         turn_id: &str,
@@ -1028,10 +1030,10 @@ impl AcpSession {
                                 Some("agent_stall_timeout"),
                             );
                             if claimed {
-                                // 同一会话反复卡死才升级为重启（见
-                                // StallSettleTracker）。输掉认领说明停止兜底或响应
-                                // 已经收口，不能累计一次虚假的 stall，也不能清掉
-                                // 新回合的 busy。
+                                // Restart only after repeated stalls in one session.
+                                // Losing the claim means a Stop fallback or response
+                                // already settled the turn, so do not count a phantom
+                                // stall or clear the next turn's busy flag.
                                 let restart = self.stall_settles.lock().record(Instant::now());
                                 if restart {
                                     self.restart_requested.store(true, Ordering::Release);
@@ -1046,8 +1048,8 @@ impl AcpSession {
         }
     }
 
-    /// 是否有等待用户决定的权限/询问卡片。等待期间没有 Agent 事件属于正常：
-    /// 那是人在读卡片，不是 Agent 卡死。
+    /// Whether a permission or elicitation card awaits the user. Agent silence
+    /// is expected while a human reads the card and must not count as a stall.
     async fn awaiting_user_decision(&self) -> bool {
         let session_id = self.bridge.pinvou_session_id();
         if self
@@ -3202,7 +3204,7 @@ impl AcpPool {
         let turn_id = runtime
             .bridge
             .begin_turn(&content, &prepared.display_attachments);
-        // prompt 发出即从这一刻起算静默：看门狗只认 Agent 侧的后续活动。
+        // Start silence measurement when the prompt is sent; only later agent activity resets it.
         stall::mark_activity(&runtime.activity);
         drop(_admission);
         let pool = self.clone();
@@ -3263,9 +3265,9 @@ impl AcpPool {
                 if runtime.busy.load(Ordering::Acquire) {
                     let turn_id = runtime.bridge.current_turn_id();
                     runtime.cancel();
-                    // 停止不能无限期依赖 Agent 应答：上游在丢弃/吸收 prompt 时
-                    // 可能永不回应，用户会以为停止按钮失灵（现场见到连点四次、
-                    // 约 30 秒后才被适配器自己的 cancel floor 收口）。
+                    // Stop cannot wait forever for the agent. An upstream adapter
+                    // may never answer a dropped or absorbed prompt; field evidence
+                    // showed four clicks before its own cancel floor settled it.
                     if let Some(turn_id) = turn_id {
                         self.schedule_cancel_settle(
                             session_id.to_string(),
@@ -3299,15 +3301,15 @@ impl AcpPool {
         }
     }
 
-    /// 用户停止后的兜底收口：宽限期内 Agent 没有给出响应就本地收口。
+    /// Settle locally if the agent does not answer within the user-Stop grace period.
     fn schedule_cancel_settle(
         &self,
         session_id: String,
         runtime: Arc<AcpSession>,
         turn_id: String,
     ) {
-        // 连点停止只按同一回合去重。若该回合先结束并马上开启新回合，新回合
-        // 仍可安装自己的兜底，而旧任务只能观察、绝不能收口它。
+        // Deduplicate repeated Stop clicks per turn. If that turn ends and the
+        // next begins, it may install a fallback while the old task can only observe it.
         if !runtime.cancel_settle_turns.lock().insert(turn_id.clone()) {
             return;
         }
@@ -3844,23 +3846,23 @@ impl AcpPool {
                     "session:reused",
                     format!("session_id={session_id}"),
                 );
-                // 复用即活动：前端对可见会话的状态轮询会持续刷新空闲时钟，
-                // 这正好与「active 会话不回收」的保守语义一致。
+                // Reuse counts as activity. UI polling for a visible session
+                // refreshes the idle clock, matching the conservative no-reap policy.
                 runtime.note_activity();
                 return Ok(runtime);
             }
-            // 同一会话在窗口内反复 stall：采纳上游「可能需要新会话」的建议，
-            // 丢弃这个运行时，让下面的 spawn_session 重新拉起（会话上下文由
-            // session/load 恢复，只丢掉在飞的那次工作）。首次 stall 不走到这里，
-            // 因为无法从外部区分「query 卡死」与「Agent 在等长时后台任务」。
+            // Repeated stalls in one window indicate that this session may need
+            // replacement. Discard the runtime and let `spawn_session` restore
+            // context through `session/load`; the first stall does not restart
+            // because a wedged query is indistinguishable from long background work.
             //
-            // sessions 锁必须一直持有到 replacement 插入完成。若在 shutdown
-            // 期间留下空洞，并发 get_or_spawn 会各自拉起子进程，后 insert 的
-            // 运行时覆盖先 insert 的运行时并泄漏它的进程/事件泵。
+            // Hold the sessions lock until replacement insertion completes. A
+            // gap during shutdown would let concurrent callers spawn separate
+            // children, and the later insert would leak the earlier runtime.
             sessions.remove(session_id);
-            // 与 evict/restart_agent_sessions 相同，先回答旧运行时留下的权限/
-            // 询问卡片；否则共享 pending map 会让新运行时的看门狗永久误判为
-            // 用户仍在思考，从而跳过所有 stall 检查。
+            // As in eviction and agent restart, resolve cards left by the old
+            // runtime first. Otherwise shared pending maps make the replacement
+            // watchdog think the user is still deciding and skip every check.
             self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
                 .await;
             self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
@@ -3871,10 +3873,10 @@ impl AcpPool {
                 "session:restart_after_stall",
                 format!("session_id={session_id}"),
             );
-            // 旧运行时的 bridge 可能仍有在飞的 flush；新 bridge 构造时会重读
-            // timeline 尾部并据此继续分配 seq，编号保持单调。重启通知延后到新
-            // 运行时建好后由它发出（见下面 insert 之后），这样也能区分「真的
-            // 恢复了旧会话」与「只能新建会话」。
+            // The old bridge may still flush while the new bridge re-reads the
+            // timeline tail and continues monotonic sequence allocation. Emit
+            // the restart notice from the replacement after insertion so it can
+            // distinguish a resumed session from a fresh one.
             restarted_after_stall = true;
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
@@ -3924,8 +3926,8 @@ impl AcpPool {
         };
         sessions.insert(session_id.to_string(), runtime.clone());
         if restarted_after_stall {
-            // 只有真的恢复了旧会话才承诺「历史保留」：适配器不支持 load_session
-            // 或 load 失败时 spawn_session 会静默新建会话，此时必须如实告知用户。
+            // Promise retained history only after a real resume. Without
+            // `load_session`, or when loading fails, spawn creates a fresh session.
             let kind = if runtime.resumed_session {
                 "agent_session_restarted"
             } else {
@@ -4020,9 +4022,9 @@ impl AcpPool {
                         "session:bridge_stderr",
                         format!("agent={agent_id} session_id={sid} stderr={line}"),
                     );
-                    // 适配器把真正的异常写进 stderr（例如「cancel floor … wedged」），
-                    // 只落盘不够：用户看不到，只能对着永久转圈的界面猜。闸门
-                    // （措辞命中 + 限频 + 内容去重）抽在 stall.rs 里做单测。
+                    // Adapters report actionable failures such as "cancel floor ...
+                    // wedged" only on stderr. Logging alone leaves the user guessing,
+                    // so `stall.rs` owns the tested phrase/throttle/deduplication gate.
                     let now = Instant::now();
                     let detail = line
                         .chars()
@@ -4110,7 +4112,7 @@ impl AcpPool {
                                 "request": request_value,
                             }),
                         );
-                        // 权限请求是 Agent 侧活动：看门狗据此外推静默窗口。
+                        // A permission request is agent activity and resets the silence window.
                         bridge_for_permission.note_agent_activity();
                         let response = response_rx.await.unwrap_or_else(|_| {
                             RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
@@ -4253,8 +4255,8 @@ impl AcpPool {
         } else {
             self.config_defaults.get(backend)
         };
-        // `resumed_session` 记录这次 spawn 是「恢复」还是「新建」：重启兜底要如实
-        // 告诉用户历史是否被带过来（load_session 缺失或 load 失败都会静默新建）。
+        // Record whether spawn resumed or created the session so restart recovery
+        // can report whether history survived. Missing or failed load creates fresh.
         let (acp_session_id, mut mode_state, mut config_options, resumed_session) =
             if initialized.agent_capabilities.load_session {
                 if let Some(saved_id) = saved.acp_session_id.clone() {
@@ -5500,11 +5502,10 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// 声明的适配器版本必须与随包 pin 一致。
+    /// Declared adapter versions must match their bundled pins.
     ///
-    /// `CLAUDE_ACP_VERSION` 会被写进会话的 `acp-state.json`（`adapter.version`）
-    /// 当作「本会话用的适配器版本」：它一旦落后于 bridge 的 pin，记录出来的
-    /// 版本就是假的（本轮修过一次：常量停在 0.62.0，而随包已经是 0.70.0→0.79.0）。
+    /// `CLAUDE_ACP_VERSION` is written to session `acp-state.json` as
+    /// `adapter.version`; if it lags the bridge pin, persisted diagnostics lie.
     #[test]
     fn forkguard_declared_adapter_versions_match_the_bridge_pin() {
         let manifest = std::fs::read_to_string(concat!(
@@ -5523,11 +5524,11 @@ mod tests {
             .expect("claude-agent-acp pin");
         assert_eq!(
             codex_pinned, CODEX_ACP_ADAPTER_VERSION,
-            "CODEX_ACP_ADAPTER_VERSION 必须等于随包 codex-acp 的 pin"
+            "CODEX_ACP_ADAPTER_VERSION must match the bundled codex-acp pin"
         );
         assert_eq!(
             claude_pinned, CLAUDE_ACP_VERSION,
-            "CLAUDE_ACP_VERSION 必须等于随包 claude-agent-acp 的 pin"
+            "CLAUDE_ACP_VERSION must match the bundled claude-agent-acp pin"
         );
 
         let prepare = std::fs::read_to_string(concat!(
@@ -5539,11 +5540,11 @@ mod tests {
             prepare.contains(&format!(
                 "CODEX_ACP_VERSION=\"{CODEX_ACP_ADAPTER_VERSION}\""
             )),
-            "prepare-codex-bridge-runtime.sh 必须钉同一个 Codex 适配器版本"
+            "prepare-codex-bridge-runtime.sh must pin the same Codex adapter version"
         );
         assert!(
             prepare.contains(&format!("CLAUDE_ACP_VERSION=\"{CLAUDE_ACP_VERSION}\"")),
-            "prepare-codex-bridge-runtime.sh 必须钉同一个适配器版本"
+            "prepare-codex-bridge-runtime.sh must pin the same adapter version"
         );
 
         let lock = std::fs::read_to_string(concat!(
@@ -5608,13 +5609,12 @@ mod tests {
         drop(request);
     }
 
-    /// 迟到的收口不得关闭别人的回合。
+    /// A late closer must not close another turn.
     ///
-    /// 看门狗/停止兜底本地收口后 `busy` 立刻放开，用户可以马上开新回合；此时
-    /// 被丢弃的 prompt future 才失败返回，若它无条件关 timing，关掉的是用户
-    /// 刚开的那条记录（timing 每会话只留一条、`finish_turn_internal` 取队尾）：
-    /// `has_active_turn` 变假会让同工作区的分支切换守卫失效，`assistant_done`
-    /// 也会带上前一回合的状态。
+    /// After watchdog or Stop settlement releases `busy`, the user may start a
+    /// new turn before the abandoned prompt fails. An unconditional timing close
+    /// would then pop the new session-level entry, disable active-turn guards,
+    /// and attach the old terminal status to the new turn.
     #[test]
     fn forkguard_late_close_does_not_finish_the_next_timing_turn() {
         crate::platform::test_support::with_temp_home("acp-late-close-test", || {
@@ -5630,16 +5630,16 @@ mod tests {
             }));
             assert!(
                 busy.load(Ordering::Acquire),
-                "没认领到旧回合的一方不得放开新回合的 busy"
+                "a loser of the old turn claim must not release the new turn's busy flag"
             );
             assert!(
                 crate::features::assistant::timing::has_queued_active_turn(session_id),
-                "没认领到回合的一方不得关掉 timing"
+                "a loser of the turn claim must not close timing"
             );
             assert!(finalize_claimed_turn(&busy, true, || {
                 assert!(
                     busy.load(Ordering::Acquire),
-                    "收口顺序必须是 claim -> timing -> busy"
+                    "settlement order must be claim -> timing -> busy"
                 );
                 crate::features::assistant::timing::finish_turn(
                     session_id,
@@ -5650,7 +5650,7 @@ mod tests {
             assert!(!busy.load(Ordering::Acquire));
             assert!(
                 !crate::features::assistant::timing::has_queued_active_turn(session_id),
-                "认领到本回合的一方负责收口"
+                "the claimant owns settlement"
             );
             crate::features::assistant::timing::clear_session(session_id);
         });
