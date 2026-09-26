@@ -117,11 +117,13 @@ test('verbatim runtime copy set excludes everything the startup bundles serve', 
   // both builds; every other bundled or cross-platform script must be absent
   // from the copy set, or the build ships the same source twice.
   const requiredByPetEntry = new Set(['shared/model-service-errors.js']);
+  const requiredByRuntimeFetch = new Set(['platform/web/access-policy.json']);
   const intentionallyCopied = new Set([
     'shared/legacy-polyfills.js',
     'platform/web/bootstrap.js',
     'features/updater/update-notice-logic.js',
     ...requiredByPetEntry,
+    ...requiredByRuntimeFetch,
   ]);
   for (const webBuild of [false, true]) {
     const required = requiredVerbatimRuntimeScripts(webBuild);
@@ -144,6 +146,11 @@ test('verbatim runtime copy set excludes everything the startup bundles serve', 
       assert.ok(dropped.has('platform/tauri/bridge/sessions.js'), 'desktop build must drop a bridge fragment copy');
       assert.ok(!dropped.has('shared/model-service-errors.js'), 'pet entry still needs model-service-errors.js');
     }
+    // Runtime-fetched assets: the desktop bridge fetches this at WebAccess
+    // boot (remote-control.js loadAccessPolicy) relative to document.baseURI,
+    // so dropping it on either build returns an index.html parse error.
+    assert.ok(required.has('platform/web/access-policy.json'), 'both builds must keep the runtime-fetched access policy');
+    assert.ok(!dropped.has('platform/web/access-policy.json'), 'access-policy.json must never be dropped');
     for (const relative of dropped) {
       assert.ok(!required.has(relative), `${relative} cannot be both copied and dropped`);
     }

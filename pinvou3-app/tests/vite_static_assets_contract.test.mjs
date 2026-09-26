@@ -144,10 +144,22 @@ test('Vite build contains every local classic runtime script referenced by index
 
   // Since the startup-bundle rework, dist keeps verbatim copies only of
   // scripts not merged into dist/startup: tags that survived the transform
-  // (legacy-polyfills, update-notice-logic) and scripts pet.html references
-  // directly (model-service-errors). Everything else — merged into a bundle
-  // or stripped for this platform — must be absent from dist.
+  // (legacy-polyfills, update-notice-logic), scripts pet.html references
+  // directly (model-service-errors), and runtime-fetched assets
+  // (access-policy.json — the desktop bridge fetches it at WebAccess boot).
+  // Everything else — merged into a bundle or stripped for this platform —
+  // must be absent from dist.
   const keptVerbatim = new Set(['shared/model-service-errors.js']);
+  // access-policy.json is not a script tag, so it never enters `expected`;
+  // pin it separately against both directions.
+  const accessPolicyPath = resolveContainedRuntimePath(distRoot, 'platform/web/access-policy.json');
+  const accessPolicySource = resolveContainedRuntimePath(sourceRoot, 'platform/web/access-policy.json');
+  assert.ok(fs.existsSync(accessPolicyPath), 'dist must carry the runtime-fetched access policy (WebAccess boot)');
+  assert.deepEqual(
+    fs.readFileSync(accessPolicyPath),
+    fs.readFileSync(accessPolicySource),
+    'access-policy.json copy differs from source',
+  );
   for (const relative of expected) {
     const sourcePath = resolveContainedRuntimePath(sourceRoot, relative);
     assert.ok(fs.statSync(sourcePath).isFile(), `missing runtime source: ${relative}`);
