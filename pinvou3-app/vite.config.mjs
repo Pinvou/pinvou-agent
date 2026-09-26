@@ -264,16 +264,29 @@ const bundledButStandaloneElsewhere = new Set([
   'shared/model-service-errors.js',
 ]);
 
-// Scripts whose verbatim copy dist actually needs in this build:
+// Files that are not <script> tags at all but runtime-fetched assets: the
+// desktop bridge fetches platform/web/access-policy.json relative to
+// document.baseURI when WebAccess boots (platform/tauri/bridge/
+// remote-control.js loadAccessPolicy), so its copy must exist on BOTH
+// builds regardless of the platform stripping. bootstrap.js resolves it the
+// same way on web.
+const runtimeFetchAssets = new Set([
+  'platform/web/access-policy.json',
+]);
+
+// Scripts/files whose verbatim copy dist actually needs in this build:
 //   - standalone tags the classic-bundle layer intentionally left unbundled
 //     (fail-closed even if a tag disappears from index.html);
-//   - scripts another entry (pet.html / reader.html) references directly.
+//   - scripts another entry (pet.html / reader.html) references directly;
+//   - runtime-fetched assets (both builds).
 export function requiredVerbatimRuntimeScripts(webBuild) {
   const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
   const platformRetained = localClassicScriptPaths(indexHtml).filter((relative) =>
     webBuild ? !relative.startsWith('platform/tauri/') : !relative.startsWith('platform/web/'));
-  return new Set(platformRetained.filter((relative) =>
+  const required = new Set(platformRetained.filter((relative) =>
     startupBundleExcludedScripts.has(relative) || bundledButStandaloneElsewhere.has(relative)));
+  for (const asset of runtimeFetchAssets) required.add(asset);
+  return required;
 }
 
 function listSourceFilesUnder(prefix) {
@@ -307,6 +320,10 @@ export function verbatimDroppedRuntimeScripts(webBuild) {
     if (!prefix.startsWith(otherPlatformPrefix)) continue;
     for (const file of listSourceFilesUnder(prefix)) dropped.add(file);
   }
+  // Runtime-fetched assets are exempt from the platform strip: the desktop
+  // bridge fetches access-policy.json at WebAccess boot regardless of whose
+  // platform directory the file lives in.
+  for (const asset of runtimeFetchAssets) dropped.delete(asset);
   return dropped;
 }
 
