@@ -8,10 +8,12 @@
 //!
 //! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes: {"<mode>": [...]},
 //! "initialized": ["<mode>"], project_skills_enabled}`，scope 键即 `SessionMode` 的
-//! kebab-case 名。首个版本读取时把两份旧文件迁移到本文件（读到即迁移）：
-//! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
-//! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
-//! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
+//! kebab-case 名。读到旧双文件时在内存中迁移出本文件的等价视图；只有持锁
+//! 写方把迁移结果落盘到本文件——读路径刻意不落盘（读路径 persistence-free
+//! 契约见下）。旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经
+//! `bundle::skill_owner_package` 映射到所属包（companion → MCP/CLI 包，独立
+//! 技能 → 自身）；`skill:` 前缀跨文件借道残留统一剥除并清出连接器文件。
+//! 迁移幂等，失败回退默认值（安全兜底）。
 //!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。

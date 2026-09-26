@@ -59,6 +59,8 @@ pub use crate::core::mode_state::{ModeLane, SerializableMode};
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
 use parking_lot::{Mutex, RwLock};
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use retention::RetentionEvictionRecord;
 
 /// Re-export the session-domain mode-state types so they are owned by the
 /// sessions feature. These were historically re-exported through a `core`
@@ -274,7 +276,14 @@ pub struct SessionStore {
     /// deletions (see `product_runtime::agentic_task`). `None` everywhere
     /// else — the GUI never installs one and the sweep pays nothing.
     #[cfg(feature = "benchmark-hooks")]
-    retention_eviction_observer: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
+    retention_eviction_observer: Arc<Mutex<Option<Arc<Mutex<RetentionEvictionRecord>>>>>,
+    /// Evictions recorded before any observer was installed (the headless
+    /// host boots — and sweeps — before the runner arms). Flushed into the
+    /// observer when one is installed; the record windows its ids, since a
+    /// process that never arms must not grow it without bound. Gated like
+    /// the observer.
+    #[cfg(feature = "benchmark-hooks")]
+    pending_retention_evictions: Arc<Mutex<RetentionEvictionRecord>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话

@@ -2046,10 +2046,11 @@ mod tests {
             "含空格的秘密路径不得出现在清单: {:?}",
             diff.changes
         );
-        // patch 同样不得携带秘密段（---/+++ 兜底剔除对含空格路径的覆盖）。
+        // The patch must not carry the secret section either (the ---/+++
+        // strip covers paths containing spaces).
         assert!(
             !diff.patch.contains("SECRET") && !diff.patch.contains(".env"),
-            "含空格的秘密段不得进入 patch: {:?}",
+            "secret section with spaces must not enter the patch: {:?}",
             diff.patch
         );
     }
@@ -2283,21 +2284,21 @@ mod tests {
             diff.changes
         );
         assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
-        // patch 面向 CLI 直接上屏：秘密段（含路径与原文）必须被整段剔除，
-        // 正常文件的差异必须保留。
+        // The patch renders straight to the CLI: the secret section (path
+        // and content) must be stripped wholesale, normal files kept.
         assert!(
             !diff.patch.contains("SECRET"),
-            "秘密原文不得进入 patch: {:?}",
+            "secret content must not enter the patch: {:?}",
             diff.patch
         );
         assert!(
             !diff.patch.contains(".env"),
-            "秘密路径不得进入 patch: {:?}",
+            "secret path must not enter the patch: {:?}",
             diff.patch
         );
         assert!(
             diff.patch.contains("ok.txt"),
-            "正常文件差异必须保留在 patch: {:?}",
+            "normal file diffs must survive in the patch: {:?}",
             diff.patch
         );
     }
