@@ -3,7 +3,9 @@
  * Registered before bridge.js builds the backwards-compatible facade.
  *
  * After ADR-0006 this is a thin layer: multi-agent = plain-session capability
- * + proactive delegation. Subagent identity/status/records are persisted by
+ * + the spawn-time swarm contract (delegation is the parent agent's judgment
+ * by actual benefit, not mandated). Subagent identity/status/records are
+ * persisted by
  * the foundation (worker ledger + transcripts); this domain only reads the
  * subagent list and transcripts and forwards subagent bridge events as DOM
  * events for the running overlay, the spawn count rows, and the transcript

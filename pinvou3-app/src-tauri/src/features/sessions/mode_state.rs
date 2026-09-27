@@ -97,8 +97,9 @@ pub struct SessionModeState {
     #[serde(skip)]
     pub mounted_collections_revision: u64,
     /// 多智能体模式开关（ADR-0006）：模型列表下方的会话级开关。开启后本会话
-    /// 装配专家名册，并在每轮注入主动委派指令；关闭停止注入并回收引擎，取消
-    /// 仍在后台运行的子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
+    /// 装配专家名册：引擎生成时注入一次蜂群契约（委派与否由模型按收益判断），
+    /// 每轮仅附专家候选提醒；关闭停止注入并回收引擎，取消仍在后台运行的
+    /// 子智能体（工具面不随开关变化，与主线一致）。会话级记忆，经
     /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
     #[serde(default)]
     pub multi_agent: bool,
@@ -266,7 +267,10 @@ impl SessionStore {
         let _io = self.multi_agent_flags_io.lock();
         let previous = {
             let mut m = self.mode_states.write();
-            let entry = m.entry(id.to_string()).or_default();
+            // 与本文件其他 setter 同惯例：物化条目时用解析出的默认 mode，
+            // 不得 or_default()——那会把从未切换过 mode 的 code 会话从
+            // Plan 只读默认静默翻成 Yolo 自动批准。
+            let entry = Self::mode_state_entry(&mut m, id, self.resolved_default_mode(id));
             let previous = entry.multi_agent;
             entry.multi_agent = enabled;
             previous
@@ -332,7 +336,10 @@ impl SessionStore {
             let mut m = self.mode_states.write();
             for id in ids {
                 if sessions_dir.join(format!("{id}.json")).is_file() {
-                    m.entry(id).or_default().multi_agent = true;
+                    // 同 set_multi_agent：物化条目用解析出的默认 mode，
+                    // 避免 or_default() 把 code 会话翻成 Yolo。
+                    Self::mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
+                        .multi_agent = true;
                 } else {
                     ghosts = true;
                 }
