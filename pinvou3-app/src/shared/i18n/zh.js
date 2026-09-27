@@ -371,7 +371,7 @@ export const dictZh = {
           confirmHoldKeyMasked:(chord, count, ms)=>chord?`按住 ${chord} + ${count} 个掩码字符 ${ms} 毫秒`:`按住 ${count} 个掩码字符 ${ms} 毫秒`,
           confirmDrag:(from, to)=>`从 ${from} 拖拽到 ${to}`,
           confirmMouseMove:point=>`移动鼠标到 ${point}`,
-          confirmMouseDown:button=>`按下${button}`,
+          confirmMouseDown:button=>`按住${button}`,
           confirmMouseUp:button=>`松开${button}`,
           screenshotCaption:'屏幕截图',
           screenshotLoading:'正在加载截图…',

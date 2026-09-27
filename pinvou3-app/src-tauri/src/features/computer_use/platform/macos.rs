@@ -100,6 +100,8 @@ use super::helpers::{
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
+use super::super::guard::raw_element_binding;
+
 /// Wait before a click so the preceding move settles (the target process
 /// consumes the mouse-moved event).
 const CLICK_SETTLE_MS: u64 = 30;
@@ -992,6 +994,8 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
         info.title
     };
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
+    // Bound while the raw strings are still in scope (see `raw_binding`).
+    let raw_binding = raw_element_binding(&name, &info.role);
     ElementInfo {
         // AXRole/AXSubrole are free-form strings supplied by the target app,
         // so the role is carried **raw**: it is a screening input
@@ -1003,6 +1007,7 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
         // tree node both sanitize.
         role: info.role,
         name_screening_hit: screening_hit(&name),
+        raw_binding,
         name: display_name,
         x: info.x,
         y: info.y,
@@ -2165,9 +2170,11 @@ mod tests {
         );
 
         // The role reaches `is_secure_role`/`matches_t3_denylist` verbatim, so
-        // padding must not be able to push the signal out of it either.
+        // padding must not be able to push the signal out of it either. The
+        // padding deliberately exceeds the streaming matcher's fold chunk, so
+        // the pinned suffix lands in a window other than the first one.
         let padded_role = element_info_from(AxNodeInfo {
-            role: format!("{padding}AXSecureTextField"),
+            role: format!("{}{padding}AXSecureTextField", "P".repeat(5000)),
             title: "Card number".to_string(),
             ..base.clone()
         });

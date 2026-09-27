@@ -76,6 +76,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use xcap::Monitor;
 
 use super::super::backend::ComputerUseBackend;
+use super::super::guard::raw_element_binding;
 use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
@@ -625,9 +626,13 @@ fn element_info_from_cache(
         .is_cached_password()
         .map_err(|e| map_uia_err(&format!("{context} password"), e))?;
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
+    let role = format!("{control_type:?}");
+    // Bound while the raw strings are still in scope (see `raw_binding`).
+    let raw_binding = raw_element_binding(&name, &role);
     Ok(ElementInfo {
-        role: format!("{control_type:?}"),
+        role,
         name_screening_hit: screening_hit(&name),
+        raw_binding,
         name: display_name,
         x: rect.get_left(),
         y: rect.get_top(),

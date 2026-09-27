@@ -664,6 +664,17 @@ for (const library of ["libpipewire-0.3-0", "libgbm1", "libegl1"]) {
     `Linux packages must depend on ${library}: the binary links it at load time`,
   );
 }
+// The list is pinned exactly, not just by membership: the bundler writes
+// `Depends:` verbatim, so an EXTRA entry is as much a shipped fact as a
+// missing one, and a silent addition deserves the same friction as a
+// removal. Update this list deliberately when the linkage genuinely changes.
+assert.deepEqual(linux.bundle.linux.deb.depends, [
+  "libwebkit2gtk-4.1-0 (>= 2.40)",
+  "webkit2gtk-driver",
+  "libpipewire-0.3-0",
+  "libgbm1",
+  "libegl1",
+]);
 const linuxManifest = buildResourceManifest(linux, { platform: "linux" });
 assert.ok(linuxManifest.resourceFileCount > 0);
 assert.ok(linuxManifest.files.some((file) => file.destination.startsWith("runtime/asr/")));

@@ -442,13 +442,32 @@ fn fold_confusable(c: char) -> char {
         'ʏ' => 'y',
         'ᴢ' => 'z',
         // Cherokee syllabary letters UTS#39 maps to a single term letter —
-        // whole-letterform substitutions (`ꮟuy`, `witꮒdraw`, `ꮷelete`). The
-        // arms sit on the **small** syllabary forms: the capitals (Ꮟ-class)
-        // lowercase to them before the fold, Cherokee renders as plain
-        // Latin-grade glyphs through the platform's fallback fonts, and no
-        // Cherokee word folds onto a denylist term — the armed set
-        // {i h b d r w s c} is missing at least one letter of every term
-        // (a/e/t/u/n/o/m/f/p/y/g/k/l).
+        // whole-letterform substitutions (`ꮟuy`, `witꮒdraw`, `Ᏼuy`). The
+        // arms sit on the forms the pipeline actually delivers: the capital
+        // syllables lowercase into their small forms (Ꮟ→ꮟ, Ᏼ→ᏼ) before the
+        // fold. Cherokee renders as plain Latin-grade glyphs through the
+        // platform's fallback fonts, so this is the demonstrated spoof class;
+        // the fold maps the glyph skeleton, not the phonetic word, so real
+        // Cherokee text cannot fold onto an English payment term except by a
+        // glyph-sequence coincidence (the accepted safe direction: an extra
+        // dialog, never a missed one).
+        'ꭰ' => 'd',
+        'ꭱ' => 'r',
+        'ꭲ' => 't',
+        'ꭹ' => 'y',
+        'ꭺ' => 'a',
+        'ꭼ' => 'e',
+        'ꮇ' => 'm',
+        'ꮋ' => 'h',
+        'ꮍ' => 'y',
+        'ꮐ' => 'g',
+        'ꮢ' => 'r',
+        'ꮥ' => 's',
+        'ꮮ' => 'l',
+        'ꮲ' => 'p',
+        'ꮶ' => 'k',
+        'ᏻ' => 'g',
+        'ᏼ' => 'b',
         'ꭵ' => 'i',
         'ꮒ' => 'h',
         'ꮟ' => 'b',
@@ -459,9 +478,10 @@ fn fold_confusable(c: char) -> char {
         'ꮪ' => 's',
         'ꮯ' => 'c',
         // Coptic letters UTS#39 maps to a single term letter (`ⲣay`,
-        // `aⲥcept`, `ⲟrder now`). Coptic is liturgical and its fallback
-        // rendering is a plain letter; no Coptic word folds onto a term for
-        // the same missing-letter reason as Cherokee above.
+        // `aⲥcept`, `ⲟrder now`), capitals folded to the small forms the
+        // pipeline delivers (`Ⲃuy` lowers to ⲃ). Coptic is liturgical and its
+        // fallback rendering is a plain letter; the same glyph-skeleton
+        // argument as Cherokee applies.
         'ϭ' => 'o',
         'ⲅ' => 'r',
         'ⲓ' => 'i',
@@ -471,15 +491,57 @@ fn fold_confusable(c: char) -> char {
         'ⲩ' => 'y',
         'ⲽ' => 'w',
         'ⳏ' => 'p',
+        'ⳑ' => 'l',
+        'ⲃ' => 'b',
+        'ⲏ' => 'h',
+        'ⲕ' => 'k',
+        'ⲙ' => 'm',
+        'ⲛ' => 'n',
+        'ⲧ' => 't',
         // Canadian syllabics and Lisu letters UTS#39 maps to a single term
-        // letter (`ᑲuy`, `ᖯuy`, `ꓒiscard`, `deꓲete`) — the same
-        // whole-letterform class as Cherokee, with the same missing-letter
-        // argument ({d b} and {d l} alone spell no term).
+        // letter (`ᑲuy`, `ᖯuy`, `ᗷuy`, `witᕼdraw`, `ꓐuy`, `ꓪithdraw`) — the
+        // same whole-letterform class. Both scripts are caseless, so the
+        // arms sit directly on the delivered characters. Lisu's letterforms
+        // are Latin-capital-shaped by design (the Frazer alphabet), and
+        // Canadian syllabics render through Euphemia-class fallbacks; real
+        // text in either script in a consent-dialog label is effectively
+        // nonexistent, and the fold maps glyphs, not phonetics.
         'ᑯ' => 'd',
         'ᑲ' => 'b',
         'ᖯ' => 'b',
+        'ᕼ' => 'h',
+        'ᗷ' => 'b',
+        'ᑌ' => 'u',
+        'ᑭ' => 'p',
+        'ᒪ' => 'l',
+        'ᖇ' => 'r',
+        'ᖴ' => 'f',
+        'ᗅ' => 'a',
+        'ᗞ' => 'd',
+        'ᗪ' => 'd',
+        'ᗰ' => 'm',
+        'ꓐ' => 'b',
+        'ꓑ' => 'p',
         'ꓒ' => 'd',
+        'ꓓ' => 'd',
+        'ꓔ' => 't',
+        'ꓖ' => 'g',
+        'ꓗ' => 'k',
+        'ꓚ' => 'c',
+        'ꓝ' => 'f',
+        'ꓟ' => 'm',
+        'ꓠ' => 'n',
+        'ꓡ' => 'l',
+        'ꓢ' => 's',
+        'ꓣ' => 'r',
+        'ꓧ' => 'h',
+        'ꓪ' => 'w',
+        'ꓬ' => 'y',
+        'ꓮ' => 'a',
         'ꓲ' => 'l',
+        'ꓰ' => 'e',
+        'ꓳ' => 'o',
+        'ꓴ' => 'u',
         other => other,
     }
 }
@@ -640,6 +702,46 @@ pub fn is_secure_role(role: &str) -> bool {
     })
 }
 
+/// The per-process random key every consent binding hash is keyed with
+/// (in-process only — tokens are memory-bound with a TTL — but **keyed**:
+/// any deterministic 64-bit hash has a ~2^32 birthday surface an offline
+/// attacker can walk, and the model must have no oracle to forge bindings
+/// against; reading the key requires the same process-memory access the
+/// approval tokens themselves already rely on staying private). Shared by
+/// the tool's action binding and the platform layer's raw-target bindings.
+pub(crate) fn binding_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        for word in key.chunks_exact_mut(8) {
+            word.copy_from_slice(&rand::random::<u64>().to_le_bytes());
+        }
+        key
+    })
+}
+
+/// Keyed hash of one element's raw identity: the unsanitized, untruncated
+/// accessible name and role, length-prefixed so no adversary-chosen pair of
+/// fields folds into the same byte stream as a different pair. Computed at
+/// the platform boundary where the raw strings still exist (the `ElementInfo`
+/// copy of the name is display-sanitized and truncated); the tool layer
+/// combines these per-element bindings into the target-set binding the
+/// approval token carries, so a token cannot be replayed onto an element
+/// whose display line renders identically to the approved one.
+pub(crate) fn raw_element_binding(name: &str, role: &str) -> u64 {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(binding_key());
+    hasher.update((name.len() as u64).to_be_bytes());
+    hasher.update(name.as_bytes());
+    hasher.update((role.len() as u64).to_be_bytes());
+    hasher.update(role.as_bytes());
+    let digest = hasher.finalize();
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(prefix)
+}
+
 /// Guard rejection reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardRejection {
@@ -743,6 +845,14 @@ pub struct PendingConfirmation {
     /// cannot be silently swapped for a same-summary different-content one.
     pub action_binding: u64,
     pub element_label: String,
+    /// Keyed hash of the raw (unsanitized, untruncated) name/role identity
+    /// behind `element_label`, computed by the tool layer. The label is a
+    /// display line: sanitized and truncated to 80 chars, so distinct
+    /// elements can render it identically (payloads differing only past the
+    /// truncation tail, or only in characters sanitization rewrites). The
+    /// spend path compares this binding too, so a token cannot be replayed
+    /// onto a display-identical twin.
+    pub element_binding: u64,
     pub created_at: Instant,
     /// The full `confirm_required` event payload exactly as minted
     /// (identity + structured fields + optional preview), served through
@@ -770,6 +880,9 @@ struct ApprovedToken {
     /// token aimed at a different consequential control than the one on the
     /// dialog.
     element_label: String,
+    /// See [`PendingConfirmation::element_binding`]: the raw identity behind
+    /// the label, so the spend path can refuse a display-identical twin.
+    element_binding: u64,
     minted_at: Instant,
 }
 
@@ -1100,6 +1213,7 @@ impl ComputerUseShared {
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
         action_binding: u64,
+        element_binding: u64,
     ) -> Option<String> {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
@@ -1124,6 +1238,7 @@ impl ComputerUseShared {
                 action_summary: action_summary.into(),
                 action_binding,
                 element_label: element_label.into(),
+                element_binding,
                 created_at: now,
                 // Attached right after the mint via `set_pending_payload`
                 // (the payload embeds the mint-returned confirm_id).
@@ -1316,6 +1431,7 @@ impl ComputerUseShared {
                 action_summary: entry.action_summary,
                 action_binding: entry.action_binding,
                 element_label: entry.element_label,
+                element_binding: entry.element_binding,
                 minted_at: now,
             },
         );
@@ -1323,7 +1439,9 @@ impl ComputerUseShared {
     }
 
     /// Validates an approval token **without consuming it** and returns the
-    /// element label the user approved.
+    /// element label the user approved plus the raw-identity binding behind
+    /// it ([`PendingConfirmation::element_binding`]), so the spend path can
+    /// refuse a display-identical twin.
     ///
     /// The token must exactly match this session, the action summary and the
     /// action content hash — the user approves a summary for readability, but
@@ -1345,7 +1463,7 @@ impl ComputerUseShared {
         session_id: &str,
         action_summary: &str,
         action_binding: u64,
-    ) -> Option<String> {
+    ) -> Option<(String, u64)> {
         // Defense in depth (mirrors the mint side): a token minted while
         // enabled must not be spendable after a stop/disable landed — the
         // spend path still dies at verify_input_action, but consuming the
@@ -1368,7 +1486,7 @@ impl ComputerUseShared {
         {
             return None;
         }
-        Some(token.element_label.clone())
+        Some((token.element_label.clone(), token.element_binding))
     }
 
     /// Consumes a token previously validated by [`Self::peek_confirmation`],
@@ -1412,7 +1530,7 @@ mod tests {
     /// both sides (mint copies it verbatim, spend compares it verbatim).
     fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
         shared
-            .new_pending_confirmation(session, summary, "Buy now", 0)
+            .new_pending_confirmation(session, summary, "Buy now", 0, 0)
             .expect("pending minted while the feature is enabled")
     }
 
@@ -1984,6 +2102,30 @@ mod tests {
             "\u{0584}ormat", // Armenian keh (ք) for f
             "ꜱᴇɴᴅ",       // whole small-capital term
             "ᴅᴇʟᴇᴛᴇ",     // whole small-capital term
+            // Fifth round: the uppercase-skeleton letterform set — capitals
+            // that lowercase into the armed small forms, or caseless scripts
+            // armed directly. Each renders as the plain ASCII label through
+            // the platform's fallback fonts.
+            "ᗷuy",            // Canadian syllabics carrier khe (ᗷ) for b
+            "Ᏼuy",            // Cherokee capital yv (Ᏼ; lowers to ᏼ) for b
+            "ꓐuy",            // Lisu ba (ꓐ) for b
+            "ꓪithdraw",       // Lisu wa (ꓪ) for w
+            "witᕼdraw",       // Canadian syllabics Nunavut h (ᕼ) for h
+            "\u{13A0}iscard", // Cherokee capital a (Ꭰ; lowers to ꭰ) for d
+            "ſubmit",         // long s: NFKC's compatibility fold lands it on plain s
+            // Fifth round: one payload per previously unpinned invisible
+            // family (same code path as the pinned ranges — hygiene against
+            // a future list regression deleting an entire range).
+            "De\u{061C}lete",  // Arabic letter mark
+            "De\u{17B5}lete",  // Khmer vowels
+            "De\u{180B}lete",  // Mongolian free variation selectors
+            "De\u{2060}lete",  // word joiner
+            "De\u{2066}lete",  // left-to-right isolate
+            "De\u{FFA0}lete",  // halfwidth hangul filler
+            "De\u{FFF9}lete",  // interlinear annotation anchor
+            "De\u{1BCA1}lete", // shorthand format controls
+            "De\u{E0100}lete", // variation selector supplement
+            "支\u{2060}付",
             // Fourth review round: the İ dot. Lowercasing İ produces i +
             // U+0307, and NFKC leaves the sequence; without the
             // post-composition pass the undeletable dot split every i-term.
@@ -2177,8 +2319,14 @@ mod tests {
         let id = new_pending(&shared, "s1", summary);
         assert!(shared.mint_confirmation(&id));
         // Peeked (not consumed): the tool is re-screening the target now.
-        let label = shared.peek_confirmation(&id, "s1", summary, 0);
-        assert_eq!(label.as_deref(), Some("Buy now"));
+        let Some((label, element_binding)) = shared.peek_confirmation(&id, "s1", summary, 0) else {
+            panic!("a freshly minted token must peek");
+        };
+        assert_eq!(label, "Buy now");
+        assert_eq!(
+            element_binding, 0,
+            "the pending's raw binding is copied verbatim"
+        );
         // The user denies before the consume lands.
         assert!(shared.deny_confirmation(&id));
         // The consume must report that nothing was spent, so the caller can
@@ -2396,7 +2544,7 @@ mod tests {
         // not a dead dialog.
         assert!(
             shared
-                .new_pending_confirmation("s3", "left click", "Buy now", 0)
+                .new_pending_confirmation("s3", "left click", "Buy now", 0, 0)
                 .is_none(),
             "no pending may be registered while the stop latch is raised"
         );
@@ -2404,7 +2552,7 @@ mod tests {
         // Re-enable restores the ability to ask (a fresh id), while nothing
         // from the stopped window exists.
         let fresh = shared
-            .new_pending_confirmation("s3", "left click", "Buy now", 0)
+            .new_pending_confirmation("s3", "left click", "Buy now", 0, 0)
             .expect("pending registered after re-enable");
         assert!(shared.pending_confirmation(&fresh).is_some());
     }
@@ -2558,7 +2706,7 @@ mod tests {
         shared.stop_all();
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none(),
             "no pending may be registered while the stop latch is raised"
         );
@@ -2634,7 +2782,7 @@ mod tests {
         let shared = enabled_shared();
         shared.grant_session("s1");
         let id = shared
-            .new_pending_confirmation("s1", "type 3 characters", "field", 42)
+            .new_pending_confirmation("s1", "type 3 characters", "field", 42, 0)
             .expect("pending registered");
         assert!(shared.mint_confirmation(&id));
         assert_eq!(
@@ -2650,7 +2798,7 @@ mod tests {
         // Mint refuses while disabled, too (toggle-off race symmetry).
         let shared2 = enabled_shared();
         let id2 = shared2
-            .new_pending_confirmation("s2", "left click", "Buy now", 7)
+            .new_pending_confirmation("s2", "left click", "Buy now", 7, 0)
             .expect("pending registered");
         shared2.set_enabled(false);
         assert!(
@@ -2669,7 +2817,7 @@ mod tests {
         let shared = enabled_shared();
         shared.grant_session("s1");
         let id = shared
-            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
             .expect("pending registered");
         shared.revoke_session("s1");
         assert!(!shared.mint_confirmation(&id));
@@ -2689,14 +2837,14 @@ mod tests {
         shared.set_enabled(false);
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none()
         );
         shared.set_enabled(true);
         shared.stop_all();
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none()
         );
     }
@@ -2948,7 +3096,7 @@ mod tests {
         ))
         .expect("tool.rs readable");
         assert!(
-            source.contains(".mark_grant_requested_serialized(&self.parts.session_id);"),
+            source.contains("shared.mark_grant_requested_serialized(&session_id);"),
             "the GrantRequired path must mark under the physical-input lock \
              (mark_grant_requested_serialized), not race a live injection"
         );
@@ -2963,7 +3111,7 @@ mod tests {
         let shared = enabled_shared();
         assert!(shared.pending_payload_for_session("s1").is_none());
         let id1 = shared
-            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
             .expect("pending registered");
         shared.set_pending_payload(&id1, serde_json::json!({ "confirm_id": id1 }));
         let served = shared
@@ -2972,7 +3120,7 @@ mod tests {
         assert_eq!(served["confirm_id"], id1);
         // Newest wins: the replacement's payload is the one served.
         let id2 = shared
-            .new_pending_confirmation("s1", "type 3 characters", "Buy now", 0)
+            .new_pending_confirmation("s1", "type 3 characters", "Buy now", 0, 0)
             .expect("pending registered");
         shared.set_pending_payload(&id2, serde_json::json!({ "confirm_id": id2 }));
         let served = shared
@@ -3098,8 +3246,12 @@ mod tests {
         ))
         .expect("linux.rs readable");
         assert!(
-            linux_source.contains("(sanitize_name(&raw, MAX_NAME_CHARS), screening_hit(&raw))"),
+            linux_source.contains("let hit = screening_hit(&raw);"),
             "Linux must screen the raw accessible name, not the sanitized display copy"
+        );
+        assert!(
+            linux_source.contains("raw_element_binding(&raw_name, role.name())"),
+            "Linux must bind the raw accessible name into the consent token"
         );
 
         // The Linux hit test must skip undecidable non-active windows and
