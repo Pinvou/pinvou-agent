@@ -1448,6 +1448,7 @@ function hasStoredCredential(record) {
                   {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                   <label className="shrink-0 text-[14px] leading-5">API Key</label>
                   <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
+                    autoCorrect="off" autoCapitalize="off" spellCheck={false}
                     // biome-ignore lint/a11y/noAutofocus: the edit-search-source modal focuses the key input on open; focus is the input intent
                     autoFocus
                     placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
