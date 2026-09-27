@@ -22,9 +22,6 @@ const PET_ACTIVITY_DEFAULT_H: f64 = 112.0;
 const PET_ACTIVITY_MIN_H: f64 = 48.0;
 const PET_ACTIVITY_MAX_H: f64 = 260.0;
 const PET_ACTIVITY_GAP_H: f64 = 12.0;
-/// 人物可见区距窗口底边的距离,与 pet.css(.pet-root padding-bottom)及
-/// JS 拖拽物理(pet-interaction PET_BOTTOM_PADDING)三方必须一致。
-const PET_CHARACTER_BOTTOM: f64 = 8.0;
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 1.2;
 

@@ -4,7 +4,7 @@ import { ensureLanguage, initialSystemLanguage } from '../shared/i18n.js';
 
 const query = new URLSearchParams(window.location.search);
 
-// 桌宠窗口级配置。
+// Pet-window-level configuration.
 const PET_WINDOW_CONFIG = Object.freeze({
   scale: 0.5,
   verticalAlignment: query.get('verticalAlignment') === 'top' ? 'top' : 'bottom',

@@ -425,7 +425,8 @@ fn resize_pet_window(win: &tauri::WebviewWindow, logical_size: (f64, f64), ancho
     super::platform::resize_pet_window(win, logical_size, anchor);
 }
 
-/// 缩放桌宠:唯一调用方是 PetWindow 启动时的缩放初始化。返回 clamp 后的实际值。
+/// Scales the pet: the only caller is the scale initialization at PetWindow startup.
+/// Returns the clamped actual value.
 pub async fn set_pet_scale(
     scale: f64,
     vertical_alignment: Option<String>,
@@ -484,9 +485,10 @@ pub async fn set_pet_activity_visible(
     }
     if let Some(win) = app.get_webview_window(PET_LABEL) {
         let logical_size = pet_window_effective_size(st.scale, visible, activity_height);
-        // 人物在窗口内贴当前竖向边与横向对齐侧(CSS 与
-        // character_local_top_left 一致)。活动卡显隐改变窗口尺寸时，
-        // 同时保住这两条边，人物在屏幕上就不会跳。
+        // The character sticks to the current vertical edge and the horizontally aligned
+        // side inside the window (matching pet.css's positioning rules). When the
+        // activity card's visibility change resizes the window, keeping both of these
+        // edges fixed prevents the character from jumping on screen.
         // 贴边方向必须用前端的实际对齐值:按窗口中心猜测在屏幕中部会猜反,
         // 这正是收起时人物瞬移的原始根因。
         let anchor = match (alignment.as_deref(), vertical_alignment) {
