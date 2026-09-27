@@ -1857,7 +1857,6 @@ impl AppEngine {
         )
         .await
     }
-    }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_reserved_user_message(
