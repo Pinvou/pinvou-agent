@@ -156,11 +156,12 @@ export function ComputerUseDialogs({ slice, copy }) {
 
   useEffect(() => {
     const target = grantRequest ? grantDenyRef.current : confirmDenyRef.current;
-    // `preventScroll` matters because the panel body scrolls: Deny is the last
-    // control in the dialog, so a plain focus() would scroll a tall consent
-    // body to the bottom and open the prompt with the title and the target
-    // line already out of view — asking the user to decide about something
-    // they have to scroll up to read.
+    // `preventScroll` keeps the initial focus from scrolling anything.
+    // Deny now sits in the pinned row outside the scroller, so a plain
+    // focus() would no longer scroll the body — this is kept defensively
+    // for the layout's next edit and for engines where the focus target
+    // resolution differs; on browsers that ignore the options object it
+    // degrades to a plain focus().
     if (open && target && typeof target.focus === 'function') {
       target.focus({ preventScroll: true });
     }

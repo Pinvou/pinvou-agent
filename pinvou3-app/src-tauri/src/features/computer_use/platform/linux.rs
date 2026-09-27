@@ -62,6 +62,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::super::backend::ComputerUseBackend;
+use super::super::guard::raw_element_binding;
 use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
@@ -570,16 +571,24 @@ async fn element_info_of(
     // screening copy must respect that erasure and never re-introduce the
     // raw text through a side channel — secure fields always confirm via the
     // password screen anyway.
-    let (name, name_screening_hit) = if secure {
-        (String::new(), false)
+    let (name, name_screening_hit, raw_name) = if secure {
+        // The erasure below must extend to the raw binding too: it exists to
+        // keep a secure field's raw text from re-entering anything through a
+        // side channel, so the binding hashes the erased identity (secure
+        // fields always confirm via the password screen anyway).
+        (String::new(), false, String::new())
     } else {
         let raw = proxy.name().await.unwrap_or_default();
-        (sanitize_name(&raw, MAX_NAME_CHARS), screening_hit(&raw))
+        let hit = screening_hit(&raw);
+        let display = sanitize_name(&raw, MAX_NAME_CHARS);
+        (display, hit, raw)
     };
+    let raw_binding = raw_element_binding(&raw_name, role.name());
     let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
     ElementInfo {
         role: role.name().to_string(),
         name_screening_hit,
+        raw_binding,
         name,
         x,
         y,
@@ -3405,7 +3414,7 @@ mod x11_live_tests {
         let summary = "left click x1 at Some((200, 300))";
         let confirm_id = fx
             .shared
-            .new_pending_confirmation(SESSION, summary, "Live", 0)
+            .new_pending_confirmation(SESSION, summary, "Live", 0, 0)
             .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
         assert!(
@@ -3533,7 +3542,7 @@ mod x11_live_tests {
         // element is reachable here, so the guard API is used directly).
         let confirm_id = fx
             .shared
-            .new_pending_confirmation(SESSION, "left click x1 at Some((300, 200))", "Live", 0)
+            .new_pending_confirmation(SESSION, "left click x1 at Some((300, 200))", "Live", 0, 0)
             .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
 

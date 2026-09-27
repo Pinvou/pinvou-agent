@@ -35,7 +35,10 @@ use deepseek_tui::tools::spec::{
 
 use super::audit::{AuditLog, AuditRecord};
 use super::backend::BackendHandle;
-use super::guard::{ComputerUseShared, GuardRejection, is_secure_role, matches_t3_denylist};
+use super::guard::{
+    ComputerUseShared, GuardRejection, binding_key, is_secure_role, matches_t3_denylist,
+    raw_element_binding,
+};
 use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
@@ -842,6 +845,14 @@ enum T3Screening {
 
 struct T3Hit {
     element_label: String,
+    /// Keyed hash of the **raw** screening identity behind `element_label`.
+    /// The label is display-sanitized and truncated to
+    /// [`MAX_LABEL_CHARS`], so two different elements can render the same
+    /// line — a label differing only past the truncation tail, or only in
+    /// characters sanitization rewrites. The replay comparison therefore
+    /// checks this binding too: the token must name the same *element*, not
+    /// merely the same *line*.
+    element_binding: u64,
     reason: &'static str,
 }
 
@@ -882,6 +893,7 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: element_label(element),
+            element_binding: element.raw_binding,
             reason: "a password/secure field",
         });
     }
@@ -908,6 +920,7 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     {
         return T3Screening::Blocked(T3Hit {
             element_label: element_label(element),
+            element_binding: element.raw_binding,
             reason: "a consequential control (financial/send/delete/submit/consent)",
         });
     }
@@ -929,6 +942,7 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
 /// binding is unchanged for them.
 fn screen_points(parts: &Parts, points: &[(i32, i32)]) -> T3Screening {
     let mut labels: Vec<String> = Vec::with_capacity(points.len());
+    let mut bindings: Vec<u64> = Vec::with_capacity(points.len());
     let mut reason: Option<&'static str> = None;
     for &(x, y) in points {
         // A screening failure and an absent element are deliberately the same
@@ -942,6 +956,9 @@ fn screen_points(parts: &Parts, points: &[(i32, i32)]) -> T3Screening {
         // widgets) and the denylist is name-based.
         let Ok(Some(element)) = parts.backend.element_at_point(x, y) else {
             labels.push(UNREADABLE_TARGET_LABEL.to_string());
+            // Same sentinel on the raw side, so both replays of an
+            // unreadable point bind identically.
+            bindings.push(raw_element_binding(UNREADABLE_TARGET_LABEL, ""));
             continue;
         };
         let label = element_label(&element);
@@ -949,11 +966,13 @@ fn screen_points(parts: &Parts, points: &[(i32, i32)]) -> T3Screening {
             // First hit wins the reason line; the label still names them all.
             reason.get_or_insert(hit.reason);
         }
+        bindings.push(element.raw_binding);
         labels.push(label);
     }
     match reason {
         Some(reason) => T3Screening::Blocked(T3Hit {
             element_label: labels.join(" → "),
+            element_binding: element_binding(&bindings),
             reason,
         }),
         None => T3Screening::Clear,
@@ -1240,17 +1259,23 @@ fn action_binding(action: &ComputerUseAction) -> u64 {
     u64::from_be_bytes(prefix)
 }
 
-/// The random per-process key for [`action_binding`] (see that function's
-/// doc for why the digest must be keyed).
-fn binding_key() -> &'static [u8; 32] {
-    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let mut key = [0u8; 32];
-        for word in key.chunks_exact_mut(8) {
-            word.copy_from_slice(&rand::random::<u64>().to_le_bytes());
-        }
-        key
-    })
+/// Combines the per-element raw bindings ([`ElementInfo::raw_binding`],
+/// computed at the platform boundary where the raw strings still exist) into
+/// one target-set binding, in screening order, each as fixed-width
+/// big-endian bytes (self-delimiting, so distinct binding vectors always
+/// hash distinct byte streams). Same key as [`action_binding`]; in-process
+/// only, never shown to the model — the same no-oracle argument.
+fn element_binding(bindings: &[u64]) -> u64 {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(binding_key());
+    for binding in bindings {
+        hasher.update(binding.to_be_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(prefix)
 }
 
 /// Structured i18n source for the consent dialog, serialized into the
@@ -1452,6 +1477,7 @@ fn request_confirmation(
     type_preview_full: Option<String>,
     masked_target: bool,
     binding: u64,
+    element_binding: u64,
 ) -> String {
     // The payload is built once and serves two consumers: the event
     // broadcast and the guard's server-truth store (re-served through
@@ -1466,6 +1492,7 @@ fn request_confirmation(
         summary.to_string(),
         element_label.to_string(),
         binding,
+        element_binding,
     ) else {
         return format!(
             "{T3_CONFIRM_REQUIRED_ERROR}: this action targets {reason_phrase}: \
@@ -1576,7 +1603,9 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         .shared
                         .peek_confirmation(id, &parts.session_id, &summary, binding)
                     {
-                        Some(label) => Some((id.clone(), label)),
+                        Some((label, element_binding)) => {
+                            Some((id.clone(), label, element_binding))
+                        }
                         None => {
                             return Err(
                                 "the confirm_id is invalid, expired, or was already used. Ask the \
@@ -1603,7 +1632,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                 // unapproved run would already do, so a carried token is
                 // simply spent.
                 T3Screening::Clear => {
-                    if let Some((id, _)) = &approved {
+                    if let Some((id, _, _)) = &approved {
                         // consume_confirmation returning false means the token
                         // was retracted between peek and spend — a Deny
                         // ("approve → changed my mind") landing during the
@@ -1621,7 +1650,15 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                 }
                 T3Screening::Blocked(hit) => match approved {
                     // Approved, and still the same target: spend and execute.
-                    Some((id, label)) if label == hit.element_label => {
+                    // The label comparison is what the dialog named; the
+                    // element-binding comparison catches the twin the label
+                    // cannot see — a different element whose sanitized,
+                    // 80-char-truncated line renders identically (a payload
+                    // differing only past the truncation tail or only in
+                    // characters sanitization rewrites).
+                    Some((id, label, element_binding))
+                        if label == hit.element_label && element_binding == hit.element_binding =>
+                    {
                         // Same deny race as the Clear arm: false means the
                         // user retracted the approval while the re-screen ran.
                         if !parts.shared.consume_confirmation(&id) {
@@ -1634,9 +1671,11 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         confirmed_t3 = true;
                     }
                     // Either no token at all, or a token approved for a
-                    // different target. Both raise a fresh confirmation naming
-                    // what is under the target now; the stale token is left
-                    // alone so a correct retry can still spend it.
+                    // different target (different label, or the same label
+                    // over a different raw element). Both raise a fresh
+                    // confirmation naming what is under the target now; the
+                    // stale token is left alone so a correct retry can still
+                    // spend it.
                     _ => {
                         // The a11y queries above (focused element, screening)
                         // take real time: re-check the stop/disable/grant
@@ -1657,6 +1696,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                             context.type_preview_full.clone(),
                             context.secure_type_target,
                             binding,
+                            hit.element_binding,
                         );
                         if had_token {
                             blocked.push_str(
@@ -2435,10 +2475,18 @@ impl ToolSpec for ComputerUseTool {
                 // the pending grant (cleared by grant/revoke/stop/disable).
                 // The serialized variant keeps the dialog from appearing
                 // under another session's in-flight injection (see the
-                // guard method's doc).
-                self.parts
-                    .shared
-                    .mark_grant_requested_serialized(&self.parts.session_id);
+                // guard method's doc); it runs on the blocking pool because
+                // the bounded lock wait must not stall an executor worker.
+                let shared = std::sync::Arc::clone(&self.parts.shared);
+                let session_id = self.parts.session_id.clone();
+                // The only failure mode of the join is the task being
+                // cancelled with the runtime shutting down — the action's
+                // GrantRequired error still goes out, and the retry path
+                // re-asks. Nothing useful to do with the error here.
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    shared.mark_grant_requested_serialized(&session_id);
+                })
+                .await;
                 self.parts.events.emit(
                     EVENT_GRANT_REQUIRED,
                     json!({ "session_id": self.parts.session_id }),

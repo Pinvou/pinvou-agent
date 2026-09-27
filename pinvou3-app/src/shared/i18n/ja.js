@@ -374,7 +374,7 @@ const jaBase = {
           confirmKeyChordMasked:(chord, count)=>chord?`${chord} + マスクされた${count}文字を押す`:`マスクされた${count}文字を押す`,
           confirmHoldKeyMasked:(chord, count, ms)=>chord?`${chord} + マスクされた${count}文字を ${ms} ミリ秒押し続ける`:`マスクされた${count}文字を ${ms} ミリ秒押し続ける`,
           confirmDrag:(from, to)=>`${from} から ${to} までドラッグ`,
-          confirmMouseDown:button=>`${button}ボタンを押す`,
+          confirmMouseDown:button=>`${button}ボタンを押し続ける`,
           confirmMouseUp:button=>`${button}ボタンを離す`,
           screenshotCaption:'スクリーンショット',
           screenshotLoading:'スクリーンショットを読み込み中…',

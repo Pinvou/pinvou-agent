@@ -318,6 +318,17 @@ pub struct ElementInfo {
     /// a match window. Internal only — never serialized to the model.
     #[serde(skip)]
     pub name_screening_hit: bool,
+    /// Keyed hash of the raw (untruncated, unsanitized) name and role,
+    /// computed at the platform boundary where the raw strings still exist
+    /// ([`guard::raw_element_binding`]). `name` is a display copy, so two
+    /// different elements can carry identical `name`/`role` pairs (payloads
+    /// differing only past the truncation tail, or only in characters
+    /// sanitization rewrites); this binding is how the spend path tells them
+    /// apart when it re-screen a replayed action's target. Internal only —
+    /// never serialized to the model. A u64, not a text copy, so a hostile
+    /// multi-megabyte label still costs bounded memory.
+    #[serde(skip)]
+    pub raw_binding: u64,
 }
 
 /// `ui_tree` fetch options. `None` lets the backend apply its defaults.

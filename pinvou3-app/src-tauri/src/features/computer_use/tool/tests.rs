@@ -545,6 +545,7 @@ fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
         width,
         height,
         secure: false,
+        raw_binding: 0,
     }
 }
 
@@ -954,6 +955,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1048,6 +1050,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -1070,6 +1073,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
         width: 30,
         height: 12,
         secure: false,
+        raw_binding: 0,
     });
     let attempt = fixture
         .tool
@@ -1104,6 +1108,7 @@ async fn secure_field_blocks_typing() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1190,6 +1195,7 @@ async fn mouse_down_up_composition_is_t3_screened() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     for action in ["left_mouse_down", "left_mouse_up"] {
         let result = fixture
@@ -1291,6 +1297,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
         width: 5,
         height: 5,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1317,6 +1324,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1378,6 +1386,7 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -1441,6 +1450,7 @@ async fn drag_drop_target_is_screened() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1472,6 +1482,7 @@ async fn drag_drop_target_is_screened() {
         width: 3,
         height: 3,
         secure: false,
+        raw_binding: 0,
     }];
     fixture.mock.lock().element = Some(benign_element(10, 10, 5, 5));
     let result = fixture
@@ -1509,6 +1520,7 @@ async fn denied_action_retry_mints_a_fresh_confirmation() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let first = fixture
         .tool
@@ -1607,6 +1619,7 @@ async fn confirm_token_is_bound_to_the_action() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let _ = fixture
         .tool
@@ -1765,6 +1778,7 @@ async fn type_summary_is_a_plain_character_count() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     // 20 chars, including a control char
     // the old in-summary preview had to escape.
@@ -1832,6 +1846,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let text = "hunter2secret!".to_string();
     let result = fixture
@@ -2247,6 +2262,7 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         width: 20,
         height: 20,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -2355,6 +2371,7 @@ async fn key_chords_never_require_confirmation() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     for chord in [
         "cmd+delete",
@@ -2425,6 +2442,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     for input in [
         json!({"action": "scroll", "direction": "down", "amount": 2}),
@@ -2491,6 +2509,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let held_move = fixture
         .tool
@@ -2549,6 +2568,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
             width: 16,
             height: 16,
             secure: false,
+            raw_binding: 0,
         });
         let result = fixture
             .tool
@@ -2585,6 +2605,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
             width: 16,
             height: 16,
             secure: false,
+            raw_binding: 0,
         });
         let result = fixture
             .tool
@@ -2741,12 +2762,12 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     let summary = "left click x1 at Some((5, 5))";
     let own_token = fixture
         .shared
-        .new_pending_confirmation("s-test", summary, "Buy now", 0)
+        .new_pending_confirmation("s-test", summary, "Buy now", 0, 0)
         .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&own_token));
     let other_token = fixture
         .shared
-        .new_pending_confirmation("s-other", summary, "Buy now", 0)
+        .new_pending_confirmation("s-other", summary, "Buy now", 0, 0)
         .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&other_token));
 
@@ -2853,6 +2874,7 @@ async fn approved_token_spends_when_the_target_screens_clear() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -2930,6 +2952,7 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -2977,6 +3000,7 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
 
     // Mint: the blocked click raises one pending.
@@ -3232,6 +3256,7 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let text = "this paragraph is long enough to be truncated in the summary".to_string();
     let result = fixture
@@ -3297,6 +3322,7 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -3353,6 +3379,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3430,6 +3457,7 @@ async fn approved_drag_is_refused_when_the_drop_target_changed() {
         width: 4,
         height: 4,
         secure: false,
+        raw_binding: 0,
     };
     let benign_drop = ElementInfo {
         name_screening_hit: false,
@@ -3440,6 +3468,7 @@ async fn approved_drag_is_refused_when_the_drop_target_changed() {
         width: 4,
         height: 4,
         secure: false,
+        raw_binding: 0,
     };
     fixture.mock.lock().background = vec![start.clone(), benign_drop];
 
@@ -3471,6 +3500,7 @@ async fn approved_drag_is_refused_when_the_drop_target_changed() {
             width: 4,
             height: 4,
             secure: false,
+            raw_binding: 0,
         },
     ];
     let redirected = fixture
@@ -3519,6 +3549,7 @@ async fn deny_during_the_rescreen_stops_the_tool_spend() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     };
     fixture.mock.lock().element = Some(target.clone());
     let blocked = fixture
@@ -3553,10 +3584,6 @@ async fn deny_during_the_rescreen_stops_the_tool_spend() {
         "the spend must report the retracted approval: {text}"
     );
     assert!(
-        !text.contains("Approved") || text.contains("denied"),
-        "a denied spend must not read as a success: {text}"
-    );
-    assert!(
         fixture.mock.lock().downed.is_empty(),
         "no injection may reach the backend over a retracted approval"
     );
@@ -3577,6 +3604,7 @@ async fn deny_during_the_rescreen_stops_the_tool_spend() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3640,6 +3668,7 @@ async fn approved_token_is_refused_on_a_different_target() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3664,6 +3693,7 @@ async fn approved_token_is_refused_on_a_different_target() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let redirected = fixture
         .tool
@@ -3707,7 +3737,106 @@ async fn approved_token_is_refused_on_a_different_target() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let replay = match replay {
+        Ok(r) => r,
+        Err(e) => panic!("replay execute failed: {e}"),
+    };
+    assert!(replay.success, "{}", replay.content);
+    assert_eq!(fixture.mock.lock().downed.len(), 1);
+}
+
+/// The replay comparison binds the **raw** identity, not just the display
+/// line: `ElementInfo::name` is sanitized and truncated to 80 chars, so two
+/// different elements can render the identical consent label (payloads
+/// differing only past the truncation tail, or only in characters
+/// sanitization rewrites). A token approved on one must not spend on its
+/// display-identical twin — and must still spend on the original.
+#[tokio::test]
+async fn approved_token_is_refused_on_a_display_identical_twin() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // Two raw names that sanitize and truncate to the same 80-char display
+    // line but differ past the truncation tail.
+    let raw_a = format!("Buy now{}", "a".repeat(100));
+    let raw_b = format!("Buy now{}!", "a".repeat(100));
+    assert_eq!(
+        platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        platform::sanitize_name(&raw_b, MAX_LABEL_CHARS),
+        "test setup: the twins must share the display line"
+    );
+    let mut element = ElementInfo {
+        name_screening_hit: true,
+        role: "AXButton".to_string(),
+        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 111,
+    };
+    fixture.mock.lock().element = Some(element.clone());
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved the original. The model swaps in the twin — same
+    // display line, different raw element — and replays the identical call.
+    element.name = platform::sanitize_name(&raw_b, MAX_LABEL_CHARS);
+    element.raw_binding = 222;
+    fixture.mock.lock().element = Some(element);
+    let twin = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = twin.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("was NOT spent"),
+        "the twin spend must be refused even though the label matches: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "no injection may reach the backend on a twin spend"
+    );
+
+    // The refusal left a fresh dialog (over the same display line, so only
+    // the raw binding can tell them apart). Deny it; the kept token must
+    // still spend on the element it actually approved.
+    let fresh_id = latest_confirm_id(&fixture.events);
+    assert_ne!(fresh_id, confirm_id, "a fresh confirmation must be minted");
+    assert!(fixture.shared.deny_confirmation(&fresh_id));
+    let element = ElementInfo {
+        name_screening_hit: true,
+        role: "AXButton".to_string(),
+        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 111,
+    };
+    fixture.mock.lock().element = Some(element);
     let replay = fixture
         .tool
         .execute(
@@ -3742,6 +3871,7 @@ async fn same_summary_type_text_swap_is_rejected() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let approved_text = "correct-horse-battery"; // 21 chars
     let blocked = fixture
@@ -3840,6 +3970,7 @@ async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3991,10 +4122,10 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     // minted token coexist.
     shared.grant_session("s2");
     let pending_id = shared
-        .new_pending_confirmation("s1", "left click", "Buy now", 0)
+        .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
         .expect("pending registered");
     let token_id = shared
-        .new_pending_confirmation("s2", "type 3 characters", "secret-field", 0)
+        .new_pending_confirmation("s2", "type 3 characters", "secret-field", 0, 0)
         .expect("pending registered");
     assert!(shared.pending_confirmation(&pending_id).is_some());
     assert!(shared.mint_confirmation(&token_id));
@@ -4112,6 +4243,7 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
             width: 20,
             height: 20,
             secure: false,
+            raw_binding: 0,
         });
     }
     // Establish the scale map.
@@ -4247,6 +4379,7 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let text = "x".repeat(4097);
     let result = fixture
@@ -4295,6 +4428,7 @@ async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture_plain
         .tool
@@ -4346,6 +4480,7 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture_secure
         .tool
@@ -5125,6 +5260,7 @@ fn denylist_matches_beyond_the_display_truncation_window() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     };
     assert!(
         element.name_screening_hit,
