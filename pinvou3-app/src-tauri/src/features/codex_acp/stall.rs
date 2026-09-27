@@ -5,7 +5,7 @@
 //! orphan cleanup on application restart can recover it. Upstream
 //! `claude-agent-acp` can omit this response when a background-task notification
 //! starts a turn and absorbs the host prompt as `absorbed_mid_turn`
-//! （agentclientprotocol/claude-agent-acp#896/#1027/#1039/#1114）。
+//! (agentclientprotocol/claude-agent-acp#896/#1027/#1039/#1114).
 //!
 //! This module contains decisions only: the activity clock, silence escalation,
 //! turn claiming, the stderr-notice gate, and repeated-stall tracking. Callers
@@ -29,13 +29,15 @@ pub(super) const STALL_TICK: Duration = Duration::from_secs(15);
 pub(super) const STALL_NOTICE_AFTER: Duration = Duration::from_secs(180);
 /// Silence duration before requesting cancellation and starting the settlement grace period.
 ///
-/// This is deliberately generous because the activity clock sees only inbound
-/// agent events. A long model call and an agent waiting for a `run_in_background`
-/// task can both remain healthy without emitting any event (the latter reports
-/// only on completion). This step cancels a live query, so the threshold is 30
-/// minutes, far beyond locally observed normal silence: seconds to 1-2 minutes,
-/// with the incident's 2m21s gap as the only outlier. Manual Stop remains the
-/// faster path and is now bounded by `CANCEL_SETTLE_GRACE` as well.
+/// This is deliberately generous because the activity clock advances on agent
+/// events and host delivery of permission/elicitation answers or cancellation,
+/// but not on ordinary bridge timeline output. A long model call and an agent
+/// waiting for a `run_in_background` task can both remain healthy without any
+/// such event (the latter reports only on completion). This step cancels a live
+/// query, so the threshold is 30 minutes, far beyond locally observed normal
+/// silence: seconds to 1-2 minutes, with the incident's 2m21s gap as the only
+/// outlier. Manual Stop remains the faster path and is now bounded by
+/// `CANCEL_SETTLE_GRACE` as well.
 pub(super) const STALL_CANCEL_AFTER: Duration = Duration::from_secs(1800);
 /// Grace period for the agent to finish after cancellation (upstream floor is about 30 seconds).
 pub(super) const CANCEL_SETTLE_GRACE: Duration = Duration::from_secs(60);
@@ -53,9 +55,11 @@ pub(super) const STDERR_NOTICE_MAX_CHARS: usize = 400;
 pub(super) const STALL_RESTART_WINDOW: Duration = Duration::from_secs(3600);
 pub(super) const STALL_RESTART_AFTER: usize = 2;
 
-/// Monotonic agent-side activity clock. It records inbound notifications and
-/// permission/elicitation requests only. A prompt response exits the wait loop
-/// directly, and host-emitted events must not refresh the watchdog.
+/// Monotonic turn activity clock. It records inbound agent notifications and
+/// permission/elicitation requests. Host delivery of a permission/elicitation
+/// answer or cancellation also advances it so user think time and cancellation
+/// grace are not counted as agent silence. A prompt response exits the wait loop
+/// directly; bridge-emitted timeline events do not advance this clock.
 ///
 /// `Instant` avoids wall-clock rollback from NTP or manual adjustment, which
 /// could otherwise freeze elapsed time at zero and disable the watchdog.
@@ -69,7 +73,7 @@ pub(super) fn mark_activity(clock: &ActivityClock) {
     *clock.lock() = Instant::now();
 }
 
-/// Elapsed time since the most recent agent-side activity.
+/// Elapsed time since the most recent watchdog-relevant activity.
 pub(super) fn quiet_for(clock: &ActivityClock) -> Duration {
     clock.lock().elapsed()
 }
@@ -85,7 +89,7 @@ pub(super) fn activity_resumed(previous: Option<Duration>, current: Duration) ->
 pub(super) enum StallStep {
     /// Do nothing: no threshold was reached, or cancellation is still in grace.
     Idle,
-    /// Notify the user that the agent has been silent; at most once per turn.
+    /// Notify the user that the agent has been silent; once per silence episode.
     Notice,
     /// Request cancellation and give the agent one final chance to answer.
     Cancel,
@@ -221,7 +225,7 @@ mod tests {
         assert_eq!(
             stall_step(STALL_NOTICE_AFTER + Duration::from_secs(30), true, None),
             StallStep::Idle,
-            "notify at most once per turn"
+            "notify at most once per silence episode"
         );
         assert_eq!(
             stall_step(STALL_CANCEL_AFTER, true, None),
@@ -292,7 +296,7 @@ mod tests {
     fn forkguard_stderr_notice_filters_to_real_agent_trouble() {
         // Field evidence: the adapter's only diagnostic during the incident.
         assert!(stderr_notice_worthy(
-            "Session e6772626-52a8-45c4-8c2e-e89ddfefea99: cancel floor elapsed without the SDK yielding; forcing \"cancelled\". The underlying query may still be wedged — a new session may be required."
+            "Session 00000000-0000-4000-8000-000000000001: cancel floor elapsed without the SDK yielding; forcing \"cancelled\". The underlying query may still be wedged — a new session may be required."
         ));
         assert!(stderr_notice_worthy(
             "Internal error: \"response to `session/prompt` never received: oneshot canceled\""
@@ -303,7 +307,7 @@ mod tests {
         ));
         // Ordinary startup banners and logs do not notify the user.
         assert!(!stderr_notice_worthy(
-            "[session/query] sessionId=e6772626-52a8-45c4-8c2e-e89ddfefea99 resume=none apiType=native baseUrl=native"
+            "[session/query] sessionId=00000000-0000-4000-8000-000000000001 resume=none apiType=native baseUrl=native"
         ));
         assert!(!stderr_notice_worthy(
             "warning: unhandled promise rejection was observed and recovered"

@@ -1235,7 +1235,7 @@ export function CodexAcpView({
   const visibleServiceFailure = serviceFailure?.key === dismissedFailureKey
     ? null
     : serviceFailure;
-  // 提示里可能带适配器 stderr 原文：与回合错误一致，展示前无条件脱敏。
+  // Adapter stderr can appear here; always redact it before display, as for turn errors.
   const runtimeNotice = useMemo(() => {
     const notice = latestAgentRuntimeNotice(events);
     if (!notice) return null;

@@ -692,9 +692,10 @@ pub struct EventBridge {
     web_delivery: OrderedWebDelivery,
     tools: Arc<Mutex<HashMap<String, ToolCall>>>,
     timeline_writer: Arc<Mutex<TimelineWriter>>,
-    /// Agent-side activity clock (see [`super::stall`]). Inbound notifications
-    /// and permission/elicitation requests advance it; a prompt response exits
-    /// the stall loop instead of advancing this clock.
+    /// Turn activity clock (see [`super::stall`]). Inbound notifications and
+    /// permission/elicitation requests advance it. Host-side answers and
+    /// cancellation also advance it through their pending request handles; a
+    /// prompt response exits the stall loop without advancing this clock.
     activity: super::stall::ActivityClock,
 }
 
@@ -831,14 +832,16 @@ impl EventBridge {
         turn_id
     }
 
-    /// 把 timeline 中只开始、未结束的旧回合收口为已中断。
+    /// Settle timeline turns that started but never finished as interrupted.
     ///
-    /// ACP prompt future 和当前 turn 只存在于宿主进程内；应用被直接关闭后，Agent
-    /// 会话虽然可以恢复，但旧 prompt 已无法重新挂接。继续把这种回合展示为 running
-    /// 会让前端永久停在“处理中”，而恢复后的 session/cancel 也没有旧 turn 可取消。
+    /// ACP prompt futures and the current turn exist only in the host process.
+    /// After the application is terminated, the Agent session can resume but
+    /// the old prompt cannot be reattached. Leaving that turn running would
+    /// keep the UI busy forever, while the resumed session has no old turn for
+    /// `session/cancel` to address.
     ///
-    /// 本方法只处理当前 timeline 已存在的孤儿回合。正常的同进程活跃回合仍由
-    /// `prompt()` settles the turn through `finish_turn_once()` when it returns.
+    /// This handles only orphaned turns already present in the timeline. A live
+    /// same-process turn is settled by `prompt()` through `finish_turn_once()`.
     pub fn interrupt_orphaned_turns(&self, reason: &str) -> usize {
         // Orphan detection must pair turn_started/turn_completed events that
         // can live arbitrarily far apart, so this scan is inherently over the
@@ -1928,7 +1931,7 @@ mod tests {
             "kind": "agent_stderr",
             "agent": "claude",
             "quietSeconds": 200,
-            "detail": "File C:\\Users\\l28756\\Temp\\x.ps1: cancel floor elapsed without the SDK yielding",
+            "detail": "File C:\\Users\\example-user\\Temp\\x.ps1: cancel floor elapsed without the SDK yielding",
         });
         let projected = project_acp_event_for_web(&notice).event.data;
         assert_eq!(projected["kind"], json!("agent_stderr"));

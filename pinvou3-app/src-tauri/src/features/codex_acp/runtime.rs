@@ -9,9 +9,11 @@ use wait_timeout::ChildExt;
 /// Compatibility floor retained from the legacy codex-acp bridge.
 ///
 /// Every runtime source, including an explicit override, must satisfy this
-/// gate. Recalibrating it for the bundled 1.6.2 bridge requires a separate
-/// compatibility change so an existing installation is not rejected here
-/// without its own evidence and migration path.
+/// gate. The bundled codex-acp 1.6.2 package declares `@openai/codex ^0.148.0`,
+/// so the current gate can still accept 0.144.6-0.147.x (including the 0.146.0
+/// documentation example). Recalibrating it requires a separate compatibility
+/// change so an existing installation is not rejected without its own evidence
+/// and migration path.
 pub const MIN_CODEX_VERSION: &str = "0.144.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

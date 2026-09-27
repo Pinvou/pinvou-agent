@@ -796,7 +796,7 @@ async fn take_pending_permission(
     let mut pending = pending.lock().await;
     let request = pending
         .remove(&key)
-        .context("权限请求已过期、已被回复，或属于其他会话")?;
+        .context("权限请求已过期、已回复或不属于当前会话")?;
     if !request
         .option_ids
         .iter()
@@ -816,7 +816,7 @@ async fn take_pending_elicitation(
     let mut pending = pending.lock().await;
     let request = pending
         .remove(key)
-        .context("问询请求已过期、已被回复，或属于其他会话")?;
+        .context("输入请求已过期、已回复或不属于当前会话")?;
     stall::mark_activity(&request.activity);
     Ok(request)
 }
@@ -843,8 +843,9 @@ struct AcpSession {
     /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
     /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
     last_activity: parking_lot::Mutex<Instant>,
-    /// Agent-side activity clock shared with the event bridge. The turn-silence
-    /// watchdog uses it independently from the idle-reaping clock above.
+    /// Turn activity clock shared with the event bridge. Agent events and host
+    /// delivery of card answers or cancellation advance it; timeline output
+    /// does not. The watchdog uses it independently from the idle-reaping clock.
     activity: stall::ActivityClock,
     /// Session-level pending permission and elicitation maps shared by the pool.
     /// While a user is answering, silence is human think time, not an agent stall.
@@ -3204,7 +3205,8 @@ impl AcpPool {
         let turn_id = runtime
             .bridge
             .begin_turn(&content, &prepared.display_attachments);
-        // Start silence measurement when the prompt is sent; only later agent activity resets it.
+        // Start silence measurement when the prompt is sent. Agent activity and
+        // host delivery of card answers or cancellation can reset it afterward.
         stall::mark_activity(&runtime.activity);
         drop(_admission);
         let pool = self.clone();
@@ -3856,9 +3858,12 @@ impl AcpPool {
             // context through `session/load`; the first stall does not restart
             // because a wedged query is indistinguishable from long background work.
             //
-            // Hold the sessions lock until replacement insertion completes. A
-            // gap during shutdown would let concurrent callers spawn separate
-            // children, and the later insert would leak the earlier runtime.
+            // Hold the pool-wide sessions lock until replacement insertion
+            // completes. A gap during shutdown would let concurrent callers
+            // spawn separate children, and the later insert would leak the
+            // earlier runtime. This deliberately blocks ACP entrypoints for
+            // every session during shutdown, the bounded 30-second initialize,
+            // and the currently unbounded session/load and config restoration.
             sessions.remove(session_id);
             // As in eviction and agent restart, resolve cards left by the old
             // runtime first. Otherwise shared pending maps make the replacement
@@ -3868,15 +3873,16 @@ impl AcpPool {
             self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
                 .await;
             runtime.shutdown().await;
+            // Card settlement and shutdown-side events must be durable before
+            // the replacement EventBridge seeds its sequence from the journal.
+            runtime.bridge.flush_journal();
             diagnostics::write(
                 &operation_id,
                 "session:restart_after_stall",
                 format!("session_id={session_id}"),
             );
-            // The old bridge may still flush while the new bridge re-reads the
-            // timeline tail and continues monotonic sequence allocation. Emit
-            // the restart notice from the replacement after insertion so it can
-            // distinguish a resumed session from a fresh one.
+            // Emit the restart notice from the replacement after insertion so
+            // it can distinguish a resumed session from a fresh one.
             restarted_after_stall = true;
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
