@@ -99,8 +99,10 @@ fn fail_closed_defaults() -> DisabledBundlesFile {
 fn save_disabled_bundles_file_unless_degraded(file: &DisabledBundlesFile) -> Result<(), String> {
     if file.degraded {
         return Err(
-            "disabled_bundles.json could not be read; refusing to overwrite it with fail-closed \
-             defaults. Fix or remove the file, then retry."
+            "the bundle governance state could not be read; refusing to overwrite it with \
+             fail-closed defaults. Fix or remove the unreadable state file — \
+             disabled_bundles.json, or the legacy disabled_connectors.json / \
+             disabled_skills.json it migrates from — then retry."
                 .to_string(),
         );
     }
@@ -221,8 +223,9 @@ fn migrate_from_legacy_files() -> DisabledBundlesFile {
     file
 }
 
-/// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
-/// （scope 条目按旧文件**覆盖写**）。返回该旧文件是否「存在但读不动」。
+/// Maps each scope entry of the legacy `disabled_connectors.json` to package ids and
+/// merges them into `file` (scope entries are **overwritten** from the legacy file).
+/// Returns whether that legacy file "exists but cannot be read".
 fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
@@ -234,8 +237,9 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     )
 }
 
-/// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。返回该旧文件是否「存在但读不动」。
+/// Maps each scope entry of the legacy `disabled_skills.json` to package ids and merges
+/// them into `file` (union), also inheriting `project_skills_enabled`. Returns whether
+/// that legacy file "exists but cannot be read".
 fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
@@ -245,16 +249,19 @@ fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     )
 }
 
-/// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
-/// 骨架：裸数组 → plain scope、新版 `{scopes, initialized}` 对象、旧双 scope 对象
-/// `{plain, code, code_initialized}` 三种形态，条目经 `to_package_id` 归一为包 id，
-/// 并迁移 `initialized` / `code_initialized`。
+/// Shared parse skeleton for the legacy scope files (`disabled_connectors.json` /
+/// `disabled_skills.json`): three shapes are recognized — a bare array (plain scope),
+/// the newer `{scopes, initialized}` object, and the older dual-scope object
+/// `{plain, code, code_initialized}` — with entries normalized to package ids via
+/// `to_package_id`, and `initialized` / `code_initialized` migrated along.
 ///
 /// `merge_ids` 决定 scope 条目的落库语义（连接器文件 = 覆盖写，技能文件 = 并集
 /// 合并）；`inherit_project_flag` 为真时继承 `project_skills_enabled`（仅技能文件）。
 ///
-/// 返回 `true` 表示该旧文件**存在但无法消费**（读失败或结构不可解析）。缺文件是
-/// 迁移的常态，返回 `false`；两者必须分开，否则读失败会被当成"本来就没禁用过"。
+/// A `true` return means the legacy file **exists but cannot be consumed** (read failure
+/// or unparseable structure). A missing file is the normal case during migration and
+/// returns `false`; the two must stay distinct, otherwise a read failure would be treated
+/// as "nothing was ever disabled".
 fn merge_legacy_scope_file_into(
     file: &mut DisabledBundlesFile,
     path: &std::path::Path,
@@ -285,48 +292,99 @@ fn merge_legacy_scope_file_into(
         eprintln!("[scope] {} is not a JSON object", path.display());
         return true;
     };
-    if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
-        for (key, arr) in scopes {
-            if let Some(arr) = arr.as_array() {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
+    // A file that is valid JSON but only partially matches a documented shape is
+    // corruption, not an empty state: consuming the half that happens to parse
+    // would silently read as "nothing was disabled", so any wrong-typed field or
+    // unrecognized shape fails closed exactly like an unreadable file.
+    let scope_ids = |value: &serde_json::Value| -> Option<Vec<String>> {
+        let arr = value.as_array()?;
+        let mut ids = Vec::with_capacity(arr.len());
+        for entry in arr {
+            ids.push(to_package_id(entry.as_str()?));
+        }
+        Some(ids)
+    };
+    match obj.get("scopes") {
+        Some(serde_json::Value::Object(scopes)) => {
+            for (key, arr) in scopes {
+                let Some(ids) = scope_ids(arr) else {
+                    eprintln!(
+                        "[scope] {} has a malformed scope entry {key}",
+                        path.display()
+                    );
+                    return true;
+                };
                 if !ids.is_empty() {
                     merge_ids(file, key, ids);
                 }
             }
-        }
-        if let Some(initialized) = obj.get("initialized").and_then(|v| v.as_array()) {
-            for key in initialized.iter().filter_map(|v| v.as_str()) {
-                file.initialized.insert(key.to_string());
-            }
-        }
-    } else {
-        // 旧双 scope 对象 {plain, code, code_initialized}
-        for key in ["plain", "code"] {
-            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
-                if !ids.is_empty() {
-                    merge_ids(file, key, ids);
+            match obj.get("initialized") {
+                None => {}
+                Some(serde_json::Value::Array(keys)) => {
+                    for key in keys.iter().filter_map(|v| v.as_str()) {
+                        file.initialized.insert(key.to_string());
+                    }
+                }
+                Some(_) => {
+                    eprintln!("[scope] {} has a non-array \"initialized\"", path.display());
+                    return true;
                 }
             }
         }
-        if obj
-            .get("code_initialized")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+        Some(_) => {
+            eprintln!("[scope] {} has a non-object \"scopes\"", path.display());
+            return true;
+        }
+        None if obj.contains_key("plain")
+            || obj.contains_key("code")
+            || obj.contains_key("code_initialized") =>
         {
-            file.initialized
-                .insert(SessionMode::Code.as_str().to_string());
+            // Legacy dual-scope object {plain, code, code_initialized}
+            for key in ["plain", "code"] {
+                let Some(value) = obj.get(key) else { continue };
+                let Some(ids) = scope_ids(value) else {
+                    eprintln!(
+                        "[scope] {} has a malformed scope entry {key}",
+                        path.display()
+                    );
+                    return true;
+                };
+                if !ids.is_empty() {
+                    merge_ids(file, key, ids);
+                }
+            }
+            match obj.get("code_initialized") {
+                None => {}
+                Some(serde_json::Value::Bool(true)) => {
+                    file.initialized
+                        .insert(SessionMode::Code.as_str().to_string());
+                }
+                Some(serde_json::Value::Bool(false)) => {}
+                Some(_) => {
+                    eprintln!(
+                        "[scope] {} has a non-bool \"code_initialized\"",
+                        path.display()
+                    );
+                    return true;
+                }
+            }
+        }
+        None => {
+            eprintln!("[scope] {} has no recognizable scope shape", path.display());
+            return true;
         }
     }
     if inherit_project_flag {
-        if let Some(enabled) = obj.get("project_skills_enabled").and_then(|v| v.as_bool()) {
-            file.project_skills_enabled = enabled;
+        match obj.get("project_skills_enabled") {
+            None => {}
+            Some(serde_json::Value::Bool(enabled)) => file.project_skills_enabled = *enabled,
+            Some(_) => {
+                eprintln!(
+                    "[scope] {} has a non-bool \"project_skills_enabled\"",
+                    path.display()
+                );
+                return true;
+            }
         }
     }
     false
@@ -1146,6 +1204,74 @@ mod tests {
                 !disabled_bundles_path().exists(),
                 "the fail-closed guess must not be migrated onto disk"
             );
+        });
+    }
+
+    /// A legacy file that parses as JSON but does not match a documented shape — or
+    /// matches one only partially (wrong-typed `scopes`, entries, or flags) — is
+    /// corruption, not an empty state: consuming the half that happens to parse would
+    /// silently read as "nothing was disabled". It must fail closed like an unreadable
+    /// file and must not be migrated onto disk.
+    #[test]
+    fn schema_invalid_legacy_file_fails_closed() {
+        for (name, payload) in [
+            (
+                "pinvou3-scope-legacy-scopes-array",
+                r#"{"scopes":[], "initialized":["plain"]}"#,
+            ),
+            (
+                "pinvou3-scope-legacy-entry-string",
+                r#"{"scopes":{"plain":"pptx"}}"#,
+            ),
+            (
+                "pinvou3-scope-legacy-entry-mixed",
+                r#"{"scopes":{"plain":["weather", 3]}}"#,
+            ),
+            ("pinvou3-scope-legacy-no-shape", r#"{}"#),
+        ] {
+            with_temp_home(name, || {
+                std::fs::write(
+                    paths::pinvou3_home().join("disabled_connectors.json"),
+                    payload,
+                )
+                .unwrap();
+
+                let denied = load_disabled_bundles_for(ConnectorScope::Plain);
+                assert!(
+                    denied.contains(&"pptx".to_string()),
+                    "a schema-invalid legacy file ({payload}) must fail closed: {denied:?}"
+                );
+                assert!(
+                    !disabled_bundles_path().exists(),
+                    "the fail-closed guess must not be migrated onto disk"
+                );
+            });
+        }
+    }
+
+    /// Positive control for the strict legacy parser: the three documented shapes
+    /// (bare array, `{scopes, initialized}`, `{plain, code}`) still migrate, with
+    /// their flags carried over.
+    #[test]
+    fn wellformed_legacy_shapes_still_migrate() {
+        with_temp_home("pinvou3-scope-legacy-positive", || {
+            let home = paths::pinvou3_home();
+            std::fs::write(home.join("disabled_connectors.json"), r#"["weather"]"#).unwrap();
+            std::fs::write(
+                home.join("disabled_skills.json"),
+                r#"{"scopes":{"code":["weather"]},"initialized":["code"],"project_skills_enabled":true}"#,
+            )
+            .unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert_eq!(file.scopes.get("plain"), Some(&vec!["weather".to_string()]));
+            assert_eq!(
+                file.scopes.get("code"),
+                Some(&vec!["weather".to_string()]),
+                "the skills file unions into the connectors scope"
+            );
+            assert!(file.initialized.contains("code"));
+            assert!(file.project_skills_enabled);
         });
     }
 }
