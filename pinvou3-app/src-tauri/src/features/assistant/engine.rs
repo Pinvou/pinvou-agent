@@ -3927,8 +3927,9 @@ mod live_tests {
         let sid = "live-test";
         let prompts = ["用一句话介绍你自己。", "再用一句话讲个冷笑话。"];
 
-        // 跑两轮:首轮冷启,二轮暖。两轮都记 TTFT/TPS —— 早年的「首轮跳过」
-        // 分支连同它读的 warmed_sessions 集合早已下线,这里不能再假设它存在。
+        // Run two turns: the first is a cold start, the second is warm. Record TTFT/TPS for
+        // both — the old "skip first turn" branch, along with the warmed_sessions set it
+        // read, was removed long ago; do not assume it still exists here.
         engine
             .send_headless_user_message(
                 prompts[0].to_string(),
@@ -4007,7 +4008,7 @@ mod live_tests {
         );
         if s.ttft_count > 0 {
             eprintln!(
-                "[live] → 平均 TTFT={:.3}s  TPS={:.1} tok/s (含首轮冷启)",
+                "[live] → avg TTFT={:.3}s  TPS={:.1} tok/s (incl. first-turn cold start)",
                 s.ttft_sum_s / s.ttft_count as f64,
                 if s.tps_time_s > 0.0 {
                     s.tps_tokens as f64 / s.tps_time_s
@@ -4022,9 +4023,13 @@ mod live_tests {
             s.gen_tokens_total > 0,
             "无 output token 累加(usage 空?) seq={seq:?}"
         );
-        // 二轮纯文本(无工具)才断言:两轮各记一次 TTFT。
+        // Only assert when turn 2 is plain text (no tools): each of the two turns records
+        // one TTFT.
         if !tool_in_turn2 {
-            assert_eq!(s.ttft_count, 2, "两轮应各记 1 次 TTFT seq={seq:?}");
+            assert_eq!(
+                s.ttft_count, 2,
+                "both turns should record 1 TTFT each seq={seq:?}"
+            );
             assert!(s.tps_time_s > 0.0, "TPS 时长未记 seq={seq:?}");
         }
     }

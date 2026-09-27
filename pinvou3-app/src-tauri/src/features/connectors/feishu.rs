@@ -39,15 +39,18 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// lark-cli 是否已在 PATH(快速,~秒级)。与钉钉 `dws_cli_present` 同构:
-/// 复用下方三态探测并把两类失败都折叠为「不可用」。
+/// Whether lark-cli is already on PATH (fast, ~seconds). Mirrors DingTalk's
+/// `dws_cli_present`: reuse the three-state probe below and fold both failure
+/// classes into "unavailable".
 fn lark_cli_present() -> bool {
     lark_cli_probe().unwrap_or(false)
 }
 
-/// `--version` 三态探测,与钉钉 `dws_cli_probe` 同构:`Ok(true)` 已安装可用;
-/// `Ok(false)` 已安装但版本探测退出非零;`Err(ProbeError)` 按 Spawn/Timeout/Other
-/// 分型。断开登录路径必须经 [`cc::logout_probe_verdict`] 裁决后才允许按未安装降级。
+/// `--version` three-state probe, mirroring DingTalk's `dws_cli_probe`:
+/// `Ok(true)` installed and usable; `Ok(false)` installed but the version probe exited
+/// non-zero; `Err(ProbeError)` classified as Spawn/Timeout/Other. The disconnect path
+/// must receive the [`cc::logout_probe_verdict`] verdict before it may degrade to
+/// not-installed.
 fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
     cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
@@ -293,9 +296,11 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// 断开飞书:`lark-cli auth logout`(清 token)。探测裁决与钉钉/tmeet 统一走
-/// [`cc::logout_probe_verdict`]:真未安装按 `installed:false` 降级并清 bundle
-/// store;凭据状态未确认时原样上抛,绝不谎报「已断开」。
+/// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
+/// unified with DingTalk/tmeet via [`cc::logout_probe_verdict`]: a genuinely not-installed
+/// CLI degrades to `installed:false` and clears the bundle store; when the credential
+/// state is unconfirmed the error is propagated as-is — never falsely report
+/// "disconnected".
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         let not_installed = || {

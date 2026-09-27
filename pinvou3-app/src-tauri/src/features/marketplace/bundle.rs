@@ -203,7 +203,8 @@ pub enum BundleKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidBundle;
 
-/// 就绪态（派生态，不进存储、不参与 serde 序列化）。UI 消费 (installed, ready)。
+/// Ready state (derived state; never stored and not part of serde serialization).
+/// The UI consumes (installed, ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
     Ready,

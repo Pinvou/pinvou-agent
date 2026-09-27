@@ -2,7 +2,8 @@
 //!
 //! 原 app 侧 smoke 评测栈(runner/cases/mock/report/markdown 报告与 judge
 //! 运行时)已由 `pinvou-cli/crates/adapter-smoke` 统一实现并删除;本模块只
-//! 保留 EnginePool 与 headless 评测宿主仍消费的模型身份与不可变选中快照。
+//! retains the model identity and immutable selected snapshot still consumed by
+//! EnginePool and the headless eval host.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelIdentity {

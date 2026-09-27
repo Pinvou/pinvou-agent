@@ -808,8 +808,9 @@ pub async fn save_session_pinvou_scene_events(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取用户消息专业场景标签。缺少 sidecar 表示该会话尚未写入标签；已存在但
-/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
+/// Reads the persona-scene tags attached to user messages. A missing sidecar means the
+/// session has not written tags yet; a sidecar that exists but is corrupt must fail
+/// explicitly, so data corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_pinvou_scene_events(
     session_id: String,
@@ -863,8 +864,9 @@ pub async fn save_session_steered_messages(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取 mid-turn steer 消息的位置标记。缺少 sidecar 表示该会话尚未写入标记；已存在但
-/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
+/// Reads the position markers for mid-turn steer messages. A missing sidecar means the
+/// session has not written markers yet; a sidecar that exists but is corrupt must fail
+/// explicitly, so data corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_steered_messages(
     session_id: String,

@@ -200,14 +200,14 @@ mod tests {
     #[test]
     fn self_metrics_drop_session_clears_inflight() {
         let m = SelfMetrics::default();
-        // s1 正常完成收尾；s2 inflight 打点未收尾。
+        // s1 completes normally; s2's inflight marker is left unfinished.
         m.on_turn_started("s1");
         m.on_first_delta("s1");
         m.on_turn_complete("s1", 10, 5, None, None);
         m.on_turn_started("s2");
         let inflight = m.debug_counts();
         assert_eq!(inflight, 1);
-        // 删除 s2：inflight 应清空。
+        // Removing s2: inflight should be cleared.
         m.drop_session("s2");
         let inflight = m.debug_counts();
         assert_eq!(inflight, 0);

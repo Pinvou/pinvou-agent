@@ -2761,7 +2761,8 @@ function applyDeletedSession(id) { return pinvouSharedweb().applyDeletedSession(
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
       // 该次 Session、Run 与底座 Task,任务定义与共享工作间保留。
       await invoke("delete_session", { id });
-      // 复用远端事件与本地操作的统一清理路径，并保留批量操作所需的结果语义。
+      // Reuse the unified cleanup path shared by remote events and local operations,
+      // and preserve the result semantics needed by batch operations.
       return applyDeletedSession(id);
     } catch (e) {
       addSystemItem(bt("deleteFailed") + e);

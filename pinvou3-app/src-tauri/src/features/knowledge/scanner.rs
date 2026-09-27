@@ -29,7 +29,7 @@ pub(super) fn walk_pruned(root: &Path, ex: &Excluder) -> impl Iterator<Item = Di
 /// 从一个根遍历并写入 store。返回**遍历**到的条目数（进度量）。
 /// 增量：`existing`(path→mtime,size) 里 mtime+size 都没变的文件直接跳过，不重写、不触发 FTS。
 /// 本次遍历到的每个 path 记入 `visited`，调用方据此删除「已消失」的旧条目。
-/// `on_progress(walked)` 周期回调。
+/// `on_progress(walked)` is a periodic callback.
 pub fn scan(
     root: &Path,
     store: &Store,

@@ -469,8 +469,9 @@ pub(crate) async fn load_installed_embedder(
 /// 是否存在会用到 embedding 模型的使用迹象：本地有已入库内容，或配置了远程
 /// 知识库连接（与 tool_policy 的 kb_usable 同口径：远程连接存在即视为知识库
 /// 可用，宁可保守加载；远程检索本身在服务端嵌入，本地模型只为挂载校验与
-/// 可能的本地混检兜底）。两者皆无 → 首帧不加载。判定复用工具门控的
-/// [`KnowledgeService::kb_tools_usable`]，避免两份谓词各自漂移。
+/// 可能的本地混检兜底）。两者皆无 → 首帧不加载。
+/// The check reuses the tool gating's [`KnowledgeService::kb_tools_usable`], so the two
+/// predicates cannot drift apart.
 fn knowledge_usage_present(service: &KnowledgeService) -> bool {
     KnowledgeService::kb_tools_usable(service.has_indexed_content(), remote_has_connections())
 }

@@ -641,8 +641,9 @@ fn save_locked(path: &Path, file: &BundlesFile) -> Result<(), String> {
 // 旧布局反推（只读旧文件，不动包内容）
 // ---------------------------------------------------------------------------
 
-/// 安装/回收时间戳：RFC3339/ISO8601 UTC，对齐 SessionMetadata.updated_at 的 chrono 惯例。
-/// recycle_bin.rs 复用本实现，避免两份时间戳格式各自漂移。
+/// Install/recycle timestamps: RFC3339/ISO8601 UTC, following the same chrono convention
+/// as SessionMetadata.updated_at. recycle_bin.rs reuses this implementation so the two
+/// timestamp formats cannot drift apart.
 pub(super) fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
 }

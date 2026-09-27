@@ -168,8 +168,9 @@ pub async fn save_session_persona_events(
     super::sessions::write_session_sidecar(&path, &events)
 }
 
-/// 读某 session 的卡牌事件时间线。缺少 sidecar 表示该会话尚未写入事件；已存在但
-/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
+/// Reads a session's card-event timeline. A missing sidecar means the session has not
+/// written events yet; a sidecar that exists but is corrupt must fail explicitly, so data
+/// corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_persona_events(&session_id);
@@ -258,8 +259,9 @@ pub async fn save_session_pinvou_reviews(
     super::sessions::write_session_sidecar(&path, &merged)
 }
 
-/// 读某 session 的 Pinvou 审查时间线。缺少 sidecar 表示该会话尚未写入审查；已存在但
-/// 损坏的 sidecar 必须显式报错，避免把数据损坏伪装成合法的空时间线。
+/// Reads a session's Pinvou review timeline. A missing sidecar means the session has not
+/// written reviews yet; a sidecar that exists but is corrupt must fail explicitly, so data
+/// corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_pinvou_reviews(&session_id);

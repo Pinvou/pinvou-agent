@@ -553,7 +553,7 @@ impl KnowledgeService {
                 scan_state.lock().scanned = scanned_total;
             }
 
-            // 清理「已消失」的文件（上次在库、本次没遍历到）。
+            // Clean up files that "disappeared" (in the library last time, not walked this time).
             let stale: Vec<String> = existing
                 .keys()
                 .filter(|p| !visited.contains(*p))
