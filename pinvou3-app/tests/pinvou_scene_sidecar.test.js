@@ -24,8 +24,9 @@ const webNormalizeSceneRegexSource = extractNormalizeSceneRegex(webBridgeSource)
 // eval 出真正的 RegExp 对象（源码里就是字面量正则）
 const tauriNormalizeSceneRegex = eval(tauriNormalizeSceneRegexSource);
 
-// scene sidecar 同步块（两个上报助手 + 同步函数）的源码整段取出，既用于两宿主
-// 逐字节比对，也用于在沙箱里真正执行失败路径。
+// The scene sidecar sync block (the two reporting helpers plus the sync function) is
+// extracted verbatim from the source: it is used both for a byte-for-byte comparison
+// across the two hosts and for actually executing the failure paths in a sandbox.
 const CACHED_SCENE_EVENTS = [{ pos: 0, scene: 'design:poster' }];
 function extractSceneSyncBlock(source) {
   const match = source.match(
@@ -58,6 +59,50 @@ async function runSceneSync(block, { readFails = false, saveFails = false } = {}
   });
   try {
     return { value: await sandbox.__syncScene('s1'), warnings, threw: false };
+  } catch (error) {
+    return { value: null, warnings, threw: String(error) };
+  }
+}
+
+// The steered-message sidecar exists only in the tauri host (the web bridge has
+// no steer persistence), so there is no byte twin to compare against. Run the
+// real source block through the same failure paths as the scene sidecar: a read
+// failure degrades to the cache, and a migration-write failure must never throw
+// across the bare await in the session-switch path.
+function extractSteeredSyncBlock(source) {
+  const match = source.match(
+    /const STEERED_MESSAGES_STORAGE_PREFIX[\s\S]*?async function syncSteeredMessagesForSession\(sid\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
+async function runSteeredSync(block, { readFails = false, saveFails = false, cachedEvents = [] } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    window: { localStorage: { setItem() {}, getItem: () => JSON.stringify(cachedEvents) } },
+    reportSidecarReadFailure(kind, sid, error) {
+      warnings.push(`[sidecar] ${kind} read failed for session ${sid}; falling back to the local cache`, error);
+    },
+    reportSidecarWriteFailure(kind, sid, error) {
+      warnings.push(`[sidecar] ${kind} migration write failed for session ${sid}; keeping the local cache`, error);
+    },
+    async invoke(command) {
+      if (command === 'get_session_steered_messages') {
+        if (readFails) throw new Error('sidecar unreadable');
+        return [];
+      }
+      if (command === 'save_session_steered_messages') {
+        if (saveFails) throw new Error('No space left on device');
+        return null;
+      }
+      return null;
+    },
+  };
+  vm.runInNewContext(`${block}\nthis.__syncSteered = syncSteeredMessagesForSession;`, sandbox, {
+    filename: 'steered-sidecar-block.js',
+  });
+  try {
+    return { value: await sandbox.__syncSteered('s1'), warnings, threw: false };
   } catch (error) {
     return { value: null, warnings, threw: String(error) };
   }
@@ -293,9 +338,11 @@ function rec(name, pass, detail = '') {
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
-  // 两个 bridge 的真实源码取出来跑，而不是对 catch 做形状匹配：形状断言分不出
-  // 「迁移写在 try 内」与「写在 try 外」，而后者会让写失败逃逸到裸 await 它的
-  // switchToSessionInternal，把装饰性标签的写失败升级成整个会话打不开。
+  // The real source of both bridges is extracted and executed rather than shape-matching
+  // the catch: shape assertions cannot tell "migration write inside the try" from
+  // "outside the try", and the latter would let a write failure escape to the bare-await
+  // switchToSessionInternal, escalating a decorative tag's write failure into the whole
+  // session failing to open.
   const tauriSceneSync = extractSceneSyncBlock(tauriBridgeSource);
   const webSceneSync = extractSceneSyncBlock(webBridgeSource);
   rec('scene sidecar 同步在两个宿主上逐字节同一，避免二次漂移',
@@ -311,6 +358,24 @@ function rec(name, pass, detail = '') {
     const write = await runSceneSync(block, { saveFails: true });
     rec(`${host}: scene sidecar 迁移写失败时上报后降级，绝不抛给会话切换`,
       !write.threw && JSON.stringify(write.value) === JSON.stringify(CACHED_SCENE_EVENTS) &&
+        write.warnings.some(text => text.includes('migration write failed')),
+      JSON.stringify(write));
+  }
+
+  const tauriSteeredSync = extractSteeredSyncBlock(tauriBridgeSource);
+  rec('steered sidecar 同步块存在于 tauri 桥源码',
+    tauriSteeredSync !== '',
+    'tauri steered sidecar block');
+  {
+    const cached = [{ pos: 3, text: '调整一下' }];
+    const read = await runSteeredSync(tauriSteeredSync, { readFails: true, cachedEvents: cached });
+    rec('tauri: steered 读失败时上报后降级到本地缓存',
+      !read.threw && JSON.stringify(read.value) === JSON.stringify(cached) &&
+        read.warnings.some(text => text.includes('read failed')),
+      JSON.stringify(read));
+    const write = await runSteeredSync(tauriSteeredSync, { saveFails: true, cachedEvents: cached });
+    rec('tauri: steered 迁移写失败时上报后降级，绝不抛给会话切换',
+      !write.threw && JSON.stringify(write.value) === JSON.stringify(cached) &&
         write.warnings.some(text => text.includes('migration write failed')),
       JSON.stringify(write));
   }
