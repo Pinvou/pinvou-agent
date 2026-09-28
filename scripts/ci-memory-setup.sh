@@ -120,7 +120,7 @@ fi
 warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }
 
 if [[ ${EUID} -ne 0 ]]; then
-  warn "must run as root (invoke as: sudo bash scripts/ci-memory-setup.sh)"
+  warn "must run as root (invoke as: sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash scripts/ci-memory-setup.sh)"
   exit 0
 fi
 
@@ -158,7 +158,7 @@ log "sysctl tuned (best effort): swappiness=130 watermark_scale_factor=300 min_f
 
 # zram knobs: the virtual device is ZRAM_RAM_MULT x RAM (derived at runtime
 # from MemTotal) and the compressed pool is capped at ZRAM_POOL_RAM_PCT
-# percent of RAM. The opt-in disk swap keeps a fixed size.
+# percent of RAM. The mandatory disk swap keeps a fixed size.
 ZRAM_RAM_MULT=2
 ZRAM_POOL_RAM_PCT=70
 ZRAM_PRIORITY=100
