@@ -13,7 +13,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { applyConnectorFailure, connectorFailure, connectorUiStep } from './connector-ui-state.js';
+import { applyConnectorFailure, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -251,7 +251,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               <div className="rounded-xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-3">
                 <div className="text-[13px] font-medium text-rose-700 dark:text-rose-300 mb-1.5">{copy.connectionIncomplete}</div>
                 <div className="text-[12px] leading-relaxed text-rose-800/80 dark:text-rose-200/70">
-                  {errors[flow.errorCode] || errors.unknown || copy.connectionIncomplete}
+                  {connectorErrorCopy(errors, flow.errorCode) || errors.unknown || copy.connectionIncomplete}
                 </div>
                 <div className="flex gap-2 mt-3 justify-end">
                   <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-100 text-[13px]">{copy.close}</button>
@@ -330,7 +330,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           conn.stopTick();
           if (cfg.openAuthUrl && p.url) {
             // Log without the error: the rejection carries the full auth URL (device-code-bearing),
-            // which must not land in the console; the card surfaces the localized open failure.
+            // which must not land in the console; reopening stays available via the card's button.
             invokeTauri('open_external_url', { url: p.url }).catch(() => {
               console.error('open tmeet auth url failed');
             });
@@ -346,7 +346,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
           conn.stopTick();
-          conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+          // Flow null = the card was closed (cancel) before the event landed;
+          // writing would resurrect a zombie "done" card.
+          conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
           // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
           invokeTauri(cfg.commands.applySkills).catch(() => {});
           // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
@@ -364,7 +366,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               }
             }
             await invokeTauri(cfg.commands.applySkills);
-            conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
+            // Same null guard as above: the awaited apply gives cancel a wide window.
+            conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
             setTimeout(() => conn.setFlow(null), 1800);
           } catch (e) {
             // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; every other failure

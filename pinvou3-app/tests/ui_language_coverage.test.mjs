@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // full three-language dict: browser entry lazy-loads via i18n.js, tests use the aggregate shim
 import {
   applyConnectorFailure,
+  connectorErrorCopy,
   connectorErrorCodeForStep,
   connectorFailure,
   connectorUiStep,
@@ -308,12 +309,26 @@ for (const language of ['zh', 'en', 'ja']) {
 const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'unknown'];
 for (const language of ['zh', 'en', 'ja']) {
   for (const code of connectorErrorCodes) {
-    assert.equal(typeof dict[language].uiToolStore.connectorErrors[code], 'string', `${language}.uiToolStore.connectorErrors.${code} must exist`);
+    const copy = dict[language].uiToolStore.connectorErrors[code];
+    assert.equal(typeof copy, 'string', `${language}.uiToolStore.connectorErrors.${code} must exist`);
+    assert.ok(copy.length > 0, `${language}.uiToolStore.connectorErrors.${code} must not be empty`);
   }
+  assert.ok(typeof dict[language].updateCheckFailed === 'string' && dict[language].updateCheckFailed.length > 0, `${language}.updateCheckFailed must exist and not be empty`);
   for (const retired of ['connFailed', 'dingtalkSkillsFailed', 'tmeetAuthIncomplete']) {
     assert.equal(dict[language].uiToolStore[retired], undefined, `${language}.uiToolStore.${retired} is replaced by connectorErrors`);
   }
 }
+// The render lookup must resolve own keys only: `constructor`/`toString` pass the
+// snake_case code pattern but would resolve to Object.prototype functions.
+const connectorErrorsDict = dict.en.uiToolStore.connectorErrors;
+assert.equal(connectorErrorCopy(connectorErrorsDict, 'auth_failed'), connectorErrorsDict.auth_failed);
+assert.equal(connectorErrorCopy(connectorErrorsDict, 'constructor'), '');
+assert.equal(connectorErrorCopy(connectorErrorsDict, 'toString'), '');
+assert.equal(connectorErrorCopy(connectorErrorsDict, 'valueOf'), '');
+assert.equal(connectorErrorCopy(connectorErrorsDict, 'hasOwnProperty'), '');
+assert.equal(connectorErrorCopy(connectorErrorsDict, 42), '');
+assert.equal(connectorErrorCopy(connectorErrorsDict, null), '');
+assert.equal(connectorErrorCopy(null, 'auth_failed'), '');
 assert.equal(errorCode({ code: 'auth_failed', message: 'raw diagnostic' }), 'auth_failed');
 assert.equal(errorCode(new Error('cli_install_failed: raw backend detail')), 'cli_install_failed');
 assert.equal(errorCode(new Error('raw backend detail')), '');
@@ -352,7 +367,7 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
 {
   const toolStore = source('features/tools/ToolStoreView.jsx');
   assert.match(toolStore, /errors=\{storeCopy\.connectorErrors\}/);
-  assert.match(toolStore, /errors\[flow\.errorCode\] \|\| errors\.unknown \|\| copy\.connectionIncomplete/);
+  assert.match(toolStore, /connectorErrorCopy\(errors, flow\.errorCode\) \|\| errors\.unknown \|\| copy\.connectionIncomplete/);
   assert.match(toolStore, /applyConnectorFailure\(f, p, p\.phase\)/);
   assert.doesNotMatch(toolStore, /\berr:\s*String\(/);
   assert.doesNotMatch(toolStore, /flow\.err\b/);

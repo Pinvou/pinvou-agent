@@ -540,6 +540,27 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
       await dismiss(page);
+      // Backend `wecom:error` events are the only ingress that carries real raw
+      // backend text (the Rust json! message field); the card must render the
+      // localized category message and never the raw payload or its details.
+      await page.evaluate(() => window.__emitTauri('wecom:error', {
+        phase: 'authorize',
+        code: 'auth_failed',
+        message: 'RAW后端诊断 payload secret_token=abcdef 授权流程中断',
+      }));
+      await sleep(150);
+      rec('WeCom backend error event renders localized copy without the raw payload', await page.evaluate(() => {
+        const text = document.body.innerText;
+        return text.includes('登录授权未完成，请重新连接') && !text.includes('secret_token') && !text.includes('RAW后端诊断');
+      }));
+      await clickExact(page, '关闭'); await sleep(150);
+      // Restore the QR card so the cancel-from-qr pin below runs unchanged.
+      await page.evaluate(() => window.__emitTauri('wecom:qr', {
+        phase: 'authorize',
+        url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      }));
+      await sleep(150);
       await clickExact(page, '取消'); await sleep(150);
       rec('WeCom flow-card cancel clears the flow card', await page.evaluate(() => {
         const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
