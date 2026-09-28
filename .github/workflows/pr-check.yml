@@ -1210,7 +1210,8 @@ jobs:
     name: windows-rust-test (${{ matrix.phase }})
     needs: changes
     # Native Windows coverage runs once on ready high-risk/explicit PRs and on main.
-    # Merge Queue does not repeat this up-to-90-minute leg; Linux validates the combined tree.
+    # Merge Queue does not repeat these legs (each capped at its own
+    # timeout-minutes below); Linux validates the combined tree.
     if: >-
       ${{
         !cancelled() &&

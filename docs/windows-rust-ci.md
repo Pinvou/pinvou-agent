@@ -7,9 +7,9 @@ gate also has `windows-codex-runtime-test`, which is out of scope here). It is
 a two-leg matrix on `windows-latest` (`fail-fast: false`, `max-parallel: 2`);
 the required gate aggregates the matrix result, so both legs must pass:
 
-- `all-targets-check` runs the metadata-only checks (steps 4-5 below).
+- `all-targets-check` runs the metadata-only checks (steps 5-6 below).
 - `regression` links the `pinvou3_lib` test executable and runs everything
-  that needs it (steps 6-10 below).
+  that needs it (steps 7-11 below).
 
 Routing is job level and identical for both legs. The job runs on every push
 to `main` (cumulative Windows coverage plus cache warm-up) and on ready,
@@ -29,7 +29,7 @@ on the app crate; only `pet` is exempt from both filters.
 
 ## What the job runs
 
-The job shell is `bash`; three steps opt into `pwsh`. Steps 1-3 and the
+The job shell is `bash`; four steps opt into `pwsh`. Steps 1-4 and the
 cache restore run on both legs; the leg of every later step is noted. In
 order:
 
@@ -41,29 +41,33 @@ order:
    `RUSTC_WRAPPER`: compile-time-only `RUST_MIN_STACK=16MiB`; the `.exe` form
    avoids the cmd.exe 8191-character command-line limit.
    `AWS_LC_SYS_PREBUILT_NASM=1` substitutes for the NASM the runner lacks.
-4. (`all-targets-check`) `cargo check --manifest-path
+4. (`both legs`) `Windows Rust cache baseline diagnostics`: print the
+   `WINDOWS_RUST_CACHE` marker (target presence plus fingerprint and
+   direct dependency-artifact counts, no recursive scan) so cold-cache
+   regressions are visible per leg without leaking cache contents.
+5. (`all-targets-check`) `cargo check --manifest-path
    pinvou3-app/src-tauri/Cargo.toml --all-targets --features dev-tools`.
-5. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
+6. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
    --all-targets --locked`: the CLI's Windows-only branches (exe/cmd
    candidates, `cmd /D /S /C` shims, taskkill tree kill, `CREATE_NO_WINDOW`)
    compile-check only on a Windows runner.
-6. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+7. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
    --lib --no-run --message-format=json`, capturing the `pinvou3_lib` test
    executable as `PINVOU3_TEST_EXE`.
-7. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
+8. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
    `mt.exe`: `muda` statically imports `TaskDialogIndirect`, which exists only
    in the Common-Controls v6 side-by-side assembly, and Windows ignores a
    side-by-side `<exe>.manifest` once `link.exe` embedded a default one.
-8. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
+9. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
    — a non-blocking PE import-table diagnostic (`continue-on-error`), after
-   step 7 so the embedded manifest exempts SxS DLLs such as `comctl32`.
-9. (`regression`) Run the CodeWhale PowerShell regression filters
+   step 8 so the embedded manifest exempts SxS DLLs such as `comctl32`.
+10. (`regression`) Run the CodeWhale PowerShell regression filters
    (`forkguard_powershell` and `forkguard_windows_shell_text`) from the
    dependency crate itself. The parent application jobs do not execute a
    dependency crate's lib tests. The step unsets `SHELL` so the Windows
    fallback to `pwsh.exe` is deterministic, and each filter must match at
    least one test so a rename cannot silently pass.
-10. (`regression`) Regression loop: run the patched application binary directly — re-invoking
+11. (`regression`) Regression loop: run the patched application binary directly — re-invoking
    `cargo test` could relink and drop the embedded manifest — once per filter
    with `--test-threads=1`; each filter must match at least one test
    (`running [1-9][0-9]* tests?`) so a renamed test fails loudly:
@@ -145,7 +149,7 @@ compile. `timeout-minutes` is now 180, with headroom for two cold workspaces;
 the cap applies per leg, since either leg can still compile cold on a cache
 miss.
 
-On failure, read the import-diagnostic output (step 8) and the failing filter
+On failure, read the import-diagnostic output (step 9) and the failing filter
 name (steps 9–10); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing

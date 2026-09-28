@@ -884,6 +884,7 @@ class CiGatePolicyTests(unittest.TestCase):
             # Shared setup runs on both legs.
             "初始化公共底座 submodule": None,
             "Cargo cache": None,
+            "Windows Rust cache baseline diagnostics": None,
         }
         for name, phase in expected.items():
             with self.subTest(step=name):
