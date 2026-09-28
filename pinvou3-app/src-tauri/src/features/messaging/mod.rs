@@ -333,12 +333,13 @@ async fn process_pending_spool(
 
 /// Spawn the delivery watcher: processes the boot backlog first, then polls
 /// until the process exits (the app lifetime is the watcher lifetime —
-/// started once from `lib.rs` setup).
+/// started once from `lib.rs` setup). Uses `tauri::async_runtime::spawn`
+/// (not `tokio::spawn`): the setup hook runs outside any raw tokio context.
 pub fn spawn_delivery_watcher(
     pool: EnginePool,
     store: crate::features::sessions::SessionStore,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
         let mut attempts: HashMap<String, u32> = HashMap::new();
         loop {
             process_pending_spool(&pool, &store, &mut attempts).await;
