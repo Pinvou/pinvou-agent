@@ -141,8 +141,10 @@ pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        // The card renders a localized category message only; the raw cause lives here.
-        log::warn!("[wecom] connect flow failed: {e}");
+        // The card renders a localized category message only; the raw cause lives
+        // here on stderr (the logging backend is only attached in debug builds,
+        // so eprintln! is the trail that survives into release).
+        eprintln!("[wecom] connect flow failed: {e}");
         cc::emit(
             app,
             "wecom:error",
@@ -280,9 +282,20 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             return Ok(()); // 取消:静默
         }
         match child.try_wait() {
-            Ok(Some(_status)) => {
+            Ok(Some(status)) => {
                 conn.set_pid(ID, None);
-                if is_ready() {
+                if conn.is_cancelled(ID) {
+                    // 取消竞态:kill 后的失败退出按取消处理,静默
+                    eprintln!("[wecom] cancelled; child exit={status}");
+                    return Ok(());
+                }
+                let ready = is_ready();
+                // is_ready 探针是子进程调用,期间可能取消:静默收尾,
+                // 不向已关闭的卡片发 connected 或复活错误卡。
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
+                if ready {
                     cc::bundle_store_on_connected(ID);
                     cc::emit(app, "wecom:connected", json!({ "ok": true }));
                     return Ok(());

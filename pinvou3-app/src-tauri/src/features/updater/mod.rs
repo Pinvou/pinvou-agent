@@ -91,14 +91,22 @@ pub fn get_app_version() -> String {
 }
 
 /// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
-/// 手动检查才展示错误。
+/// 手动检查才展示错误。原始原因同时落到 stderr:失败提示是短文案,诊断靠这里。
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION");
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
-    platform::check_for_update_info(&client, current).await
+    {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("[updater] update check failed: {e}");
+            return Err(format!("HTTP client 构建失败: {e}"));
+        }
+    };
+    platform::check_for_update_info(&client, current)
+        .await
+        .inspect_err(|e| eprintln!("[updater] update check failed: {e}"))
 }
 
 /// Downloads the update package to `~/.pinvou3/updates/` with streaming

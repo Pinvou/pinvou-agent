@@ -130,8 +130,10 @@ fn run_connect_flow(app: &AppHandle) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
-            // The card renders a localized category message only; the raw cause lives here.
-            log::warn!("[feishu] register phase failed: {e}");
+            // The card renders a localized category message only; the raw cause lives
+            // here on stderr (the logging backend is only attached in debug builds,
+            // so eprintln! is the trail that survives into release).
+            eprintln!("[feishu] register phase failed: {e}");
             cc::emit(
                 app,
                 "feishu:error",
@@ -141,7 +143,7 @@ fn run_connect_flow(app: &AppHandle) {
         }
     }
     if let Err(e) = phase_authorize(app) {
-        log::warn!("[feishu] authorize phase failed: {e}");
+        eprintln!("[feishu] authorize phase failed: {e}");
         cc::emit(
             app,
             "feishu:error",
@@ -210,7 +212,9 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if conn.is_cancelled(ID) {
-                    return Ok(false); // 取消竞态:kill 后的失败退出按取消处理,静默
+                    // 取消竞态:kill 后的失败退出按取消处理,静默
+                    eprintln!("[feishu] register cancelled; child exit={status}");
+                    return Ok(false);
                 }
                 if !status.success() {
                     return Err("注册应用未完成(可能已取消或超时)".into());
@@ -279,6 +283,10 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
             &device_code,
             "--json",
         ]));
+        // 探针可能长时间阻塞,期间取消:静默收尾,不向已关闭的卡片发 connected。
+        if conn.is_cancelled(ID) {
+            return Ok(());
+        }
         if is_user_ready() {
             cc::bundle_store_on_connected(ID);
             cc::emit(app, "feishu:connected", json!({ "ok": true }));

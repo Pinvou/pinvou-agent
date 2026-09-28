@@ -221,8 +221,10 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        // The card renders a localized category message only; the raw cause lives here.
-        log::warn!("[tmeet] connect flow failed: {e}");
+        // The card renders a localized category message only; the raw cause lives
+        // here on stderr (the logging backend is only attached in debug builds,
+        // so eprintln! is the trail that survives into release).
+        eprintln!("[tmeet] connect flow failed: {e}");
         cc::emit(
             app,
             "tmeet:error",
@@ -355,11 +357,19 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 conn.set_pid(ID, None);
                 // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
                 if conn.is_cancelled(ID) {
+                    eprintln!("[tmeet] cancelled; child exit={status}");
                     return Ok(());
                 }
                 // A single status wait is enough: the already flag is decided from the captured output lines,
                 // with no second 5s polling run just to fill in already:true.
-                if wait_logged_in(Duration::from_secs(5)) {
+                let logged_in = wait_logged_in(Duration::from_secs(5));
+                // wait_logged_in polls a subprocess for up to 5s; a cancel landing
+                // inside it must finish silently instead of emitting onto the
+                // just-closed card.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
+                if logged_in {
                     cc::bundle_store_on_connected(ID);
                     let already = auth_lines_say_already_logged_in(&auth_lines);
                     cc::emit(

@@ -239,8 +239,10 @@ pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
-        // The card renders a localized category message only; the raw cause lives here.
-        log::warn!("[dingtalk] connect flow failed: {e}");
+        // The card renders a localized category message only; the raw cause lives
+        // here on stderr (the logging backend is only attached in debug builds,
+        // so eprintln! is the trail that survives into release).
+        eprintln!("[dingtalk] connect flow failed: {e}");
         cc::emit(
             app,
             "dingtalk:error",
@@ -282,6 +284,10 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
+            // 与 tmeet 对齐:deadline 到期瞬间的取消按取消处理,静默
+            if conn.is_cancelled(ID) {
+                return Ok(());
+            }
             return Err("60s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
         match rx.recv_timeout(deadline.saturating_duration_since(now)) {
@@ -364,9 +370,16 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if conn.is_cancelled(ID) {
-                    return Ok(()); // 取消竞态:kill 后的失败退出按取消处理,静默
+                    // 取消竞态:kill 后的失败退出按取消处理,静默
+                    eprintln!("[dingtalk] cancelled; child exit={status}");
+                    return Ok(());
                 }
                 if is_authenticated() {
+                    // is_authenticated 探针是子进程调用,期间可能取消:静默收尾,
+                    // 不向已关闭的卡片发 connected 或复活错误卡。
+                    if conn.is_cancelled(ID) {
+                        return Ok(());
+                    }
                     cc::bundle_store_on_connected(ID);
                     cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
                     return Ok(());
