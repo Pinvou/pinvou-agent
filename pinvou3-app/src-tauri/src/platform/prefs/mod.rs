@@ -269,7 +269,8 @@ pub struct SavedModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     /// 用户选择的思考深度档位（透传底座 reasoning_effort：off/low/medium/high/max）。
-    /// None = 未显式设置，走 provider 默认（vllm→off 防 SSE timeout，其余→high）。
+    /// None = 未显式设置，走 provider 默认（本地默认最低思考档：vllm→low、
+    /// 探测出的 ollama→high——真机实测本地模型无法可靠关闭思考；其余→high）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     pub model: String,

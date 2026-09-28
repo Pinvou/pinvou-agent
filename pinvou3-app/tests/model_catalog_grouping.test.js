@@ -654,9 +654,9 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k26)], ['off', 'high']);
   assert.ok(![...reasoningEffortTiersForModel(k3)].includes('off'));
   assert.strictEqual(reasoningEffortForModelSwitch(k3), 'high');
-  // 无档位模型切换置 null（未显式设置）；vllm 切回 off
+  // 无档位模型切换置 null（未显式设置）；vllm 切回本地默认的最低思考档 low
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
-  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'off');
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'low');
   // z.ai glm-5.2 switch defaults to high; the bigmodel paas host (tiered route
   // since #53) is also
   // high; glm-5.2 on a compatible gateway has no tiers → null
@@ -767,10 +767,12 @@ test('local routes hitting the knowledge table: tiers/defaults/stored-value norm
   const r1Local = { preset: 'local_vllm', model: 'deepseek-r1:14b' };
   assert.strictEqual(reasoningEffortTiersForModel(r1Local), null);
   assert.strictEqual(normalizeStoredReasoningEffort(r1Local, 'high'), null);
-  // plain local models are unaffected: still default off, four tiers
+  // plain local models keep the four tiers; the default is the lowest
+  // thinking tier low (off is no longer the local default: real-world
+  // models like the Qwen3.8 family do not reliably honor it)
   const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
-  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'low');
   // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
   const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
@@ -821,11 +823,11 @@ test('reasoningEffortDisplayForTiers: display fallback of stored tiers against p
   assert.strictEqual(reasoningEffortDisplayForTiers(null, ['off', 'high']), null);
 });
 
-test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {
+test('defaultReasoningEffortForModel：vllm→low（最低思考档），其余支持档位的模型→high，不支持→null', () => {
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.strictEqual(defaultReasoningEffortForModel(deepseek), 'high');
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
-  assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(vllm), 'low');
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(defaultReasoningEffortForModel(xai), null);
   // grok-4.6 on the xai official endpoint offers tiers and defaults to high
@@ -833,9 +835,11 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
   const xai46 = { preset: 'xai', vendor: 'xai', model: 'grok-4.6', base_url: 'https://api.x.ai/v1' };
   assert.strictEqual(defaultReasoningEffortForModel(xai46), 'high');
   assert.strictEqual(reasoningEffortForModelSwitch(xai46), 'high');
-  // 本地 loopback OpenAI 兼容端点默认关闭思考（与 vllm 一致）
+  // 本地 loopback OpenAI 兼容端点静态默认同样是最低思考档 low；探测出 ollama
+  // 时运行时默认 high（think 开关只有关/开），静态 low 在 ['off','high'] 探测
+  // 表上经 reasoningEffortDisplayForTiers 映射为 high 高亮，与运行时一致
   const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
-  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'low');
 });
 
 test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {
@@ -859,9 +863,9 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // 无存量 → 回退默认档位
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, null), 'high');
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek), 'high');
-  // vllm 默认 off，存量为空时同样回退 off
+  // vllm 默认最低思考档 low，存量为空时同样回退 low
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
-  assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'off');
+  assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'low');
   // 无档位模型（xai 底座空操作）→ null
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(normalizeStoredReasoningEffort(xai, 'high'), null);

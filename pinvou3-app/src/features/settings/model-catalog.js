@@ -1127,8 +1127,9 @@ function baseUrlUsesLoopback(baseUrl) {
 
 // 对齐 Rust bridge.rs `base_url_uses_local_or_private`：loopback / RFC1918 私网
 // （10/8、172.16/12、192.168/16）/ Docker 宿主别名（host.docker.internal 等）。
-// 这些端点通常跑在用户自己的机器/内网，探测成本低且值得默认关思考；公网
-// OpenAI 兼容端点不在此列（保持默认 high）。与 `baseUrlUsesLoopback` 的区别：
+// 这些端点通常跑在用户自己的机器/内网，探测成本低，值得下发真实思考档位
+// （默认取最低思考档）；公网 OpenAI 兼容端点不在此列（保持默认 high）。
+// 与 `baseUrlUsesLoopback` 的区别：
 // 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
 // 回环部分复用 `baseUrlUsesLoopback`，本函数只补 Docker 别名与 RFC1918，
 // 避免两份回环规则漂移。
@@ -1350,22 +1351,27 @@ function isAlwaysThinkingK3Route(model) {
   return isExactMoonshotK3Route(model, modelName);
 }
 
-// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认 off
-// （防 SSE timeout / 思考 trace 抢占首包），其余 high。
+// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认最低思考档
+// （静态四档表 → low），其余 high。本地默认不再取 off：真机实测 Qwen3.8 一类本地
+// 模型无法可靠关闭思考，沉默思考既拖慢首包又会把 reasoning 混入正文；off 仍作为
+// 显式选项保留。探测出 Ollama 时运行时默认 high（think 布尔只有关/开两态，开=high，
+// 见 Rust request_reasoning_effort）；本函数的静态默认 low 经
+// reasoningEffortDisplayForTiers 在 ['off','high'] 探测表上映射为 high，与运行时一致。
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (provider === 'vllm' || provider === 'local') {
-    // Always-thinking models with controllable tiers (knowledge table): off is
-    // unavailable, default to the lowest tier.
+    // Always-thinking models with controllable tiers (knowledge table):
+    // tiers[0] is the lowest tier the model allows.
     const spec = alwaysThinkingSpecForModel(model && model.model);
     if (spec && spec.tiers) return spec.tiers[0];
-    return 'off';
+    return 'low';
   }
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
 // 切换模型时的思考深度重置：丢弃旧档位，按新 model 的 route 回落到默认档位
-// （vllm→off，其余支持档位的模型→high；无档位模型→null = 未显式设置）。K2.6 选 off 后
+// （vllm→low（最低思考档），其余支持档位的模型→high；无档位模型→null = 未显式设置）。
+// K2.6 选 off 后
 // 切 K3，off 不在 K3 档位表（low/high/max）内，必须重置为 high，否则界面无高亮且保存
 // 仍写旧值。单独成函数以便对「模型切换归一」这一状态迁移做行为测试。
 function reasoningEffortForModelSwitch(model) {

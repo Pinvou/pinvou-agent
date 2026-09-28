@@ -135,12 +135,13 @@ pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
 /// (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges (10/8, 172.16/12,
 /// 192.168/16), or Docker-specific hostnames (host.docker.internal, etc.).
 /// These endpoints usually run on the user's own machine/intranet; probing
-/// them is cheap and thinking can default to off; public OpenAI-compatible
-/// endpoints are excluded (keep the default high).
+/// them is cheap so real thinking tiers can be offered (defaulting to the
+/// lowest thinking tier — see `request_reasoning_effort`); public
+/// OpenAI-compatible endpoints are excluded (keep the default high).
 /// Difference from `base_url_uses_loopback`: the latter is only for the
 /// "allow unauthenticated" decision (api_key required), while this decision
 /// covers probing and thinking control (LAN vLLM/Ollama also defaults to
-/// thinking off).
+/// the lowest thinking tier).
 pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -1069,16 +1070,22 @@ impl Pinvou3Bridge {
     /// through to the foundation's `reasoning_effort`).
     ///
     /// Priority: user-explicit `SavedModel.reasoning_effort` > provider
-    /// default (local models — vLLM and probed Ollama — default to off to
-    /// prevent SSE timeouts; everything else defaults to high — the
-    /// foundation's own default is Max, and Pinvou uniformly caps it to high,
-    /// matching the product's default thinking intensity).
+    /// default (local models default to the lowest thinking tier the wire can
+    /// express — vLLM low, probed Ollama high because its wire only has the
+    /// boolean think — since real-world local models such as the Qwen3.8
+    /// family do not reliably honor thinking=off: a model that silently
+    /// thinks anyway stalls the first packet and leaks reasoning into plain
+    /// text, while a declared low tier keeps the stream alive and the
+    /// reasoning properly labeled. off stays available as an explicit user
+    /// choice. Everything else defaults to high — the foundation's own
+    /// default is Max, and Pinvou uniformly caps it to high, matching the
+    /// product's default thinking intensity).
     /// The exception is models whose thinking cannot be disabled on local
     /// routes: when the `core::always_thinking` knowledge table matches,
     /// normalize per the table (NoControl sends no thinking parameters; Tiers
     /// only allows the tiers in the table — out-of-tier/missing stored values
     /// normalize to the lowest tier), overriding the stored value and the
-    /// local default off.
+    /// local default tier.
     ///
     /// Local OpenAI-compatible endpoints (loopback LM Studio etc., where the
     /// probe cannot identify the server type or resolves to LM Studio/generic)
@@ -1151,10 +1158,15 @@ impl Pinvou3Bridge {
             return Some(effort.to_string());
         }
         match provider.as_str() {
-            // Local models default to thinking off: vLLM to prevent SSE
-            // timeouts; Ollama to prevent the thinking trace from preempting
-            // the first packet.
-            "vllm" | "ollama" => Some("off".to_string()),
+            // Local models default to the lowest thinking tier instead of
+            // off: real-world models (Qwen3.8 family etc.) do not reliably
+            // honor thinking=off, and a silently-thinking model stalls the
+            // first packet and leaks reasoning into plain text. vLLM exposes
+            // the low tier; the Ollama wire only has the boolean think, so
+            // its lowest thinking level is think=true, exposed as high. off
+            // remains selectable as an explicit user choice.
+            "vllm" => Some("low".to_string()),
+            "ollama" => Some("high".to_string()),
             // Local OpenAI-compatible endpoints (loopback/private-network LM
             // Studio/generic services) are not injected, preserving the old
             // behavior.
@@ -2471,8 +2483,9 @@ impl Pinvou3Bridge {
             reasoning_stream_style,
         );
         cfg.default_text_model = Some(model);
-        // Local models (vLLM / probed Ollama) default to thinking off (to
-        // prevent SSE timeouts); everything else defaults to high.
+        // Local models (vLLM / probed Ollama) default to the lowest thinking
+        // tier (see request_reasoning_effort); everything else defaults to
+        // high.
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
     }
@@ -2975,8 +2988,8 @@ impl Pinvou3Bridge {
             // does not use it — take the default (no budget/Active).
             goal_token_budget: None,
             goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
-            // Local vLLM turns thinking off (to prevent SSE timeouts);
-            // everything else defaults to high.
+            // Local models default to the lowest thinking tier (see
+            // request_reasoning_effort); everything else defaults to high.
             reasoning_effort: self.request_reasoning_effort(),
             reasoning_effort_auto: false,
             auto_model: false,
@@ -6364,7 +6377,7 @@ mod tests {
     /// would give pinvou3 strange behavior or privilege escalation.
     #[test]
     fn engine_config_locks_critical_fields() {
-        // The reasoning_effort=off assertion pins LocalVllm behavior (the
+        // The reasoning_effort assertion pins LocalVllm behavior (the
         // default preset is now platform-aware), so set LocalVllm explicitly.
         let mut bridge = fixture_bridge();
         set_active_model(
@@ -6391,9 +6404,10 @@ mod tests {
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
-            Some("off"),
-            "本地 vLLM(Qwen3.6)每轮 thinking 必须关；v0.9.12 由 SendMessage 下发，\
-             不再依赖已删除的 EngineConfig 全局字段"
+            Some("low"),
+            "本地 vLLM(Qwen3.6)默认最低思考档 low（真机实测本地模型无法可靠关闭\
+             thinking）；v0.9.12 由 SendMessage 下发，不再依赖已删除的 \
+             EngineConfig 全局字段"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
@@ -7743,10 +7757,12 @@ mod tests {
     }
 
     /// A local loopback endpoint probed as Ollama: use the foundation's
-    /// ollama provider (think toggle), default thinking off (off →
-    /// think=false), no auth required.
+    /// ollama provider (think toggle), default to the lowest thinking level
+    /// the wire can express (think=true, exposed as high — off is no longer
+    /// the default because real-world models do not reliably honor it), no
+    /// auth required.
     #[test]
-    fn local_ollama_probe_maps_to_ollama_wire_and_defaults_off() {
+    fn local_ollama_probe_maps_to_ollama_wire_and_defaults_high() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -7764,9 +7780,9 @@ mod tests {
         bridge.probed_local_kind = Some(LocalServerKind::Ollama);
         assert_eq!(bridge.provider(), "ollama");
         assert!(!bridge.api_key_required(), "本地 Ollama 无需鉴权");
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
         let providers = cfg.providers.as_ref().expect("providers");
         assert_eq!(
             providers.ollama.base_url.as_deref(),
@@ -7777,10 +7793,10 @@ mod tests {
     }
 
     /// A local loopback endpoint probed as vLLM (an OpenAI-compatible preset
-    /// pointing at vLLM): use the vllm provider (tier wire), default thinking
-    /// off.
+    /// pointing at vLLM): use the vllm provider (tier wire), default to the
+    /// lowest thinking tier low.
     #[test]
-    fn local_vllm_probe_maps_to_vllm_wire_and_defaults_off() {
+    fn local_vllm_probe_maps_to_vllm_wire_and_defaults_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -7797,9 +7813,9 @@ mod tests {
         );
         bridge.probed_local_kind = Some(LocalServerKind::Vllm);
         assert_eq!(bridge.provider(), "vllm");
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(
             cfg.providers
                 .as_ref()
@@ -7986,10 +8002,12 @@ mod tests {
         assert!(generic.api_key_required());
     }
 
-    /// On a local Ollama, a user-explicit thinking tier takes priority over
-    /// the default off.
+    /// On a local Ollama, an explicit user tier wins over the default: the
+    /// default is now the lowest thinking level (think=true → high), and a
+    /// stored off must still be kept verbatim (think=false) — off stays a
+    /// supported explicit choice.
     #[test]
-    fn local_ollama_explicit_effort_overrides_default_off() {
+    fn local_ollama_explicit_off_effort_is_kept() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8007,22 +8025,22 @@ mod tests {
         bridge.probed_local_kind = Some(LocalServerKind::Ollama);
         if let Some(model) = bridge.effective_model_owned() {
             let mut model = model;
-            model.reasoning_effort = Some("high".to_string());
+            model.reasoning_effort = Some("off".to_string());
             bridge.session_model = Some(model);
         }
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
-            Some("high"),
-            "显式档位必须覆盖本地默认 off"
+            Some("off"),
+            "显式保存的 off 必须原样保留（think=false），不被本地默认档覆盖"
         );
     }
 
     /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner probe
     /// results all map to the engine's vllm provider (chat_template_kwargs +
-    /// reasoning_effort wire are structurally identical), defaulting to
-    /// thinking off locally.
+    /// reasoning_effort wire are structurally identical), defaulting to the
+    /// lowest thinking tier low locally.
     #[test]
-    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_off() {
+    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_low() {
         for kind in [
             LocalServerKind::Sglang,
             LocalServerKind::LlamaCpp,
@@ -8048,7 +8066,7 @@ mod tests {
             assert_eq!(bridge.provider(), "vllm", "{kind:?}");
             assert_eq!(
                 bridge.request_reasoning_effort().as_deref(),
-                Some("off"),
+                Some("low"),
                 "{kind:?}"
             );
         }
@@ -8116,7 +8134,7 @@ mod tests {
     }
 
     /// kimi-k3 without a stored value: normalizes to the lowest tier "low"
-    /// (the local default off does not apply).
+    /// (matching the local default tier, which is itself the lowest tier).
     #[test]
     fn local_vllm_kimi_k3_without_stored_defaults_to_low() {
         let (_lock, _env) = locked_env(&[
@@ -8233,9 +8251,12 @@ mod tests {
     }
 
     /// A plain local model that does not match the knowledge table
-    /// (qwen3-32b without thinking): keeps the local default off unchanged.
+    /// (qwen3-32b without thinking): gets the new lowest-tier default (low).
+    /// This is the class of models (Qwen3.8 family etc.) whose off switch is
+    /// unreliable in real-world tests, which is why off is no longer the
+    /// local default.
     #[test]
-    fn local_vllm_plain_model_keeps_default_off() {
+    fn local_vllm_plain_model_defaults_to_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8251,7 +8272,7 @@ mod tests {
             "",
         );
         bridge.probed_local_kind = Some(LocalServerKind::Vllm);
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
     }
 
     /// kimi-k3 on the official remote moonshot route does not enter local
@@ -8529,10 +8550,10 @@ mod tests {
         );
     }
 
-    /// DtConfig must keep reasoning_effort=off in LocalVllm mode (to prevent
-    /// SSE timeouts).
+    /// DtConfig must keep the LocalVllm default at the lowest thinking tier
+    /// (reasoning_effort=low).
     #[test]
-    fn local_vllm_forces_reasoning_effort_off() {
+    fn local_vllm_defaults_reasoning_effort_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8540,7 +8561,7 @@ mod tests {
             "DEEPSEEK_API_KEY",
         ]);
         // The default preset is now platform-aware (macOS/Windows→Deepseek),
-        // so set LocalVllm explicitly to test its reasoning_effort=off.
+        // so set LocalVllm explicitly to test its reasoning_effort=low.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -8550,7 +8571,7 @@ mod tests {
             "",
         );
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
     }
 
     /// Tool surface at parity with mainline: no `workflow` ban may be added

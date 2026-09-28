@@ -1,8 +1,11 @@
 //! Knowledge table and runtime normalization for always-thinking models
 //! (thinking cannot be disabled).
 //!
-//! Local routing defaults to thinking off (to guard against SSE timeouts /
-//! first-chunk preemption), but one class of models is always-thinking —
+//! Local routing defaults to the lowest thinking tier rather than off:
+//! real-world local models (e.g. the Qwen3.8 family) increasingly fail to
+//! honor thinking=off, and a model that silently thinks anyway stalls the
+//! first packet and leaks reasoning into plain text. One class of models is
+//! always-thinking —
 //! thinking cannot be disabled and there is no controllable effort tier, or
 //! only some tiers are allowed. Sending "off" or an out-of-range tier would
 //! only be ignored/rejected by the server. This table identifies such models
