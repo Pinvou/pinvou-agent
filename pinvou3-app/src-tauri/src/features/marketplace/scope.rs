@@ -115,6 +115,14 @@ fn to_package_id(raw: &str) -> String {
     skill_owner_package(stripped)
 }
 
+/// Maps a user-supplied raw id to the package id the persisted list stores,
+/// for headless callers (the CLI's toggle read-back verification). A raw
+/// skill id is conditionally re-claimed to its owner package, so verifying
+/// against the raw id yields false positives.
+pub fn package_id_for(raw: &str) -> String {
+    to_package_id(raw)
+}
+
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
 /// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的

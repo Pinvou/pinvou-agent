@@ -42,6 +42,11 @@ pub struct ImportJobState {
     pub job_id: Option<String>,
     pub running: bool,
     pub resumable: bool,
+    /// The job was explicitly cancelled. Without this flag a cancelled job
+    /// is indistinguishable from a finished one (running=false with a
+    /// job_id), which made the CLI's phase derivation report `done` right
+    /// after a successful cancel.
+    pub cancelled: bool,
     pub collection_id: i64,
     /// 已处理文件数（成功、跳过和失败）。
     pub done: u64,
@@ -132,6 +137,18 @@ impl ImportJobStore {
             return Ok(());
         }
         let now = now();
+        // The promotion carries the same state guard as `resume`: a job that a
+        // concurrent interrupt (e.g. the CLI's stall timeout) or cancel pulled
+        // out of the pre-item walk must never be resurrected to `running`.
+        let promoted = tx.execute(
+            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 \
+             WHERE id=?1 AND state IN ('preparing','running')",
+            params![job_id, now],
+        )?;
+        if promoted == 0 {
+            tx.commit()?;
+            return Ok(());
+        }
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO knowledge_import_items(job_id,path,name,state,updated_at) \
@@ -146,10 +163,6 @@ impl ImportJobStore {
                 stmt.execute(params![job_id, path_str.as_ref(), name, now])?;
             }
         }
-        tx.execute(
-            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 WHERE id=?1",
-            params![job_id, now],
-        )?;
         tx.commit()
     }
 
@@ -319,10 +332,21 @@ impl ImportJobStore {
             "done"
         };
         let now = now();
-        c.execute(
-            "UPDATE knowledge_import_jobs SET state=?2,updated_at=?3,finished_at=?3 WHERE id=?1",
+        // The same state guard `prepare_items`/`resume` carry: an interrupted
+        // or cancelled job must never be promoted to a terminal success by a
+        // `finish` that lands after the interruption. The window is real —
+        // the CLI's stall timeout can interrupt during a >300s
+        // `expand_import_roots` walk, the guarded prepare then stages zero
+        // items, and this finish (called by the import loop's ordinary
+        // exit) would otherwise overwrite `interrupted` with `done`,
+        // turning "zero sources ingested, resumable" into an exit-0
+        // success whose promised remedy never materializes.
+        let promoted = c.execute(
+            "UPDATE knowledge_import_jobs SET state=?2,updated_at=?3,finished_at=?3 \
+             WHERE id=?1 AND state IN ('preparing','running')",
             params![job_id, state, now],
         )?;
+        let _ = promoted;
         Ok(())
     }
 
@@ -444,6 +468,7 @@ impl ImportJobStore {
             job_id: Some(id),
             running: matches!(phase.as_str(), "preparing" | "running"),
             resumable: phase == "interrupted",
+            cancelled: phase == "cancelled",
             collection_id,
             done: (completed + skipped + failed) as u64,
             total: total as u64,
@@ -685,5 +710,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item_state, "failed", "重试被拒时失败项状态不得变动");
+    }
+
+    #[test]
+    fn interrupt_landing_during_prepare_is_not_promoted_back() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        // The CLI's stall-timeout interrupt can land while the import thread
+        // is still in the pre-item walk: the job is already `interrupted` by
+        // the time the prepare transaction runs.
+        jobs.interrupt(&job_id);
+        jobs.prepare_items(
+            &job_id,
+            &[PathBuf::from("/tmp/a.md"), PathBuf::from("/tmp/b.md")],
+        )
+        .unwrap();
+
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "prepare must not resurrect an interrupted job to running"
+        );
+        assert_eq!(
+            jobs.item_count(&job_id).unwrap(),
+            0,
+            "the refused prepare must not stage any items"
+        );
+
+        // Round-21 review finding (finish's missing state guard): the
+        // import thread continues past the refused prepare, its loop sees
+        // zero staged items, and its exit calls finish() — which must not
+        // overwrite `interrupted` with a terminal success, or the CLI
+        // reports "index completed" (exit 0) for a job that ingested
+        // nothing and whose promised `index resume` remedy never comes.
+        jobs.finish(&job_id).unwrap();
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "finish must not promote an interrupted job to done: state is {state:?}"
+        );
+    }
+
+    #[test]
+    fn finish_does_not_promote_an_interrupted_job_to_done() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        // The direct shape of the finding: a job the stall timeout pulled
+        // out of its walk (interrupted, zero pending items) is finished by
+        // the thread's ordinary exit. Pre-fix this flipped it to `done`.
+        jobs.interrupt(&job_id);
+        jobs.finish(&job_id).unwrap();
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "an interrupted job must stay resumable, not become done: {state:?}"
+        );
     }
 }

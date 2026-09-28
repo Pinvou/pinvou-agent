@@ -2499,6 +2499,96 @@ async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
     );
 }
 
+/// Cross-process half of the single-flight guard: the ORGANIZE_IN_FLIGHT
+/// mutex above only covers this process, so a second organize from another
+/// process (the CLI while the GUI's scheduled task is organizing) is fenced
+/// out by the advisory file lock in the memory data directory. Holding the
+/// lock the way the other process would must make the call fail fast with
+/// the actionable busy error — no model contact, no history entry.
+#[tokio::test]
+async fn organize_memory_rejects_second_pass_while_pass_lock_is_held() {
+    let _home = IsolatedPinvouHome::new("organize-cross-process-lock");
+    enable_memory_for_tests();
+    let holder = super::io::try_lock_organize_pass().expect("lock must be free at test start");
+    // Port 9 (discard) almost certainly refuses connections: if a locked-out
+    // pass (wrongly) proceeded to the LLM call, the error below would carry a
+    // request failure instead of the busy message.
+    let bridge = FakeOrganizeModel {
+        base_url: "http://127.0.0.1:9".to_string(),
+    };
+
+    let started = std::time::Instant::now();
+    let error = organize_memory_with_llm(&bridge, None).await.unwrap_err();
+
+    // Fail fast: the try-lock must reject immediately, not queue behind the
+    // holder (and not spend the ~75s LLM timeout first).
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "a locked-out pass must fail immediately (took {:?})",
+        started.elapsed()
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("another organize pass is already running"),
+        "unexpected error: {error:#}"
+    );
+    assert!(load_organize_history().is_empty());
+
+    // Releasing the holder (the other process finishing) frees the pass
+    // again; the lock file itself stays behind and must not block it.
+    drop(holder);
+    assert!(super::io::organize_lock_path().is_file());
+    let relock = super::io::try_lock_organize_pass();
+    assert!(
+        relock.is_ok(),
+        "a leftover lock file must not block the next pass"
+    );
+}
+
+/// The pass lock is a scoped RAII guard: a pass that errors mid-way (here:
+/// the model response is unparseable, after the LLM call already spent) must
+/// release it, so the next pass can acquire it and complete.
+#[tokio::test]
+async fn organize_memory_releases_pass_lock_after_mid_pass_failure() {
+    let _home = IsolatedPinvouHome::new("organize-lock-error-release");
+    enable_memory_for_tests();
+    // Seed one preference so the pass has content to scan.
+    let preference_dir = paths::user_memory_preferences_dir();
+    std::fs::create_dir_all(&preference_dir).unwrap();
+    write_json_atomic(
+        &preference_dir.join("pref_lock_release.json"),
+        &preference_fixture("pref_lock_release", "answer_style", "回答默认先给结论"),
+    )
+    .unwrap();
+    // Unbalanced braces: direct parse fails and no JSON object can be
+    // extracted, so the pass errors out mid-way (lock acquired, no actions
+    // applied, no report persisted).
+    let failing_bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(format!("not json {{")),
+    };
+    let error = organize_memory_with_llm(&failing_bridge, None)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("parse"),
+        "unexpected error: {error:#}"
+    );
+    assert!(load_organize_history().is_empty());
+
+    // The very next pass acquires the lock — a plain relock now proves the
+    // release; the full retry below also proves it end to end against the
+    // same lock file that was never removed.
+    let retry_bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(serde_json::json!({ "actions": [] }).to_string()),
+    };
+    let report = organize_memory_with_llm(&retry_bridge, None).await.unwrap();
+    assert!(report.no_change);
+    assert_eq!(report.scanned.get("preference"), Some(&1));
+    assert_eq!(load_organize_history().len(), 1);
+    assert!(super::io::organize_lock_path().is_file());
+}
+
 #[tokio::test]
 async fn organize_memory_rejects_concurrent_second_pass() {
     let _home = IsolatedPinvouHome::new("organize-single-flight");
