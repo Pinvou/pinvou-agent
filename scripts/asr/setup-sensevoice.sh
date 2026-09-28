@@ -56,7 +56,13 @@ else
   printf '%s  %s\n' "$CMAKE_SHA256" "$WORK/cmake.tgz" | sha256sum --check --status \
     || { echo "❌ CMake prebuilt archive sha256 check failed (corrupt download or changed upstream asset): expected $CMAKE_SHA256, actual $(sha256sum "$WORK/cmake.tgz" | cut -d' ' -f1)" >&2; exit 1; }
   tar xzf "$WORK/cmake.tgz" -C "$WORK"
-  CMAKE="$WORK/$(ls "$WORK" | grep '^cmake-')/bin/cmake"
+  # head -1 guards multi-match; the -x guard turns an unexpected upstream
+  # archive layout into a loud failure instead of a silent empty-substitution exit.
+  CMAKE="$WORK/$(ls "$WORK" | grep '^cmake-' | head -n 1)/bin/cmake"
+  if [[ ! -x "$CMAKE" ]]; then
+    echo "❌ CMake 预编译包解压后未找到可执行的 bin/cmake（上游资产布局可能已变化）: $CMAKE" >&2
+    exit 1
+  fi
 fi
 
 echo "[2/5] 克隆 + 构建 SenseVoice.cpp@$SENSEVOICE_SOURCE_COMMIT（CUDA=${GGML_CUDA:-OFF}）…"
