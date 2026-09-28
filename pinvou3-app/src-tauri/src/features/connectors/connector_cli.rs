@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -240,6 +241,7 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    rotate_cli_install_log_if_oversized(&log_path);
     let (out, err) = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -308,6 +310,29 @@ pub fn append_cli_install_log(line: &str) {
     {
         let _ = writeln!(file, "{line}");
     }
+}
+
+/// `cli-install.log` 是追加写、没有自然上界（多阶段安装/多次重试的输出
+/// 全部累加，应用整个生命周期只增不减）。超过上限时轮转为
+/// `cli-install.log.old`（覆盖上一份）：日志磁盘占用有界，当前安装的最新
+/// 输出仍完整保留。
+const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+    rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
+}
+
+fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if metadata.len() <= max_bytes {
+        return;
+    }
+    let mut rotated = log_path.as_os_str().to_owned();
+    rotated.push(".old");
+    // 两个安装同时触发轮转时后到者 rename 失败：日志轮转不值得加锁，忽略。
+    let _ = std::fs::rename(log_path, PathBuf::from(rotated));
 }
 
 /// Bounded reap of a killed connector child with the shared grace budget,
@@ -608,6 +633,30 @@ mod tests {
         envs: &[],
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
+
+    /// 追加写的 cli-install.log 没有自然上界：超限必须轮转为 `.old`
+    /// （覆盖上一份轮转），未超限时保持不动。
+    #[test]
+    fn oversized_cli_install_log_rotates_to_old() {
+        let root = std::env::temp_dir().join(format!("pinvou-cli-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log_path = root.join("cli-install.log");
+        std::fs::write(&log_path, b"x").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(log_path.exists());
+        assert!(!root.join("cli-install.log.old").exists());
+
+        std::fs::write(&log_path, [b'a'; 2048]).unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        assert_eq!(
+            std::fs::read(root.join("cli-install.log.old"))
+                .unwrap()
+                .len(),
+            2048
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// extract_url three-branch matrix: whitelisted domain hits truncate at
     /// whitespace (QR-scan URLs often carry `&` query strings that must not be
