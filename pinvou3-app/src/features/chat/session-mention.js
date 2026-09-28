@@ -2,7 +2,7 @@
  * Session mention (referenced chats): the injection block contract and the
  * composer @-trigger parsing.
  *
- * Contract (paired with mcp-servers/session_reader_server.py): a reference
+ * Contract (paired with pinvou3-app/resources/mcp-servers/session-reader/server.py): a reference
  * injects only structured metadata (sessionId + title + usage contract), never
  * the referenced session's contents; the model must actively call read_session
  * to see content and must treat whatever it reads as untrusted context. The
