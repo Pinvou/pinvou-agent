@@ -1,3 +1,18 @@
+//! CLI contract tests for the benchmark command surface.
+//!
+//! Every test in this file compiles and runs under the default feature set
+//! (`product-backend`), because the local-only GAIA operations they exercise
+//! (fetch/verify/score) share one unconditional implementation in `lib.rs`
+//! regardless of the feature. The single exception is
+//! `gaia_run_requires_product_backend_without_exposing_error_chains`, which
+//! asserts the no-default-features refusal (`product_backend_not_enabled`)
+//! and therefore stays behind `#[cfg(not(feature = "product-backend"))]`;
+//! that configuration is compile-checked by the `cli-lint` featureless step
+//! in `.github/workflows/pr-check.yml` (which builds `--all-targets`), but
+//! no CI leg RUNS it — the refusal itself can only be exercised by a local
+//! `cargo test --no-default-features` (disclosed in docs/pinvou-cli.md,
+//! Known limitations).
+
 use pinvou_cli::{
     BenchmarkAvailability, BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry,
     execute, parse_args, render_list,
@@ -26,7 +41,6 @@ impl Drop for RestoreHome {
     }
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
@@ -242,7 +256,6 @@ fn gaia_output_mode_remains_global_without_stealing_submission_destination() {
     );
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,7 +290,6 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -390,6 +402,14 @@ fn gaia_parser_rejects_unpinned_or_noncomparable_modes() {
     }
 }
 
+// Kept feature-gated on purpose: this test asserts the no-default-features
+// refusal (`product_backend_not_enabled`) of `benchmark run gaia`, which can
+// never fire when the default `product-backend` feature is compiled in. CI
+// compile-checks this configuration (`cli-lint` builds `--no-default-features
+// --all-targets`, see docs/pinvou-cli.md, Known limitations) but never RUNS
+// it, so the test stays dead in CI rather than failing everywhere;
+// do NOT remove this `cfg` to "revive" it.
+>>>>>>> 797129dcd (feat(cli)!: product command families for the pinvou cli)
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_run_requires_product_backend_without_exposing_error_chains() {
@@ -552,7 +572,10 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert_eq!(
         error.to_string(),
-        "usage: pinvou benchmark <command> | pinvou agent run"
+        "usage: pinvou benchmark <command> | pinvou agent run | pinvou \
+         sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
+         projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou \
+         --version|version"
     );
 }
 

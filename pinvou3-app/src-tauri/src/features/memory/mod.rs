@@ -53,6 +53,24 @@ pub use self::io::{
     take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
 };
 
+// ---- Stored text length cap (io) ----
+// The CLI's `memory add` validation must use the same cap constant as the
+// write side; a local copy would reintroduce a spurious
+// `memory_add_not_materialized` failure whenever the cap changes.
+pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+
+// ---- stored-text normalization (util) ----
+// The CLI predicts the text `memory add` stores for work context and the text
+// `memory update` stores in every editable store; those writers normalize it
+// with this function, so a local copy would drift into false
+// "not materialized" failures.
+pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` rejects profile-shaped preference text before
+// enqueueing (the confirm path marks it confirmed but writes nothing), and
+// `memory pending confirm` reports that no-op instead of printing success.
+pub use self::io::confirmed_pending_memory_is_materialized;
+pub use self::types::looks_like_profile_preference_text;
+
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;
 
