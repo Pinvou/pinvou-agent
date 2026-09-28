@@ -245,10 +245,17 @@ const SNAPSHOT_KEYS: &[&str] = &[
 /// - human mode gained the `Cpu:` line the JSON always had, so the two output
 ///   modes mirror each other field for field.
 fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::Value), CliError> {
+    // Vendor-reported hardware names are remote-sourced cells: collapsed like
+    // every other family's human tab rows, so a control character in a
+    // driver-reported name cannot forge extra rows or columns (JSON mode
+    // keeps the originals — serde escapes them).
     let gpu_line = match &snapshot.gpu {
         Some(gpu) => format!(
             "Gpu: {}\t{} MiB / {} MiB\t{}%",
-            gpu.name, gpu.vram_used_mib, gpu.vram_total_mib, gpu.utilization_pct
+            crate::support::collapse_control_characters(&gpu.name),
+            gpu.vram_used_mib,
+            gpu.vram_total_mib,
+            gpu.utilization_pct
         ),
         None => "Gpu: unavailable".to_owned(),
     };
@@ -263,7 +270,7 @@ fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::V
     let cpu_line = match &snapshot.cpu {
         Some(cpu) => format!(
             "Cpu: {}\t{}",
-            cpu.name,
+            crate::support::collapse_control_characters(&cpu.name),
             cpu.total_usage_pct
                 .map(|pct| format!("{pct:.1}%"))
                 .unwrap_or_else(|| "-".to_owned()),

@@ -2408,6 +2408,73 @@ fn update_with_model_id_moves_both_the_definition_and_the_pin() {
     let _ = prompt;
 }
 
+/// A failed binding write must not leave the definition and the pin
+/// inconsistent: `update` commits the definition's new model wire name first,
+/// so a binding-write failure has to restore the captured pre-update
+/// definition (mirroring create's rollback) instead of leaving the executor's
+/// pair split between old and new values. The seam that forces the binding
+/// write to fail is a newer-schema model-bindings.json: the registry read
+/// keeps it (valid shape) and the write refuses it with
+/// `scheduled_storage_unavailable`.
+#[test]
+fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("model-id-update-binding-failure");
+    let created = create_task(&home, "Rollback task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let def_before: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+
+    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    add.args([
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Rollback model",
+        "--model",
+        "rollback-wire-name",
+        "--base-url",
+        "https://api.deepseek.com",
+    ])
+    .env("PINVOU3_HOME", home.path());
+    let added = add.output().expect("models add runs");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let model_id = String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned();
+
+    let bindings = home.path().join("automations").join("model-bindings.json");
+    let future_format = r#"{"schema_version": 99, "tasks": {}}"#;
+    std::fs::write(&bindings, future_format).unwrap();
+
+    let error = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
+    assert!(error.contains("scheduled_storage_unavailable"), "{error}");
+    assert!(
+        error.contains("newer than supported"),
+        "the binding write must fail on the newer-schema registry: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bindings).unwrap(),
+        future_format,
+        "the refused binding write must leave the future-format file untouched"
+    );
+    let def_after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        def_after, def_before,
+        "the failed binding write must restore the pre-update definition"
+    );
+}
+
 /// `update`/`resume` must PERSIST the workspace repair: the GUI's
 /// `ensure_automation_workspace` writes a repaired `cwds` back through
 /// `update_automation(cwds: …)`, so a definition whose stored `cwds` is empty

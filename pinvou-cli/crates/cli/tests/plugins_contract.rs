@@ -347,17 +347,21 @@ fn plugins_usage_errors_exit_two() {
     assert!(usage_error(&["pinvoy", "plugins", "disable"]).contains("id"));
     // unsupported / malformed options
     assert!(usage_error(&["pinvoy", "plugins", "tools", "list", "--bogus"]).contains("--bogus"));
+    let no_equals = usage_error(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "install",
+        "w",
+        "--secret",
+        "NO_EQUALS",
+    ]);
+    assert!(no_equals.contains("KEY=ENV_VAR_NAME"));
+    // The argument may be the plaintext secret pasted at the wrong spot, so
+    // the refusal must never echo it back.
     assert!(
-        usage_error(&[
-            "pinvoy",
-            "plugins",
-            "tools",
-            "install",
-            "w",
-            "--secret",
-            "NO_EQUALS"
-        ])
-        .contains("KEY=ENV_VAR_NAME")
+        !no_equals.contains("NO_EQUALS"),
+        "the --secret refusal must not echo the argument: {no_equals}"
     );
     assert!(
         usage_error(&["pinvoy", "plugins", "tools", "install", "w", "--secret"])
@@ -1153,6 +1157,40 @@ fn oauth_login_guards_and_cancel_behaviour() {
     assert!(
         stdout.contains("no active oauth login"),
         "oauth-cancel output should report no active login"
+    );
+}
+
+/// A user who pastes the plaintext secret where the env-var NAME belongs gets
+/// a failed variable lookup, and that failure must not echo the pasted value
+/// back into the diagnostics — it names only the config key plus the
+/// KEY=ENV_VAR_NAME hint. Hermetic: `resolve_secrets` runs before any
+/// marketplace/network access, so the missing variable fails the command
+/// with exit 1 immediately.
+#[test]
+fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("tools-secret-no-echo");
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "install",
+        "weather",
+        "--secret",
+        "AMAP_KEY=pasted-plaintext-secret-not-a-variable",
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        !message.contains("pasted-plaintext-secret-not-a-variable"),
+        "the diagnostics must not echo the pasted value: {message}"
+    );
+    assert!(
+        message.contains("AMAP_KEY"),
+        "the diagnostics must name the config key: {message}"
+    );
+    assert!(
+        message.contains("KEY=ENV_VAR_NAME"),
+        "the diagnostics must carry the KEY=ENV_VAR_NAME hint: {message}"
     );
 }
 
