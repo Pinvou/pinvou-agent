@@ -38,6 +38,20 @@ pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
     NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// 清华 TUNA pip 镜像：仅在默认源整轮失败后的兜底轮以 per-invocation `-i`
+/// 参数使用，不改用户 pip 配置。
+const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
+
+/// pip 安装的索引轮次：默认源整轮在前（尊重用户自己的 pip.conf/企业源），
+/// 清华 TUNA 兜底轮在后——顺序是刻意的，见
+/// `pip_mirror_round_runs_after_default_round`。
+fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
+    [
+        ("默认源", &[]),
+        ("清华 TUNA 镜像", &["-i", PIP_CN_MIRROR_INDEX]),
+    ]
+}
+
 pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
     MCP_JSON_LOCK
         .lock()
@@ -182,18 +196,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             &["--user", "--break-system-packages"],
             &["--break-system-packages"],
         ];
-        const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
         // 默认索引整轮先行（不带 -i，用户 pip.conf / 企业源保持优先），
-        // 整轮全败才用清华 TUNA 重跑一轮。pip 子进程无总超时：最坏情形耗时
-        // 随轮数翻倍，与 native_installer 多候选回退的最坏情形同口径。
-        // 每轮各自的最后一条错误都进最终报错：只保留最后一轮会把触发镜像
-        // 重试的默认源根因藏掉（与 tmeet/npm 的首次错误因果链同口径）。
-        let index_rounds: [(&str, &[&str]); 2] = [
-            ("默认源", &[]),
-            ("清华 TUNA 镜像", &["-i", PIP_CN_MIRROR_INDEX]),
-        ];
+        // 整轮全败才用清华 TUNA 重跑一轮（轮次定义见 pip_index_rounds）。
+        // pip 子进程无总超时：最坏情形耗时随轮数翻倍，与 native_installer
+        // 多候选回退的最坏情形同口径。每轮各自的最后一条错误都进最终报错：
+        // 只保留最后一轮会把触发镜像重试的默认源根因藏掉（与 tmeet/npm 的
+        // 首次错误因果链同口径）。
         let mut round_errors: Vec<String> = Vec::new();
-        for (round_label, index_args) in index_rounds {
+        for (round_label, index_args) in pip_index_rounds() {
             let mut last_err = String::new();
             for extra in attempts {
                 let mut args: Vec<&str> = Vec::with_capacity(extra.len() + index_args.len());
@@ -1060,5 +1070,30 @@ fn align_remote_entry_fields(
         None => {
             object.remove("oauth_resource");
         }
+    }
+}
+
+#[cfg(test)]
+mod pip_rounds_tests {
+    use super::*;
+
+    /// 默认源必须整轮在前（尊重用户 pip.conf/企业源，TUNA 只是最后兜底）：
+    /// 轮次顺序被换时此测试即失败。
+    #[test]
+    fn pip_mirror_round_runs_after_default_round() {
+        let rounds = pip_index_rounds();
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].0, "默认源");
+        assert!(
+            rounds[0].1.is_empty(),
+            "默认源轮不得携带 -i: {:?}",
+            rounds[0].1
+        );
+        assert_eq!(rounds[1].0, "清华 TUNA 镜像");
+        assert!(
+            rounds[1].1.contains(&PIP_CN_MIRROR_INDEX),
+            "兜底轮必须带 TUNA 索引: {:?}",
+            rounds[1].1
+        );
     }
 }
