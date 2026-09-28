@@ -463,7 +463,7 @@ pub async fn apply_disabled_connectors_for(
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
-    // §3.3 defense in depth): the write fails loudly instead of silently
+    // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
@@ -507,7 +507,7 @@ pub fn install_mcp_secret_resolver() {
 /// Default-installed preset MCP tools: peripheral capabilities ship as
 /// plugins so features like session mention work out of the box. Builtin
 /// plugins cannot be uninstalled or disabled — the attempt is rejected
-/// server-side (docs/builtin-toolset-contract.md §3.3) — so a missing
+/// server-side (docs/builtin-toolset-contract.md §3.1) — so a missing
 /// BundleStore record only ever means "not seeded yet".
 pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
 
@@ -831,6 +831,32 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // installed.json (the None-branch convention of store_state).
                 let (installed_flag, _) = bundle::store_state(store_records.as_deref(), &m.id)
                     .unwrap_or_else(|| (installed.contains(&m.id), None));
+                let is_builtin = builtin::is_builtin_tool(&m.id);
+                // Audit VALUES shown on the read-only builtin page
+                // (security_level / data_access / mcp_tools) come from the
+                // embedded catalog for builtin ids: a tampered on-disk
+                // manifest must not rewrite what the transparency page shows
+                // until the next boot self-heal (review round-3 minor 2).
+                // `is_builtin` true implies a catalog hit; non-builtin ids
+                // keep their own (uploaded) manifest values. Borrowed before
+                // the display-override match below moves name/description.
+                let audit_source = if is_builtin {
+                    mcp_catalog::embedded_manifest(&m.id).ok().flatten()
+                } else {
+                    None
+                };
+                let shown = audit_source.as_ref().unwrap_or(&m);
+                let security_level = if is_builtin && !shown.security_level.is_empty() {
+                    Some(shown.security_level.clone())
+                } else {
+                    None
+                };
+                let data_access = if is_builtin {
+                    shown.data_access.clone()
+                } else {
+                    Vec::new()
+                };
+                let mcp_tools = shown.mcp_tools.clone();
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
                         let (name, description) = store::apply_display_override(record, None, None);
@@ -851,7 +877,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // 'system'` entries from the store flow and pins them on the
                 // read-only page, so honoring a poisoned claim would strip a
                 // normal plugin of every management action.
-                let is_builtin = builtin::is_builtin_tool(&m.id);
                 MarketplaceToolInfo {
                     source: source_by_id
                         .get(m.id.as_str())
@@ -859,7 +884,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .unwrap_or_else(|| "builtin".to_string()),
                     // 预置目录包不可导出（zip 无法重新导入，与 export_installed_plugin
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
-                    exportable: !mcp_catalog::spec_for(&m.id).is_some(),
+                    exportable: !mcp_catalog::spec_for_builtin_probe(&m.id).is_some(),
                     installed: installed_flag,
                     // Builtin semantics (docs/builtin-toolset-contract.md
                     // §3.1) pass through only on builtin plugins: normal
@@ -867,18 +892,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // the frontend contract clean. mcp_tools passes through
                     // in full (the builtin section lists a plugin's tools);
                     // visibility mirrors security_level; bundle_version marks
-                    // the bundle version a builtin plugin ships with.
-                    security_level: if is_builtin && !m.security_level.is_empty() {
-                        Some(m.security_level.clone())
-                    } else {
-                        None
-                    },
-                    data_access: if is_builtin {
-                        m.data_access.clone()
-                    } else {
-                        Vec::new()
-                    },
-                    mcp_tools: m.mcp_tools.clone(),
+                    // the bundle version a builtin plugin ships with. The
+                    // values themselves are sourced above (embedded catalog
+                    // for builtin ids).
+                    security_level,
+                    data_access,
+                    mcp_tools,
                     // visibility passthrough mirrors security_level: filled
                     // only for builtin plugins, omitted otherwise.
                     visibility: if is_builtin && !m.visibility.is_empty() {

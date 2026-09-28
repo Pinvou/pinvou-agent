@@ -1044,7 +1044,7 @@ pub async fn export_installed_plugin(
 pub struct BundleReadinessResult {
     pub installed: bool,
     pub ready: bool,
-    /// 动作下发（§3.3）：后端按当前状态推导的可用动作集。serde default 保持
+    /// 动作下发（§3.1）：后端按当前状态推导的可用动作集。serde default 保持
     /// 契约纯增量；前端切换为动作渲染器在后续 PR。
     #[serde(default)]
     pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
