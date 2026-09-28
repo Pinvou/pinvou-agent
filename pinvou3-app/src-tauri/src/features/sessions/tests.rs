@@ -24,8 +24,10 @@ use super::scheduled::ScheduledProfileRegistry;
 use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
 use super::validators::generate_session_id;
 
-/// `isolated_store` 的 RAII 收尾。字段顺序即 drop 顺序：env 在锁内恢复 →
-/// 释放 ENV_LOCK → 最后删除临时 home（store 在 tuple 里先于 guard 落幕）。
+/// RAII teardown for `isolated_store`. Field order is drop order: env is
+/// restored while the lock is still held → ENV_LOCK is released → the
+/// temporary home is deleted last (the store leaves the tuple before the
+/// guard does).
 struct TestHomeGuard {
     _env: crate::platform::test_support::EnvRestore,
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -38,14 +40,17 @@ impl Drop for TestHomeGuard {
     }
 }
 
-/// 借用 platform::test_support::locked_env 一步拿 ENV_LOCK 并快照 env——
-/// 避免与其他 mutate PINVOU3_HOME 的测试并行 race。返回带 guard 的 store；
-/// guard drop 后才解锁，且 env 恢复、临时 home 删除：测试既不向 /tmp 泄漏
-/// 整棵种子仓库，也不再让 PINVOU3_HOME 悬在已删目录上。
+/// Use `platform::test_support::locked_env` to take ENV_LOCK and snapshot the
+/// env in one step — avoids racing tests that mutate PINVOU3_HOME in
+/// parallel. Returns the store plus a guard; only after the guard drops are
+/// the lock released, the env restored, and the temporary home deleted: the
+/// test neither leaks a whole seeded repo into /tmp nor leaves PINVOU3_HOME
+/// dangling on a deleted directory.
 fn isolated_store() -> (SessionStore, TestHomeGuard) {
     let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-    // pid + nanos：ENV_LOCK 只串行本进程，两个并发 cargo test 进程仍可能同
-    // 纳秒（paths::tests 的 unique_suffix 在这里拿不到，直接拼 pid）。
+    // pid + nanos: ENV_LOCK only serializes within this process, so two
+    // concurrent cargo test processes can still collide on the same nanosecond
+    // (paths::tests' unique_suffix is not reachable here; assemble pid directly).
     let tmp = std::env::temp_dir().join(format!(
         "pinvou3-sessions-test-{}-{}",
         std::process::id(),
@@ -57,7 +62,8 @@ fn isolated_store() -> (SessionStore, TestHomeGuard) {
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
-    // 锁在 guard 里持有到测试结束：下面的断言全程需要 PINVOU3_HOME 仍是这个值。
+    // The lock is held in the guard until the test ends: the assertions below
+    // need PINVOU3_HOME to still be this value for their whole run.
     (
         store,
         TestHomeGuard {
@@ -68,8 +74,9 @@ fn isolated_store() -> (SessionStore, TestHomeGuard) {
     )
 }
 
-/// 断言 sessions 根目录存在文件名含 `needle` 的隔离证据文件，且字节逐字
-/// 保留。三个 quarantine 拒写测试共用：改隔离命名只动这一处。
+/// Assert that the sessions root contains a quarantine evidence file whose
+/// name contains `needle` and whose bytes are preserved verbatim. Shared by
+/// the three quarantine-refusal tests: quarantine naming changes only here.
 fn assert_quarantine_evidence(needle: &str, expected: &[u8]) {
     let evidence = std::fs::read_dir(crate::platform::paths::sessions_root())
         .expect("list sessions root")
@@ -251,21 +258,25 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
 
 #[test]
 fn foreign_write_invalidates_the_list_cache() {
-    // 跨进程动机场景（headless 持久化的立身之本）：headless `agent run` 与
-    // GUI 共享同一 PINVOU3_HOME，另一进程 create/delete 记录时本进程的
-    // list_cache 代数计数器不动——只有 sessions 目录条目名集合这个第二维
-    // token（sorted entry names, see `sessions_dir_change_token`）能击穿
-    // 缓存；mtime 形态已被替换（同一 tick 内 create+delete 会漏失效）。
-    // 用第二个 store 实例模拟"另一个进程"的写路径。
+    // Cross-process motivation (the reason headless persistence works at
+    // all): headless `agent run` and the GUI share one PINVOU3_HOME, and a
+    // create/delete by the other process does not move this process's
+    // list_cache generation counter — only the second-dimension token of the
+    // sessions directory entry-name set (sorted entry names, see
+    // `sessions_dir_change_token`) can pierce the cache; the mtime shape was
+    // already replaced (a create+delete within one tick would miss the
+    // invalidation). A second store instance simulates the "other process"
+    // write path.
     let (store_a, _g) = isolated_store();
     let s1 = store_a
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create in process A");
-    // 预热进程 A 的缓存。
+    // Warm process A's cache.
     let warm = store_a.list_sessions_cached().expect("warm cache");
     assert!(warm.iter().any(|m| m.id == s1.metadata.id));
 
-    // 另一个进程 boot 同一 sessions 目录并创建新会话（本进程不做任何写）。
+    // Another process boots the same sessions directory and creates a new
+    // session (this process performs no writes).
     let store_b = SessionStore::boot_with_scheduled_root(
         crate::platform::paths::sessions_root()
             .parent()
@@ -290,7 +301,8 @@ fn foreign_write_invalidates_the_list_cache() {
         "the foreign write must not be served from the warm snapshot"
     );
 
-    // 外部删除同样可见：被驱逐/删除的会话不得继续驻留列表。
+    // External deletes must be visible too: an evicted/deleted session must
+    // not linger in the list.
     store_b.delete(&s2.metadata.id).expect("foreign delete");
     let after_delete = store_a
         .list_sessions_cached()

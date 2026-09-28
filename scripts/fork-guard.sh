@@ -261,17 +261,23 @@ fingerprints=(
   "APP|Shell 任务按稳定来源对账         |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
   "APP|GUI export reuses base session_export |pinvou3-app/src-tauri/src/features/sessions/store.rs|deepseek_tui::session_export::write_session_archive("
   "APP|GUI export store contract regression  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_session_archive_export_via_store_keeps_full_context"
-  # --fast 只跑指纹层（CI 唯一的入口），但改固定测试名恰恰是它看不见的形态：
-  # 此处以源码级指纹把「无工具调用上限钉死测试」的存在性纳入秒级层——改名、
-  # 删除立刻红；其是否真实执行仍由第 3 层 run_pinned_cap_test 编译级验证。
-  "APP|engine config 无工具调用上限钉死 |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
-  # 跨特性/跨语言字面量契约：两侧字面量没有任何类型系统关联，单侧改名即静默
-  # 失效——code 探针读不到 marker 会把原生 code 会话当 plain chat 走错同意域；
-  # 标题哨兵失配会让侧栏本地化与首条消息自动改名失效。两侧各钉一条秒级指纹。
-  "APP|code 会话探针侧字面量           |pinvou3-app/src-tauri/src/features/sessions/store.rs|const CODE_SESSION_MARKER_FILE: &str = \"code-session.json\""
-  "APP|code 会话写入侧字面量           |pinvou3-app/src-tauri/src/features/codex_acp/store.rs|join(\"code-session.json\")"
-  "APP|标题哨兵 Rust 侧字面量          |pinvou3-app/src-tauri/src/features/sessions/store.rs|const NEW_CHAT_TITLE: &str = \"新对话\""
-  "APP|标题哨兵前端词典字面量          |pinvou3-app/src/shared/i18n.js|DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット'])"
+  # --fast runs only the fingerprint layer (CI's sole entry point), but
+  # renaming a pinned test is exactly the shape it cannot see: this
+  # source-level fingerprint pulls the existence of the "no tool-call cap
+  # pinned test" into the sub-second layer — a rename or deletion turns red
+  # immediately; whether it actually executes is still verified at compile
+  # level by the layer-3 run_pinned_cap_test.
+  "APP|engine config no-tool-call-cap pinned test |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
+  # Cross-feature / cross-language literal contracts: the two sides share no
+  # type-system link, so renaming either side alone fails silently — a code
+  # probe that misses the marker would treat a native code session as a plain
+  # chat and walk the wrong consent domain; a title-sentinel mismatch breaks
+  # sidebar localization and first-message auto-rename. One sub-second
+  # fingerprint pinned on each side.
+  "APP|code-session marker, probe-side literal    |pinvou3-app/src-tauri/src/features/sessions/store.rs|const CODE_SESSION_MARKER_FILE: &str = \"code-session.json\""
+  "APP|code-session marker, writer-side literal    |pinvou3-app/src-tauri/src/features/codex_acp/store.rs|join(\"code-session.json\")"
+  "APP|title sentinel, Rust-side literal          |pinvou3-app/src-tauri/src/features/sessions/store.rs|const NEW_CHAT_TITLE: &str = \"新对话\""
+  "APP|title sentinel, frontend dict literal      |pinvou3-app/src/shared/i18n.js|DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット'])"
 )
 
 for fp in "${fingerprints[@]}"; do
@@ -321,7 +327,7 @@ run_pinned_cap_test() {
     -- --exact --test-threads=1 2>&1 ) || { printf '%s\n' "$output"; return 1; }
   if ! grep -q '1 passed' <<<"$output"; then
     printf '%s\n' "$output"
-    red "❌ 固定测试 engine_config_has_no_tool_call_cap 未运行（被改名或删除？）"
+    red "❌ pinned test engine_config_has_no_tool_call_cap did not run (renamed or deleted?)"
     return 1
   fi
 }

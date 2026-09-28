@@ -593,9 +593,11 @@ impl KnowledgeService {
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    /// 跨进程取消（一次性 CLI 无法触达桌面进程内的扫描）须由消费方另行设计。
+    /// Test-only: the `kb_cancel_scan` command is retired (lazy-triggered
+    /// scans have no frontend cancel entry) and production paths no longer
+    /// call this; the cancel branch inside the scan thread stays (semantics
+    /// unchanged). Cross-process cancellation (a one-shot CLI cannot reach a
+    /// scan inside the desktop process) remains a consumer-side design task.
     #[cfg(test)]
     pub fn cancel_scan(&self) {
         self.cancel.store(true, Ordering::Relaxed);

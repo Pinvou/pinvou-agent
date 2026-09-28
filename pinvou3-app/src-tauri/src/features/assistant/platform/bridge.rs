@@ -211,9 +211,10 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-/// 原生代码会话的执行根解析器与「两个根」类型统一由
-/// [`crate::features::sessions`] 定义(SessionStore 与 bridge 共用同一实现),
-/// 此处 re-export 保持既有调用路径不变。
+/// The exec-root resolver and "two roots" types for native code sessions are
+/// defined in one place, [`crate::features::sessions`] (SessionStore and the
+/// bridge share the same implementation); this re-export keeps existing call
+/// paths unchanged.
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
 /// One-shot gate for the removed-`PINVOU3_MAX_TOOL_CALLS` warning: the config

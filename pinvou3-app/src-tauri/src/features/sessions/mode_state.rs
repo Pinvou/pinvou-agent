@@ -1030,11 +1030,14 @@ impl SessionStore {
         )
     }
 
-    /// 启动时恢复所有会话的 per-session mode：合并进 `mode_states`，
-    /// 重开某个会话即恢复它自己上次显式使用的 mode。
+    /// Restore every session's per-session mode at boot: merge into
+    /// `mode_states`, so reopening a session restores the mode it last
+    /// explicitly used.
     ///
-    /// 兼容：新文件不存在时回退读旧的 `_code_mode_states.json`（只含 code 会话
-    /// 的时代产物），并**立即把它落到新文件**完成迁移，旧文件不删。
+    /// Compatibility: when the new file is absent, fall back to reading the
+    /// legacy `_code_mode_states.json` (a remnant of the code-session-only
+    /// era) and **immediately persist it into the new file** to complete the
+    /// migration; the old file is not deleted.
     ///
     /// Materializing the legacy map here is load-bearing, not tidiness. Every
     /// durable mode write is now an id-level read-modify-write against

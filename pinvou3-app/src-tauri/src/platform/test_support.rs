@@ -63,12 +63,14 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     f();
 }
 
-/// 取 crate 唯一 env 锁并一步完成一组 env 的快照：
+/// Take the crate-unique env lock and snapshot a set of env vars in one step:
 /// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
-/// 不可重入——已持 ENV_LOCK 时不得再调。guard 在作用域退出（含 panic 路径）
-/// 释放锁并恢复 env。
-/// （`bridge.rs` 的测试模块仍保留一个私有 `locked_env`/`EnvGuard` 配对，
-/// 上百个调用点未收敛至此；新代码一律使用本实现，不再扩散旧配对。）
+/// Not reentrant — never call while already holding ENV_LOCK. The guard
+/// releases the lock and restores the env when scope exits (including panic
+/// unwind). (`bridge.rs`'s test module still keeps a private
+/// `locked_env`/`EnvGuard` pair; its ~hundred call sites have not been
+/// migrated here — new code always uses this implementation so the old pair
+/// stops spreading.)
 #[cfg(test)]
 pub(crate) fn locked_env(
     vars: &[&'static str],

@@ -267,7 +267,7 @@ pub async fn kb_model_download(
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
-    // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
+    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }

@@ -244,18 +244,22 @@ pub struct SessionStore {
     /// the **older snapshot that finishes writing last** overwrites the newer
     /// one — after a restart, the flag state of some sessions is gone.
     multi_agent_flags_io: Arc<Mutex<()>>,
-    /// `_pinned_sessions.json` 的持久化互斥（与 `multi_agent_flags_io` 同一
-    /// 契约）：set_pinned 与保留清扫的 id 级 RMW 必须串行，否则丢失更新会把
-    /// 刚写入的置顶抹掉，清扫随即把它变成可驱逐会话。
+    /// Persistence mutex for `_pinned_sessions.json` (same contract as
+    /// `multi_agent_flags_io`): the id-level RMWs of `set_pinned` and the
+    /// retention sweep must be serialized, or a lost update erases a freshly
+    /// written pin and the sweep then turns that session evictable.
     pinned_sessions_io: Arc<Mutex<()>>,
-    /// `_hidden_sessions.json` 的持久化互斥（同 `pinned_sessions_io` 契约）。
+    /// Persistence mutex for `_hidden_sessions.json` (same contract as
+    /// `pinned_sessions_io`).
     hidden_sessions_io: Arc<Mutex<()>>,
-    /// `_session_models.json` 的持久化互斥（同 `pinned_sessions_io` 契约）：
-    /// set_session_model_id 持缓存写锁跨 RMW 自洽，但清扫侧的批量移除此前
-    /// 无锁，两边交错即丢失更新。
+    /// Persistence mutex for `_session_models.json` (same contract as
+    /// `pinned_sessions_io`): `set_session_model_id` is self-consistent across
+    /// the RMW under the cache's write lock, but the sweep side's batch removal
+    /// was previously lock-free — interleaving loses updates.
     session_models_io: Arc<Mutex<()>>,
-    /// `_session_mode_states.json` 的持久化互斥（同 `pinned_sessions_io`
-    /// 契约）：set_mode / set_mode_and_persist / 保留清扫共用。
+    /// Persistence mutex for `_session_mode_states.json` (same contract as
+    /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
+    /// retention sweep.
     session_mode_states_io: Arc<Mutex<()>>,
     /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
     /// call does a full-directory read_dir + per-file prefix parsing, and the
