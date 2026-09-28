@@ -358,13 +358,34 @@ where
 /// both go through it, holding the exact same turn gate as lazy spawn /
 /// send, so a queued send cannot resurrect the session between the engine
 /// reclaim and the on-disk deletion.
+/// Emptiness probe for the guarded stub delete. The store method is
+/// headless-surface (`benchmark-hooks`/test); the gate function also serves
+/// GUI builds, where the guarded variant has no caller and the probe is
+/// stubbed to "delete unconditionally" so the branch can never fire.
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn record_is_message_free(store: &SessionStore, session_id: &str) -> bool {
+    matches!(store.chat_session_has_messages(session_id), Ok(false))
+}
+
+#[cfg(not(any(feature = "benchmark-hooks", test)))]
+fn record_is_message_free(_store: &SessionStore, _session_id: &str) -> bool {
+    true
+}
+
+/// `only_if_still_empty` guards the headless stub cleanup: the disposition
+/// sampled `has_messages` OUTSIDE the turn gate, so a turn admitted between
+/// that sample and this gate would make the record a started transcript —
+/// the only copy. Under the gate the emptiness is re-checked, and such a
+/// record is kept (`Ok(false)`, engine reclaimed, nothing deleted) instead
+/// of being destroyed as a stub.
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
     session_id: &str,
+    only_if_still_empty: bool,
     evict_locked: F,
     forget: G,
-) -> Result<()>
+) -> Result<bool>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
@@ -372,6 +393,18 @@ where
 {
     let turn_lock = turn_locks.for_session(session_id).await;
     let _turn = turn_lock.lock().await;
+    if only_if_still_empty && !record_is_message_free(store, session_id) {
+        // A read error also keeps: deleting on unknown state is the unsafe
+        // direction. The engine teardown below is everything the keep path
+        // would have done, so the skip reports success — the caller's
+        // cleanup-failure lane stays reserved for genuine delete faults.
+        eprintln!(
+            "[agent-task] stub cleanup skipped: the record carries messages \
+             under the delete gate; keeping the session"
+        );
+        evict_locked().await;
+        return Ok(false);
+    }
     evict_locked().await;
     store.delete(session_id)?;
     forget();
@@ -383,7 +416,7 @@ where
     // under create/delete cycles like GAIA. Idempotent overlap with the
     // hook cleanup fired from store.delete; no duplicated side effects.
     crate::features::assistant::timing::clear_session(session_id);
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1474,14 +1507,29 @@ impl EnginePool {
         for sid in sids {
             let scope = self.bridge.session_policy(&sid).mode();
             let project_workspace = self.project_workspace_for(&sid);
-            let _ = tokio::task::spawn_blocking(move || {
+            let sid_for_log = sid.clone();
+            if let Err(join_error) = tokio::task::spawn_blocking(move || {
                 crate::features::assistant::skill_materialization::rewrite_session_skills(
                     &sid,
                     scope,
                     project_workspace.as_deref(),
                 );
             })
-            .await;
+            .await
+            {
+                // Best-effort refresh: a panicked rewrite leaves the composed
+                // dirs stale until the next materialization, but the join
+                // failure itself must not vanish silently — every other
+                // spawn_blocking join in the engine fails closed or logs.
+                // eprintln, not log: the headless host installs no logger
+                // (`run_windowless_host` builds a bare Tauri app), so a
+                // `log::warn!` here is dropped in exactly the process this
+                // path was hardened for. Every other diagnostic in this file
+                // uses eprintln for the same reason.
+                eprintln!(
+                    "[engine_pool] session {sid_for_log} skills rewrite join failed: {join_error}"
+                );
+            }
         }
     }
 
@@ -1957,6 +2005,23 @@ impl EnginePool {
         self.evict_locked(session_id).await;
     }
 
+    /// Teardown-path reclaim with a bounded wait for the turn gate. The
+    /// headless run has already finished (or hit its deadline) and must
+    /// produce its report, so an admitted turn it does not know about must
+    /// not block the process for up to the turn's wall clock — the same
+    /// post-deadline bounding philosophy as the cancel settle window. On
+    /// timeout the engine stays (the turn keeps running; the one-shot
+    /// process exits right after) and the caller surfaces the skip.
+    /// Returns `false` when the gate was not acquired within `wait`.
+    pub(crate) async fn evict_bounded(&self, session_id: &str, wait: Duration) -> bool {
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let Ok(_turn) = tokio::time::timeout(wait, turn_lock.lock()).await else {
+            return false;
+        };
+        self.evict_locked(session_id).await;
+        true
+    }
+
     /// The reclaim path used only by idle reclaim: acquires the turn gate +
     /// runtime lock just like [`evict`](Self::evict) (lock-order skeleton in
     /// [`evict_if_idle_with_gates`]), but rechecks the session is still idle
@@ -2066,10 +2131,11 @@ impl EnginePool {
     /// and send. No queued sender can slip between engine reclaim, disk delete,
     /// and lifecycle cleanup to resurrect the session.
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
-        delete_chat_session_with_gate(
+        let deleted = delete_chat_session_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
+            false,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
         )
@@ -2080,10 +2146,51 @@ impl EnginePool {
         // the parent directory) can resurrect the just-deleted sessions/<id>/.
         // A missing directory is the common case and costs nothing; once
         // Shutdown is processed no new writes happen, so it always converges.
-        Self::schedule_late_sweep(
-            crate::platform::paths::sessions_root().join(session_id),
-            "late sweep of deleted chat",
-        );
+        if deleted {
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of deleted chat",
+            );
+        }
+        Ok(())
+    }
+
+    /// Headless stub-cleanup delete: like [`Self::delete_chat_session`], but
+    /// the durable delete is guarded — under the turn gate a record that
+    /// carries messages (or whose state is unloadable) is a started
+    /// transcript, not a stub, and is kept with only the engine reclaimed
+    /// (`delete_chat_session_with_gate` with `only_if_still_empty`).
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_chat_session_if_still_empty(&self, session_id: &str) -> Result<()> {
+        let deleted = delete_chat_session_with_gate(
+            &self.turn_locks,
+            &self.store,
+            session_id,
+            true,
+            || self.evict_locked(session_id),
+            || self.forget_session(session_id),
+        )
+        .await;
+        let deleted = match deleted {
+            Ok(deleted) => deleted,
+            // Same failed-delete backstop as `delete_eval_session`: the
+            // in-memory entry must not linger on a failed delete, and the
+            // late sweep retries the disk cleanup.
+            Err(error) => {
+                self.forget_session(session_id);
+                Self::schedule_late_sweep(
+                    crate::platform::paths::sessions_root().join(session_id),
+                    "late sweep of failed stub cleanup",
+                );
+                return Err(error);
+            }
+        };
+        if deleted {
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of deleted stub",
+            );
+        }
         Ok(())
     }
 
@@ -2388,6 +2495,20 @@ impl EnginePool {
         self.eval_model_snapshots.discard_suite(suite);
     }
 
+    /// Resolve and privately pin the complete SavedModel while returning only a
+    /// non-sensitive opaque selection to the evaluation layer. Callers that do
+    /// not pass the selection to `prepare_eval_session` must explicitly discard it.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        let prefs = UserPrefs::load();
+        let (saved, identity) = resolve_eval_model_selection_from(
+            &self.bridge,
+            &prefs.advanced.saved_models,
+            model_id,
+        )?;
+        Ok(self.eval_model_snapshots.pin(saved, identity))
+    }
+
     /// Creates and loads a one-off eval session. The eval runner decides the
     /// session ID in advance so reports and cleanup can be correlated exactly;
     /// ordinary GUI sessions keep using the SessionStore-generated ID.
@@ -2396,7 +2517,13 @@ impl EnginePool {
         &self,
         session_id: &str,
         model_selection: Option<&EvalModelSelection>,
+        workspace: Option<&std::path::Path>,
     ) -> Result<()> {
+        // The caller's task directory (when provided) lands in the session's
+        // `metadata.workspace` so the GUI list/detail shows the directory the
+        // session actually works in; the durable binding sidecar is written
+        // separately by the caller.
+        let metadata_workspace = workspace.map(std::path::Path::to_path_buf);
         match model_selection {
             None => {
                 let (model, model_id) = self.default_model_for_new_session();
@@ -2404,7 +2531,9 @@ impl EnginePool {
                     session_id.to_string(),
                     model,
                     model_id,
-                    self.bridge.workspace.clone(),
+                    metadata_workspace
+                        .clone()
+                        .unwrap_or_else(|| self.bridge.workspace.clone()),
                 )?;
                 self.get_or_spawn(session_id).await?;
             }
@@ -2415,7 +2544,7 @@ impl EnginePool {
                     session_id.to_string(),
                     selection.wire_model().to_string(),
                     selection.model_id().map(str::to_string),
-                    self.bridge.workspace.clone(),
+                    metadata_workspace.unwrap_or_else(|| self.bridge.workspace.clone()),
                 );
                 if let Err(error) = prepare_result {
                     self.eval_model_snapshots.forget_session(session_id);
@@ -3440,9 +3569,11 @@ fn default_model_for_new_session_from(
     }
 }
 
-// Test-only snapshot resolution: production eval paths obtain the
-// (SavedModel, identity) pair through the pinned selections instead.
-#[cfg(test)]
+// Snapshot resolution. Under `test` this backs the session-continuation
+// tests; under `benchmark-hooks` it backs the production eval pin path in
+// `pin_eval_model_selection` — that gate must match the caller's, or a plain
+// `--features benchmark-hooks` build (no test cfg) fails to compile.
+#[cfg(any(feature = "benchmark-hooks", test))]
 fn resolve_eval_model_selection_from(
     bridge: &Pinvou3Bridge,
     models: &[SavedModel],
@@ -5036,6 +5167,7 @@ mod scheduled_model_tests {
                 &delete_locks,
                 &delete_store,
                 &delete_id,
+                false,
                 || async move {
                     delete_engine.store(false, Ordering::Release);
                 },
@@ -5111,7 +5243,7 @@ mod scheduled_model_tests {
         );
 
         let locks = SessionTurnLocks::default();
-        delete_chat_session_with_gate(&locks, &store, &session_id, || async {}, || {})
+        delete_chat_session_with_gate(&locks, &store, &session_id, false, || async {}, || {})
             .await
             .expect("delete chat");
 
@@ -5127,6 +5259,85 @@ mod scheduled_model_tests {
                 None => std::env::remove_var("PINVOU3_HOME"),
             }
         }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// The headless stub-cleanup guard: `only_if_still_empty` re-checks
+    /// emptiness UNDER the turn gate, so a record whose transcript landed
+    /// between the disposition's outside-the-gate sample and the delete is
+    /// kept (started transcript, the only copy) while a genuine zero-message
+    /// stub still deletes.
+    #[tokio::test]
+    async fn guarded_stub_delete_keeps_a_record_that_has_messages() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // RAII env restore: a failing assertion unwinds past the straight-line
+        // restore this replaces and would leave PINVOU3_HOME stale for every
+        // later test in the process.
+        let _env = EnvRestore::capture(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-stub-guard-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        // Simulate a transcript admitted after the disposition sampled an
+        // empty record: the durable record now carries messages.
+        let mut started = deepseek_tui::session_manager::create_saved_session_with_id_and_mode(
+            session_id.clone(),
+            &[deepseek_tui::models::Message {
+                role: "user".into(),
+                content: vec![deepseek_tui::models::ContentBlock::Text {
+                    text: "admitted before the gate".into(),
+                    cache_control: None,
+                }],
+            }],
+            "wire-model",
+            &home,
+            0,
+            None,
+            None,
+        );
+        started.metadata.updated_at = chrono::Utc::now();
+        store.save_session_atomic(&started).expect("seed messages");
+
+        let locks = SessionTurnLocks::default();
+        let deleted =
+            delete_chat_session_with_gate(&locks, &store, &session_id, true, || async {}, || {})
+                .await
+                .expect("guarded delete");
+        assert!(
+            !deleted,
+            "a record that carries messages under the gate must be kept"
+        );
+        assert!(
+            store.load(&session_id).is_ok(),
+            "the started transcript survives the guarded stub delete"
+        );
+
+        // A genuine zero-message stub remains cleanup-eligible.
+        let empty_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("empty session")
+            .metadata
+            .id;
+        let deleted =
+            delete_chat_session_with_gate(&locks, &store, &empty_id, true, || async {}, || {})
+                .await
+                .expect("guarded delete");
+        assert!(deleted, "a zero-message stub is still deleted");
+        assert!(store.load(&empty_id).is_err());
+
         let _ = std::fs::remove_dir_all(home);
     }
 

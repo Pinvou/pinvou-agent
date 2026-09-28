@@ -303,6 +303,9 @@ jobs:
               - 'pinvou3-app/src-tauri/src/app/commands/remote_control.rs'
               - 'pinvou3-app/src-tauri/src/app/commands/personas.rs'
               - 'pinvou3-app/src-tauri/src/lib.rs'
+              # 原子写助手有 staging+rename 契约断言;不列出则该文件的
+              # Rust-only 改动会静默跳过该 node 门禁(上方清单同一锁定机制)。
+              - 'pinvou3-app/src-tauri/src/platform/filesystem.rs'
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'

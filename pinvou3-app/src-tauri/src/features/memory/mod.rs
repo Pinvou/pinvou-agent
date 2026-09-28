@@ -53,6 +53,11 @@ pub use self::io::{
     update_preference, update_profile, update_timed_memory, update_work_context,
 };
 
+// ---- 存储文本长度上限（io）----
+// CLI 的 `memory add` 校验需要与写入侧同一个上限常量，本地复制一份会在上限变化时
+// 重新引入假的 `memory_add_not_materialized` 失败。
+pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;
 
