@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -32,13 +33,20 @@ function assertStartupBundles({ built, expectedPlatform, outputRoot, webBuild })
   );
   assert.ok(startup.length + retained.length <= 10, `${expectedPlatform} classic startup scripts exceed the request budget`);
   for (const relative of startup) {
-    assert.match(
-      relative,
-      new RegExp(`^startup/pinvou-${expectedPlatform}-classic-\\d+-[a-f0-9]{8}\\.js$`, 'u'),
-    );
+    const match = new RegExp(`^startup/pinvou-${expectedPlatform}-classic-(\\d+)-([a-f0-9]{8})\\.js$`, 'u').exec(relative);
+    assert.ok(match, `${relative} must follow the startup bundle naming contract`);
+    const bundlePath = resolveContainedRuntimePath(outputRoot, relative);
     assert.ok(
-      fs.statSync(resolveContainedRuntimePath(outputRoot, relative)).isFile(),
+      fs.statSync(bundlePath).isFile(),
       `missing ${expectedPlatform} startup bundle: ${relative}`,
+    );
+    // The bundle filename embeds a content hash, but nothing forced it to be
+    // THE hash of the shipped bytes — a bundler bug that wrote different
+    // content under a stale name would ship silently. Recompute it.
+    assert.equal(
+      createHash('sha256').update(fs.readFileSync(bundlePath)).digest('hex').slice(0, 8),
+      match[2],
+      `${relative} name hash must equal the sha256 prefix of its content`,
     );
   }
 }
@@ -179,6 +187,11 @@ test('Vite build contains every local classic runtime script referenced by index
     // keep a copy.
     if (keptVerbatim.has(relative)) {
       assert.ok(fs.existsSync(builtPath), `missing verbatim copy needed by another entry: ${relative}`);
+      assert.deepEqual(
+        fs.readFileSync(builtPath),
+        fs.readFileSync(sourcePath),
+        `verbatim copy needed by another entry differs from source: ${relative}`,
+      );
       continue;
     }
     assert.ok(
@@ -227,4 +240,46 @@ test('web build index strips tauri-only bridge scripts', {
     false,
     'web index must not inline the desktop platform marker',
   );
+
+  // Mirror of the desktop artifact pins: kept verbatim copies must be
+  // byte-identical to source, the runtime-fetched access policy must ship
+  // byte-identical, and scripts merged into the startup bundles (or stripped
+  // for this platform) must not leave dead copies behind. Without this loop
+  // the web dist is only covered by the in-build assert, not by the test.
+  const webDistRoot = path.dirname(webDistIndexPath);
+  const accessPolicyPath = resolveContainedRuntimePath(webDistRoot, 'platform/web/access-policy.json');
+  const accessPolicySource = resolveContainedRuntimePath(sourceRoot, 'platform/web/access-policy.json');
+  assert.ok(fs.existsSync(accessPolicyPath), 'web dist must carry the runtime-fetched access policy (bootstrap resolves it at boot)');
+  assert.deepEqual(
+    fs.readFileSync(accessPolicyPath),
+    fs.readFileSync(accessPolicySource),
+    'web access-policy.json copy differs from source',
+  );
+  const webKeptVerbatim = new Set(['shared/model-service-errors.js']);
+  for (const relative of expected) {
+    const sourcePath = resolveContainedRuntimePath(sourceRoot, relative);
+    const builtPath = resolveContainedRuntimePath(webDistRoot, relative);
+    if (built.includes(relative)) {
+      assert.ok(fs.existsSync(builtPath), `missing web runtime build asset: ${relative}`);
+      assert.deepEqual(
+        fs.readFileSync(builtPath),
+        fs.readFileSync(sourcePath),
+        `web runtime build asset differs from source: ${relative}`,
+      );
+      continue;
+    }
+    if (webKeptVerbatim.has(relative)) {
+      assert.ok(fs.existsSync(builtPath), `missing web verbatim copy needed by another entry: ${relative}`);
+      assert.deepEqual(
+        fs.readFileSync(builtPath),
+        fs.readFileSync(sourcePath),
+        `web verbatim copy needed by another entry differs from source: ${relative}`,
+      );
+      continue;
+    }
+    assert.ok(
+      !fs.existsSync(builtPath),
+      `web dist still ships a dead verbatim copy of ${relative}: its code is served from web dist/startup or stripped for web`,
+    );
+  }
 });

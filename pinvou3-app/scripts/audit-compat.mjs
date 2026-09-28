@@ -35,6 +35,7 @@ import { staticRuntimeScripts, staticRuntimeScriptPrefixes } from '../vite.confi
 const appRoot = resolve(fileURLToPath(import.meta.url), '../..');
 const sourceRoot = join(appRoot, 'src');
 const distRoot = join(appRoot, 'dist');
+const webDistRoot = resolve(appRoot, '../remote-control-relay/web/dist');
 
 // APIs the startup polyfill (src/shared/legacy-polyfills.js) installs in every
 // HTML entry before any other script runs. Once the contract test pins that
@@ -297,7 +298,7 @@ function auditDistCss(assetsDir) {
   return violations;
 }
 
-export function runAudit({ distDir = distRoot } = {}) {
+export function runAudit({ distDir = distRoot, webDistDir = webDistRoot } = {}) {
   const violations = [];
 
   for (const { relative, full } of collectStaticRuntimeScripts()) {
@@ -339,8 +340,7 @@ export function runAudit({ distDir = distRoot } = {}) {
   // lives in a separate tree (remote-control-relay/web/dist). When the web
   // dist exists, its CSS and minified startup bundles fall under the same
   // inset-shorthand / ES2021 audit as the desktop artifacts.
-  const webDistDir = resolve(appRoot, '../remote-control-relay/web/dist');
-  if (webDistDir !== resolve(distDir) && existsSync(webDistDir)) {
+  if (resolve(webDistDir) !== resolve(distDir) && existsSync(webDistDir)) {
     const webAssetsDir = join(webDistDir, 'assets');
     if (existsSync(webAssetsDir)) {
       violations.push(...auditDistCss(webAssetsDir));
@@ -361,40 +361,60 @@ export function runAudit({ distDir = distRoot } = {}) {
   return violations;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const violations = runAudit();
-  const distAssetsDir = join(distRoot, 'assets');
-  if (!existsSync(distAssetsDir)) {
+// Fail-closed presence checks for every layer runAudit only audits when its
+// artifacts exist. Exported so tests/compat_audit.test.mjs pins them: these
+// guards are what stop an absent or stale dist from green-lighting an audit
+// that silently scanned nothing.
+export function auditDistPresenceProblems({
+  desktopDist = distRoot,
+  webDist = webDistRoot,
+} = {}) {
+  const problems = [];
+  const assetsDir = join(desktopDist, 'assets');
+  if (!existsSync(assetsDir)) {
     // Fail closed: the dist layer is the one that catches a marked@16-style
     // parse-time regression, so silently green-lighting without it would
     // defeat the gate. The static/inline layers were still audited above.
-    console.error('audit-compat: dist/assets not found — run `npm run build:ui` first');
-    process.exitCode = 1;
+    problems.push('audit-compat: dist/assets not found — run `npm run build:ui` first');
   } else {
     // Same fail-closed principle for the CSS layer: a dist without CSS assets
     // predates the current build and would silently skip the inset scan.
-    const hasCssAssets = readdirSync(distAssetsDir).some((name) => name.endsWith('.css'));
+    const hasCssAssets = readdirSync(assetsDir).some((name) => name.endsWith('.css'));
     if (!hasCssAssets) {
-      console.error('audit-compat: no CSS assets found in dist/assets — run `npm run build:ui` first');
-      process.exitCode = 1;
+      problems.push('audit-compat: no CSS assets found in dist/assets — run `npm run build:ui` first');
     }
   }
   // Same fail-closed principle for the generated classic startup bundles:
   // runAudit only audits them when dist/startup exists, so a dist built
   // without them would otherwise green-light without the minified layer.
-  const distStartupDir = join(distRoot, 'startup');
-  const hasStartupBundles = existsSync(distStartupDir)
-    && readdirSync(distStartupDir).some((name) => name.endsWith('.js'));
-  if (!hasStartupBundles) {
-    console.error('audit-compat: no startup bundles found in dist/startup — run `npm run build:ui` first');
-    process.exitCode = 1;
+  const startupDir = join(desktopDist, 'startup');
+  if (!existsSync(startupDir) || !readdirSync(startupDir).some((name) => name.endsWith('.js'))) {
+    problems.push('audit-compat: no startup bundles found in dist/startup — run `npm run build:ui` first');
   }
   // Same fail-closed principle for the web dist: CI builds it in the same
   // step (build:web) before this audit runs. Absent web artifacts mean the
-  // web CSS/bundle layer was never produced, not that it is clean.
-  const webDistAssetsDir = join(resolve(appRoot, '../remote-control-relay/web/dist'), 'assets');
-  if (!existsSync(join(webDistAssetsDir, '..', 'index.html'))) {
-    console.error('audit-compat: no web dist found under remote-control-relay/web/dist — run `npm run build:web` first');
+  // web CSS/bundle layer was never produced, not that it is clean — and an
+  // index.html alone is not enough, its CSS and startup layers are checked
+  // with the same rigor as the desktop's.
+  if (!existsSync(join(webDist, 'index.html'))) {
+    problems.push('audit-compat: no web dist found under remote-control-relay/web/dist — run `npm run build:web` first');
+    return problems;
+  }
+  const webAssetsDir = join(webDist, 'assets');
+  if (!existsSync(webAssetsDir) || !readdirSync(webAssetsDir).some((name) => name.endsWith('.css'))) {
+    problems.push('audit-compat: no CSS assets found in the web dist — run `npm run build:web` first');
+  }
+  const webStartupDir = join(webDist, 'startup');
+  if (!existsSync(webStartupDir) || !readdirSync(webStartupDir).some((name) => name.endsWith('.js'))) {
+    problems.push('audit-compat: no startup bundles found in the web dist — run `npm run build:web` first');
+  }
+  return problems;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const violations = runAudit();
+  for (const problem of auditDistPresenceProblems()) {
+    console.error(problem);
     process.exitCode = 1;
   }
   if (violations.length) {

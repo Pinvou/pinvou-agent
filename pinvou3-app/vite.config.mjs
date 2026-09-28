@@ -17,7 +17,9 @@ const staticExtensions = new Set([
 // the compatibility audit always audits these sources regardless of how the
 // build ships them (verbatim copy or merged into a dist/startup bundle), so
 // the minified-bundle layer never re-audits what the source layer already
-// pinned.
+// pinned. The set is keyed by script, but also carries one runtime-fetched
+// non-script: platform/web/access-policy.json rides here so copyRuntimeAssets
+// ships it (see runtimeFetchAssets below).
 export const staticRuntimeScripts = new Set([
   'features/attachments/attachment-drop-controller.js',
   'features/personas/personas-i18n.js',
@@ -164,13 +166,35 @@ export function transformIndexHtmlForClassicBundle(webBuild, html, bundlePaths, 
   return transformed;
 }
 
+// Soft cap per generated startup bundle: a single minified source larger than
+// the cap (e.g. platform/web/bridge.js) becomes its own oversize bundle
+// instead of being split — a classic script cannot be divided across load
+// boundaries. Exported with the grouping so the contract test pins the same
+// constant the build packs with.
+export const MAX_CLASSIC_BUNDLE_BYTES = 80_000;
+
+// Order-preserving greedy packing: sources accumulate into the current bundle
+// (joined with ';\n' so each original file starts on a fresh line) until the
+// next source would push the bundle over the cap.
+export function groupMinifiedSources(minifiedSources, maxBundleBytes = MAX_CLASSIC_BUNDLE_BYTES) {
+  const grouped = [];
+  let current = '';
+  for (const code of minifiedSources) {
+    const next = current ? `${current};\n${code}` : code;
+    if (current && Buffer.byteLength(next) > maxBundleBytes) {
+      grouped.push(current);
+      current = code;
+    } else {
+      current = next;
+    }
+  }
+  if (current) grouped.push(current);
+  return grouped;
+}
+
 function bundleClassicStartup(webBuild) {
   const bundlePaths = classicStartupBundlePaths(webBuild);
   const bundlePrefix = `startup/pinvou-${webBuild ? 'web' : 'desktop'}-classic`;
-  // Soft per-request cap: a single minified source larger than the cap (e.g.
-  // platform/web/bridge.js) becomes its own oversize bundle instead of being
-  // split — a classic script cannot be divided across load boundaries.
-  const maxBundleBytes = 80_000;
   let bundles;
   return {
     name: 'pinvou-bundle-classic-startup',
@@ -179,24 +203,23 @@ function bundleClassicStartup(webBuild) {
       const minifiedSources = [];
       for (const relative of bundlePaths) {
         const source = readFileSync(resolveContainedRuntimePath(sourceRoot, relative), 'utf8');
+        // Minify options stay empty on purpose: these are classic scripts, so
+        // rolldown's toplevel mangle defaults to off for non-modules and the
+        // cross-script globals the tags exchange (window.PinvouPlatform,
+        // __PINVOU_STARTUP__, ...) survive. Passing `module: true` here would
+        // silently mangle that contract away.
         const result = await minify(relative, source, {});
         if (result.errors.length > 0 || typeof result.code !== 'string') {
           throw new Error(`Could not minify ${relative}: ${result.errors.map(error => error.message).join('; ') || 'minifier returned no code'}`);
         }
         minifiedSources.push(result.code);
       }
-      const groupedSources = [];
-      let current = '';
-      for (const code of minifiedSources) {
-        const next = current ? `${current};\n${code}` : code;
-        if (current && Buffer.byteLength(next) > maxBundleBytes) {
-          groupedSources.push(current);
-          current = code;
-        } else {
-          current = next;
-        }
-      }
-      if (current) groupedSources.push(current);
+      const groupedSources = groupMinifiedSources(minifiedSources);
+      // Bundles intentionally ship without sourcemaps: startup failures
+      // attribute through the stage-level __PINVOU_STARTUP__ marks and the
+      // app:tauri_bridge_* marks on the last bundle, and sources are joined
+      // with ';\n' so each original file starts on a fresh line for manual
+      // inspection of the minified output.
       bundles = groupedSources.map((source, index) => ({
         source,
         fileName: `${bundlePrefix}-${index + 1}-${createHash('sha256').update(source).digest('hex').slice(0, 8)}.js`,
@@ -274,17 +297,32 @@ const runtimeFetchAssets = new Set([
   'platform/web/access-policy.json',
 ]);
 
+// Auxiliary HTML entries load some classic scripts as their own standalone
+// tags (pet.html: legacy-polyfills + model-service-errors; reader.html:
+// legacy-polyfills). Their needs derive from these entries directly — never
+// from index.html tag survival — so removing a script's index.html tag cannot
+// silently 404 an auxiliary entry, and a new auxiliary-entry tag is picked up
+// without touching this file.
+const auxiliaryEntryHtmls = ['pet.html', 'reader.html'];
+
 // Scripts/files whose verbatim copy dist actually needs in this build:
 //   - standalone tags the classic-bundle layer intentionally left unbundled
 //     (fail-closed even if a tag disappears from index.html);
 //   - scripts another entry (pet.html / reader.html) references directly;
 //   - runtime-fetched assets (both builds).
-export function requiredVerbatimRuntimeScripts(webBuild) {
-  const indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8');
+export function requiredVerbatimRuntimeScripts(webBuild, indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8')) {
   const platformRetained = localClassicScriptPaths(indexHtml).filter((relative) =>
     webBuild ? !relative.startsWith('platform/tauri/') : !relative.startsWith('platform/web/'));
   const required = new Set(platformRetained.filter((relative) =>
     startupBundleExcludedScripts.has(relative) || bundledButStandaloneElsewhere.has(relative)));
+  for (const entry of auxiliaryEntryHtmls) {
+    const entryPath = join(sourceRoot, entry);
+    if (!existsSync(entryPath)) continue;
+    for (const relative of localClassicScriptPaths(readFileSync(entryPath, 'utf8'))) {
+      if (webBuild ? relative.startsWith('platform/tauri/') : relative.startsWith('platform/web/')) continue;
+      required.add(relative);
+    }
+  }
   for (const asset of runtimeFetchAssets) required.add(asset);
   return required;
 }
@@ -307,11 +345,15 @@ function listSourceFilesUnder(prefix) {
 // code inside dist/startup, so a verbatim copy would ship the same source
 // twice (~350 kB of dead bytes per build); the other platform's scripts are
 // stripped from this build's index.html entirely, so their copies are equally
-// dead. audit-compat keeps auditing all of these at the source layer, so
+// dead. The required set always wins: a script another entry (or a runtime
+// fetch) needs keeps its copy even when a startup bundle also serves its
+// code. audit-compat keeps auditing all of these at the source layer, so
 // dropping the copies does not weaken the Safari 14 audit.
-export function verbatimDroppedRuntimeScripts(webBuild) {
-  const dropped = new Set(classicStartupBundlePaths(webBuild));
-  dropped.delete('shared/model-service-errors.js');
+export function verbatimDroppedRuntimeScripts(webBuild, indexHtml = readFileSync(join(sourceRoot, 'index.html'), 'utf8')) {
+  const dropped = new Set(classicStartupBundlePaths(webBuild, indexHtml));
+  for (const relative of requiredVerbatimRuntimeScripts(webBuild, indexHtml)) {
+    dropped.delete(relative);
+  }
   const otherPlatformPrefix = webBuild ? 'platform/tauri/' : 'platform/web/';
   for (const relative of staticRuntimeScripts) {
     if (relative.startsWith(otherPlatformPrefix)) dropped.add(relative);

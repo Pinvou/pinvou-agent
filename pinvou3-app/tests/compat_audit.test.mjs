@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
 
-import { runAudit } from '../scripts/audit-compat.mjs';
+import { auditDistPresenceProblems, runAudit } from '../scripts/audit-compat.mjs';
 import { staticRuntimeScripts } from '../vite.config.mjs';
 
 // WebView compatibility contract: the desktop minimum is macOS 11
@@ -23,13 +23,17 @@ import { staticRuntimeScripts } from '../vite.config.mjs';
 const testRoot = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(testRoot, '..');
 const readSrc = (...parts) => fs.readFileSync(path.join(appRoot, 'src', ...parts), 'utf8');
+// Non-existent dist paths keep the tests hermetic: they must pass in CI
+// without a prior build and must not depend on a developer's stale dist —
+// including the relay web dist, which runAudit scans whenever it exists on
+// disk (the default resolves the real one).
+const noDesktopDist = path.join(appRoot, '.compat-test-no-dist');
+const noWebDist = path.join(appRoot, '.compat-test-no-web-dist');
+const hermeticAudit = (options = {}) => runAudit({ distDir: noDesktopDist, webDistDir: noWebDist, ...options });
 const { browserslistToTargets, transform: transformCss } = createRequire(import.meta.url)('lightningcss');
 
 test('static runtime scripts and HTML inline scripts stay within the Safari 14 baseline', () => {
-  // A non-existent dist dir keeps the test hermetic: it must pass in CI
-  // without a prior UI build and must not depend on a developer's stale dist.
-  const violations = runAudit({ distDir: path.join(appRoot, '.compat-test-no-dist') });
-  assert.deepEqual(violations, []);
+  assert.deepEqual(hermeticAudit(), []);
 });
 
 test('legacy polyfills load before app modules in every entry', () => {
@@ -85,7 +89,7 @@ test('the auditor flags violations under minifier-shaped syntax (complete walker
       'function g(w = [1, 2].findLastIndex(() => 0)) {}',
       'const s = (0, structuredClone({}));',
     ].join('\n'));
-    const violations = runAudit({ distDir });
+    const violations = hermeticAudit({ distDir });
     const expected = [
       [1, 'lookbehind assertion'],
       [2, 'lookbehind assertion'],
@@ -143,11 +147,69 @@ test('the auditor flags inset shorthand that survives into dist CSS (Safari 14.0
       '*{--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px}',
       '.ring-inset{--tw-ring-inset:inset}',
     ].join('\n'));
-    const violations = runAudit({ distDir });
+    const violations = hermeticAudit({ distDir });
     assert.equal(violations.length, 1, `exactly the surviving shorthand must be reported; got: ${JSON.stringify(violations)}`);
     assert.match(violations[0], /^dist:main\.css:1: inset shorthand survives the build/);
     assert.match(violations[0], /inset:0px/);
   } finally {
     fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('the audit fails closed when a dist layer is absent or empty', () => {
+  // The presence guards are the CLI's only defense against green-lighting an
+  // audit whose dist layers were never produced: every layer runAudit scans
+  // conditionally (desktop assets/CSS, desktop startup bundles, web dist
+  // index/CSS/startup bundles) must produce an explicit problem here.
+  const emptyDist = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-empty-'));
+  try {
+    const problems = auditDistPresenceProblems({ desktopDist: emptyDist, webDist: emptyDist });
+    assert.deepEqual(
+      problems.map((problem) => problem.replace(/^audit-compat: /, '')),
+      [
+        'dist/assets not found — run `npm run build:ui` first',
+        'no startup bundles found in dist/startup — run `npm run build:ui` first',
+        'no web dist found under remote-control-relay/web/dist — run `npm run build:web` first',
+      ],
+    );
+
+    // A desktop dist with assets but no CSS must fail the CSS layer, and a
+    // web dist with an index.html but no CSS/startup layers must fail both
+    // web layers.
+    fs.mkdirSync(path.join(emptyDist, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(emptyDist, 'assets', 'main.js'), 'void 0;\n');
+    fs.writeFileSync(path.join(emptyDist, 'index.html'), '<html></html>\n');
+    const shallowProblems = auditDistPresenceProblems({ desktopDist: emptyDist, webDist: emptyDist });
+    assert.ok(
+      shallowProblems.some((problem) => problem.includes('no CSS assets found in dist/assets')),
+      `desktop CSS layer must be flagged; got: ${JSON.stringify(shallowProblems)}`,
+    );
+    assert.ok(
+      shallowProblems.some((problem) => problem.includes('no CSS assets found in the web dist')),
+      `web CSS layer must be flagged; got: ${JSON.stringify(shallowProblems)}`,
+    );
+    assert.ok(
+      shallowProblems.some((problem) => problem.includes('no startup bundles found in the web dist')),
+      `web startup layer must be flagged; got: ${JSON.stringify(shallowProblems)}`,
+    );
+    assert.ok(
+      !shallowProblems.some((problem) => problem.includes('dist/assets not found')),
+      'present desktop assets dir must not be flagged',
+    );
+    assert.ok(
+      !shallowProblems.some((problem) => problem.includes('no web dist found')),
+      'present web index.html must not be flagged',
+    );
+
+    // Filling every layer clears all problems — the guard set is exhaustive.
+    fs.writeFileSync(path.join(emptyDist, 'assets', 'main.css'), '.ok{color:red}\n');
+    fs.mkdirSync(path.join(emptyDist, 'startup'), { recursive: true });
+    fs.writeFileSync(path.join(emptyDist, 'startup', 'classic.js'), 'void 0;\n');
+    assert.deepEqual(
+      auditDistPresenceProblems({ desktopDist: emptyDist, webDist: emptyDist }),
+      [],
+    );
+  } finally {
+    fs.rmSync(emptyDist, { recursive: true, force: true });
   }
 });

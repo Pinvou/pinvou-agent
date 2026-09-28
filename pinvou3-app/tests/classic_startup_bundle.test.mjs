@@ -8,6 +8,7 @@ import { localClassicScriptPaths } from '../scripts/vite-runtime-assets.mjs';
 import {
   classicStartupBundlePaths,
   desktopPlatformMarkerScript,
+  groupMinifiedSources,
   requiredVerbatimRuntimeScripts,
   transformIndexHtmlForClassicBundle,
   transformIndexHtmlForPlatform,
@@ -156,3 +157,56 @@ test('verbatim runtime copy set excludes everything the startup bundles serve', 
     }
   }
 });
+
+test('auxiliary-entry needs stay required regardless of index.html tag survival', () => {
+  // pet.html loads model-service-errors.js as its own standalone tag. The
+  // required set must derive that need from pet.html itself: if the
+  // model-service-errors tags disappeared from index.html entirely (no
+  // bundled tag, no standalone tag), dropping the copy would 404 the pet
+  // entry while every index-derived contract stayed green.
+  const indexWithoutMse = sourceIndex
+    .split('\n')
+    .filter((line) => !/model-service-errors\.js/u.test(line))
+    .join('\n');
+  assert.ok(indexWithoutMse.length < sourceIndex.length, 'fixture must actually remove the tags');
+  for (const webBuild of [false, true]) {
+    const required = requiredVerbatimRuntimeScripts(webBuild, indexWithoutMse);
+    assert.ok(
+      required.has('shared/model-service-errors.js'),
+      'pet.html standalone tag must keep the model-service-errors copy required',
+    );
+    assert.ok(
+      !verbatimDroppedRuntimeScripts(webBuild, indexWithoutMse).has('shared/model-service-errors.js'),
+      'a required auxiliary-entry script must never be dropped',
+    );
+  }
+});
+
+test('classic bundle grouping preserves order and the byte budget', () => {
+  // Order never changes (a classic script's execution order is load order),
+  // and a bundle only exceeds the cap when a single source alone is over it —
+  // a classic script cannot be divided across load boundaries.
+  const sizes = [30, 30, 30, 120, 10];
+  const sources = sizes.map((size, index) => String(index).repeat(size));
+  const groups = groupMinifiedSources(sources, 100);
+  // Joining adds a 2-byte ';\n' separator between sources inside a bundle.
+  assert.deepEqual(
+    groups.map((group) => group.length),
+    [94, 120, 10],
+  );
+  assert.equal(
+    groups.map((group) => group.split(';\n')).flat().join(''),
+    sources.join(''),
+    'concatenated bundles must contain every source exactly once, in manifest order',
+  );
+  for (const group of groups) {
+    if (Buffer.byteLength(group) > 100) {
+      assert.ok(
+        sources.includes(group),
+        `oversize bundle must be a single source kept whole, got: ${JSON.stringify(group.slice(0, 20))}…`,
+      );
+    }
+  }
+  assert.equal(groupMinifiedSources([], 100).length, 0, 'no sources means no bundles');
+});
+

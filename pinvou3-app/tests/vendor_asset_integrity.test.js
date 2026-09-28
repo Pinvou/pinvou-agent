@@ -24,6 +24,12 @@ for (const line of readme.split('\n')) {
 // Browser libraries now come from npm and are bundled or compiled by Vite.
 // Keep this generic integrity contract so a future classic vendor script
 // cannot be added without an explicit registry row and reviewed checksum.
+// The registry is intentionally EMPTY right now: the Tailwind runtime was the
+// last vendor script and moved to a build-time dependency, so src/vendor/
+// holds only this README. Emptiness is a pinned state, not a vacuous pass —
+// the two-sided checks below still fail if a .js file appears unregistered,
+// if a registry row loses its file, or if either side drifts from its
+// reviewed SHA-256.
 
 for (const entry of registered) {
   assert.ok(entry.version.trim().length > 0, `registry row for ${entry.file} is missing a version`);
