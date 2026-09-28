@@ -102,8 +102,12 @@ impl SessionStore {
         let mut delete_error = None;
         // Orphan reclaim ("aux records die with their main", the derived-id
         // half): an aux record whose main record is genuinely gone can only
-        // arise from an out-of-band main deletion or an interrupted cascade —
-        // every in-band path (delete/discard/eviction) is all-or-nothing.
+        // arise from an out-of-band main deletion, an interrupted cascade —
+        // the aux-first eviction commits the aux delete and aborts the main
+        // on a post-record fault, and the delete path's cascade has the same
+        // window (see the eviction leg below) — or a benign ensure-vs-delete
+        // race. No in-band path orphans an aux on its happy path, but
+        // "all-or-nothing" only holds before the aux record commits.
         // Reclaim it here; the boot sweep is what collects it after a crash.
         // Identity comes from the FILENAME, never from parsing the record
         // (round-31 M3): the metadata listing silently drops any record it
@@ -189,14 +193,34 @@ impl SessionStore {
         // main-`updated_at` descending order, so behavior is unchanged where
         // no aux session exists.
         candidates.sort_by_key(|metadata| {
-            std::cmp::Reverse(
-                aux_freshness
-                    .get(Self::aux_session_id_for(&metadata.id).as_str())
-                    .copied()
-                    .map_or(metadata.updated_at, |aux_at| {
-                        std::cmp::max(metadata.updated_at, aux_at)
-                    }),
-            )
+            let aux_id = Self::aux_session_id_for(&metadata.id);
+            let aux_at = match aux_freshness.get(aux_id.as_str()).copied() {
+                Some(aux_at) => Some(aux_at),
+                // Listing blind spot (round-33 MAJOR-7): the snapshot
+                // silently drops a record it cannot read, so an in-use pair
+                // whose aux momentarily fails to parse would sort by the
+                // stale main `updated_at` alone, drift past the line, and
+                // the fail-closed delete-side probe — which does NOT trust
+                // the listing — would cascade-evict the live pair. A
+                // freshness-map miss stats the record directly: a real
+                // mtime feeds the same max(), so an alive-but-unparseable
+                // record still protects its pair. A stat that cannot read
+                // the record at all (NotFound or any other fault) degrades
+                // this ordering leg to the main timestamp alone — the
+                // round-31 M3 contract (an unreadable stale aux is still
+                // reclaimable by the cascade) lives on the delete-side
+                // probe, which stays the fail-closed authority.
+                None => match std::fs::metadata(
+                    self.manager.sessions_dir().join(format!("{aux_id}.json")),
+                ) {
+                    Ok(stat) => stat.modified().ok().map(chrono::DateTime::from),
+                    Err(_) => None,
+                },
+            };
+            std::cmp::Reverse(match aux_at {
+                Some(aux_at) => std::cmp::max(metadata.updated_at, aux_at),
+                None => metadata.updated_at,
+            })
         });
         let mut chat_count = 0usize;
         for metadata in candidates {

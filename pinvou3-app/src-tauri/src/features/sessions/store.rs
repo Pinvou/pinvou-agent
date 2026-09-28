@@ -308,8 +308,6 @@ impl SessionStore {
             .clone();
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
-        // Scheduled conversations share the durable store so detail/history can
-        // load them normally, but remain owned by the Scheduled Tasks surface.
         // Multi-agent is a persistent switch on ordinary sessions, not a separate
         // session type; only scheduled sessions are isolated here — all other
         // history goes into the ordinary list.
@@ -435,8 +433,13 @@ impl SessionStore {
         // NotFound counts as "no aux", so a transient stat fault can never
         // skip the cascade. The aux id never owns an aux itself, so the
         // recursion depth is bounded at 1 by the prefix check inside
-        // `aux_session_id`. The cascade is all-or-nothing: a failed aux
-        // delete aborts the main delete and preserves both records.
+        // `aux_session_id`. A failed aux delete aborts the main delete — but
+        // "abort" is not all-or-nothing once the aux record itself committed:
+        // a post-record cleanup fault on the aux leg leaves the aux durably
+        // gone (its deletion hook fired) while the main record survives
+        // (retention.rs documents the same window for the eviction leg). The
+        // state converges: on retry the derived-id probe reports no aux, the
+        // cascade is skipped, and the main delete completes.
         if let Some(aux_id) = self.aux_session_id(id) {
             self.delete(&aux_id)
                 .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
