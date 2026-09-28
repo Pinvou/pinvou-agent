@@ -1646,6 +1646,34 @@ async function webToolEndFlushesStreamHtmlBeforeReset() {
     "web: tool_end must synchronously flush the full markdown html before the stream state reset");
 }
 
+// The early-return terminal branches inside chat:tool_end each carry their own
+// flush before the stream reset; a removed flush there is invisible to the
+// general tool_end pin because those branches return before reaching it.
+async function webTerminalToolEndBranchFlushesStreamHtmlBeforeReset(toolStartPayload, toolEndPayload, label) {
+  const harness = createBridgeHarness(null, { bridgeKind: "web" });
+  const bridge = harness.bridge;
+  const sessionId = "chat-web-terminal-flush-" + label;
+  harness.handlers.load_session = function () {
+    return { metadata: { id: sessionId, title: "Terminal flush " + label }, messages: [], artifacts: [] };
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession(sessionId), true);
+
+  harness.emit("chat:tool_start", Object.assign({ session_id: sessionId }, toolStartPayload));
+  harness.emit("chat:delta", { session_id: sessionId, text: "before " });
+  harness.emit("chat:delta", { session_id: sessionId, text: label + "-tail" });
+  // Deliberately synchronous: no awaited timer between the deltas and
+  // tool_end, so the 180ms trailing-edge render cannot preempt the flush.
+  harness.emit("chat:tool_end", Object.assign({ session_id: sessionId }, toolEndPayload));
+
+  const tail = "before " + label + "-tail";
+  const streamedItem = bridge.state.get().chatItems.filter(function (item) {
+    return item.type === "assistant" && item.text === tail;
+  }).pop();
+  assert.ok(streamedItem, "web[" + label + "]: the accumulated stream bubble must survive the terminal tool_end branch");
+  assert.ok(String(streamedItem.html || "").includes(tail),
+    "web[" + label + "]: the terminal tool_end branch must synchronously flush the full markdown html before the stream state reset");
+}
+
 async function olderDesktopUsesServerGeneratedSessionDownloadId() {
   const harness = createBridgeHarness(null, { bridgeKind: "web", webSupportedCommands: [] });
   const sessionId = "chat-legacy-download";
@@ -8852,6 +8880,18 @@ Promise.resolve()
   .then(function () { return backgroundSessionFirstDeltaPublishesViaFrame("tauri"); })
   .then(function () { return backgroundSessionFirstDeltaPublishesViaFrame("web"); })
   .then(function () { return webToolEndFlushesStreamHtmlBeforeReset(); })
+  .then(function () { return webTerminalToolEndBranchFlushesStreamHtmlBeforeReset(
+    { id: "web-flush-req-input", name: "request_user_input", args: {} },
+    { id: "web-flush-req-input", name: "request_user_input", output: "ok", success: true },
+    "req-input"); })
+  .then(function () { return webTerminalToolEndBranchFlushesStreamHtmlBeforeReset(
+    { id: "web-flush-artifact-fail", name: "present_artifact", args: { path: "tail.png" } },
+    { id: "web-flush-artifact-fail", name: "present_artifact", output: "boom", success: false },
+    "artifact-fail"); })
+  .then(function () { return webTerminalToolEndBranchFlushesStreamHtmlBeforeReset(
+    { id: "web-flush-artifact-ok", name: "present_artifact", args: { path: "tail.png" } },
+    { id: "web-flush-artifact-ok", name: "present_artifact", output: "tail.png", success: true },
+    "artifact-ok"); })
   .then(multipleKnowledgeMountBehavior)
   .then(queuedKnowledgeMountKeepsOriginalSession)
   .then(staleKnowledgeSnapshotDoesNotCrossSessions)
