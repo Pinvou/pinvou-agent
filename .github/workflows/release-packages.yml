@@ -356,7 +356,8 @@ jobs:
     needs: check-version-bump
     if: github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.build_required == 'true'
     runs-on: windows-latest
-    timeout-minutes: 90
+    # 0.10.5 的 nsis 构建耗时 ~86min,90min 上限在 post cache save 阶段被撞掉。
+    timeout-minutes: 150
     environment:
       name: windows-release
     defaults:
