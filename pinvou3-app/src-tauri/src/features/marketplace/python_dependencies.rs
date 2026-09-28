@@ -1431,6 +1431,32 @@ mod tests {
     }
 
     #[test]
+    fn checksum_mismatch_rejects_tampered_bytes_and_cleans_staging() {
+        // 镜像/网络返回被篡改字节时必须在落盘前被 sha256 pin 拦截并清理
+        // 暂存：这是「镜像候选与官方源同样过 pin」这一核心安全断言的
+        // 直接测试（删除实际比对时本测试必须转红）。
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-checksum-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = b"tampered wheel bytes";
+        let destination = root.join("tampered-wheel.whl");
+        let partial = destination.with_extension(format!("part-{}", std::process::id()));
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.sha256 =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+
+        let error =
+            persist_wheel_download(&mut Cursor::new(bytes), &destination, &wheel).unwrap_err();
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(!partial.exists());
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn bundled_document_mcp_manifests_have_complete_windows_locks() {
         let cases = [
             (
