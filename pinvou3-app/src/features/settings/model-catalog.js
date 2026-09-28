@@ -44,7 +44,7 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   page carries no such restriction ($2/$12 vs sol's $2/$10). gpt-6-sol /
 //   gpt-6-luna stay listed with the restriction in their descriptions;
 //   gpt-6-astra's tool calling remains Responses-only (Using GPT-6 Astra
-//   guide verbatim: "GPT-6 Astra supports Chat Completions, but tool
+//   guide verbatim: "GPT-6 Astra supports Chat Completions, but its tool
 //   calling requires Responses", re-verified 2026-09-28).
 // - anthropic: claude-opus-5-5 (2026-09-22) takes the default per the
 //   official models overview "start with Claude Opus 5.5 for most workloads".
@@ -270,12 +270,12 @@ const MODEL_CATALOG = {
       vendor: 'tencent',
       baseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions'],
-      // Row lineup mirrors the live 130119 general-tier table (re-checked
-      // 2026-09-28; 130060 updated 2026-09-24); GLM-5/GLM-5.1 retire
+      // Row lineup mirrors the live 130060 personal-plan table (re-checked
+      // 2026-09-28; the page updated 2026-09-24); GLM-5/GLM-5.1 retire
       // 2026-10-09 per 130060 (the TokenHub platform list 130051 marks the
       // underlying models 2026-10-08, so treat end of 10-08 as the safe
       // cutoff). The old "high-load" flag on hy4-preview is gone from the
-      // current 130060/130119 tables, so the note is dropped. DeepSeek rows
+      // current 130060 table, so the note is dropped. DeepSeek rows
       // are first-party direct supply without SLA, per 130060.
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
@@ -307,7 +307,10 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.kimi.com/coding/v1',
       // The overseas Kimi Code plan serves https://api.kimi.ai/coding/v1
       // (kimi.com/code/docs, checked 2026-09-28); registered as an
-      // alias so saved configs classify into this group.
+      // alias so saved configs classify into this group — note the alias
+      // only classifies; the exact-route K3 effort gate still pins
+      // api.kimi.com/coding/v1, so an overseas-host config gets no K3
+      // tiers until the base learns the new host.
       endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions', 'https://api.kimi.ai/coding/v1'],
       // kimi-for-coding is a stable alias whose underlying model rolls: it
       // became K2.8 Preview on 2026-09-11 with 1M context on all tiers
@@ -461,14 +464,18 @@ const MODEL_CATALOG = {
       // context, native multimodal); MiniMax-M3.1-Flash-Preview is the newer
       // multimodal tier with real reasoning_effort tuning, but it is
       // temporarily only served via the Token Plan and MiniMax Code
-      // subscriptions — a plain pay-as-you-go key may not invoke it. The
-      // whole M2.x family is text-only with thinking always on (M3 accepts
-      // thinking.type=disabled; effort tuning is M3.1-only). The official
-      // China docs' primary domain moved to api.minimax.cn; api.minimaxi.com
-      // still answers (401 liveness probe, 2026-09-28) and stays the default
-      // because the base tiered route pins it, with the new domain
-      // registered as an alias. International and China use separate
-      // account/key systems.
+      // subscriptions — a plain pay-as-you-go key may not invoke it (no
+      // dated announcement page exists; per the current model-intro pages).
+      // The whole M2.x family is text-only with thinking always on (M3
+      // accepts thinking.type=disabled; effort tuning is M3.1-only). The
+      // official China docs' primary domain moved to api.minimax.cn;
+      // api.minimaxi.com still answers (401 liveness probe, 2026-09-28) and
+      // stays the default because the base tiered route pins it, with the
+      // new domain registered as an alias below — note the alias only
+      // classifies configs into this group; the exact-route thinking gate
+      // still pins the two legacy hosts, so a saved api.minimax.cn config
+      // gets no M3 effort tiers until the base learns the new host.
+      // International and China use separate account/key systems.
       endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
         { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
@@ -512,9 +519,10 @@ const MODEL_CATALOG = {
       // deprecation page): the MiMo-V2.6 series launched 2026-09-22 and all
       // three tiers are omni-modal (text/image/audio/video input) with 1M
       // context; mimo-v2.5-pro is text-only and mimo-v2.5 multimodal. The
-      // whole v2.5 family hard-retires Beijing time 2026-10-21 10:00 with NO
-      // system replacement (requests error out), so the v2.6 rows lead and
-      // the v2.5 rows carry the retirement notice.
+      // two v2.5 chat models (both listed below) hard-retire Beijing time
+      // 2026-10-21 10:00 with NO system replacement (requests error out),
+      // so the v2.6 rows lead and the v2.5 rows carry the retirement
+      // notice.
       // Token Plan subscription keys (tp-/ttp-) must switch to the cluster
       // hosts (token-plan-cn / -sgp / -ams.xiaomimimo.com/v1); the console's
       // displayed URL is authoritative.
@@ -637,12 +645,12 @@ const MODEL_CATALOG = {
       // (Pro ¥200/月; the Lite tier closed to new purchases 2026-03-20)
       // separate from the Token Plan, usable only inside AI coding tools.
       // Keys are also sk-sp- prefixed. The endpoint serves exact-version
-      // ids only; the rows mirror the official page's recommended list (the
-      // page additionally lists qwen3.5-plus / qwen3-max-2026-01-23 /
-      // qwen3-coder-next / qwen3-coder-plus / glm-4.7; the listed
-      // kimi-k2.5 row is deliberately not mirrored here because Moonshot
-      // retired kimi-k2.5 platform-wide on 2026-08-31). Gateway
-      // deployments are not verified one by one, so rows stay unannotated.
+      // ids only; the rows are a deliberate subset of the official page
+      // list (the page additionally recommends kimi-k2.5 — not mirrored
+      // because Moonshot retired it platform-wide on 2026-08-31 — and
+      // lists qwen3.5-plus / qwen3-max-2026-01-23 under "more models").
+      // Gateway deployments are not verified one by one, so rows stay
+      // unannotated.
       items: [
         { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-plus', title: 'qwen3.6-plus', desc: '均衡性价比' },
@@ -665,23 +673,25 @@ const MODEL_CATALOG = {
       // Official figures re-checked 2026-09-28 (docs.volcengine.com/ark
       // model list + release announcements 1159178): doubao-seed-evolving is
       // the officially recommended Coding/Agent model — a permanent Model ID
-      // whose underlying version auto-updates (at least weekly; current
-      // version 2026-09-09), so the old "rolls weekly" wording is gone. The
-      // 2-1 family gained -260915 pro/lite snapshots (released ~2026-09-15);
-      // -260628 stays on sale with no deprecation notice. The
-      // coding-specialized preview doubao-seed-2-0-code-preview-260215 also
-      // lists multimodal understanding, so the image capability is
-      // annotated. Vendor docs now document seven reasoning_effort modes
-      // (none…max, default high); the base still normalizes to the
-      // off/high/max exposure below, so no tier change is made here.
+      // whose underlying version auto-updates (at least weekly), so the old
+      // "rolls weekly" wording is gone. The 2-1 family gained -260915
+      // pro/lite snapshots (2026-09); the -260628 rows and the 2-1 -260915
+      // snapshots stay on sale, but every 2-0 -260215 snapshot on the model
+      // list now carries an 即将下线 badge, so those rows note the coming
+      // retirement. The coding-specialized preview
+      // doubao-seed-2-0-code-preview-260215 also lists multimodal
+      // understanding, so the image capability is annotated. Vendor docs now
+      // document seven reasoning_effort modes (none…max, default high); the
+      // base still normalizes to the off/high/max exposure below, so no tier
+      // change is made here.
       items: [
         { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐，统一模型 ID 自动升级' },
         { model: 'doubao-seed-2-1-pro-260915', imageCapable: true, title: 'doubao-seed-2-1-pro-260915', desc: '高能力模型' },
         { model: 'doubao-seed-2-1-pro-260628', imageCapable: true, title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
         { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '低成本低时延，效果比肩 2-1-pro' },
         { model: 'doubao-seed-2-1-lite-260915', imageCapable: true, title: 'doubao-seed-2-1-lite-260915', desc: '轻量模型' },
-        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览）' },
-        { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
+        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览），官方即将下线' },
+        { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用，官方即将下线' },
         { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
         { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
       ],
@@ -739,14 +749,14 @@ const MODEL_CATALOG = {
       // ("built to power complex coding and agentic workflows", $2/$10) and
       // gpt-6-luna ($0.10/$0.50) joined, but their model detail pages state
       // verbatim "Chat Completions supports function calling only with
-      // reasoning_effort set to none" (the GPT-6 Sol guide's "tool calling
-      // on both the Responses API and Chat Completions" glosses over this).
+      // reasoning_effort set to none" (the family-wide "Using GPT-6" guide
+      // states the same restriction explicitly).
       // The engine sends no reasoning_effort for gpt-6 (outside the base
       // reasoning-family predicate) and the API default is medium, so the
       // gpt-6 rows cannot drive the agent tool loop on the Chat wire this
       // preset uses — gpt-5.6-terra ($2/$12, no such restriction on its
       // page) keeps the default. gpt-6-astra additionally has Responses-only
-      // tool calling ("GPT-6 Astra supports Chat Completions, but tool
+      // tool calling ("GPT-6 Astra supports Chat Completions, but its tool
       // calling requires Responses") and rejects effort "none". The 5.6
       // family and gpt-5.5 / gpt-5.4-mini are on sale and not deprecated
       // (5.6-sol promo pricing documented through at least 2026-11-21).
@@ -784,12 +794,13 @@ const MODEL_CATALOG = {
       // reasoning and long-horizon agentic work. claude-fable-5 and
       // claude-opus-5 are both Legacy (retirement floors 2027-06/2027-07).
       // claude-haiku-4-5 keeps its 200K context / no-effort figures; watch
-      // item: its retirement floor is 2026-10-15 and Haiku 5.5 was
-      // announced as "coming weeks" on 2026-09-22 — re-check at the next
-      // refresh. Every current model supports image input (the base bundled
-      // offline seed recording them as text-only is stale; the official docs
-      // win). From the 4.6 generation on, IDs without a date are fixed
-      // snapshots (claude-haiku-4-5 predates that and stays an alias).
+      // item: its retirement floor is 2026-10-15, and Sonnet 5.5 / Haiku 5.5
+      // were both announced as "coming weeks" on 2026-09-22 — re-check both
+      // slots at the next refresh. Every current model supports image input
+      // (the base bundled offline seed recording them as text-only is
+      // stale; the official docs win). From the 4.6 generation on, IDs
+      // without a date are fixed snapshots (claude-haiku-4-5 predates that
+      // and stays an alias).
       items: [
         { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
@@ -842,7 +853,11 @@ const MODEL_CATALOG = {
       // slot — "For everything else, including code, use Grok 4.7. It is
       // the most capable model we've built" (500K, effort low/medium/high/
       // xhigh, reasoning cannot be turned off); grok-4.6 demotes to the
-      // previous generation; grok-4.5 effort now officially includes xhigh.
+      // previous generation. grok-4.5's model page lists xhigh, but the
+      // official reasoning guide contradicts it ("xhigh is available on
+      // grok-4.6 and later"; grok-4.5 requests with xhigh are treated as
+      // high) — the app follows the guide and keeps exposing low/medium/
+      // high for grok-4.5, matching the base's downgrade.
       // The grok-4.20-0309-* and grok-build-0.1 detail pages all state
       // text, image → text, so image capability is annotated.
       // Note: the base's effort injection (apply_xai_grok_4_6_reasoning_effort)
@@ -873,8 +888,10 @@ const MODEL_CATALOG = {
       // and rankings shift weekly, so the rows are the current top usage
       // plus stable vendor flagships — treat them as suggestions, the custom
       // row covers everything else. Rows stay unannotated: deployments
-      // behind the aggregator are not verified one by one. The engine has a
-      // dedicated openrouter route (reasoning_effort passthrough low/
+      // behind the aggregator are not verified one by one, and their
+      // per-deployment context figures are likewise not mirrored (the
+      // engine keeps its conservative fallback for these ids). The engine
+      // has a dedicated openrouter route (reasoning_effort passthrough low/
       // medium/high, thinking toggle at off), exposed via REASONING_EFFORT_TIERS.
       items: [
         { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应' },
@@ -905,7 +922,9 @@ const MODEL_CATALOG = {
       // the accelerated tier. The engine has dedicated siliconflow kinds
       // (thinking toggle at off; low/medium/high collapse to high), exposed
       // via REASONING_EFFORT_TIERS. Rows stay unannotated: deployments
-      // behind the platform are not verified one by one.
+      // behind the platform are not verified one by one, and their
+      // per-deployment context figures are likewise not mirrored (the
+      // engine keeps its conservative fallback for these ids).
       items: [
         { model: 'deepseek-ai/DeepSeek-V4-Pro', title: 'deepseek-ai/DeepSeek-V4-Pro', desc: '高能力模型' },
         { model: 'deepseek-ai/DeepSeek-V4-Flash', title: 'deepseek-ai/DeepSeek-V4-Flash', desc: '快速响应' },
@@ -1153,7 +1172,8 @@ const REASONING_EFFORT_TIERS = {
   // (client.rs apply_reasoning_effort)，只有 off/high 有实际区别。
   siliconflow: ['off', 'high'],
   // openrouter：底座按 OpenRouter 统一标度透传 low/medium/high（off →
-  // thinking.disabled），max/xhigh 无文档化映射，不暴露。
+  // thinking.disabled）；底座另把 max/xhigh 原样透传为 xhigh，但聚合平台的
+  // xhigh 只有部分上游模型接受，UI 保持保守只暴露 off/low/medium/high。
   openrouter: ['off', 'low', 'medium', 'high'],
   // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
   anthropic: ['low', 'medium', 'high', 'max'],

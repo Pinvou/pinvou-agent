@@ -1077,7 +1077,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '正式旗舰，夜间 22:00-08:00 四折（个人版）':'GA flagship, 40% credit cost 22:00-08:00 (personal plan)',
   '轻量兼容款，支持图像输入':'Lightweight compatibility option, image input',
   '最新推荐，统一模型 ID 自动升级':'Latest recommended, auto-updating under one Model ID', '低成本低时延，效果比肩 2-1-pro':'Low cost, low latency, near 2-1-pro quality',
-  '编程特化（预览）':'Coding-specialized (preview)', '最强旗舰；仅 Responses 协议支持函数调用':'Strongest flagship; function calling only via Responses API',
+  '编程特化（预览），官方即将下线':'Coding-specialized (preview); retiring soon per official docs', '稳定通用，官方即将下线':'Stable general-purpose model; retiring soon per official docs', '最强旗舰；仅 Responses 协议支持函数调用':'Strongest flagship; function calling only via Responses API',
   '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用':'New coding/agent flagship; Chat wire function calling only at effort=none',
   '低价高效；Chat 协议仅 effort=none 支持函数调用':'Low-cost and efficient; Chat wire function calling only at effort=none',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 family flagship, reasoning and coding',
@@ -1111,5 +1111,5 @@ Object.assign(dictEn.uiChat, {
   bgTasksRunning: n => `${n} background task${n === 1 ? '' : 's'} running`,
 });
 // restored: baseline catalog descriptions (referenced by the model catalog data)
-Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '高速响应': 'High-speed responses', '稳定通用': 'Stable general-purpose model', '轻量模型': 'Lightweight model'
+Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '高速响应': 'High-speed responses', '轻量模型': 'Lightweight model'
 });

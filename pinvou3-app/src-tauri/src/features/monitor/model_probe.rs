@@ -1129,7 +1129,8 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
-            // MiniMax：M3 是 1M，M2.x 全系 204,800
+            // MiniMax：M3 是 1M，M2.x 全系 204,800（2026-09-11 核对值沿用；
+            // 现行官方页面不再公布 M2.x 的逐模型上下文数字）
             (ModelPreset::Minimax, "MiniMax-M3", 1_000_000),
             // M3.1 Flash Preview (2026-09-26) is 1M; the exact "MiniMax-M3"
             // spelling cannot suffix-match the m3.1 wire id.
@@ -1153,14 +1154,22 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // Doubao: evolving is already 1M; the 2.x family is officially 256k
-            // (volcengine 1330310, checked 2026-09-12), carried by the
-            // core::model_context supplemental table — the base has no doubao
-            // rows, and without the supplemental table the engine side falls to
-            // 128K, diverging from the monitor page
+            // Doubao: evolving is already 1M; the 2-1 -260628 generation and
+            // the 2-0 snapshots are officially 256k, while the -260915
+            // snapshots moved to 1024k (volcengine 1330310, re-checked
+            // 2026-09-28), carried by the core::model_context supplemental
+            // table — the base has no doubao rows, and without the
+            // supplemental table the engine side falls to 128K, diverging
+            // from the monitor page
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
             (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260915", 1_048_576),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-1-lite-260915",
+                1_048_576,
+            ),
             (
                 ModelPreset::Doubao,
                 "doubao-seed-2-0-code-preview-260215",
@@ -1168,15 +1177,32 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             ),
             (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
+            // Ark Coding Plan dot spellings (same underlying models, plan
+            // model list) ride their own supplemental rows.
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.1-pro",
+                1_048_576,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.0-mini",
+                262_144,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "kimi-k2.8-preview",
+                1_048_576,
+            ),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
             // xAI: the base known table lists grok-4.6 / grok-4.5 at 500K (checked 2026-09-11)
             (ModelPreset::Xai, "grok-4.6", 500_000),
-            // grok-4.7 (2026-09-17 default) is 500K per the release notes;
-            // the base has no row yet, filled by the core::model_context
-            // supplemental table.
+            // grok-4.7 (September 2026 default) is 500K per the release
+            // notes; the base has no row yet, filled by the
+            // core::model_context supplemental table.
             (ModelPreset::Xai, "grok-4.7", 500_000),
             // The base known table still records grok-4.20-0309-* as 2M; the
             // core::model_context override table corrects it first to the 1M

@@ -204,9 +204,9 @@ impl ModelPreset {
             ModelPreset::Minimax => "MiniMax-M3",
             // API enum default shared by both Zhipu endpoints.
             ModelPreset::Glm => "glm-5.3",
-            // The V2.6 series (2026-09-22) replaces the default: the whole
-            // v2.5 family hard-retires 2026-10-21 with no auto-replacement
-            // (mimo.mi.com deprecation page).
+            // The V2.6 series (2026-09-22) replaces the default: the two
+            // v2.5 chat models (v2.5-pro / v2.5) hard-retire 2026-10-21
+            // with no auto-replacement (mimo.mi.com deprecation page).
             ModelPreset::Mimo => "mimo-v2.6-pro",
             // gpt-5.6-terra stays the default (re-verified 2026-09-28): the
             // gpt-6 family detail pages state verbatim "Chat Completions
@@ -273,8 +273,10 @@ impl ModelPreset {
             // other 4.20 spellings the base does not know), grok-4.3 is 1M,
             // grok-4.7 / grok-4.6 / grok-4.5 are 500K, grok-build-0.1 is
             // 256K (the base known table has a separate stale 512K row for
-            // bare "grok-build", which the catalog does not list, so the
-            // actual wire id grok-build-0.1 lands on this 256K fallback).
+            // bare "grok-build"; the actual wire id grok-build-0.1 resolves
+            // before this fallback via the core::model_context override at
+            // the same 256K, so this arm only carries ids the resolution
+            // chain misses).
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
                 Some(m) if m.contains("grok-4.20") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),

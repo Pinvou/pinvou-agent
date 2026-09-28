@@ -2506,6 +2506,15 @@ impl Pinvou3Bridge {
             "xiaomi-mimo" => &mut providers.xiaomi_mimo,
             "anthropic" => &mut providers.anthropic,
             "xai" => &mut providers.xai,
+            // Aggregator kinds must keep their own foundation slots: the
+            // credential chain reads the provider table of the resolved kind
+            // (the root api_key belongs to DeepSeek), so falling into the
+            // vllm catch-all would strand the user's key in a slot these
+            // routes never read and redirect custom base URLs to the
+            // official defaults.
+            "openrouter" => &mut providers.openrouter,
+            "siliconflow" => &mut providers.siliconflow,
+            "siliconflow-cn" => &mut providers.siliconflow_cn,
             // Unknown providers uniformly fall through to vllm (consistent with the
             // existing catch-all behavior).
             _ => &mut providers.vllm,
@@ -8802,6 +8811,99 @@ mod tests {
         // Anthropic thinking is a native thinking block; no OpenAI-family
         // reasoning field is injected.
         assert_eq!(providers.anthropic.reasoning_stream_style.as_deref(), None);
+    }
+
+    /// Aggregator catalog groups route to the foundation's dedicated
+    /// openrouter / siliconflow(+CN) kinds. Credentials and address must land
+    /// in those kinds' own provider slots — the foundation's credential chain
+    /// never reads the root api_key for them, so a vllm catch-all write would
+    /// strand the key and silently redirect custom endpoints to the official
+    /// defaults.
+    #[test]
+    fn aggregator_vendors_route_to_dedicated_provider_slots() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+
+        // OpenRouter routes by the saved vendor name alone.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek/deepseek-v4.1-flash",
+            "https://openrouter.ai/api/v1",
+            "or-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("openrouter".to_string());
+        assert_eq!(bridge.provider(), "openrouter");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Openrouter
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.openrouter.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(providers.openrouter.api_key.as_deref(), Some("or-key"));
+        assert_eq!(
+            providers.openrouter.reasoning_stream_style.as_deref(),
+            Some(SEPARATE_REASONING_FIELD)
+        );
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+
+        // SiliconFlow China: the CN kind is picked from the endpoint host and
+        // owns its own slot.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "https://api.siliconflow.cn/v1",
+            "sf-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("siliconflow".to_string());
+        assert_eq!(bridge.provider(), "siliconflow-cn");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::SiliconflowCn
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.siliconflow_cn.base_url.as_deref(),
+            Some("https://api.siliconflow.cn/v1")
+        );
+        assert_eq!(providers.siliconflow_cn.api_key.as_deref(), Some("sf-key"));
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+
+        // The global host routes to the plain siliconflow kind.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "https://api.siliconflow.com/v1",
+            "sfg-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("siliconflow".to_string());
+        assert_eq!(bridge.provider(), "siliconflow");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Siliconflow
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.siliconflow.base_url.as_deref(),
+            Some("https://api.siliconflow.com/v1")
+        );
+        assert_eq!(providers.siliconflow.api_key.as_deref(), Some("sfg-key"));
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
     }
 
     /// xAI uses the built-in xai provider; Gemini has no built-in provider
