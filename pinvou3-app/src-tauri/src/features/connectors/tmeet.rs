@@ -201,7 +201,9 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
     if let Some(pid) = conn.cancel(ID) {
         let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
     }
-    conn.reset(ID);
+    // 代号在 reset 时取:already_logged_in 分支同属本轮(登录态是机器级事实,
+    // 迟到也无害),仅 spawn 的 flow 线程需要过期自检。
+    let generation = conn.reset(ID);
     let already_logged_in = tokio::task::spawn_blocking(is_logged_in)
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?;
@@ -215,16 +217,20 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
         return Ok(json!({ "started": true, "already_connected": true }));
     }
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
     if let Err(e) = phase_scan(app) {
-        // The card renders a localized category message only; the raw cause lives
-        // here on stderr (the logging backend is only attached in debug builds,
-        // so eprintln! is the trail that survives into release).
+        // The card renders a localized category message only; the raw cause
+        // goes to stderr and the app log for diagnostics.
         eprintln!("[tmeet] connect flow failed: {e}");
+        // reset 已清掉取消标志,取消竞态之外的残余窗口靠代号识别:
+        // 本轮已被新一轮连接取代时保持静默,不污染新一轮的卡片。
+        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+            return;
+        }
         cc::emit(
             app,
             "tmeet:error",

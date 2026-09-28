@@ -523,14 +523,33 @@ pub struct ConnectorConn {
 struct Slot {
     pid: Option<u32>,
     cancelled: bool,
+    /// 每轮 connect_begin 递增;旧 flow 线程据此识别自己已被新一轮取代。
+    generation: u64,
 }
 
 impl ConnectorConn {
-    /// 开始一轮连接前清掉该连接器的取消标志。
-    pub fn reset(&self, id: &'static str) {
-        if let Ok(mut m) = self.slots.lock() {
-            m.entry(id).or_default().cancelled = false;
+    /// 开始一轮连接前清掉该连接器的取消标志,返回新一轮代号。
+    pub fn reset(&self, id: &'static str) -> u64 {
+        match self.slots.lock() {
+            Ok(mut m) => {
+                let s = m.entry(id).or_default();
+                s.cancelled = false;
+                s.generation = s.generation.wrapping_add(1);
+                s.generation
+            }
+            Err(_) => 0,
         }
+    }
+
+    /// 旧 flow 线程 emit 前自检:reset 会清掉 cancelled 标志,单靠它挡不住
+    /// 「用户取消后立刻重连」窗口里旧线程的迟到 emit——旧一轮的失败事件
+    /// 会打到新一轮刚打开的卡片上。代号不匹配即视为过期。
+    pub fn flow_stale(&self, id: &str, generation: u64) -> bool {
+        self.slots
+            .lock()
+            .ok()
+            .and_then(|m| m.get(id).map(|s| s.generation != generation))
+            .unwrap_or(true)
     }
 
     /// 置取消标志,返回当前长驻 PID(供 tree-kill)。
@@ -684,6 +703,23 @@ mod tests {
         assert_eq!(rotated.len(), 2048);
         assert!(rotated.iter().all(|&b| b == b'b'), "{rotated:?}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 每轮 reset 递取代号:新一轮开始后,拿着旧代号的 flow 线程按过期处理,
+    /// 新代号自检通过——这是旧线程失败事件不打到新一轮卡片上的依据。
+    #[test]
+    fn generation_marks_superseded_flows_stale() {
+        let conn = ConnectorConn::default();
+        let gen1 = conn.reset("test-connector");
+        assert!(!conn.flow_stale("test-connector", gen1));
+        let gen2 = conn.reset("test-connector");
+        assert!(conn.flow_stale("test-connector", gen1));
+        assert!(!conn.flow_stale("test-connector", gen2));
+        // 取消不影响代号:取消后的静默仍由 cancelled 标志负责。
+        conn.cancel("test-connector");
+        assert!(!conn.flow_stale("test-connector", gen2));
+        // 未登记的连接器按过期处理(保守,宁静默不误报)。
+        assert!(conn.flow_stale("other-connector", gen1));
     }
 
     /// extract_url three-branch matrix: whitelisted domain hits truncate at

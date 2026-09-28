@@ -118,22 +118,24 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 进度全程走事件:`feishu:qr` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let generation = app.state::<ConnectorConn>().reset(ID);
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
 /// 编排:段① 注册 app → 段② 授权用户。任一段出错 / 取消即停,错误经事件上报。
-fn run_connect_flow(app: &AppHandle) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
     match phase_register(app) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
-            // The card renders a localized category message only; the raw cause lives
-            // here on stderr (the logging backend is only attached in debug builds,
-            // so eprintln! is the trail that survives into release).
+            // The card renders a localized category message only; the raw cause
+            // goes to stderr and the app log for diagnostics.
             eprintln!("[feishu] register phase failed: {e}");
+            if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+                return; // 本轮已被新一轮连接取代:静默
+            }
             cc::emit(
                 app,
                 "feishu:error",
@@ -144,6 +146,9 @@ fn run_connect_flow(app: &AppHandle) {
     }
     if let Err(e) = phase_authorize(app) {
         eprintln!("[feishu] authorize phase failed: {e}");
+        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+            return; // 本轮已被新一轮连接取代:静默
+        }
         cc::emit(
             app,
             "feishu:error",

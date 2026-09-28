@@ -231,18 +231,22 @@ pub async fn dingtalk_status() -> Result<Value, String> {
 
 /// 开始连接钉钉(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let generation = app.state::<ConnectorConn>().reset(ID);
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
     if let Err(e) = phase_scan(app) {
-        // The card renders a localized category message only; the raw cause lives
-        // here on stderr (the logging backend is only attached in debug builds,
-        // so eprintln! is the trail that survives into release).
+        // The card renders a localized category message only; the raw cause
+        // goes to stderr and the app log for diagnostics.
         eprintln!("[dingtalk] connect flow failed: {e}");
+        // reset 已清掉取消标志,取消竞态之外的残余窗口靠代号识别:
+        // 本轮已被新一轮连接取代时保持静默,不污染新一轮的卡片。
+        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+            return;
+        }
         cc::emit(
             app,
             "dingtalk:error",
