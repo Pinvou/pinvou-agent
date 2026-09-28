@@ -839,6 +839,53 @@ pub(super) async fn run_official_install_script(
 /// for prefix/cache/auth as usual). npm installs have no app-side artifact
 /// pin; integrity on this path rests on TLS plus the mirror's registry-sync
 /// fidelity.
+/// npm 全局升级单次尝试的 [`ManagedInstallStage`] 描述：官方源与 npmmirror
+/// 镜像重试共用一份，仅镜像标志改变诊断前缀、命令行与超时文案，避免两份
+/// 手写结构体在字段增减时漂移。
+fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage {
+    let (diag_stage, upgrade_kind): (&'static str, &'static str) = if mirror {
+        ("npm-mirror", "npm mirror upgrade")
+    } else {
+        ("npm", "npm global upgrade")
+    };
+    ManagedInstallStage {
+        diag_stage,
+        command_line: if mirror {
+            format!(
+                "npm install -g {} --registry={NPM_MIRROR_REGISTRY}",
+                npm_package(backend).unwrap_or("")
+            )
+        } else {
+            format!("npm install -g {}", npm_package(backend).unwrap_or(""))
+        },
+        process_group: true,
+        spawn_context: format!("failed to spawn {upgrade_kind}"),
+        stdout_context: if mirror {
+            "failed to read npm mirror stdout"
+        } else {
+            "failed to read npm stdout"
+        },
+        stderr_context: if mirror {
+            "failed to read npm mirror stderr"
+        } else {
+            "failed to read npm stderr"
+        },
+        wait_context: if mirror {
+            "failed to wait for npm mirror upgrade process"
+        } else {
+            "failed to wait for npm global upgrade process"
+        },
+        timeout_message: format!(
+            "{} {upgrade_kind} did not finish within 10 minutes; check the network and retry",
+            backend.display_name()
+        ),
+        failure_subject: format!("{upgrade_kind} of {} exited", backend.display_name()),
+        failure_hint: false,
+        idempotent_ok: None,
+        failure_detail: managed_install_failure,
+    }
+}
+
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -858,23 +905,7 @@ pub(super) async fn run_npm_global_upgrade(
         install_children,
         install_cancelled,
         command,
-        ManagedInstallStage {
-            diag_stage: "npm",
-            command_line: format!("npm install -g {}", npm_package(backend).unwrap_or("")),
-            process_group: true,
-            spawn_context: "failed to spawn npm global upgrade".to_string(),
-            stdout_context: "failed to read npm stdout",
-            stderr_context: "failed to read npm stderr",
-            wait_context: "failed to wait for npm global upgrade process",
-            timeout_message: format!(
-                "{} npm global upgrade did not finish within 10 minutes; check the network and retry",
-                backend.display_name()
-            ),
-            failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
-            failure_hint: false,
-            idempotent_ok: None,
-            failure_detail: managed_install_failure,
-        },
+        npm_upgrade_stage(backend, false),
     )
     .await;
     let primary = match first {
@@ -900,29 +931,7 @@ pub(super) async fn run_npm_global_upgrade(
         install_children,
         install_cancelled,
         mirror_command,
-        ManagedInstallStage {
-            diag_stage: "npm-mirror",
-            command_line: format!(
-                "npm install -g {} --registry={NPM_MIRROR_REGISTRY}",
-                npm_package(backend).unwrap_or("")
-            ),
-            process_group: true,
-            spawn_context: "failed to spawn npm mirror upgrade".to_string(),
-            stdout_context: "failed to read npm mirror stdout",
-            stderr_context: "failed to read npm mirror stderr",
-            wait_context: "failed to wait for npm mirror upgrade process",
-            timeout_message: format!(
-                "{} npm mirror upgrade did not finish within 10 minutes; check the network and retry",
-                backend.display_name()
-            ),
-            failure_subject: format!(
-                "npm mirror upgrade of {} exited",
-                backend.display_name()
-            ),
-            failure_hint: false,
-            idempotent_ok: None,
-            failure_detail: managed_install_failure,
-        },
+        npm_upgrade_stage(backend, true),
     )
     .await
     // 镜像重试也失败时保留首次错误的因果链：只报镜像错误会把
