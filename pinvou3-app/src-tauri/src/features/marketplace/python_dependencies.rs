@@ -312,7 +312,7 @@ fn validate_wheel(wheel: &PythonWheel, target: &PythonDependencyTarget) -> Resul
     }
     let url = reqwest::Url::parse(&wheel.url)
         .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
-    if url.scheme() != "https" || !is_allowed_wheel_host(&url) {
+    if url.scheme() != "https" || !is_official_wheel_host(&url) {
         return Err(format!(
             "Python wheel '{}' must come from the trusted HTTPS host",
             wheel.name
@@ -423,8 +423,15 @@ fn python_version_digits(python: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// 信任的 wheel 下载源：PyPI 官方 CDN 与其国内镜像（清华 TUNA，路径结构一致）。
-/// lock 清单里的地址仍按官方 CDN 校验（见 validate_wheel）；镜像在下载时派生。
+/// lock 清单地址的信任源：仅 PyPI 官方 CDN。清单校验（validate_wheel）按此
+/// 把关；清华 TUNA 镜像只作为下载时派生的候选（见 [`is_allowed_wheel_host`]），
+/// 不允许直接写进 lock。
+fn is_official_wheel_host(url: &reqwest::Url) -> bool {
+    matches!(url.host_str(), Some("files.pythonhosted.org"))
+}
+
+/// 下载路径信任的 wheel 源：PyPI 官方 CDN 与其国内镜像（清华 TUNA，路径结构
+/// 一致）。用于下载候选与重定向把关；字节始终过清单内的 sha256 pin。
 fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
     matches!(
         url.host_str(),
@@ -633,9 +640,10 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
 
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // 15 分钟总量(单只 wheel;整条安装是串行 wheel 链):wheels 上限
-        // 64 MiB,180s 在常见慢链路上恰好不够;超时会让整条串行 wheel 链
-        // 反复从头重来。与 native_installer 共用同一常量。
+        // 每个候选源 15 分钟（reqwest 的 client timeout 按单次请求计；整条
+        // 安装是串行 wheel 链）：wheels 上限 64 MiB,180s 在常见慢链路上恰好
+        // 不够;超时会让整条串行 wheel 链反复从头重来。与 native_installer
+        // 共用同一常量；多候选回退时最坏情形按候选数翻倍。
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let refused = attempt.previous().len() >= 10
@@ -656,8 +664,10 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         .build()
         .map_err(|e| format!("failed to build the Python dependency download client: {e}"))?;
 
+    let candidates = wheel_download_urls(wheel);
+    let total_candidates = candidates.len();
     let mut last_error = None;
-    for url in wheel_download_urls(wheel) {
+    for url in candidates {
         let parsed = reqwest::Url::parse(&url)
             .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
         match download_wheel_from(&client, &parsed, destination, wheel) {
@@ -671,8 +681,15 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
             }
         }
     }
-    Err(last_error
-        .unwrap_or_else(|| format!("Python dependency {} has no download URL", wheel.name)))
+    // 全部候选失败时把「试过多少个源」带进报错（release 构建没有 logger，
+    // 逐候选的 log::warn! 不可见，报错本身要能说明镜像被试过）。
+    Err(match last_error {
+        Some(error) => format!(
+            "Python dependency {} download failed ({} candidate source(s) exhausted): {error}",
+            wheel.name, total_candidates
+        ),
+        None => format!("Python dependency {} has no download URL", wheel.name),
+    })
 }
 
 /// 从单一地址下载 wheel 到 `destination`（`.part` 暂存 → sha256 校验 → 原子
@@ -1098,9 +1115,36 @@ mod tests {
                 .contains("trusted HTTPS host")
         );
 
+        // 清单地址必须仍是官方 CDN：TUNA 只是下载时派生的候选，
+        // 不允许直接写进 lock（见 is_official_wheel_host）。
+        let mut lock = sample_lock();
+        lock.targets[0].wheels[0].url =
+            "https://pypi.tuna.tsinghua.edu.cn/packages/example-1.0.0-py3-none-any.whl".to_string();
+        assert!(
+            validate_lock(&lock)
+                .unwrap_err()
+                .contains("trusted HTTPS host")
+        );
+
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
+    }
+
+    /// 两条信任边界的分工：清单校验只认官方 CDN；下载/重定向路径额外放行
+    /// TUNA 镜像（候选由 pythonhosted 地址派生），其余主机两边都拒绝。
+    #[test]
+    fn manifest_validation_stays_official_only_while_download_accepts_tuna() {
+        let official =
+            reqwest::Url::parse("https://files.pythonhosted.org/packages/a.whl").unwrap();
+        let tuna = reqwest::Url::parse("https://pypi.tuna.tsinghua.edu.cn/packages/a.whl").unwrap();
+        let other = reqwest::Url::parse("https://mirror.example/a.whl").unwrap();
+        assert!(is_official_wheel_host(&official));
+        assert!(!is_official_wheel_host(&tuna));
+        assert!(!is_official_wheel_host(&other));
+        assert!(is_allowed_wheel_host(&official));
+        assert!(is_allowed_wheel_host(&tuna));
+        assert!(!is_allowed_wheel_host(&other));
     }
 
     /// wheel 下载候选：pythonhosted 地址派生 TUNA 镜像且镜像优先；完整路径
