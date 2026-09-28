@@ -141,6 +141,8 @@ pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
+        // The card renders a localized category message only; the raw cause lives here.
+        log::warn!("[wecom] connect flow failed: {e}");
         cc::emit(
             app,
             "wecom:error",

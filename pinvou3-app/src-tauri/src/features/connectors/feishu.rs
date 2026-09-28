@@ -130,6 +130,8 @@ fn run_connect_flow(app: &AppHandle) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
+            // The card renders a localized category message only; the raw cause lives here.
+            log::warn!("[feishu] register phase failed: {e}");
             cc::emit(
                 app,
                 "feishu:error",
@@ -139,6 +141,7 @@ fn run_connect_flow(app: &AppHandle) {
         }
     }
     if let Err(e) = phase_authorize(app) {
+        log::warn!("[feishu] authorize phase failed: {e}");
         cc::emit(
             app,
             "feishu:error",
@@ -180,6 +183,11 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
+            // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+            // on purpose, so finish silently instead of misreporting a register failure.
+            if conn.is_cancelled(ID) {
+                return Ok(false);
+            }
             return Err("注册:40s 内未拿到二维码链接(检查网络 / 代理)".into());
         }
     };
@@ -201,6 +209,9 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
+                if conn.is_cancelled(ID) {
+                    return Ok(false); // 取消竞态:kill 后的失败退出按取消处理,静默
+                }
                 if !status.success() {
                     return Err("注册应用未完成(可能已取消或超时)".into());
                 }

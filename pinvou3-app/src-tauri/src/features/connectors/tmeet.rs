@@ -221,6 +221,8 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
+        // The card renders a localized category message only; the raw cause lives here.
+        log::warn!("[tmeet] connect flow failed: {e}");
         cc::emit(
             app,
             "tmeet:error",
@@ -281,6 +283,11 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
+            // Cancel tree-kills the child; a cancel landing in this window must
+            // finish silently instead of misreporting an authorization timeout.
+            if conn.is_cancelled(ID) {
+                return Ok(());
+            }
             return Err(auth_failure_message(
                 &auth_lines,
                 "60s 内未拿到腾讯会议授权链接(检查网络 / 代理)",
@@ -296,6 +303,14 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             }
             Ok((None, line)) => remember_auth_line(&mut auth_lines, line),
             Err(_) => {
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting an auth failure.
+                if conn.is_cancelled(ID) {
+                    let _ = child.kill();
+                    cc::reap_after_kill(&mut child);
+                    conn.set_pid(ID, None);
+                    return Ok(());
+                }
                 if let Ok(Some(status)) = child.try_wait() {
                     conn.set_pid(ID, None);
                     eprintln!("[tmeet] auth login exited before auth url: exit={status}");
@@ -338,6 +353,10 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
+                // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
                 // A single status wait is enough: the already flag is decided from the captured output lines,
                 // with no second 5s polling run just to fill in already:true.
                 if wait_logged_in(Duration::from_secs(5)) {

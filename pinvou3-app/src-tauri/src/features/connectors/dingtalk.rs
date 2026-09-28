@@ -239,6 +239,8 @@ pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 fn run_connect_flow(app: &AppHandle) {
     if let Err(e) = phase_scan(app) {
+        // The card renders a localized category message only; the raw cause lives here.
+        log::warn!("[dingtalk] connect flow failed: {e}");
         cc::emit(
             app,
             "dingtalk:error",
@@ -310,6 +312,11 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 let _ = child.kill();
                 cc::reap_after_kill(&mut child);
                 conn.set_pid(ID, None);
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting a link timeout.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
                 return Err("60s 内未拿到二维码链接(检查网络 / 代理)".into());
             }
         }
@@ -356,6 +363,9 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
+                if conn.is_cancelled(ID) {
+                    return Ok(()); // 取消竞态:kill 后的失败退出按取消处理,静默
+                }
                 if is_authenticated() {
                     cc::bundle_store_on_connected(ID);
                     cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
