@@ -234,7 +234,10 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
             .or_else(|| workspace_references.first().map(String::as_str))
             .unwrap_or("附件")
     } else {
-        message.as_str()
+        // The ACP composer and web remote control can carry a pasted
+        // session-mention block; the auto-title must strip it like the native
+        // chat path does (review round-5 minor 5).
+        super::sessions::strip_session_mention_block(message.trim())
     };
     super::sessions::apply_default_session_title(store, &session_id, title_source)?;
     // Timing registration lives inside `AcpPool::send_message`, after busy

@@ -222,7 +222,9 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // (MAX_BLOCK_JSON_LINE_LENGTH in session-mention.js): a line beyond the
     // bound is dirty data by the block's own construction (MAX_SESSION_REFS ×
     // capped title), and both sides must agree that it is not a block —
-    // otherwise one side strips and the other keeps the raw contract.
+    // otherwise one side strips and the other keeps the raw contract. Counted
+    // in UTF-16 code units to match the JS string `length` exactly (astral
+    // code points count as 2, same as JS).
     const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 * 1024;
     let mut rest = match text.strip_prefix(SESSION_MENTION_BLOCK_HEADER) {
         Some(rest) if rest.starts_with('\n') => &rest[1..],
@@ -239,7 +241,7 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
         // JSON line is the last line (refs-only trimmed form).
         None => (rest, ""),
     };
-    if json_line.chars().count() > MAX_BLOCK_JSON_LINE_CHARS {
+    if json_line.encode_utf16().count() > MAX_BLOCK_JSON_LINE_CHARS {
         return text;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
