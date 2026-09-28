@@ -1250,8 +1250,8 @@ mod tests {
     }
 
     /// Positive control for the strict legacy parser: the three documented shapes
-    /// (bare array, `{scopes, initialized}`, `{plain, code}`) still migrate, with
-    /// their flags carried over.
+    /// (bare array, `{scopes, initialized}`, `{plain, code, code_initialized}`)
+    /// still migrate, with their flags carried over.
     #[test]
     fn wellformed_legacy_shapes_still_migrate() {
         with_temp_home("pinvou3-scope-legacy-positive", || {
@@ -1272,6 +1272,18 @@ mod tests {
             );
             assert!(file.initialized.contains("code"));
             assert!(file.project_skills_enabled);
+        });
+        with_temp_home("pinvou3-scope-legacy-positive-dual", || {
+            std::fs::write(
+                paths::pinvou3_home().join("disabled_connectors.json"),
+                r#"{"plain":["weather"],"code":["pptx"],"code_initialized":true}"#,
+            )
+            .unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert_eq!(file.scopes.get("plain"), Some(&vec!["weather".to_string()]));
+            assert_eq!(file.scopes.get("code"), Some(&vec!["pptx".to_string()]));
+            assert!(file.initialized.contains("code"));
         });
     }
 }
