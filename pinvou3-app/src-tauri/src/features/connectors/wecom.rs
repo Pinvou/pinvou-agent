@@ -140,13 +140,15 @@ pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
 }
 
 fn run_connect_flow(app: &AppHandle, generation: u64) {
-    if let Err(e) = phase_scan(app) {
+    let conn = app.state::<ConnectorConn>();
+    if let Err(e) = phase_scan(app, generation) {
         // The card renders a localized category message only; the raw cause
-        // goes to stderr and the app log for diagnostics.
-        eprintln!("[wecom] connect flow failed: {e}");
-        // reset 已清掉取消标志,取消竞态之外的残余窗口靠代号识别:
-        // 本轮已被新一轮连接取代时保持静默,不污染新一轮的卡片。
-        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+        // is logged here (stdout in dev runs, the app log in packaged builds).
+        log::warn!("[wecom] connect flow failed: {e}");
+        // reset() clears the cancelled flag, so the flag alone cannot stop a
+        // late emit in the cancel-then-reconnect window; a cancelled or
+        // superseded round stays silent instead of polluting the new card.
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
             return;
         }
         cc::emit(
@@ -182,7 +184,7 @@ fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
 }
 
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     // CLI 1.1.0's --output-qrcode only accepts a path relative to the current
     // directory, so the real auth QR PNG is written into a temp dir. The stdout
     // URL is the /ai/qc/gen landing page (which would ask the user to scan
@@ -227,7 +229,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     };
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
     // 排空 stdout+stderr,抓首个企微 URL(channel 送回)。主线程 tx 丢掉,
     // 两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
@@ -262,13 +265,15 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .or_else(|| cc::make_qr(&url));
     let _ = std::fs::remove_dir_all(&qr_dir);
     // Cancel during the PNG wait window: exit silently. Emitting wecom:qr now
-    // would re-open the scan modal the user already dismissed.
-    // (wecom_cancel already tree-killed by pid; the extra kill + pid slot reset
-    // here covers the race.)
-    if conn.is_cancelled(ID) {
+    // would re-open the scan modal the user already dismissed — and after a
+    // reconnect it would paint the dead round's QR onto the new round's card,
+    // so a superseded generation is treated the same as a cancel here.
+    // (wecom_cancel already tree-killed by pid; the extra kill + pid-slot
+    // reset here covers the race. clear_pid_if keeps a newer round's pid.)
+    if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
         let _ = child.kill();
         cc::reap_after_kill(&mut child);
-        conn.set_pid(ID, None);
+        conn.clear_pid_if(ID, pid);
         return Ok(());
     }
     cc::emit(
@@ -287,15 +292,16 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 if conn.is_cancelled(ID) {
-                    // 取消竞态:kill 后的失败退出按取消处理,静默
-                    eprintln!("[wecom] cancelled; child exit={status}");
+                    // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                    log::info!("[wecom] cancelled; child exit={status}");
                     return Ok(());
                 }
                 let ready = is_ready();
-                // is_ready 探针是子进程调用,期间可能取消:静默收尾,
-                // 不向已关闭的卡片发 connected 或复活错误卡。
+                // The readiness probe is a subprocess call and can span a
+                // cancel: finish silently — no connected onto a closed card,
+                // no resurrected error card.
                 if conn.is_cancelled(ID) {
                     return Ok(());
                 }

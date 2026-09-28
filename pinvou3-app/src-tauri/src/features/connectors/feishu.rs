@@ -126,15 +126,19 @@ pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
 
 /// 编排:段① 注册 app → 段② 授权用户。任一段出错 / 取消即停,错误经事件上报。
 fn run_connect_flow(app: &AppHandle, generation: u64) {
-    match phase_register(app) {
+    let conn = app.state::<ConnectorConn>();
+    match phase_register(app, generation) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
             // The card renders a localized category message only; the raw cause
-            // goes to stderr and the app log for diagnostics.
-            eprintln!("[feishu] register phase failed: {e}");
-            if app.state::<ConnectorConn>().flow_stale(ID, generation) {
-                return; // 本轮已被新一轮连接取代:静默
+            // is logged here (stdout in dev runs, the app log in packaged builds).
+            log::warn!("[feishu] register phase failed: {e}");
+            // reset() clears the cancelled flag, so the flag alone cannot stop a
+            // late emit in the cancel-then-reconnect window; a cancelled or
+            // superseded round stays silent instead of polluting the new card.
+            if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+                return; // superseded by a newer round: stay silent
             }
             cc::emit(
                 app,
@@ -144,10 +148,10 @@ fn run_connect_flow(app: &AppHandle, generation: u64) {
             return;
         }
     }
-    if let Err(e) = phase_authorize(app) {
-        eprintln!("[feishu] authorize phase failed: {e}");
-        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
-            return; // 本轮已被新一轮连接取代:静默
+    if let Err(e) = phase_authorize(app, generation) {
+        log::warn!("[feishu] authorize phase failed: {e}");
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+            return; // superseded by a newer round: stay silent
         }
         cc::emit(
             app,
@@ -159,7 +163,7 @@ fn run_connect_flow(app: &AppHandle, generation: u64) {
 
 /// 段①:`config init --new` 长驻 → 抓 URL 出二维码 → 等用户扫码完成(进程退出)。
 /// 返回 Ok(true)=注册成功;Ok(false)=被取消;Err=失败。
-fn phase_register(app: &AppHandle) -> Result<bool, String> {
+fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
     let mut cmd = lark(&["config", "init", "--new"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -199,11 +203,16 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         }
     };
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "register", "url": url, "qr_data_url": qr }),
-    );
+    // A cancelled round must not re-open the scan modal the user dismissed,
+    // and after a reconnect a superseded round's QR would paint a code that
+    // can never be exchanged onto the new round's card.
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "feishu:qr",
+            json!({ "phase": "register", "url": url, "qr_data_url": qr }),
+        );
+    }
 
     // 等进程退出(用户扫码完成);期间轮询取消标志。
     loop {
@@ -217,8 +226,8 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if conn.is_cancelled(ID) {
-                    // 取消竞态:kill 后的失败退出按取消处理,静默
-                    eprintln!("[feishu] register cancelled; child exit={status}");
+                    // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                    log::info!("[feishu] register cancelled; child exit={status}");
                     return Ok(false);
                 }
                 if !status.success() {
@@ -237,7 +246,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
 
 /// 段②:`auth login --no-wait --json --recommend` 拿 URL+device_code → 二维码 →
 /// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / 超时。
-fn phase_authorize(app: &AppHandle) -> Result<(), String> {
+fn phase_authorize(app: &AppHandle, generation: u64) -> Result<(), String> {
     let (_ok, so, se) = cc::run(lark(&[
         "auth",
         "login",
@@ -245,6 +254,14 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         "--json",
         "--recommend",
     ]))?;
+    let conn = app.state::<ConnectorConn>();
+    // This probe child is untracked (cancel cannot tree-kill it), so it can
+    // outlive a cancel by its whole run budget. Either outcome after a cancel
+    // or a supersede must stay silent: a late error would resurrect the closed
+    // card, and a late QR would show a device code that is never exchanged.
+    if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+        return Ok(());
+    }
     let p = cc::parse_json(&so)
         .or_else(|| cc::parse_json(&se))
         .unwrap_or(Value::Null);
@@ -271,7 +288,6 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
     );
 
     let start = Instant::now();
-    let conn = app.state::<ConnectorConn>();
     loop {
         if conn.is_cancelled(ID) {
             return Ok(()); // 取消:静默(run_connect_flow 不再 emit)
@@ -288,11 +304,18 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
             &device_code,
             "--json",
         ]));
-        // 探针可能长时间阻塞,期间取消:静默收尾,不向已关闭的卡片发 connected。
+        // The probe can block for a long time and span a cancel: finish
+        // silently, no connected onto a closed card.
         if conn.is_cancelled(ID) {
             return Ok(());
         }
-        if is_user_ready() {
+        let ready = is_user_ready();
+        // A cancel landing inside the readiness probe must not emit onto the
+        // just-closed card either.
+        if conn.is_cancelled(ID) {
+            return Ok(());
+        }
+        if ready {
             cc::bundle_store_on_connected(ID);
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());

@@ -238,13 +238,15 @@ pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
 }
 
 fn run_connect_flow(app: &AppHandle, generation: u64) {
-    if let Err(e) = phase_scan(app) {
+    let conn = app.state::<ConnectorConn>();
+    if let Err(e) = phase_scan(app, generation) {
         // The card renders a localized category message only; the raw cause
-        // goes to stderr and the app log for diagnostics.
-        eprintln!("[dingtalk] connect flow failed: {e}");
-        // reset 已清掉取消标志,取消竞态之外的残余窗口靠代号识别:
-        // 本轮已被新一轮连接取代时保持静默,不污染新一轮的卡片。
-        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+        // is logged here (stdout in dev runs, the app log in packaged builds).
+        log::warn!("[dingtalk] connect flow failed: {e}");
+        // reset() clears the cancelled flag, so the flag alone cannot stop a
+        // late emit in the cancel-then-reconnect window; a cancelled or
+        // superseded round stays silent instead of polluting the new card.
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
             return;
         }
         cc::emit(
@@ -255,7 +257,7 @@ fn run_connect_flow(app: &AppHandle, generation: u64) {
     }
 }
 
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     let mut cmd = dws(&["auth", "login", "--device"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -288,7 +290,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
-            // 与 tmeet 对齐:deadline 到期瞬间的取消按取消处理,静默
+            // Aligned with tmeet: a cancel landing at the deadline instant is
+            // handled as a cancel, silent.
             if conn.is_cancelled(ID) {
                 return Ok(());
             }
@@ -346,11 +349,15 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         url.contains("user_code="),
         user_code.is_some()
     );
-    cc::emit(
-        app,
-        "dingtalk:qr",
-        json!({ "phase": "authorize", "url": url, "user_code": user_code, "qr_data_url": cc::make_qr(&url) }),
-    );
+    // A cancelled round must not re-open the scan modal the user dismissed,
+    // and after a reconnect a superseded round's QR would be dead on arrival.
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "dingtalk:qr",
+            json!({ "phase": "authorize", "url": url, "user_code": user_code, "qr_data_url": cc::make_qr(&url) }),
+        );
+    }
 
     loop {
         if conn.is_cancelled(ID) {
@@ -374,13 +381,14 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             Ok(Some(status)) => {
                 conn.set_pid(ID, None);
                 if conn.is_cancelled(ID) {
-                    // 取消竞态:kill 后的失败退出按取消处理,静默
-                    eprintln!("[dingtalk] cancelled; child exit={status}");
+                    // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                    log::info!("[dingtalk] cancelled; child exit={status}");
                     return Ok(());
                 }
                 if is_authenticated() {
-                    // is_authenticated 探针是子进程调用,期间可能取消:静默收尾,
-                    // 不向已关闭的卡片发 connected 或复活错误卡。
+                    // The auth probe is a subprocess call and can span a
+                    // cancel: finish silently — no connected onto a closed
+                    // card, no resurrected error card.
                     if conn.is_cancelled(ID) {
                         return Ok(());
                     }

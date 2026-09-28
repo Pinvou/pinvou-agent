@@ -201,8 +201,9 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
     if let Some(pid) = conn.cancel(ID) {
         let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
     }
-    // 代号在 reset 时取:already_logged_in 分支同属本轮(登录态是机器级事实,
-    // 迟到也无害),仅 spawn 的 flow 线程需要过期自检。
+    // The generation is captured at reset: the already_logged_in branch belongs
+    // to this round (login state is a machine-level fact, harmless when late),
+    // only the spawned flow thread needs the staleness self-check.
     let generation = conn.reset(ID);
     let already_logged_in = tokio::task::spawn_blocking(is_logged_in)
         .await
@@ -222,13 +223,15 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
 }
 
 fn run_connect_flow(app: &AppHandle, generation: u64) {
-    if let Err(e) = phase_scan(app) {
+    let conn = app.state::<ConnectorConn>();
+    if let Err(e) = phase_scan(app, generation) {
         // The card renders a localized category message only; the raw cause
-        // goes to stderr and the app log for diagnostics.
-        eprintln!("[tmeet] connect flow failed: {e}");
-        // reset 已清掉取消标志,取消竞态之外的残余窗口靠代号识别:
-        // 本轮已被新一轮连接取代时保持静默,不污染新一轮的卡片。
-        if app.state::<ConnectorConn>().flow_stale(ID, generation) {
+        // is logged here (stdout in dev runs, the app log in packaged builds).
+        log::warn!("[tmeet] connect flow failed: {e}");
+        // reset() clears the cancelled flag, so the flag alone cannot stop a
+        // late emit in the cancel-then-reconnect window; a cancelled or
+        // superseded round stays silent instead of polluting the new card.
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
             return;
         }
         cc::emit(
@@ -260,7 +263,7 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
     })
 }
 
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     let mut cmd = tmeet(&["auth", "login", "--no-browser"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -321,10 +324,19 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 }
                 if let Ok(Some(status)) = child.try_wait() {
                     conn.set_pid(ID, None);
-                    eprintln!("[tmeet] auth login exited before auth url: exit={status}");
-                    if auth_lines_say_already_logged_in(&auth_lines)
-                        && wait_logged_in(Duration::from_secs(5))
-                    {
+                    log::info!("[tmeet] auth login exited before auth url: exit={status}");
+                    // A single status wait is enough: the already flag is decided
+                    // from the captured output lines, with no second 5s polling
+                    // run just to fill in already:true.
+                    let already = auth_lines_say_already_logged_in(&auth_lines)
+                        && wait_logged_in(Duration::from_secs(5));
+                    // wait_logged_in polls a subprocess for up to 5s; a cancel
+                    // landing inside it must finish silently instead of emitting
+                    // onto the just-closed card.
+                    if conn.is_cancelled(ID) {
+                        return Ok(());
+                    }
+                    if already {
                         cc::bundle_store_on_connected(ID);
                         cc::emit(
                             app,
@@ -342,11 +354,15 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    cc::emit(
-        app,
-        "tmeet:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
-    );
+    // A cancelled round must not re-open the scan modal the user dismissed,
+    // and after a reconnect a superseded round's QR would be dead on arrival.
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "tmeet:qr",
+            json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
+        );
+    }
 
     loop {
         if conn.is_cancelled(ID) {
@@ -363,7 +379,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                 conn.set_pid(ID, None);
                 // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
                 if conn.is_cancelled(ID) {
-                    eprintln!("[tmeet] cancelled; child exit={status}");
+                    log::info!("[tmeet] cancelled; child exit={status}");
                     return Ok(());
                 }
                 // A single status wait is enough: the already flag is decided from the captured output lines,

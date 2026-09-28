@@ -523,12 +523,14 @@ pub struct ConnectorConn {
 struct Slot {
     pid: Option<u32>,
     cancelled: bool,
-    /// 每轮 connect_begin 递增;旧 flow 线程据此识别自己已被新一轮取代。
+    /// Bumped by every connect_begin; lets a flow thread recognize it was
+    /// superseded by a newer round.
     generation: u64,
 }
 
 impl ConnectorConn {
-    /// 开始一轮连接前清掉该连接器的取消标志,返回新一轮代号。
+    /// Clears the connector's cancel flag before a new round and returns the
+    /// new round's generation.
     pub fn reset(&self, id: &'static str) -> u64 {
         match self.slots.lock() {
             Ok(mut m) => {
@@ -541,9 +543,11 @@ impl ConnectorConn {
         }
     }
 
-    /// 旧 flow 线程 emit 前自检:reset 会清掉 cancelled 标志,单靠它挡不住
-    /// 「用户取消后立刻重连」窗口里旧线程的迟到 emit——旧一轮的失败事件
-    /// 会打到新一轮刚打开的卡片上。代号不匹配即视为过期。
+    /// Self-check for a flow thread before emitting: reset() clears the
+    /// cancelled flag, so the flag alone cannot stop a late emit in the
+    /// "cancel then immediately reconnect" window — the old round's failure
+    /// would land on the new round's fresh card. A generation mismatch means
+    /// stale.
     pub fn flow_stale(&self, id: &str, generation: u64) -> bool {
         self.slots
             .lock()
@@ -573,6 +577,20 @@ impl ConnectorConn {
     pub fn set_pid(&self, id: &'static str, pid: Option<u32>) {
         if let Ok(mut m) = self.slots.lock() {
             m.entry(id).or_default().pid = pid;
+        }
+    }
+
+    /// Clears the slot's pid only when it still holds `pid`. A superseded flow
+    /// thread finishing its own cleanup must not clear the pid a newer round
+    /// has registered — cancel's tree-kill and kill_all_pids would miss the
+    /// live child.
+    pub fn clear_pid_if(&self, id: &'static str, pid: u32) {
+        if let Ok(mut m) = self.slots.lock() {
+            if let Some(s) = m.get_mut(id) {
+                if s.pid == Some(pid) {
+                    s.pid = None;
+                }
+            }
         }
     }
 
@@ -705,8 +723,10 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// 每轮 reset 递取代号:新一轮开始后,拿着旧代号的 flow 线程按过期处理,
-    /// 新代号自检通过——这是旧线程失败事件不打到新一轮卡片上的依据。
+    /// Every reset bumps the generation: once a new round starts, a flow
+    /// thread holding the old generation is treated as stale while the new
+    /// one passes the self-check — the guarantee that keeps an old round's
+    /// failure off the new round's card.
     #[test]
     fn generation_marks_superseded_flows_stale() {
         let conn = ConnectorConn::default();
@@ -715,11 +735,32 @@ mod tests {
         let gen2 = conn.reset("test-connector");
         assert!(conn.flow_stale("test-connector", gen1));
         assert!(!conn.flow_stale("test-connector", gen2));
-        // 取消不影响代号:取消后的静默仍由 cancelled 标志负责。
+        // Cancel does not bump the generation: post-cancel silence stays the
+        // cancelled flag's job.
         conn.cancel("test-connector");
         assert!(!conn.flow_stale("test-connector", gen2));
-        // 未登记的连接器按过期处理(保守,宁静默不误报)。
+        // An unregistered connector is treated as stale (conservative:
+        // silence over a wrong card).
         assert!(conn.flow_stale("other-connector", gen1));
+    }
+
+    /// clear_pid_if must be a compare-and-set: a superseded thread's cleanup
+    /// drops only its own pid, never the pid a newer round has registered.
+    #[test]
+    fn clear_pid_if_only_clears_its_own_pid() {
+        let conn = ConnectorConn::default();
+        let _ = conn.reset("test-connector");
+        conn.set_pid("test-connector", Some(111));
+        // A different pid (e.g. registered by a newer round) is left alone.
+        conn.clear_pid_if("test-connector", 222);
+        conn.cancel("test-connector"); // cancel returns the still-registered pid
+        assert_eq!(conn.cancel("test-connector"), Some(111));
+        // The owning pid clears.
+        conn.clear_pid_if("test-connector", 111);
+        assert_eq!(conn.cancel("test-connector"), None);
+        // Clearing again is a no-op.
+        conn.clear_pid_if("test-connector", 111);
+        assert_eq!(conn.cancel("test-connector"), None);
     }
 
     /// extract_url three-branch matrix: whitelisted domain hits truncate at
