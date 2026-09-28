@@ -45,7 +45,7 @@ pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), Stri
     // 预置目录包不导出：预置 id 受导入管线冲突保护（`plugin_import` 拒绝与
     // `mcp_catalog` 冲突的包），导出的 zip 无法重新导入；预置可从市场重新安装，
     // 导出无重导价值。迁移登记为 Preset 的手写自定义 MCP 不在目录内，不受此限。
-    if crate::features::marketplace::mcp_catalog::spec_for(pkg_id).is_some() {
+    if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(pkg_id).is_some() {
         return Err(format!(
             "包 '{pkg_id}' 属于市场预置，可从市场重新安装，无需导出（预置 id 受导入管线冲突保护，导出的 zip 无法重新导入）"
         ));

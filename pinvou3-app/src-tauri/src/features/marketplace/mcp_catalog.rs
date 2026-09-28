@@ -124,15 +124,35 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
     },
 ];
 
-/// 按 id 取内嵌包（不在目录 = 自定义/手放工具，走旧布局回退）。
+/// Look up an embedded package by id (absent from the catalog = custom /
+/// hand-placed tool, legacy-layout fallback). Exact match; write paths
+/// (`release_package`) must use this so the written directory keeps the
+/// catalog's casing.
 pub fn spec_for(id: &str) -> Option<&'static McpPackageSpec> {
     MCP_PACKAGES.iter().find(|spec| spec.id == id)
 }
 
-/// 解析编译进应用的 manifest。安装与依赖下载必须以这份只读快照为准，不能信任
-/// 用户目录中可能来自旧版本或已被修改的同名 manifest。
+/// Case-insensitive catalog membership probe: "does this id denote a builtin
+/// package". Exact match wins; otherwise ASCII case folding covers
+/// case-insensitive filesystems (Windows/macOS), where a case-variant id
+/// resolves to the same on-disk directory and must not bypass the builtin
+/// guards, the import collision check, or the read-time self-heal (review
+/// round-3 M1). Membership judgement only — write paths always go through
+/// the exact `spec_for`.
+pub fn spec_for_builtin_probe(id: &str) -> Option<&'static McpPackageSpec> {
+    spec_for(id).or_else(|| {
+        MCP_PACKAGES
+            .iter()
+            .find(|spec| spec.id.eq_ignore_ascii_case(id))
+    })
+}
+
+/// Parse the compile-time embedded manifest. Installs and dependency
+/// downloads must trust this read-only snapshot, not a same-named manifest in
+/// the user directory that may come from an old version or have been
+/// modified. The probe is case-insensitive (`spec_for_builtin_probe`).
 pub fn embedded_manifest(id: &str) -> Result<Option<ToolManifest>, String> {
-    spec_for(id)
+    spec_for_builtin_probe(id)
         .map(|spec| {
             serde_json::from_str(spec.manifest_json)
                 .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))

@@ -1274,7 +1274,7 @@ impl Pinvou3Bundle {
         match crate::features::marketplace::store::BundleStore::new().records() {
             Ok(records) => {
                 for record in records.iter().filter(|r| r.installed) {
-                    if crate::features::marketplace::mcp_catalog::spec_for(&record.id).is_none() {
+                    if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(&record.id).is_none() {
                         continue; // 非内嵌包（自定义/上传），无内嵌资源可校验
                     }
                     // 上传/未知来源的记录即使 id 撞内嵌目录也不得重释放：重释放

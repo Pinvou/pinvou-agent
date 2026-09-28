@@ -59,7 +59,7 @@ pub fn is_builtin_tool(id: &str) -> bool {
 }
 
 /// Guard before writing disable/hide lists (docs/builtin-toolset-contract.md
-/// §3.3: builtin plugins can be neither disabled nor hidden). Any builtin id
+/// §3.1: builtin plugins can be neither disabled nor hidden). Any builtin id
 /// fails the whole write — no silent filtering, which would make the frontend
 /// believe a toggle took effect. Ids are normalized with the same
 /// `to_package_id` rule the persistence layer applies (strip the `skill:`
@@ -133,22 +133,30 @@ fn feature_registry_with_disabled(disabled: &BTreeSet<String>) -> Vec<BuiltinFea
 
 /// All `builtin: true` manifests in the embedded catalog (parse failures are
 /// skipped).
-fn embedded_builtin_manifests() -> Vec<super::types::ToolManifest> {
-    mcp_catalog::MCP_PACKAGES
-        .iter()
-        .filter_map(|spec| {
-            serde_json::from_str::<super::types::ToolManifest>(spec.manifest_json)
-                .map_err(|e| {
-                    eprintln!(
-                        "[builtin] embedded manifest parse failed ({}): {e}",
-                        spec.id
-                    );
-                    e
-                })
-                .ok()
-        })
-        .filter(|manifest| manifest.builtin)
-        .collect()
+/// Process-wide cache of the parsed builtin manifests. The source is a
+/// compile-time snapshot (the parse result cannot change at runtime), and the
+/// hot path — `feature_disabled_tool_names` inside
+/// `unavailable_tool_names_for` — runs per message assembly and per refresh,
+/// so re-parsing every embedded manifest on each call is pure waste (review
+/// round-3 minor 5). `log::warn!` over `eprintln!`: packaged GUI builds have
+/// no stderr surface.
+fn embedded_builtin_manifests() -> &'static [super::types::ToolManifest] {
+    static CACHE: std::sync::OnceLock<Vec<super::types::ToolManifest>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        mcp_catalog::MCP_PACKAGES
+            .iter()
+            .filter_map(|spec| {
+                serde_json::from_str::<super::types::ToolManifest>(spec.manifest_json)
+                    .map_err(|e| {
+                        log::warn!("[builtin] embedded manifest parse failed ({}): {e}", spec.id);
+                        e
+                    })
+                    .ok()
+            })
+            .filter(|manifest| manifest.builtin)
+            .collect()
+    })
 }
 
 /// Currently disabled feature ids (settings.json; unreadable = all enabled).
@@ -294,6 +302,30 @@ mod tests {
         assert!(!is_builtin_tool("weather"));
         // An unknown id (absent from disk too) counts as non-builtin.
         assert!(!is_builtin_tool("no-such-tool"));
+    }
+
+    /// Case-variant ids must not slip past the builtin guards: on a
+    /// case-insensitive filesystem (Windows/macOS) `uninstall("Session-Reader")`
+    /// resolves to the real builtin directory, so the guard probes fold case
+    /// (review round-3 M1).
+    #[test]
+    fn case_variant_ids_hit_the_builtin_guards() {
+        assert!(super::super::mcp_catalog::spec_for_builtin_probe("Session-Reader").is_some());
+        assert!(super::super::mcp_catalog::spec_for_builtin_probe("SESSION-READER").is_some());
+        // A non-builtin id stays non-builtin under folding too.
+        assert!(super::super::mcp_catalog::spec_for_builtin_probe("Weather").is_some());
+        assert!(super::super::mcp_catalog::spec_for_builtin_probe("no-such-tool").is_none());
+        assert!(is_builtin_tool("Session-Reader"));
+        assert!(is_builtin_tool("SESSION-READER"));
+        // The disable/hide guard rejects the case variant before it can land in
+        // the stored set.
+        assert!(reject_builtin_ids(&["Session-Reader".to_string()]).is_err());
+        assert!(reject_builtin_ids(&["custom-tool".to_string()]).is_ok());
+        // The exact id still finds the exact spec (write-path invariant).
+        assert_eq!(
+            super::super::mcp_catalog::spec_for("session-reader").map(|spec| spec.id),
+            Some("session-reader")
+        );
     }
 
     /// Trust boundary: a released on-disk manifest claiming `builtin: true` is
