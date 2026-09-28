@@ -495,6 +495,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
     // tmeet's done toast uses a detailCopy phrase via doneTitle; others pass evaluated storeCopy.connectedTool(...).
     const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId }) => {
+      // The subscription effect runs once per enabled state; the toast copy goes
+      // through a latest-ref so a "connected" toast raised after a mid-flow
+      // language switch uses the current language, like the failure card does.
+      const toastCopyRef = useRef(null);
+      useEffect(() => {
+        toastCopyRef.current = { doneTitle, enabledSubtitle: detailCopy.actions.enabled };
+      });
       useEffect(() => {
         if (!enabled) return;
         ensureListeners();
@@ -506,7 +513,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             if (ph === 'done') {
               setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
-              setAlert({ visible: true, loading: false, title: doneTitle, subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId });
+              setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: toastCopyRef.current && toastCopyRef.current.enabledSubtitle, isInstall: true, isError: false, toolId });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId((current) => releaseBusy(current, toolId));
