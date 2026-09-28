@@ -172,8 +172,24 @@ test('the strong-confirm flag and the stay-open gate survive refactors', () => {
   // every later attempt.
   assert.match(
     DIALOG,
-    /onClick=\{\(\) => onConfirm\(!{0,2}warnExisting\)\}/,
+    /onClick=\{\(\) => onConfirm\(!!warnExisting\)\}/,
     'the confirm button must forward the strong-confirm flag, not a constant',
+  );
+  // review #463 round-17 SF-8: the former `!{0,2}` also matched
+  // `onConfirm(!warnExisting)` — the one mutation that silently inverts the
+  // strong-confirm handshake. Only the exact double-bang form is accepted.
+  assert.doesNotMatch(
+    DIALOG,
+    /onClick=\{\(\) => onConfirm\(!warnExisting\)\}/,
+    'a single-bang forward silently inverts the strong-confirm handshake',
+  );
+  // round-17 SF-4: warnExisting is consumed only when the run proceeded past
+  // the old-root check (post-fence copy kinds); pre-fence kinds and raw
+  // errors keep the flag.
+  assert.match(
+    MAIN,
+    /warnExisting: classified\.passedFence \? false : prev\.warnExisting/,
+    'a copy-kind failure must clear the strong-confirm flag only past the fence',
   );
   assert.doesNotMatch(
     DIALOG,

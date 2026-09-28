@@ -336,6 +336,26 @@ fn reject_nested_rebind_target(from: &Path, to_display: &Path) -> Result<(), Str
             "REBIND_TO_NESTED: the destination cannot sit inside the original folder".to_string(),
         );
     }
+    // Mirror geometry (review #463 round-17 MAJOR-2): `from` strictly inside
+    // `to`. Reachable through the supported strong-confirm flow — the old
+    // root is required to exist only up to `require_confirm_existing`, and a
+    // root recreated between badge and pick (or a Windows traverse-ACL shape
+    // where `is_dir(from)` fails while `from/B` resolves) admits it. Fatal
+    // there: the metadata's `rebind_target_path` has a to-arm but the plain
+    // and codex lane scans do not, so a binding at `from/sub` deepens one
+    // level per rerun (`from/B/sub` → `from/B/B/sub`) and no rerun converges
+    // — while run 1 is even false-failed by the plain fence rescan in this
+    // geometry. Equality is already handled above (same-or-nested includes
+    // it), so this arm fires only for the strict mirror. Same typed marker:
+    // the trilingual copy stays direction-neutral.
+    if crate::platform::os::path_identity_is_same_or_nested(
+        from_key.trim_end_matches('/'),
+        to_display_str.trim_end_matches('/'),
+    ) {
+        return Err(
+            "REBIND_TO_NESTED: the original folder cannot sit inside the destination".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -675,12 +695,25 @@ pub async fn rebind_workspace_root(
         .iter()
         .map(|(session_id, _)| session_id.clone())
         .collect();
-    let stranded = detect_stranded_index_records(
+    let stranded: Vec<(String, PathBuf)> = detect_stranded_index_records(
         &codex_to_lane_hits,
         &lane_moved_ids,
+        &prefix_outcome.sidecar_final_stale,
         |session_id| acp_pool.agents().code_project_workspace(session_id),
         |session_id| acp_pool.agents().code_sidecar_workspace(session_id),
-    );
+    )
+    .into_iter()
+    // Belt-and-braces complement to the detector's stale-sidecar exclusion
+    // (review #463 round-17 MAJOR-1): refuse any repair whose AUTHORITY
+    // still sits under the run's `from`. A sidecar this run never moved is
+    // the stale side by definition, and re-keying the index onto it would
+    // point the resurrection-class lanes at the vanished root. Never a
+    // legitimate target: with both nesting rejections in place `to` is
+    // disjoint from `from`, so a translated sidecar at `to` can never fall
+    // under this predicate. Such sessions are already in
+    // `sidecar_final_stale` and reported failed.
+    .filter(|(_, target)| !repair_target_is_backward(target, &from))
+    .collect();
     let mut repaired_targets_folded: Vec<(String, PathBuf)> = Vec::new();
     if !stranded.is_empty() {
         let repaired_ids = acp_pool
@@ -933,10 +966,7 @@ pub async fn rebind_workspace_root(
             // Append this run's moved ids; the dialog feeds them back and
             // the backend honors only the intersection with its own retry
             // population, so the suffix can never widen the eviction set.
-            return Err(format!(
-                "{marker}\nrebound-session-ids:{}",
-                rebound_session_ids.join(",")
-            ));
+            return Err(append_rebound_ids_suffix(marker, &rebound_session_ids));
         }
     };
 
@@ -1198,6 +1228,7 @@ fn classify_absent_record_session(
 fn detect_stranded_index_records(
     to_lane_hits: &[(String, PathBuf)],
     lane_moved_ids: &[String],
+    stale_sidecar_ids: &[String],
     index_path_of: impl Fn(&str) -> Option<PathBuf>,
     sidecar_path_of: impl Fn(&str) -> Option<PathBuf>,
 ) -> Vec<(String, PathBuf)> {
@@ -1227,6 +1258,18 @@ fn detect_stranded_index_records(
     // the vanished directory). Only records no writer of this run touched
     // can honestly disagree.
     //
+    // Except the sessions whose SIDECAR is the stale side (review #463
+    // round-17 MAJOR-1): `sidecar_final_stale` holds the sessions whose
+    // sidecar rewrite failed durably — run 1 left index@`to`, sidecar@`from`
+    // — so on the retry the sidecar pass fails again and the detector, if
+    // unguarded, reads the STALE sidecar as authority, re-keys the index
+    // onto the vanished `from`, and `fold_repaired_index_targets` then feeds
+    // `from` into the metadata loop — destroying the partially-good state
+    // and making even/odd retries oscillate. A sidecar this run itself
+    // reported finally-stale is never a legitimate repair authority; such a
+    // session is already reported failed, and the rerun converges it through
+    // the ordinary lane passes once the persistent fault clears.
+    //
     // The comparison folds both sides to platform identity keys (review #463
     // round-13): a case-spelling difference between the index record and the
     // surfaced sidecar path (Windows) is the same directory, and a raw
@@ -1240,6 +1283,7 @@ fn detect_stranded_index_records(
     to_lane_hits
         .iter()
         .filter(|(session_id, _)| !lane_moved_ids.iter().any(|id| id == session_id))
+        .filter(|(session_id, _)| !stale_sidecar_ids.iter().any(|id| id == session_id))
         .filter_map(|(session_id, surfaced)| {
             let authority = sidecar_path_of(session_id).unwrap_or_else(|| surfaced.clone());
             index_path_of(session_id)
@@ -1247,6 +1291,36 @@ fn detect_stranded_index_records(
                 .map(|_| (session_id.clone(), authority))
         })
         .collect()
+}
+
+/// The stranded-repair guard's pure half (review #463 round-17 MAJOR-1):
+/// an authority under the run's `from` prefix means the sidecar was never
+/// translated by this run — it is the stale side, and re-keying the index
+/// onto it re-points the record at the vanished root. Folded identity keys,
+/// component-aware (a sibling sharing the prefix's spelling, `/alpha` vs
+/// `/alphabet`, is not nested).
+fn repair_target_is_backward(target: &Path, from: &Path) -> bool {
+    let target_key = crate::platform::os::filesystem_path_identity_key(&target.to_string_lossy());
+    let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+    crate::platform::os::path_identity_is_same_or_nested(
+        target_key.trim_end_matches('/'),
+        from_key.trim_end_matches('/'),
+    )
+}
+
+/// Producer-side pin target for the carryover wire shape (review #463
+/// round-17 SF-1): the marker line first, then the moved-id list on its own
+/// `\nrebound-session-ids:` line, comma-joined with no trailing separator.
+/// The dialog strips the suffix by the exact constant `REBOUND_IDS_SUFFIX`
+/// in `rebindErrors.js` and feeds the ids back as the post-busy carryover —
+/// deleting the suffix would resurrect the round-14 SF1 bug (the dialog
+/// closing "up to date" while an old-cwd runtime stays resident), so both
+/// halves of the format are pinned.
+fn append_rebound_ids_suffix(marker: String, moved_session_ids: &[String]) -> String {
+    format!(
+        "{marker}\nrebound-session-ids:{}",
+        moved_session_ids.join(",")
+    )
 }
 
 /// Eviction candidates for the rebind tail: sessions rebound in this run,
@@ -1563,8 +1637,13 @@ mod tests {
         // excluded — its surfaced path is a stale scan-time capture, and
         // "repairing" it re-keys the index onto the vanished path.
         let no_sidecar = |_: &str| -> Option<PathBuf> { None };
-        let detected =
-            detect_stranded_index_records(&hits, &["lane-moved".to_string()], index_of, no_sidecar);
+        let detected = detect_stranded_index_records(
+            &hits,
+            &["lane-moved".to_string()],
+            &[],
+            index_of,
+            no_sidecar,
+        );
         assert_eq!(
             detected,
             vec![
@@ -1589,13 +1668,13 @@ mod tests {
         let trailing_sep = |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/vault/beta/")) };
         let no_sidecar = |_: &str| -> Option<PathBuf> { None };
         assert!(
-            detect_stranded_index_records(&hits, &[], trailing_sep, no_sidecar).is_empty(),
+            detect_stranded_index_records(&hits, &[], &[], trailing_sep, no_sidecar).is_empty(),
             "a spelling-only difference is the same directory, not a strand"
         );
         let genuinely_different =
             |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/gone/intermediate")) };
         assert_eq!(
-            detect_stranded_index_records(&hits, &[], genuinely_different, no_sidecar),
+            detect_stranded_index_records(&hits, &[], &[], genuinely_different, no_sidecar),
             vec![("s".to_string(), PathBuf::from("/vault/beta"))],
             "a real disagreement is still re-keyed onto the surfaced path"
         );
@@ -1707,7 +1786,7 @@ mod tests {
             }
         };
         assert_eq!(
-            detect_stranded_index_records(&hits, &[], index_of, sidecar_of),
+            detect_stranded_index_records(&hits, &[], &[], index_of, sidecar_of),
             vec![
                 ("index-arm-strand".to_string(), to2),
                 ("sidecar-arm-strand".to_string(), to),
@@ -1940,9 +2019,234 @@ mod tests {
         assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
         assert!(
             reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
-            "目录边界:sibling 前缀不得误命中"
+            "directory boundary: a sibling prefix sharing the spelling must not match"
         );
-        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
+        // `to` a strict ancestor of `from` used to be OK; since round-17
+        // MAJOR-2 it is the rejected mirror geometry (see
+        // rebind_rejects_from_nested_inside_target_mirror_geometry below).
+        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_err());
+    }
+
+    #[test]
+    fn rebind_rejects_from_nested_inside_target_mirror_geometry() {
+        // review #463 round-17 MAJOR-2: `from` strictly inside `to` is
+        // reachable through the strong-confirm flow (the old root recreated
+        // between badge and pick; Windows traverse-ACL shapes), and without
+        // this rejection the lanes deepen one level per rerun
+        // (`from/B/sub` → `from/B/B/sub`) and never converge. Same typed
+        // marker; equality was already handled by the first arm.
+        let mirror =
+            reject_nested_rebind_target(Path::new("/a/b/c"), Path::new("/a/b")).unwrap_err();
+        assert!(
+            mirror.starts_with("REBIND_TO_NESTED"),
+            "the mirror geometry lands on the same typed marker (round-8 M4)"
+        );
+        assert!(reject_nested_rebind_target(Path::new("/a/b"), Path::new("/a")).is_err());
+        // Unrelated or sibling destinations are still fine.
+        assert!(reject_nested_rebind_target(Path::new("/a/b"), Path::new("/c/d")).is_ok());
+        assert!(reject_nested_rebind_target(Path::new("/a/bc"), Path::new("/a/b")).is_ok());
+    }
+
+    #[test]
+    fn stranded_detection_skips_sessions_whose_sidecar_is_the_stale_side() {
+        // review #463 round-17 MAJOR-1: run 1 leaves index@`to`,
+        // sidecar@`from` (the sidecar rewrite failed durably); on the retry
+        // the sidecar pass fails again, the session lands in
+        // `sidecar_final_stale`, and an unguarded detector would read the
+        // STALE sidecar as authority — re-keying the index (then the
+        // metadata) BACK onto the vanished `from`, oscillating with every
+        // retry. A session this run itself reported finally-stale is never a
+        // repair authority.
+        let to = PathBuf::from("/vault/beta");
+        let from = PathBuf::from("/vault/alpha");
+        let hits = vec![("stale-sidecar".to_string(), to.clone())];
+        let index_of = |_: &str| -> Option<PathBuf> { Some(to.clone()) };
+        let sidecar_at_from = |_: &str| -> Option<PathBuf> { Some(from.clone()) };
+        assert!(
+            detect_stranded_index_records(
+                &hits,
+                &[],
+                &["stale-sidecar".to_string()],
+                index_of,
+                sidecar_at_from,
+            )
+            .is_empty(),
+            "the finally-stale sidecar must never drive the repair backward",
+        );
+        // The exclusion is exactly the finally-stale set, not a blanket
+        // carve-out: the same shape with a DIFFERENT id in the stale list
+        // still repairs (the run-10 interleave, sidecar at `to2`).
+        let sidecar_at_to2 = |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/vault/gamma")) };
+        assert_eq!(
+            detect_stranded_index_records(
+                &hits,
+                &[],
+                &["other".to_string()],
+                index_of,
+                sidecar_at_to2,
+            ),
+            vec![("stale-sidecar".to_string(), PathBuf::from("/vault/gamma"))],
+        );
+    }
+
+    #[test]
+    fn repair_targets_under_from_are_refused() {
+        // round-17 MAJOR-1's call-site guard, pure half: an authority under
+        // the run's `from` (equality included) is the stale side. Folded
+        // keys, component-aware — a sibling sharing the prefix's spelling is
+        // NOT nested.
+        let from = Path::new("/vault/alpha");
+        assert!(repair_target_is_backward(Path::new("/vault/alpha"), from));
+        assert!(repair_target_is_backward(
+            Path::new("/vault/alpha/sub"),
+            from
+        ));
+        assert!(repair_target_is_backward(Path::new("/vault/alpha/"), from));
+        assert!(!repair_target_is_backward(Path::new("/vault/beta"), from));
+        assert!(!repair_target_is_backward(
+            Path::new("/vault/alphabet"),
+            from
+        ));
+    }
+
+    #[test]
+    fn rebound_ids_suffix_wire_shape_is_pinned_end_to_end() {
+        // review #463 round-17 SF-1: the producer string had no test, so
+        // deleting the suffix passed the whole suite and silently resurrected
+        // the round-14 SF1 bug. Pin the exact wire shape and cross-check the
+        // FE parser's strip constant.
+        let error = append_rebound_ids_suffix(
+            "REBIND_ROOTS_PERSIST: ctx".to_string(),
+            &["s1".to_string(), "s2".to_string()],
+        );
+        assert_eq!(
+            error, "REBIND_ROOTS_PERSIST: ctx\nrebound-session-ids:s1,s2",
+            "marker line first, then the moved ids on their own line, comma-joined",
+        );
+        let fe = include_str!("../../../../src/features/projects/rebindErrors.js");
+        assert!(
+            fe.contains("'\\nrebound-session-ids:'"),
+            "the FE parser's strip constant drifted from the producer format"
+        );
+    }
+
+    #[test]
+    fn repaired_targets_fold_is_wired_into_the_command() {
+        // review #463 round-17 SF-7: the fold's call-site wiring was
+        // unpinned (asymmetric with the detector's own wiring probe), so
+        // deleting the call left every unit test green while the repaired
+        // session stayed an eviction-only candidate forever.
+        let src = include_str!("projects.rs");
+        let start = src
+            .find("let stranded = detect_stranded_index_records")
+            .expect("the detector call site must exist");
+        let window = &src[start..(start + 4000).min(src.len())];
+        assert!(
+            window.contains("fold_repaired_index_targets("),
+            "the repaired targets must be folded into the metadata sync set at the call site"
+        );
+        assert!(
+            window.contains("repair_target_is_backward("),
+            "the backward-repair guard must sit on the repair path (round-17 MAJOR-1)"
+        );
+    }
+
+    #[test]
+    fn retry_admission_routes_by_metadata_sync_state() {
+        // review #463 round-17 SF-2: `admit_rebind_retry_candidate` had zero
+        // coverage, including the folded identity-key compare whose
+        // regression to a raw `!=` would spuriously rewrite healthy to-lane
+        // sessions on Windows spelling drift.
+        crate::platform::test_support::with_temp_home("rebind-admit", || {
+            let store = crate::features::sessions::SessionStore::boot_for_process_startup()
+                .expect("boot store");
+            let ws = std::env::temp_dir().join("rebind-admit-ws");
+            let _ = std::fs::remove_dir_all(&ws);
+            std::fs::create_dir_all(&ws).expect("create ws");
+            let session = store
+                .create_new("/model".into(), None, ws.clone())
+                .expect("create session");
+
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                ws.clone(),
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.is_empty() && retry_evict == vec![session.metadata.id.clone()],
+                "a healthy to-lane session (metadata == binding) is an eviction candidate only"
+            );
+
+            // A trailing-separator spelling drift is the same directory
+            // (folded identity key) — not a sync-worthy difference.
+            let ws_sep = PathBuf::from(format!("{}{}", ws.display(), std::path::MAIN_SEPARATOR));
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                ws_sep,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.is_empty() && retry_evict.len() == 1,
+                "a spelling-only drift must not demand a metadata rewrite"
+            );
+
+            // A genuinely different binding needs the metadata sync.
+            let elsewhere = std::env::temp_dir().join("rebind-admit-elsewhere");
+            let _ = std::fs::remove_dir_all(&elsewhere);
+            std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                elsewhere,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.len() == 1 && retry_evict.is_empty(),
+                "metadata != binding admits the session into the sync set"
+            );
+
+            // A load failure (the session record is gone) conservatively
+            // admits — there is nothing to compare against.
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                "absent-session".to_string(),
+                ws,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.len() == 1 && retry_evict.is_empty(),
+                "an unloadable session is admitted, never silently evicted"
+            );
+        });
+    }
+
+    #[test]
+    fn persist_roots_error_maps_to_the_typed_marker() {
+        // review #463 round-17 SF-6: a Persist→Other regression would drop
+        // the disk-failure copy for raw error prose and pass the suite. Pin
+        // the command's marker mapping; the store-level Persist
+        // classification is asserted positively in
+        // features/projects/tests.rs (`rebind_roots_rolls_back_memory_when_
+        // persist_fails`).
+        let src = include_str!("projects.rs");
+        assert!(
+            src.contains("RebindRootsError::Persist(context) => format!(\"REBIND_ROOTS_PERSIST"),
+            "the Persist arm must keep producing the typed REBIND_ROOTS_PERSIST marker"
+        );
     }
 
     #[test]

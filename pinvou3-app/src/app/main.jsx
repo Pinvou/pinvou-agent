@@ -2608,11 +2608,16 @@ const NAV_PREFETCH = {
                   prev.partial && prev.partial.postBusyIds,
                   classified.reboundIds,
                 );
+                // Spread first, counts after (review #463 round-17 SF-4): a
+                // trailing spread dragged the PREVIOUS run's rebound/failed
+                // counts into this error state — a mixed-run report where
+                // the same id could appear in two contradicting rows. This
+                // arm's only honest counts are the merged carryover.
                 return {
+                  ...(prev.partial || {}),
                   rebound: 0,
                   failed: 0,
                   failedIds: [],
-                  ...prev.partial,
                   postBusy: mergedIds.length,
                   postBusyIds: mergedIds,
                 };
@@ -2633,13 +2638,17 @@ const NAV_PREFETCH = {
               ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
             });
           } else if (classified.kind === 'copy') {
-            // The run proceeded past the fence: the old-root warning is
-            // consumed. Clearing it (review #463 round-14 should-fix 3)
-            // means a LATER reappearance of the old root re-arms the strong
-            // confirm instead of riding the stale flag silently.
+            // Consume the old-root warning ONLY when the run actually
+            // proceeded past the old-root check (round-17 SF-4): IN_PROGRESS
+            // / TO_ROOT / TO_NESTED / TO_UNUSABLE all classify as `copy` and
+            // all fire BEFORE require_confirm_existing, and clearing on them
+            // would let a re-appeared old root ride the stale flag silently.
+            // Clearing on a genuine post-fence failure (review #463 round-14
+            // should-fix 3) still re-arms the strong confirm on a later
+            // reappearance of the old root.
             setRebindDraft(prev => prev && {
               ...prev,
-              warnExisting: false,
+              warnExisting: classified.passedFence ? false : prev.warnExisting,
               error: classified.message,
               ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
             });
@@ -2652,10 +2661,12 @@ const NAV_PREFETCH = {
             // On failure keep the dialog open with the error inline
             // (review #463 M7): in-place display persists and sits next to
             // the retry; an unmapped backend error is shown verbatim as a
-            // diagnostic detail rather than guessed at.
+            // diagnostic detail rather than guessed at. Its provenance is
+            // unknown (round-17 SF-4), so the strong-confirm flag is kept:
+            // an extra confirm round-trip at worst, never a skipped one.
             setRebindDraft(prev => prev && {
               ...prev,
-              warnExisting: false,
+              warnExisting: prev.warnExisting,
               error: classified.message,
               ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
             });

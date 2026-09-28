@@ -53,6 +53,21 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_LEGACY_TABLE_CORRUPT]: 'rebindLegacyTableCorrupt',
 };
 
+// Markers that can only fire AFTER the old-root check (review #463 round-17
+// SF-4): the roots pre-flight/commit conflicts, the persist failure, the
+// runtime-starting fence and the two legacy-table aborts. The remaining
+// `copy` markers (IN_PROGRESS / TO_ROOT / TO_NESTED / TO_UNUSABLE) all fire
+// BEFORE `require_confirm_existing`, so on those the run never proceeded past
+// the old-root warning and its strong-confirm flag must be preserved, not
+// consumed.
+const REBIND_POST_FENCE_MARKERS = new Set([
+  REBIND_ROOTS_CONFLICT,
+  REBIND_ROOTS_PERSIST,
+  REBIND_RUNTIME_STARTING,
+  REBIND_LEGACY_TABLE_UNWRITABLE,
+  REBIND_LEGACY_TABLE_CORRUPT,
+]);
+
 // Suffix the backend appends to a roots-commit failure (review #463 round-14
 // should-fix 1): the session lanes are already durable at `to` when the roots
 // commit fails, but an Err carries no report, so the moved ids ride the error
@@ -96,7 +111,12 @@ function classifyRebindError(error, t) {
     message.startsWith(prefix),
   );
   if (marker) {
-    return { kind: 'copy', message: t.uiProjects[REBIND_MARKER_MESSAGE_KEYS[marker]], reboundIds };
+    return {
+      kind: 'copy',
+      message: t.uiProjects[REBIND_MARKER_MESSAGE_KEYS[marker]],
+      reboundIds,
+      passedFence: REBIND_POST_FENCE_MARKERS.has(marker),
+    };
   }
   return { kind: 'raw', message, reboundIds };
 }
@@ -116,6 +136,7 @@ function mergeRebindCarryoverIds(previousIds, reboundIds) {
 
 export {
   REBIND_MARKER_MESSAGE_KEYS,
+  REBIND_POST_FENCE_MARKERS,
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
   mergeRebindCarryoverIds,

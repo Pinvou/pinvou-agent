@@ -5737,3 +5737,62 @@ fn rebind_publishes_cache_only_legacy_entry_translation() {
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
 }
+#[test]
+fn rebind_translates_an_entry_absent_from_both_disk_shapes() {
+    // review #463 round-17 SF-5: the pin above seeds the on-disk table
+    // too, so dropping the CACHE arm from the merged view stays green
+    // there — the table's own entry carries the translation and the
+    // named mutation is not exercised. This fixture is cache-only in the
+    // strict sense: no sidecar AND no table file, the entry lives only
+    // in the in-memory cache. Dropping the cache arm must fail red — the
+    // session is then never translated, and no boot migration can heal
+    // what no store ever recorded.
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-strict-cacheonly-from");
+    let to = unique_temp_dir("rebind-strict-cacheonly-to");
+    std::fs::create_dir_all(&from).expect("create from");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind under from");
+    let sidecar = store
+        .manager
+        .sessions_dir()
+        .join(&session.metadata.id)
+        .join("workspace-binding.json");
+    std::fs::remove_file(&sidecar).expect("remove sidecar");
+    // Deliberately NO _session_workspaces.json seeding: the entry must
+    // exist in the cache only.
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    assert!(!legacy.exists(), "fixture precondition: no table on disk");
+
+    let outcome = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("rebind succeeds");
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "the strictly cache-only entry must be translated (dropping the cache arm fails here)",
+    );
+
+    let rebooted = SessionStore::boot_for_process_startup().expect("reopen home");
+    assert_eq!(
+        rebooted
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+        "the translation must be durable across a restart",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}

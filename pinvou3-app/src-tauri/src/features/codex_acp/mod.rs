@@ -5715,10 +5715,16 @@ mod tests {
     /// pure-predicate pins cannot cover.
     fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
         let start = src.find(signature).expect("production fn must exist");
-        let end = src[start + signature.len()..]
-            .find("\n    pub ")
-            .map(|offset| start + signature.len() + offset)
-            .unwrap_or(src.len());
+        let rest = &src[start + signature.len()..];
+        // End at the next fn ITEM, not the next `pub ` token (review #463
+        // round-17 SF-3): a `pub(crate)`/`pub(super)` item would otherwise
+        // extend the span past the function under test, silently diluting
+        // (and eventually neutralizing) the contains-assertions.
+        let end = ["\n    pub ", "\n    pub(crate) ", "\n    pub(super) "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(src.len(), |offset| start + signature.len() + offset);
         &src[start..end]
     }
 

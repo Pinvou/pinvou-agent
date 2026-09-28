@@ -17,6 +17,7 @@ import {
   REBIND_MARKER_MESSAGE_KEYS,
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
+  REBIND_POST_FENCE_MARKERS,
 } from "../src/features/projects/rebindErrors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,30 @@ test("every copy marker resolves to trilingual uiProjects copy", () => {
     const classified = classifyRebindError(`${marker}: backend prose`, dictEn);
     assert.equal(classified.kind, "copy", `${marker} must map to copy`);
     assert.equal(classified.message, dictEn.uiProjects[key]);
+  }
+});
+
+test("copy markers declare whether they fire past the old-root fence", () => {
+  // review #463 round-17 SF-4: the dialog consumes the strong-confirm flag
+  // only when the run actually proceeded past `require_confirm_existing`.
+  // IN_PROGRESS / TO_ROOT / TO_NESTED / TO_UNUSABLE fire BEFORE it; the
+  // roots conflicts, the persist failure, the runtime-starting fence and the
+  // legacy-table aborts fire after. A marker landing in the wrong set either
+  // rides a stale flag or burns a confirm round-trip.
+  const preFence = ['REBIND_IN_PROGRESS', 'REBIND_TO_ROOT', 'REBIND_TO_NESTED', 'REBIND_TO_UNUSABLE'];
+  for (const marker of preFence) {
+    assert.equal(
+      classifyRebindError(`${marker}: x`, dictEn).passedFence,
+      false,
+      `${marker} fires before the old-root check and must keep the flag`,
+    );
+  }
+  for (const marker of REBIND_POST_FENCE_MARKERS) {
+    assert.equal(
+      classifyRebindError(`${marker}: x`, dictEn).passedFence,
+      true,
+      `${marker} fires after the old-root check and may consume the flag`,
+    );
   }
 });
 

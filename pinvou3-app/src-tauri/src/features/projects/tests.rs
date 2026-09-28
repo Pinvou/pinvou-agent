@@ -492,6 +492,13 @@ fn rebind_roots_rolls_back_memory_when_persist_fails() {
         ),
         "a persist failure must not be classified as an overlap conflict (round-8 M3)"
     );
+    assert!(
+        matches!(
+            error,
+            crate::features::projects::RebindRootsError::Persist(_)
+        ),
+        "positive classification (round-17 SF-6): a Persist→Other regression would          drop the disk-failure copy for raw error prose and pass this suite"
+    );
     assert_eq!(
         store.get(&project.id).unwrap(),
         before,
