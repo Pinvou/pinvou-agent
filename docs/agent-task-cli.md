@@ -34,6 +34,21 @@ See the `AgenticTaskRequest` struct docs in `agentic_task.rs` for the exact erro
 
 Prerequisites: the `settings.json` of the sandbox `PINVOU3_HOME` needs an active model (any OpenAI-compatible endpoint works, `preset = "openai_compatible"`); `PINVOU3_ALLOW_SHELL=1` pins shell authorization without relying on prefs. There is no per-turn tool-call cap; runaway protection stays with the engine's per-turn bounds — a default 200-step budget and a 1-hour per-turn wall clock (foundation defaults), plus this command's `--timeout-secs` watchdog that cancels the turn and still emits a report. If your scripts still export `PINVOU3_MAX_TOOL_CALLS`, delete the export: the knob is no longer read, and a one-line stderr warning reminds you once per process when it is present.
 
+## Shared-home cross-process consistency (known limitation)
+
+Headless runs and the desktop app share one `PINVOU3_HOME` session store, and this layer serializes the session sidecar files (`_pinned_sessions.json`, `_hidden_sessions.json`, `_session_models.json`, `_session_mode_states.json`, multi-agent flags) with **per-process io mutexes only**: each mutation is a whole-file load→mutate→atomic-rename, and there is no cross-process lock (flock) on these files yet. A pin can therefore still be lost in a two-process race even though both writers reported success:
+
+1. Process A (say the GUI) loads the pin sidecar, adds pin P, and is preempted before its rename.
+2. Process B (a headless `agent run`, including its prepare-time save and retention sweep) completes its own sidecar RMW in between.
+3. Process A resumes and renames its stale whole-file snapshot — B's already-confirmed write is silently reverted even though B's caller already saw `Ok(())`.
+4. The next retention sweep consults the durable file, no longer sees P, and can evict the session the user believes is pinned keep-forever. The transcript loss is unrecoverable.
+
+The same whole-file RMW class covers record create/delete races in the store itself (`features/sessions/sidecars.rs` documents the residual risk where the in-code contract lives). Mitigations until a cross-process lock lands (#623):
+
+- Do not pin/unpin (or toggle hidden/model/mode) from the GUI while a headless `agent run` is in flight against the same `PINVOU3_HOME`, and vice versa — the race window is one sidecar RMW, short but real.
+- After running batches alongside GUI session management, re-verify the pins you care about (re-pin from the GUI): the durable sidecar file, not the earlier success toast, is what the next sweep reads.
+- Unattended harnesses that don't need GUI interplay can point `PINVOU3_HOME` at a dedicated home, so the sweep's eviction surface stays limited to headless-created sessions and no GUI pin is ever in the race.
+
 ## Output contract
 
 JSON report fields: `session_id`, `status` (`Completed`/`Failed`/`timeout`/`error` or another engine status), `timed_out`, `completed_after_deadline` (timeout race marker: a turn that finished naturally after the deadline but before the cancel took effect keeps the engine's real `status` instead of being rewritten to `timeout`, letting graders distinguish "finished, but past the line" from "cancelled"; absent in older reports, defaults to false), `assistant_text` (last turn's assistant text), `tool_events` (tool names and success flags only, never arguments/results), `usage` (input/output/cache hit/cache miss/cache write/reasoning tokens and context window), `error` (host-side root causes — populated on `status=error` reports and on `timeout` reports whose session setup did not finish in time, whose cancel did not settle, or whose final turn-result read failed after the deadline fired — as well as the engine's own failure message for failed turns). Tool events deliberately carry no payloads, so reports can safely be persisted under `/logs` for harness usage aggregation. While the turn runs, a liveness heartbeat is written to stderr every 10 seconds; stdout stays reserved for the final report.
