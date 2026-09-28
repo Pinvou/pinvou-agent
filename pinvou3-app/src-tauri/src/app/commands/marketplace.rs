@@ -211,12 +211,11 @@ pub async fn install_marketplace_tool(
         }
     }
 
-    let companion_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
-        for sid in mgr.companion_skills(&companion_tool_id) {
+        for sid in mgr.companion_skills(&tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .install(&sid)
@@ -229,7 +228,7 @@ pub async fn install_marketplace_tool(
             crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid);
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&tool_id);
         Ok::<(), String>(())
     })
     .await
@@ -570,8 +569,7 @@ pub async fn install_marketplace_skill(
     skill_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    let install_skill_id = skill_id.clone();
-    tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&install_skill_id))
+    tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&skill_id))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
