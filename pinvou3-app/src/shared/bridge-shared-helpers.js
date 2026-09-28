@@ -2186,6 +2186,12 @@
   }
 
   // web+tauriChat 共享
+  function sessionMentionSplitter() {
+    return (typeof window !== "undefined") && window.__PINVOU_SESSION_MENTION__ &&
+      window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+  }
+
+  // web+tauriChat 共享
   function queuedPayloadEnvelope(userText, payloadText, meta) {
     const user = String(userText || "");
     const payload = String(payloadText == null ? user : payloadText);
@@ -2206,11 +2212,59 @@
     } else if (payload.indexOf(user) === payload.lastIndexOf(user)) {
       index = payload.indexOf(user);
     }
-    if (index < 0) return payload === user ? { before: "", after: "" } : null;
+    if (index < 0) {
+      // Session-mention block-aware fallback: a queued scene send stores the
+      // text as <block><body> while a scene payload embeds the body inside
+      // its template (the personal workbench default prompt sandwiches it as
+      // `PROMPT…\n用户需求：\n<body>`), so the literal substring match above
+      // fails. Split the envelope into the block prefix, the scaffold between
+      // block and body, and the tail: the rebuild swaps in the EDITED block
+      // and body (rebuiltQueuedFromEnvelope) so the payload keeps the
+      // send-time shape — block at the head, body at its original anchor —
+      // with the edited refs honored instead of the queued ones.
+      const splitMention = sessionMentionSplitter();
+      if (typeof splitMention === "function") {
+        const split = splitMention(user);
+        if (split && split.refs.length && split.text) {
+          const blockText = user.slice(0, user.length - split.text.length);
+          const bodyIndex = payload.indexOf(split.text);
+          if (blockText && payload.startsWith(blockText) && bodyIndex >= blockText.length) {
+            return {
+              blockPrefix: blockText,
+              before: payload.slice(blockText.length, bodyIndex),
+              after: payload.slice(bodyIndex + split.text.length),
+              blockAware: true,
+            };
+          }
+        }
+      }
+      return payload === user ? { before: "", after: "" } : null;
+    }
     return {
       before: payload.slice(0, index),
       after: payload.slice(index + user.length),
     };
+  }
+
+  // web+tauriChat 共享. Block-aware envelopes reassemble as
+  // <edited block><scaffold><edited body><tail>: the edited text carries the
+  // freshly gated `<block><body>` (same edit-resend gate as the bubble
+  // editor), and a raw body without a leading block means the feature was off
+  // at save time — the block is dropped with it.
+  function rebuiltQueuedFromEnvelope(envelope, userText) {
+    const raw = String(userText == null ? "" : userText);
+    if (envelope.blockAware) {
+      const splitMention = sessionMentionSplitter();
+      const split = typeof splitMention === "function" ? splitMention(raw) : null;
+      let block = "";
+      let body = raw;
+      if (split && split.matched) {
+        block = raw.slice(0, raw.length - split.text.length);
+        body = split.text;
+      }
+      return block + envelope.before + body + envelope.after;
+    }
+    return envelope.before + raw + envelope.after;
   }
 
   // web+tauriChat 共享
@@ -2234,14 +2288,14 @@
   function rebuiltQueuedPayload(item, userText) {
     const envelope = item && item.payloadEnvelope;
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
-    return envelope.before + userText + envelope.after;
+    return rebuiltQueuedFromEnvelope(envelope, userText);
   }
 
   // web+tauriChat 共享
   function rebuiltQueuedMetaPayload(item, userText) {
     const envelope = item && item.metaPayloadEnvelope;
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
-    return envelope.before + userText + envelope.after;
+    return rebuiltQueuedFromEnvelope(envelope, userText);
   }
 
   // web+tauriChat 共享
