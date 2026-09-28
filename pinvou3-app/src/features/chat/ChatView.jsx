@@ -64,6 +64,7 @@ import {
   filterSessionMentionCandidates,
   dedupeSessionRefs,
   isSessionMentionEnabled,
+  MAX_SESSION_REFS,
 } from './session-mention.js';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
@@ -206,9 +207,11 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
 // Pending mention chips per draft scope (session id, or draft epoch for the
-// not-yet-materialized draft session). Module-level, in-memory only — the
-// same lifetime as the bridge's composer working set (both survive view
-// unmount/remount, neither survives an app restart).
+// not-yet-materialized draft session). Module-level, in-memory only, FIFO-
+// evicted at MENTION_DRAFT_CACHE_LIMIT with no stash of evicted scopes and no
+// purge on session deletion — weaker than the bridge's composer working set
+// (LRU + stash + delete purge); both agree on the user-visible property that
+// chips survive view unmount/remount but not an app restart.
 const sessionMentionDrafts = new Map();
 const MENTION_DRAFT_CACHE_LIMIT = 200;
 
@@ -1032,10 +1035,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // four-layer cascade): on by default; the registry read is exposed on
       // both lanes (the web bridge proxies list_builtin_features to the same
       // desktop host), so a host-side switch-off reaches browser clients too.
-      // Only a query failure fails open as enabled (same semantics as the
-      // backend: a missing state file means all enabled). Switch changes are
-      // broadcast via remote_control:tools_changed → pinvou:tools-changed
-      // (chat-events.js); this subscription refetches to hot-update the UI.
+      // A query failure keeps the current state (only the initial default
+      // fails open as enabled, same semantics as the backend: a missing state
+      // file means all enabled). Switch changes are broadcast via
+      // remote_control:tools_changed → pinvou:tools-changed (chat-events.js on
+      // desktop, platform/web/bridge.js on web — the relay allowlists the
+      // event); this subscription refetches to hot-update the UI.
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
       useEffect(() => {
         let alive = true;
@@ -1700,7 +1705,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // session group / candidates.
       const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
       const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
-      const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
+      // At the ref cap the panel stays empty: a pick there could only be a
+      // silent no-op, so typing @ no longer opens it (the already-maxed chips
+      // strip stays the only feedback surface).
+      const mentionCandidates = sessionRefs.length >= MAX_SESSION_REFS ? [] : filterSessionMentionCandidates((bs && bs.sessions) || [], {
         query: mentionTrigger ? mentionTrigger.query : '',
         excludeIds: [activeSessionId, ...sessionRefs.map(ref => ref.sessionId)].filter(Boolean),
         limit: 8,
@@ -1711,8 +1719,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         : 0;
       const knownSessionMentionIds = useMemo(
         // Archived sessions are still alive and openable (the card jumps to
-        // them and un-archives on switch), so they count as known; only a
-        // truly deleted session renders the unavailable state.
+        // them), so they count as known; only a truly deleted session renders
+        // the unavailable state.
         () => new Set(
           [...((bs && bs.sessions) || []), ...((bs && bs.archivedSessions) || [])]
             .map(session => session.id),
@@ -1756,7 +1764,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           if (meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
             meta = {
               ...meta,
-              pinvouPayloadText: buildSessionMentionBlock(mentionSplit.refs) + meta.pinvouPayloadText,
+              // dedupe + cap: a hand-forged block in history can carry far more
+              // refs than the composer allows into a live chip strip.
+              pinvouPayloadText: buildSessionMentionBlock(dedupeSessionRefs(mentionSplit.refs)) + meta.pinvouPayloadText,
             };
           }
         }
@@ -2518,7 +2528,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
           const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
           try {
-            return await sendChatMessage(outgoingText);
+            const accepted = await sendChatMessage(outgoingText);
+            // The send consumed the chips even if the composer drifted during
+            // the await (the draft-untouched guard then skips onTaskAccepted):
+            // clearing here keeps them from re-arming the next plain send.
+            if (accepted) setSessionRefs([]);
+            return accepted;
           } catch (error) {
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
