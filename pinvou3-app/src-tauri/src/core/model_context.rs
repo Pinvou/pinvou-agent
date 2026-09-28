@@ -135,8 +135,10 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // heuristics) has no doubao rows at all, so resolved returns None and
     // the engine falls to 128K while the monitor page falls to the Doubao
     // preset fallback of 262,144 — the two diverge. The -260628 generation
-    // and the 2-0 snapshots are officially 256k context / 224k max input;
-    // the 2-1 -260915 snapshots moved to 1024k context (volcengine docs
+    // and the 2-0 snapshots are officially 256k context (the 224k max-input
+    // figure applies to the 2-0 snapshots only; the -260628 rows cap max
+    // input at 256k); the 2-1 -260915 snapshots moved to 1024k context
+    // (volcengine docs
     // 82379/1330310 model list, re-checked 2026-09-28), so they get their
     // own 1M rows below instead of inheriting the 256K figures — the
     // dash-and-date spellings cannot suffix-match each other. The base has

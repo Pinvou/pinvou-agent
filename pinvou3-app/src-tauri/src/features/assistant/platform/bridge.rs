@@ -8790,9 +8790,10 @@ mod tests {
 
         assert_eq!(bridge.provider(), "anthropic");
         // The Anthropic default follows the official recommendation slot
-        // (claude-opus-5-5 since 2026-09-22); this assert pins the routing
-        // chain end to end, so it reads the default instead of a literal.
-        assert_eq!(bridge.model(), ModelPreset::Anthropic.default_model());
+        // (claude-opus-5-5 since 2026-09-22, locked in prefs); the literal
+        // keeps this assert from being tautological with the default_model()
+        // input fed into set_active_model above.
+        assert_eq!(bridge.model(), "claude-opus-5-5");
         assert_eq!(bridge.base_url(), "https://api.anthropic.com/v1");
         assert_eq!(bridge.api_key(), "sk-ant");
         let cfg = bridge.build_dt_config();

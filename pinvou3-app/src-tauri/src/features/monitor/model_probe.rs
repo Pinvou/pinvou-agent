@@ -1092,6 +1092,9 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
 
     /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，
     /// 依据为仓库 catalog + 底座启发式 + 各厂商官方文档，见 pinvou_known_context_window 注释）。
+    /// 豁免口径：聚合平台 org 前缀 id 与 Coding Plan 网关自部署的逐部署上下文
+    /// 数字不逐一镜像（见 model-catalog.js 聚合/Coding Plan 组注释）；底座链
+    /// 未收录的这类 id 落预设兜底，并在下方按兜底值钉扎。
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
@@ -1155,6 +1158,16 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
+            // Token Plan 新增行（auto / 0813 快照 / v4.1-flash）与 Qwen
+            // Coding Plan 组的 exact-version 行：底座链未收录的 id 落 Qwen
+            // 预设兜底（131,072），deepseek 行走底座 v4 启发式。
+            (ModelPreset::Qwen, "auto", 131_072),
+            (ModelPreset::Qwen, "deepseek-v4-pro-0813", 1_000_000),
+            (ModelPreset::Qwen, "deepseek-v4.1-flash", 1_000_000),
+            (ModelPreset::Qwen, "qwen3.6-plus", 131_072),
+            (ModelPreset::Qwen, "qwen3-coder-plus", 131_072),
+            (ModelPreset::Qwen, "qwen3-coder-next", 131_072),
+            (ModelPreset::Qwen, "glm-5", 131_072),
             // Doubao: evolving is already 1M; the 2-1 -260628 generation and
             // the 2-0 snapshots are officially 256k, while the -260915
             // snapshots moved to 1024k (volcengine 1330310, re-checked
@@ -1195,6 +1208,22 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
                 "kimi-k2.8-preview",
                 1_048_576,
             ),
+            // Ark Coding Plan 组的其余行：lite 点号拼写由补充表承接；
+            // glm-5.3-flash / deepseek-v4.1-flash 走底座精确行与 v4 启发式；
+            // ark-code-latest 是 Auto 壳模型，官方无逐模型上下文数字，两侧
+            // 都保持保守兜底（引擎 128K / 监视页 131,072 的已披露网关模式）。
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.1-lite",
+                1_048_576,
+            ),
+            (ModelPreset::OpenaiCompatible, "glm-5.3-flash", 1_000_000),
+            (
+                ModelPreset::OpenaiCompatible,
+                "deepseek-v4.1-flash",
+                1_000_000,
+            ),
+            (ModelPreset::OpenaiCompatible, "ark-code-latest", 131_072),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
@@ -1238,6 +1267,11 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
             (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
+            // 2026-09-22 default recommendation: rides the claude-opus-5
+            // override row via suffix tolerance (model_context tests pin it;
+            // listed here so the settings-page row is covered by this
+            // charter too).
+            (ModelPreset::Anthropic, "claude-opus-5-5", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(

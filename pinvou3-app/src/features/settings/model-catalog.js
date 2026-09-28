@@ -673,15 +673,16 @@ const MODEL_CATALOG = {
       // Official figures re-checked 2026-09-28 (docs.volcengine.com/ark
       // model list + release announcements 1159178): doubao-seed-evolving is
       // the officially recommended Coding/Agent model — a permanent Model ID
-      // whose underlying version auto-updates (at least weekly), so the old
-      // "rolls weekly" wording is gone. The 2-1 family gained -260915
+      // whose underlying version auto-updates (no update cadence is
+      // documented), so the old "rolls weekly" wording is gone. The 2-1 family gained -260915
       // pro/lite snapshots (2026-09); the -260628 rows and the 2-1 -260915
       // snapshots stay on sale, but every 2-0 -260215 snapshot on the model
       // list now carries an 即将下线 badge, so those rows note the coming
       // retirement. The coding-specialized preview
       // doubao-seed-2-0-code-preview-260215 also lists multimodal
       // understanding, so the image capability is annotated. Vendor docs now
-      // document seven reasoning_effort modes (none…max, default high); the
+      // document seven reasoning_effort modes (none…max; default high for
+      // doubao-seed-evolving and the 2-1 generation, medium for 2-0); the
       // base still normalizes to the off/high/max exposure below, so no tier
       // change is made here.
       items: [
@@ -853,11 +854,12 @@ const MODEL_CATALOG = {
       // slot — "For everything else, including code, use Grok 4.7. It is
       // the most capable model we've built" (500K, effort low/medium/high/
       // xhigh, reasoning cannot be turned off); grok-4.6 demotes to the
-      // previous generation. grok-4.5's model page lists xhigh, but the
-      // official reasoning guide contradicts it ("xhigh is available on
-      // grok-4.6 and later"; grok-4.5 requests with xhigh are treated as
-      // high) — the app follows the guide and keeps exposing low/medium/
-      // high for grok-4.5, matching the base's downgrade.
+      // previous generation. The reasoning guide's summary table still lists
+      // xhigh on the grok-4.5/grok-4.6 row, but its caveat is authoritative
+      // ("xhigh is available on grok-4.6 and later"; grok-4.5 requests with
+      // xhigh are treated as high; the grok-4.5 model page itself lists no
+      // reasoning-effort row) — the app follows the caveat and keeps
+      // exposing low/medium/high for grok-4.5, matching the base's downgrade.
       // The grok-4.20-0309-* and grok-build-0.1 detail pages all state
       // text, image → text, so image capability is annotated.
       // Note: the base's effort injection (apply_xai_grok_4_6_reasoning_effort)

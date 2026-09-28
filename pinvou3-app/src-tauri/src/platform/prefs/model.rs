@@ -88,9 +88,12 @@ pub(super) fn migrated_minimax_base_url(value: &str) -> Option<String> {
 /// 2026-09-28) and the Alibaba Model Studio Coding Plan
 /// (help.aliyun.com/zh/model-studio/coding-plan, 2026-09-28) are modeled the
 /// same way; both have dedicated /api/coding hosts distinct from their
-/// pay-as-you-go endpoints. Only the China Alibaba host is canonical here —
-/// the intl host (coding-intl) is a separate subscription and must not be
-/// rewritten to it.
+/// pay-as-you-go endpoints. The China Alibaba host is canonical; the intl
+/// host (coding-intl) and the overseas Kimi host (api.kimi.ai) are separate
+/// subscriptions and are identified as their own canonical URLs — never
+/// rewritten to the China hosts, so saved configs keep coding_plan
+/// classification on reload instead of being re-derived to
+/// official_api/custom.
 pub(super) fn identify_coding_plan_endpoint(
     base_url: &str,
 ) -> Option<(&'static str, &'static str)> {
@@ -115,6 +118,13 @@ pub(super) fn identify_coding_plan_endpoint(
         }
         "https://coding.dashscope.aliyuncs.com/v1" => {
             Some(("qwen", "https://coding.dashscope.aliyuncs.com/v1"))
+        }
+        // Separate-subscription hosts registered as frontend endpointAliases:
+        // identity-canonical, so the kind survives normalize_provider_metadata
+        // on reload.
+        "https://api.kimi.ai/coding/v1" => Some(("kimi", "https://api.kimi.ai/coding/v1")),
+        "https://coding-intl.dashscope.aliyuncs.com/v1" => {
+            Some(("qwen", "https://coding-intl.dashscope.aliyuncs.com/v1"))
         }
         _ => None,
     }
@@ -430,12 +440,21 @@ mod tests {
             identify_coding_plan_endpoint("https://api.deepseek.com"),
             None
         );
-        // The intl Alibaba coding host is a separate subscription; it must
-        // not be canonicalized to the China endpoint.
+        // The intl Alibaba / overseas Kimi coding hosts are separate
+        // subscriptions: identified as their own canonical URLs (kind kept
+        // on reload) and never rewritten to the China endpoints.
         assert_eq!(
             identify_coding_plan_endpoint("https://coding-intl.dashscope.aliyuncs.com/v1"),
+            Some(("qwen", "https://coding-intl.dashscope.aliyuncs.com/v1")),
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://api.kimi.ai/coding/v1"),
+            Some(("kimi", "https://api.kimi.ai/coding/v1")),
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://coding-intl.dashscope.aliyuncs.com/other"),
             None,
-            "intl coding host must not be identified as the China plan"
+            "only the exact intl coding path is identified"
         );
         assert_eq!(
             identify_coding_plan_endpoint("https://api.lkeap.cloud.tencent.com/other/v3"),
