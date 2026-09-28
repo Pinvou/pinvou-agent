@@ -125,9 +125,15 @@ fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
 /// 镜像 → 官方源兜底。官方源恒在列表末尾；每个候选下载后都要过
 /// `archive_sha256` 校验，镜像字节被篡改时会被校验拦截并落到下一候选。
 fn artifact_download_urls(artifact: &Artifact) -> Vec<String> {
+    let prefix = std::env::var(GITHUB_ASSET_MIRROR_PREFIX_ENV).ok();
+    artifact_download_urls_with_prefix(prefix.as_deref(), artifact)
+}
+
+/// [`artifact_download_urls`] 的纯函数核心（便于单测，不触环境变量）。
+fn artifact_download_urls_with_prefix(prefix: Option<&str>, artifact: &Artifact) -> Vec<String> {
     let mut urls = Vec::new();
-    if let Ok(prefix) = std::env::var(GITHUB_ASSET_MIRROR_PREFIX_ENV)
-        && let Some(prefixed) = github_prefixed_url(&prefix, &artifact.url)
+    if let Some(prefix) = prefix
+        && let Some(prefixed) = github_prefixed_url(prefix, &artifact.url)
     {
         urls.push(prefixed);
     }
@@ -318,13 +324,14 @@ fn load_lock() -> Result<ConnectorLock, String> {
 
 /// 按候选地址顺序下载归档并校验归档 SHA-256，返回实际命中的下载地址
 /// （调用方据此判定归档格式）。任何候选的网络失败或校验不符都会清掉 `.part`
-/// 并尝试下一候选；全部候选失败时返回最后一个错误。
+/// 并尝试下一候选；全部候选失败时返回带候选总数的汇总错误。
 fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // 15 分钟总量:归档上限 128 MiB,180s 只够 ~730 KB/s 的链路,慢网
-        // 用户每次都恰好死在半途且无断点续传;15 分钟覆盖到 ~150 KB/s,
-        // 同时仍保证卡死连接最终会失败而不是挂住安装流程。
+        // 每个候选源 15 分钟（reqwest 的 client timeout 按单次请求计）：归档
+        // 上限 128 MiB,180s 只够 ~730 KB/s 的链路,慢网用户每次都恰好死在半途
+        // 且无断点续传;15 分钟覆盖到 ~150 KB/s,同时仍保证卡死连接最终会失败
+        // 而不是挂住安装流程。多候选回退时最坏情形按候选数翻倍。
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
@@ -337,8 +344,10 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
         .build()
         .map_err(|e| format!("创建下载客户端失败: {e}"))?;
 
+    let candidates = artifact_download_urls(artifact);
+    let total_candidates = candidates.len();
     let mut last_error = None;
-    for url_text in artifact_download_urls(artifact) {
+    for url_text in candidates {
         // 非法候选（环境变量前缀拼错、非 HTTPS 等）只跳过并告警，不整体失败：
         // 后面的审核镜像/官方源兜底不受用户配置错误牵连。
         let url = match reqwest::Url::parse(&url_text) {
@@ -361,7 +370,15 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| "无可用下载地址".to_string()))
+    // 全部候选失败时把「试过多少个源」带进报错（release 构建没有 logger，
+    // 逐候选的 log::warn! 不可见，报错本身要能说明镜像被试过）。
+    Err(match last_error {
+        Some(error) => format!(
+            "{} 归档下载失败（{} 个候选下载源全部未成功）: {error}",
+            artifact.name, total_candidates
+        ),
+        None => "无可用下载地址".to_string(),
+    })
 }
 
 /// 从单一地址下载归档到 `destination`（`.part` 暂存 → SHA-256 校验 → 原子
@@ -510,9 +527,7 @@ mod tests {
     /// wecom-cli 的 lock 镜像必须与官方 URL 同路径、仅域名换成 npmmirror
     /// （npmmirror 字节级镜像 npm 包，两端归档 SHA-256 一致）；dws/lark-cli
     /// 只发布在 GitHub Release，暂无审核过的国内镜像。
-    #[test]
-    fn wecom_lock_mirror_is_npmmirror_same_path_and_github_artifacts_have_none() {
-        let lock = load_lock().unwrap();
+    fn assert_wecom_mirror_invariants(lock: &ConnectorLock) {
         for artifact in &lock.artifacts {
             if artifact.name != "wecom-cli" {
                 assert!(
@@ -537,8 +552,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn current_platform_lock_mirror_invariants_hold() {
+        let lock = load_lock().unwrap();
+        assert_wecom_mirror_invariants(&lock);
+    }
+
+    /// 全部五个平台的 lock 都要过同一镜像不变量：`load_lock` 按 target 取
+    /// 资源，而 CI 的 cargo-test 矩阵只覆盖 linux-x86_64 与 macos-aarch64，
+    /// 其余平台 mirrorUrl 里的路径拼写错误只能在这里被拦下。
+    #[test]
+    fn all_platform_locks_pass_mirror_invariants() {
+        const ALL_PLATFORM_LOCKS: [&str; 5] = [
+            include_str!(
+                "../../../resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/linux/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/windows/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+        ];
+        for lock_json in ALL_PLATFORM_LOCKS {
+            let lock: ConnectorLock =
+                serde_json::from_str(lock_json).expect("平台 lock 必须能反序列化");
+            assert_eq!(lock.schema_version, 1);
+            assert_wecom_mirror_invariants(&lock);
+        }
+    }
+
     /// 候选顺序：GitHub 加速前缀（仅对 github.com 生效）→ 审核镜像 → 官方源；
-    /// 官方源恒在末尾，非 GitHub 制品不受前缀影响。
+    /// 官方源恒在末尾，非 GitHub 制品不受前缀影响。走纯函数核心，不触环境
+    /// 变量（导出了该环境变量的开发机上照样成立）。
     #[test]
     fn artifact_download_urls_order_prefix_mirror_then_official() {
         let artifact = Artifact {
@@ -552,12 +604,19 @@ mod tests {
             archive_sha256: "0".repeat(64),
             binary_sha256: "0".repeat(64),
         };
+        // 无前缀：审核镜像 → 官方源。
         assert_eq!(
-            artifact_download_urls(&artifact),
+            artifact_download_urls_with_prefix(None, &artifact),
             vec![
                 "https://registry.npmmirror.com/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz",
                 "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz",
             ]
+        );
+        // npmjs 制品即使配了前缀也不套加速地址。
+        assert_eq!(
+            artifact_download_urls_with_prefix(Some("https://gh-proxy.example"), &artifact),
+            artifact_download_urls_with_prefix(None, &artifact),
+            "非 github.com 官方源不得套加速前缀"
         );
 
         let github_artifact = Artifact {
@@ -568,26 +627,27 @@ mod tests {
             archive_sha256: "0".repeat(64),
             binary_sha256: "0".repeat(64),
         };
+        // 无前缀：仅官方源（dws/lark-cli 暂无审核镜像）。
         assert_eq!(
-            artifact_download_urls(&github_artifact),
+            artifact_download_urls_with_prefix(None, &github_artifact),
             vec![github_artifact.url.clone()]
         );
+        // 有前缀：前缀加速地址在前，官方源兜底。
+        assert_eq!(
+            artifact_download_urls_with_prefix(Some("https://mirror.example/gh/"), &github_artifact),
+            vec![
+                "https://mirror.example/gh/https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.0/dws-linux-amd64.tar.gz".to_string(),
+                github_artifact.url.clone(),
+            ]
+        );
 
-        // 前缀只作用于 github.com 官方源，且对镜像候选不加前缀。
+        // 前缀拼进候选后仍会在下载前过 HTTPS 复查；空白前缀无效。
         assert_eq!(
             github_prefixed_url(
                 "https://mirror.example/gh/",
                 "https://github.com/org/repo/releases/download/v1/a.tar.gz"
             ),
             Some("https://mirror.example/gh/https://github.com/org/repo/releases/download/v1/a.tar.gz".to_string())
-        );
-        assert_eq!(
-            github_prefixed_url(
-                "https://mirror.example/gh",
-                "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz"
-            ),
-            None,
-            "非 github.com 官方源不得套加速前缀"
         );
         assert_eq!(github_prefixed_url("  ", "https://github.com/o/r"), None);
     }
