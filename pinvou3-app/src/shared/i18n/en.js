@@ -631,7 +631,7 @@ dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'U
 dictEn.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictEn.uiToolDetails.tools, {
-  'session-reader':{ title:'Session Reader', subtitle:'Read-only access to other local sessions', latency:'Local', desc:'Lets AI read other Pinvou session histories on this device in paged, read-only form: after you @-reference a session in the composer, AI fetches its contents on demand (installed by default; reads local session files only, no network, nothing uploaded). If uninstalled, referenced sessions can no longer be read.', welcomeQueries:['Summarize the session I referenced','Where did my last session leave off'] },
+  'session-reader':{ title:'Session Reader', subtitle:'Read access to other local sessions; can message them', latency:'Local', desc:'Lets AI read other Pinvou session histories on this device in paged, read-only form: after you @-reference a session in the composer, AI fetches its contents on demand (installed by default; reads local session files only, no network, nothing uploaded). If uninstalled, referenced sessions can no longer be read.', welcomeQueries:['Summarize the session I referenced','Where did my last session leave off'] },
   weather:{ title:'Amap Weather', subtitle:'Real-time weather and multi-day forecasts from Amap', desc:'Query real-time weather and multi-day forecasts for cities nationwide through the Amap Web Service API. Enter your own Amap Web Service API Key; the key is written only to this device\u2019s system credentials.', configTitle:'Amap Weather Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Create a Web Service Key', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'Choose the \u201CWeb Service\u201D type.', placeholder:'Paste your Amap Web Service Key'}], welcomeQueries:['Weather in Hangzhou today','Will it rain in Beijing this week','What to wear in Shanghai tomorrow'] },
   iwencai:{ title:'iWenCai', subtitle:'A-share quotes, financials, screening, macro, and news', desc:'Provides 12 financial query tools based on the official iWenCai API. Enter your own iWenCai API Key; the key is written only to this device\u2019s system credentials.', configTitle:'iWenCai Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Open iWenCai SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'Open any official Skill and copy it from \u201CInstallation\u201D.', placeholder:'Paste your IWENCAI_API_KEY'}], welcomeQueries:['Latest Moutai share price','How is the market doing today','Bank stocks with P/E below 10','Recent rate-cut news'] },
   card3:{ title:'QQ Mail API', subtitle:'Smart email sending/receiving and thread summarization', desc:'Provides standard interfaces for sending, receiving, searching, and organizing email. Combined with an LLM, you can read mail in natural language, summarize long threads, and automatically archive and manage folders.' },
@@ -667,7 +667,7 @@ dictEn.uiBuiltinPlugins = {
   versionNote:'Updates with the app',
   dataAccessLabel:'Data access',
   levels:{ L0:'Read-only: modifies no state; content is marked untrusted', L1:'Write: produces user-visible side effects (e.g. send messages, create tasks)', L2:'Destructive: irreversible delete/overwrite; requires explicit authorization' },
-  dataAccess:{ 'sessions.read':'Local session store (read-only)' },
+  dataAccess:{ 'sessions.read':'Local session store (read-only)', 'sessions.write':'Send messages into other local sessions (write)' },
 };
 
 // Generic built-in feature degradation copy (docs/builtin-toolset-contract.md
@@ -883,6 +883,7 @@ dictEn.uiArtifacts = {
 };
 
 dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', dropHint:'Drop to reference this session', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted', cardDisabled:'Feature off' };
+dictEn.uiSessionMessage = { from:name=>`From session: ${name}`, fromUnknown:'From another session', jump:name=>`Open session: ${name}`, unavailable:'Session deleted' };
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {

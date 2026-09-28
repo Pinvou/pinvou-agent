@@ -244,6 +244,8 @@ mod tests {
     /// The builtin manifest (session-reader embedded snapshot) parses its 5
     /// contract fields correctly, and the tool_features keys match the
     /// mcp_tools full names exactly (a shared-contract hard constraint).
+    /// The send tool maps to its own feature (session-messaging) — the
+    /// union-semantics counterpart of the two read tools.
     #[test]
     fn session_reader_manifest_carries_builtin_contract_fields() {
         let manifest =
@@ -252,19 +254,30 @@ mod tests {
                 .expect("session-reader is in the embedded catalog");
         assert!(manifest.builtin);
         assert_eq!(manifest.visibility, "system");
-        assert_eq!(manifest.security_level, "L0");
-        assert_eq!(manifest.data_access, ["sessions.read".to_string()]);
-        assert_eq!(manifest.tool_features.len(), 2);
-        for tool in &manifest.mcp_tools {
-            let features = manifest
-                .tool_features
-                .get(tool)
-                .unwrap_or_else(|| panic!("tool_features is missing an entry for {tool}"));
+        assert_eq!(manifest.security_level, "L1");
+        assert_eq!(
+            manifest.data_access,
+            ["sessions.read".to_string(), "sessions.write".to_string()]
+        );
+        assert_eq!(manifest.tool_features.len(), 3);
+        for tool in [
+            "mcp_session-reader_read_session",
+            "mcp_session-reader_list_sessions",
+        ] {
             assert_eq!(
-                features,
-                &["session-mention".to_string(), "long-memory".to_string()]
+                manifest.tool_features.get(tool).unwrap(),
+                &["session-mention".to_string(), "long-memory".to_string()],
+                "{tool} serves both read features"
             );
         }
+        assert_eq!(
+            manifest
+                .tool_features
+                .get("mcp_session-reader_send_message_to_session")
+                .unwrap(),
+            &["session-messaging".to_string()],
+            "the send tool serves only the messaging feature"
+        );
     }
 
     /// MarketplaceToolInfo frontend contract: builtin plugins carry

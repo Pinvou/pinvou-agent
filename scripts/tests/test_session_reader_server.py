@@ -18,6 +18,9 @@ Covers the session-mention P2 acceptance points:
 - feature-switch fallback (docs/builtin-toolset-contract.md §3.3): a
   structured feature_disabled error when all dependent features are off;
   union semantics; missing/corrupt manifest or state file allows the call.
+- send_message_to_session (contract §5 L1 / §6): target/sender validation
+  (charset, isolation prefixes, existence), self-send rejection, text/key
+  caps, atomic spool write with idempotency-key dedup, sanitized errors.
 
 Run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 """
@@ -640,7 +643,11 @@ class StdioContractTests(unittest.TestCase):
 
             tools = self._rpc(proc, "tools/list")
             names = [tool["name"] for tool in tools["result"]["tools"]]
-            self.assertEqual(names, ["read_session", "list_sessions"])
+            self.assertEqual(names, [
+                "read_session",
+                "list_sessions",
+                "send_message_to_session",
+            ])
 
             call = self._rpc(proc, "tools/call", {
                 "name": "read_session",
@@ -871,6 +878,99 @@ class FeatureGateStdioTests(unittest.TestCase):
         finally:
             proc.kill()
             proc.communicate()
+
+
+class SendMessageTests(unittest.TestCase):
+    """send_message_to_session: validation + spool write (contract §5 L1 / §6)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-send-test-")
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        self.messaging = Path(self.tmp) / "messaging"
+        _write_session(self.sessions, "src0001", [], title="源会话")
+        _write_session(self.sessions, "tgt0001", [], title="目标会话")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _send(self, **overrides):
+        args = {
+            "sessions_dir": str(self.sessions),
+            "messaging_dir": str(self.messaging),
+            "to_session": "tgt0001",
+            "text": "跨会话交接",
+        }
+        args.update(overrides)
+        return server.send_message_to_session(**args)
+
+    def _spooled(self):
+        return sorted(Path(self.messaging, "spool").glob("*.json"))
+
+    def test_valid_send_spools_with_titles_and_text(self):
+        payload, error = self._send(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertFalse(payload["duplicate"])
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["to_session"], "tgt0001")
+        self.assertEqual(record["to_title"], "目标会话")
+        self.assertEqual(record["from_session"], "src0001")
+        self.assertEqual(record["from_title"], "源会话")
+        self.assertEqual(record["text"], "跨会话交接")
+        self.assertEqual(record["idempotency_key"], "k1")
+
+    def test_same_idempotency_key_overwrites_one_spool_file(self):
+        first, _ = self._send(from_session="src0001", idempotency_key="k1")
+        second, _ = self._send(from_session="src0001", idempotency_key="k1")
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(len(self._spooled()), 1)
+
+    def test_missing_key_uses_unique_file_names(self):
+        self._send()
+        self._send()
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_isolated_and_unknown_targets_are_rejected(self):
+        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1", "no-such"):
+            payload, error = self._send(to_session=target)
+            self.assertIsNone(payload)
+            self.assertIn("not", error)
+        payload, error = self._send(to_session="../escape")
+        self.assertIsNone(payload)
+        self.assertIn("invalid", error)
+
+    def test_isolated_sender_and_self_send_are_rejected(self):
+        payload, error = self._send(from_session="sched-run1")
+        self.assertIsNone(payload)
+        payload, error = self._send(from_session="TGT0001")
+        self.assertIsNone(payload)
+        self.assertIn("itself", error)
+
+    def test_text_and_key_caps_are_enforced(self):
+        payload, error = self._send(text="   ")
+        self.assertIsNone(payload)
+        payload, error = self._send(text="x" * (server.MAX_MESSAGE_TEXT_CHARS + 1))
+        self.assertIsNone(payload)
+        payload, error = self._send(idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1))
+        self.assertIsNone(payload)
+
+    def test_spool_errors_do_not_leak_host_paths(self):
+        blocker = Path(self.tmp) / "blocked-file"
+        blocker.write_bytes(b"x")  # a plain file where the spool dir must be
+        payload, error = self._send(messaging_dir=str(blocker))
+        self.assertIsNone(payload)
+        self.assertTrue(str(self.tmp) not in error, error)
+
+    def test_spool_write_is_atomic_json(self):
+        self._send()
+        record_file = self._spooled()[0]
+        # A torn/partial write would fail json parsing; the atomic tmp+rename
+        # guarantees the watcher only ever observes complete records.
+        json.loads(record_file.read_text(encoding="utf-8"))
 
 
 class SessionsDirResolutionTests(unittest.TestCase):

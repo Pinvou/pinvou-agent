@@ -149,8 +149,21 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Write-semantics decision template**: when writing a message into a running session,
   the design must declare queue (wait for the current turn) vs steer (inject into the
   current turn); do not reinvent.
+- **Inter-session delivery semantics** (session-reader `send_message_to_session`,
+  landed 2026-09): a target that is mid-turn gets the message **steered** into its
+  current turn; an idle or not-yet-loaded target gets a **new turn dispatched
+  immediately** (the scheduled-task wake precedent — the receiving session's model
+  sees the message at once and may reply by calling the same tool). Delivery never
+  writes the target's session file directly: the MCP server validates and spools
+  (`~/.pinvou3/messaging/spool/<uuid>.json`), and an app-side Rust watcher performs
+  the steer/dispatch through the engine pool, so the persistence actor's
+  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  carries a machine-readable sender header block (the session-mention block pattern
+  mirrored on receive) that the timeline renders as a sender card and all three
+  auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
-  idempotency key or be naturally idempotent.
+  idempotency key or be naturally idempotent. `send_message_to_session` takes an
+  optional `idempotency_key`; the server dedupes recent keys per sender.
 
 ## 7. Presentation to the model
 
@@ -187,7 +200,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| Inter-session messaging (`send_message_to_session`-like) | session-reader | L1 | not initiated; mind sched- ownership and queue/steer semantics in design |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; approval via a typed execpolicy Ask rule + audit log; sched-/eval_/aux- rejected as targets) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

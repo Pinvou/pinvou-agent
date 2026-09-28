@@ -102,9 +102,14 @@ pub(crate) async fn chat_with_reservation(
         // contract + JSON metadata, see session-mention.js) is machine
         // context, not user body text: strip it before auto-titling so a
         // refs-only first send does not name the session after the contract.
-        super::sessions::strip_session_mention_block(message.trim())
-            .trim()
-            .to_string()
+        // A received cross-session message block (features::messaging) is
+        // machine context too: strip it after the mention block so neither
+        // contract feeds the title.
+        super::sessions::strip_session_message_block(super::sessions::strip_session_mention_block(
+            message.trim(),
+        ))
+        .trim()
+        .to_string()
     };
     if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
         log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");

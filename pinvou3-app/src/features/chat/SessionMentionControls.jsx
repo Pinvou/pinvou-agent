@@ -7,7 +7,6 @@ import { MessageSquare, X } from '../../components/icons.jsx';
  * AttachmentChips / BackgroundTasksIndicator; all copy is injected via
  * props.copy (trilingual i18n keys live under uiSessionMention in shared/i18n).
  */
-
 const CHIP_CLS =
   'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
   'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]';
@@ -159,6 +158,63 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
           </span>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Sender card of a received cross-session message (session-reader's
+ * send_message_to_session, delivered by features/messaging): sits above the
+ * message body in the receiving session's timeline. Attributed senders are
+ * clickable and jump to the sender session (same navigation as the mention
+ * reference cards); a deleted sender degrades to unavailable, an
+ * unattributed one to a generic notice. Copy is injected via props.copy
+ * (trilingual keys under uiSessionMessage).
+ */
+export function SessionMessageCard({ sender, knownSessionIds, onOpenSession, copy }) {
+  if (!sender || (!sender.sessionId && !sender.title)) return null;
+  const label = sender.title || sender.sessionId;
+  const known = sender.sessionId && (!knownSessionIds || knownSessionIds.has(sender.sessionId));
+  const base =
+    'max-w-[240px] rounded-xl px-3 py-1.5 inline-flex items-center gap-1.5 text-[12px] border ';
+  const active =
+    'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 ' +
+    'dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300 dark:hover:bg-blue-500/20';
+  const dead = 'border-black/[0.06] text-[#9AA0A6] dark:border-white/5 dark:text-[#80868B]';
+  const inner = (
+    <>
+      <MessageSquare size={13} className="shrink-0" />
+      <span className="min-w-0 truncate">{copy.from(label)}</span>
+    </>
+  );
+  if (known && onOpenSession) {
+    return (
+      <div data-testid="session-message-card" className="flex max-w-full justify-end mb-1.5">
+        <button
+          type="button"
+          data-testid={'session-message-card-' + sender.sessionId}
+          title={copy.jump(label)}
+          aria-label={copy.jump(label)}
+          onClick={() => onOpenSession(sender.sessionId)}
+          className={base + active}
+        >
+          {inner}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div data-testid="session-message-card" className="flex max-w-full justify-end mb-1.5">
+      <span
+        title={sender.sessionId && !known ? copy.unavailable : copy.fromUnknown}
+        className={base + (sender.sessionId && !known ? dead : active)}
+      >
+        {sender.sessionId && !known
+          ? <span className="shrink-0 text-[11px]">{copy.from(label)} · {copy.unavailable}</span>
+          : sender.sessionId
+            ? inner
+            : <span className="shrink-0 text-[11px]">{copy.fromUnknown}</span>}
+      </span>
     </div>
   );
 }

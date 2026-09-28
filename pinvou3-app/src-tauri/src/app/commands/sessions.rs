@@ -262,6 +262,46 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     }
 }
 
+/// Received cross-session message block contract (the delivery side is
+/// `features::messaging::build_session_message_block`; the JS receiver parser
+/// `session-message-block.js` mirrors this — all three must agree): header
+/// line, one JSON object line, blank line, body; the JSON line may also
+/// terminate the string. Same tolerance as the mention block: lookalikes are
+/// returned unchanged, never swallowed.
+const SESSION_MESSAGE_BLOCK_HEADER: &str = "## Message from another session";
+
+/// Strip a leading received-message sender block and return the body. Used
+/// by auto-titling so a session woken by a delivered message is not named
+/// after the sender contract.
+pub(crate) fn strip_session_message_block(text: &str) -> &str {
+    const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 * 1024;
+    let rest = match text.strip_prefix(SESSION_MESSAGE_BLOCK_HEADER) {
+        Some(rest) if rest.starts_with('\n') => &rest[1..],
+        _ => return text,
+    };
+    let (json_line, after) = match rest.find('\n') {
+        Some(index) => (&rest[..index], &rest[index + 1..]),
+        // JSON line is the last line (header + sender only).
+        None => (rest, ""),
+    };
+    if json_line.chars().count() > MAX_BLOCK_JSON_LINE_CHARS {
+        return text;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
+        return text;
+    };
+    if !value.is_object() {
+        return text;
+    }
+    if after.is_empty() {
+        return "";
+    }
+    match after.strip_prefix('\n') {
+        Some(body) => body,
+        None => text,
+    }
+}
+
 /// 标题仍为默认值「新对话」时，用首条消息（或附件名兜底）派生会话标题（前 28 字符）。
 ///
 /// ACP（codex_acp_prompt）与原生（chat）两条发送链路统一经此自动命名；
@@ -531,6 +571,61 @@ mod session_mention_title_tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod session_message_title_tests {
+    use super::strip_session_message_block;
+
+    /// Build the exact block features::messaging delivers.
+    fn message_block(sender_json: &str, body: &str) -> String {
+        format!("## Message from another session\n{sender_json}\n\n{body}")
+    }
+
+    #[test]
+    fn strips_the_block_and_returns_the_body() {
+        let outgoing = message_block(
+            r#"{"sessionId":"src0001","title":"源会话"}"#,
+            "请确认上次的结论\n第二行",
+        );
+        assert_eq!(
+            strip_session_message_block(&outgoing),
+            "请确认上次的结论\n第二行"
+        );
+    }
+
+    #[test]
+    fn sender_only_block_yields_an_empty_body() {
+        let binding = message_block(r#"{"sessionId":null,"title":null}"#, "");
+        let trimmed = binding.trim_end();
+        assert_eq!(strip_session_message_block(trimmed), "");
+    }
+
+    #[test]
+    fn hand_written_lookalikes_are_not_swallowed() {
+        // Non-object JSON line.
+        let array_line = "## Message from another session\n[1,2]\n\n正文";
+        assert_eq!(strip_session_message_block(array_line), array_line);
+        // Bad JSON line.
+        let bad_json = "## Message from another session\nnot-json\n\n正文";
+        assert_eq!(strip_session_message_block(bad_json), bad_json);
+        // Missing blank separator while a body follows.
+        let no_blank = "## Message from another session\n{\"sessionId\":\"a\"}\n正文";
+        assert_eq!(strip_session_message_block(no_blank), no_blank);
+        // Ordinary text starting with a similar heading is untouched.
+        let plain = "普通消息\n## Message from another session\n{\"sessionId\":\"a\"}";
+        assert_eq!(strip_session_message_block(plain), plain);
+    }
+
+    #[test]
+    fn json_line_beyond_the_64kb_cap_is_not_a_block() {
+        let huge_title = "t".repeat(70 * 1024);
+        let oversized = message_block(
+            &format!(r#"{{"sessionId":"a","title":"{huge_title}"}}"#),
+            "正文",
+        );
+        assert_eq!(strip_session_message_block(&oversized), oversized);
     }
 }
 

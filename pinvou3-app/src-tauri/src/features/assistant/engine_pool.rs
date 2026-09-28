@@ -2967,6 +2967,39 @@ impl EnginePool {
         .await
     }
 
+    /// Deliver a cross-session message as a new turn — the idle-wake path of
+    /// `features::messaging` (docs/builtin-toolset-contract.md §6: target
+    /// idle / not loaded → dispatch immediately, the scheduled-task wake
+    /// precedent). Mirrors `send_user_message` minus its benchmark gate;
+    /// the session's own mode governs the turn.
+    pub(crate) async fn deliver_messaging_turn(
+        &self,
+        session_id: &str,
+        content: String,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        let display_message = user_display_message(content.clone());
+        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+            && self.swarm_mode_available(session_id))
+        .then(ExpertRosterSnapshot::capture);
+        let expert_candidates = expert_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.available_role_lines(&content))
+            .unwrap_or_default();
+        let mode = self.store.mode_state(session_id).mode.to_app_mode();
+        self.send_reserved_user_message(
+            session_id,
+            content,
+            display_message,
+            mode,
+            false,
+            expert_snapshot,
+            expert_candidates,
+            reservation,
+        )
+        .await
+    }
+
     /// Execute the initial turn for a pre-created scheduled session and wait
     /// for the authoritative terminal event produced by the existing engine
     /// forwarder. The engine is evicted afterwards, while the session itself

@@ -13,6 +13,7 @@ pub(crate) mod knowledge;
 pub(crate) mod local_llm;
 pub mod marketplace;
 pub mod memory;
+pub mod messaging;
 pub(crate) mod monitor;
 pub mod multiagent;
 pub mod personas;

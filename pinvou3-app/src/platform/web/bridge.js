@@ -1500,6 +1500,12 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
         // classic-script bridges do not import features back).
         const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
         if (splitMention) titleText = splitMention(titleText).text.trim();
+        // Same treatment for the received cross-session message block
+        // (features/messaging delivery of send_message_to_session): a session
+        // woken by a delivered message must not be titled after the sender
+        // header contract.
+        const splitMessage = window.__PINVOU_SESSION_MESSAGE__ && window.__PINVOU_SESSION_MESSAGE__.splitSessionMessageBlock;
+        if (splitMessage) titleText = splitMessage(titleText).text.trim();
         if (titleText) {
           const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
