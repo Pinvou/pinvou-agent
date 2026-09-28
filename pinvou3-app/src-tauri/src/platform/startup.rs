@@ -93,6 +93,12 @@ fn rotate_if_oversized(path: &Path) -> RotationInfo {
     }
 }
 
+/// Open the startup log under the current `PINVOU3_HOME` and stamp
+/// `process:start`. Safe to call again: a re-init re-points the sink at the
+/// freshly opened log instead of being silently dropped, so every caller's
+/// marks land in the log it just opened (tests re-init under a fresh home;
+/// production inits once). A re-init whose open fails keeps the previous
+/// sink — marks keep landing somewhere real instead of vanishing.
 pub fn init() {
     STARTED_AT.get_or_init(Instant::now);
     let started_utc = Utc::now();
@@ -116,7 +122,9 @@ pub fn init() {
             .open(&path)
             .ok()
     });
-    let _ = LOG_FILE.set(Mutex::new(file));
+    if let (Some(file), Ok(mut slot)) = (file, LOG_FILE.get_or_init(|| Mutex::new(None)).lock()) {
+        *slot = Some(file);
+    }
     mark_with_detail(
         "rust",
         "process:start",

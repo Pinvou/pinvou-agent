@@ -1122,6 +1122,21 @@ fn llm_review_sanitizer_applies_per_store_text_caps() {
 }
 
 #[test]
+fn work_context_normalizes_to_the_exported_cap() {
+    // The final storage gate must truncate to WORK_CONTEXT_TEXT_MAX_CHARS —
+    // the exported constant the CLI validates against. A regression back to
+    // a local literal is behavior-identical while the values match, so pin
+    // the constant itself here.
+    let mut item: WorkContextFile = serde_json::from_value(serde_json::json!({})).unwrap();
+    item.text = "记".repeat(super::io::WORK_CONTEXT_TEXT_MAX_CHARS + 5);
+    super::io::normalize_work_context(&mut item);
+    assert_eq!(
+        item.text.chars().count(),
+        super::io::WORK_CONTEXT_TEXT_MAX_CHARS
+    );
+}
+
+#[test]
 fn llm_review_prompt_matches_supported_actions() {
     assert!(
         LLM_REVIEW_PROMPT_TEMPLATE
