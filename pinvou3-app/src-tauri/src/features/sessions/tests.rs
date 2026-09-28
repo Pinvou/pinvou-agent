@@ -1111,6 +1111,58 @@ fn create_empty_with_id_refuses_to_overwrite_an_existing_record() {
 }
 
 #[test]
+fn create_empty_with_id_refusal_leaves_the_retained_transcript_and_pin_untouched() {
+    let (store, _g) = isolated_store();
+    let retained = "eval_collision_survivor";
+
+    // Seed the record a PID-reused fresh id would collide with: a started
+    // transcript plus a durable pin — exactly what a silent overwrite would
+    // destroy or inherit onto the new stub.
+    store
+        .create_empty_with_id(
+            retained.to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("seed the retained record");
+    store
+        .update_messages(&retained, vec![user_text("real work")])
+        .expect("start the transcript");
+    store.set_pinned(retained, true).expect("pin the session");
+    let pin_file = paths::sessions_root().join("_pinned_sessions.json");
+
+    let colliding = store.create_empty_with_id(
+        retained.to_string(),
+        "/model".into(),
+        None,
+        std::env::temp_dir(),
+    );
+    assert!(
+        colliding.is_err(),
+        "the collision must be refused instead of replacing the record"
+    );
+
+    // The retained transcript survives verbatim, asserted against a reopened
+    // store so the check reads the durable record rather than this process's
+    // caches; the pin file is parsed for the same reason.
+    let reopened = reopen_store(&store).expect("reopen the store");
+    let survived = reopened
+        .load(&retained)
+        .expect("the retained record must survive the refused create");
+    assert_eq!(
+        survived.messages,
+        vec![user_text("real work")],
+        "the refused create must not truncate or replace the transcript"
+    );
+    let durable = parse_pin_file(&pin_file);
+    assert!(
+        durable.contains_key(retained),
+        "the refused create must not drop the retained session's pin: {durable:?}"
+    );
+}
+
+#[test]
 fn chat_session_has_messages_reflects_the_durable_transcript() {
     let (store, _g) = isolated_store();
     let session = store
