@@ -348,7 +348,7 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
 
     let candidates = artifact_download_urls(artifact);
     let total_candidates = candidates.len();
-    let mut last_error = None;
+    let mut failures: Vec<String> = Vec::new();
     for url_text in candidates {
         // 非法候选（环境变量前缀拼错、非 HTTPS 等）只跳过并告警，不整体失败：
         // 后面的审核镜像/官方源兜底不受用户配置错误牵连。
@@ -357,29 +357,40 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
             _ => {
                 let error = format!("下载地址无效或非 HTTPS: {url_text}");
                 log::warn!("[connectors] {} 跳过候选地址: {error}", artifact.name);
-                last_error = Some(error);
+                failures.push(error);
                 continue;
             }
         };
         match download_from_url(&client, &url, artifact, destination) {
             Ok(()) => return Ok(url_text),
             Err(error) => {
+                // 非默认端口写进前缀，避免同机多端口候选在报错里无法区分。
+                let host = match url.port() {
+                    Some(port) => {
+                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
+                    }
+                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
+                };
                 log::warn!(
                     "[connectors] {} 下载源失败，尝试下一候选地址: {error}",
                     artifact.name
                 );
-                last_error = Some(error);
+                failures.push(format!("[{host}] {error}"));
             }
         }
     }
-    // 全部候选失败时把「试过多少个源」带进报错（release 构建没有 logger，
-    // 逐候选的 log::warn! 不可见，报错本身要能说明镜像被试过）。
-    Err(match last_error {
-        Some(error) => format!(
-            "{} 归档下载失败（{} 个候选下载源全部未成功）: {error}",
-            artifact.name, total_candidates
+    // 全部候选失败时把「试过多少个源、每个源各自的失败原因」都带进报错
+    // （release 构建没有 logger，逐候选的 log::warn! 不可见，报错本身要能
+    // 说明镜像被试过、失败出在哪一层；只保留最后一个错误会把触发镜像重试
+    // 的首个根因藏掉）。
+    Err(match failures.as_slice() {
+        [] => "无可用下载地址".to_string(),
+        list => format!(
+            "{} 归档下载失败（{} 个候选下载源全部未成功）: {}",
+            artifact.name,
+            total_candidates,
+            list.join("；")
         ),
-        None => "无可用下载地址".to_string(),
     })
 }
 
@@ -406,10 +417,22 @@ fn download_from_url(
     let partial = destination.with_extension("part");
     let _ = fs::remove_file(&partial);
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    let mut file = File::create(&partial).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
-    let copied = io::copy(&mut reader, &mut file).map_err(|e| format!("保存下载失败: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("同步下载文件失败: {e}"))?;
+    // 写入阶段任一步失败（磁盘满/连接中断）同样清掉 .part：失败残留既占
+    // 磁盘（上限 128 MiB），也与「任何候选失败都清理暂存」的语义一致。
+    let write_result = (|| -> Result<u64, String> {
+        let mut file = File::create(&partial).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
+        let copied = io::copy(&mut reader, &mut file).map_err(|e| format!("保存下载失败: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("同步下载文件失败: {e}"))?;
+        Ok(copied)
+    })();
+    let copied = match write_result {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
+    };
     if copied > MAX_ARCHIVE_BYTES {
         let _ = fs::remove_file(&partial);
         return Err("连接器归档超过 128 MiB 安全上限".to_string());
@@ -527,8 +550,9 @@ mod tests {
     }
 
     /// wecom-cli 的 lock 镜像必须与官方 URL 同路径、仅域名换成 npmmirror
-    /// （npmmirror 字节级镜像 npm 包，两端归档 SHA-256 一致）；dws/lark-cli
-    /// 只发布在 GitHub Release，暂无审核过的国内镜像。
+    /// （npmmirror 是 registry 同步镜像——不承诺字节级一致，两端归档以
+    /// SHA-256 pin 为准，review 中实测一致）；dws/lark-cli 只发布在
+    /// GitHub Release，暂无审核过的国内镜像。
     fn assert_wecom_mirror_invariants(lock: &ConnectorLock) {
         for artifact in &lock.artifacts {
             if artifact.name != "wecom-cli" {
