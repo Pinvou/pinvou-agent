@@ -66,6 +66,9 @@ import {
   filterSessionMentionCandidates,
   dedupeSessionRefs,
   isSessionMentionEnabled,
+  stashSessionMentionDraft,
+  restoreSessionMentionDraft,
+  MAX_SESSION_REFS,
 } from './session-mention.js';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
@@ -208,13 +211,6 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
-
-// Pending mention chips per draft scope (session id, or draft epoch for the
-// not-yet-materialized draft session). Module-level, in-memory only — the
-// same lifetime as the bridge's composer working set (both survive view
-// unmount/remount, neither survives an app restart).
-const sessionMentionDrafts = new Map();
-const MENTION_DRAFT_CACHE_LIMIT = 200;
 
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
@@ -1054,6 +1050,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         window.addEventListener('pinvou:tools-changed', refresh);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
       }, []);
+      // Draft scope the in-flight voice send will consume chips from; read
+      // by onTaskAccepted (a separate callback) so its clear obeys the same
+      // session-switch guard as the sendTask clear.
+      const mentionSendScopeRef = useRef(null);
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
       }, []);
@@ -1770,20 +1770,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // same scope change.
         const key = activeSessionId ? `session:${activeSessionId}` : `draft:${draftEpoch}`;
         mentionDraftKeyRef.current = key;
-        setSessionRefs(dedupeSessionRefs(sessionMentionDrafts.get(key) || []));
+        setSessionRefs(restoreSessionMentionDraft(key));
         setMentionDismissedToken(null);
         setMentionSelection({ token: null, index: 0 });
         return () => {
-          const refs = sessionRefsRef.current;
-          if (refs.length) {
-            if (sessionMentionDrafts.size >= MENTION_DRAFT_CACHE_LIMIT) {
-              // Bounded cache: evict the oldest scope (Map insertion order).
-              sessionMentionDrafts.delete(sessionMentionDrafts.keys().next().value);
-            }
-            sessionMentionDrafts.set(key, refs);
-          } else {
-            sessionMentionDrafts.delete(key);
-          }
+          stashSessionMentionDraft(key, sessionRefsRef.current);
         };
       /* eslint-enable react-hooks/set-state-in-effect */
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: restore only on session and draft epoch; adding bs would reread the draft on every backend snapshot change, overwriting in-progress input
@@ -2056,8 +2047,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // armed for the next plain composer send.
         const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
         const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
+        // Scope guard: the clear races a session switch during the await —
+        // chips picked in the NEW scope must survive (they restore from the
+        // per-scope draft store on return).
+        const draftKeyAtSend = mentionDraftKeyRef.current;
         void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
-          if (accepted) setSessionRefs([]);
+          if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
       }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
@@ -2454,11 +2449,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // append-style prefill (newline separator, re-review #4) that does not
         // interrupt typing.
         setInputText('');
+        // Scope guard for the post-await chip clear below: switching sessions
+        // mid-send must not wipe the target scope's freshly picked chips.
+        const draftKeyAtSend = mentionDraftKeyRef.current;
         try {
           const accepted = await sendChatMessage(outgoingText);
           // Clear chips once the send is accepted, even when the feature gate
           // suppressed the block (stale chips from before the toggle must not linger).
-          if (accepted) setSessionRefs([]);
+          if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2688,6 +2686,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // — a voice send must not drop refs the user explicitly picked.
           const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
           const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
+          // Scope guard: a session switch during the await moves the draft key;
+          // the new scope's chips must not be wiped by this send's cleanup.
+          const draftKeyAtSend = mentionDraftKeyRef.current;
+          mentionSendScopeRef.current = draftKeyAtSend;
           try {
             const result = await sendChatMessage(outgoingText, { ...context, draftOwner: owner });
             if (result === true) {
@@ -3437,8 +3439,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 maxLength={CHAT_INPUT_MAX_LENGTH}
                 placeholder={composerPlaceholder}
                 rows={1}
+                role="combobox"
                 aria-haspopup="listbox"
                 aria-expanded={mentionMenuOpen}
+                aria-controls="session-mention-listbox"
                 aria-activedescendant={
                   mentionMenuOpen && mentionCandidates.length > 0
                     ? `session-mention-option-${mentionCandidates[mentionIndex].sessionId}`
