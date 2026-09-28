@@ -110,16 +110,18 @@ entry under shared key `windows-rust-test`. CodeWhale is a path dependency,
 not an application-workspace member, so its required lib tests need their own
 target directory; including that directory in the existing entry is the
 minimum cache shape for this coverage, not a second cache. The first `main`
-run after this change may compile CodeWhale cold and is expected to add about
-0.8–2GB compressed. Restore-key fallback then reuses the entry across lockfile
-changes. Both legs restore the same entry on their isolated runners, but
+run after adding CodeWhale to the entry may compile it cold and is expected
+to add about 0.8–2GB compressed. Restore-key fallback then reuses the entry
+across lockfile changes. Both legs restore the same entry on their isolated
+runners, but
 `save-if` only allows the `regression` leg on `refs/heads/main` to write it
 (that leg owns the linked application and CodeWhale test artifacts), so the
 split adds neither a second writer nor a new namespace, pull requests never
 rewrite the entry, and usage stays within the repository-wide 10GB budget.
-The saved entry holds build (not check) artifacts, so the `all-targets-check`
-leg compiles its metadata-only dependency graph without a warm cache; that is
-the expected cost of the split and is visible in the timing lines below.
+The saved entry holds the regression leg's build artifacts, so much of the
+dependency graph stays warm for the `all-targets-check` leg; the application
+crate's own `--all-targets --features dev-tools` metadata is the part compiled
+cold on every run. That residual cost is visible in the timing lines below.
 `pinvou-cli` has no separate cache. Node/npm setup is absent —
 under the debug profile tauri's `generate_context!` uses `devUrl`, `dist/`
 is never packaged, and `build.rs` only depends on `tauri-build`/`cc` —
@@ -150,7 +152,7 @@ the cap applies per leg, since either leg can still compile cold on a cache
 miss.
 
 On failure, read the import-diagnostic output (step 9) and the failing filter
-name (steps 9–10); cache restore misses stay visible rollback signals. Do not
+name (steps 10–11); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing
 failures to warnings, or adding another independent large target cache beyond

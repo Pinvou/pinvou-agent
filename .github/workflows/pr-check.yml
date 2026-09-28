@@ -252,6 +252,7 @@ jobs:
               - 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'
               - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
+              - 'pinvou3-app/tests/tauri_effective_config.test.js'
             pet:
               - 'pinvou3-app/src/assets/pet/**'
               - 'pinvou3-app/src/features/pet/**'
@@ -1236,7 +1237,7 @@ jobs:
     # must codegen and link the default-feature test harness; a prior check
     # does not turn that link into an incremental step. Running them in one
     # serial job put both compile graphs on the critical path (passing runs
-    # took 75-108 minutes). Both legs stay required under this aggregate
+    # took 85-87 minutes). Both legs stay required under this aggregate
     # matrix job, but run independently so wall time is the slower leg
     # rather than the sum. See docs/windows-rust-ci.md.
     strategy:
@@ -1285,8 +1286,12 @@ jobs:
       - name: 初始化公共底座 submodule
         run: |
           started=$SECONDS
+          set +e
           git submodule update --init --recursive -- CodeWhale
-          echo "WINDOWS_RUST_TIMING phase=${{ matrix.phase }} step=codewhale-init elapsed_seconds=$((SECONDS-started))"
+          status=$?
+          set -e
+          echo "WINDOWS_RUST_TIMING phase=${{ matrix.phase }} step=codewhale-init elapsed_seconds=$((SECONDS-started)) status=$status"
+          exit "$status"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
