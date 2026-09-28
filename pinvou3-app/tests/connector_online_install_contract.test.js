@@ -30,7 +30,10 @@ for (const connector of ["lark-cli", "wecom-cli", "dws"]) {
 
 assert.match(installer, /archive_sha256/);
 assert.match(installer, /binary_sha256/);
-assert.match(installer, /url\.scheme\(\) != "https"/);
+// HTTPS 双闸：候选地址必须在下载前过 scheme 校验（非 HTTPS 候选直接跳过），
+// 重定向策略同样拒绝降级到非 HTTPS。
+assert.match(installer, /url\.scheme\(\) == "https"/);
+assert.match(installer, /scheme\(\) != "https"/);
 assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
