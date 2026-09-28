@@ -1334,6 +1334,24 @@ fn npm_fallback_available(npm_package: Option<&str>, npm_executable: bool) -> bo
     npm_package.is_some() && npm_executable
 }
 
+/// npm 升级前是否需要把官方脚本二进制移开（纯函数核心，便于单测）：仅当
+/// 脚本路径就是当前解析生效的 CLI 时，脚本文件才会遮住 npm 装进全局目录的
+/// 新版本，移开才有意义。解析优先级更高的来源（`PINVOU3_*_CLI_PATH` 覆盖、
+/// Claude 桥接自带的 agent SDK 二进制、PATH 命中）不受脚本文件遮蔽——此时
+/// 移开不会让升级更生效，反而会在「finalize 只验已安装、有效性校验在备份
+/// 清理之后」的时序下，把用户的脚本安装永久删掉（备份在 finalize 通过后
+/// 清理，而版本有效性校验在 install 收口处才跑）。
+fn npm_move_aside_needed(resolved: Option<&Path>, script_paths: &[PathBuf]) -> bool {
+    match resolved {
+        Some(path) => script_paths
+            .iter()
+            .any(|candidate| candidate.as_path() == path),
+        // 解析不出任何可用 CLI 时仍移开：脚本残留属于解析不认的坏文件，
+        // 清到旁边才能让升级后的探测命中 npm 安装的新版本。
+        None => true,
+    }
+}
+
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
@@ -2421,6 +2439,21 @@ impl AcpPool {
         }
     }
 
+    /// 按后端解析当前生效的 CLI 路径（与各 Agent 探测/登录入口同一套解析
+    /// 优先级）。仅用于 npm 升级前的移开判定；`None` 表示本机没有解析得到
+    /// 任何可用 CLI。
+    fn resolved_agent_cli_path(&self, backend: AgentBackend) -> Option<PathBuf> {
+        match backend {
+            AgentBackend::CodexAcp => resolve_codex_cli(),
+            AgentBackend::ClaudeAcp => {
+                let adapter = self.resolve_claude_adapter();
+                resolve_claude_cli(adapter.as_deref())
+            }
+            AgentBackend::KimiAcp => resolve_kimi_path(),
+            AgentBackend::Deepseek => None,
+        }
+    }
+
     /// 通过 npm 全局升级 Agent CLI（`npm install -g <pkg>@latest`），输出写诊断日志。
     async fn upgrade_via_npm(&self, backend: AgentBackend) -> Result<CodexAcpStatus> {
         let operation_id = diagnostics::operation_id("npm-upgrade");
@@ -2436,35 +2469,59 @@ impl AcpPool {
         };
         // 清掉上一次安装可能残留的取消标记：本次失败语义只来自本次取消。
         self.install_cancelled.lock().remove(&backend);
-        // 官方脚本安装的旧二进制先改名移开：CLI 解析优先脚本绝对路径
-        // （resolve_codex_cli/resolve_claude_cli），不移开的话 npm 装进全局
-        // 目录的新版本会被旧文件遮住，升级永远不生效，有效性校验只会误报
-        // 「被占用/被安全软件拦截」。官方脚本源不可达降级为 npm_upgrade 时
-        // 必然踩中该场景。机制与脚本路径一致：备份失败即中止、命令失败恢复
-        // 旧文件、验证通过才清理备份；全新安装（无旧文件）不移动任何文件。
-        let moved_backups = match move_official_binaries_aside(backend) {
-            Ok(moved) => {
-                if !moved.is_empty() {
+        // 官方脚本安装的旧二进制先改名移开：仅当脚本路径就是当前解析生效的
+        // CLI 时，npm 装进全局目录的新版本才会被旧文件遮住（升级永远不生效，
+        // 有效性校验只会误报「被占用/被安全软件拦截」）。官方脚本源不可达
+        // 降级为 npm_upgrade 时必然踩中该场景。解析优先级更高的来源（环境
+        // 变量覆盖、Claude 桥接自带 SDK）不受脚本文件遮蔽，跳过移开：此时
+        // 移开不会让升级更生效，反而会在备份被清理后把用户的脚本安装永久
+        // 删掉。机制与脚本路径一致：备份失败即中止、命令失败恢复旧文件、
+        // 验证通过才清理备份；全新安装（无旧文件）不移动任何文件。
+        let script_paths = providers::lifecycle::official_script_paths(backend);
+        let resolved_cli = self.resolved_agent_cli_path(backend);
+        let moved_backups = if npm_move_aside_needed(resolved_cli.as_deref(), &script_paths) {
+            match move_official_binaries_aside(backend) {
+                Ok(moved) => {
+                    if !moved.is_empty() {
+                        diagnostics::write(
+                            &operation_id,
+                            "npm:move_aside",
+                            format!(
+                                "agent={} backups={}",
+                                backend.agent_id().unwrap_or("unknown"),
+                                moved
+                                    .iter()
+                                    .map(|(_, backup)| backup.display().to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                        );
+                    }
+                    moved
+                }
+                Err(error) => {
                     diagnostics::write(
                         &operation_id,
-                        "npm:move_aside",
-                        format!(
-                            "agent={} backups={}",
-                            backend.agent_id().unwrap_or("unknown"),
-                            moved
-                                .iter()
-                                .map(|(_, backup)| backup.display().to_string())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        ),
+                        "npm:move_aside_failed",
+                        format!("{error:#}"),
                     );
+                    return Err(error);
                 }
-                moved
             }
-            Err(error) => {
-                diagnostics::write(&operation_id, "npm:move_aside_failed", format!("{error:#}"));
-                return Err(error);
-            }
+        } else {
+            diagnostics::write(
+                &operation_id,
+                "npm:move_aside_skipped",
+                format!(
+                    "agent={} resolved={}",
+                    backend.agent_id().unwrap_or("unknown"),
+                    resolved_cli
+                        .as_deref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string())
+                ),
+            );
+            Vec::new()
         };
         diagnostics::write(
             &operation_id,
@@ -4921,6 +4978,30 @@ mod tests {
         assert!(!npm_fallback_available(Some("@openai/codex"), false));
         assert!(!npm_fallback_available(None, true));
         assert!(!npm_fallback_available(None, false));
+    }
+
+    /// 移开判定只认「脚本路径就是当前解析结果」：Claude 桥接自带的 agent
+    /// SDK、`PINVOU3_*_CLI_PATH` 覆盖、PATH 命中等解析结果都不在脚本路径上，
+    /// 此时移开不会让 npm 升级更生效，反而会在备份被清理后把用户的脚本安装
+    /// 永久删掉（回归：移开必须以脚本遮蔽为前提）。解析不出任何 CLI 时保留
+    /// 移开语义——脚本残留属于解析不认的坏文件，清到旁边才能让升级后的
+    /// 探测命中 npm 新版本。
+    #[test]
+    fn npm_move_aside_only_when_script_path_is_resolved() {
+        let script = PathBuf::from("/home/u/.local/bin/claude");
+        let script_paths = vec![script.clone()];
+        // 解析结果就是脚本路径：需要移开（否则遮住 npm 版本）。
+        assert!(npm_move_aside_needed(Some(script.as_path()), &script_paths));
+        // 解析结果在别处（桥接 SDK / PATH / 环境变量覆盖）：绝不移开。
+        let sdk = PathBuf::from(
+            "/app/resources/codex-bridge/node_modules/\
+             @anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+        );
+        assert!(!npm_move_aside_needed(Some(sdk.as_path()), &script_paths));
+        // 解析不出任何可用 CLI：保留移开清理语义。
+        assert!(npm_move_aside_needed(None, &script_paths));
+        // 脚本路径表为空（防御）：解析到任何路径都不移开。
+        assert!(!npm_move_aside_needed(Some(script.as_path()), &[]));
     }
 
     #[test]
