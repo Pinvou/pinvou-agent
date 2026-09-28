@@ -15,7 +15,7 @@
 //! `lib.rs` 里 `.manage(ConnectorConn::default())` 注册一次,飞书 / 企微共用。
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -231,14 +231,20 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 /// 1. **stdin 显式接 null**。app 是无窗口 GUI 进程,继承来的 stdin 是坏句柄,
 ///    CLI 安装器(`@wecom/cli` / `@larksuite/cli` 等)读它会**死等 → 每次卡到超时**
 ///    (终端手动跑却几十秒就成)。给个立即 EOF 的 null stdin,安装器走非交互分支跑通。
-/// 2. **stdout/stderr 落日志文件**(不再 `null` 丢弃),失败可诊断:
-///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。
+/// 2. **stdout/stderr 追加写入日志文件**(不再 `null` 丢弃),失败可诊断:
+///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。追加写
+///    而非每次截断,多阶段安装(默认源失败后的镜像重试)每段输出都得以保留,
+///    阶段边界用 [`append_cli_install_log`] 的标记行区分。
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let (out, err) = match std::fs::File::create(&log_path) {
+    let (out, err) = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
         Ok(f) => match f.try_clone() {
             Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
             Err(_) => (Stdio::null(), Stdio::null()),
@@ -284,6 +290,23 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
                 std::thread::sleep(Duration::from_millis(300));
             }
         }
+    }
+}
+
+/// 往 `cli-install.log` 追加一行阶段标记。日志是追加写(见
+/// [`run_with_timeout`]),多阶段安装(默认源失败后换镜像重试)的每段输出
+/// 靠标记行区分归属。落盘失败同样静默丢弃,不阻塞安装流程。
+pub fn append_cli_install_log(line: &str) {
+    let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 
