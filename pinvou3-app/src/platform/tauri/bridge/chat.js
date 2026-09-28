@@ -217,20 +217,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       if (TAURI && TAURI.event && TAURI.event.emit) TAURI.event.emit(name, { session_id: sid });
     } catch { /* 桌宠是纯装饰,广播失败不影响对话 */ }
   }
-  function trackSceneBehavior(sid, scene) {
-    const raw = String(scene || "");
-    if (!sid || !raw) return;
-    const parts = raw.split(":");
-    invoke("track_behavior_event", {
-      request: {
-        eventName: "scene_triggered",
-        sessionId: sid,
-        sceneL1: parts[0] || "unknown",
-        sceneL2: parts.slice(1).join(":") || parts[0] || "unknown",
-      },
-    }).catch(function () {});
-  }
-
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -298,7 +284,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
           runSyncOnSession(sid, function () {
             recordPinvouSceneForMessage(sid, submittedMessagePos, meta.pinvouScene);
           });
-          trackSceneBehavior(sid, meta.pinvouScene);
         }
         return true;
       })

@@ -970,13 +970,6 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       // Once recording actually starts, register this window's label; while window A records,
       // window B's Alt gesture is routed to window A to stop it.
       syncVoiceShortcutRecording(currentVoiceWindowLabel(), session.sessionId);
-      invoke("track_behavior_event", {
-        request: {
-          eventName: "voice_started",
-          sessionId: session.sessionId,
-          stage: "recording",
-        },
-      }).catch(function () {});
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
