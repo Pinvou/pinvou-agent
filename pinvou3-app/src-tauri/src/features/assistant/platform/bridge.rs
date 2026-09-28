@@ -1165,6 +1165,16 @@ impl Pinvou3Bridge {
             // the low tier; the Ollama wire only has the boolean think, so
             // its lowest thinking level is think=true, exposed as high. off
             // remains selectable as an explicit user choice.
+            //
+            // Known trade-off on the ollama arm: think=true is a hard 400
+            // ("does not support thinking") on models without thinking
+            // support (ollama >=0.9), a class the old off default served
+            // fine — ollama honors think=false server-side, so its leak
+            // risk is the lowest of the local wires. Accepted per the
+            // #622 product decision; recovery is explicitly saving off
+            // (kept verbatim, see the tests below). Revisit with a
+            // per-model capability probe if real-machine reports cluster
+            // here.
             "vllm" => Some("low".to_string()),
             "ollama" => Some("high".to_string()),
             // Local OpenAI-compatible endpoints (loopback/private-network LM
@@ -8273,6 +8283,86 @@ mod tests {
         );
         bridge.probed_local_kind = Some(LocalServerKind::Vllm);
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// A plain local vLLM model with a stored off keeps it verbatim: off
+    /// stays an explicit user choice on the vLLM wire too (the provider
+    /// default is now low, but stored values win). Pins the vLLM half of
+    /// the upgrade contract — the ollama half is pinned by
+    /// `local_ollama_explicit_off_effort_is_kept`, and the one-time prefs
+    /// migration (`migrate_legacy_local_thinking_default`) only ever strips
+    /// pre-#622 machine-written defaults, never a later explicit save.
+    #[test]
+    fn local_vllm_explicit_off_effort_is_kept() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3-32b",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        if let Some(model) = bridge.effective_model_owned() {
+            let mut model = model;
+            model.reasoning_effort = Some("off".to_string());
+            bridge.session_model = Some(model);
+        }
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "显式保存的 off 必须原样保留（enable_thinking=false），不被本地默认档 low 覆盖"
+        );
+    }
+
+    /// The prefs one-time migration classifies pre-#622 records through a
+    /// frozen snapshot of THIS module's route predicates
+    /// (`platform::prefs::legacy_local_route_base_url` mirrors
+    /// `base_url_uses_local_or_private`; the deepseek snapshot mirrors
+    /// `is_official_deepseek_base_url`). The snapshot is allowed to drift
+    /// from future changes by design, but it must match today's semantics —
+    /// this contract test turns any drift into a conscious decision.
+    #[test]
+    fn prefs_legacy_local_route_snapshot_matches_bridge_predicate() {
+        for url in [
+            "http://127.0.0.1:8000/v1",
+            "http://localhost:11434",
+            "http://localhost.:11434/v1",
+            "http://[::1]:11434/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://10.0.0.2:8000",
+            "http://172.16.4.5:8000/v1",
+            "http://host.docker.internal:8080/v1",
+            "http://host.lima.internal:8080/v1",
+            "http://host.orbstack.internal:8080/v1",
+            "http://foo.docker.internal:8080/v1",
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com/v1",
+            "https://gateway.example.com/v1",
+            "http://8.8.8.8:8000",
+            "http://[fe80::1]:11434/v1",
+            "https://api.deepseek.com:443",
+            "not a url",
+            "",
+        ] {
+            assert_eq!(
+                crate::platform::prefs::legacy_local_route_base_url(url),
+                base_url_uses_local_or_private(url),
+                "local-route snapshot diverged for {url}"
+            );
+            assert_eq!(
+                crate::platform::prefs::legacy_official_deepseek_base_url(url),
+                is_official_deepseek_base_url(url),
+                "deepseek snapshot diverged for {url}"
+            );
+        }
     }
 
     /// kimi-k3 on the official remote moonshot route does not enter local

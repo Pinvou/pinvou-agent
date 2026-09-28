@@ -1,10 +1,12 @@
 //! Knowledge table and runtime normalization for always-thinking models
 //! (thinking cannot be disabled).
 //!
-//! Local routing defaults to the lowest thinking tier rather than off:
-//! real-world local models (e.g. the Qwen3.8 family) increasingly fail to
-//! honor thinking=off, and a model that silently thinks anyway stalls the
-//! first packet and leaks reasoning into plain text. One class of models is
+//! Local routing defaults to the lowest thinking tier the wire can express
+//! rather than off (vLLM low; probed Ollama high — its boolean think wire's
+//! lowest thinking level is on): real-world local models (e.g. the Qwen3.8
+//! family) increasingly fail to honor thinking=off, and a model that
+//! silently thinks anyway stalls the first packet and leaks reasoning into
+//! plain text. One class of models is
 //! always-thinking —
 //! thinking cannot be disabled and there is no controllable effort tier, or
 //! only some tiers are allowed. Sending "off" or an out-of-range tier would
