@@ -488,9 +488,13 @@ fn parse_recycle(rest: &[String]) -> Result<PluginsCommand, CliError> {
 /// plaintext never appears on argv).
 fn parse_secret_pair(value: &str) -> Result<(String, String), CliError> {
     let (key, env_var) = value.split_once('=').ok_or_else(|| {
-        CliError::usage(format!(
-            "plugins tools install --secret must be KEY=ENV_VAR_NAME (got {value})"
-        ))
+        // No echo of the argument: a user who pasted the plaintext secret
+        // instead of the env-var NAME must not have it repeated back in the
+        // failure diagnostics.
+        CliError::usage(
+            "plugins tools install --secret must be KEY=ENV_VAR_NAME (the value after = must \
+             be the NAME of an environment variable, not the secret itself)",
+        )
     })?;
     if key.is_empty() || env_var.is_empty() {
         return Err(CliError::usage(
@@ -697,14 +701,21 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
 fn resolve_secrets(secrets: &[(String, String)]) -> Result<HashMap<String, String>, CliError> {
     let mut config = HashMap::new();
     for (key, env_var) in secrets {
+        // Neither message names `env_var`: it is whatever stood on the
+        // right-hand side of `--secret`, and a user who pasted the plaintext
+        // secret instead of the variable NAME must not have it echoed back
+        // into failure diagnostics. Only the config key (public manifest
+        // vocabulary) plus the KEY=ENV_VAR_NAME hint is surfaced.
         let value = std::env::var(env_var).map_err(|_| {
             CliError::failed(format!(
-                "secret environment variable {env_var} is not set (for config key {key})"
+                "the secret environment variable for config key {key} is not set; --secret \
+                 takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
             ))
         })?;
         if value.trim().is_empty() {
             return Err(CliError::failed(format!(
-                "secret environment variable {env_var} is empty (for config key {key})"
+                "the secret environment variable for config key {key} is empty; --secret \
+                 takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
             )));
         }
         config.insert(key.clone(), value);
@@ -2122,10 +2133,21 @@ fn charge_wrapper_structure_overhead(
     Ok(())
 }
 
+/// The one entry cap the zip format itself imposes: the central directory
+/// stores the entry count in a u16 field, so a stored package holds at most
+/// 65535 entries. Enforced in the walk below AND re-checked by
+/// [`build_stored_zip`] (`u16::try_from` at the end-of-central-directory
+/// record), both against this same constant so the two sites cannot drift.
+/// No dedicated test drives a fixture over the cap — 65k+ fixture files cost
+/// far more than they prove; the shared constant with the build path is the
+/// drift guard.
+const MAX_STORED_ZIP_ENTRIES: usize = u16::MAX as usize;
+
 /// Recursively collects regular, non-hidden files under `root` as
 /// (zip-relative, bytes) entries with `/` separators, in sorted order so the
 /// produced archive is deterministic. Total bytes read are bounded through
-/// `cumulative` by the import pipeline's package limit.
+/// `cumulative` by the import pipeline's package limit, and the entry count
+/// by [`MAX_STORED_ZIP_ENTRIES`].
 fn collect_directory_entries(
     root: &Path,
     display: &str,
@@ -2164,6 +2186,15 @@ fn collect_directory_entries(
             if path.is_dir() {
                 stack.push((path, rel));
             } else if path.is_file() {
+                // Same cap `build_stored_zip` enforces at write time (the u16
+                // central-directory count): refusing HERE keeps a hostile
+                // directory from being read file by file into memory before
+                // anything notices the count.
+                if entries.len() >= MAX_STORED_ZIP_ENTRIES {
+                    return Err(CliError::failed(
+                        "plugin package exceeds the 65535-entry archive limit",
+                    ));
+                }
                 let bytes = read_import_file_capped(&path, "file", display, cumulative)?;
                 entries.push((rel, bytes));
             }
@@ -2338,6 +2369,8 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
     push_u32(&mut out, 0x0605_4b50);
     push_u16(&mut out, 0); // disk number
     push_u16(&mut out, 0); // disk with central directory
+    // Backstop for [`MAX_STORED_ZIP_ENTRIES`] (normally enforced in the
+    // directory walk): the central directory stores the entry count as a u16.
     let entry_count = u16::try_from(entries.len())
         .map_err(|_| CliError::failed("plugin package exceeds the 65535-entry archive limit"))?;
     push_u16(&mut out, entry_count);

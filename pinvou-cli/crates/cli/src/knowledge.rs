@@ -646,9 +646,20 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>,
 }
 
 fn parse_non_negative(value: &str, name: &str) -> Result<usize, CliError> {
-    value
+    let parsed = value
         .parse::<usize>()
-        .map_err(|_| CliError::usage(format!("knowledge {name} must be a non-negative integer")))
+        .map_err(|_| CliError::usage(format!("knowledge {name} must be a non-negative integer")))?;
+    // The value lands upstream as a SQLite i64 (e.g. `index failed --offset`);
+    // a larger usize would wrap negative in the cast and silently serve page
+    // 0 again. Rejected as usage, like every other out-of-range numeric flag
+    // in the family, rather than answered with a misleading empty page.
+    if parsed > i64::MAX as usize {
+        return Err(CliError::usage(format!(
+            "knowledge {name} must be at most {max} (got {value})",
+            max = i64::MAX
+        )));
+    }
+    Ok(parsed)
 }
 
 /// Stable error for `model download`: the feature orchestration and its
@@ -1024,13 +1035,17 @@ fn search(
     } else {
         hits.iter()
             .map(|hit| {
+                // Store/user-sourced cells: collapsed like every other
+                // family's tab rows, so a name or path carrying a control
+                // character cannot forge extra rows or columns in the human
+                // block (JSON keeps the originals).
                 format!(
                     "{}\t{}\t{}\t{}\t{}",
-                    hit.name,
+                    crate::support::collapse_control_characters(&hit.name),
                     hit.ext.as_deref().unwrap_or("-"),
                     hit.size,
                     hit.mtime,
-                    hit.path
+                    crate::support::collapse_control_characters(&hit.path)
                 )
             })
             .collect::<Vec<_>>()
@@ -1109,10 +1124,12 @@ fn collections_list(output: OutputMode) -> Result<CliOutcome, CliError> {
         collections
             .iter()
             .map(|collection| {
+                // User-named cell: collapsed like every other family's tab
+                // rows (JSON keeps the original name).
                 format!(
                     "{}\t{}\t{}\tdocs={}\tchunks={}\tbytes={}",
                     collection.id,
-                    collection.name,
+                    crate::support::collapse_control_characters(&collection.name),
                     collection.status,
                     collection.doc_count,
                     collection.chunk_count,
@@ -1380,13 +1397,15 @@ fn documents(
         documents
             .iter()
             .map(|document| {
+                // Store/filesystem-sourced cells: collapsed like every other
+                // family's tab rows (JSON keeps the originals).
                 format!(
                     "{}\t{}\t{}\tchunks={}\t{}",
                     document.id,
-                    document.name,
+                    crate::support::collapse_control_characters(&document.name),
                     document.parse_status,
                     document.n_chunks,
-                    document.path
+                    crate::support::collapse_control_characters(&document.path)
                 )
             })
             .collect::<Vec<_>>()

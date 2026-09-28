@@ -1853,8 +1853,9 @@ fn update(
     let store_holder = TaskStore::new()?;
     // The foundation update reads the current record itself; this pre-read
     // keeps the CLI's unknown-id contract stable (scheduled_task_not_found
-    // for a missing task, before any sidecar is touched).
-    store_holder.read_def(id)?;
+    // for a missing task, before any sidecar is touched). The captured value
+    // is also the rollback point for a failed binding write below.
+    let pre_update_def = store_holder.read_def(id)?;
     // Same pair-resolution rule as create (see there): `--model-id` X
     // re-binds the pin to X AND the definition to X's wire name — the GUI
     // sends `model: selected.model, modelId: selected.id`, and the executor
@@ -1923,7 +1924,15 @@ fn update(
     let mut def = def_to_value(&updated);
     ensure_workspace(&store_holder, &mut def)?;
     if validated_model_id.is_some() {
-        write_model_binding(&store_holder, id, validated_model_id.as_deref())?;
+        if let Err(error) = write_model_binding(&store_holder, id, validated_model_id.as_deref()) {
+            // The definition's new model wire name is already committed, so
+            // propagating the failure as-is would leave the pair the executor
+            // resolves (definition model + pin) inconsistent. Restore the
+            // captured pre-update definition, mirroring create's rollback;
+            // the restore itself is best-effort like create's cleanup.
+            let _ = store_holder.write_def(&pre_update_def);
+            return Err(error);
+        }
     }
     // Enrichment is best-effort: the update is committed above, so a
     // sessions store boot failure must not report the update as failed.
@@ -2372,7 +2381,16 @@ fn run(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
                 "interrupted: the pinvou CLI process was terminated before this run finished"
             );
             stale["ended_at"] = serde_json::json!(now_string());
-            let _ = store_holder.save_run(&stale);
+            // Best-effort like the definition refresh below, but not silent:
+            // a failed reconcile leaves the stranded `queued` record in place
+            // while the command moves on, so the loss is disclosed on stderr.
+            if let Err(error) = store_holder.save_run(&stale) {
+                let stale_id = str_field(&stale, "id").unwrap_or("unknown");
+                note!(
+                    "pinvou: warning: stranded run {stale_id} (task {id}) could not be marked \
+                     failed ({error}); it still shows as queued"
+                );
+            }
         }
     }
     let kind = kind_for(
@@ -2491,6 +2509,7 @@ enabled in settings",
     // the `models` family set with `probe-local`: the output body (and the
     // persisted run record) stay exactly as before, but the exit code must
     // tell scripts the outcome was not a success.
+    // The Err arm above owns the failed verdict; this branch is defense-in-depth.
     Ok(CliOutcome {
         exit_code: if status == "failed" {
             ExitCode::Failed

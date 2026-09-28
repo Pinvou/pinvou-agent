@@ -1803,11 +1803,11 @@ fn pending(
                 .find(|item| item.id == id);
             let Some(confirmed) = confirmed else {
                 return Err(CliError::failed(format!(
-                    "memory pending confirm({id}): the confirm was accepted, but no pending \
-                     entry with this id can be read back, so whether the target store was \
-                     written cannot be verified; the id given probably differs from its stored \
-                     spelling (ids normalize to letters, digits, '-' and '_'), or the entry was \
-                     removed concurrently — check `pinvou memory list --store pending`"
+                    "memory_pending_confirm_unverified: {id}: the confirm was accepted, but no \
+                     pending entry with this id can be read back, so whether the target store \
+                     was written cannot be verified; the id given probably differs from its \
+                     stored spelling (ids normalize to letters, digits, '-' and '_'), or the \
+                     entry was removed concurrently — check `pinvou memory list --store pending`"
                 )));
             };
             // The observable fact is only that the confirm produced no store
@@ -1819,15 +1819,16 @@ fn pending(
             // where a write may well have happened.
             if !feature::confirmed_pending_memory_is_materialized(&confirmed) {
                 return Err(CliError::failed(format!(
-                    "memory pending confirm({id}): the candidate is marked confirmed, but no \
-                     matching item is visible in its target store. Known causes: the content is \
-                     profile-shaped preference text the write deliberately skips (never \
-                     materialized); a current-focus/recent-activity item whose store row is no \
-                     longer active (TTL archival); an item deleted after an earlier confirm (a \
-                     re-confirm short-circuits and rewrites nothing); a concurrent removal of a \
-                     just-written item; or a profile candidate whose topic is neither call_name \
-                     nor assistant_alias, which this check cannot verify at all. Inspect the \
-                     target store with `pinvou memory list` before retrying"
+                    "memory_pending_confirm_not_materialized: {id}: the candidate is marked \
+                     confirmed, but no matching item is visible in its target store. Known \
+                     causes: the content is profile-shaped preference text the write \
+                     deliberately skips (never materialized); a current-focus/recent-activity \
+                     item whose store row is no longer active (TTL archival); an item deleted \
+                     after an earlier confirm (a re-confirm short-circuits and rewrites \
+                     nothing); a concurrent removal of a just-written item; or a profile \
+                     candidate whose topic is neither call_name nor assistant_alias, which \
+                     this check cannot verify at all. Inspect the target store with \
+                     `pinvou memory list` before retrying"
                 )));
             }
             (
@@ -1863,6 +1864,25 @@ fn pending(
         }
     };
     Ok(success(render(output, human, &value)))
+}
+
+/// Text marker the feature layer carries when its cross-process organize lock
+/// is held: `features/memory/io.rs` `ORGANIZE_LOCK_BUSY` ("another organize
+/// pass is already running …"), surfaced by `organize_memory_with_llm` as an
+/// anyhow message. The constant is `pub(crate)` to `pinvou3_lib`, so the host
+/// error mapping matches it by text.
+const ORGANIZE_LOCK_BUSY_MARKER: &str = "another organize pass is already running";
+
+/// The one busy refusal for both single-flight gates: the CLI's own
+/// `memory-organize.lock` (CLI vs CLI) and the feature layer's
+/// `.organize.lock` (GUI button and scheduled executor vs CLI). The same
+/// situation — another organize in flight — must produce the same documented
+/// error whichever lock refuses.
+fn organize_busy_error() -> CliError {
+    CliError::failed(
+        "memory_organize_busy: another pinvou process is organizing memory; retry after \
+         it finishes",
+    )
 }
 
 /// Cross-process single-flight lock for `memory organize` — see [`organize`]
@@ -1929,10 +1949,7 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut organize_lock = organize_lock()?;
     let _organize_guard = organize_lock.try_write().map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
-            CliError::failed(
-                "memory_organize_busy: another pinvou process is organizing memory; retry after \
-                 it finishes",
-            )
+            organize_busy_error()
         } else {
             CliError::failed(format!(
                 "memory organize: cannot acquire the organize lock: {error}"
@@ -1954,10 +1971,20 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
         // document refresh happens below, outside the host.
     })
     .map_err(|error| {
-        CliError::failed(format!(
-            "memory_organize_failed: {}",
-            pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"))
-        ))
+        let detail = pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
+        // A lock held by another SURFACE (the GUI button or the scheduled
+        // executor) surfaces here, not at the CLI lock above: the feature
+        // layer's `.organize.lock` is taken inside `organize_memory_with_llm`,
+        // on the host path, and reaches this map as an anyhow error carrying
+        // [`ORGANIZE_LOCK_BUSY_MARKER`]. That is the same "another organize is
+        // in flight" situation as the CLI-vs-CLI `WouldBlock`, so it must get
+        // the same documented `memory_organize_busy` refusal instead of a
+        // generic `memory_organize_failed` that reads like a crashed pass.
+        if detail.contains(ORGANIZE_LOCK_BUSY_MARKER) {
+            organize_busy_error()
+        } else {
+            CliError::failed(format!("memory_organize_failed: {detail}"))
+        }
     })?;
     // Same post-organize refresh as the GUI command (app/commands/memory.rs
     // `organize_memory` → `refresh_memory_snapshot_document`): reload every
@@ -2167,8 +2194,19 @@ fn append_warning_lines(lines: &mut Vec<String>, warnings: &[serde_json::Value])
 
 // ---- per-store human line renderers (one item per line, tab separated) ----
 
+/// One human row cell. Stored user content is rendered verbatim in JSON but
+/// must not reach the terminal raw: the shared
+/// `support::collapse_control_characters` replaces control characters (ESC,
+/// newline, …) and the invisible bidi/zero-width formatters with spaces
+/// FIRST — the same hygiene the `sessions`/`projects`/`code` rows apply — so
+/// the row stays one line with columns that mean what they show. The
+/// whitespace join then flattens the collapsed text (including runs the
+/// collapse introduced) to single separators.
 fn one_line(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
+    support::collapse_control_characters(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn render_preference(item: &PreferenceFile) -> String {

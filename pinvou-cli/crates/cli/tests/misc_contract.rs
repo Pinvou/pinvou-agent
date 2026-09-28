@@ -871,14 +871,16 @@ fn voice_postprocess_draft_file_refuses_a_special_file() {
 /// Pure-noise input short-circuits without touching the model (GUI parity),
 /// and every postprocess result names the GUI pipeline stages the CLI does
 /// NOT run — the deterministic rule corrections and the shrink/protected-term
-/// validator — so the difference is disclosed instead of silent. Hermetic:
-/// the empty short-circuit precedes the host boot.
+/// validator — so the difference is disclosed instead of silent: `omitted_stages`
+/// in JSON and the trailing `Note:` line in human output, on the model path
+/// AND on the empty short-circuit alike. Hermetic: the empty short-circuit
+/// precedes the host boot.
 #[test]
 fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("voice-postprocess-empty");
     let value = run_json(&[
-        "pinvou",
+        "pinvoy",
         "voice",
         "postprocess",
         "--mode",
@@ -895,6 +897,28 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
         .expect("every postprocess result discloses the omitted GUI stages");
     assert!(omitted.contains(&serde_json::json!("deterministic-rule-corrections")));
     assert!(omitted.contains(&serde_json::json!("shrink-and-protected-term-validation")));
+    // The human output carries the same disclosure as its trailing Note line
+    // — the module header promises it on EVERY postprocess result, the
+    // empty short-circuit included.
+    let outcome = run(&[
+        "pinvoy",
+        "voice",
+        "postprocess",
+        "--mode",
+        "edit",
+        "--text",
+        "   ",
+        "--draft",
+        "整理会议纪要。",
+    ])
+    .expect("the empty short-circuit must succeed");
+    assert!(
+        outcome
+            .stdout
+            .contains("Note: the model output is returned as written"),
+        "the human output must carry the trailing Note disclosure: {}",
+        outcome.stdout
+    );
 }
 
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)

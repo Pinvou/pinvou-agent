@@ -375,6 +375,17 @@ impl ImportJobStore {
         if !exists {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
+        // SQLite's OFFSET is i64 and treats a negative value as 0, so a raw
+        // `offset as i64` would wrap a >i64::MAX usize negative and silently
+        // serve page 0 again. Nothing exists at such an offset anyway, so
+        // answer an honest empty page (`next_offset: None`) instead of a
+        // wrong one.
+        if offset > i64::MAX as usize {
+            return Ok(FailedImportFilePage {
+                files: Vec::new(),
+                next_offset: None,
+            });
+        }
         let mut stmt = c.prepare(
             "SELECT id,name,path,COALESCE(error,'') FROM knowledge_import_items \
              WHERE job_id=?1 AND state='failed' ORDER BY id LIMIT ?2 OFFSET ?3",
@@ -392,7 +403,14 @@ impl ImportJobStore {
         let has_more = files.len() > limit;
         Ok(FailedImportFilePage {
             files: files.into_iter().take(limit).collect(),
-            next_offset: has_more.then_some((offset + limit) as u64),
+            // Only compute the next page offset when a next page exists: an
+            // offset near usize::MAX plus `limit` would panic in debug and
+            // wrap in release, long before SQLite could refuse it.
+            next_offset: if has_more {
+                offset.checked_add(limit).map(|next| next as u64)
+            } else {
+                None
+            },
         })
     }
 
@@ -639,6 +657,28 @@ mod tests {
         assert_eq!(second.files.len(), 50);
         assert_eq!(third.files.len(), 5);
         assert_eq!(third.next_offset, None);
+    }
+
+    /// An offset past i64::MAX cannot be a SQLite OFFSET (negative there
+    /// means page 0), and `offset + limit` near usize::MAX would overflow
+    /// before SQL ever ran. The page must come back honestly empty instead
+    /// of wrapping to page 0.
+    #[test]
+    fn huge_offset_answers_an_empty_page_without_wrapping() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&job_id, &[PathBuf::from("/tmp/a.md")])
+            .unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        jobs.mark_failed(&job_id, item.id, "失败 A");
+        jobs.finish(&job_id).unwrap();
+
+        let page = jobs.failed_files_page(&job_id, usize::MAX, 50).unwrap();
+        assert!(
+            page.files.is_empty(),
+            "an offset past i64::MAX must not serve page 0 again"
+        );
+        assert_eq!(page.next_offset, None);
     }
 
     #[test]

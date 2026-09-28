@@ -1171,11 +1171,14 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// component probe and the recognition dispatch — so a test can pin what the
 /// gate does for an install the test host cannot produce. Both are taken lazily
 /// so the input validation below still runs before anything is probed or spawned.
+/// `recognize` receives the probed ffmpeg verdict (`AsrLanes::ffmpeg`) so the
+/// recognition lanes reuse that single bounded probe instead of spawning a
+/// second `ffmpeg -version` for the same fact.
 fn transcribe_with(
     path: &Path,
     output: OutputMode,
     lanes: impl FnOnce() -> AsrLanes,
-    recognize: impl FnOnce(&Path) -> Result<(String, &'static str), CliError>,
+    recognize: impl FnOnce(&Path, bool) -> Result<(String, &'static str), CliError>,
 ) -> Result<CliOutcome, CliError> {
     // Validate the input BEFORE anything else: a FIFO or character device
     // reports len 0, so a size gate alone would let `/dev/zero` stream
@@ -1204,7 +1207,10 @@ fn transcribe_with(
     // already carries whether the component triple buys a lane here, so on
     // macOS/Windows — where `run_recognition` has only the external lane — the
     // preflight rejects for exactly the reason the dispatcher would.
-    match asr_preflight(lanes(), path.extension().and_then(|ext| ext.to_str())) {
+    // `AsrLanes` is `Copy`, so the probed verdict survives the move into the
+    // gate and is handed to `recognize` below.
+    let lanes = lanes();
+    match asr_preflight(lanes, path.extension().and_then(|ext| ext.to_str())) {
         AsrPreflight::Run => {}
         // A warning, not an error: execution continues into the raw-wav lane
         // that `native_engine_transcribe` already implements.
@@ -1248,7 +1254,7 @@ fn transcribe_with(
     // every path out of the rest of this function (the manual remove below
     // covers only the recognize call), panic unwinding included.
     let _staged_wav = StagedFile { path: wav.clone() };
-    let result = recognize(&wav);
+    let result = recognize(&wav, lanes.ffmpeg);
     let _ = std::fs::remove_file(&wav);
     let (text, source) = result?;
     let value = serde_json::json!({ "text": text, "source": source });
@@ -1310,13 +1316,15 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
 /// Recognition dispatch mirrors `transcribe_voice_audio_bytes`: the platform
 /// native lane first (Linux bundled SenseVoice engine; macOS Speech is not
 /// reachable from the CLI), then the external ASR CLI. Without either lane
-/// the error names `pinvou voice asr-status` as the hint.
-fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
+/// the error names `pinvou voice asr-status` as the hint. `ffmpeg` is the
+/// verdict the caller's lane scan already probed, passed through to the
+/// native lane so the probe runs exactly once per `transcribe`.
+fn run_recognition(wav: &Path, ffmpeg: bool) -> Result<(String, &'static str), CliError> {
     let native_attempted = native_lane_supported() && engine_path().is_some() && model_available();
     if native_attempted {
         // GUI parity: a failing native lane falls back to the env-configured
         // external ASR CLI before giving up.
-        if let Ok(text) = native_engine_transcribe(wav) {
+        if let Ok(text) = native_engine_transcribe(wav, ffmpeg) {
             // The same token the GUI reports for this lane
             // (`features/voice/platform/linux.rs::native_recognition_source`).
             // The `pinvou-webview-` prefix names the shipped engine build, not
@@ -1341,8 +1349,11 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
 /// Mirror of `voice_asr::transcribe`: normalize to 16 kHz mono through ffmpeg
 /// when available (bounded wait), run the engine with cwd pinned to the
 /// writable asr dir under the shared ASR timeout budget with size-capped
-/// output pipes, and fail with `asr_parse_failed` on unusable output.
-fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
+/// output pipes, and fail with `asr_parse_failed` on unusable output. The
+/// ffmpeg verdict is the one the caller already probed for the pre-flight
+/// gate (`installed_lanes`), threaded in so one `transcribe` never spawns
+/// the bounded `ffmpeg -version` probe a second time.
+fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError> {
     // The availability check ran earlier in the caller; if the binary
     // vanished since, fail honestly instead of panicking (a panic here
     // would strand the staged wav).
@@ -1401,7 +1412,11 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     let _staged_normalized = StagedFile {
         path: normalized.clone(),
     };
-    let input = if ffmpeg_available() {
+    // The threaded verdict from the caller's single probe: re-probing here
+    // would spawn a second bounded `ffmpeg -version` for the same fact, and
+    // `false` degrades to the raw-wav lane exactly like the pre-flight's
+    // `RunOnRawWav` downgrade promises.
+    let input = if ffmpeg {
         let mut convert_command = std::process::Command::new("ffmpeg");
         convert_command
             .args(["-y", "-i"])
@@ -2081,6 +2096,14 @@ const POSTPROCESS_OMITTED_STAGES: [&str; 2] = [
     "shrink-and-protected-term-validation",
 ];
 
+/// The trailing human-output disclosure promised on every postprocess result
+/// (the JSON twin is `omitted_stages`). One constant shared by the normal
+/// path and the empty-input short-circuit so the two renderings cannot drift:
+/// the module header promises the `Note:` line on EVERY postprocess result.
+const POSTPROCESS_NOTE: &str = "Note: the model output is returned as written; the CLI applies \
+     neither the desktop app's deterministic rule corrections nor its shrink/protected-term \
+     validator, so it never silently falls back to the ASR text.";
+
 /// Wall-clock bound for everything the command does after the windowless host
 /// is up. The per-attempt `budget` measures only the model round-trip (GUI
 /// parity), so this is the separate guarantee that a wedged bridge/probe
@@ -2103,7 +2126,15 @@ fn postprocess(
         (None, Some(file)) => {
             crate::support::read_text_file_capped(&file, 64 * 1024, "voice postprocess")?
         }
-        (None, None) => unreachable!("parse enforces exactly one text source"),
+        // The parser enforces exactly one text source, but `execute` is a
+        // `pub` entry point of the lib crate: a command constructed directly
+        // with neither field gets the parser's own usage error instead of a
+        // panic here.
+        (None, None) => {
+            return Err(CliError::usage(
+                "voice postprocess requires exactly one of --text or --text-file",
+            ));
+        }
     };
     // Same input hygiene as the ASR text: regular files only, 64 KiB cap,
     // then the app's 4000-character model-input truncation
@@ -2141,9 +2172,15 @@ fn postprocess(
             "truncated": false,
             "omitted_stages": POSTPROCESS_OMITTED_STAGES,
         });
+        // The empty short-circuit discloses the omitted GUI stages exactly
+        // like the model path does: same JSON field, same trailing Note line.
         return Ok(success(render(
             output,
-            format!("Mode: {}\nSource: empty\nText:", mode.as_str()),
+            format!(
+                "Mode: {}\nSource: empty\nText:\n{}",
+                mode.as_str(),
+                POSTPROCESS_NOTE
+            ),
             &value,
         )));
     }
@@ -2254,10 +2291,8 @@ fn postprocess(
         "omitted_stages": POSTPROCESS_OMITTED_STAGES,
     });
     let human = format!(
-        "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\nNote: the model output is returned as \
-         written; the CLI applies neither the desktop app's deterministic rule corrections nor \
-         its shrink/protected-term validator, so it never silently falls back to the ASR text.",
-        mode_str, outcome.source, outcome.truncated, outcome.text
+        "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\n{}",
+        mode_str, outcome.source, outcome.truncated, outcome.text, POSTPROCESS_NOTE
     );
     Ok(success(render(output, human, &value)))
 }
@@ -2940,9 +2975,10 @@ mod review_fix_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        AsrLanes, AsrPreflight, OutputMode, PostprocessMode, anthropic_stop_reason_says_truncated,
-        apply_postprocess_reasoning_controls, asr_preflight, ffmpeg_missing_is_fatal_for,
-        postprocess_http_exchange, postprocess_prompt, transcribe_with,
+        AsrLanes, AsrPreflight, OutputMode, PostprocessMode, VoiceCommand,
+        anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls, asr_preflight,
+        execute, ffmpeg_missing_is_fatal_for, postprocess_http_exchange, postprocess_prompt,
+        transcribe_with,
     };
 
     /// The call site, not just the helper: against a loopback endpoint
@@ -3393,7 +3429,7 @@ content-length: {}\r\n\r\n{}",
             &wav,
             OutputMode::Human,
             || lanes(true, false, true, false),
-            |_| {
+            |_, _| {
                 Ok((
                     "stub transcript".to_owned(),
                     "pinvou-webview-sensevoice-local",
@@ -3408,5 +3444,31 @@ content-length: {}\r\n\r\n{}",
             outcome.stdout
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `execute` is a `pub` entry point of the lib crate, so a command
+    /// constructed directly — bypassing the parser that enforces exactly one
+    /// text source — must get the parser's usage error, not the panic the
+    /// former `unreachable!` raised. The parser path itself is covered by the
+    /// contract suite (`voice postprocess` with neither flag is refused at
+    /// parse time); this exercises the variant the parser can never produce.
+    #[test]
+    fn postprocess_without_a_text_source_is_a_usage_error_not_a_panic() {
+        let error = execute(
+            VoiceCommand::Postprocess {
+                mode: PostprocessMode::Dictation,
+                text: None,
+                text_file: None,
+                draft: None,
+                draft_file: None,
+            },
+            OutputMode::Human,
+        )
+        .expect_err("a missing text source must be refused");
+        assert_eq!(error.exit_code(), crate::ExitCode::Usage);
+        assert!(
+            error.to_string().contains("--text"),
+            "the refusal must name the text-source options: {error}"
+        );
     }
 }
