@@ -8855,6 +8855,11 @@ mod tests {
             Some(SEPARATE_REASONING_FIELD)
         );
         assert_eq!(providers.vllm.base_url.as_deref(), None);
+        // Org-prefixed ids are not in the foundation's openrouter alias map,
+        // so route resolution must pass them through instead of rejecting.
+        bridge
+            .resolve_runtime_route_for_model("deepseek/deepseek-v4.1-flash")
+            .unwrap_or_else(|error| panic!("openrouter route must resolve: {error}"));
 
         // SiliconFlow China: the CN kind is picked from the endpoint host and
         // owns its own slot.
@@ -8880,6 +8885,9 @@ mod tests {
         );
         assert_eq!(providers.siliconflow_cn.api_key.as_deref(), Some("sf-key"));
         assert_eq!(providers.vllm.base_url.as_deref(), None);
+        bridge
+            .resolve_runtime_route_for_model("deepseek-ai/DeepSeek-V4-Pro")
+            .unwrap_or_else(|error| panic!("siliconflow-cn route must resolve: {error}"));
 
         // The global host routes to the plain siliconflow kind.
         let mut bridge = fixture_bridge();

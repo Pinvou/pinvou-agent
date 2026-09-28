@@ -1148,6 +1148,7 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Mimo, "mimo-v2.5-pro", 1_000_000),
             (ModelPreset::Mimo, "mimo-v2.5", 1_000_000),
             (ModelPreset::Mimo, "mimo-v2.6-pro", 1_000_000),
+            (ModelPreset::Mimo, "mimo-v2.6-flash", 1_000_000),
             (ModelPreset::Mimo, "mimo-v2.6-pro-ultraspeed", 1_000_000),
             // Qwen：3.7 全系 / 3.6-flash 均 1M
             (ModelPreset::Qwen, "qwen3.7-plus", 1_000_000),
