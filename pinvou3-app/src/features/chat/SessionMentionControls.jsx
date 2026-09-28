@@ -142,6 +142,7 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
             {inner}
           </button>
         ) : (
+          // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the card is a labelled pill (not a widget role); the deleted-session reason must reach assistive tech instead of staying tooltip-only
           <span
             key={ref.sessionId + '-' + index}
             data-testid={'session-mention-card-' + ref.sessionId}
