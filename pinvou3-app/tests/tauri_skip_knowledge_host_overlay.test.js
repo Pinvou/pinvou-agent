@@ -110,11 +110,46 @@ test("skipKnowledgeHost=true replaces the platform overlay minus only knowledge-
 
 test("non-Linux platforms: the switch leaves the platform overlay untouched", () => {
   withSwitch("1", () => {
-    // knowledge-host is only on the Linux packaging path; a lost guard would
-    // replace the Windows platform overlay too, which never declares it.
+    // knowledge-host is only on the Linux packaging path. Off Linux the
+    // removal is currently a no-op (no overlay declares it), so this cannot
+    // distinguish a guarded from an unguarded switch today; what it pins is
+    // that setting the switch never disturbs the non-Linux overlay chain,
+    // which the `platform === "linux"` guard keeps true even if a future
+    // non-Linux overlay ever gains a matching declaration.
     const specs = configSpecs(prepareTauriArgs(["build"], { ...LINUX, platform: "win32" }));
     assert.equal(specs[0], platformConfigPath("win32"));
   });
+});
+
+test("the knowledge-host marker removes the knowledge-host declaration and nothing wider", () => {
+  // The marker is a substring match. Widening it (say `knowledge-host` to
+  // `knowledge`) would silently drop unrelated declarations from the platform
+  // overlay, and the layer-by-layer test above cannot see that: the tracked
+  // overlay happens to contain no near-miss key. This synthetic overlay
+  // supplies the near-miss witness. The test goes through the production
+  // wrapper so the marker string pinned here is the one the build actually
+  // uses.
+  const { platformConfigWithoutKnowledgeHost } = require("../scripts/tauri/build.js");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou3-kb-marker-"));
+  try {
+    const overlay = path.join(dir, "tauri.conf.json");
+    const resources = {
+      "resources/platforms/linux/asr/": "runtime/asr",
+      "resources/platforms/linux/knowledge-host/": "runtime/knowledge-host",
+      "resources/platforms/linux/knowledge-assets/": "runtime/knowledge-assets",
+    };
+    fs.writeFileSync(overlay, JSON.stringify({ bundle: { resources } }));
+    const result = JSON.parse(platformConfigWithoutKnowledgeHost(overlay));
+    assert.deepEqual(
+      Object.keys(result.bundle.resources),
+      ["resources/platforms/linux/asr/", "resources/platforms/linux/knowledge-assets/"],
+      "only the knowledge-host declaration may be removed",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("callers that bypass main(): the environment default still applies", () => {

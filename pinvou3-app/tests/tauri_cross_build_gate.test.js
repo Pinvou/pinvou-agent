@@ -65,6 +65,26 @@ test("non-cross builds are never blocked", () => {
 test("targetArchitecture accepts both --target spellings", () => {
   assert.equal(targetArchitecture(["build", "--target", "aarch64-unknown-linux-gnu"]), "arm64");
   assert.equal(targetArchitecture(["build", "--target=x86_64-unknown-linux-gnu"]), "x64");
+  // The last occurrence wins, matching cargo's override semantics; both
+  // spellings must take part in the same "last one" competition.
+  assert.equal(
+    targetArchitecture([
+      "build",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target=aarch64-unknown-linux-gnu",
+    ]),
+    "arm64",
+  );
+  assert.equal(
+    targetArchitecture([
+      "build",
+      "--target=aarch64-unknown-linux-gnu",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+    ]),
+    "x64",
+  );
   // Without --target it is a native build: null keeps process.arch.
   assert.equal(targetArchitecture(["build"]), null);
 });

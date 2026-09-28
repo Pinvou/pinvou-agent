@@ -73,11 +73,13 @@ function withSwitches(env, body) {
 }
 
 test("non-Linux platforms: the switch leaves the overlay chain untouched", () => {
-  // Mirrors the case in tauri_skip_knowledge_host_overlay.test.js: without the
-  // `platform === "linux"` guard, macOS/Windows overlays would be rewritten
-  // too, harmless today only because the marker happens not to match. Pin
-  // that no inline replacement appears off Linux. win32 has no architecture
-  // overlay, so its platform overlay must stay a file path.
+  // Mirrors the case in tauri_skip_knowledge_host_overlay.test.js. Off Linux
+  // no overlay matches the marker, so the removal is a no-op there and this
+  // cannot distinguish a guarded from an unguarded switch today; what it
+  // pins is that setting the switch never disturbs the non-Linux overlay
+  // chain, which the `platform === "linux"` guard keeps true even if a
+  // future non-Linux overlay ever gains a matching declaration. win32 has no
+  // architecture overlay, so its platform overlay must stay a file path.
   const saved = process.env.PINVOU3_SKIP_LINUX_ASR;
   try {
     process.env.PINVOU3_SKIP_LINUX_ASR = "1";
@@ -143,4 +145,35 @@ test("PINVOU3_SKIP_LINUX_ASR=1 replaces the architecture overlay without the ASR
       "the aarch64 overlay must declare ASR, or this test asserts nothing",
     );
   });
+});
+
+test("the ASR marker removes the ASR declaration and nothing wider", () => {
+  // The marker is a substring match. Widening it (say `linux-asr-runtime` to
+  // `linux-asr`) would silently drop unrelated declarations from every
+  // architecture overlay, and the prepareTauriArgs tests above cannot see
+  // that: the tracked overlay happens to contain no near-miss key. This
+  // synthetic overlay supplies the near-miss witness. The test goes through
+  // the production wrapper so the marker string pinned here is the one the
+  // build actually uses.
+  const { architectureConfigWithoutAsr } = require("../scripts/tauri/build.js");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou3-asr-marker-"));
+  try {
+    const overlay = path.join(dir, "tauri.conf.json");
+    const resources = {
+      "target/linux-asr-runtime/aarch64/sense-voice-main": "runtime/asr/sense-voice-main",
+      "target/linux-asr-models/config.json": "runtime/asr/config.json",
+      "resources/platforms/linux/codex-bridge/": "runtime/codex-bridge",
+    };
+    fs.writeFileSync(overlay, JSON.stringify({ bundle: { resources } }));
+    const result = JSON.parse(architectureConfigWithoutAsr(overlay));
+    assert.deepEqual(
+      Object.keys(result.bundle.resources),
+      ["target/linux-asr-models/config.json", "resources/platforms/linux/codex-bridge/"],
+      "only the linux-asr-runtime declaration may be removed",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

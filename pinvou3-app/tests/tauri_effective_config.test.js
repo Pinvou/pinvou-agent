@@ -314,6 +314,15 @@ for (const machine of injectedBridgeMachines) {
     );
   }
 }
+// The dispatch above only checks which targets are accepted; it never proves
+// that $TARGET_MACHINE is fed from the injected variable. A refactor that
+// re-derives it from `uname -m` alone would pass everything above and package
+// the host architecture's Node again - the original cross-build bug.
+assert.match(
+  bridgeScriptSource,
+  /TARGET_MACHINE="\$\{PINVOU3_BRIDGE_TARGET_ARCH:-/u,
+  "the bridge script must derive TARGET_MACHINE from PINVOU3_BRIDGE_TARGET_ARCH (host fallback), or cross builds package a host-architecture Node",
+);
 
 // Adding an architecture must extend build.js's table and codex-bridge.js's
 // machine map together.
@@ -500,6 +509,15 @@ assert.match(
   buildSource,
   /prepareCodexBridge\([^)]*targetArch/u,
   "the bridge must be prepared for the parsed target architecture, or cross builds silently package a host-architecture Node",
+);
+// The loose pin above matches the property key, so it would also accept the
+// wrong value (`{ targetArch: hostArch }`). Forbid the host architecture
+// inside the call: in main() the only argument that may reach the bridge is
+// the parsed target.
+assert.doesNotMatch(
+  buildSource,
+  /prepareCodexBridge\([^)]*hostArch/u,
+  "the bridge must not be prepared for the host architecture, or cross builds silently package a host-architecture Node",
 );
 const preparedBrowserPlatforms = [];
 for (const platform of ["win32", "darwin", "linux"]) {
