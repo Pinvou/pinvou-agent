@@ -716,10 +716,15 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
       }
     })();
     ensureSessionInFlight = p;
-    const result = await p;
-    if (ensureSessionInFlight === p) ensureSessionInFlight = null;
-    applyDraftOutcome(draftOutcome);
-    return result;
+    try {
+      const result = await p;
+      applyDraftOutcome(draftOutcome);
+      return result;
+    } finally {
+      // Reset on every path: a rejection that skipped the reset would make
+      // every future draft send await the same dead promise forever.
+      if (ensureSessionInFlight === p) ensureSessionInFlight = null;
+    }
   }
 
 function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedtauriSessions().reportSessionSwitchFailure(error, errorScope); }

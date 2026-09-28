@@ -310,8 +310,13 @@ pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Resu
 }
 
 /// Pure state transition so the claim/release/steal rules stay testable
-/// without a global: a claim fails when another window already owns the
-/// microphone; a release only lands on the exact matching owner.
+/// without a global: a claim from another window fails, but a claim from the
+/// owning window itself replaces the recorded token — the JS keeps at most
+/// one live recording per window, so a same-window re-claim can only be a
+/// recovery from a start that failed after claiming (releasing on that path
+/// is best-effort); without the steal, one leaked claim would lock the
+/// microphone in every window until the owning window is destroyed. A
+/// release only lands on the exact matching owner.
 fn update_recording_owner(
     owner: &mut Option<RecordingOwner>,
     label: &str,
@@ -323,7 +328,7 @@ fn update_recording_owner(
         token: token.to_string(),
     };
     if claim {
-        if owner.as_ref().is_some_and(|current| current != &expected) {
+        if owner.as_ref().is_some_and(|current| current.label != label) {
             return false;
         }
         *owner = Some(expected);
@@ -380,6 +385,20 @@ fn resolve_trigger_target(
     focused_router_label.map(|label| (label.to_string(), "focused"))
 }
 
+/// A "recording"-routed emit is only valid while the current owner still
+/// matches (same window and token); a stale registration must drop the
+/// gesture instead of ghost-targeting. Pure so the production guard itself —
+/// not just the claim state machine — stays tested.
+fn recording_route_is_current(
+    owner: Option<&RecordingOwner>,
+    window_label: &str,
+    recording_token: Option<&str>,
+) -> bool {
+    owner.is_some_and(|owner| {
+        owner.label == window_label && Some(owner.token.as_str()) == recording_token
+    })
+}
+
 mod platform;
 
 pub(crate) fn install(app: AppHandle) {
@@ -403,9 +422,11 @@ fn emit_shortcut_event(
     recording_token: Option<String>,
 ) {
     if route == "recording"
-        && recording_owner().as_ref().is_none_or(|owner| {
-            owner.label != window_label || Some(owner.token.as_str()) != recording_token.as_deref()
-        })
+        && !recording_route_is_current(
+            recording_owner().as_ref(),
+            window_label,
+            recording_token.as_deref(),
+        )
     {
         return;
     }
@@ -631,6 +652,61 @@ mod tests {
         );
         forget_owner_window(&mut owner, "detached-b");
         assert!(owner.is_none());
+    }
+
+    #[test]
+    fn recording_claim_same_window_replaces_a_leaked_token() {
+        // The JS keeps at most one live recording per window, so a
+        // same-window re-claim with a fresh token can only be the recovery
+        // path for a start that failed after claiming: it must heal instead
+        // of locking every window out of the microphone. Another window's
+        // claim still fails, and the replaced token no longer releases
+        // anything.
+        let mut owner = None;
+        assert!(update_recording_owner(&mut owner, "main", "a1", true));
+        assert!(update_recording_owner(&mut owner, "main", "a2", true));
+        assert_eq!(
+            owner.as_ref().map(|o| o.token.as_str()),
+            Some("a2"),
+            "the owning window replaces the stale token"
+        );
+        assert!(!update_recording_owner(&mut owner, "main", "a1", false));
+        assert!(owner.is_some(), "the replaced token must not release");
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "b1",
+            true
+        ));
+        assert!(update_recording_owner(&mut owner, "main", "a2", false));
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn recording_route_emits_only_while_the_owner_still_matches() {
+        // The emit-time guard (defense in depth for the check-to-emit gap):
+        // the current owner passes; a stale token, a stale label, or no
+        // owner at all drops the gesture.
+        let owner = Some(RecordingOwner {
+            label: "main".to_string(),
+            token: "a1".to_string(),
+        });
+        assert!(recording_route_is_current(
+            owner.as_ref(),
+            "main",
+            Some("a1")
+        ));
+        assert!(!recording_route_is_current(
+            owner.as_ref(),
+            "main",
+            Some("a0")
+        ));
+        assert!(!recording_route_is_current(
+            owner.as_ref(),
+            "detached-b",
+            Some("a1")
+        ));
+        assert!(!recording_route_is_current(None, "main", Some("a1")));
     }
 
     #[test]

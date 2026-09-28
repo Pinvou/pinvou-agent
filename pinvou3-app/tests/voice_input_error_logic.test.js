@@ -582,11 +582,12 @@ assert.doesNotMatch(
   /mode === "edit" \? bt\("voiceEditApplied"\)/,
   "edit writeback only opens a preview, so the applied notice must not fire at writeback time",
 );
-// After the preview apply/cancel finishes, clear the completed notice so a leftover "pending review" message cannot mislead the user.
+// After the preview apply finishes, dismiss the completed notice so a leftover "pending review" message cannot mislead the user —
+// dismissing (not closeVoice: that would abandon the unsent operation before its own send).
 assert.match(
   voiceHookSource,
-  /const applyVoiceEditPreview[\s\S]*?editPreviewRef\.current = null;[\s\S]*?setEditPreview\(null\);[\s\S]*?closeVoice\(\);[\s\S]*?if \(!options\.send\) return true;/,
-  "applying or canceling the voice edit preview must clear the stale voice notice",
+  /const applyVoiceEditPreview[\s\S]*?editPreviewRef\.current = null;[\s\S]*?setEditPreview\(null\);[\s\S]*?dismissVoice\(\);[\s\S]*?if \(!options\.send\) return true;/,
+  "applying the voice edit preview must dismiss the stale voice notice without ending the operation",
 );
 // Windows low-level hook callbacks are bound by LowLevelHooksTimeout; synchronous stderr printing is forbidden.
 assert.doesNotMatch(
@@ -1058,6 +1059,16 @@ assert.match(
   source,
   /async function finishVoiceInput\(cancelled, timedOut\) \{[\s\S]*?if \(!session\) return;[\s\S]*?syncVoiceShortcutRecording\(null, session\.id\)/,
   "finishVoiceInput must release the ownership claim (token-bound) on every exit path",
+);
+assert.match(
+  source,
+  /const claimed = await syncVoiceShortcutRecording\(currentVoiceWindowLabel\(\), session\.id\);[\s\S]*?probeVoiceAudioInput\([\s\S]*?requestVoiceMedia\(/,
+  "the ownership claim must strictly precede the device probe and the microphone request",
+);
+assert.match(
+  source,
+  /} catch \(err\) \{[\s\S]*?activeVoiceInput = null;[\s\S]*?syncVoiceShortcutRecording\(null, session\.id\);/,
+  "a start that fails after claiming must release the ownership claim",
 );
 // Storage listeners filter by exact key (three places): a null key
 // (localStorage.clear()) and unrelated keys say nothing about the

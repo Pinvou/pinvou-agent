@@ -54,7 +54,13 @@ function pinvouSharedtauriVoice() {
       session.draftEpoch = Number(state.draftEpoch || 0);
     }
     for (const entry of voiceOperations) {
-      if (entry[1].telemetryTerminal) voiceOperations.delete(entry[0]);
+      const item = entry[1];
+      // Terminal entries are done; a dismissed entry stays adoptable for a
+      // manual retry until the next recording starts, then it is swept —
+      // a never-sent dismissal must not leak its audio chunks forever.
+      if (item.telemetryTerminal || (item.dismissed && !item.pendingSubmission)) {
+        voiceOperations.delete(entry[0]);
+      }
     }
     voiceOperations.set(session.operationId, session);
   }
@@ -131,6 +137,12 @@ function pinvouSharedtauriVoice() {
       clearVoiceInput();
       return;
     }
+    // Mark the dismissal so the next recording start can sweep a never-sent
+    // dismissal; until then the operation stays adoptable by a manual send.
+    const operation = voiceOperations.get((state.voiceInput || {}).operationId);
+    if (operation && !operation.telemetryTerminal && !operation.pendingSubmission) {
+      operation.dismissed = true;
+    }
     setVoiceInputStatus("idle", { message: "", operationId: null });
   }
 
@@ -150,7 +162,7 @@ function pinvouSharedtauriVoice() {
   // Clearing the input or cancelling the preview abandons the result of a
   // recorded (but not submitted) operation; these are the only paths that
   // actually end an unsent operation.
-  function abandonCompletedVoiceResult(stage) {
+  function abandonCompletedVoiceResult() {
     const current = state.voiceInput || {};
     const operation = voiceOperations.get(current.operationId);
     if (!operation || operation.telemetryTerminal) return;
@@ -984,7 +996,7 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       (options && options.ownerKind) || "chat"
     );
     if (previousOperationId) abandonVoiceResult(previousOperationId);
-    abandonCompletedVoiceResult("recognition");
+    abandonCompletedVoiceResult();
     // While a model download is running, re-triggering voice input keeps the original
     // download session; a fresh dependency probe must not overwrite
     // installing/cancelling/progress. Keep the open state as-is too: auto-install uses the
@@ -1093,11 +1105,16 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       // recording, or missing native support, fails closed here.
       const claimed = await syncVoiceShortcutRecording(currentVoiceWindowLabel(), session.id);
       if (activeVoiceInput !== session) {
+        // A cancel raced the claim resolution: finishVoiceInput may have
+        // released before the claim landed, so release again — the Rust
+        // side ignores a release from a non-owner.
+        syncVoiceShortcutRecording(null, session.id);
         cleanupVoiceInputSession(session);
         return;
       }
       if (!claimed) {
-        throw voiceFlowError("device_unavailable", "device", bt("voiceMicUnavailable"));
+        // The mic is held by another Pinvou window, not by another app.
+        throw voiceFlowError("device_unavailable", "device", bt("voiceMicBusyOtherWindow"));
       }
       const hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
       if (activeVoiceInput !== session) return;
@@ -1149,6 +1166,10 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       cleanupVoiceInputSession(session);
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
+      // The start failed after the claim landed (claim rejection, device
+      // probe, permission, getUserMedia): release the ownership claim, or
+      // the stale owner makes every later start in every window fail closed.
+      syncVoiceShortcutRecording(null, session.id);
       const normalized = normalizeVoiceError(err, "recording");
       if (!session.permissionRecorded && normalized.category !== "cancelled") {
         session.permissionRecorded = true;
@@ -1190,7 +1211,7 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
     // Clearing the input on the idle notice is the user abandoning the
     // unsent result: that ends the operation (a pending submission keeps its
     // admission outcome instead).
-    abandonCompletedVoiceResult("recognition");
+    abandonCompletedVoiceResult();
     setVoiceInputStatus("idle", {
       message: "",
       error: null,
@@ -1203,7 +1224,7 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
   function abandonVoiceResult(operationId) {
     const operation = voiceOperations.get(operationId || getVoiceOperationId(state.activeSessionId, "chat"));
     if (operation) trackVoiceTerminal("voice_cancelled", operation);
-    if (!operationId) abandonCompletedVoiceResult("recognition");
+    if (!operationId) abandonCompletedVoiceResult();
   }
 
 function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoiceText(base, text); }

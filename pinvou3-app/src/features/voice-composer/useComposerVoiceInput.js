@@ -107,6 +107,17 @@ function useComposerVoiceInput(adapter) {
   // because callers use them interchangeably at different call sites.
   const closeVoice = cancelVoice;
 
+  // Dismissing the finished notice (or applying an edit preview) only hides
+  // the voice UI: the unsent operation stays adoptable by a later manual
+  // send. An in-flight recording is still an explicit cancel.
+  const dismissVoice = useCallback(() => {
+    const current = adapterRef.current || {};
+    if (!current.bridge || !current.bridge.available) return;
+    if (typeof current.bridge.voice?.dismissVoiceInput === 'function') {
+      current.bridge.voice.dismissVoiceInput();
+    }
+  }, []);
+
   // Abandon the result of the operation that recorded it (called when the
   // preview is discarded): ending an unsent operation without sending it.
   const discardVoiceResult = useCallback((context) => {
@@ -167,7 +178,9 @@ function useComposerVoiceInput(adapter) {
     current.setDraft(next);
     editPreviewRef.current = null;
     setEditPreview(null);
-    closeVoice();
+    // Applying a preview keeps the operation alive: the send (if any) adopts
+    // it and ends it on the send path; a manual retry keeps the provenance.
+    dismissVoice();
     if (!options.send) return true;
     if (typeof current.canSendTask === 'function' && !current.canSendTask(next, { mode: 'edit', preview })) {
       if (typeof current.onTaskBlocked === 'function') current.onTaskBlocked('gate', next, { mode: 'edit', preview });
@@ -175,7 +188,7 @@ function useComposerVoiceInput(adapter) {
     }
     if (typeof current.sendTask !== 'function') return false;
     return deliverVoiceTask(current, next, { ...preview.context, mode: 'edit', preview }, taskSendInFlightRef);
-  }, [editPreview, closeVoice, discardEditPreview]);
+  }, [editPreview, dismissVoice, discardEditPreview]);
 
   const clearStaleVoiceState = useCallback((targetId, sessionId) => {
     const current = adapterRef.current || {};
@@ -447,6 +460,7 @@ function useComposerVoiceInput(adapter) {
     triggerVoice,
     cancelVoice,
     closeVoice,
+    dismissVoice,
     cancelVoiceEditPreview,
     applyVoiceEditPreview,
   };

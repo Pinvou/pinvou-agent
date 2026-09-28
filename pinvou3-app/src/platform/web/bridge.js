@@ -2322,12 +2322,17 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
       }
     })();
     ensureSessionInFlight = p;
-    const result = await p;
-    if (ensureSessionInFlight === p) ensureSessionInFlight = null;
-    if (draftOwner && draftOwner.draftEpoch === draftOutcome.epoch) {
-      applyDraftOutcome(draftOutcome);
+    try {
+      const result = await p;
+      if (draftOwner && draftOwner.draftEpoch === draftOutcome.epoch) {
+        applyDraftOutcome(draftOutcome);
+      }
+      return result;
+    } finally {
+      // Reset on every path: a rejection that skipped the reset would make
+      // every future draft send await the same dead promise forever.
+      if (ensureSessionInFlight === p) ensureSessionInFlight = null;
     }
-    return result;
   }
 
 function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedweb().reportSessionSwitchFailure(error, errorScope); }
@@ -3725,6 +3730,12 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       // 首轮提交成功 = 新一轮已受理：未提交的「打开」转正锁死（同 doSendFor）。
       try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* silently ignored */ }
       acceptFirstTurnSubmission(submission, metadata);
+      // Admission truth lives here: an accepted first turn ends its voice
+      // operation (the retryable association is for rejections only, and the
+      // optimistic `return true` in sendMessage must not end it early).
+      if (submission.voiceOperationId) {
+        completeVoiceSubmission(submission.voiceOperationId, metadata.id, true);
+      }
     } catch (error) {
       submission.inFlight = false;
       submission.lastErrorCode = String(error && error.code || "rpc_failed");
@@ -3913,6 +3924,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
@@ -3941,6 +3953,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
 
@@ -3959,6 +3972,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
         return !readyAttachments.includes(attachment);
       });
       notify();
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
     // Admission rejected (notice already surfaced by doSendFor): nothing was
@@ -4007,14 +4021,23 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // it, so a fresh draft never inherits old text or voice provenance.
   const pendingTaskDraftRecovery = { buffer: null };
   function readComposerDraftWithRecovery() {
-    if (pendingTaskDraftRecovery.buffer && pendingTaskDraftRecovery.buffer.epoch !== Number(state.draftEpoch || 0)) {
-      pendingTaskDraftRecovery.buffer = null;
-    }
+    // Consumed once on returning to the draft, never while an unrelated
+    // session is open. No epoch gate: re-entering the draft always allocates
+    // a new epoch (enterDraft increments unconditionally), so an epoch match
+    // could never fire and the retained text would be silently dropped.
     if (pendingTaskDraftRecovery.buffer && !state.activeSessionId) {
       state.composerDraft = [state.composerDraft, pendingTaskDraftRecovery.buffer.text].filter(Boolean).join("\n");
       pendingTaskDraftRecovery.buffer = null;
     }
     return String(state.composerDraft || "");
+  }
+
+  // A dispatched send ends its voice operation (mirrors the desktop lane);
+  // false/"restored" returns keep the retryable association and are settled
+  // by the ChatView funnel / restoreTaskDraft / first-turn admission.
+  function settleAcceptedVoiceSubmission(meta, sessionId) {
+    const operationId = meta && meta.voiceOperationId;
+    if (operationId) completeVoiceSubmission(operationId, sessionId || null, true);
   }
 
   // Scoped task-draft restore: resolves by the original ownership (session,
@@ -4023,18 +4046,22 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   function restoreTaskDraft(text, owner) {
     if (!owner || owner.restored) return false;
     const sid = owner.sessionId || owner.createdSessionId || voiceOperationSessionId(owner.operationId);
+    // Every restore branch settles the submission (un-park + consume a
+    // queued dismiss); without it a rejected send would leave the operation
+    // parked forever and never adoptable by a retry.
     if (sid) {
       if (owner.operationId) completeVoiceSubmission(owner.operationId, sid, false);
       restoreComposerText(sid, text);
-    } else if (!state.activeSessionId && Number(state.draftEpoch || 0) === owner.draftEpoch) {
-      prefillComposer(text, true);
-    } else if (Number(state.draftEpoch || 0) === owner.draftEpoch) {
+    } else if (state.activeSessionId) {
       // Retain one departed draft in memory, never in the unrelated active session.
-      const retained = pendingTaskDraftRecovery.buffer && pendingTaskDraftRecovery.buffer.epoch === owner.draftEpoch
-        ? pendingTaskDraftRecovery.buffer.text : "";
+      if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
+      const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
       pendingTaskDraftRecovery.buffer = { epoch: owner.draftEpoch, text: [retained, text].filter(Boolean).join("\n") };
     } else {
-      return false;
+      // Back in the draft — any epoch, because re-entering the draft
+      // allocates a new one (enterDraft increments unconditionally).
+      if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
+      prefillComposer(text, true);
     }
     owner.restored = true;
     return true;
@@ -7016,7 +7043,12 @@ function voiceFlowError(category, stage, message) { return pinvouSharedweb().voi
       session.draftEpoch = Number(state.draftEpoch || 0);
     }
     for (const entry of voiceOperations) {
-      if (entry[1].telemetryTerminal) voiceOperations.delete(entry[0]);
+      const item = entry[1];
+      // Terminal entries are done; a dismissed entry stays adoptable for a
+      // manual retry until the next recording starts, then it is swept.
+      if (item.telemetryTerminal || (item.dismissed && !item.pendingSubmission)) {
+        voiceOperations.delete(entry[0]);
+      }
     }
     voiceOperations.set(session.operationId, session);
   }
@@ -7067,7 +7099,18 @@ function voiceFlowError(category, stage, message) { return pinvouSharedweb().voi
     if (sessionId && !operation.sessionId) {
       operation.sessionId = sessionId;
     }
-    if (!accepted && operation.pendingTerminal) {
+    if (accepted) {
+      // Acceptance ends the operation (mirrors the desktop lane): it is
+      // never adoptable again and the next recording start sweeps it.
+      operation.pendingTerminal = null;
+      operation.telemetryTerminal = true;
+      if (state.voiceInput && state.voiceInput.operationId === operationId) {
+        state.voiceInput = Object.assign({}, state.voiceInput, {
+          status: "idle", operationId: null, telemetryTerminal: true,
+        });
+        notify();
+      }
+    } else if (operation.pendingTerminal) {
       const terminal = operation.pendingTerminal;
       operation.pendingTerminal = null;
       trackVoiceTerminal(terminal.eventName, operation, terminal.fields);
@@ -7078,6 +7121,12 @@ function voiceFlowError(category, stage, message) { return pinvouSharedweb().voi
     if (activeVoiceInput && !activeVoiceInput.voiceResultReady) {
       clearVoiceInput();
       return;
+    }
+    // Mark the dismissal so the next recording start can sweep a never-sent
+    // dismissal; until then the operation stays adoptable by a manual send.
+    const operation = voiceOperations.get((state.voiceInput || {}).operationId);
+    if (operation && !operation.telemetryTerminal && !operation.pendingSubmission) {
+      operation.dismissed = true;
     }
     setVoiceInputStatus("idle", { message: "", operationId: null });
   }

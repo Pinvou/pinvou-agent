@@ -2322,7 +2322,9 @@ export function CodexAcpView({
     nativeVoice.cancelVoice();
   }
   function handleNativeVoiceClose() {
-    nativeVoice.closeVoice();
+    // Dismiss without ending the unsent operation (an in-flight recording
+    // still cancels); closeVoice would abandon it.
+    nativeVoice.dismissVoice();
   }
 
   // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
@@ -2857,10 +2859,20 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
+      // A dispatched ACP send ends its voice operation; without this the
+      // accepted record would sit pending forever (leaking its audio chunks).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId, true);
+      }
       // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
       return true;
     } catch (err) {
       if (materializingDraft && draftFailureCleanup) draftFailureCleanup();
+      // A failed ACP send un-parks its voice operation and keeps the
+      // retryable association (same contract as the chat lane's rejections).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId || null, false);
+      }
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);

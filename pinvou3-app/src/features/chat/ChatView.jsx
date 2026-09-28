@@ -2427,7 +2427,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }
 
       function handleVoiceClose() {
-        chatVoice.closeVoice();
+        // Hiding the notice dismisses without ending the unsent operation
+        // (an in-flight recording still cancels); closeVoice would abandon it.
+        chatVoice.dismissVoice();
       }
 
       async function handlePaste(e) {

@@ -93,11 +93,8 @@ vm.runInContext(
     getVoiceOperationId: () => null,
     abandonVoiceResult: () => {},
     abandonCompletedVoiceResult: () => {},
-    trackVoiceEvent: () => {},
     trackVoiceTerminal: () => {},
     voiceToken: (prefix) => `${prefix}1`,
-    voiceDurationMs: () => 0,
-    voiceTelemetryErrorCategory: (category) => category,
     rememberVoiceOperation: () => {},
   };
   vm.createContext(guardContext);

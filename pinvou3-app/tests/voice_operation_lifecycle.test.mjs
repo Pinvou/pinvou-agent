@@ -36,7 +36,7 @@ function operationCore(source, lane) {
   if (lane === "desktop") {
     const blockEnd = source.indexOf("  function normalizeVoiceMode(mode) {", blockStart);
     const abandonStart = source.indexOf("  function abandonVoiceResult(operationId) {", blockStart);
-    const anchor = source.indexOf("if (!operationId) abandonCompletedVoiceResult(\"recognition\");", abandonStart);
+    const anchor = source.indexOf("if (!operationId) abandonCompletedVoiceResult();", abandonStart);
     // Two newlines past the anchor statement to include the closing "  }".
     const abandonEnd = source.indexOf("\n", source.indexOf("\n", anchor) + 1) + 1;
     if (blockEnd < 0 || abandonStart < 0 || abandonEnd < abandonStart) {
@@ -55,16 +55,14 @@ function baseSandbox(state) {
   sandbox.state = state;
   sandbox.notify = () => {};
   sandbox.invoke = async () => null;
-  // Stubs for module-level helpers the extracted slice references.
+  // Stubs for module-level helpers the extracted slices reference but do not
+  // define. (voiceToken/getVoiceOperationId/abandon* are defined inside the
+  // desktop slice itself and are intentionally not stubbed here.)
   sandbox.activeVoiceInput = null;
   sandbox.bt = (key) => key;
-  sandbox.voiceToken = (prefix) => `${prefix}1`;
   sandbox.webVoiceToken = (prefix) => `${prefix}1`;
   sandbox.clearVoiceInput = () => {};
   sandbox.setVoiceInputStatus = () => {};
-  sandbox.getVoiceOperationId = () => null;
-  sandbox.abandonVoiceResult = () => {};
-  sandbox.abandonCompletedVoiceResult = () => {};
   sandbox.emitVoiceDiagnostic = () => {};
   return sandbox;
 }
@@ -168,48 +166,93 @@ test("desktop: only a proven same-draft rollback may rebind the draft associatio
 });
 
 // ── Desktop ownership claim: the microphone must stay closed until the claim lands ──
-test("desktop: no microphone probe before the Rust ownership claim resolves", async () => {
-  const source = sources.desktop;
-  let resolveClaim;
-  const claim = new Promise((resolve) => { resolveClaim = resolve; });
-  let microphoneProbes = 0;
-  const state = {
-    activeSessionId: null,
-    draftEpoch: 4,
-    composerDraft: "",
-    voiceAsrSetup: { installing: false },
-    voiceInput: { status: "idle" },
-  };
+
+// Builds a sandbox whose startVoiceInput slice passes the mediaDevices and
+// AudioContext guards, so the test exercises the actual claim gate instead
+// of failing at the first guard (a stub gap here used to make this suite
+// pass while a claim-after-microphone reordering went undetected).
+function startVoiceInputSandbox(state, handlers) {
   const sandbox = baseSandbox(state);
   sandbox.bt = (key) => key;
-  sandbox.window = { AudioContext: undefined };
-  sandbox.navigator = {};
+  sandbox.window = { AudioContext: function AudioContext() {} };
+  sandbox.navigator = { mediaDevices: { getUserMedia: async () => ({}) } };
+  sandbox.invoke = async () => ({ ready: true });
   sandbox.emitVoiceDiagnostic = () => {};
   sandbox.normalizeVoiceMode = (mode) => mode;
   sandbox.normalizeVoiceError = (error) => error;
-  sandbox.voiceToken = (prefix) => `${prefix}1`;
+  sandbox.voiceFlowError = (category, stage, message) =>
+    Object.assign(new Error(message), { category, stage });
   sandbox.currentVoiceWindowLabel = () => "detached-b";
-  sandbox.syncVoiceShortcutRecording = () => claim;
-  sandbox.probeVoiceAudioInput = () => { microphoneProbes += 1; return true; };
+  sandbox.voiceToken = (prefix) => `${prefix}1`;
+  sandbox.VOICE_DEVICE_PROBE_TIMEOUT_MS = 5;
+  sandbox.VOICE_DEVICE_REQUEST_TIMEOUT_MS = 5;
+  sandbox.probeVoiceAudioInput = handlers.probe;
+  sandbox.requestVoiceMedia = handlers.requestMedia;
+  sandbox.syncVoiceShortcutRecording = handlers.sync;
   sandbox.cleanupVoiceInputSession = () => {};
   sandbox.rememberVoiceOperation = () => {};
   sandbox.getVoiceOperationId = () => null;
   sandbox.abandonVoiceResult = () => {};
   sandbox.abandonCompletedVoiceResult = () => {};
   sandbox.trackVoiceTerminal = () => {};
-  const statuses = [];
-  sandbox.setVoiceInputStatus = (status) => { statuses.push(status); };
+  sandbox.statuses = [];
+  sandbox.setVoiceInputStatus = (status) => { sandbox.statuses.push(status); };
+  const source = sources.desktop;
   const start = source.indexOf("  async function startVoiceInput(");
   const end = source.indexOf("function cancelVoiceInput()", start);
   assert.ok(start >= 0 && end > start, "desktop startVoiceInput must exist");
   vm.runInContext(`${source.slice(start, end)}\nthis.startVoiceInput = startVoiceInput;`, sandbox);
+  return sandbox;
+}
+
+test("desktop: no microphone probe before the Rust ownership claim resolves", async () => {
+  let resolveClaim;
+  const claim = new Promise((resolve) => { resolveClaim = resolve; });
+  const claimCalls = [];
+  let microphoneProbes = 0;
+  let mediaRequests = 0;
+  const sandbox = startVoiceInputSandbox({
+    activeSessionId: null,
+    draftEpoch: 4,
+    composerDraft: "",
+    voiceAsrSetup: { installing: false },
+    voiceInput: { status: "idle" },
+  }, {
+    sync: (label, token) => { claimCalls.push([label, token]); return claim; },
+    probe: () => { microphoneProbes += 1; return true; },
+    requestMedia: async () => { mediaRequests += 1; return {}; },
+  });
   const starting = sandbox.startVoiceInput("draft text", () => {}, { mode: "dictation" });
   await new Promise((resolve) => { setImmediate(resolve); });
-  assert.equal(microphoneProbes, 0, "the probe must wait for the ownership claim");
+  assert.deepEqual(claimCalls, [["detached-b", "voice_1"]], "the claim must carry this window's label and the operation token");
+  assert.equal(microphoneProbes, 0, "the device probe must wait for the ownership claim");
+  assert.equal(mediaRequests, 0, "the microphone must not open before the ownership claim");
   resolveClaim(false);
   await starting;
-  assert.equal(microphoneProbes, 0, "a rejected claim must fail the start before any microphone");
-  assert.equal(statuses[statuses.length - 1], "failed");
+  assert.equal(mediaRequests, 0, "a rejected claim must fail the start before any microphone");
+  assert.equal(sandbox.statuses[sandbox.statuses.length - 1], "failed");
+});
+
+test("desktop: a start that fails after claiming releases the ownership claim", async () => {
+  const ownershipCalls = [];
+  const sandbox = startVoiceInputSandbox({
+    activeSessionId: null,
+    draftEpoch: 4,
+    composerDraft: "",
+    voiceAsrSetup: { installing: false },
+    voiceInput: { status: "idle" },
+  }, {
+    sync: (label, token) => { ownershipCalls.push([label, token]); return Promise.resolve(true); },
+    probe: () => false,
+    requestMedia: async () => ({}),
+  });
+  await sandbox.startVoiceInput("draft text", () => {}, { mode: "dictation" });
+  assert.deepEqual(
+    ownershipCalls,
+    [["detached-b", "voice_1"], [null, "voice_1"]],
+    "the failed start must release its claim, or every later start in every window fails closed",
+  );
+  assert.equal(sandbox.statuses[sandbox.statuses.length - 1], "failed");
 });
 
 // ── Web first-turn admission certainty ──
@@ -249,6 +292,7 @@ test("web: outcome_unknown keeps the first-turn retry association, explicit reje
 test("hook: discarding a stale edit preview abandons the operation", async () => {
   const hookSource = read("src/features/voice-composer/useComposerVoiceInput.js");
   const discarded = [];
+  const dismissals = [];
   const sandbox = { console, Math, Date, Promise, Object, Array, JSON };
   vm.createContext(sandbox);
   const editPreviewRef = { current: null };
@@ -258,7 +302,8 @@ test("hook: discarding a stale edit preview abandons the operation", async () =>
   const adapterRef = { current: {
     bridge: { available: true, voice: {
       abandonVoiceResult: (id) => discarded.push(id),
-      cancelVoiceInput() {}, clearVoiceInput() {}, dismissVoiceInput() {},
+      cancelVoiceInput() {}, clearVoiceInput() {},
+      dismissVoiceInput: () => dismissals.push("dismiss"),
     } },
   } };
   sandbox.adapterRef = adapterRef;
@@ -268,9 +313,12 @@ test("hook: discarding a stale edit preview abandons the operation", async () =>
   sandbox.closeVoice = () => {};
   sandbox.trimDraft = (value) => String(value || "").trim();
   sandbox.useCallback = (fn) => fn;
-  const discardStart = hookSource.indexOf("  // Abandon the result of the operation that recorded it");
+  // The slice starts at dismissVoice: applyVoiceEditPreview closes over it,
+  // and its wiring (dismiss — not closeVoice/abandon) is part of the
+  // contract under test.
+  const discardStart = hookSource.indexOf("  // Dismissing the finished notice");
   const applyEnd = hookSource.indexOf("  const clearStaleVoiceState = useCallback(");
-  assert.ok(discardStart >= 0 && applyEnd > discardStart, "the hook keeps its discard/apply block");
+  assert.ok(discardStart >= 0 && applyEnd > discardStart, "the hook keeps its dismiss/discard/apply block");
   vm.runInContext(`${hookSource.slice(discardStart, applyEnd)}\nthis.applyPreview = applyVoiceEditPreview;`, sandbox);
   const preview = { original: "original", next: "edited", context: { operationId: "voiceop-preview" } };
   let draft = "manually changed";
@@ -282,6 +330,18 @@ test("hook: discarding a stale edit preview abandons the operation", async () =>
   assert.equal(applied, false);
   assert.deepEqual(discarded, ["voiceop-preview"]);
   assert.equal(draft, "manually changed", "a drifted draft must not be replaced by the preview");
+
+  // Applying a matching preview (without sending) dismisses the notice and
+  // keeps the operation alive: no abandon, no cancel.
+  draft = "original";
+  discarded.length = 0;
+  editPreviewRef.current = preview;
+  sandbox.editPreview = preview;
+  const appliedClean = await sandbox.applyPreview({});
+  assert.equal(appliedClean, true);
+  assert.deepEqual(dismissals, ["dismiss"], "applying a preview dismisses without ending the operation");
+  assert.deepEqual(discarded, [], "applying a preview must not abandon its operation");
+  assert.equal(draft, "edited", "the preview text is applied to the draft");
 });
 
 // ── ChatView source contracts for the submission protocol ──
@@ -328,4 +388,123 @@ test("ownership: tokenless clears are rejected and stale teardown cannot wipe a 
   );
 });
 
-console.log("voice_operation_lifecycle: all assertions passed");
+test("web: an accepted submission ends the operation like the desktop lane", () => {
+  const h = operationHarness("web");
+  const operation = h.operation("voiceop-web-accepted");
+  h.api.beginVoiceSubmission(operation.operationId, "web-session");
+  h.api.completeVoiceSubmission(operation.operationId, "web-session", true);
+  assert.equal(operation.telemetryTerminal, true, "acceptance ends the operation");
+  assert.equal(h.api.getVoiceOperationId("web-session", "chat"), null, "a terminal operation is never adopted again");
+});
+
+test("desktop: dismissing the finished notice keeps the operation until the next recording", () => {
+  const h = operationHarness("desktop");
+  const operation = h.operation("voiceop-dismissed");
+  h.state.voiceInput = { status: "idle", operationId: operation.operationId };
+  h.api.dismissVoiceInput();
+  assert.equal(operation.telemetryTerminal, false, "dismissing must not end the unsent operation");
+  assert.equal(operation.dismissed, true, "the dismissal is marked so the next start can sweep it");
+  assert.equal(h.api.getVoiceOperationId(null, "chat"), operation.operationId, "a dismissed operation stays adoptable by a manual send");
+  const next = { operationId: "voiceop-next", ownerKind: "chat", sessionId: null, startedAt: Date.now(), telemetryTerminal: false };
+  h.api.rememberVoiceOperation(next);
+  next.voiceResultReady = true;
+  assert.equal(h.api.getVoiceOperationId(null, "chat"), "voiceop-next", "the next recording start sweeps the never-sent dismissal");
+});
+
+// ── Scoped task-draft restore (real chat.js code): retention, consumption, settlement ──
+const chatSource = read("src/platform/tauri/bridge/chat.js");
+
+function restoreHarness(stateOverrides) {
+  const state = { activeSessionId: null, draftEpoch: 4, composerDraft: "", ...stateOverrides };
+  const sandbox = { console, Math, Date, Promise, Object, Array, JSON, String, Number, Boolean };
+  vm.createContext(sandbox);
+  sandbox.state = state;
+  const calls = { complete: [], steer: [], prefill: [] };
+  sandbox.voice = () => ({
+    rebindVoiceDraftAfterRollback: () => false,
+    completeVoiceSubmission: (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted }),
+    voiceOperationSessionId: () => null,
+  });
+  sandbox.restoreSteerText = (sid, text) => calls.steer.push({ sid, text });
+  sandbox.prefillComposer = (text, append) => calls.prefill.push({ text, append });
+  const start = chatSource.indexOf("  const pendingTaskDraftRecovery = { buffer: null };");
+  const end = chatSource.indexOf("  // Per-session in-flight interrupt flag", start);
+  assert.ok(start >= 0 && end > start, "chat bridge must keep the scoped task-draft restore block");
+  vm.runInContext(`${chatSource.slice(start, end)}
+    this.restoreTaskDraft = restoreTaskDraft;
+    this.readComposerDraftWithRecovery = readComposerDraftWithRecovery;`, sandbox);
+  return { sandbox, state, calls };
+}
+
+test("restore: a rejected send with an active session retains once and consumes on draft return", () => {
+  const { sandbox, state, calls } = restoreHarness({ activeSessionId: "session-b", draftEpoch: 5 });
+  const owner = { sessionId: null, draftEpoch: 4, operationId: "voiceop-restore", restored: false };
+  assert.equal(sandbox.restoreTaskDraft("dictated text", owner), true);
+  assert.deepEqual(calls.prefill, [], "the text must never land in the unrelated active composer");
+  assert.deepEqual(calls.complete, [{ operationId: "voiceop-restore", sessionId: null, accepted: false }], "the restore settles the parked submission");
+  // Returning to the draft allocates a NEW epoch (enterDraft increments
+  // unconditionally) — the retained text must still be consumed exactly once.
+  state.activeSessionId = null;
+  state.draftEpoch = 7;
+  assert.equal(sandbox.readComposerDraftWithRecovery(), "dictated text");
+  assert.equal(state.composerDraft, "dictated text", "the retained text lands in the composer draft");
+  state.composerDraft = "";
+  assert.equal(sandbox.readComposerDraftWithRecovery(), "", "the retained draft is consumed once");
+  assert.equal(sandbox.restoreTaskDraft("again", owner), false, "the restore is once-only");
+});
+
+test("restore: back in the draft it prefills directly regardless of the epoch", () => {
+  const { sandbox, calls } = restoreHarness({ activeSessionId: null, draftEpoch: 9 });
+  const owner = { sessionId: null, draftEpoch: 4, operationId: "voiceop-prefill", restored: false };
+  assert.equal(sandbox.restoreTaskDraft("dictated text", owner), true);
+  assert.deepEqual(calls.prefill, [{ text: "dictated text", append: true }]);
+  assert.deepEqual(calls.complete, [{ operationId: "voiceop-prefill", sessionId: null, accepted: false }]);
+});
+
+test("restore: a bound session steers into its own session and settles there", () => {
+  const { sandbox, calls } = restoreHarness({ activeSessionId: "session-b", draftEpoch: 5 });
+  sandbox.voice = () => ({
+    rebindVoiceDraftAfterRollback: () => false,
+    completeVoiceSubmission: (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted }),
+    voiceOperationSessionId: () => "voice-bound-session",
+  });
+  const owner = { sessionId: null, draftEpoch: 4, operationId: "voiceop-bound", restored: false };
+  assert.equal(sandbox.restoreTaskDraft("dictated text", owner), true);
+  assert.deepEqual(calls.steer, [{ sid: "voice-bound-session", text: "dictated text" }]);
+  assert.deepEqual(calls.complete, [{ operationId: "voiceop-bound", sessionId: "voice-bound-session", accepted: false }]);
+});
+
+// ── Sent operations really end: the bridges settle acceptance at the point of truth ──
+test("sends: dispatched sends settle their voice operation as accepted in both lanes", () => {
+  const desktopSettles = chatSource.match(/settleAcceptedVoiceSubmission\(meta, sid\);/g) || [];
+  assert.ok(desktopSettles.length >= 4, "every dispatched exit of the desktop sendMessage must settle its voice operation");
+  const webSource = sources.web;
+  const webSettles = webSource.match(/settleAcceptedVoiceSubmission\(meta, sid\);/g) || [];
+  assert.ok(webSettles.length >= 3, "every dispatched exit of the web sendMessage must settle its voice operation");
+  assert.match(
+    webSource,
+    /acceptFirstTurnSubmission\(submission, metadata\);[\s\S]*?completeVoiceSubmission\(submission\.voiceOperationId, metadata\.id, true\);/,
+    "web first-turn admission truth — not the optimistic resolve — ends the operation",
+  );
+  const codexSource = read("src/features/codex/CodexAcpView.jsx");
+  assert.match(
+    codexSource,
+    /await sendBody\(\{ targetId, operation \}\);[\s\S]*?completeVoiceSubmission\(voiceOperationId, targetId, true\);/,
+    "an accepted ACP send ends its voice operation",
+  );
+  assert.match(
+    codexSource,
+    /} catch \(err\) \{[\s\S]*?completeVoiceSubmission\(voiceOperationId, targetId \|\| null, false\);/,
+    "a failed ACP send un-parks its voice operation and keeps the retryable association",
+  );
+  assert.match(
+    read("src/features/chat/ChatView.jsx"),
+    /if \(voiceOwner && \(\(activeSessionIdRef\.current \|\| null\) !== voiceOwner\.sessionId/,
+    "the ChatView pre-guard must reject sends whose ownership moved on",
+  );
+  assert.match(
+    read("src/features/voice-composer/useComposerVoiceInput.js"),
+    /const dismissVoice = useCallback\(\(\) => \{[\s\S]*?dismissVoiceInput\(\);/,
+    "the hook exposes the dismiss-without-ending primitive",
+  );
+});
