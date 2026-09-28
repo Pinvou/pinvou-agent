@@ -463,8 +463,9 @@ mod tests {
             parse_npm_mirror_latest(br#"{"name":"@openai/codex","version":"0.157.1"}"#).unwrap(),
             "0.157.1"
         );
-        // 带前导 v 或附加字段的版本号会被 normalize 成裸三段数字（与官方源
-        // 解析结果同形，latest_update_available 才能正确比较）。
+        // 附加 JSON 字段不影响解析。npm 的 version 字段本身是严格 semver
+        //（不含前导 v），但若镜像给出 v 前缀（非 semver），normalize_semver
+        // 与官方源同款地如实报错，不会静默产出错位的版本号去参与比较。
         assert_eq!(
             parse_npm_mirror_latest(br#"{"version":"v2.1.283"}"#)
                 .unwrap_err()

@@ -125,6 +125,15 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
 pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
 
+/// npm 国内镜像 registry（阿里云 npmmirror，官方 registry 的同步镜像）。
+/// codex/claude 与 tmeet 的 npm 安装在官方 registry.npmjs.org 整体失败后，
+/// 以本次调用追加 `--registry` 的方式重试一次；不写入用户 npm 配置。
+/// 放在 platform 供 codex_acp 与 connectors 两个 feature 共用（feature 之间
+/// 不得互相依赖）。注意：npm 安装路径没有应用侧制品 pin（npm 的完整性
+/// 元数据同样来自该 registry），此路径的完整性依赖 TLS 与镜像的同步保真，
+/// 与归档/wheel 下载的 SHA-256 pin 校验不是同一强度。
+pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+
 pub(crate) async fn download_to_part_with_verify(
     mut req: DownloadRequest<'_>,
 ) -> Result<(), String> {

@@ -835,7 +835,10 @@ pub(super) async fn run_official_install_script(
 /// diagnostics log. On failure (and not user-cancelled), retries once against
 /// the npmmirror China mirror: registry.npmjs.org is frequently unreachable on
 /// Chinese networks. The flag is per-invocation only — the user's npm
-/// configuration is never read or written.
+/// configuration is never written or modified (npm still reads its own config
+/// for prefix/cache/auth as usual). npm installs have no app-side artifact
+/// pin; integrity on this path rests on TLS plus the mirror's registry-sync
+/// fidelity.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -922,6 +925,11 @@ pub(super) async fn run_npm_global_upgrade(
         },
     )
     .await
+    // 镜像重试也失败时保留首次错误的因果链：只报镜像错误会把
+    // EACCES/磁盘满这类与网络无关的首次失败藏进诊断日志。
+    .map_err(|mirror_error| {
+        mirror_error.context(format!("首次 npm 源错误：{primary:#}"))
+    })
 }
 
 /// brew's idempotent notices do not count as failure: install reports already installed, upgrade reports already

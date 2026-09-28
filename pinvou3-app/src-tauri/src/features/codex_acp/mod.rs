@@ -128,10 +128,12 @@ const KIMI_ACP_PACKAGE: &str = "kimi acp";
 const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
 const MIN_CLAUDE_VERSION: &str = "2.0.0";
-/// npm 国内镜像 registry（阿里云 npmmirror，包内容与官方 registry 字节一致）。
+/// npm 国内镜像 registry（阿里云 npmmirror，官方 registry 的同步镜像）。
+/// 定义在 [`crate::platform::download`]（连接器侧 tmeet 同样使用；platform
+/// 是两个 feature 共同的下依赖，避免 feature 反向依赖）。
 /// 仅在官方 registry.npmjs.org 不可达时作为该次安装/升级调用的 `--registry`
 /// 重试源与 latest 版本探测兜底，不写入也不改变用户的 npm 配置。
-pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+pub(crate) use crate::platform::download::NPM_MIRROR_REGISTRY;
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
 const MIN_KIMI_VERSION: &str = "0.9.0";
 const CODEX_INSTALL_SCRIPT_UNIX: &str = "https://chatgpt.com/codex/install.sh";
@@ -1302,6 +1304,29 @@ fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `official_script` 动作的降级决策（纯函数核心，便于单测）：
+/// - 脚本源可达 → 原样 `official_script`；
+/// - 不可达且本机有 npm 兜底（有对应 npm 包且 npm 可执行）→ `npm_upgrade`
+///   （`run_npm_global_upgrade` 自带 npmmirror 镜像重试）；
+/// - 不可达且无 npm 兜底 → `None`，调用方报原始网络错误与手动安装提示。
+///
+/// kimi 的 official_script 动作同样适用：仅在其官方源（code.kimi.com，国内
+/// 可达）真的不可达时才降级，正常路径不受影响；与 latest 探测对 kimi 排除
+/// npmmirror 兜底并不矛盾——那里排除的是正常路径上的版本探测兜底，这里是
+/// 可达性故障时的安装兜底（npm 本就是 kimi 的合法安装渠道）。
+fn official_script_degrade(
+    script_reachable: bool,
+    npm_fallback_available: bool,
+) -> Option<&'static str> {
+    if script_reachable {
+        Some("official_script")
+    } else if npm_fallback_available {
+        Some("npm_upgrade")
+    } else {
+        None
+    }
+}
+
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
@@ -2167,26 +2192,25 @@ impl AcpPool {
             unix_url
         };
         let script_reachable = script_url_reachable(url).await;
-        if !script_reachable {
-            let npm_pkg = npm_package(backend).unwrap_or("");
-            if !(npm_package(backend).is_some() && npm_executable().is_some()) {
-                bail!(
+        let npm_fallback_available = npm_package(backend).is_some() && npm_executable().is_some();
+        let effective = official_script_degrade(script_reachable, npm_fallback_available)
+            .ok_or_else(|| {
+                let npm_pkg = npm_package(backend).unwrap_or("");
+                anyhow::anyhow!(
                     "无法连接 {} 官方安装脚本（{url}），请检查网络或稍后重试；\
                      也可手动安装：npm install -g {npm_pkg}",
                     backend.display_name()
-                );
-            }
-        }
+                )
+            })?;
         self.ensure_no_stale_official_install(backend).await?;
-        if !script_reachable {
+        if effective != action {
             diagnostics::write(
                 "install-preflight",
                 "preflight:script_source_unreachable_degrade_npm",
                 format!("url={url} npm_pkg={}", npm_package(backend).unwrap_or("")),
             );
-            return Ok("npm_upgrade".to_string());
         }
-        Ok(action.to_string())
+        Ok(effective.to_string())
     }
 
     /// 官方脚本目标路径的坏残留检查（脚本安装与降级 npm 安装共用）。
@@ -4810,6 +4834,20 @@ fn codex_client_capabilities() -> ClientCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_script_degrade_covers_reachable_unreachable_and_no_npm() {
+        // 脚本源可达：原样执行，无论 npm 是否可用。
+        assert_eq!(
+            official_script_degrade(true, false),
+            Some("official_script")
+        );
+        assert_eq!(official_script_degrade(true, true), Some("official_script"));
+        // 不可达但有 npm 兜底：降级 npm 安装（自带 npmmirror 镜像重试）。
+        assert_eq!(official_script_degrade(false, true), Some("npm_upgrade"));
+        // 不可达且无 npm 兜底：无法降级，调用方报原始网络错误与手动安装提示。
+        assert_eq!(official_script_degrade(false, false), None);
+    }
 
     #[test]
     fn idle_reap_keeps_busy_configuring_and_active_sessions() {
