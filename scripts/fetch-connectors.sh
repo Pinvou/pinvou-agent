@@ -77,10 +77,14 @@ verify_file() {
   # and the pre-install binary check) run bare under `set -e`, so the
   # mismatch diagnostic must live here or the script exits with no output;
   # the pre-download cache probe silences it with >/dev/null 2>&1.
-  if [[ -f "$1" ]]; then
-    echo "sha256 mismatch: $1 (expected $2, actual $(compute_sha256 "$1"))" >&2
-  else
+  # An unreadable file is an I/O failure, not a hash difference, so it gets
+  # its own message instead of a misleading "mismatch ... actual )".
+  if [[ ! -f "$1" ]]; then
     echo "sha256 check failed: $1 is missing (expected $2)" >&2
+  elif [[ ! -r "$1" ]]; then
+    echo "sha256 check failed: $1 is not readable (expected $2)" >&2
+  else
+    echo "sha256 mismatch: $1 (expected $2, actual $(compute_sha256 "$1"))" >&2
   fi
   return 1
 }

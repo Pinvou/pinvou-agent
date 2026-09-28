@@ -932,6 +932,9 @@ class CiGatePolicyTests(unittest.TestCase):
             source,
         )
         self.assertIn('echo "sha256 check failed: $1 is missing (expected $2)" >&2', source)
+        self.assertIn(
+            'echo "sha256 check failed: $1 is not readable (expected $2)" >&2', source
+        )
         self.assertIn('[[ "$(compute_sha256 "$1")" == "$2" ]]', source)
         self.assertIn("return 1", source)
         # Three bare checks plus the silenced pre-download probe: the number
