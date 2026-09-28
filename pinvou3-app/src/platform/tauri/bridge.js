@@ -1568,8 +1568,13 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
 
   let notificationQueue = [];
   let notificationDispatching = false;
+  // React subscribes before lifecycle.init() finishes. The independent startup
+  // loaders therefore used to expose a succession of partial snapshots and
+  // re-render the root once per completed IPC. Keep their state ownership and
+  // parallelism, but publish the initialized state as one coherent revision.
+  let startupNotificationBatching = false;
   function notify() {
-    if (suppressNotify) return;
+    if (suppressNotify || startupNotificationBatching) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
@@ -1611,7 +1616,33 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   }
   function subscribeStateSlices(domains, fn) {
     subscriptionStateSlices(domains);
-    return subscribe(function () { return subscriptionStateSlices(domains); }, fn);
+    // Re-read every domain slice on each round: subscriptionStateValue's
+    // structural comparison guarantees slice identity (same content <=> same
+    // reference), so the combined object only needs rebuilding when one of the
+    // subscribed slices changes identity. Publications for unrelated domains
+    // reuse the previous combined object so React's Object.is check skips the
+    // render; the callback still fires on every notification, matching the
+    // single-domain subscription contract. Mirrors the web domain adapter's
+    // stablePick semantics.
+    let lastSlices = [];
+    let lastResult = null;
+    return subscribe(function () {
+      let changed = !lastResult;
+      const slices = [];
+      for (let i = 0; i < domains.length; i++) {
+        slices[i] = subscriptionStateSlice(domains[i]);
+        if (slices[i] !== lastSlices[i]) changed = true;
+      }
+      if (changed) {
+        const result = {};
+        for (let j = 0; j < slices.length; j++) {
+          Object.assign(result, slices[j]);
+        }
+        lastSlices = slices;
+        lastResult = Object.freeze(result);
+      }
+      return lastResult;
+    }, fn);
   }
 
   const scheduledFeature = installBridgeFeature("scheduled", { state, notify, invoke, bt, runSyncOnSession, addSystemItem, rememberScheduledRunOwner, isScheduledRunTerminal, purgeSessionBuffer, createNewSession, prefillComposer, sessionStates });
@@ -2307,6 +2338,9 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     if (initPromise) return initPromise;
     initPromise = (async function () {
     startupMark("bridge:init_start");
+    startupNotificationBatching = true;
+    let initFailure;
+    try {
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
     if (!isDetachedWindow) {
@@ -2362,7 +2396,23 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     }
     startupMark("bridge:background_checks_started");
     if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
-    notify();
+    } catch (initError) {
+      initFailure = initError;
+    } finally {
+      startupNotificationBatching = false;
+    }
+    // Publish the coherent startup snapshot outside the finally: notify()
+    // rethrows subscriber-callback errors, and a throw from inside a finally
+    // would replace the in-flight init error. The failure path still gets its
+    // publish, but only the real init error propagates; on the success path a
+    // publish failure fails init exactly as before. This sync section cannot
+    // interleave with other notifies between the flag reset and the publish.
+    try {
+      notify();
+    } catch (notifyError) {
+      if (!initFailure) throw notifyError;
+    }
+    if (initFailure) throw initFailure;
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
     })();
