@@ -79,7 +79,8 @@
       action: ready ? (installerLaunch ? "none" : "restart") : (downloading ? "none" : "download"),
       disabled: downloading || (ready && installerLaunch),
       // Localized hint only: the raw error may carry request details and be
-      // untranslated; it stays on bridge state / the app log for diagnostics.
+      // untranslated; it stays on bridge state, and the updater logs the raw
+      // cause for diagnostics.
       error: bs && bs.updateError ? text(labels, "updateInstallFailed", "更新失败") : "",
     };
   }

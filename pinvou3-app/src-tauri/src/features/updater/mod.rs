@@ -90,8 +90,11 @@ pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// 拉 latest.json 与当前版本比较。网络失败返回 Err——启动静默检查由前端吞掉，
-/// 手动检查才展示错误。原始原因同时落到 stderr:失败提示是短文案,诊断靠这里。
+/// Fetches latest.json and compares it with the current version. Network
+/// failures return Err — the frontend swallows them for the startup silent
+/// check, and only a manual check surfaces the error. The raw cause is
+/// logged here: the failure hint shown to the user is short copy, the
+/// diagnostics live in the log (the app log in packaged builds).
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION");
     let client = match reqwest::Client::builder()
@@ -100,13 +103,13 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
     {
         Ok(client) => client,
         Err(e) => {
-            eprintln!("[updater] update check failed: {e}");
-            return Err(format!("HTTP client 构建失败: {e}"));
+            log::warn!("[updater] update check failed: {e}");
+            return Err(format!("failed to build the HTTP client: {e}"));
         }
     };
     platform::check_for_update_info(&client, current)
         .await
-        .inspect_err(|e| eprintln!("[updater] update check failed: {e}"))
+        .inspect_err(|e| log::warn!("[updater] update check failed: {e}"))
 }
 
 /// Downloads the update package to `~/.pinvou3/updates/` with streaming
@@ -116,7 +119,7 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<(), String> {
     platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT)
         .await
-        .inspect_err(|e| eprintln!("[updater] download failed: {e}"))
+        .inspect_err(|e| log::warn!("[updater] download failed: {e}"))
 }
 
 /// 安装下载好的更新包。Linux 走 pkexec apt；macOS 打开已校验的安装镜像。
@@ -131,10 +134,10 @@ pub async fn install_update(
     })
     .await
     .map_err(|e| {
-        eprintln!("[updater] install task failed: {e}");
-        format!("安装任务失败: {e}")
+        log::warn!("[updater] install task failed: {e}");
+        format!("install task failed: {e}")
     })?
-    .inspect_err(|e| eprintln!("[updater] install failed: {e}"))?;
+    .inspect_err(|e| log::warn!("[updater] install failed: {e}"))?;
     if exit_after_start {
         app.exit(0);
     }

@@ -666,9 +666,11 @@ async function modalWidth(page, headingText) {
   await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
   await sleep(250);
 
-  // ①u 下载/安装失败只显示本地化短提示:原始后端错误串(可能携带请求细节、
-  // 语言不定)不进卡片,留在 bridge 状态与应用日志里作诊断。不 await 返回的
-  // promise——下载挂起直到 reject 钩子触发,await 会拖死 CDP。
+  // ①u A failed download/install shows only the localized short hint: the raw
+  // backend error string (it may carry request details and its language is
+  // undefined) never enters the card — it stays on bridge state and the
+  // updater's log as diagnostics. Do not await the returned promise: the
+  // download hangs until the reject hook fires, and awaiting would stall CDP.
   await page.evaluate(() => { window.TauriBridge.updater.downloadAndInstallUpdate(); });
   await sleep(250);
   await page.evaluate(() => window.__SETTINGS_TEST__.rejectDownload('RAW update diagnostics: apt stderr http://proxy.internal'));
