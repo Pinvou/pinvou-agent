@@ -203,6 +203,32 @@ for (const command of [
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
 }
 
+// Builtin feature switches (docs/builtin-toolset-contract.md §3.3): the WebUI
+// proxies to the same desktop host, so the feature-off state must be readable
+// from the browser too — otherwise a browser client keeps a switched-off
+// feature (session mention) fully live while read_session is gone on the
+// host. list_builtin_features is lane-agnostic and read-only; the write side
+// stays desktop-only.
+for (const command of ['list_builtin_features']) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (builtin feature registry read)`);
+}
+for (const command of ['set_builtin_feature_enabled']) {
+  assert.equal(allowed.has(command), false, `${command} must remain desktop-only (builtin feature toggles)`);
+}
+// Hot refresh: switch toggles broadcast remote_control:tools_changed; the relay
+// must forward it (allowlist) and the web bridge must re-dispatch the shared
+// pinvou:tools-changed DOM event so ChatView's registry subscription updates
+// on browser clients too (desktop gets the same event via chat-events.js).
+assert.equal(
+  allowedEvents.has('remote_control:tools_changed'), true,
+  'remote_control:tools_changed must be allowed on Web (builtin feature switch hot refresh)',
+);
+assert.match(
+  webBridge,
+  /listen\("remote_control:tools_changed"[^]*?pinvou:tools-changed/,
+  'web bridge must re-dispatch pinvou:tools-changed from remote_control:tools_changed',
+);
+
 // Memory organize is a global action (no session scope, same surface as
 // get_memory_overview): the settings "AI 整理记忆" (AI organize memory) button and
 // the "上次整理" (last organized) history read must work on WebUI too; missing

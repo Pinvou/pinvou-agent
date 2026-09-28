@@ -6,7 +6,8 @@ import { EmptyState } from '../../components/EmptyState.jsx';
 import { Spinner } from '../../components/Spinner.jsx';
 import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
-import { localizeTool, mergeConfigFields, TsActionBtn, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { localizeTool, mergeConfigFields, TsActionBtn, BuiltinPluginCard, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
+import { isBuiltinPlugin } from './builtin-plugin-logic.js';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -869,6 +870,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ToolStoreView = ({ t, onNewChat }) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
+      // Copy for the read-only builtin plugins page (docs/builtin-toolset-contract.md §3.1);
+      // BuiltinPluginCard falls back to the zh dictionary when copy is missing.
+      const builtinCopy = t.uiBuiltinPlugins;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
       // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
       const storeData = storeCopy.storeData || {};
@@ -936,6 +940,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // 回收站：用户上传的插件卸载后进入回收站，可恢复或彻底删除
       // （list 为只读命令，Web 端可看列表；恢复/删除挂 toolStoreMutations 能力门）。
       const [showRecycleBin, setShowRecycleBin] = useState(false);
+      // Dedicated builtin-plugins subpage (docs/builtin-toolset-contract.md §3.1):
+      // entered from the toolbar "Builtin Plugins" button, rendered fully read-only;
+      // it reuses builtinPluginCards (list_marketplace_tools is already fetched when
+      // the main list loads — no extra request needed).
+      const [showBuiltinPlugins, setShowBuiltinPlugins] = useState(false);
       const [recycledPlugins, setRecycledPlugins] = useState([]);
       // 加载态：进入子页到首包返回之间不得闪「回收站是空的」空态；recycledLoaded
       // 标记首次加载完成（成功或失败都算，失败由 alert 提示），加载中渲染 spinner。
@@ -1273,7 +1282,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
       // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
       const customMcpTools = toolBackend
-        .filter(x => tsToolsData.every(t => t.backendId !== x.id))
+        // Builtin plugins (docs/builtin-toolset-contract.md §3.1, via the shared
+        // isBuiltinPlugin judgement) stay out of the regular store card flow —
+        // builtinPluginCards below renders them as a separate read-only section
+        // (visibility: system semantics).
+        .filter(x => !isBuiltinPlugin(x) && tsToolsData.every(t => t.backendId !== x.id))
         .map(x => {
           const bs = bundleStates[x.id] || null;
           // 卡面标题/说明优先取 readiness bundle 的生效值（后端已应用 extra
@@ -1293,6 +1306,43 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return localizeTool(base, t);
         });
       const tools = [...builtinTools, ...customMcpTools];
+      // Builtin plugins section data (docs/builtin-toolset-contract.md §3.1 read-only
+      // audit window): entries matching the shared isBuiltinPlugin judgement form a
+      // separate section, excluded from the regular card flow / search / category
+      // filters (visibility: system semantics). The displayed facts (mcp_tools tool
+      // list, security level, data access scopes, bundle version) all come from
+      // list_marketplace_tools; name/description go through the existing
+      // localizeTool overlay.
+      const builtinMcpCards = toolBackend
+        .filter(isBuiltinPlugin)
+        .map(x => localizeTool({
+          id: 'builtin-' + x.id, backendId: x.id, builtin: true,
+          title: x.name || x.id, subtitle: '', desc: x.description || '',
+          icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
+          securityLevel: x.security_level || null,
+          dataAccess: Array.isArray(x.data_access) ? x.data_access : [],
+          mcpTools: Array.isArray(x.mcp_tools) ? x.mcp_tools : [],
+          bundleVersion: x.bundle_version ? String(x.bundle_version).replace(/^v/i, '') : null,
+        }, t));
+      // Builtin skills (visual design is the only builtin === true entry in
+      // tsSkillsData) also live on the builtin-plugins page: the store keeps its
+      // feature card (that is its entry point); this page is the transparency
+      // window. A skill is a pure prompt capability — no tool list / security
+      // level / data access — so it declares facts with a kind row and a version
+      // row. Copy goes through the same overlay as the store skill cards
+      // (localizeSkill → uiToolStore.storeData.skills, keyed by id 's5'), so
+      // en/ja render the localized title/subtitle/desc/version.
+      const builtinSkillCards = tsSkillsData
+        .filter(x => x.builtin === true)
+        .map(x => {
+          const s = localizeSkill(x);
+          return {
+            ...s, id: 'builtin-skill-' + x.id,
+            kindLabel: (storeCopy.typeGroups || {})[String(s.type).toLowerCase()] || s.type,
+            versionText: s.version || null,
+          };
+        });
+      const builtinPluginCards = [...builtinMcpCards, ...builtinSkillCards];
       // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
@@ -2184,7 +2234,43 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </main>
           </div>
           )}
-          {!showRecycleBin && (
+          {/* Builtin plugins subpage (docs/builtin-toolset-contract.md §3.1
+              transparency/audit window): fully read-only; shows the tool list,
+              security level, version (upgraded with the app) and data access
+              scopes; no uninstall, no toggles. Same structure as the recycle-bin
+              subpage: the back button returns to the main list. */}
+          {showBuiltinPlugins && (
+          <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
+
+            <header className="z-30 bg-white/80 dark:bg-[#131314]/80 backdrop-blur-2xl transition-colors">
+              <div className="max-w-[1400px] mx-auto border-b border-slate-200/50 pb-6 dark:border-white/10">
+                <div className="flex items-center gap-3">
+                  <button type="button" data-testid="builtin-plugins-back" onClick={() => setShowBuiltinPlugins(false)} title={storeCopy.back} aria-label={storeCopy.back}
+                    className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 flex items-center justify-center text-slate-600 dark:text-slate-300 transition-colors shrink-0">
+                    <ChevronLeft size={20} />
+                  </button>
+                  <h1 className="shrink-0 text-[26px] font-normal tracking-tight">{(builtinCopy || {}).sectionTitle}</h1>
+                </div>
+                {(builtinCopy || {}).pageIntro && (
+                  <p className="mt-3 text-[13px] text-slate-500 dark:text-slate-400 leading-relaxed">{builtinCopy.pageIntro}</p>
+                )}
+              </div>
+            </header>
+
+            <main className="flex-1">
+              <div className="max-w-[1400px] mx-auto pt-5 pb-8">
+                <ul data-testid="builtin-plugin-list" className="flex flex-col">
+                  {builtinPluginCards.map((tool) => (
+                    <li key={tool.id}>
+                      <BuiltinPluginCard tool={tool} copy={builtinCopy} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </main>
+          </div>
+          )}
+          {!showRecycleBin && !showBuiltinPlugins && (
           <div className="flex-1 flex flex-col bg-white dark:bg-[#131314] text-slate-900 dark:text-white transition-colors duration-300 font-sans overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-10">
 
             {/* Header */}
@@ -2304,6 +2390,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                             <Trash2 size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.recycleBin}</span>
                           </button>
+                          {/* Builtin plugins entry (docs/builtin-toolset-contract.md §3.1):
+                              a dedicated read-only subpage, kept out of the regular card flow */}
+                          {builtinPluginCards.length > 0 && (
+                            <button type="button" data-testid="tool-store-builtin-plugins" onClick={() => setShowBuiltinPlugins(true)} title={(builtinCopy || {}).sectionTitle}
+                              className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
+                              <Package size={14} className="mr-1.5 opacity-70" />
+                              <span>{(builtinCopy || {}).sectionTitle}</span>
+                            </button>
+                          )}
                           <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
                             {storeCopy.guide.dragHintShort}
                             <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}

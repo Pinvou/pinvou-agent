@@ -1,3 +1,5 @@
+import { isBuiltinPlugin } from '../tools/builtin-plugin-logic.js';
+
 const DEFAULT_BUILTIN_SKILLS = [
   {
     id: 'visual-design',
@@ -40,7 +42,13 @@ function buildComposerToolMenuState({
     }));
 
   const toolRows = installedTools
-    .filter(tool => tool && !hidden.has(tool.id))
+    // docs/builtin-toolset-contract.md §3.2 configuration visibility: builtin
+    // plugins (e.g. session-reader) are hidden from the composer tool list via
+    // the shared isBuiltinPlugin judgement; execution visibility (ToolCard
+    // rendering in the chat timeline) is unaffected. Missing fields (old
+    // backend / regular plugins) pass through; the caller refreshToolsMenu
+    // forwards the raw list_marketplace_tools result.
+    .filter(tool => tool && !hidden.has(tool.id) && !isBuiltinPlugin(tool))
     .map(tool => ({
       id: tool.id,
       kind: 'tool',

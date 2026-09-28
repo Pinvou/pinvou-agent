@@ -840,6 +840,17 @@ impl SkillMarketplaceManager {
     /// 删除）；companion 技能随属主 MCP 包整包回收，其候选目录已随包搬离，
     /// 下方循环自然跳过、结尾清登记即可（recycle-aware）。
     pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
+        // Builtin guard (docs/builtin-toolset-contract.md §3.1, defense in
+        // depth): a builtin package's companion skill must not be removable
+        // through the skill lane either — builtin exposure changes go through
+        // the feature-switch mechanism (§3.3). Normalized like the MCP-side
+        // uninstall guard so a `skill:`-prefixed alias cannot slip past.
+        let owner_package = super::scope::to_package_id(skill_id);
+        if super::builtin::is_builtin_tool(&owner_package) {
+            return Err(format!(
+                "skill '{skill_id}' belongs to builtin plugin '{owner_package}', which is part of the application and cannot be uninstalled"
+            ));
+        }
         // 预置 id(pua/nuwa) → skill_name;上传技能 id 即目录名本身。
         let dir_name = self
             .preset(skill_id)
@@ -3017,6 +3028,24 @@ mod tests {
         std::fs::write(legacy.join("SKILL.md"), "---\nname: hand-placed\n---\n").unwrap();
         assert!(mgr.uninstall("hand-placed").is_err(), "无标记旧扁平应拒绝");
         assert!(legacy.join("SKILL.md").is_file(), "保护对象不得被动");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Builtin guard (docs/builtin-toolset-contract.md §3.1): a skill id that
+    /// normalizes to a builtin package must be rejected by the skill lane too
+    /// (a builtin's companion skill must never be removable outside the
+    /// feature-switch mechanism), including the `skill:`-prefixed alias.
+    #[test]
+    fn uninstall_rejects_builtin_owned_skill() {
+        let tmp = fresh_dir("builtin_guard");
+        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
+        for raw in ["session-reader", "skill:session-reader"] {
+            let err = mgr.uninstall(raw).unwrap_err();
+            assert!(
+                err.contains("builtin") && err.contains("session-reader"),
+                "the rejection should name the builtin plugin: {err}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
