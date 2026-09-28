@@ -113,11 +113,24 @@ fn safe_auth_log_line(line: &str) -> Option<String> {
 }
 
 fn install_tmeet_cli() -> Result<(), String> {
-    let mut c = TMEET_CTX.base_cmd("npm");
-    cc::apply_user_npm_prefix(&mut c);
-    c.args(["install", "-g", TMEET_NPM_SPEC]);
-    // run_with_timeout 只回成败布尔;失败统一落到 cli-install.log 可诊断。
-    cc::run_with_timeout(c, 180).and_then(|installed| {
+    // registry.npmjs.org 在国内网络常不可达：默认源整体失败后，用 npmmirror
+    // 对本次调用重试一次（仅追加 --registry，不读写用户 npm 配置），与
+    // codex/claude 的 npm 升级镜像重试同一策略；两次输出都落 cli-install.log。
+    let attempt = |registry: Option<&str>| -> Result<bool, String> {
+        let mut c = TMEET_CTX.base_cmd("npm");
+        cc::apply_user_npm_prefix(&mut c);
+        c.args(["install", "-g", TMEET_NPM_SPEC]);
+        if let Some(registry) = registry {
+            c.arg(format!("--registry={registry}"));
+        }
+        // run_with_timeout 只回成败布尔;失败统一落到 cli-install.log 可诊断。
+        cc::run_with_timeout(c, 180)
+    };
+    let mut installed = attempt(None);
+    if !installed.as_ref().is_ok_and(|ok| *ok) {
+        installed = attempt(Some(crate::platform::download::NPM_MIRROR_REGISTRY));
+    }
+    installed.and_then(|installed| {
         if installed {
             Ok(())
         } else {
