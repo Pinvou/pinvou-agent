@@ -16,6 +16,16 @@ import { projectDeepSeekConversation, conversationItemsForMode } from '../conver
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
+// Native controls are session-owned; bridge state belongs to the separate
+// chat workspace. Only a loaded model whose controls belong to this very
+// session identifies the provider behind an error. During a session handoff
+// (or before controls load) no model attribution is safer than borrowing the
+// previous native session or the chat workspace's default model.
+export function nativeModelServiceContext(sessionId, controlsSessionId, modelId, savedModels) {
+  if (!sessionId || controlsSessionId !== sessionId || !modelId) return null;
+  return { currentSessionModelId: modelId, savedModels };
+}
+
 export function createNativeLane() {
   return {
     hydrated: false,

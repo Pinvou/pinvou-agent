@@ -1,8 +1,13 @@
-// 低频视图懒加载:用户典型路径是聊天,Settings/Codex/卡池/工具商店/定时/知识库/
-// 监控/搜索视图切到才加载对应 chunk(rolldown 对动态 import 自动分割)。VIEW_LOADERS
-// 是唯一的动态 import 出口:main.jsx 的 React.lazy 与 NavItem 悬停/聚焦预取、
-// DetachedShell 的撕离窗视图共用同一工厂,保证命中同一模块缓存。
-// 本模块不得静态引入任何视图,否则对应视图会被钉回主 chunk。
+// Lazy loading for low-frequency views and overlays: the typical user path is
+// chat, so the Settings / Codex / card pool / tool store / scheduled /
+// knowledge / monitor / search views, the search overlay, the project dialogs
+// and the rare global dialogs load only when used (rolldown splits dynamic
+// imports automatically). VIEW_LOADERS is the single dynamic-import exit:
+// main.jsx's React.lazy and the hover / focus / pre-open prefetches share the
+// same factories so they hit the same module cache, and DetachedShell reuses
+// the view factories for torn-off windows. This module must not statically
+// import any of these components, or they would be pinned back into the main
+// chunk.
 export const VIEW_LOADERS = {
   settings: () => import('../features/settings/SettingsView.jsx'),
   codex: () => import('../features/codex/CodexAcpView.jsx'),
@@ -12,6 +17,14 @@ export const VIEW_LOADERS = {
   knowledge: () => import('../features/knowledge/KnowledgeView.jsx'),
   monitor: () => import('../features/monitor/MonitorView.jsx'),
   search: () => import('../features/search/SearchView.jsx'),
+  searchOverlay: () => import('../features/search/SearchOverlay.jsx'),
+  moveToProjectDialog: () => import('../features/projects/MoveToProjectDialog.jsx'),
+  rebindFolderDialog: () => import('../features/projects/RebindFolderDialog.jsx'),
+  pinvouSummon: () => import('../features/tools/PinvouSummonCard.jsx'),
+  updateNotice: () => import('../features/updater/UpdateNoticeButton.jsx'),
+  savedPersonaConfirmDialog: () => import('../features/personas/SavedPersonaConfirmDialog.jsx'),
+  apiKeyGateDialog: () => import('../features/settings/ApiKeyGateDialog.jsx'),
+  archiveConfirmDialog: () => import('../features/sessions/ArchiveConfirmDialog.jsx'),
   // chat is not here: the main window renders ChatView at startup and imports
   // it statically in main.jsx; a dynamic import would not produce a separate
   // chunk (rolldown reports INEFFECTIVE_DYNAMIC_IMPORT). A detached window
