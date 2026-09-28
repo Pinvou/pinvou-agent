@@ -1032,9 +1032,9 @@ export function CodexAcpView({
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
       // Same as the main chat ChatView: the timeline error card's friendly
-      // copy is built in the UI language, with the provider label derived
-      // from bridge state (internally, a provider signal in the error text
-      // still wins).
+      // copy is built in the UI language; the provider label comes from the
+      // native session's own controls (nativeModelServiceState above), and a
+      // provider signal in the error text itself still wins.
       language: nativeModelServiceLanguage,
       modelServiceState: nativeModelServiceState,
     }) : null),
