@@ -28,11 +28,11 @@ pub trait MemoryReviewModel {
     /// reachability).
     fn memory_locale_tag(&self) -> String;
 
-    /// OpenCode gateway conversation key for the session-affinity header:
+    /// Conversation key for the OpenCode gateway session-affinity header:
     /// session-bound bridges share the conversation's session ID (matching
     /// the official client, where auxiliary calls use the conversation's
     /// session ID); the default falls back to the caller's feature label.
-    fn memory_opencode_conversation_key(&self, feature_label: &str) -> String {
+    fn aux_conversation_key(&self, feature_label: &str) -> String {
         feature_label.to_string()
     }
 }

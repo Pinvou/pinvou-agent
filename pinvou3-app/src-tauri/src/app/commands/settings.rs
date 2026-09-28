@@ -1200,8 +1200,11 @@ pub async fn run_image_capability_probe(
     if !key.trim().is_empty() {
         req = req.bearer_auth(key.trim());
     }
-    let req =
-        crate::core::model_endpoint::with_opencode_session_header(req, base_url, "image-probe");
+    let req = crate::core::model_endpoint::with_opencode_session_header(
+        req,
+        &base_url_stripped,
+        "image-probe",
+    );
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();

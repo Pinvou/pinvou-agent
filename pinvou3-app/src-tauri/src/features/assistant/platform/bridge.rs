@@ -322,7 +322,7 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
         self.locale_tag().to_string()
     }
 
-    fn memory_opencode_conversation_key(&self, feature_label: &str) -> String {
+    fn aux_conversation_key(&self, feature_label: &str) -> String {
         self.opencode_conversation_key(feature_label).to_string()
     }
 }
@@ -2494,9 +2494,7 @@ impl Pinvou3Bridge {
             cfg.http_headers.get_or_insert_with(HashMap::new).insert(
                 "x-opencode-session".to_string(),
                 opencode_session_id_for(
-                    self.session_affinity_key
-                        .as_deref()
-                        .unwrap_or(ENGINE_DEFAULT_CONVERSATION_KEY),
+                    self.opencode_conversation_key(ENGINE_DEFAULT_CONVERSATION_KEY),
                 ),
             );
         }

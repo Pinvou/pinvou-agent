@@ -998,6 +998,7 @@ async fn call_voice_postprocess_model(
             system,
             &user,
             voice_postprocess_max_tokens(mode, retry),
+            bridge.opencode_conversation_key("voice-postprocess"),
         )
         .await?;
         let truncated = completion.stop_reason.as_deref() == Some("max_tokens");

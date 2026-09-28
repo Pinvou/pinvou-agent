@@ -545,6 +545,7 @@ async fn model_review(
             &prompt,
             user_content,
             1600,
+            bridge.opencode_conversation_key("model-review"),
         )
         .await?
         .text;

@@ -609,6 +609,7 @@ pub(super) async fn send_memory_llm_request(
             prompt,
             user_content,
             max_tokens,
+            &bridge.aux_conversation_key("memory-review"),
         )
         .await?;
         if completion.stop_reason.as_deref() == Some("max_tokens") {
@@ -634,7 +635,7 @@ pub(super) async fn send_memory_llm_request(
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.memory_api_key()),
         &base_url,
-        &bridge.memory_opencode_conversation_key("memory-review"),
+        &bridge.aux_conversation_key("memory-review"),
     )
     .json(&body)
     .send()
