@@ -178,14 +178,15 @@ function targetArchitecture(
  *
  * Why replace instead of layering `{key: null}`: layering null is a valid and
  * shorter route (overlays merge as JSON Merge Patch, see `mergeConfig` in
- * `effective-config.js`, and the NSIS staging path relies on it). The one
+ * `effective-config.js`). The one
  * reason for replacing is that the removal is filtered from the overlay's own
  * keys, so a future declaration of the same unpreparable kind is removed
  * automatically instead of needing a second key list here. The costs, stated
  * so they are not forgotten: markers match substrings, which is wider than an
  * exact key, and rewriting the whole overlay trades "missed a key" for
- * "dropped a key", which only the layer-by-layer comparison in
- * `tests/tauri_skip_knowledge_host_overlay.test.js` guards against.
+ * "dropped a key", which the layer-by-layer comparisons in
+ * `tests/tauri_skip_knowledge_host_overlay.test.js` and the near-miss marker
+ * tests in the two skip-overlay test files guard against.
  *
  * A reason that does NOT hold: a missed declaration does not fail late in the
  * bundle stage; the `writeEffectiveArtifacts` check fails within seconds,
@@ -254,13 +255,17 @@ function platformConfigWithoutKnowledgeHost(configPath) {
  * When the target architecture differs from the host, check that every step
  * that can only prepare host-architecture artifacts has been dealt with.
  *
- * This is a hard failure, not a warning, because the symptom is a silently
- * wrong package rather than a build error:
- *   - without `PINVOU3_SKIP_LINUX_ASR`, `build-sensevoice-runtime.sh` asserts
- *     `requested_arch == host_arch` and fails, which is at least visible;
+ * This is a hard failure, not a warning, because the symptoms without the
+ * skip switches are late or silent:
+ *   - without `PINVOU3_SKIP_LINUX_ASR`, the SenseVoice script is asked for
+ *     the host architecture, so its `requested_arch == host_arch` assertion
+ *     passes; the build only stops later at the effective-config resource
+ *     check, because the target overlay declares a file that was never
+ *     prepared;
  *   - without `PINVOU3_SKIP_KNOWLEDGE_HOST`, `cargo build` runs without
- *     `--target` and the host-architecture server is packaged into the other
- *     architecture's deb with no warning at all.
+ *     `--target`, the host-architecture server lands where the platform
+ *     overlay expects it, and it is packaged into the other architecture's
+ *     deb with no warning at all.
  *
  * The codex bridge is not on this list: it prepares the target architecture
  * (`PINVOU3_BRIDGE_TARGET_ARCH` in `prepare-codex-bridge-runtime.sh`), so a

@@ -48,7 +48,10 @@ Architecture overlays follow the `--target <triple>` passed to the build
 entry (`--target X` or `--target=X`, last one wins), not the host
 architecture; without `--target` the host architecture is used as before. A
 Linux cross build to a machine segment `build.js` does not know fails instead
-of silently falling back to the host. Two sidecars can only be prepared for the
+of silently falling back to the host. One exception: a Linux host whose own
+architecture is outside the table (anything other than x86_64/aarch64) falls
+back as well, because there the build cannot tell a cross build from a native
+one. Two sidecars can only be prepared for the
 host architecture, so a cross build must opt out of both or `build.js` stops
 before any preparation:
 
