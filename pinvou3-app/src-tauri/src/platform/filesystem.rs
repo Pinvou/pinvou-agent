@@ -389,6 +389,37 @@ pub(crate) fn permission_bits(path: &Path) -> io::Result<Option<u32>> {
     }
 }
 
+/// A file's stable identity (device/inode); `None` on platforms without a
+/// portable equivalent, where callers must fall back to the weaker change
+/// signal (length + mtime). An atomic rename always changes the inode, so
+/// identity can distinguish "a different write of identical length at the
+/// same instant". Same reasoning as [`permission_bits`]: the `cfg(unix)`
+/// stays in this layer and the feature layer stays unconditionally compiled
+/// (architecture-guard: rust_target_cfg_outside_adapter).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
+/// Extract the identity from already-fetched metadata (reuses the same
+/// stat; adds no extra syscall).
+pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Some(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
 /// Open a private append-only data file without introducing a world-readable
 /// creation window on Unix. `mode(0o600)` only applies at creation — an
 /// existing file left loose by an earlier revision or external tooling would

@@ -390,7 +390,9 @@ fn validate_agent(agent: &str) -> Result<()> {
 /// Claude Code 细化模型槽位：槽位 id → 写入 settings.json env 的变量名。
 /// 槽位不填时 CC 的子 agent/辅助调用会回落官方模型（走官方流量），因此
 /// 保存 claude Provider 时以下槽位全部必填。
-pub(crate) const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
+/// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `providers add` 英文预检
+/// 与本保存逻辑使用同一槽位列表，消除手工副本漂移；GUI 语义不变。
+pub const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
