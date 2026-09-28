@@ -154,16 +154,25 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // understanding (volcengine docs 82379/1330310, 2026-09-11), so admitting
     // the whole family is justified.
     "doubao-seed",
-    // MiniMax: only M3 supports image input, M2.x does not, so the bare
-    // minimax substring must not be used (official docs, 2026-09-11).
+    // MiniMax: M3 and the newer M3.1-Flash-Preview support image (and video)
+    // input, M2.x does not, so the bare minimax substring must not be used
+    // (official docs, re-checked 2026-09-28). "minimax-m3" covers both.
     "minimax-m3",
     // Zhipu: GLM-5.3-Flash is natively multimodal; glm-5.3 / glm-5.2 are
     // text-only, so the glm-5.3 prefix cannot be used as one substring
-    // (2026-09-11). The glm-4v entry stays for compatibility with existing
-    // configs: only glm-4v-flash (free tier) is still sold; glm-4v /
-    // glm-4v-plus are gone from the on-sale table and the API enum.
+    // (2026-09-11). "glm-5.3-flash" also covers the 2026-09 multimodal speed
+    // tier glm-5.3-flashx (re-checked 2026-09-28). The glm-4v entry stays for
+    // compatibility with existing configs: only glm-4v-flash (free tier) is
+    // still sold; glm-4v / glm-4v-plus are gone from the on-sale table and
+    // the API enum.
     "glm-5.3-flash",
     "glm-4v",
+    // Xiaomi MiMo: the 2026-09-22 V2.6 series is omni-modal (text/image/
+    // audio/video input; mimo.mi.com model pages, checked 2026-09-28).
+    // "mimo-v2.6" covers pro / flash / pro-ultraspeed; the text-only
+    // mimo-v2.5-pro stays Unknown while multimodal mimo-v2.5 keeps its
+    // exact-equality entry below.
+    "mimo-v2.6",
     // Kimi (2026-09-11): Kimi direct kimi-k3 and Kimi Code k3 / k3-256k are
     // officially image-input models; kimi-k3 goes through the substring entry
     // while k3 / k3-256k are short generic ids, so they are admitted exactly
@@ -399,8 +408,15 @@ mod tests {
             (ModelPreset::Qwen, "qwen3.6-flash"),
             (ModelPreset::Glm, "glm-4v-plus"),
             (ModelPreset::Glm, "glm-5.3-flash"),
+            // The multimodal speed tier (standard API, 2026-09) is covered by
+            // the same "glm-5.3-flash" substring.
+            (ModelPreset::Glm, "glm-5.3-flashx"),
             (ModelPreset::Doubao, "doubao-seed-evolving"),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260915"),
             (ModelPreset::Minimax, "MiniMax-M3"),
+            // The newer preview tier shares M3's multimodal input and is
+            // covered by the same "minimax-m3" substring.
+            (ModelPreset::Minimax, "MiniMax-M3.1-Flash-Preview"),
             // Tencent Token Plan official hyphenated parallel spelling (same
             // as the frontend legacyAliases); must also resolve to Supported
             // via the exact table, otherwise existing configs degrade to
@@ -410,6 +426,11 @@ mod tests {
             // mimo-v2.5-pro must not be caught by accident, hence the exact
             // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
             (ModelPreset::Mimo, "mimo-v2.5"),
+            // The 2026-09-22 V2.6 series is omni-modal; all three tiers hit
+            // the "mimo-v2.6" substring entry.
+            (ModelPreset::Mimo, "mimo-v2.6-pro"),
+            (ModelPreset::Mimo, "mimo-v2.6-flash"),
+            (ModelPreset::Mimo, "mimo-v2.6-pro-ultraspeed"),
             // Kimi direct kimi-k3 and Kimi Code k3 / k3-256k are officially
             // image-input (2026-09-11); kimi-for-coding was user-verified as
             // vision-capable (2026-07).

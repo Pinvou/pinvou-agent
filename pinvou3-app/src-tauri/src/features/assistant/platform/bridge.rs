@@ -122,6 +122,18 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
 /// `core::model_endpoint::opencode_session_id_for`.
 const ENGINE_DEFAULT_CONVERSATION_KEY: &str = "engine-default";
 
+/// SiliconFlow China endpoint discrimination: the foundation splits
+/// Siliconflow / SiliconflowCN into two provider kinds with identical wire
+/// semantics but separate route identities (global default
+/// https://api.siliconflow.com/v1, China https://api.siliconflow.cn/v1,
+/// docs.siliconflow.cn quickstart, 2026-09-28). The saved model carries only
+/// one `siliconflow` vendor, so the kind is picked from the endpoint host.
+fn is_siliconflow_cn_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    normalized.starts_with("https://api.siliconflow.cn/")
+        || normalized == "https://api.siliconflow.cn"
+}
+
 pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -970,6 +982,17 @@ impl Pinvou3Bridge {
                 "kimi" | "moonshot" => Some("moonshot"),
                 "glm" | "zai" | "zhipu" => Some("zai"),
                 "minimax" => Some("minimax"),
+                // Aggregators have dedicated foundation routes
+                // (reasoning_content replay, thinking toggle at off, and
+                // OpenRouter's effort passthrough); routing by the saved
+                // vendor keeps those semantics instead of degrading to the
+                // generic openai wire (catalog groups added 2026-09-28).
+                "openrouter" => Some("openrouter"),
+                "siliconflow" => Some(if is_siliconflow_cn_base_url(&self.base_url()) {
+                    "siliconflow-cn"
+                } else {
+                    "siliconflow"
+                }),
                 "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
                 "doubao" | "volcengine" => Some("volcengine"),
                 // Anthropic uses the foundation's built-in anthropic provider
@@ -1061,6 +1084,10 @@ impl Pinvou3Bridge {
         if matches!(
             provider,
             "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
+                // Aggregator kinds the foundation lists in
+                // provider_accepts_reasoning_content (chat.rs): both return
+                // and accept the dedicated reasoning_content field.
+                | "openrouter" | "siliconflow" | "siliconflow-cn"
         ) {
             return Some(SEPARATE_REASONING_FIELD);
         }
@@ -8753,7 +8780,10 @@ mod tests {
         bridge.prefs.advanced.saved_models[0].vendor = Some("claude".to_string());
 
         assert_eq!(bridge.provider(), "anthropic");
-        assert_eq!(bridge.model(), "claude-sonnet-5");
+        // The Anthropic default follows the official recommendation slot
+        // (claude-opus-5-5 since 2026-09-22); this assert pins the routing
+        // chain end to end, so it reads the default instead of a literal.
+        assert_eq!(bridge.model(), ModelPreset::Anthropic.default_model());
         assert_eq!(bridge.base_url(), "https://api.anthropic.com/v1");
         assert_eq!(bridge.api_key(), "sk-ant");
         let cfg = bridge.build_dt_config();

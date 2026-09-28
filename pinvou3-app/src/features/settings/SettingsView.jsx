@@ -846,7 +846,7 @@ function hasStoredCredential(record) {
         </div>
       );
       const renderCloudProviderPicker = () => {
-        const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
+        const bySection = ['coding_plan', 'official_api', 'aggregator', 'custom'].map(section => ({
           section,
           title: settingsCopy.catalogSections[section] || MODEL_CATALOG_SECTIONS[section],
           groups: catalogGroups.filter(group => (group.section || 'official_api') === section),

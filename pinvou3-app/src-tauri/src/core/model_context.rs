@@ -27,7 +27,10 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // Both the base catalog and the known table already list claude-opus-5 at
     // 1M. The entry stays as an explicit anchor: if the base figure ever
     // regresses, the official 1M figure still governs (the Claude 5 family
-    // except haiku is 1M, platform.claude.com models overview).
+    // except haiku is 1M, platform.claude.com models overview). The suffix
+    // tolerance also carries the Anthropic default since 2026-09-22,
+    // claude-opus-5-5, at the same official 1M figure — no separate row
+    // needed.
     ("claude-opus-5", 1_000_000),
     // The base context heuristic only grants 1M to deepseek-family names that
     // contain the "v4" substring; deepseek-flash has no "v4" and would fall to
@@ -79,6 +82,22 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // engine resolves None and falls to 128K. Official figure is 256K
     // (docs.x.ai grok-build-0.1 page, 2026-09-11).
     ("grok-build-0.1", 256_000),
+    // The base known table pins bare kimi-for-coding at the safe 256K
+    // plan-dependent value; since the 2026-09-28 refresh it serves K2.8
+    // Preview, officially 1M on every plan tier (platform.kimi.com). The
+    // highspeed row (K2.7 Code HighSpeed, still officially 256K) must stay
+    // listed first, or the suffix tolerance would let the 1M row shadow it.
+    ("kimi-for-coding-highspeed", 262_144),
+    ("kimi-for-coding", 1_048_576),
+    // Like gpt-6-astra, no gpt-6-family row exists in the base chain, so the
+    // engine would fall to 128K while the monitor page shows the Openai
+    // preset fallback of 1.05M. Official figure 1,050,000 for both rows
+    // (developers.openai.com gpt-6-sol / gpt-6-luna model pages,
+    // 2026-09-28). Both stay listed-but-not-default: their Chat Completions
+    // function calling only works at effort=none (see prefs::model), so
+    // astra's "Responses-only tool calling" note gains these two siblings.
+    ("gpt-6-sol", 1_050_000),
+    ("gpt-6-luna", 1_050_000),
 ];
 
 /// pinvou3 supplemental table: applies only when the base chain (catalog /
@@ -92,9 +111,8 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // The Coding Plan bare-k3 window depends on the plan; the base records the
     // safe 256K value and 1M plans should configure it explicitly.
     // kimi-for-coding-highspeed belongs to K2.7 Code HighSpeed, officially 256K;
-    // bare kimi-for-coding is now K2.8 Preview (officially up to 1M,
-    // plan-tier dependent), deliberately not listed separately here pending
-    // the next refresh.
+    // bare kimi-for-coding is corrected to 1M by PINVOU_OVERRIDES since it
+    // started serving K2.8 Preview (see that table).
     ("kimi-for-coding-highspeed", 262_144),
     ("kimi-k2.7-code-highspeed", 262_144),
     // Alibaba Cloud's official docs give qwen3.7-plus/max/flash a 1M context.
@@ -127,6 +145,29 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // Zhipu officially rates GLM-4.7 at 200K; following the settings page's
     // binary-K display convention.
     ("glm-4.7", 204_800),
+    // MiMo V2.6 series (2026-09-22 release, mimo.mi.com): officially 1M of
+    // context across the series, and the base chain has no row for any v2.6
+    // spelling (its mimo rows stop at v2.5), so the engine would fall to
+    // 128K while the monitor page shows the Mimo preset fallback of 1M.
+    // pro-ultraspeed rides the suffix tolerance of the pro row; v2.5 rows
+    // keep resolving through the base catalog.
+    ("mimo-v2.6-pro", 1_000_000),
+    ("mimo-v2.6-flash", 1_000_000),
+    // xAI release notes (2026-09-17, docs.x.ai): "Grok 4.7 ... 500k context
+    // window". The base known table has no grok-4.7 row yet (its xai rows
+    // stop at 4.6), so the engine would fall to 128K while the monitor page
+    // shows the Xai preset fallback of 500K.
+    ("grok-4.7", 500_000),
+    // GLM-5.3-FlashX (2026-09, open.bigmodel.cn / docs.z.ai): 1M context,
+    // 128K max output. The suffix ".1"-style spellings do not inherit via
+    // model_name_matches, and the flashx wire id is a distinct model from
+    // glm-5.3 (multimodal, 200 tokens/s), so it is listed explicitly rather
+    // than relying on any glm-5.3 row.
+    ("glm-5.3-flashx", 1_000_000),
+    // MiniMax M3.1 Flash Preview (2026-09-26, platform.minimaxi.com): 1M
+    // context; the base's minimax rows stop at M3, whose exact spelling
+    // cannot suffix-match the m3.1 wire id.
+    ("minimax-m3.1-flash-preview", 1_000_000),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -234,6 +275,14 @@ mod tests {
             ("doubao-seed-2-0-pro-260215", 262_144),
             ("doubao-seed-2-0-lite-260428", 262_144),
             ("glm-4.7", 204_800),
+            ("kimi-for-coding", 1_048_576),
+            ("mimo-v2.6-pro", 1_000_000),
+            ("mimo-v2.6-flash", 1_000_000),
+            // Suffix tolerance: the ultraspeed tier inherits the pro row.
+            ("mimo-v2.6-pro-ultraspeed", 1_000_000),
+            ("grok-4.7", 500_000),
+            ("glm-5.3-flashx", 1_000_000),
+            ("minimax-m3.1-flash-preview", 1_000_000),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
@@ -282,6 +331,23 @@ mod tests {
         // them here so removing either entry turns this test red.
         assert_eq!(resolved_context_window("gpt-6-astra"), Some(1_050_000));
         assert_eq!(resolved_context_window("grok-build-0.1"), Some(256_000));
+        // The 2026-09-28 gpt-6 listing rows ride the same anchor logic as
+        // astra (no base gpt-6 row exists anywhere).
+        assert_eq!(resolved_context_window("gpt-6-sol"), Some(1_050_000));
+        assert_eq!(resolved_context_window("gpt-6-luna"), Some(1_050_000));
+        // The Anthropic default since 2026-09-22: opus-5-5 inherits the
+        // claude-opus-5 anchor's 1M via suffix tolerance (official models
+        // overview: opus-5-5 is 1M context).
+        assert_eq!(resolved_context_window("claude-opus-5-5"), Some(1_000_000));
+        // Bare kimi-for-coding serves K2.8 Preview (1M on every tier); the
+        // base still records the stale plan-dependent 256K, so the override
+        // must correct it — while the highspeed variant keeps its official
+        // 256K row ahead of it (suffix tolerance ordering guard).
+        assert_eq!(resolved_context_window("kimi-for-coding"), Some(1_048_576));
+        assert_eq!(
+            resolved_context_window("kimi-for-coding-highspeed"),
+            Some(262_144)
+        );
         // Models the base already lists with correct figures are unaffected.
         assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));
