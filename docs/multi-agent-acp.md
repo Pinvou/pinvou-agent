@@ -10,7 +10,7 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 |---|---|---|---|
 | 品悟（原生） | 进程内 CodeWhale Engine（非 ACP 子进程） | 与“工作”模式相同的应用模型配置 | 无独立登录，沿用工作模式的模型凭据 |
 | Codex | `codex-acp` Bridge | Pinvou 内置 Bridge；Codex CLI 优先使用系统安装（≥ 0.144.6），缺失或过旧时经用户确认自动安装或升级（见下文安装与升级矩阵） | Pinvou 内完成 Codex OAuth；也支持 `OPENAI_API_KEY` |
-| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge（仅 JS 适配器，版本固定为 `0.62.0`）；Claude Code CLI 使用系统安装（≥ 2.0.0），App 不内置 CLI，缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级（见下文安装与升级矩阵） | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
+| Claude Code | `claude-agent-acp` Bridge | Pinvou 内置 Bridge（仅 JS 适配器，版本固定为 `0.79.0`）；Claude Code CLI 使用系统安装（≥ 2.0.0），App 不内置 CLI，缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级（见下文安装与升级矩阵） | 在 Pinvou 点击“授权登录”；也支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` |
 | Kimi | `kimi acp` | 自动检测系统 `PATH` 中的官方 Kimi Code CLI（≥ 0.9.0），缺失时经用户确认运行官方安装脚本，过旧时按安装来源升级 | 在 Pinvou 点击“授权登录”，按提示完成设备码授权；也支持成对设置 `KIMI_MODEL_NAME` 与 `KIMI_MODEL_API_KEY` |
 
 品悟原生会话不是 ACP 后端：它复用“工作”模式的 Engine，通过 `chat` 命令发消息、
@@ -29,6 +29,11 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 - `PINVOU3_CLAUDE_CLI_PATH`
 - `PINVOU3_KIMI_ACP_BIN`
 - `PINVOU3_ACP_NODE_PATH`
+
+重复静默触发的运行时重启会在持有全局 ACP 会话池锁时完成旧进程关闭和新进程恢复，
+以避免并发请求为同一会话启动多个子进程。代价是这段时间所有会话的 ACP 入口都会阻塞：
+`initialize` 最长等待 30 秒，后续 `session/load` 和配置恢复目前没有单独超时。这是当前的
+正确性优先取舍；如需缩小阻塞范围，应引入显式的“重启中”占位状态后再释放会话池锁。
 
 ## CLI 探测与安装
 
@@ -55,7 +60,7 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 
 | Agent | 最低版本 | 版本输出示例 | 依据 |
 |---|---|---|---|
-| Codex | 0.144.6 | `codex-cli 0.146.0` | `codex-acp` 1.1.5 的依赖下界 |
+| Codex | 0.144.6 | `codex-cli 0.146.0` | 保留的旧 Bridge 兼容门禁；内置 `codex-acp` 1.6.2 声明依赖 `@openai/codex ^0.148.0`，因此当前仍会放行 0.144.6–0.147.x（包括示例 0.146.0），需另行完成兼容性校准 |
 | Claude Code | 2.0.0 | `2.1.163 (Claude Code)` | `claude-agent-sdk` 要求 |
 | Kimi | 0.9.0 | `0.31.1`（裸 semver） | `kimi acp` 引入版本；旧 Python 版 kimi-cli 已废弃，版本解析失败一律视为不合规 |
 
