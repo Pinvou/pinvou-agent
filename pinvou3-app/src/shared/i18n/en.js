@@ -412,6 +412,7 @@ export const dictEn = {
           sendingHint:'Sending…',
           newTopic:'New topic',
           newTopicConfirm:'Click again to confirm: discard this auxiliary conversation and start over',
+          newTopicConfirmShort:'Tap again to confirm',
           sendFailed:'Failed to send. Please try again.',
           ensureFailed:'Failed to start the auxiliary session. Start a new topic or try again later.',
           discardFailed:'Failed to restart the auxiliary chat; the previous transcript may have been discarded. Switch tasks or reopen the panel to reload it, or retry “New topic”.',

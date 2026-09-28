@@ -82,8 +82,9 @@ pub use self::scheduled::{
 pub use self::transcript::transcript_revision;
 /// Test-only re-export: the case-insensitive sched- predicate's direct
 /// callers live inside this module; outside it only the engine_pool helper
-/// tests pin the predicate itself.
-#[cfg(test)]
+/// Re-export the crate-visible sched-id predicate: the send gates
+/// (alias-defeating, round-34 minor 4) and the tests that pin the
+/// predicate itself.
 pub(crate) use self::validators::is_sched_session_id;
 /// Re-export the crate-visible session-id validator (used by commands). It is
 /// `pub(crate)` so it stays out of the crate's public API surface.

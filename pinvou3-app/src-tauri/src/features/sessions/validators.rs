@@ -60,12 +60,15 @@ pub(crate) fn aux_side_effect_exclusion(id: &str) -> bool {
 }
 
 /// Case-insensitive `sched-` prefix test — same alias-defeating argument as
-/// [`is_aux_session_id`]. Applied at the two sites this module owns (the
-/// aux creation guard and the list/retention filters); the sched-side
-/// registries (`is_scheduled_session`, `purge_all_scheduled_side_maps`,
-/// `list_scheduled`) and the sched- turn gates keep their pre-existing
-/// exact-match checks — scheduled profiles are only ever written through
-/// the validating API, so their registry keys cannot carry case variants.
+/// [`is_aux_session_id`]. Applied at the aux creation guard, the
+/// list/retention filters and the sched- send gates (round-34 minor 4: a
+/// `SCHED-` file alias on a case-insensitive filesystem loads the real
+/// record but must not slip past the send gates' profile re-validation);
+/// the sched-side registries (`is_scheduled_session`,
+/// `purge_all_scheduled_side_maps`, `list_scheduled`) keep their
+/// pre-existing exact-match checks — scheduled profiles are only ever
+/// written through the validating API, so their registry keys cannot carry
+/// case variants.
 pub(crate) fn is_sched_session_id(id: &str) -> bool {
     // See is_aux_session_id for the boundary-safe `get(..6)`.
     id.get(..6)

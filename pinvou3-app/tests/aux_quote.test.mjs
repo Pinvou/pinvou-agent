@@ -350,3 +350,53 @@ test('clearAuxQuotes drops every staged quote for the task and notifies listener
   assert.deepEqual(seen, [0], 'a repeat clear is a no-op (no duplicate publish)');
   unsubscribe();
 });
+
+// ── Round-34 minor 20: the branch coverage the suite had skipped ──
+
+test('buildAuxQuoteBlock drops invalid entries instead of crashing (round-34 minor 20)', () => {
+  // Valid array whose entries are mixed garbage: null, non-object, missing
+  // text, non-string text — each filtered; the valid ones survive trimmed.
+  const block = buildAuxQuoteBlock([
+    null,
+    'plain string entry',
+    { noText: true },
+    { text: 42 },
+    { text: '  real excerpt  ' },
+  ]);
+  const parsed = parseAuxQuotedMessage(`body${block}`);
+  assert.deepEqual(
+    parsed.quotes.map((quote) => quote.text),
+    ['real excerpt'],
+    'only the valid string entries ride the block',
+  );
+});
+
+test('parseAuxQuotedMessage returns an empty projection for empty/absent input (round-34 minor 20)', () => {
+  assert.deepEqual(parseAuxQuotedMessage(''), { visibleText: '', quotes: [] });
+  // null/absent collapse through the same `text || ''` guard as empty.
+  assert.deepEqual(parseAuxQuotedMessage(null), { visibleText: '', quotes: [] });
+});
+
+test('adjacent quote blocks parse when newline-terminated; a glued tail stays raw (round-34 minor 20)', () => {
+  const first = buildAuxQuoteBlock([{ text: 'one' }]);
+  const second = buildAuxQuoteBlock([{ text: 'two' }]);
+  // Production shape: the send path appends the block at message end, so
+  // each block's closing fence is followed by a newline (or the message
+  // end) — both blocks are recovered.
+  const parsed = parseAuxQuotedMessage(`a${first}\n${second}\n`);
+  assert.deepEqual(
+    parsed.quotes.map((quote) => quote.text),
+    ['one', 'two'],
+    'newline-terminated adjacent blocks are both recovered',
+  );
+  // Fail-safe shape: text glued directly after a closing fence breaks the
+  // end anchor; regex backtracking then extends the body across the next
+  // fence, the JSON.parse fails, and the catch leaves the WHOLE region
+  // visible as raw text — no half-parsed chips, no silent swallowing.
+  const glued = parseAuxQuotedMessage(`a${first}glued-tail${second}\n`);
+  assert.deepEqual(glued.quotes, [], 'a broken region yields no chips at all');
+  assert.ok(
+    glued.visibleText.includes('glued-tail') && glued.visibleText.includes('# userselect:'),
+    'the whole region stays visible as raw text',
+  );
+});

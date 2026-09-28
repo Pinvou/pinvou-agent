@@ -836,6 +836,39 @@ test('reconcileLiveTaskIds: a mid-life empty listing is skipped, not treated as 
   assert.deepEqual(purged, ['kept-b'], 'a real listing still purges genuinely deleted ids');
 });
 
+test('purgeTask leaves the in-flight send registry to its own settle path (round-34 minor 19)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'purge-inflight');
+  panel.setDraftText('in flight');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  // The M5 purge drops the draft and the epoch, but the documented
+  // invariant says the in-flight registries belong to the exact operation
+  // that registered them — a deletion-during-flight must not free the
+  // duplicate-send window.
+  h.controller.purgeTask('purge-inflight');
+  panel.setDraftText('again');
+  void panel.send();
+  assert.equal(
+    h.auxChat.calls.send.length,
+    1,
+    'the in-flight entry still blocks a second dispatch after the purge',
+  );
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  // turn_started lands and the turn ends: the busy-gated release owns the
+  // latch (the ack alone deliberately leaves it held, round-20 minor-4).
+  h.auxChat.snapshots.set('aux-purge-inflight', { chatItems: [], busy: true, queued: [] });
+  h.notifyChat();
+  h.auxChat.snapshots.set('aux-purge-inflight', { chatItems: [], busy: false, queued: [] });
+  h.notifyChat();
+  panel.setDraftText('after settle');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the composer reopens when the send settles');
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+});
+
 test('M5: reconcileLiveTaskIds purges only ids that disappeared after being seen', () => {
   const known = new Set();
   const purged = [];

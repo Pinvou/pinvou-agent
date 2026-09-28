@@ -124,11 +124,12 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     };
     const onKeyUp = () => {
       // No key whitelist: a whitelist misses selection-changing keys outside
-      // the shift/arrow family — most importantly Ctrl+A ("a"), the standard
-      // keyboard path to select a whole assistant reply. Evaluating on every
-      // keyup mirrors the unconditional mouseup handler and is cheap: a
-      // collapsed selection just hides (or no-ops) the popover, and a range
-      // the user dismissed with Escape is suppressed by the latch.
+      // the shift/arrow family (Shift+arrows, Ctrl+Shift+Home/End). Ctrl+A
+      // itself selects the whole DOCUMENT, which the containment check
+      // rejects — keyboard selection that stays inside the timeline is what
+      // this handler serves. Known gap (round-34 minor 13, disclosed):
+      // touch-generated selections fire selectionchange without
+      // mouseup/keyup, so the mobile web lane never surfaces the chip.
       scheduleEvaluation();
     };
     document.addEventListener('mouseup', onMouseUp);

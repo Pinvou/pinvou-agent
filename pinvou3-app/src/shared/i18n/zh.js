@@ -412,6 +412,7 @@ export const dictZh = {
           sendingHint:'正在发送…',
           newTopic:'重开话题',
           newTopicConfirm:'再点一次确认：丢弃当前辅助对话并重开',
+          newTopicConfirmShort:'再点一次确认',
           sendFailed:'发送失败，请重试。',
           ensureFailed:'辅助会话初始化失败，请重开话题或稍后再试。',
           discardFailed:'重开辅助对话失败，此前的对话内容可能已被丢弃。切换任务或重新打开面板可重新加载，也可以重试「重开话题」。',

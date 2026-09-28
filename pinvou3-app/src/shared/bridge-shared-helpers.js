@@ -3476,7 +3476,7 @@
     },
     "auxChat": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ auxChatEnsure: b.auxChatEnsure, auxChatSend: b.auxChatSend, auxChatSnapshotItems: b.auxChatSnapshotItems, auxChatSnapshot: b.auxChatSnapshot, auxChatDiscard: b.auxChatDiscard, auxChatReset: b.auxChatReset });
+      return Object.freeze({ auxChatEnsure: b.auxChatEnsure, auxChatSend: b.auxChatSend, auxChatSnapshot: b.auxChatSnapshot, auxChatDiscard: b.auxChatDiscard, auxChatReset: b.auxChatReset });
     },
   };
 

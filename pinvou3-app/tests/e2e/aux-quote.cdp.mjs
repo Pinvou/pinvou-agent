@@ -1,8 +1,10 @@
 /**
  * CDP-driven E2E for the aux-chat conversation-quote (selected-text quote) loop.
  *
- * Windows/WebView2-only by construction (drives the WebView2 remote-debugging
- * port); requires a RUNNING dev desktop app (start it with
+ * Drives any CDP-capable runtime through its remote-debugging port — in
+ * practice the WebView2 dev app (the repo ships no WKWebView CDP port, so
+ * macOS coverage needs a port forward); requires a RUNNING dev desktop app
+ * (start it with
  * WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 and the
  * dev server / backend it points at):
  * every interaction is a DOM/React event dispatched from Runtime.evaluate —

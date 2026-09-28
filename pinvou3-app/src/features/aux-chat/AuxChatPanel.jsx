@@ -210,7 +210,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           title={view.restartArmed ? copy.newTopicConfirm : copy.newTopic}
         >
           <RotateCcw size={13} />
-          <span>{view.restartArmed ? copy.newTopicConfirm : copy.newTopic}</span>
+          {/* Visible label is the short confirm (round-34 minor 12): the full
+              destructive sentence overflowed the 420 px dock minimum; the
+              complete copy stays in the title/aria above. */}
+          <span>{view.restartArmed ? copy.newTopicConfirmShort : copy.newTopic}</span>
         </button>
         <button
           type="button"

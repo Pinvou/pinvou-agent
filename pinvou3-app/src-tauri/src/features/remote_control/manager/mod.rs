@@ -114,6 +114,18 @@ fn validate_multi_agent_session_web_scope(
     command: &str,
     session_id: &str,
 ) -> Result<(), String> {
+    // Documented exception (round-34 minor 7): the three aux commands are
+    // NOT in the denylist even when the MAIN session runs multi-agent — an
+    // aux conversation on a multi-agent main stays fully usable over the
+    // relay. Intended: the aux engine is the isolated pure-Q&A config
+    // (zero tools, no subagents — the denylist's threat model never
+    // applies to it), the desktop offers the same entry, and blocking it
+    // would break the side chat for exactly the heaviest users. The
+    // denylist's "web is read-only" promise is scoped to the multi-agent
+    // EXECUTION surface, not to its side chat.
+    if crate::features::sessions::is_aux_session_id(session_id) {
+        return Ok(());
+    }
     if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
         return Ok(());
     }

@@ -593,3 +593,103 @@ command_protocol!(
     "diagnostics.rs",
     ["record_authority_sync_diagnostics"]
 );
+
+// Round-34 MAJOR-2: the reset's emit-before-error sequencing must be
+// EXECUTED, not inferred — the pre-fix bug (event gated behind the
+// command's `?`) left web clients buffering a stale aux transcript when
+// the create half failed after the delete half committed.
+#[test]
+fn reset_finish_emits_the_committed_delete_even_when_the_create_half_failed() {
+    use crate::app::commands::sessions::reset_aux_session_finish;
+
+    // The exact post-fix failure shape: delete committed (Some), create
+    // half failed (Err) — the event fires AND the error still returns.
+    let outcome: (Option<String>, Result<(), std::io::Error>) = (
+        Some("aux-parent".to_string()),
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the parent session no longer exists",
+        )),
+    );
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result = reset_aux_session_finish(outcome, |aux_id| {
+        emitted.borrow_mut().push(aux_id.to_string());
+    });
+    assert!(
+        result.is_err(),
+        "the create-half failure must still surface to the command"
+    );
+    assert_eq!(
+        emitted.borrow().clone(),
+        vec!["aux-parent".to_string()],
+        "the committed delete's event must fire before the error returns"
+    );
+
+    // Control: no committed delete, no event, and success passes through.
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result: Result<u8, std::io::Error> = reset_aux_session_finish((None, Ok(7u8)), |aux_id| {
+        emitted.borrow_mut().push(aux_id.to_string());
+    });
+    assert_eq!(result.expect("success passes through"), 7);
+    assert!(emitted.borrow().is_empty(), "no committed delete, no event");
+
+    // And the event still fires on the success shape (fresh session).
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result: Result<u8, std::io::Error> =
+        reset_aux_session_finish((Some("aux-parent".to_string()), Ok(7u8)), |aux_id| {
+            emitted.borrow_mut().push(aux_id.to_string());
+        });
+    assert_eq!(result.expect("success passes through"), 7);
+    assert_eq!(emitted.borrow().clone(), vec!["aux-parent".to_string()]);
+}
+
+// Round-34 minor 17: the four inline aux refusals are command-layer guards
+// with no executable driver (State/AppHandle construction is not unit-wide),
+// so their presence is pinned by source shape — a deleted guard flips its
+// pin red.
+#[test]
+fn aux_refusal_guards_stay_in_their_commands() {
+    let sessions = include_str!("sessions.rs");
+    let interaction = include_str!("interaction.rs");
+    let projects = include_str!("projects.rs");
+
+    // The discard command must not silently no-op on aux-shaped ids.
+    assert!(
+        sessions.contains("discard_aux_session: auxiliary conversations do not own an aux session"),
+        "discard_aux_session must reject aux-shaped parent ids",
+    );
+    assert!(
+        interaction
+            .contains("set_multi_agent_mode: auxiliary conversations do not take multi-agent mode"),
+        "set_multi_agent_mode must reject aux ids explicitly",
+    );
+    assert!(
+        sessions.contains(
+            "rename_session: auxiliary conversations are managed through their main session"
+        ),
+        "rename_session must keep its aux refusal",
+    );
+    assert!(
+        sessions.contains(
+            "set_session_pinned: auxiliary conversations are managed through their main session"
+        ),
+        "set_session_pinned must keep its aux refusal",
+    );
+    assert!(
+        sessions.contains(
+            "set_session_archived: auxiliary conversations are managed through their main session"
+        ),
+        "set_session_archived must keep its aux refusal",
+    );
+    assert!(
+        projects.contains("move_session_to_project: auxiliary conversations are managed through their main session"),
+        "move_session_to_project must keep its aux refusal",
+    );
+    // The sched- send gates go through the alias-defeating predicate, not
+    // exact prefix matching (round-34 minor 4).
+    let pool = include_str!("../../features/assistant/engine_pool.rs");
+    assert!(
+        !pool.contains("session_id.starts_with(\"sched-\")"),
+        "the sched- send gates must use the case-insensitive predicate",
+    );
+}

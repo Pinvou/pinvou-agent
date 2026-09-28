@@ -175,7 +175,15 @@ impl SessionStore {
         // eviction candidates by max(main.updated_at, aux.updated_at): activity
         // on either half of the pair keeps the pair alive, restoring the
         // pre-aux invariant "in use ⇒ not evicted".
-        let mut candidates: Vec<&SessionMetadata> = sessions
+        // Stable sort: pairs without aux activity keep the snapshot's
+        // main-`updated_at` descending order, so behavior is unchanged where
+        // no aux session exists. The ordering key is PRECOMPUTED once per
+        // candidate (round-34 MAJOR-1): `sort_by_key` re-evaluates the key
+        // for both arguments of every comparison, so the blind-spot stat
+        // below — one per freshness-map miss — would otherwise cost up to
+        // two `fs::metadata` syscalls per comparison (O(n log n) stats per
+        // sweep, under the store write lock, on every transcript persist).
+        let mut candidates: Vec<(&SessionMetadata, chrono::DateTime<chrono::Utc>)> = sessions
             .iter()
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
@@ -188,42 +196,42 @@ impl SessionStore {
                 !super::validators::is_sched_session_id(&metadata.id)
                     && !super::validators::is_aux_session_id(&metadata.id)
             })
-            .collect();
-        // Stable sort: pairs without aux activity keep the snapshot's
-        // main-`updated_at` descending order, so behavior is unchanged where
-        // no aux session exists.
-        candidates.sort_by_key(|metadata| {
-            let aux_id = Self::aux_session_id_for(&metadata.id);
-            let aux_at = match aux_freshness.get(aux_id.as_str()).copied() {
-                Some(aux_at) => Some(aux_at),
-                // Listing blind spot (round-33 MAJOR-7): the snapshot
-                // silently drops a record it cannot read, so an in-use pair
-                // whose aux momentarily fails to parse would sort by the
-                // stale main `updated_at` alone, drift past the line, and
-                // the fail-closed delete-side probe — which does NOT trust
-                // the listing — would cascade-evict the live pair. A
-                // freshness-map miss stats the record directly: a real
-                // mtime feeds the same max(), so an alive-but-unparseable
-                // record still protects its pair. A stat that cannot read
-                // the record at all (NotFound or any other fault) degrades
-                // this ordering leg to the main timestamp alone — the
-                // round-31 M3 contract (an unreadable stale aux is still
-                // reclaimable by the cascade) lives on the delete-side
-                // probe, which stays the fail-closed authority.
-                None => match std::fs::metadata(
-                    self.manager.sessions_dir().join(format!("{aux_id}.json")),
-                ) {
-                    Ok(stat) => stat.modified().ok().map(chrono::DateTime::from),
-                    Err(_) => None,
-                },
-            };
-            std::cmp::Reverse(match aux_at {
-                Some(aux_at) => std::cmp::max(metadata.updated_at, aux_at),
-                None => metadata.updated_at,
+            .map(|metadata| {
+                let aux_id = Self::aux_session_id_for(&metadata.id);
+                let aux_at = match aux_freshness.get(aux_id.as_str()).copied() {
+                    Some(aux_at) => Some(aux_at),
+                    // Listing blind spot (round-33 MAJOR-7): the snapshot
+                    // silently drops a record it cannot read, so an in-use
+                    // pair whose aux momentarily fails to parse would sort
+                    // by the stale main `updated_at` alone, drift past the
+                    // line, and the fail-closed delete-side probe — which
+                    // does NOT trust the listing — would cascade-evict the
+                    // live pair. A freshness-map miss stats the record
+                    // directly: a real mtime feeds the same max(), so an
+                    // alive-but-unparseable record still protects its pair.
+                    // A stat that cannot read the record at all (NotFound
+                    // or any other fault) degrades this ordering leg to the
+                    // main timestamp alone — the round-31 M3 contract (an
+                    // unreadable stale aux is still reclaimable by the
+                    // cascade) lives on the delete-side probe, which stays
+                    // the fail-closed authority.
+                    None => match std::fs::metadata(
+                        self.manager.sessions_dir().join(format!("{aux_id}.json")),
+                    ) {
+                        Ok(stat) => stat.modified().ok().map(chrono::DateTime::from),
+                        Err(_) => None,
+                    },
+                };
+                let key = match aux_at {
+                    Some(aux_at) => std::cmp::max(metadata.updated_at, aux_at),
+                    None => metadata.updated_at,
+                };
+                (metadata, key)
             })
-        });
+            .collect();
+        candidates.sort_by_key(|(_, key)| std::cmp::Reverse(*key));
         let mut chat_count = 0usize;
-        for metadata in candidates {
+        for (metadata, _) in candidates {
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
                 let id = metadata.id.clone();

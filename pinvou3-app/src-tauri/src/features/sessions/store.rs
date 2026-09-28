@@ -421,6 +421,12 @@ impl SessionStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // An invalid id must fail as itself: the derived-id probe below is
+        // fail-closed (an unreadable record counts as "present"), so garbage
+        // input would otherwise surface as a fabricated "delete aux session"
+        // cascade error naming an aux id that was never a session
+        // (round-34 minor 5).
+        super::validators::validate_session_id(id)?;
         // An aux session is never a scheduled session, so this refusal guard
         // applies to cascade targets naturally and the auxiliary-conversation
         // path cannot bypass it.
@@ -834,6 +840,22 @@ impl SessionStore {
         // removes this binding along with it.
         if let Some(model_id) = self.session_model_override(parent_id) {
             self.set_session_model_id(&id, Some(model_id))?;
+        }
+        // Concurrent-ensure narrowing (round-34 minor 1): a lagging ensure
+        // that observed NotFound at its own entry load must not overwrite a
+        // record a concurrent ensure (or a turn on it) just published at the
+        // same derived path — a healthy record is reused, and a record that
+        // loads with any other error fails closed exactly like the entry
+        // probe (never overwrite what cannot be read). This re-check is not
+        // an atomic create: a save landing after another creator's first
+        // transcript write can still clobber, and closing that residual
+        // window needs a foundation-level exclusive-create — disclosed.
+        match self.load(&id) {
+            Ok(existing) => return Ok(existing.metadata),
+            Err(error) if !is_not_found_error(&error) => {
+                return Err(error).with_context(|| "re-check the aux record before create");
+            }
+            Err(_) => {}
         }
         if let Err(error) = self.save(&session) {
             let rollback = self.delete(&id);

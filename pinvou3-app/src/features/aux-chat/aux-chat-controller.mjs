@@ -563,6 +563,11 @@ export function createAuxChatController(options = {}) {
       // never-settling invoke itself (whose registry entry the watchdog
       // deletes by identity inside armSendWatchdog).
       armSendWatchdog(sentTaskId, sendPromise, () => {
+        // A failsafe firing after dispose()/bridge teardown must not read
+        // the bridge snapshot or write latched state on a dead instance
+        // (round-34 minor 11); the registry delete in armSendWatchdog still
+        // runs and stays correct for the module-scoped registries.
+        if (disposed) return;
         if (!sendingLatch) return;
         if (generation !== sendGeneration || view.auxId !== sentAuxId) return;
         if (auxChatBusy(normalizeAuxSnapshot(auxChat.snapshot(sentAuxId)))) return;
