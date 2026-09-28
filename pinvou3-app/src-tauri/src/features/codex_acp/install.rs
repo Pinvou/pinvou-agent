@@ -830,15 +830,6 @@ pub(super) async fn run_official_install_script(
     )
     .await
 }
-/// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
-/// Windows), 10-minute timeout, with the output tail written to the
-/// diagnostics log. On failure (and not user-cancelled), retries once against
-/// the npmmirror China mirror: registry.npmjs.org is frequently unreachable on
-/// Chinese networks. The flag is per-invocation only — the user's npm
-/// configuration is never written or modified (npm still reads its own config
-/// for prefix/cache/auth as usual). npm installs have no app-side artifact
-/// pin; integrity on this path rests on TLS plus the mirror's registry-sync
-/// fidelity.
 /// npm 全局升级单次尝试的 [`ManagedInstallStage`] 描述：官方源与 npmmirror
 /// 镜像重试共用一份，仅镜像标志改变诊断前缀、命令行与超时文案，避免两份
 /// 手写结构体在字段增减时漂移。
@@ -886,6 +877,15 @@ fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage
     }
 }
 
+/// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
+/// Windows), 10-minute timeout, with the output tail written to the
+/// diagnostics log. On failure (and not user-cancelled), retries once against
+/// the npmmirror China mirror: registry.npmjs.org is frequently unreachable on
+/// Chinese networks. The flag is per-invocation only — the user's npm
+/// configuration is never written or modified (npm still reads its own config
+/// for prefix/cache/auth as usual). npm installs have no app-side artifact
+/// pin; integrity on this path rests on TLS plus the mirror's registry-sync
+/// fidelity.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -936,8 +936,14 @@ pub(super) async fn run_npm_global_upgrade(
     .await
     // 镜像重试也失败时保留首次错误的因果链：只报镜像错误会把
     // EACCES/磁盘满这类与网络无关的首次失败藏进诊断日志。
+    // 镜像尝试期间用户主动取消同样不是「镜像源故障」：原样上抛取消语义，
+    // 不与首次源错误拼接（否则取消会被误报成双重网络失败）。
     .map_err(|mirror_error| {
-        mirror_error.context(format!("首次 npm 源错误：{primary:#}"))
+        if format!("{mirror_error:#}").contains(INSTALL_CANCELLED_MARKER) {
+            mirror_error
+        } else {
+            mirror_error.context(format!("首次 npm 源错误：{primary:#}"))
+        }
     })
 }
 
@@ -1537,6 +1543,9 @@ pub(super) fn official_script_urls(backend: AgentBackend) -> (&'static str, &'st
     }
 }
 
+/// HEAD 探测脚本源可达性。传输层成功即视为可达——任何 HTTP 状态（含
+/// 403/405）都说明源存活、正式 GET 下载大概率可用；按状态码收紧反而会在
+/// CDN 拒绝 HEAD 请求时把可用的源误判为不可达、触发不必要的安装降级。
 pub(super) async fn script_url_reachable(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))
