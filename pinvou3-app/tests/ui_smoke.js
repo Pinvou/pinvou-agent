@@ -353,6 +353,26 @@ async function expand(page) {
     JSON.stringify(visualShell),
   );
 
+  const searchOverlayFirstOpen = await page.evaluate(async () => {
+    const trigger = [...document.querySelectorAll('[aria-label], [title]')]
+      .find(element => `${element.getAttribute('aria-label') || ''}${element.getAttribute('title') || ''}`.includes('搜索对话'));
+    trigger?.click();
+    const opened = await window.__uiWait__(() => !!document.querySelector('[role="dialog"][aria-modal="true"]'));
+    const dialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+    const fixedBackdrop = dialog?.parentElement
+      ? getComputedStyle(dialog.parentElement).position === 'fixed'
+      : false;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    const closed = await window.__uiWait__(() => !document.querySelector('[role="dialog"][aria-modal="true"]'));
+    return { triggerFound: !!trigger, opened, fixedBackdrop, closed };
+  });
+  rec(
+    'search overlay lazy chunk opens on first use and closes with Escape',
+    searchOverlayFirstOpen.triggerFound && searchOverlayFirstOpen.opened
+      && searchOverlayFirstOpen.fixedBackdrop && searchOverlayFirstOpen.closed,
+    JSON.stringify(searchOverlayFirstOpen),
+  );
+
   const artifactPresentation = await page.evaluate(async () => {
     await window.TauriBridge.sessions.switchToSession('s1');
     await window.__uiWait__(() => !!document.querySelector('[data-testid="chat-scroll"]'));
@@ -1512,7 +1532,12 @@ async function expand(page) {
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
     label && label.closest('div[class*="cursor-pointer"]')?.click();
   });
-  await clickText(page, '收纳'); await sleep(700);
+  await clickText(page, '收纳');
+  // The archive toast is a lazy chunk (Suspense fallback=null until it
+  // arrives), so poll for the toast text instead of a fixed sleep — the same
+  // contract the ⑤b archive flow below pins.
+  await page.evaluate(() => window.__uiWait__(() =>
+    document.body.innerText.includes('已收纳到【对话管理-已收纳】')));
   const codexBatchArchive = await page.evaluate(() => ({
     invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'set_session_archived' && call.args.id === 'codex-1' && call.args.archived === true),
     archived: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
@@ -2456,11 +2481,17 @@ async function expand(page) {
     }));
     return true;
   });
-  await sleep(250);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('span,div,button,a')]
+      .some(node => (node.textContent || '').trim() === '收纳')));
   await clickText(page, '收纳');
-  await sleep(250);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('span,div,button,a')]
+      .some(node => (node.textContent || '').trim() === '确认收纳')));
   await clickText(page, '确认收纳');
-  await sleep(450);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('button')]
+      .some(node => (node.textContent || '').trim() === '前往查看')));
   const archiveToastBefore = await page.evaluate(() => {
     const button = [...document.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '前往查看');
     const rect = button && button.getBoundingClientRect();
@@ -2471,7 +2502,9 @@ async function expand(page) {
     };
   });
   await clickText(page, '前往查看');
-  await sleep(600);
+  await page.evaluate(() => window.__uiWait__(() =>
+    document.querySelector('[data-testid="app-root"]')?.dataset.currentView === 'search'
+      && document.body.innerText.includes('第三季度财报分析')));
   const archiveToastGoto = await page.evaluate(() => ({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
     archivedTabVisible: document.body.innerText.includes('已收纳'),
