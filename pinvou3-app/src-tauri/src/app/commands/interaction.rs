@@ -122,7 +122,7 @@ pub async fn exit_plan_to_yolo(
 /// 模型列表下方的会话级开关。开启：装配专家名册，并让下一次发送按多智能体
 /// 资源边界重建引擎；关闭：让下一次发送恢复普通对话的底座资源配置。切换时
 /// 回收空闲旧引擎，避免旧 hook / 深度 / 并发配置泄漏到新模式；正在生成时拒绝
-/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（委派提醒
+/// 切换。工具面不随开关变化——与主线完全一致：`workflow` 保持可用（蜂群契约
 /// 不教学不推荐），裸 `agent` 本就对所有会话可用。
 #[tauri::command]
 pub async fn set_multi_agent_mode(
@@ -218,12 +218,15 @@ pub async fn accept_plan(
         .await;
         return Err(format!("prepare accept_plan admission: {error:#}"));
     }
+    // 候选专家只从计划正文（plan_markdown）匹配，不加 accept 前缀——与快照同源；
+    // 实际发送内容仍是包装后的 accept 指令。蜂群契约在 spawn 级 instructions，
+    // 这里不再改写消息内容。
     let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool.inner(),
         &session_id,
         accepted_mode_state.multi_agent,
-        &plan_markdown,
         accept_plan_instruction(&plan_markdown),
+        super::multiagent::MatchSource(&plan_markdown),
     );
     let display_content = display_message
         .map(|message| message.trim().to_string())
@@ -237,6 +240,7 @@ pub async fn accept_plan(
             SerializableMode::Yolo.to_app_mode(),
             false,
             prepared_delegation.expert_snapshot,
+            prepared_delegation.expert_candidates,
             reservation,
         )
         .await

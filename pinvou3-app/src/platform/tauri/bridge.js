@@ -2193,6 +2193,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const openUserExternalUrl = artifactsFeature.openUserExternalUrl;
   const addAttachmentByPath = artifactsFeature.addAttachmentByPath;
   const addPasteImage = artifactsFeature.addPasteImage;
+  const addPasteImageFromClipboard = artifactsFeature.addPasteImageFromClipboard;
   const removeAttachment = artifactsFeature.removeAttachment;
   const pickAndAttach = artifactsFeature.pickAndAttach;
   const uploadDeviceFiles = artifactsFeature.uploadDeviceFiles;
@@ -2561,6 +2562,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     attachments: {
       addAttachmentByPath,
       addPasteImage,
+      addPasteImageFromClipboard,
       removeAttachment,
       pickAndAttach,
       uploadDeviceFiles,
