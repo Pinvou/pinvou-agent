@@ -10,6 +10,8 @@
  *   ⑤ session 内未发送的 composer 草稿在跳转其他页面后仍能恢复。
  * 依赖:puppeteer-core(自动从 node_modules / ~/.npm/_npx 发现)+ 系统 chromium(或 env CHROME 指定)。
  * 用法:node pinvou3-app/tests/ui_smoke.js   (全 PASS → exit 0,任一 FAIL → exit 1,缺依赖 → exit 2)
+ * 缺依赖分支必须在 exit 2 之前打印一行以 SKIP: 开头的说明(必须在行首);
+ * scripts/run-user-journey-tests.sh 只在退出码 2 且有该行时才算 skip,否则算失败。
  */
 const fs = require('fs'), path = require('path'), os = require('os');
 const { startUiTestServer } = require('./ui_test_server');
@@ -686,7 +688,17 @@ async function expand(page) {
       cancelable: true,
       dataTransfer: dragData,
     }));
-    await new Promise(resolve => setTimeout(resolve, 80));
+    // Wait for a DEFINITE overlay state before reading the flag. While inactive
+    // the overlay still renders (invisible, aria-hidden) — a fixed timeout here
+    // raced the dragenter commit on slow runners and read the inactive-present
+    // form as "not withheld" (deflake). The withheld form is the overlay being
+    // removed from the DOM entirely (active committed, publication not yet
+    // acked); the published form is aria-hidden=false after the ack resolves
+    // below — a publication without an ack still fails the flag read.
+    await window.__uiWait__(() => {
+      const overlay = document.querySelector('[data-testid="attachment-drop-overlay"]');
+      return !overlay || overlay.getAttribute('aria-hidden') === 'false';
+    });
     const attachmentDropWithheldUntilHideAck = !document.querySelector('[data-testid="attachment-drop-overlay"]');
     const attachmentDropHidePending = typeof window.__RESOLVE_BROWSER_HIDE__ === 'function';
     window.__RESOLVE_BROWSER_HIDE__?.();

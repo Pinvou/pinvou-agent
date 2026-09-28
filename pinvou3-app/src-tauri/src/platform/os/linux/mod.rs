@@ -1,6 +1,9 @@
+mod linux_clipboard;
 mod linux_path;
 mod linux_permission;
 mod linux_system;
+
+pub use linux_clipboard::read_clipboard_image;
 
 pub(crate) use super::locale::current_system_locale;
 

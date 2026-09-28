@@ -3377,6 +3377,9 @@ mod tests {
         }
         assert!(!policy.commands.contains("list_sessions"));
         assert!(!policy.commands.contains("list_archived_sessions"));
+        // The native clipboard fallback must stay desktop-only: a browser relay
+        // session must never be able to read the host clipboard.
+        assert!(!policy.commands.contains("paste_clipboard_image"));
         assert!(policy.events.contains("chat:delta"));
         assert!(policy.events.contains("chat:reasoning_start"));
         assert!(policy.events.contains("chat:reasoning_delta"));

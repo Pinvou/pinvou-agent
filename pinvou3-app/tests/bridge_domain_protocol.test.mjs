@@ -127,8 +127,12 @@ const expectedProtocolHashes = {
   // (open_artifact_window / open_in_system) and the whitelisted
   // openUserExternalUrl, so the runtime command surface is unchanged.
   // Recomputed against the #463-merge tree (the rebind wave's artifact-path
-  // redaction composes with the cleanup).
-  artifacts: '3e78b6ae64c0e3659ecf32f2987d32d09727a00375ca13746f1a414843dd1b0c',
+  // redaction composes with the cleanup). Recomputed again for the Linux
+  // clipboard-image paste fallback: artifacts.js gains the
+  // addPasteImageFromClipboard invoke wrapping the paste_clipboard_image
+  // command (the native layer reads the WebKitGTK-invisible clipboard image
+  // and saves it server-side; web lane intentionally has no such backend).
+  artifacts: '550566a1213eca4d379c2ffe48a0e09c5a60128dd7c7cc8d432f9c7e817974e1',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed

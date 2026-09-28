@@ -55,6 +55,7 @@ pub struct PlatformCapabilities {
     pub codex_acp_supported: bool,
     pub browser_native_display: bool,
     pub voice_shortcut_native: bool,
+    pub paste_image_clipboard_read: bool,
 }
 
 impl PlatformCapabilities {
@@ -84,6 +85,7 @@ impl PlatformCapabilities {
             codex_acp_supported: capabilities.codex_acp_supported,
             browser_native_display: browser_ready,
             voice_shortcut_native: capabilities.voice_shortcut_native,
+            paste_image_clipboard_read: capabilities.paste_image_clipboard_read,
         }
     }
 }
@@ -153,6 +155,10 @@ mod platform_capability_tests {
         assert_eq!(
             capabilities.voice_shortcut_native,
             expected.voice_shortcut_native
+        );
+        assert_eq!(
+            capabilities.paste_image_clipboard_read,
+            expected.paste_image_clipboard_read
         );
     }
 

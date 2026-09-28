@@ -155,6 +155,7 @@ command_protocol!(
         "open_conversation_attachment",
         "reveal_conversation_attachment",
         "save_paste_image",
+        "paste_clipboard_image",
     ]
 );
 command_protocol!(
