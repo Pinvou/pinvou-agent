@@ -2335,6 +2335,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     initPromise = (async function () {
     startupMark("bridge:init_start");
     startupNotificationBatching = true;
+    let initFailure;
     try {
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
@@ -2391,10 +2392,23 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     }
     startupMark("bridge:background_checks_started");
     if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
+    } catch (initError) {
+      initFailure = initError;
     } finally {
       startupNotificationBatching = false;
-      notify();
     }
+    // Publish the coherent startup snapshot outside the finally: notify()
+    // rethrows subscriber-callback errors, and a throw from inside a finally
+    // would replace the in-flight init error. The failure path still gets its
+    // publish, but only the real init error propagates; on the success path a
+    // publish failure fails init exactly as before. This sync section cannot
+    // interleave with other notifies between the flag reset and the publish.
+    try {
+      notify();
+    } catch (notifyError) {
+      if (!initFailure) throw notifyError;
+    }
+    if (initFailure) throw initFailure;
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
     })();

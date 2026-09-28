@@ -7178,6 +7178,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     // web 重试契约的前提)。与 tauri 桥同口径:启动窗口内抑制 notify(状态照
     // 写),try/finally 结束后发布一个连贯快照并把通知恢复为立即发布。
     startupNotificationBatching = true;
+    let initFailure;
     try {
     const parallelLoads = [
       loadSettings(),
@@ -7207,13 +7208,24 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
     setInterval(pollBackendStatus, 10000);
+    } catch (initError) {
+      initFailure = initError;
     } finally {
       // finally 而非仅成功路径:即使启动中途抛错,也必须恢复立即发布,
       // 否则抑制位会永久吞掉此后所有通知(下文 loadScheduledTasks 等
       // fire-and-forget 仍需照常发布)。
       startupNotificationBatching = false;
-      notify();
     }
+    // 连贯快照在 finally 之外发布:notify() 会原样上抛订阅者回调的异常,
+    // 而 finally 内抛出的异常会顶替进行中的 init 错误。失败路径照常发布,
+    // 但只让真正的 init 错误向外传播;成功路径上发布失败仍按原样使 init
+    // 失败。此段同步执行,标志复位与发布之间不会插入其他通知。
+    try {
+      notify();
+    } catch (notifyError) {
+      if (!initFailure) throw notifyError;
+    }
+    if (initFailure) throw initFailure;
     })();
     initPromise = attempt.then(function (result) {
       disarmWebInitRetry();
