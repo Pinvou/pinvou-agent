@@ -448,7 +448,13 @@ try {
     conversationView.includes('bg-white/85') && conversationView.includes('dark:bg-[rgba(38,38,42,0.78)]'),
     'timeline user-error card must provide a light theme alongside the dark glass style',
   );
-  assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('<ConversationTimeline')
+    && chatView.includes('scrollElementRef={scrollRef}')
+    && chatView.includes('followOutputRef={autoScrollRef}')
+    && chatView.includes('turnGapPx={16}'),
+  'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('shouldVirtualizeConversationTurns(conversationProjection.turns.length, scrollRef)'),
+  'native scroll anchoring must stay enabled while the chat timeline is in normal flow');
   assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
     && chatView.includes('{activeSessionId && (')
     && chatView.includes('const artifactsVisible = Boolean(activeSessionId && artifactsOpen)')

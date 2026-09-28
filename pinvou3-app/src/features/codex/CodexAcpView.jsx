@@ -90,6 +90,7 @@ import {
   ConversationTimeline,
   LiveConversationActivityIndicator,
 } from '../conversation/ConversationTimeline.jsx';
+import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import {
   transitionConversationScrollState,
   useConversationBottomFollower,
@@ -3417,7 +3418,11 @@ export function CodexAcpView({
 
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
-        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar" style={{ overflowAnchor: 'none' }}>
+        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar" style={{
+          // Must match the timeline's own virtualization decision: anchoring off
+          // only while absolute virtual rows own the positioning.
+          overflowAnchor: shouldVirtualizeConversationTurns(visibleTurns.length, scroller) ? 'none' : undefined,
+        }}>
           <div ref={conversationContentRef} className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             {workspaceUnavailable ? (
               <div

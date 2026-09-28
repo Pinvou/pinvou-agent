@@ -30,6 +30,7 @@ import {
   LiveConversationActivityIndicator,
   useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
+import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -2489,7 +2490,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           <div ref={scrollRef} data-testid="chat-scroll"
             style={{
               ...responsiveGutterStyle,
-              overflowAnchor: 'none',
+              // Native scroll anchoring fights the virtualizer's absolute rows,
+              // but normal-flow timelines keep it so content-visibility estimate
+              // swaps stay compensated. Must match the timeline's own decision.
+              overflowAnchor: shouldVirtualizeConversationTurns(conversationProjection.turns.length, scrollRef) ? 'none' : undefined,
               ...(hasMessages ? {} : { paddingBottom: (composerH ? composerH + 48 : 160) + 'px' }),
             }}
             className={`flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar flex flex-col pt-20 max-sm:pt-16 ${hasMessages ? 'justify-start' : 'items-center justify-center'}`}>

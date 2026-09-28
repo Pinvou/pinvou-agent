@@ -974,6 +974,8 @@ try {
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
   assert.ok(codexView.includes('<ConversationTimeline') && codexView.includes('scrollElementRef={scroller}'),
     'Codex must render through the shared virtualizable timeline by default');
+  assert.ok(codexView.includes('shouldVirtualizeConversationTurns(visibleTurns.length, scroller)'),
+    'native scroll anchoring must stay enabled while the Codex timeline is in normal flow');
   assert.ok(codexView.includes('<LiveConversationActivityIndicator')
     && codexView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
