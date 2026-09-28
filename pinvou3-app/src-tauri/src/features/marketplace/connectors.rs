@@ -183,6 +183,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             &["--break-system-packages"],
         ];
         const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
+        // 默认索引整轮先行（不带 -i，用户 pip.conf / 企业源保持优先），
+        // 整轮全败才用清华 TUNA 重跑一轮。pip 子进程无总超时：最坏情形耗时
+        // 随轮数翻倍，与 native_installer 多候选回退的最坏情形同口径。
         let index_rounds: [&[&str]; 2] = [&[], &["-i", PIP_CN_MIRROR_INDEX]];
         let mut last_err = String::new();
         for index_args in index_rounds {
