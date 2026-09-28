@@ -186,9 +186,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // 默认索引整轮先行（不带 -i，用户 pip.conf / 企业源保持优先），
         // 整轮全败才用清华 TUNA 重跑一轮。pip 子进程无总超时：最坏情形耗时
         // 随轮数翻倍，与 native_installer 多候选回退的最坏情形同口径。
-        let index_rounds: [&[&str]; 2] = [&[], &["-i", PIP_CN_MIRROR_INDEX]];
-        let mut last_err = String::new();
-        for index_args in index_rounds {
+        // 每轮各自的最后一条错误都进最终报错：只保留最后一轮会把触发镜像
+        // 重试的默认源根因藏掉（与 tmeet/npm 的首次错误因果链同口径）。
+        let index_rounds: [(&str, &[&str]); 2] = [
+            ("默认源", &[]),
+            ("清华 TUNA 镜像", &["-i", PIP_CN_MIRROR_INDEX]),
+        ];
+        let mut round_errors: Vec<String> = Vec::new();
+        for (round_label, index_args) in index_rounds {
+            let mut last_err = String::new();
             for extra in attempts {
                 let mut args: Vec<&str> = Vec::with_capacity(extra.len() + index_args.len());
                 args.extend(extra.iter().copied());
@@ -210,10 +216,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     }
                 }
             }
+            round_errors.push(format!("{round_label}：{last_err}"));
         }
         Err(format!(
-            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages，\
-             并用清华镜像源重试;请确认网络可达且 python3 自带 pip）"
+            "依赖安装失败（pip）：{}（已尝试 --user 与 --break-system-packages，\
+             并用清华镜像源重试;请确认网络可达且 python3 自带 pip）",
+            round_errors.join("；")
         ))
     }
 
