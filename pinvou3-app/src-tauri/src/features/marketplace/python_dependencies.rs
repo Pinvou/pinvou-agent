@@ -446,6 +446,9 @@ fn pythonhosted_mirror_url(url: &str) -> Option<String> {
     if parsed.host_str() != Some("files.pythonhosted.org") {
         return None;
     }
+    // 只取 path：官方 CDN 的 wheel 地址不带 query/fragment；即便出现也不进
+    // 镜像候选（两源字节过同一 sha256 pin，缺 query 只影响命中，不影响
+    // 完整性），官方候选仍带原 query 兜底。
     Some(format!(
         "https://pypi.tuna.tsinghua.edu.cn{}",
         parsed.path()
@@ -666,29 +669,51 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
 
     let candidates = wheel_download_urls(wheel);
     let total_candidates = candidates.len();
-    let mut last_error = None;
-    for url in candidates {
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
-        match download_wheel_from(&client, &parsed, destination, wheel) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
+    let mut failures: Vec<String> = Vec::new();
+    for url_text in candidates {
+        // 非法候选（解析失败/非 HTTPS）只跳过并记入聚合，不整体失败（与
+        // connectors 安装器同口径）：官方源兜底不受个别候选构造问题牵连。
+        let url = match reqwest::Url::parse(&url_text) {
+            Ok(url) if url.scheme() == "https" => url,
+            _ => {
+                let error = format!("invalid or non-HTTPS Python wheel URL: {url_text}");
                 log::warn!(
-                    "[marketplace] Python dependency {} failed from {url}, trying next mirror: {error}",
+                    "[marketplace] skipping candidate for {}: {error}",
                     wheel.name
                 );
-                last_error = Some(error);
+                failures.push(error);
+                continue;
+            }
+        };
+        match download_wheel_from(&client, &url, destination, wheel) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // 非默认端口写进前缀，避免同机多端口候选在报错里无法区分。
+                let host = match url.port() {
+                    Some(port) => {
+                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
+                    }
+                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
+                };
+                log::warn!(
+                    "[marketplace] Python dependency {} failed from {host}, trying next mirror: {error}",
+                    wheel.name
+                );
+                failures.push(format!("[{host}] {error}"));
             }
         }
     }
-    // 全部候选失败时把「试过多少个源」带进报错（release 构建没有 logger，
-    // 逐候选的 log::warn! 不可见，报错本身要能说明镜像被试过）。
-    Err(match last_error {
-        Some(error) => format!(
-            "Python dependency {} download failed ({} candidate source(s) exhausted): {error}",
-            wheel.name, total_candidates
+    // 全部候选失败时把「试过多少个源、每个源各自的失败原因」带进报错
+    // （release 构建没有 logger，逐候选的 log::warn! 不可见，报错本身要能
+    // 说明镜像被试过、失败出在哪一层）。
+    Err(match failures.as_slice() {
+        [] => format!("Python dependency {} has no download URL", wheel.name),
+        list => format!(
+            "Python dependency {} download failed ({} candidate source(s) exhausted): {}",
+            wheel.name,
+            total_candidates,
+            list.join("; ")
         ),
-        None => format!("Python dependency {} has no download URL", wheel.name),
     })
 }
 
