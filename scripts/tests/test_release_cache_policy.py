@@ -8,13 +8,23 @@ RUST_CACHE_ACTION = "uses: Swatinem/rust-cache@v2"
 MAIN_ONLY_SAVE = "save-if: ${{ github.ref == 'refs/heads/main' }}"
 
 
+def _without_yaml_comments(block):
+    # Same helper as test_ci_gate_policy: a commented-out step or save-if
+    # line must not satisfy a pin meant for live configuration.
+    return "\n".join(
+        line for line in block.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 class ReleaseCachePolicyTests(unittest.TestCase):
     def test_release_rust_caches_are_read_only_outside_main(self):
         # Release caches are 1-2 GB each. A manual release run on a branch
         # may restore main's caches but must never write its own: branch
         # copies would fill the repository's 10 GB cache quota and evict
         # the warm caches the PR gates depend on.
-        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        workflow = _without_yaml_comments(
+            RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        )
         cache_steps = [
             step
             for step in workflow.split("\n      - name:")

@@ -1,4 +1,5 @@
 import platform
+import re
 import subprocess
 import sys
 import unittest
@@ -141,8 +142,11 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
         self.assertIn("pinned commit check failed", source)
         self.assertIn("-DBUILD_SHARED_LIBS=OFF", source)
         # Every error message goes to stderr so piped/CI captures keep it.
+        # Match any quoting style: a single-quoted or unquoted ❌ echo
+        # must fail this audit just as loudly as a double-quoted one.
         for line in source.splitlines():
-            if 'echo "❌' in line:
+            match = re.search(r"\becho\b", line)
+            if match and "❌" in line[match.end():]:
                 with self.subTest(line=line.strip()):
                     self.assertIn(">&2", line)
         self.assertEqual(source.count(".tmp.$$"), 3)
