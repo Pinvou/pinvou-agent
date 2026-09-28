@@ -210,6 +210,7 @@ function injectSource() {
     var failMemoryOverview = false;
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
+    var pendingDownloadReject = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
@@ -296,7 +297,7 @@ function injectSource() {
           return updateCheckFailure
             ? Promise.reject(new Error(updateCheckFailure))
             : Promise.resolve(Object.assign({}, updateResponse));
-        case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
+        case 'download_update': return new Promise(function (resolve, reject) { pendingDownloadResolve = resolve; pendingDownloadReject = reject; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
@@ -360,6 +361,13 @@ function injectSource() {
           var resolve = pendingDownloadResolve;
           pendingDownloadResolve = null;
           resolve({ package_path: 'C:\\\\tmp\\\\pinvou.zip', installer_path: 'C:\\\\tmp\\\\pinvou.msi', latest_version: updateResponse.latest_version });
+        }
+      },
+      rejectDownload: function (rawError) {
+        if (pendingDownloadResolve) {
+          var reject = pendingDownloadReject;
+          pendingDownloadResolve = null;
+          reject(new Error(rawError));
         }
       },
     };
@@ -657,6 +665,23 @@ async function modalWidth(page, headingText) {
   rec('①c 设置页可取消正在进行的更新下载', await callCount(page, 'cancel_download') === 1);
   await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
   await sleep(250);
+
+  // ①u 下载/安装失败只显示本地化短提示:原始后端错误串(可能携带请求细节、
+  // 语言不定)不进卡片,留在 bridge 状态与应用日志里作诊断。不 await 返回的
+  // promise——下载挂起直到 reject 钩子触发,await 会拖死 CDP。
+  await page.evaluate(() => { window.TauriBridge.updater.downloadAndInstallUpdate(); });
+  await sleep(250);
+  await page.evaluate(() => window.__SETTINGS_TEST__.rejectDownload('RAW update diagnostics: apt stderr http://proxy.internal'));
+  await sleep(250);
+  const updateFailureText = await page.evaluate(() => {
+    const root = document.querySelector('#settings-version-update');
+    return root ? root.innerText : '';
+  });
+  rec('①u 更新失败仅显示本地化提示,原始错误串不进卡片',
+    updateFailureText.includes('更新失败')
+    && !updateFailureText.includes('RAW update diagnostics')
+    && !updateFailureText.includes('proxy.internal'),
+    JSON.stringify(updateFailureText));
 
   await clickSettingsSection(page, '模型');
   const modelList = await page.evaluate(() => {

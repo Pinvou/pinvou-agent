@@ -737,13 +737,16 @@ pub fn run() {
             features::browser::install_automation_context(app);
             #[cfg(target_os = "macos")]
             features::updater::cleanup_stale_backup();
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Attach the logging backend in ALL builds, not just debug: without
+            // it every log:: line — connector and updater failure causes among
+            // them — is a no-op in release and the raw cause of a failure is
+            // lost. LogDir is the OS-standard per-app log directory and the
+            // plugin's default rotation keeps the file bounded (KeepOne, 40KB).
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
             startup::mark("setup:plugins_ready");
             crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 

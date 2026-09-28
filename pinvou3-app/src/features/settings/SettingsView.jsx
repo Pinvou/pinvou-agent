@@ -2364,7 +2364,12 @@ function hasStoredCredential(record) {
         const updateReady = !!(bs && bs.updateReady);
         const updateProgress = (bs && bs.updateProgress) || 0;
         const isWindowsUpdate = upd && upd.platform === 'windows';
-        const updateError = (bs && bs.updateError) || (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? t.updateCheckFailed : '');
+        // The localized hint replaces the raw backend string (it may carry request
+        // details and be untranslated); the raw cause stays in bridge state and the
+        // app log/stderr for diagnostics.
+        const updateError = bs && bs.updateError
+          ? t.updateInstallFailed
+          : (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? t.updateCheckFailed : '');
         const updateStatusDesc = updateDownloading
           ? (updateProgress >= 100 ? t.uiSettings.installingUpdate : t.uiSettings.downloading(updateProgress))
           : updateReady

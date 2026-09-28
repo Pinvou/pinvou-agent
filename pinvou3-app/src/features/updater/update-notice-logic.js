@@ -78,7 +78,9 @@
       restartAfterInstall,
       action: ready ? (installerLaunch ? "none" : "restart") : (downloading ? "none" : "download"),
       disabled: downloading || (ready && installerLaunch),
-      error: bs && bs.updateError ? String(bs.updateError) : "",
+      // Localized hint only: the raw error may carry request details and be
+      // untranslated; it stays on bridge state / the app log for diagnostics.
+      error: bs && bs.updateError ? text(labels, "updateInstallFailed", "更新失败") : "",
     };
   }
 

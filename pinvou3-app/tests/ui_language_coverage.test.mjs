@@ -314,6 +314,7 @@ for (const language of ['zh', 'en', 'ja']) {
     assert.ok(copy.length > 0, `${language}.uiToolStore.connectorErrors.${code} must not be empty`);
   }
   assert.ok(typeof dict[language].updateCheckFailed === 'string' && dict[language].updateCheckFailed.length > 0, `${language}.updateCheckFailed must exist and not be empty`);
+  assert.ok(typeof dict[language].updateInstallFailed === 'string' && dict[language].updateInstallFailed.length > 0, `${language}.updateInstallFailed must exist and not be empty`);
   for (const retired of ['connFailed', 'dingtalkSkillsFailed', 'tmeetAuthIncomplete']) {
     assert.equal(dict[language].uiToolStore[retired], undefined, `${language}.uiToolStore.${retired} is replaced by connectorErrors`);
   }

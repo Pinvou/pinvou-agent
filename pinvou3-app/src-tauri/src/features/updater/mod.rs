@@ -114,7 +114,9 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 /// frontend (the community download surface is a documented stub;
 /// `update:progress` has no consumer).
 pub async fn download_update(info: UpdateInfo, app: AppHandle) -> Result<(), String> {
-    platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT).await
+    platform::download_update_package(&info, app, &DOWNLOAD_CANCEL, DOWNLOAD_STALL_TIMEOUT)
+        .await
+        .inspect_err(|e| eprintln!("[updater] download failed: {e}"))
 }
 
 /// 安装下载好的更新包。Linux 走 pkexec apt；macOS 打开已校验的安装镜像。
@@ -128,7 +130,11 @@ pub async fn install_update(
         platform::install_downloaded_update(deb_path, installer_path, info)
     })
     .await
-    .map_err(|e| format!("安装任务失败: {e}"))??;
+    .map_err(|e| {
+        eprintln!("[updater] install task failed: {e}");
+        format!("安装任务失败: {e}")
+    })?
+    .inspect_err(|e| eprintln!("[updater] install failed: {e}"))?;
     if exit_after_start {
         app.exit(0);
     }
