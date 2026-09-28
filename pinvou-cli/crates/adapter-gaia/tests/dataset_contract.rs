@@ -2,7 +2,6 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use adapter_gaia::{
     GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_SHA256,
@@ -606,6 +605,9 @@ fn adapter_descriptor_and_native_turn_contract_are_exact() {
     assert_eq!(descriptor.scorer_revision(), GAIA_SCORER_REVISION);
     assert_eq!(descriptor.supported_splits()[0].as_str(), GAIA_SPLIT);
     assert_eq!(descriptor.execution_kind(), ExecutionKind::NativeTurn);
+    // The manifest era marker must agree with the lane: GAIA runs unbounded,
+    // so the descriptor records no harness deadline (an explicit manifest null).
+    assert_eq!(descriptor.harness_deadline_secs(), None);
     assert_eq!(
         adapter.private_output_retention(),
         PredictionRetention::DurableUntilPurge
@@ -630,7 +632,9 @@ fn adapter_descriptor_and_native_turn_contract_are_exact() {
     else {
         panic!("GAIA must use NativeTurn");
     };
-    assert_eq!(*timeout, Duration::from_secs(600));
+    // The official GAIA protocol is not known to define a wall-clock limit,
+    // so the lane defaults to no harness-side deadline.
+    assert_eq!(*timeout, None);
     assert_eq!(tool_policy.as_str(), "pinvou-gaia-public-web/v1");
     assert_eq!(output_contract.as_str(), "gaia-final/v1");
     assert_eq!(attachments.len(), 1);
