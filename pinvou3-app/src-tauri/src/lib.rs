@@ -742,11 +742,16 @@ pub fn run() {
             // them — is a no-op in release and the raw cause of a failure is
             // lost. LogDir is the OS-standard per-app log directory and the
             // plugin's default rotation keeps the file bounded (KeepOne, 40KB).
-            app.handle().plugin(
+            // An unusable log directory must not take boot down, so an attach
+            // failure only leaves a stderr note and startup continues without
+            // the backend.
+            if let Err(e) = app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .build(),
-            )?;
+            ) {
+                eprintln!("[pinvou3] failed to attach the logging plugin: {e}");
+            }
             startup::mark("setup:plugins_ready");
             crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 

@@ -64,9 +64,10 @@ impl ConnectorGate {
         let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
             let show = self.skills_should_show();
             if let Err(e) = self.apply_skills(show) {
-                // The card renders a localized category message only; the raw cause
-                // lives here on stderr (works in release, unlike log::warn).
-                eprintln!("[{}] apply skills failed: {e}", self.id);
+                // The card renders a localized category message only; the raw
+                // cause is logged here (stdout in dev runs, the app log in
+                // packaged builds — the backend attaches in all builds now).
+                log::warn!("[{}] apply skills failed: {e}", self.id);
                 return Err(e);
             }
             Ok(show)
