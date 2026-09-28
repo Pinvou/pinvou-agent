@@ -106,9 +106,11 @@ struct Artifact {
 }
 
 /// GitHub 加速前缀的纯函数核心：仅对官方源在 github.com 的地址生效，其余
-/// 地址原样返回 `None`（避免把任意站点误包进第三方代理）。前缀按用户原样
-/// 拼接（gh-proxy 惯例 `<proxy>https://github.com/...` 无分隔斜杠；带斜杠
-/// 的配置同样成立），拼错的加速地址会在校验失败后自然落到下一候选。
+/// 地址原样返回 `None`（避免把任意站点误包进第三方代理）。前缀结尾斜杠可有
+/// 可无，统一归一化成 gh-proxy 规范形 `<proxy>/https://github.com/...`——
+/// 无斜杠前缀若按原样黏连（`format!("{prefix}{url}")`）会拼出形如
+/// `proxy.examplehttps` 的非法域名，在 DNS 阶段静默退化成官方源直连。
+/// 拼错的加速地址会在校验失败后自然落到下一候选。
 fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -118,7 +120,7 @@ fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
     if parsed.host_str() != Some("github.com") {
         return None;
     }
-    Some(format!("{}{}", prefix, url))
+    Some(format!("{}/{}", prefix.trim_end_matches('/'), url))
 }
 
 /// 按序尝试的下载地址：环境变量显式指定的 GitHub 加速前缀 → lock 表审核过的
@@ -558,9 +560,10 @@ mod tests {
         assert_wecom_mirror_invariants(&lock);
     }
 
-    /// 全部五个平台的 lock 都要过同一镜像不变量：`load_lock` 按 target 取
-    /// 资源，而 CI 的 cargo-test 矩阵只覆盖 linux-x86_64 与 macos-aarch64，
-    /// 其余平台 mirrorUrl 里的路径拼写错误只能在这里被拦下。
+    /// 全部五个平台的 lock 都要过同一镜像不变量：全量 cargo test 只在
+    /// linux-x86_64 上执行（macos/windows 仅跑过滤子集），linux-aarch64 与
+    /// macos-x86_64 的 lock 不出现在任何测试执行环境里，其 mirrorUrl 的路径
+    /// 拼写错误只能在这里被静态拦下。
     #[test]
     fn all_platform_locks_pass_mirror_invariants() {
         const ALL_PLATFORM_LOCKS: [&str; 5] = [
@@ -641,13 +644,31 @@ mod tests {
             ]
         );
 
-        // 前缀拼进候选后仍会在下载前过 HTTPS 复查；空白前缀无效。
+        // 前缀拼进候选后仍会在下载前过 HTTPS 复查；空白前缀无效。结尾斜杠
+        // 带不带、带几个都必须归一化成同一规范形（文档承诺两种写法均可）。
+        let expected =
+            "https://mirror.example/gh/https://github.com/org/repo/releases/download/v1/a.tar.gz";
         assert_eq!(
             github_prefixed_url(
                 "https://mirror.example/gh/",
                 "https://github.com/org/repo/releases/download/v1/a.tar.gz"
             ),
-            Some("https://mirror.example/gh/https://github.com/org/repo/releases/download/v1/a.tar.gz".to_string())
+            Some(expected.to_string())
+        );
+        assert_eq!(
+            github_prefixed_url(
+                "https://mirror.example/gh",
+                "https://github.com/org/repo/releases/download/v1/a.tar.gz"
+            ),
+            Some(expected.to_string()),
+            "无结尾斜杠的前缀不得黏连出非法域名静默退化成直连"
+        );
+        assert_eq!(
+            github_prefixed_url(
+                "https://mirror.example/gh///",
+                "https://github.com/org/repo/releases/download/v1/a.tar.gz"
+            ),
+            Some(expected.to_string())
         );
         assert_eq!(github_prefixed_url("  ", "https://github.com/o/r"), None);
     }
