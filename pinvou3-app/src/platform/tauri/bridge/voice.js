@@ -733,10 +733,11 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtau
     syncVoiceShortcutRecording(null, session.id);
     if (cancelled) {
       trackVoiceTerminal("voice_cancelled", session);
-      // The raw PCM is never needed again once the recording is torn down;
-      // the operation record (provenance) must not pin the audio buffers.
-      session.chunks = null;
+      // Detach the audio callback first (cleanup nulls onaudioprocess), then
+      // release the PCM: the audio thread must never observe a nulled chunks
+      // array. The operation record keeps provenance, not the audio buffers.
       cleanupVoiceInputSession(session);
+      session.chunks = null;
       activeVoiceInput = null;
       setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
       emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
@@ -996,6 +997,17 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       return;
     }
 
+    // While a model download is running, re-triggering voice input keeps the original
+    // download session; a fresh dependency probe must not overwrite
+    // installing/cancelling/progress. Keep the open state as-is too: auto-install uses the
+    // button loading state + small popover, only manual repair keeps the install dialog.
+    // The previous operation must not be abandoned either: its text is still
+    // sitting in the composer awaiting a send.
+    if (state.voiceAsrSetup.installing) {
+      notify();
+      return;
+    }
+
     // Opening a new recording abandons the previous unsent operation and the
     // completed-but-dismissed result still owned by the composer.
     const previousOperationId = getVoiceOperationId(
@@ -1004,14 +1016,6 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
     );
     if (previousOperationId) abandonVoiceResult(previousOperationId);
     abandonCompletedVoiceResult();
-    // While a model download is running, re-triggering voice input keeps the original
-    // download session; a fresh dependency probe must not overwrite
-    // installing/cancelling/progress. Keep the open state as-is too: auto-install uses the
-    // button loading state + small popover, only manual repair keeps the install dialog.
-    if (state.voiceAsrSetup.installing) {
-      notify();
-      return;
-    }
 
     // Enter a visible, cancellable probing state immediately on click. The first model status
     // query may need to read model files; updating the UI only after the query finishes makes

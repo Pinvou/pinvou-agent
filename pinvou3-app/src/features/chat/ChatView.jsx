@@ -1633,7 +1633,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // Capability preparation can outlive the originating voice composer.
         // Do not let the bridge resolve its current active session as our owner.
         if (voiceOwner && ((activeSessionIdRef.current || null) !== voiceOwner.sessionId
-          || (!voiceOwner.sessionId && Number(draftEpochRef.current || 0) !== voiceOwner.draftEpoch))) return false;
+          || (!voiceOwner.sessionId && Number(draftEpochRef.current || 0) !== voiceOwner.draftEpoch))) {
+          // Mirror the catch path: a refused dispatch must not leave the
+          // stale mode-scope migration payload installed for a later session.
+          pendingModeScopeMigrationRef.current = null;
+          return false;
+        }
         let dispatchResult;
         try {
           dispatchResult = await bridge.chat.sendMessage(visibleOutgoing, meta, voiceOwner);

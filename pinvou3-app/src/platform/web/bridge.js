@@ -3877,6 +3877,11 @@ function pinvouSharedwebN247496() {
       }
     }
     const sid = state.activeSessionId;
+    // In-bridge submission gate (mirrors the tauri chat bridge): any future
+    // dispatch path carrying a voice operation id parks here, so a cancel
+    // racing the send waits for admission instead of recording a
+    // cancellation for a delivered message. begin is idempotent.
+    beginVoiceMetaSubmission(meta, sid);
     const activeTurnBuffer = getBuffer(sid);
     function consumeUiTurnState() {
       const consumed = {
@@ -4035,6 +4040,12 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // A dispatched send ends its voice operation (mirrors the desktop lane);
   // false/"restored" returns keep the retryable association and are settled
   // by the ChatView funnel / restoreTaskDraft / first-turn admission.
+  // In-bridge counterpart of the funnel-level begin: parks a dispatched
+  // voice operation even if a caller skipped the funnel's own begin.
+  function beginVoiceMetaSubmission(meta, sessionId) {
+    if (meta && meta.voiceOperationId) beginVoiceSubmission(meta.voiceOperationId, sessionId || null);
+  }
+
   function settleAcceptedVoiceSubmission(meta, sessionId) {
     const operationId = meta && meta.voiceOperationId;
     if (operationId) completeVoiceSubmission(operationId, sessionId || null, true);
@@ -7191,10 +7202,11 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
       trackVoiceTerminal("voice_cancelled", session, {
         stage: state.voiceInput && state.voiceInput.stage === "permission" ? "permission" : "recording",
       });
-      // The raw PCM is never needed again once the recording is torn down;
-      // the operation record (provenance) must not pin the audio buffers.
-      session.chunks = null;
+      // Detach the audio callback first (cleanup nulls onaudioprocess), then
+      // release the PCM: the audio thread must never observe a nulled chunks
+      // array. The operation record keeps provenance, not the audio buffers.
       cleanupVoiceInputSession(session);
+      session.chunks = null;
       activeVoiceInput = null;
       setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
       emitVoiceDiagnostic("recording", "info", "voice input cancelled", "已取消语音输入", "cancelled");
@@ -7277,6 +7289,7 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
       emitVoiceDiagnostic("writeback", "info", "voice text written back", "语音已写入输入框", "");
     } catch (err) {
       const normalized = normalizeVoiceError(err, "transcribing");
+      if (!session.voiceResultReady) trackVoiceTerminal("voice_recognition_failed", session);
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,

@@ -2818,6 +2818,13 @@ export function CodexAcpView({
     setError('');
     try {
       if (!targetId) {
+        // Park before materialization too: a cancel during createSession
+        // must wait for the admission result instead of recording
+        // voice_cancelled for a message that is then delivered (begin is
+        // idempotent; the begin after creation binds the created session).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId);
+        }
         const created = await createSession({
           shouldActivate: () => canApplyAcpSendOperation(operation),
           prepareSession,

@@ -608,6 +608,11 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
     /} else if \(voiceOperationId && bridge\.voice && typeof bridge\.voice\.beginVoiceSubmission === 'function'\) \{[\s\S]*?bridge\.voice\.beginVoiceSubmission\(voiceOperationId, targetId\);/,
     "an existing-session ACP send parks its voice operation before dispatch too",
   );
+  assert.match(
+    codexSource,
+    /if \(!targetId\) \{[\s\S]{0,500}?bridge\.voice\.beginVoiceSubmission\(voiceOperationId\);[\s\S]{0,500}?const created = await createSession\(\{/,
+    "a first-turn ACP send parks before createSession so a cancel during creation waits for admission",
+  );
   // The ChatView funnel is the only path that carries the operation id into
   // bridge.sendMessage: dispatchChatMessage must merge voiceMeta into meta
   // before the send, or every dispatched-exit settlement above is dead code
@@ -617,6 +622,25 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
   const sendAnchor = chatViewSource.indexOf("bridge.chat.sendMessage(visibleOutgoing, meta, voiceOwner)");
   assert.ok(mergeAnchor >= 0, "dispatchChatMessage must merge voiceMeta into meta");
   assert.ok(sendAnchor > mergeAnchor, "the voiceMeta merge must happen before the sendMessage call");
+  // Above the merge: sendChatMessage must resolve the parked operation id,
+  // begin the submission, and pass the id into dispatchChatMessage — a
+  // regression there nulls voiceMeta, the merge silently becomes a no-op,
+  // and every dispatched-exit settlement above dies while this source still
+  // matches (the executed settle test drives bridge.sendMessage directly, so
+  // it cannot see this funnel hop either).
+  const funnelStart = chatViewSource.indexOf("const sendChatMessage = useCallback(async (text, voiceContext) => {");
+  const resolveAnchor = chatViewSource.indexOf("bridge.voice.getVoiceOperationId(activeSessionId || null, 'chat')", funnelStart);
+  const beginAnchor = chatViewSource.indexOf("bridge.voice.beginVoiceSubmission(operationId)", funnelStart);
+  const dispatchAnchor = chatViewSource.indexOf("dispatchChatMessage(text, { voiceOperationId: operationId }, voiceContext?.draftOwner)", funnelStart);
+  assert.ok(funnelStart >= 0, "the ChatView send funnel must exist");
+  assert.ok(resolveAnchor > funnelStart, "sendChatMessage must resolve the parked chat-lane operation id");
+  assert.ok(beginAnchor > resolveAnchor, "sendChatMessage must begin the submission before dispatching");
+  assert.ok(dispatchAnchor > beginAnchor, "sendChatMessage must pass the operation id into dispatchChatMessage");
+  assert.match(
+    chatViewSource,
+    /!== voiceOwner\.draftEpoch\)\)\) \{[\s\S]{0,300}?pendingModeScopeMigrationRef\.current = null;[\s\S]{0,100}?return false;/,
+    "a refused dispatch must clear the stale mode-scope migration payload like the catch path",
+  );
   // Accepted operations must not keep pinning the raw recording PCM for the
   // rest of the app session: both lanes drop the chunks as soon as the merged
   // buffer exists (and on the cancelled teardown).
@@ -628,8 +652,27 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
     );
     assert.match(
       source,
-      /trackVoiceTerminal\("voice_cancelled", session(?:, \{[^}]*\})?\);[\s\S]{0,200}?session\.chunks = null;[\s\S]{0,200}?cleanupVoiceInputSession\(session\);/,
-      `${lane} cancelled teardown must release the PCM chunks`,
+      /trackVoiceTerminal\("voice_cancelled", session(?:, \{[^}]*\})?\);[\s\S]{0,300}?cleanupVoiceInputSession\(session\);[\s\S]{0,300}?session\.chunks = null;/,
+      `${lane} cancelled teardown must detach the audio callback before releasing the PCM chunks`,
+    );
+  }
+  assert.match(
+    sources.web,
+    /const sid = state\.activeSessionId;[\s\S]{0,400}?beginVoiceMetaSubmission\(meta, sid\);/,
+    "the web sendMessage must keep the in-bridge submission gate so future dispatch paths park too",
+  );
+  // A re-trigger during an ASR model install must not end the previous
+  // adoptable operation: its text is still sitting in the composer.
+  assert.ok(
+    sources.desktop.indexOf("if (state.voiceAsrSetup.installing) {") <
+      sources.desktop.indexOf("if (previousOperationId) abandonVoiceResult(previousOperationId);"),
+    "the install guard must precede the previous-operation abandon",
+  );
+  for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
+    assert.match(
+      source,
+      /normalizeVoiceError\(err, "transcribing"\);\s*if \(!session\.voiceResultReady\) trackVoiceTerminal\("voice_recognition_failed", session\);/,
+      `${lane} transcription failures must terminalize the operation`,
     );
   }
   assert.match(

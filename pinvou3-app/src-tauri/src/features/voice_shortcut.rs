@@ -293,6 +293,19 @@ pub(super) struct RecordingOwner {
 
 static RECORDING_OWNER: Mutex<Option<RecordingOwner>> = Mutex::new(None);
 
+/// Command-layer token shape check, kept ahead of every claim so a malformed
+/// token can never reach the owner state.
+fn validate_recording_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() || token.len() > 128 {
+        log::debug!(
+            "invalid voice recording owner token (length {})",
+            token.len()
+        );
+        return Err("invalid voice recording owner token".to_string());
+    }
+    Ok(())
+}
+
 /// Called by the `set_voice_shortcut_recording` command; the frontend claims
 /// this window's label (bound to the operation token) before opening the
 /// microphone, and releases it when recording ends/fails.
@@ -300,22 +313,24 @@ static RECORDING_OWNER: Mutex<Option<RecordingOwner>> = Mutex::new(None);
 /// matches the recorded owner, so a stale teardown cannot wipe a newer
 /// session's claim.
 pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
-    if token.trim().is_empty() || token.len() > 128 {
-        return Err("invalid voice recording owner token".to_string());
-    }
+    // A release from a non-router window is a harmless no-op whatever the
+    // token looks like: the JS releases fire-and-forget, so an Err here would
+    // surface as an unhandled rejection. Only a claim from such a window is
+    // invalid — a misbehaving renderer worth logging.
     if !is_voice_shortcut_router_window(label) {
-        // A release from a non-router window is a harmless no-op: the JS
-        // releases fire-and-forget, so an Err here would surface as an
-        // unhandled rejection. Only a claim from such a window is invalid.
         return if claim {
+            validate_recording_token(token)?;
+            log::warn!("voice recording claim from non-router window {label}");
             Err("voice recording claim from a non-router window".to_string())
         } else {
             Ok(false)
         };
     }
-    let mut owner = RECORDING_OWNER
-        .lock()
-        .map_err(|_| "voice recording owner unavailable".to_string())?;
+    validate_recording_token(token)?;
+    let mut owner = RECORDING_OWNER.lock().map_err(|err| {
+        log::warn!("voice recording owner mutex poisoned: {err}");
+        "voice recording owner unavailable".to_string()
+    })?;
     let landed = update_recording_owner(&mut owner, label, token, claim);
     if !landed {
         log::debug!(
@@ -684,6 +699,9 @@ mod tests {
         // deterministic alongside the other tests.
         assert!(set_recording_owner("pet", "tok", true).is_err());
         assert_eq!(set_recording_owner("pet", "tok", false), Ok(false));
+        // A malformed token must not turn the no-op release into an Err
+        // either: the fire-and-forget JS release never surfaces one.
+        assert_eq!(set_recording_owner("pet", "   ", false), Ok(false));
         assert!(set_recording_owner("main", "   ", true).is_err());
     }
 
