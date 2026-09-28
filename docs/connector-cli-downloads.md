@@ -28,3 +28,13 @@ PINVOU3_GITHUB_ASSET_MIRROR_PREFIX=https://your-gh-proxy.example pinvou3
 前缀仅作用于 `github.com` 地址，不会包进其他站点；加速地址必须在 HTTPS
 服务上。拼错或不可达的加速地址只会被下载前的 HTTPS 复查或下载后的
 SHA-256 校验拦下并落到下一候选，不会安装未过校验的字节。
+
+## 腾讯会议 CLI（tmeet）
+
+tmeet（`@tencentcloud/tmeet`，腾讯会议连接器使用）来自 npm，按固定版本安装：
+默认 registry 整体失败后，对该次调用追加
+`--registry=https://registry.npmmirror.com` 重试一次。两次尝试的输出都保留在
+`~/.pinvou3/cli-install.log`（追加写，超过 8 MiB 自动轮转为 `.old`），阶段边界
+有标记行可区分。与上面的归档下载不同，npm 安装没有应用侧制品校验，完整性依赖
+TLS 与镜像源的同步保真；registry 标志仅作用于单条命令，用户的 npm 配置不会被
+读写。
