@@ -11,9 +11,10 @@ use agent_backend_api::{
 };
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService, BenchmarkTask,
-    ExecutionKind, ExecutionRequest, ModelIdentity, NativeAgentRunner, OutputContract, RunContext,
-    RunManifest, RunStore, Split, TaskRunner, TaskStatus, ToolPolicyId,
+    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService,
+    BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity, NativeAgentRunner,
+    OfficialScoreReport, OutputContract, PreparedTask, RunContext, RunManifest, RunStore, Split,
+    SubmissionArtifact, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
 };
 
 fn temp_base(name: &str) -> PathBuf {
@@ -49,6 +50,108 @@ fn manifest(run_id: &str) -> RunManifest {
     .unwrap()
 }
 
+/// The exact JSON shape a schema-1 build wrote: no `schema_version` bump and
+/// no deadline-mode key at all.
+fn legacy_manifest_json() -> &'static str {
+    r#"{
+        "schema_version": 1, "run_id": "run-legacy", "benchmark": "smoke",
+        "adapter_version": "smoke/v1", "dataset_revision": "dataset-sha-123",
+        "scorer_revision": "scorer-sha-123", "split": "smoke",
+        "model": {"provider": "fixture", "model": "mock-model"},
+        "tool_policy": "smoke/v1", "concurrency": 1, "pass": 1,
+        "created_at_ms": 0
+    }"#
+}
+
+#[test]
+fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
+    // The mode is machine-readable in the manifest so an unbounded run (no
+    // harness wall-clock deadline) stays distinguishable from a bounded one
+    // — the two are not score-comparable.
+    let bounded = RunManifest::new(
+        "run-bounded",
+        &descriptor().with_harness_deadline_secs(Some(600)),
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(bounded.harness_deadline_secs(), Some(600));
+    let json = serde_json::to_value(&bounded).unwrap();
+    assert_eq!(json["harness_deadline_secs"], 600);
+    assert_eq!(json["schema_version"], 2);
+    // Within the current format the recorded mode joins the resume identity:
+    // a bounded manifest matches the one descriptor declaring the same bound
+    // and no other.
+    assert!(bounded.matches_resume(
+        &descriptor().with_harness_deadline_secs(Some(600)),
+        "smoke",
+        &ModelIdentity::new("fixture", "mock-model").unwrap(),
+        "smoke/v1"
+    ));
+
+    let unbounded = RunManifest::new(
+        "run-unbounded",
+        &descriptor(), // BenchmarkDescriptor::new defaults to None
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(unbounded.harness_deadline_secs(), None);
+    // `None` serializes as an explicit `null`, not a missing key: a
+    // manifest written by this version stays distinguishable from a legacy
+    // manifest, whose key is absent entirely (and whose real mode is
+    // unrecoverable). A missing key must never be misread as a bounded
+    // 0-second deadline either.
+    let json = serde_json::to_value(&unbounded).unwrap();
+    // Indexing a missing key also yields `Null`, so pin the key's presence
+    // itself: a future `skip_serializing_if` would otherwise silently
+    // collapse the current format back into the legacy shape.
+    assert!(
+        json.as_object()
+            .unwrap()
+            .contains_key("harness_deadline_secs")
+    );
+    assert_eq!(json["harness_deadline_secs"], serde_json::Value::Null);
+
+    // Manifests written before the field existed (schema 1) keep
+    // deserializing so old scores stay readable and scoreable. Schema is what
+    // makes them detectably legacy and keeps the unrecoverable legacy mode
+    // enforceable: this fixture matches the current descriptor on every
+    // recoverable dimension, and this descriptor's deadline is `None`, so a
+    // schema-2 manifest with an explicit `null` would be the current
+    // unbounded format — only the schema version tells the two apart, and
+    // only the current version may resume.
+    let legacy: RunManifest = serde_json::from_str(legacy_manifest_json()).unwrap();
+    assert_eq!(legacy.harness_deadline_secs(), None);
+    assert!(legacy.matches_contract(&descriptor(), "smoke", "smoke/v1", 1));
+    assert!(!legacy.matches_resume(
+        &descriptor(),
+        "smoke",
+        &ModelIdentity::new("fixture", "mock-model").unwrap(),
+        "smoke/v1"
+    ));
+}
+
+/// `Some(0)` is not a mode: validate must reject it at creation time instead
+/// of writing a manifest whose tasks would all time out instantly.
+#[test]
+fn manifest_rejects_a_zero_second_harness_deadline() {
+    let error = RunManifest::new(
+        "run-zero-deadline",
+        &descriptor().with_harness_deadline_secs(Some(0)),
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "invalid_manifest");
+}
+
 fn task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,
@@ -57,7 +160,7 @@ fn task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -72,7 +175,7 @@ fn attachment_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![AttachmentHandle::new(format!("attachment-{id}"))],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -106,7 +209,7 @@ fn resume_manifest_match_rejects_every_pinned_contract_dimension() {
     assert!(expected.matches_resume(&expected_descriptor, "smoke", &expected_model, "smoke/v1"));
 
     let mutations = [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(1)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         ("benchmark", serde_json::json!("other")),
@@ -119,6 +222,9 @@ fn resume_manifest_match_rejects_every_pinned_contract_dimension() {
             serde_json::json!({"provider": "fixture", "model": "other-model"}),
         ),
         ("tool_policy", serde_json::json!("smoke/v2")),
+        // The recorded deadline mode joins the resume identity: a bounded
+        // manifest must not resume against this unbounded descriptor.
+        ("harness_deadline_secs", serde_json::json!(600)),
     ];
     for (field, replacement) in mutations {
         let mut stored = serde_json::to_value(&expected).unwrap();
@@ -129,6 +235,45 @@ fn resume_manifest_match_rejects_every_pinned_contract_dimension() {
             "resume unexpectedly accepted changed {field}"
         );
     }
+
+    // The join reads both sides: the recorded mode must also be rejected
+    // against a bounded descriptor it does not exactly meet. Without these
+    // mirror cases a variant-only comparison (`is_some() == is_some()`) or a
+    // one-sided `stored.is_none()` escape hatch passes the whole suite.
+    let bounded = descriptor().with_harness_deadline_secs(Some(600));
+    let with_deadline = |run_id: &str, deadline: serde_json::Value| -> RunManifest {
+        let mut value = serde_json::to_value(manifest(run_id)).unwrap();
+        value["harness_deadline_secs"] = deadline;
+        serde_json::from_value(value).unwrap()
+    };
+    // The one descriptor declaring the same bound still resumes.
+    assert!(
+        with_deadline("run-join-600", serde_json::json!(600)).matches_resume(
+            &bounded,
+            "smoke",
+            &expected_model,
+            "smoke/v1"
+        )
+    );
+    // An unbounded record must not resume a bounded descriptor, and neither
+    // may a differently bounded one: the recorded bound is part of the
+    // identity, not just its presence.
+    assert!(
+        !with_deadline("run-join-none", serde_json::Value::Null).matches_resume(
+            &bounded,
+            "smoke",
+            &expected_model,
+            "smoke/v1"
+        )
+    );
+    assert!(
+        !with_deadline("run-join-300", serde_json::json!(300)).matches_resume(
+            &bounded,
+            "smoke",
+            &expected_model,
+            "smoke/v1"
+        )
+    );
 }
 
 #[test]
@@ -138,7 +283,7 @@ fn gaia_manifest_contract_rejects_every_non_model_dimension() {
     assert!(expected.matches_contract(&expected_descriptor, "smoke", "smoke/v1", 1));
 
     let mutations = [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(3)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         ("benchmark", serde_json::json!("other")),
@@ -204,6 +349,10 @@ struct MockState {
 
 enum BackendBehavior {
     Completed,
+    /// Sleeps 50ms in `run` — proves the `None`-deadline pass-through (the
+    /// harness must not impose its own `task_timeout` for unbounded GAIA
+    /// runs; a `Some` deadline that short would cut it off).
+    SlowRun,
     CloseFailed,
     Failed,
     FailedModelRequestTimeout,
@@ -327,6 +476,9 @@ impl HeadlessAgentBackend for MockBackend {
         _private_inputs: Arc<dyn PrivateInputResolver>,
         observer: Arc<dyn AgentRunObserver>,
     ) -> Result<AgentTaskOutcome, AgentBackendError> {
+        if matches!(self.behavior, BackendBehavior::SlowRun) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         {
             let mut state = self.state.lock().unwrap();
             state.active += 1;
@@ -376,6 +528,7 @@ impl HeadlessAgentBackend for MockBackend {
                     )]))
             }
             BackendBehavior::Completed
+            | BackendBehavior::SlowRun
             | BackendBehavior::PendingPrepare
             | BackendBehavior::PendingResolveOutput
             | BackendBehavior::PendingClose => {
@@ -509,7 +662,7 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-unsafe-policy"),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("api_key=PRIVATE_SENTINEL"),
             OutputContract::new("text/v1"),
         ),
@@ -610,7 +763,7 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),
                     vec![AttachmentHandle::new("attachment")],
-                    Duration::from_millis(5),
+                    Some(Duration::from_millis(5)),
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
@@ -690,7 +843,7 @@ fn short_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_millis(5),
+            Some(Duration::from_millis(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -1097,5 +1250,213 @@ fn report_is_published_without_temporary_files() {
         "# Smoke\n\ncompleted: 0\n"
     );
     assert!(!Path::new(&format!("{}.tmp", artifact.path().display())).exists());
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// `timeout: None` (the GAIA lane default) must run the future unbounded: the
+/// harness imposes no `task_timeout` of its own and the run is bounded only by
+/// the engine's own limits. Contrast with the `Some`-deadline tests above,
+/// where the same slow backend is cut off at the deadline.
+#[tokio::test]
+async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "unbounded",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    None,
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+            ),
+            &RunContext::new("unbounded"),
+        )
+        .await
+        .expect("no harness timeout for a None deadline");
+    assert_eq!(outcome.status(), TaskStatus::Completed);
+}
+
+/// The contrast the None-lane pin claims: the SAME slow backend cut off by a
+/// finite deadline does time out. Without this, `None` silently acquiring a
+/// default deadline longer than the sleep would pass both tests.
+#[tokio::test]
+async fn some_deadline_cuts_off_the_same_slow_backend() {
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "some-deadline-slow",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    Some(Duration::from_millis(10)),
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+            ),
+            &RunContext::new("some-deadline-slow"),
+        )
+        .await
+        .expect("the harness machinery itself must not fail");
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
+}
+
+/// Minimal adapter so `resume_adapter`'s manifest gates can be exercised end
+/// to end. `verify_dataset` reports the descriptor's own revision so the
+/// dataset check never fires before the manifest gates under test.
+struct ResumeProbeAdapter {
+    descriptor: BenchmarkDescriptor,
+}
+
+impl BenchmarkAdapter for ResumeProbeAdapter {
+    fn descriptor(&self) -> &BenchmarkDescriptor {
+        &self.descriptor
+    }
+
+    fn verify_dataset(&self, dataset_root: &Path) -> benchmark_core::Result<VerifiedDataset> {
+        Ok(VerifiedDataset::new(
+            self.descriptor.dataset_revision().to_owned(),
+            dataset_root,
+        ))
+    }
+
+    fn plan(
+        &self,
+        _dataset: &VerifiedDataset,
+        _selection: &TaskSelection,
+    ) -> benchmark_core::Result<BenchmarkPlan> {
+        Ok(BenchmarkPlan::new(vec![task("one")]))
+    }
+
+    fn prepare_task(
+        &self,
+        task: &BenchmarkTask,
+        _run: &RunContext,
+    ) -> benchmark_core::Result<PreparedTask> {
+        Ok(PreparedTask::new(task.clone()))
+    }
+
+    fn score(&self, _run: &CompletedRun) -> benchmark_core::Result<OfficialScoreReport> {
+        Ok(OfficialScoreReport::new(1, 1))
+    }
+
+    fn write_submission(
+        &self,
+        _run: &CompletedRun,
+        destination: &Path,
+    ) -> benchmark_core::Result<SubmissionArtifact> {
+        Ok(SubmissionArtifact::new(destination))
+    }
+}
+
+/// A legacy (schema 1) manifest matches the current descriptor on every
+/// recoverable dimension, so the schema version is the only thing that can —
+/// and must — stop an incompatible resume while the stored scores stay
+/// readable.
+#[tokio::test]
+async fn resume_adapter_rejects_a_legacy_manifest_as_incompatible() {
+    let base = temp_base("legacy-resume-rejected");
+    let store = RunStore::create(&base, &manifest("run-legacy")).unwrap();
+    fs::write(store.manifest_path(), legacy_manifest_json()).unwrap();
+
+    let adapter = ResumeProbeAdapter {
+        descriptor: descriptor(),
+    };
+    let stored = RunStore::open(&base, "run-legacy").unwrap();
+    let stored_manifest = stored.read_manifest().unwrap();
+    assert!(stored_manifest.matches_contract(adapter.descriptor(), "smoke", "smoke/v1", 1));
+
+    let expected = manifest("run-legacy");
+    let dataset = Arc::new(adapter.verify_dataset(&base).unwrap());
+    let service = BenchmarkService::native(&base, Arc::new(MockBackend::default())).unwrap();
+    let error = service
+        .resume_adapter(
+            "run-legacy",
+            &expected,
+            &adapter,
+            &dataset,
+            &TaskSelection::all(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "resume_manifest_mismatch");
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// The deadline join compares values through the service gates, not just
+/// variant presence: an unbounded record and a differently bounded record
+/// must both fail to resume against a bounded descriptor. Without the
+/// differently-bounded case, a variant-only `matches_expected` comparison
+/// (`is_some() == is_some()`) passes the whole suite.
+#[tokio::test]
+async fn resume_adapter_rejects_a_differently_bounded_deadline_join() {
+    for (name, stored_deadline) in [
+        ("run-join-unbounded", serde_json::Value::Null),
+        ("run-join-300", serde_json::json!(300)),
+    ] {
+        let mut value = serde_json::to_value(manifest(name)).unwrap();
+        value["harness_deadline_secs"] = stored_deadline;
+        let stored_manifest: RunManifest = serde_json::from_value(value).unwrap();
+        let base = temp_base(name);
+        RunStore::create(&base, &stored_manifest).unwrap();
+
+        let adapter = ResumeProbeAdapter {
+            descriptor: descriptor().with_harness_deadline_secs(Some(600)),
+        };
+        let expected = RunManifest::new(
+            name,
+            adapter.descriptor(),
+            Split::new("smoke"),
+            ModelIdentity::new("fixture", "mock-model").unwrap(),
+            ToolPolicyId::new("smoke/v1"),
+            1,
+        )
+        .unwrap();
+        let dataset = Arc::new(adapter.verify_dataset(&base).unwrap());
+        let service = BenchmarkService::native(&base, Arc::new(MockBackend::default())).unwrap();
+        let error = service
+            .resume_adapter(name, &expected, &adapter, &dataset, &TaskSelection::all())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "resume_manifest_mismatch", "{name}");
+        fs::remove_dir_all(base).unwrap();
+    }
+}
+
+/// The rejection above must not spill over to current-format runs: an
+/// unbounded (explicit-null deadline) schema-2 manifest resumes normally.
+#[tokio::test]
+async fn resume_adapter_accepts_a_current_unbounded_manifest() {
+    let base = temp_base("current-unbounded-resume");
+    let store = RunStore::create(&base, &manifest("run-current")).unwrap();
+    store.plan_tasks(["one"]).unwrap();
+
+    let adapter = ResumeProbeAdapter {
+        descriptor: descriptor(),
+    };
+    let stored = RunStore::open(&base, "run-current").unwrap();
+    let stored_manifest = stored.read_manifest().unwrap();
+    let dataset = Arc::new(adapter.verify_dataset(&base).unwrap());
+    let service = BenchmarkService::native(&base, Arc::new(MockBackend::default())).unwrap();
+    let summary = service
+        .resume_adapter(
+            "run-current",
+            &stored_manifest,
+            &adapter,
+            &dataset,
+            &TaskSelection::all(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.completed(), 1);
     fs::remove_dir_all(base).unwrap();
 }
