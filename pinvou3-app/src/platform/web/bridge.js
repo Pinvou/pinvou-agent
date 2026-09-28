@@ -3445,6 +3445,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
           });
+          flushPendingStreamRender(); // admission reject mid-stream: emit final html before the reset
           resetPendingAssistant();
           state.busy = false;
           stopThinking();
