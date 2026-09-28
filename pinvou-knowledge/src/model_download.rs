@@ -132,6 +132,17 @@ where
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(90))
         .timeout(Duration::from_secs(3 * 60 * 60))
+        // 重定向只跟随 HTTPS 目标（与 connectors / marketplace 下载路径的
+        // 策略同口径）：镜像被劫持时不得把 586MB 模型流重定向到明文 HTTP。
+        // 跨源 HTTPS 重定向仍允许——hf-mirror 现阶段会把 /resolve/ 308 到
+        // 官方源，落盘字节始终经 SHA-256 门禁。
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if hf_redirect_follow_allowed(attempt.previous().len(), attempt.url().scheme()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .user_agent(concat!("pinvou-knowledge/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("无法创建模型下载客户端: {error}"))?;
@@ -378,7 +389,20 @@ where
                     // 本身不是取消报文），不当作镜像故障换下一基地址。
                     Err(_) if is_cancelled() => return Err(CANCELLED.to_string()),
                     Err(error) => {
-                        let host = base_url.host_str().unwrap_or_else(|| base_url.as_str());
+                        let host = match base_url.port() {
+                            // 非默认端口写进前缀，避免同机多端口候选在报错里
+                            // 无法区分；默认端口省略（与 URL 显示习惯一致）。
+                            Some(port) => {
+                                format!(
+                                    "{}:{port}",
+                                    base_url.host_str().unwrap_or_else(|| base_url.as_str())
+                                )
+                            }
+                            None => base_url
+                                .host_str()
+                                .unwrap_or_else(|| base_url.as_str())
+                                .to_string(),
+                        };
                         failures.push(format!("[{host}] {error}"));
                     }
                 }
@@ -566,13 +590,25 @@ where
     Ok(())
 }
 
+/// 重定向跟随判定（纯函数核心，便于单测）：只跟随 HTTPS 目标，且跳数有界。
+/// 初始请求本身不受此限制（本地/测试服务器可用 HTTP），仅约束重定向链。
+fn hf_redirect_follow_allowed(previous_hops: usize, scheme: &str) -> bool {
+    previous_hops < 10 && scheme == "https"
+}
+
+/// 显式配置的镜像基地址可能来自共享服务端或桌面端的两个环境变量之一（校验
+/// 发生在共享 crate 内，无法区分来源），错误文案同时点名两者，避免对桌面端
+/// 用户误报成另一个变量。
+const HF_BASE_URL_ENV_HINT: &str =
+    "镜像基地址环境变量（PINVOU_KNOWLEDGE_HF_BASE_URL / PINVOU3_KB_HF_BASE_URL）";
+
 fn validate_hf_base_url(value: &str) -> Result<Url, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 不能为空"));
+        return Err(format!("{HF_BASE_URL_ENV_HINT} 不能为空"));
     }
     let mut url = Url::parse(value)
-        .map_err(|error| format!("{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 不是有效 URL: {error}"))?;
+        .map_err(|error| format!("{HF_BASE_URL_ENV_HINT} 不是有效 URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -581,7 +617,7 @@ fn validate_hf_base_url(value: &str) -> Result<Url, String> {
         || url.fragment().is_some()
     {
         return Err(format!(
-            "{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 必须是不含账号、查询参数和片段的 HTTP(S) 基地址"
+            "{HF_BASE_URL_ENV_HINT} 必须是不含账号、查询参数和片段的 HTTP(S) 基地址"
         ));
     }
     if !url.path().ends_with('/') {
@@ -942,6 +978,63 @@ mod tests {
             std::fs::read(candidate.join("config.json")).unwrap(),
             b"abc"
         );
+    }
+
+    /// 全部下载源都失败时，聚合报错必须点名每一个失败的源（`[host]` 前缀）
+    /// 并给出源总数，而不是只保留最后一个源的报错——否则用户无法分辨是
+    /// 镜像坏了还是官方源也坏了。
+    #[tokio::test]
+    async fn exhausted_sources_error_names_every_failed_base() {
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
+        let (worse_base, _worse_requests, worse_server) = serve_model_files(vec![b"yyy"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![bad_base.clone(), worse_base.clone()];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await;
+        bad_server.join().unwrap();
+        worse_server.join().unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.contains("2 个下载源均失败"), "{error}");
+        // 前缀 host 含非默认端口（本地服务器），与聚合文案的 [host:port] 一致。
+        let bad_authority = bad_base
+            .split("//")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .unwrap();
+        let worse_authority = worse_base
+            .split("//")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .unwrap();
+        assert!(error.contains(&format!("[{bad_authority}]")), "{error}");
+        assert!(error.contains(&format!("[{worse_authority}]")), "{error}");
+        assert!(!candidate.exists());
+    }
+
+    /// 模型下载的重定向策略：只跟随 HTTPS 目标、跳数有界（与
+    /// connectors/marketplace 下载路径同口径；初始请求不受限，本地测试
+    /// 服务器可用 HTTP）。
+    #[test]
+    fn redirects_follow_only_https_targets_within_hop_budget() {
+        assert!(hf_redirect_follow_allowed(0, "https"));
+        assert!(hf_redirect_follow_allowed(9, "https"));
+        assert!(!hf_redirect_follow_allowed(10, "https"));
+        assert!(!hf_redirect_follow_allowed(0, "http"));
+        assert!(!hf_redirect_follow_allowed(0, "ftp"));
     }
 
     /// 换基地址重试时该文件从头下载：进度事件的累计字节必须保持单调不减
