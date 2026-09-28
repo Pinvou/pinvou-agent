@@ -581,6 +581,13 @@ test('watchdog identity: a stale settle after the failsafe cannot remove a newer
   h.auxChat.snapshots.set('aux-stale-task', { chatItems: [], busy: true, queued: [] });
   h.notifyChat();
   assert.equal(panel.view.sending, false);
+  // End the turn: the third send must now pass the busy precheck and the
+  // (released) latch, so the registry guard is the ONLY gate left — this
+  // assertion genuinely pins the promise identity (round-33 MAJOR-4: with
+  // the snapshot left busy the dispatch died at the busy precheck first and
+  // the identity check was never consulted).
+  h.auxChat.snapshots.set('aux-stale-task', { chatItems: [], busy: false, queued: [] });
+  h.notifyChat();
   void panel.send();
   assert.equal(h.auxChat.calls.send.length, 2, 'the newer registry entry survives the stale settle');
   h.auxChat.calls.send[1].resolve({});
@@ -606,6 +613,128 @@ test('watchdog identity: a stale rejection after the failsafe stays silent', asy
   await h.flush();
   assert.equal(panel.view.sendFailed, false);
   assert.equal(panel.view.draft, '', 'the newer send\'s own ack still consumes its draft');
+});
+
+// ── Round-33 MAJOR-4: the cross-task / cross-instance settle class ──
+
+test('cross-task settle: an A ack after binding B leaves B\'s staged quotes and composer untouched (m55 quotes leg)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'quote-cross-a');
+  panel.setDraftText('shared text');
+  stageAuxQuote('quote-cross-a', 'excerpt from A');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  // Switch to B, stage a B quote and retype the same text: a mutated ack
+  // that drops the task gate would consume B's composer AND drop B's quotes
+  // as if they rode the A dispatch.
+  panel.bind('quote-cross-b');
+  await h.flush();
+  panel.setDraftText('shared text');
+  stageAuxQuote('quote-cross-b', 'excerpt from B');
+  h.notifyChat();
+  const bQuotes = () => panel.view.quotes.map((quote) => quote.text);
+  assert.deepEqual(bQuotes(), ['excerpt from B'], 'B stages its own quote');
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, 'shared text', 'the old task\'s ack must not clear the new task\'s composer');
+  assert.deepEqual(bQuotes(), ['excerpt from B'], 'the old task\'s ack must not drop the new task\'s staged quotes');
+  // A's own store entry WAS consumed; B's quote inventory is untouched.
+  panel.bind('quote-cross-a');
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'the delivered draft left the old task\'s store');
+  panel.bind('quote-cross-b');
+  await h.flush();
+  assert.deepEqual(panel.view.quotes.map((quote) => quote.text), ['excerpt from B']);
+});
+
+test('restart + in-flight send: the late ack after the completed reset keeps the recovery quotes and leaves the fresh binding dispatchable', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'restart-inflight');
+  panel.setDraftText('recovery material');
+  stageAuxQuote('restart-inflight', 'recovery excerpt');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  confirmRestart(panel);
+  h.auxChat.calls.reset[0].resolve('aux-restart-inflight');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-restart-inflight');
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, 'recovery material', 'the late ack keeps the draft (truth table)');
+  assert.deepEqual(
+    panel.view.quotes.map((quote) => quote.text),
+    ['recovery excerpt'],
+    'the late ack keeps the staged quotes: they were not part of the destroyed dispatch',
+  );
+  assert.equal(panel.view.sendFailed, false);
+  assert.equal(panel.view.sending, false);
+  // The late ack left no registry or latch residue: the fresh binding
+  // dispatches a new turn normally.
+  panel.setDraftText('after the restart');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the fresh binding accepts a new dispatch after the late ack');
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+});
+
+test('watchdog after a restart: a never-settling pre-restart send frees the registry at the bound and the post-restart composer dispatches (round-25 MAJOR-24-3 × round-29 B1)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'watch-restart');
+  panel.setDraftText('pre-restart question');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  // The pre-restart invoke never settles; the restart completes around it
+  // (the send registry entry is deliberately KEPT through the restart).
+  confirmRestart(panel);
+  h.auxChat.calls.reset[0].resolve('aux-watch-restart');
+  await h.flush();
+  assert.equal(panel.view.auxId, 'aux-watch-restart');
+  // While the stale entry stands, the registry guard blocks the fresh
+  // binding's composer — the round-25 keep is what makes the entry the
+  // blocker, and the watchdog is its only bounded exit.
+  panel.setDraftText('post-restart question');
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 1, 'the kept entry still blocks new dispatches');
+  assert.equal(panel.view.sendInFlight, true, 'the registry-derived hint covers the blocked window');
+  assert.equal(panel.view.sending, false, 'a registry-blocked dispatch never sets the panel latch');
+  // The stale failsafe fires: it deletes the pre-restart entry by identity
+  // and must leave the fresh panel's latches alone (the captured generation
+  // and binding belong to the pre-restart send — the release halves are
+  // defense-in-depth here: the restart entry already released this latch).
+  h.timers.advance(SEND_WATCHDOG_MS);
+  void panel.send();
+  assert.equal(h.auxChat.calls.send.length, 2, 'the freed registry lets the post-restart composer dispatch');
+  h.auxChat.calls.send[1].resolve({});
+  await h.flush();
+  assert.equal(panel.view.draft, '', 'the post-restart send consumes its own draft normally');
+});
+
+test('a failsafe firing after the busy-gated release is fully inert: no extra emission, no state churn (round-33 MAJOR-4)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'inert-watch');
+  const emissions = [];
+  const unsubscribe = panel.subscribe((snapshot) => emissions.push(snapshot.sending));
+  panel.setDraftText('question');
+  void panel.send();
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel.view.sending, true);
+  // turn_started lands and the turn ends in one batch: the busy-gated
+  // release owns the latch; the composer is idle again.
+  h.auxChat.snapshots.set('aux-inert-watch', { chatItems: [], busy: true, queued: [] });
+  h.notifyChat();
+  h.auxChat.snapshots.set('aux-inert-watch', { chatItems: [], busy: false, queued: [] });
+  h.notifyChat();
+  assert.equal(panel.view.sending, false);
+  const emissionsBeforeWatchdog = emissions.length;
+  h.timers.advance(SEND_WATCHDOG_MS);
+  assert.equal(panel.view.sending, false);
+  assert.equal(
+    emissions.length,
+    emissionsBeforeWatchdog,
+    'the late failsafe must return at the latch half: a redundant emit would churn every mounted subscriber',
+  );
+  unsubscribe();
 });
 
 test('hasSendContent accepts text-only, quote-only and both — and only those (round-30 B1 canary)', async () => {
@@ -813,6 +942,26 @@ test('a send ack settling on a dead instance clears the remounted composer throu
   h.auxChat.calls.send[0].resolve({});
   await h.flush();
   assert.equal(panel2.view.draft, '', 'the mirror clears the remounted composer when the ack consumes the store entry');
+});
+
+test('two live panels on one task: an ack on one clears both composers through the shared draft-delete mirror (round-33 MAJOR-4)', async () => {
+  const h = createHarness();
+  const panel1 = await mountBoundPanel(h, 'twin-a');
+  const panel2 = await mountBoundPanel(h, 'twin-a');
+  panel1.setDraftText('question');
+  // The store entry is set by panel1's typing; panel2's bind ran before it,
+  // so pull its copy forward to mirror a genuine two-mounted window.
+  panel2.setDraftText('question');
+  assert.equal(panel2.view.draft, 'question');
+  void panel1.send();
+  assert.equal(h.auxChat.calls.send.length, 1);
+  // The ack consumes the store entry and notifies the task's listener SET:
+  // every mounted instance's mirror must clear, not just the sender's —
+  // panel2 keeps the delivered text staged for a duplicate Enter otherwise.
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  assert.equal(panel1.view.draft, '', 'the sender\'s composer clears through its own ack path');
+  assert.equal(panel2.view.draft, '', 'the second live panel clears through the draft-delete mirror');
 });
 
 test('bind resets the binding and the stale banners for the new task (m21/m22)', async () => {

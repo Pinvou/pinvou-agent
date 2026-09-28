@@ -45,11 +45,17 @@ test('the controller is a module-scope singleton shared by every mounted panel',
 test('M5: per-task registries and staged quotes purge on session deletion', () => {
   // M5: the per-task registries (restart epochs, unsent drafts) and staged
   // quotes purge when the sessions domain reports the task deleted — wired
-  // once at module scope, armed from the bind effect.
+  // once at module scope, armed from the first bind effect. Two legs: the
+  // sessions-slice diff (chat tasks) and the session:deleted event (every
+  // id — list_sessions excludes code-mode sessions, so the diff leg alone
+  // never learns a code task was deleted, round-33 MAJOR-3).
   assert.match(auxChatPanel, /wireAuxSessionPurge\(\);/);
   assert.match(auxChatPanel, /bridge\.state\.subscribeMany\(\['sessions'\]/);
   assert.match(auxChatPanel, /reconcileLiveTaskIds\(knownTaskIds, liveTaskIds/);
   assert.match(auxChatPanel, /auxChatController\.purgeTask\(taskId\)/);
+  assert.match(auxChatPanel, /bridge\.sessions\.onSessionDeleted/);
+  assert.match(auxChatPanel, /knownTaskIds\.delete\(id\)/);
+  assert.match(auxChatPanel, /auxChatController\.purgeTask\(id\)/);
 });
 
 test('one controller panel per mounted instance, mirrored into state and disposed on unmount', () => {
@@ -253,4 +259,35 @@ test('a duplicate quote surfaces the trilingual notice instead of silent success
     /if \(result\.duplicate\) \{[\s\S]{0,300}?copy\.quoteDuplicate[\s\S]{0,300}?if \(onQuote\) onQuote\(\);\s*return;\s*\}/,
     'a duplicate quote must surface the trilingual notice instead of reporting silent success (round-30 D5)',
   );
+});
+
+test('both quote notice branches cancel the armed deferred evaluation (round-33 MAJOR-1)', () => {
+  // mouseup precedes click: clicking the chip arms evaluateTimerRef before
+  // handleQuote runs, and the DOM selection survives (onMouseDown
+  // preventDefaults) — so the over-limit and duplicate branches must cancel
+  // the pending evaluation themselves, or the deferred evaluateSelection
+  // overwrites the notice with the plain Quote affordance one macrotask
+  // later. The success path goes through hidePopover, which already cancels.
+  const handleQuote = auxQuoteSelection.slice(auxQuoteSelection.indexOf('const handleQuote'));
+  assert.match(handleQuote, /if \(!result\.ok\) \{[\s\S]{0,400}?cancelPendingEvaluation\(\);/);
+  assert.match(handleQuote, /if \(result\.duplicate\) \{[\s\S]{0,400}?cancelPendingEvaluation\(\);/);
+  assert.match(auxQuoteSelection, /const hidePopover = useCallback\(\(\) => \{[\s\S]{0,300}?cancelPendingEvaluation\(\);/);
+});
+
+test('defense-in-depth conjuncts stay pinned as such (round-33 MAJOR-4 residue)', () => {
+  // Mutation-sweep verdict at this head: these two guards are not killable
+  // through public behavior — the watchdog's binding half never differs from
+  // its generation half in any reachable flow (a binding change implies a
+  // generation change; the derived aux id makes the converse invisible), and
+  // the draft-delete listener's task recheck is unreachable because the
+  // registration is per-task and unsubscribed on rebind. Their combined
+  // deletion IS executing-test red, and each stays pinned here as documented
+  // defense-in-depth (the same treatment commit 9ee1c8609 applied elsewhere).
+  const watchdog = controller.slice(controller.indexOf('armSendWatchdog(sentTaskId'), controller.indexOf('try {\n        await sendPromise;') > 0 ? controller.indexOf('try {\n        await sendPromise;') : controller.indexOf('await sendPromise;'));
+  assert.match(watchdog, /if \(!sendingLatch\) return;/);
+  assert.match(watchdog, /if \(generation !== sendGeneration \|\| view\.auxId !== sentAuxId\) return;/);
+  assert.match(watchdog, /if \(auxChatBusy\(normalizeAuxSnapshot\(auxChat\.snapshot\(sentAuxId\)\)\)\) return;/);
+  const draftListener = controller.slice(controller.indexOf('draftDeleteUnsubscribe = subscribeTaskListeners'), controller.indexOf('emit();\n      if (!auxChat || !sessionId) return;'));
+  assert.match(draftListener, /if \(sessionIdMirror !== sessionId\) return;/);
+  assert.match(draftListener, /view\.draft = '';/);
 });
