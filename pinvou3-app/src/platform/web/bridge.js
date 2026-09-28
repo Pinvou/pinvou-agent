@@ -4435,6 +4435,14 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
     });
   });
 
+  // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): the host
+  // emits remote_control:tools_changed after every toggle; re-dispatch the same
+  // DOM CustomEvent the desktop bridge (chat-events.js) produces so ChatView's
+  // registry subscription hot-refreshes on browser clients too.
+  listen("remote_control:tools_changed", function () {
+    try { window.dispatchEvent(new CustomEvent("pinvou:tools-changed")); } catch { /* DOM dispatch failure only affects the refresh timing */ }
+  });
+
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
