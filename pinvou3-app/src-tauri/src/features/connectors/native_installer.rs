@@ -123,21 +123,6 @@ fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
     Some(format!("{}/{}", prefix.trim_end_matches('/'), url))
 }
 
-/// 日志/报错里展示候选地址前抹掉 userinfo（`user:pass@host`）：用户可能在
-/// 加速前缀里带入凭据，诊断输出不应落凭据。解析失败时原样返回——该地址
-/// 本来也会在 HTTPS 门禁处被跳过，不会再被请求。
-fn redact_url_credentials(url_text: &str) -> String {
-    let mut parsed = match reqwest::Url::parse(url_text) {
-        Ok(parsed) => parsed,
-        Err(_) => return url_text.to_string(),
-    };
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        let _ = parsed.set_username("");
-        let _ = parsed.set_password(None);
-    }
-    parsed.to_string()
-}
-
 /// 按序尝试的下载地址：环境变量显式指定的 GitHub 加速前缀 → lock 表审核过的
 /// 镜像 → 官方源兜底。官方源恒在列表末尾；每个候选下载后都要过
 /// `archive_sha256` 校验，镜像字节被篡改时会被校验拦截并落到下一候选。
@@ -351,8 +336,15 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
         // 而不是挂住安装流程。多候选回退时最坏情形按候选数翻倍。
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
-                attempt.stop()
+            let refused =
+                attempt.previous().len() >= 10 || attempt.url().scheme() != "https";
+            if refused {
+                // 点名被拒绝的重定向，而不是让 3xx 的空响应体走完下载后在
+                // SHA-256 比对处报出误导性的「校验失败」（与 marketplace
+                // wheel 循环同口径；跨主机 HTTPS 重定向在此合法，不设主机
+                // 白名单）。
+                let redirect_url = attempt.url().clone();
+                attempt.error(format!("连接器下载重定向离开了 HTTPS: {redirect_url}"))
             } else {
                 attempt.follow()
             }
@@ -373,7 +365,7 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
                 // 候选地址整体进日志与报错，先抹掉 userinfo 再落文。
                 let error = format!(
                     "下载地址无效或非 HTTPS: {}",
-                    redact_url_credentials(&url_text)
+                    crate::platform::download::redact_url_credentials(&url_text)
                 );
                 log::warn!("[connectors] {} 跳过候选地址: {error}", artifact.name);
                 failures.push(error);
@@ -632,24 +624,6 @@ mod tests {
             assert_eq!(lock.schema_version, 1);
             assert_wecom_mirror_invariants(&lock);
         }
-    }
-
-    /// 候选地址进日志/报错前必须抹掉 userinfo：用户可能在加速前缀里带入
-    /// 凭据，诊断输出不应落凭据。
-    #[test]
-    fn candidate_url_display_redacts_userinfo() {
-        let redacted = redact_url_credentials(
-            "https://user:pass@proxy.example/https://github.com/openai/dws/archive/v1.tar.gz",
-        );
-        assert!(!redacted.contains("user:pass"), "{redacted}");
-        assert!(redacted.contains("proxy.example"), "{redacted}");
-        // 无 userinfo 的地址原样保留。
-        assert_eq!(
-            redact_url_credentials("https://proxy.example/x"),
-            "https://proxy.example/x"
-        );
-        // 解析失败的串原样返回（不会被请求，只在 HTTPS 门禁处跳过）。
-        assert_eq!(redact_url_credentials("not a url"), "not a url");
     }
 
     /// 候选顺序：GitHub 加速前缀（仅对 github.com 生效）→ 审核镜像 → 官方源；

@@ -134,6 +134,23 @@ pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
 /// 与归档/wheel 下载的 SHA-256 pin 校验不是同一强度。
 pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 
+/// 日志/报错里展示候选地址前抹掉 userinfo（`user:pass@host`）：用户可能在
+/// 加速前缀里带入凭据，诊断输出不应落凭据。解析失败时原样返回——该地址
+/// 本来也会在 HTTPS 门禁处被跳过，不会再被请求。放在 platform 供
+/// connectors 与 marketplace 两个 feature 的候选下载循环共用（feature 之间
+/// 不得互相依赖），两处跳过候选时的口径必须一致。
+pub(crate) fn redact_url_credentials(url_text: &str) -> String {
+    let mut parsed = match reqwest::Url::parse(url_text) {
+        Ok(parsed) => parsed,
+        Err(_) => return url_text.to_string(),
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+    }
+    parsed.to_string()
+}
+
 pub(crate) async fn download_to_part_with_verify(
     mut req: DownloadRequest<'_>,
 ) -> Result<(), String> {
@@ -824,5 +841,23 @@ mod tests {
         );
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 候选地址进日志/报错前必须抹掉 userinfo：用户可能在加速前缀里带入
+    /// 凭据，诊断输出不应落凭据。
+    #[test]
+    fn redact_url_credentials_strips_userinfo() {
+        let redacted = redact_url_credentials(
+            "https://user:pass@proxy.example/https://github.com/openai/dws/archive/v1.tar.gz",
+        );
+        assert!(!redacted.contains("user:pass"), "{redacted}");
+        assert!(redacted.contains("proxy.example"), "{redacted}");
+        // 无 userinfo 的地址原样保留。
+        assert_eq!(
+            redact_url_credentials("https://proxy.example/x"),
+            "https://proxy.example/x"
+        );
+        // 解析失败的串原样返回（不会被请求，只在 HTTPS 门禁处跳过）。
+        assert_eq!(redact_url_credentials("not a url"), "not a url");
     }
 }

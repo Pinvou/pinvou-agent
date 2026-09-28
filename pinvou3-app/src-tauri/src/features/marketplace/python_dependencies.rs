@@ -672,11 +672,15 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
     let mut failures: Vec<String> = Vec::new();
     for url_text in candidates {
         // 非法候选（解析失败/非 HTTPS）只跳过并记入聚合，不整体失败（与
-        // connectors 安装器同口径）：官方源兜底不受个别候选构造问题牵连。
+        // connectors 安装器同口径，含 userinfo 抹除）：官方源兜底不受个别
+        // 候选构造问题牵连。
         let url = match reqwest::Url::parse(&url_text) {
             Ok(url) if url.scheme() == "https" => url,
             _ => {
-                let error = format!("invalid or non-HTTPS Python wheel URL: {url_text}");
+                let error = format!(
+                    "invalid or non-HTTPS Python wheel URL: {}",
+                    crate::platform::download::redact_url_credentials(&url_text)
+                );
                 log::warn!(
                     "[marketplace] skipping candidate for {}: {error}",
                     wheel.name
