@@ -332,6 +332,10 @@ fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
     let mut rotated = log_path.as_os_str().to_owned();
     rotated.push(".old");
     // 两个安装同时触发轮转时后到者 rename 失败：日志轮转不值得加锁，忽略。
+    // 依赖 std::fs::rename 的「替换已存在目标」语义：Windows 上同样是替换
+    // （FileRenameInfoEx POSIX 语义，回退 MoveFileExW+REPLACE_EXISTING），
+    // 故旧 `.old` 直接被覆盖，无需先删；仅当目标被其他进程占用等场景失败时
+    // 忽略之，下次轮转重试（下方测试钉住该覆盖语义）。
     let _ = std::fs::rename(log_path, PathBuf::from(rotated));
 }
 
@@ -655,6 +659,17 @@ mod tests {
                 .len(),
             2048
         );
+
+        // 第二次轮转必须覆盖既有的 `.old`（含 Windows：std::fs::rename 在
+        // Windows 上同为替换语义，由 CI 的 Windows 腿覆盖本测试）；若替换
+        // 失败被吞掉，主日志会从这一步起无界增长。
+        std::fs::write(&log_path, [b'b'; 2048]).unwrap();
+        std::fs::write(root.join("cli-install.log.old"), b"stale-old-log").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        let rotated = std::fs::read(root.join("cli-install.log.old")).unwrap();
+        assert_eq!(rotated.len(), 2048);
+        assert!(rotated.iter().all(|&b| b == b'b'), "{rotated:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
