@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // full three-language dict: browser entry lazy-loads via i18n.js, tests use the aggregate shim
-import { errorCode, localizedErrorMessage } from '../src/shared/user-facing-error.js';
 import {
   applyConnectorFailure,
   connectorErrorCodeForStep,
   connectorFailure,
   connectorUiStep,
+  errorCode,
 } from '../src/features/tools/connector-ui-state.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
@@ -318,14 +318,9 @@ assert.equal(errorCode({ code: 'auth_failed', message: 'raw diagnostic' }), 'aut
 assert.equal(errorCode(new Error('cli_install_failed: raw backend detail')), 'cli_install_failed');
 assert.equal(errorCode(new Error('raw backend detail')), '');
 assert.equal(errorCode({ code: 'Not A Code' }), '');
-assert.equal(
-  localizedErrorMessage({ code: 'auth_failed' }, dict.ja.uiToolStore.connectorErrors, dict.ja.uiToolStore.connectorErrors.unknown),
-  dict.ja.uiToolStore.connectorErrors.auth_failed,
-);
-assert.equal(
-  localizedErrorMessage(new Error('未知的底层诊断'), dict.en.uiToolStore.connectorErrors, dict.en.uiToolStore.connectorErrors.unknown),
-  dict.en.uiToolStore.connectorErrors.unknown,
-);
+assert.equal(errorCode(null), '');
+assert.equal(errorCode(42), '');
+assert.equal(errorCode(':leading-separator'), '');
 assert.equal(connectorErrorCodeForStep('runtime'), 'runtime_prepare_failed');
 assert.equal(connectorErrorCodeForStep('cli'), 'cli_install_failed');
 assert.equal(connectorErrorCodeForStep('register'), 'registration_failed');
@@ -346,13 +341,13 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
   );
   assert.equal(failed.phase, 'error');
   assert.equal(failed.errorCode, 'auth_failed');
-  assert.equal(failed.errStep, 'qr');
   assert.equal(failed.steps.cli, 'done');
   assert.equal(failed.steps.qr, 'error');
   assert.equal(Object.hasOwn(failed.steps, 'authorize'), false);
   // The raw diagnostic must not be carried on the flow state at all.
   assert.equal(Object.hasOwn(failed, 'err'), false);
   assert.equal(Object.hasOwn(failed, 'detail'), false);
+  assert.equal(Object.hasOwn(failed, 'errStep'), false);
 }
 {
   const toolStore = source('features/tools/ToolStoreView.jsx');

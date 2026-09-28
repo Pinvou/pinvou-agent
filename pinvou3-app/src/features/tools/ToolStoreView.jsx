@@ -329,8 +329,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const p = e.payload || {};
           conn.stopTick();
           if (cfg.openAuthUrl && p.url) {
-            invokeTauri('open_external_url', { url: p.url }).catch(err => {
-              console.error('open tmeet auth url failed:', err);
+            // Log without the error: the rejection carries the full auth URL (device-code-bearing),
+            // which must not land in the console; the card surfaces the localized open failure.
+            invokeTauri('open_external_url', { url: p.url }).catch(() => {
+              console.error('open tmeet auth url failed');
             });
           }
           conn.setFlow(f => {
@@ -365,9 +367,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             conn.setFlow(f => ({ ...f, phase: 'done', steps: { ...(f && f.steps), qr: 'done' } }));
             setTimeout(() => conn.setFlow(null), 1800);
           } catch (e) {
-            // applyAwait (dingtalk) reports a fixed skills_enable_failed; readinessAwait (tmeet) passes the error
-            // through (auth_failed when the readiness re-check failed) — both render localized copy only.
-            const failure = cfg.connectedMode === 'applyAwait' ? { code: 'skills_enable_failed' } : e;
+            // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; every other failure
+            // after authorization completed (dingtalk's awaited apply, tmeet's own skill write) reports
+            // skills_enable_failed — the sign-in demonstrably succeeded on those paths.
+            const authIncomplete = cfg.connectedMode !== 'applyAwait' && e && e.code === 'auth_failed';
+            const failure = authIncomplete ? e : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'qr');
             conn.setFlow(f => applyConnectorFailure(f, failure, 'qr'));
           }
@@ -509,7 +513,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         setFlow(conn.flow); // hydrate the current progress on (re)mount
         return unsub;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; the copy snapshot is read on demand by the callback, so resubscribing is unnecessary
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; failures are stored as error codes and localized at render time, so resubscribing on copy changes is unnecessary
       }, [enabled]);
     };
 
@@ -1224,16 +1228,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       // (alert dialog, connection-state refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu' });
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom' });
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
 
       // Subscribe to the tmeet store (mirrors the dingtalk one): mirror into rendering + done/failure finalization (done toast uses a dedicated phrase)
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, storeCopy, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
