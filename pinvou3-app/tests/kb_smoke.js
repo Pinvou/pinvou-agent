@@ -683,7 +683,7 @@ async function chooseRemoteUploadSource(page, testId) {
   await page.waitForFunction(() => !document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled);
   await page.evaluate(() => {
     window.__REMOTE_HOST_STATUS__ = {
-      supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',
+      supported:true,installed:true,endpoint:'https://127.0.0.1:3210',
       serviceVersion:'0.10.0',appVersion:'0.9.9',upgradeAvailable:true,clientOutdated:true
     };
     document.querySelector('[data-testid="remote-refresh-connections"]')?.click();
