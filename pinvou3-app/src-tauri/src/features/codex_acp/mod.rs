@@ -5720,11 +5720,16 @@ mod tests {
         // round-17 SF-3): a `pub(crate)`/`pub(super)` item would otherwise
         // extend the span past the function under test, silently diluting
         // (and eventually neutralizing) the contains-assertions.
-        let end = ["\n    pub ", "\n    pub(crate) ", "\n    pub(super) "]
-            .iter()
-            .filter_map(|marker| rest.find(marker))
-            .min()
-            .map_or(src.len(), |offset| start + signature.len() + offset);
+        let end = [
+            "\n    pub ",
+            "\n    pub(crate) ",
+            "\n    pub(super) ",
+            "\n    ///",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
         &src[start..end]
     }
 

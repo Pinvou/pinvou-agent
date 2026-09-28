@@ -492,10 +492,15 @@ impl SessionStore {
     }
 
     /// Phase 1 + phase 2 of the plain-lane rebind: build the plan and sync the
-    /// legacy global table. No binding artifact has moved when this returns,
-    /// so a sync failure aborts with the run truly untouched (table@from +
+    /// legacy global table. No SIDECAR has moved when this returns, so a sync
+    /// failure aborts with the sidecars untouched (table@from +
     /// sidecars@from consistent) and the retry redoes the whole run once the
-    /// cause is fixed.
+    /// cause is fixed. Precision (review #463 round-19 SF-9): a table-only
+    /// plan entry is itself published to the table on the success path, so
+    /// "no binding artifact has moved" would overclaim — a failure AFTER the
+    /// sync (the codex lane) legitimately leaves table@to over
+    /// sidecars@from, the accepted between-phases crash window that heals
+    /// forward at boot.
     pub fn plan_rebind_workspace_bindings(
         &self,
         from: &Path,

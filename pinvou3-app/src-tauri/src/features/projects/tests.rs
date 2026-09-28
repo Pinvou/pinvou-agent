@@ -901,3 +901,32 @@ fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
         .expect_err("a NEW overlap with a legacy project still rejects");
     assert!(error.to_string().contains("overlap"));
 }
+
+#[test]
+fn alias_equal_paths_are_the_no_op_guard() {
+    // review #463 round-19 SF-5: the round-18 minor-8 guard had zero pins,
+    // so a regression to the raw `==` compare would bump `updated_at` and
+    // persist a null rewrite for a case/spelling variant of the same
+    // directory — unreachable through the command layer today, which is
+    // exactly why the helper needs its own pin.
+    use crate::features::projects::store::paths_are_alias_equal;
+    use std::path::Path;
+    assert!(paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/alpha")
+    ));
+    assert!(paths_are_alias_equal(
+        Path::new("/vault/alpha/"),
+        Path::new("/vault/alpha")
+    ));
+    // The fold is platform-dependent for CASE; trailing separators and raw
+    // equality are the cross-platform arms.
+    assert!(!paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/beta")
+    ));
+    assert!(!paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/alphabet")
+    ));
+}

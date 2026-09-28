@@ -1937,9 +1937,10 @@ impl EnginePool {
     /// The take yields `Some(None)` for an idle session with no resident
     /// engine: there is nothing to reclaim, but the shell state may still
     /// exist from an earlier turn and must be reset. Returns false when the
-    /// session was busy at recheck OR when its turn gate could not be
-    /// acquired within [`REBIND_EVICT_GATE_TIMEOUT`] — in both cases nothing
-    /// was touched and the command reports the session as post-busy.
+    /// session was busy at recheck, when its turn gate could not be
+    /// acquired within [`REBIND_EVICT_GATE_TIMEOUT`], or when the runtime
+    /// lock itself timed out (the bounded-take third arm) — in every case
+    /// nothing was touched and the command reports the session as post-busy.
     pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
         rebind_evict_with_gates(
             &self.turn_locks,
@@ -6656,11 +6657,16 @@ mod scheduled_model_tests {
         // round-17 SF-3): a `pub(crate)`/`pub(super)` item would otherwise
         // extend the span past the function under test, silently diluting
         // (and eventually neutralizing) the contains-assertions.
-        let end = ["\n    pub ", "\n    pub(crate) ", "\n    pub(super) "]
-            .iter()
-            .filter_map(|marker| rest.find(marker))
-            .min()
-            .map_or(src.len(), |offset| start + signature.len() + offset);
+        let end = [
+            "\n    pub ",
+            "\n    pub(crate) ",
+            "\n    pub(super) ",
+            "\n    ///",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
         &src[start..end]
     }
 
@@ -6675,6 +6681,20 @@ mod scheduled_model_tests {
         assert!(
             body.contains("scheduled_running_sessions"),
             "the take must refuse eviction while a scheduled turn is running",
+        );
+        // review #463 round-19 SF-4: contains-only is order-insensitive —
+        // moving the entry removal BEFORE the evictability recheck would
+        // evict a session that just turned busy. Pin the order: the
+        // rebind_evictable gate must precede the removal.
+        let gate_at = body
+            .find("rebind_evictable(")
+            .expect("the take must gate on rebind_evictable");
+        let remove_at = body
+            .find("entries.lock().await.remove(session_id)")
+            .expect("the take must remove the pool entry");
+        assert!(
+            gate_at < remove_at,
+            "the evictability recheck must precede the entry removal"
         );
     }
 }

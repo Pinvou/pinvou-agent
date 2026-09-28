@@ -444,8 +444,14 @@ pub async fn rebind_workspace_root(
     let _rebind_gate = store.begin_rebind()?;
     validate_rebind_from(&from)?;
     validate_rebind_to(&to)?;
-    let to_display = crate::features::codex_acp::validate_codex_project_workspace(&to)
-        .map_err(|e| format!("REBIND_TO_UNUSABLE: {e:#}"))?;
+    let to_display =
+        crate::features::codex_acp::validate_codex_project_workspace(&to).map_err(|_| {
+            // Marker hygiene (review #463 round-19 SF-1): the wrapped validator's
+            // bail messages are Chinese; the marker tail crosses logs and the
+            // remote bridge, where the project rule requires English. The dialog
+            // renders typed copy, so the static prose is all the user ever sees.
+            "REBIND_TO_UNUSABLE: the destination folder cannot be used".to_string()
+        })?;
     // Normalize `from` once for all three storage lanes (review #463 B1, see
     // the docblock). Resolved through the deepest existing ancestor, so a
     // vanished directory behind a symlinked ancestor (macOS /var) still
@@ -462,9 +468,22 @@ pub async fn rebind_workspace_root(
     // has been translated. Reachable from the picker (choosing a folder that
     // is or contains another project's root), hence the typed marker so the
     // copy is localized (round-8 M4).
-    store
-        .plan_rebind_roots(&from, &to_display)
-        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
+    store.plan_rebind_roots(&from, &to_display).map_err(|e| {
+        // Same partition as the commit path (review #463 round-19 SF-6):
+        // only the overlap family wears the conflict copy — a corrupt
+        // store holding a relative root would otherwise surface the
+        // re-pick dialog for an unrelated failure. Anything else falls
+        // through as a raw diagnostic (shown verbatim by the dialog).
+        let cause = e.root_cause().to_string();
+        if cause.starts_with("project roots must not nest")
+            || cause.starts_with("project root overlaps")
+            || cause.starts_with("duplicate project root")
+        {
+            format!("REBIND_ROOTS_CONFLICT: {e:#}")
+        } else {
+            format!("rebind_workspace_root: {e:#}")
+        }
+    })?;
 
     // Affected-set snapshot (shared by the active-turn fence and the
     // metadata replay), taken BEFORE any rewrite (review #463 M1): the
@@ -571,12 +590,20 @@ pub async fn rebind_workspace_root(
         }
     }
     if acp_busy_unknown {
-        // Dedicated marker rather than an id-less REBIND_SESSIONS_BUSY: the
-        // frontend renders the busy copy only when it has ids to list, so an
-        // empty list would make this rejection completely silent. Typed like
-        // every other user-reachable outcome, and honest about what is
-        // unknown: an ACP runtime is starting up, so whether these sessions
-        // are busy could not be read inside the bound.
+        // Round-19 R1 (the round-18 minor-3 behavior, now actually in the
+        // tree): when the ACP half could not be read (an unrelated cold
+        // spawn holds the pool lock), the engine-half `busy_ids` are still
+        // known — a known-busy session must ride the id-bearing
+        // REBIND_SESSIONS_BUSY marker rather than be discarded for the
+        // vaguer starting-up copy. Only a fully empty known set falls back
+        // to REBIND_RUNTIME_STARTING: the dedicated marker rather than an
+        // id-less REBIND_SESSIONS_BUSY, because the frontend renders the
+        // busy copy only when it has ids to list, so an empty list would
+        // make this rejection completely silent — and the marker is honest
+        // about what is unknown.
+        if !busy_ids.is_empty() {
+            return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
+        }
         return Err(
             "REBIND_RUNTIME_STARTING: an ACP runtime is starting up; retry in a moment".to_string(),
         );
@@ -905,8 +932,10 @@ pub async fn rebind_workspace_root(
             failed_session_ids.push(session_id.clone());
             continue;
         }
+        let mut synced_this_loop = false;
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
+                synced_this_loop = true;
                 // Indexed session whose sidecar failed both passes: the
                 // binding moved but the authoritative sidecar still holds the
                 // old path, so honestly count it as failed to trigger a user
@@ -935,8 +964,21 @@ pub async fn rebind_workspace_root(
         // sidecar is created for them. A repair-only session (round-18
         // MAJOR-2) converges onto an out-of-geometry target, so its baseline
         // must be recaptured at the repaired target verbatim too — the old
-        // baseline points at the vanished intermediate root.
-        if code_rebound_ids.contains(session_id.as_str()) || per_session_from.is_some() {
+        // baseline points at the vanished intermediate root. A to-lane
+        // admittee whose set_workspace just succeeded also needs it (review
+        // #463 round-19 SF-2): its metadata was behind the binding from an
+        // earlier interrupted run, nothing ever recaptured the baseline
+        // since, and the boot-recovery fallback would keep pointing at the
+        // vanished root — but only for code sessions, never for the plain
+        // lane's rebound set.
+        if code_rebound_ids.contains(session_id.as_str())
+            || per_session_from.is_some()
+            || (synced_this_loop
+                && !plain_rebind
+                    .rebound
+                    .iter()
+                    .any(|(sid, _)| sid == session_id))
+        {
             deferred_baselines.push((session_id.clone(), new_path.clone()));
         }
     }
@@ -2356,24 +2398,30 @@ mod tests {
 
     #[test]
     fn runtime_starting_falls_back_to_busy_when_ids_are_known() {
-        // review #463 round-18 minor 3: an unreadable ACP half must not
-        // discard the engine-half busy set — when any session is known busy,
-        // the id-bearing REBIND_SESSIONS_BUSY marker wins; only a fully
-        // empty known set falls back to REBIND_RUNTIME_STARTING.
+        // review #463 round-19 R1 (superseding the round-18 minor-3 pin,
+        // which matched a production COMMENT and passed while production did
+        // the opposite): the arm is pinned on the executable lines — the
+        // known-busy `format!` return must be an unconditional predecessor
+        // of the starting-up fallback, and the fallback's guard must test
+        // the known set for emptiness.
         let window = production_source();
         let start = window
             .find("if acp_busy_unknown {")
             .expect("the unknown-ACP-state arm must exist");
-        let arm = &window[start..(start + 900).min(window.len())];
-        let busy_at = arm
-            .find("REBIND_SESSIONS_BUSY")
-            .expect("known busy ids must ride the id-bearing marker");
+        let arm = &window[start..(start + 1800).min(window.len())];
+        let busy_return_at = arm
+            .find("return Err(format!(\"REBIND_SESSIONS_BUSY: {}\", busy_ids.join(\", \")))")
+            .expect("known busy ids must ride the id-bearing REBIND_SESSIONS_BUSY return");
+        let guard_at = arm
+            .find("if !busy_ids.is_empty() {")
+            .expect("the known-busy shortcut must be guarded by the known set");
         let starting_at = arm
-            .find("REBIND_RUNTIME_STARTING")
+            .find("return Err(\n            \"REBIND_RUNTIME_STARTING:")
             .expect("the empty-known-set fallback must remain");
+        assert!(guard_at < busy_return_at);
         assert!(
-            busy_at < starting_at,
-            "the known-busy shortcut must precede the starting-up fallback"
+            busy_return_at < starting_at,
+            "the known-busy return must precede the starting-up fallback"
         );
     }
 

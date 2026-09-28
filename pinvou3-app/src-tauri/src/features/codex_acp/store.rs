@@ -719,8 +719,9 @@ impl SessionAgentStore {
         // so a stale record would classify a dead session as Rebound
         // (review #463 round-18 minor 2). The record counts only while the
         // owner exists — the same gate the scan and write passes apply.
-        (self.records.read().contains_key(session_id) && self.binding_owner_exists(session_id))
-            || code_session_sidecar_path(&self.path, session_id).exists()
+        self.binding_owner_exists(session_id)
+            && (self.records.read().contains_key(session_id)
+                || code_session_sidecar_path(&self.path, session_id).exists())
     }
 
     /// Whether the session still owns a durable SavedSession record
@@ -1000,12 +1001,6 @@ impl SessionAgentStore {
     /// to-lane admission must surface the sidecar and call
     /// [`Self::repair_stranded_index_records`] again.
     fn commit_index_rekeys(&self, rekeys: &[(String, PathBuf)]) -> Result<()> {
-        // Count only: the log must not carry plaintext session ids (CodeQL
-        // cleartext-logging, review #463 round 7).
-        eprintln!(
-            "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
-            rekeys.len()
-        );
         let mut originals: Vec<(String, Option<PathBuf>)> = Vec::with_capacity(rekeys.len());
         {
             let mut records = self.records.write();
@@ -1018,6 +1013,11 @@ impl SessionAgentStore {
                 }
             }
         }
+        // Success log only AFTER the persist that can roll the re-keys back
+        // (review #463 round-19 SF-9): announcing success before the write
+        // made the rollback path contradict the log. Count only: the log
+        // must not carry plaintext session ids (CodeQL cleartext-logging,
+        // review #463 round 7).
         if let Err(error) = self.persist() {
             let mut records = self.records.write();
             for (session_id, original) in originals {
@@ -1027,6 +1027,10 @@ impl SessionAgentStore {
             }
             return Err(error);
         }
+        eprintln!(
+            "[pinvou3-app] rebind repaired {} index/sidecar disagreement(s)",
+            rekeys.len()
+        );
         Ok(())
     }
 

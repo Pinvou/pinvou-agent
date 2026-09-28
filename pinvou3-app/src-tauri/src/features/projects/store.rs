@@ -292,7 +292,7 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// Alias-equality for the rebind no-op guards (review #463 round-18 minor 8):
 /// folded identity keys, so a case/spelling variant of the same directory is
 /// the same path even when the raw spellings differ.
-fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
+pub(crate) fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
     let key_a = crate::platform::os::filesystem_path_identity_key(&a.to_string_lossy());
     let key_b = crate::platform::os::filesystem_path_identity_key(&b.to_string_lossy());
     key_a.trim_end_matches('/') == key_b.trim_end_matches('/')
