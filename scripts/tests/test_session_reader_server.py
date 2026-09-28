@@ -183,6 +183,14 @@ class ReadSessionTests(unittest.TestCase):
         note = next(item for item in payload["turns"][0]["items"] if item["type"] == "note")
         self.assertEqual(note["role"], "system")
 
+    def test_charset_gate_rejects_widening_and_raw_trailing_newline(self):
+        # Indirect charset pin: widening the accepted set must turn this red.
+        for bad in ["abc def", "abc.def", "会话", "..", "a/b", "", "abc\n"]:
+            self.assertIsNotNone(server.validate_session_id(bad), repr(bad))
+        # The tools/call entry strips surrounding whitespace first (documented
+        # normalization); validate_session_id itself keeps the \Z defense for
+        # raw values.
+
     def test_rejected_session_ids(self):
         for bad in ["", "../etc", "a/b", "sched-xyz", "eval_secret", "with space",
                     "A" * 300, "abc\n"]:
@@ -348,6 +356,35 @@ class ReadSessionTests(unittest.TestCase):
         self.assertNotEqual(
             first["turns"][0]["turnIndex"], second["turns"][0]["turnIndex"])
 
+    def test_realistic_budget_stops_after_one_large_turn(self):
+        # The aggregate budget must hold at the REAL 1 MiB level, not only
+        # under the degenerate 1-byte budget the other tests swap in: two
+        # ~700 KB turns fill one page (first turn, truncated: true) instead of
+        # returning both at ~1.4 MB (round-3 M4a).
+        big_turn = [
+            _msg("user", _text("question one")),
+            _msg("assistant", *[_text("x" * 4096) for _ in range(200)]),
+        ]
+        second_turn = [
+            _msg("user", _text("question two")),
+            _msg("assistant", *[_text("y" * 4096) for _ in range(200)]),
+        ]
+        _write_session(self.dir, "bigturns", big_turn + second_turn, title="big turns")
+        # 200 blocks x 4096 chars, capped per item at the default 20000 ->
+        # each turn shapes to well under 1 MiB alone but two turns exceed it.
+        payload, error = server.read_session_history(
+            self.dir, "bigturns", turn_limit=10, max_output_chars_per_item=20000)
+        self.assertIsNone(error)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(len(payload["turns"]), 1)
+        self.assertIsNotNone(payload["nextCursor"])
+        followup, error2 = server.read_session_history(
+            self.dir, "bigturns", turn_limit=10,
+            max_output_chars_per_item=20000, cursor=payload["nextCursor"])
+        self.assertIsNone(error2)
+        self.assertGreaterEqual(len(followup["turns"]), 1)
+        self.assertFalse(followup["truncated"])
+
     def test_is_file_oserror_is_sanitized(self):
         # Path.is_file() can raise (e.g. ENAMETOOLONG); the response must be
         # the same sanitized error as the stat/open failures — the raw OSError
@@ -457,6 +494,34 @@ class ListSessionsTests(unittest.TestCase):
         payload, error = server.list_sessions(self.dir, limit=1)
         self.assertIsNone(error)
         self.assertEqual(len(payload["sessions"]), 1)
+        self.assertEqual(payload["total"], 2)
+
+    @unittest.skipIf(os.name != "posix", "os.mkfifo is POSIX-only")
+    def test_fifo_entry_is_skipped_by_listing(self):
+        # A planted FIFO passes the .json suffix and containment but would
+        # block open() forever in the single-threaded stdio loop: the listing
+        # path must stat regular files only and skip the entry (round-3 M3a).
+        fifo = Path(self.dir) / "ccc333.json"
+        os.mkfifo(fifo)
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertNotIn("ccc333", ids)
+        self.assertEqual(payload["total"], 2)
+
+    def test_symlink_loop_entry_is_skipped_by_listing(self):
+        # A self-referential symlink raises RuntimeError during resolve()
+        # (Python <= 3.12, beyond the OSError family): the entry must be
+        # skipped, never fail the listing (round-3 M3b).
+        loop = Path(self.dir) / "ddd444.json"
+        try:
+            os.symlink(loop, loop)
+        except OSError:
+            self.skipTest("filesystem does not allow symlinks")
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertNotIn("ddd444", ids)
         self.assertEqual(payload["total"], 2)
 
     def test_metadata_head_extraction_matches_full_parse(self):
