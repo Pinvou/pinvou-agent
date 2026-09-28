@@ -258,11 +258,15 @@ unsafe extern "system" fn keyboard_hook_proc(
         };
         // Shift/Ctrl/Win already held means this Alt belongs to a system
         // chord; the state machine lets that whole Alt press pass through.
-        let other_modifier_down = [VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN].iter().any(|vk| {
-            // SAFETY: GetAsyncKeyState takes a plain virtual-key code and no
-            // pointer arguments; it is safe to call from the hook callback.
-            unsafe { GetAsyncKeyState(i32::from(*vk)) < 0 }
-        });
+        // Only the Alt-down branch of the state machine consults held
+        // modifiers, so keep the probes off every other keystroke.
+        let other_modifier_down = matches!(key, VoiceShortcutKey::Alt(_))
+            && key_down
+            && [VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN].iter().any(|vk| {
+                // SAFETY: GetAsyncKeyState takes a plain virtual-key code and no
+                // pointer arguments; it is safe to call from the hook callback.
+                unsafe { GetAsyncKeyState(i32::from(*vk)) < 0 }
+            });
         let decision = handle_voice_shortcut_with_modifiers(
             &mut state,
             key,

@@ -325,6 +325,20 @@ assert.match(
   /fn keyboard_hook_proc[\s\S]*?if !shortcut_enabled\(\) \{[\s\S]*?return call_next_hook[\s\S]*?handle_voice_shortcut_with_modifiers\(/,
   "native voice shortcut hook must gate all keystrokes by the synced settings state before gesture handling",
 );
+// The hook must report held Shift/Ctrl/Win to the state machine; deleting the
+// probe would re-arm system chords such as Shift+Alt input switching.
+assert.match(
+  rustShortcutPlatformSource,
+  /fn keyboard_hook_proc[\s\S]*?other_modifier_down = [\s\S]*?VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN[\s\S]*?GetAsyncKeyState/,
+  "native voice shortcut hook must probe held Shift/Ctrl/Win so system chords pass through",
+);
+// Only the Alt-down branch consumes the probe: keep the GetAsyncKeyState
+// calls off every other keystroke of the typing hot path.
+assert.match(
+  rustShortcutPlatformSource,
+  /let other_modifier_down = matches!\(key, VoiceShortcutKey::Alt\(_\)\)\s*&& key_down/,
+  "the modifier probe must stay gated to Alt key-down events",
+);
 // Cross-window recording mutual exclusion: the trigger target resolves to the recording window first.
 assert.match(
   rustShortcutPlatformSource,
