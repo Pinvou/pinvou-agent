@@ -501,7 +501,8 @@ fn hf_repo(
     fs::create_dir_all(&cache_dir).map_err(|_| ())?;
     // from_env 让 HF_ENDPOINT 生效（国内网络可设 https://hf-mirror.com 镜像；
     // from_cache 会硬编码官方端点），缓存目录仍显式钉在评测 scratch 目录下，
-    // token 以显式参数为准（与原行为一致）。
+    // token 以显式参数为准（与原行为一致）。注意：HF_ENDPOINT 会把该 token
+    // 一并带给所选端点，只可指向可信端点（见 docs/gaia-benchmark.md）。
     let api = ApiBuilder::from_env()
         .with_cache_dir(cache_dir)
         .with_progress(false)
