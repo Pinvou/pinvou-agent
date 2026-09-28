@@ -136,8 +136,12 @@ selected from the merge group's actual base/head diff; shared, unknown, or test-
 infrastructure paths fall back to the complete smoke set. Every retained `main` push
 runs cumulative Linux compile verification (full test execution stays on the
 merge-queue leg, which already validates the same combined tree) and native Windows
-checks, and continues to warm the shared caches. A red main regression is a stop
-signal for further queueing until it is fixed or reverted. During review, maintainers should inspect only required checks:
+checks, and continues to warm the shared caches. The Windows required job runs its
+all-target metadata check and linked native regression as two parallel matrix legs;
+both legs use the same high-risk/main routing and both must pass. See
+[`docs/windows-rust-ci.md`](docs/windows-rust-ci.md) for coverage, cache, timing, and
+rollback details. A red main regression is a stop signal for further queueing until
+it is fixed or reverted. During review, maintainers should inspect only required checks:
 
 ```bash
 gh pr checks <number> --required

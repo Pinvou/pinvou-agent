@@ -1,6 +1,6 @@
 # Linux 本地语音识别搭建方案
 
-> **状态注记**：Linux 本地语音识别已内置进 main（#474，commit `40f27a543`）——应用内一键安装（`features/voice/platform/linux.rs` 的 `install_asr_runtime` 自动装 ffmpeg 并从 modelscope 下载模型）、引擎随包分发（`pinvou3-app/src-tauri/resources/platforms/linux/asr/`，npm script `test:linux-asr-runtime` 覆盖）、转码与清洗已固化进 `features/voice/voice_asr.rs`。本文保留为手动搭建 / 开发调试（POC 过程）路径。
+> **状态注记**：Linux 本地语音识别已内置进 main（#474，commit `40f27a543`）——应用内一键安装（`features/voice/platform/linux.rs` 的 `install_asr_runtime` 自动装 ffmpeg 并从 modelscope 下载模型）、引擎在打包期按架构映射进包内 `runtime/asr/`（共享源码目录 `pinvou3-app/src-tauri/resources/platforms/linux/asr/` 只放 shim 与 license，映射由 `config/platforms/linux/*/tauri.conf.json` 声明，npm script `test:linux-asr-runtime` 覆盖）、转码与清洗已固化进 `features/voice/voice_asr.rs`。本文保留为手动搭建 / 开发调试（POC 过程）路径。
 
 pinvou3 的语音输入原本是为 Windows 写的（bundle 的 `llama-funasr-sensevoice.exe`），
 迁到 Linux 没适配。本文记录 Linux 端打通的全过程 + 一键搭建脚本，并给出生产化建议。

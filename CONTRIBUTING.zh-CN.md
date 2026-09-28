@@ -104,7 +104,10 @@ Merge Queue 在入队 PR 与最新 `main` 的实际组合树上运行适用门�
 merge group 的真实 base/head diff 选择浏览器 smoke，共享、未知或测试设施路径
 fail-closed 回退全套。每个保留下来的 `main` push 都执行 Linux 累计编译验证
 （全量测试由 Merge Queue 在同一组合树上完成，push 不重复执行）与 Windows
-原生检查，并持续写暖缓存；main 回归变红后应停止继续入队，直至修复或回滚。
+原生检查，并持续写暖缓存。Windows 必需 job 以两个并行 matrix leg 分别执行全目标
+元数据检查与链接后的原生回归，两者使用相同的高风险/main 路由且都必须通过，覆盖、
+缓存、耗时与回滚说明见 [`docs/windows-rust-ci.md`](docs/windows-rust-ci.md)。
+main 回归变红后应停止继续入队，直至修复或回滚。
 评审阶段只查看 required checks：
 
 ```bash
