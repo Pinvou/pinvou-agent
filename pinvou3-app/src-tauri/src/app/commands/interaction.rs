@@ -135,15 +135,11 @@ pub async fn set_multi_agent_mode(
     // 逃逸会话边界）+ 会话确实存在（防 IPC 直调给不存在的 id 造孤儿状态）。
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("set_multi_agent_mode: {error:#}"))?;
-    // Aux sessions are pure-Q&A engines (ADR-0006): the multi-agent wrapper
-    // cannot grant them tools (the aux config branch survives reconfigure),
-    // but the sibling metadata commands reject aux ids explicitly — this
-    // gate should exclude by the same explicit guard, not by incidental
-    // structure (round-32 review minor 20).
+    // Aux = pure-Q&A engine (ADR-0006, round-32 minor 20): explicit
+    // rejection, same stance as the sibling metadata commands.
     if crate::features::sessions::is_aux_session_id(&session_id) {
         return Err(
-            "set_multi_agent_mode: auxiliary conversations do not take multi-agent mode"
-                .to_string(),
+            "set_multi_agent_mode: auxiliary conversations do not take multi-agent mode".into(),
         );
     }
     store
