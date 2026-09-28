@@ -2247,8 +2247,12 @@ impl EnginePool {
         main_id: &str,
     ) -> Result<(
         Option<String>,
-        deepseek_tui::session_manager::SessionMetadata,
+        Result<deepseek_tui::session_manager::SessionMetadata>,
     )> {
+        // The outer Result covers the delete half only: its failure means
+        // nothing committed and there is nothing to report. The inner one
+        // carries the create half, whose failure must still let the caller
+        // emit session:deleted for the committed delete (see below).
         let deleted_aux = reset_aux_session_delete_with_gate(
             &self.turn_locks,
             &self.store,
@@ -2259,8 +2263,15 @@ impl EnginePool {
             |aux_id| self.forget_session(aux_id),
         )
         .await?;
-        let metadata = self.store.get_or_create_aux_session(main_id)?;
-        Ok((deleted_aux, metadata))
+        // The create result rides next to `deleted_aux` instead of behind
+        // one outer Result (round-32 review minor 8): when the delete half
+        // committed and the create half then failed (e.g. a concurrent
+        // parent deletion), the aux record is durably gone and the command
+        // must still emit session:deleted — gating the event on overall
+        // success left clients buffering a stale transcript for a session
+        // that no longer exists.
+        let created = self.store.get_or_create_aux_session(main_id);
+        Ok((deleted_aux, created))
     }
 
     /// Eval-only deletion keeps ordinary delete semantics, but also schedules the existing
@@ -3895,6 +3906,66 @@ mod scheduled_model_tests {
         (bridge, home, restore)
     }
 
+    /// Round-32 review minor 8: the reset's delete half can commit and the
+    /// create half then fail (a concurrent parent deletion between the
+    /// command layer's existence check and the create leg). The gate must
+    /// still report the deleted aux id, and the store's create leg must
+    /// error — the exact `(Some, Err)` shape the command layer needs to
+    /// emit `session:deleted` for the committed delete before failing.
+    #[tokio::test]
+    async fn reset_reports_the_deleted_aux_when_the_create_half_fails() {
+        let guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-reset-create-fault-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: the test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled"))
+            .expect("boot isolated store");
+        let main = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main");
+        let aux = store
+            .create_aux_session(&main.metadata.id)
+            .expect("create aux");
+        // The concurrent parent deletion: the main record leaves the disk
+        // after the command layer checked it, before the create leg runs.
+        std::fs::remove_file(
+            crate::platform::paths::sessions_root().join(format!("{}.json", main.metadata.id)),
+        )
+        .expect("remove the parent record out of band");
+
+        let turn_locks = super::SessionTurnLocks::default();
+        let deleted = reset_aux_session_delete_with_gate(
+            &turn_locks,
+            &store,
+            &main.metadata.id,
+            |_aux_id| async move {},
+            |_aux_id| {},
+        )
+        .await
+        .expect("the delete half commits: the gate does not require the parent");
+        assert_eq!(
+            deleted.as_deref(),
+            Some(aux.id.as_str()),
+            "the gate reports the committed delete's aux id"
+        );
+        let created = store.get_or_create_aux_session(&main.metadata.id);
+        assert!(
+            created.is_err(),
+            "the create half must fail: the parent record is gone"
+        );
+        assert!(
+            store.durable_session_record_is_absent(&aux.id),
+            "the old aux record is durably gone once the delete half committed"
+        );
+        drop(guard);
+    }
+
     /// PR #433 review (MAJOR): `restrict_tools` is only an optional call
     /// parameter of `chat` / `web_access_chat`, so an aux session's tool
     /// restriction cannot rely on caller discipline — the `aux-` prefix
@@ -4200,9 +4271,11 @@ mod scheduled_model_tests {
         assert_eq!(message, "edited question");
     }
 
-    /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
-    /// 两个 op 同通道 FIFO；颠倒顺序等于没取消（Shutdown 直接跳出事件循环，
-    /// 会话派生的裸子智能体会以孤儿任务继续跑）。
+    /// ADR-0006: an engine reclaim must cancel all sub-agents **first** and
+    /// send Shutdown **after**. The two ops are FIFO on the same channel;
+    /// reversing the order equals no cancel (Shutdown breaks out of the
+    /// event loop directly and the session's bare sub-agents keep running
+    /// as orphan tasks).
     /// ADR-0006: an engine reclaim must cancel all sub-agents **first** and
     /// send Shutdown **after**. The two ops are FIFO on the same channel;
     /// reversing the order equals no cancel (Shutdown breaks out of the event

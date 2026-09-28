@@ -3241,9 +3241,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               too): switching to sched- unmounts the panel with the mount
               condition, and switching back to a normal session re-mounts it
               and re-runs ensure automatically. The bridge conjuncts match the
-              entry button exactly (round-26 minor M4): on the web lane the
-              auxChat domain is an absent stub, so the panel must stay
-              unreachable there even if state somehow lingers. */}
+              entry button exactly (round-26 minor M4): the auxChat-domain
+              conjunct keeps the panel unreachable on hosts that serve no
+              auxChat surface at all (a stale relay host predating the
+              domain, or the unavailable-bridge pet window) even if state
+              somehow lingers — the web lane itself implements the domain
+              fully these days. */}
           {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')
             && bridge.available && bridge.auxChat && (
             <ViewErrorBoundary t={t} variant="panel">

@@ -50,13 +50,22 @@ pub(crate) fn is_aux_session_id(id: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("aux-"))
 }
 
+/// Single-sourced negation for the "global side-effect channel" gates
+/// (memory review, task-completion notification): aux turns must never
+/// trigger them (round-15 MAJOR-4, round-26 minor M3). One helper keeps the
+/// exclusion rule from drifting apart across its call sites (round-32
+/// review minor 10).
+pub(crate) fn aux_side_effect_exclusion(id: &str) -> bool {
+    !is_aux_session_id(id)
+}
+
 /// Case-insensitive `sched-` prefix test — same alias-defeating argument as
-/// [`is_aux_session_id`]. Applied at the guards this module owns (aux
-/// creation, sidecar validation, list/retention filters, sched- turn gates);
-/// the sched-side registries (`is_scheduled_session`, `purge_all_scheduled_
-/// side_maps`, `list_scheduled`) keep their pre-existing exact-match checks —
-/// scheduled profiles are only ever written through the validating API, so
-/// their registry keys cannot carry case variants.
+/// [`is_aux_session_id`]. Applied at the two sites this module owns (the
+/// aux creation guard and the list/retention filters); the sched-side
+/// registries (`is_scheduled_session`, `purge_all_scheduled_side_maps`,
+/// `list_scheduled`) and the sched- turn gates keep their pre-existing
+/// exact-match checks — scheduled profiles are only ever written through
+/// the validating API, so their registry keys cannot carry case variants.
 pub(crate) fn is_sched_session_id(id: &str) -> bool {
     // See is_aux_session_id for the boundary-safe `get(..6)`.
     id.get(..6)

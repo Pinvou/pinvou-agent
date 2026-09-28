@@ -53,7 +53,7 @@ pub(super) fn maybe_notify_task_completed(
 /// "completed" for a task that never finished — the same global-side-effect
 /// class as the round-15 memory-review exclusion (forwarder.rs).
 fn task_completion_notify_in_scope(session_id: &str) -> bool {
-    !crate::features::sessions::is_aux_session_id(session_id)
+    crate::features::sessions::aux_side_effect_exclusion(session_id)
 }
 
 pub(super) fn persist_successful_tool_artifact(

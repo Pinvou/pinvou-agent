@@ -2172,13 +2172,24 @@ impl Pinvou3Bridge {
         session_id: &str,
         roots: SessionRoots,
     ) -> EngineConfig {
+        let is_aux = crate::features::sessions::is_aux_session_id(session_id);
         let mut cfg = self.build_engine_config();
         let _ = std::fs::create_dir_all(&roots.execution);
         let _ = std::fs::create_dir_all(&roots.ledger);
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
-        cfg.instructions = self.session_instructions(session_id);
+        // Aux sessions skip the main instruction stack entirely: the aux
+        // branch below replaces it with the minimal persona, while
+        // session_instructions walks the AGENTS.md ancestors and writes the
+        // runtime-prompt file — work that would be assembled only to be
+        // discarded, and a stray write into the aux workspace at that
+        // (round-32 review minor 9).
+        cfg.instructions = if is_aux {
+            Vec::new()
+        } else {
+            self.session_instructions(session_id)
+        };
         // The skill discovery root points at the composed directory per
         // session (skill dual-scope governance: directory content = the
         // enabled skill set of that session's scope). Pre-spawn
@@ -2224,7 +2235,6 @@ impl Pinvou3Bridge {
         //     gates on Feature::Mcp, never on allowed_tools — without this
         //     every aux spawn would boot the full MCP server set
         //     (subprocesses + network) and discard 100% of their tools.
-        let is_aux = crate::features::sessions::is_aux_session_id(session_id);
         if is_aux {
             cfg.allowed_tools = Some(Vec::new());
             cfg.instructions = vec![InstructionSource::Inline {

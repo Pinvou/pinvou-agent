@@ -3222,9 +3222,16 @@
   // 与 platform/web/bridge.js 各存一份（~60 逻辑行仅 ~3 行不同）。函数体取自原 web
   // 侧镜像；两处真实差异留在 lane 侧——send 派发（lane 以 auxChatDispatch 传入；
   // desktop 走 chat、Web 走 web_access_chat）与 web 侧的
-  // session_turn_in_progress 文案翻译。翻译已删除：两条 lane 命中同一个后端
-  // turn 闩锁时，controller 只 console.warn、面板渲染静态本地化 sendFailed
-  // 文案，翻译后的错误文本从不到达用户（桌面侧一直是裸字符串），统一为一种行为。
+  // The web-only session_turn_in_progress translation wrapper was dropped
+  // with the M7 move: on either lane send errors only reach console.warn and
+  // the panel's static localized sendFailed copy, so translated error text
+  // never reached the user (the desktop side was always the bare string) —
+  // one behavior for both lanes.
+  // Display-only and case-sensitive ON PURPOSE: it only gates ensure/send
+  // inputs on ids the backend itself minted (always lowercase `aux-`);
+  // identity and destructive paths decide in Rust, whose
+  // is_aux_session_id is deliberately case-insensitive. Never reuse this
+  // predicate for a security or destructive decision.
   function auxChatIsAuxSession(id) {
     return typeof id === "string" && id.indexOf("aux-") === 0;
   }

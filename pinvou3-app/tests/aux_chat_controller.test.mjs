@@ -525,6 +525,17 @@ test('restart entry clears stale failure banners and a successful reset binds th
   await h.flush();
   assert.equal(panel.view.sendFailed, true);
   assert.equal(panel.view.sending, false, 'the failure path releases the latch directly');
+  // The live rejection path keeps the draft (round-32 review M2): same
+  // epoch, same task, the catch's gates all pass — nothing was delivered,
+  // so the typed text stays staged. A mutation that wipes the draft in the
+  // catch fails exactly here.
+  assert.equal(panel.view.draft, 'will fail', 'an ordinary failed send keeps the typed draft');
+  // The store entry survives too: a bind round trip restores it.
+  panel.bind('banner-other');
+  await h.flush();
+  panel.bind('banner-task');
+  await h.flush();
+  assert.equal(panel.view.draft, 'will fail', 'the draft store restores the failed send\'s text');
   confirmRestart(panel);
   assert.equal(panel.view.sendFailed, false, 'the restart entry clears the stale send banner');
   h.auxChat.calls.reset[0].resolve('aux-banner-task');
@@ -807,6 +818,18 @@ test('M5: purgeTask drops the restart epoch, the stored draft and the staged quo
   assert.equal(panel.view.draft, '', 'the purged epoch reads as a fresh task: the ack consumes normally');
   h.auxChat.calls.reset[1].resolve('aux-purge-task');
   await h.flush();
+});
+
+test('reconcileLiveTaskIds: a mid-life empty listing is skipped, not treated as mass deletion (round-32 minor 14)', () => {
+  const known = new Set(['kept-a', 'kept-b']);
+  const purged = [];
+  reconcileLiveTaskIds(known, new Set(), (id) => purged.push(id));
+  assert.deepEqual(purged, [], 'an empty live listing must not purge every known task');
+  assert.deepEqual([...known].sort(), ['kept-a', 'kept-b'], 'known ids survive the empty listing');
+  // The guard is one-way: a non-empty listing still diffs normally, and the
+  // initial-empty case (nothing known) never bailed in the first place.
+  reconcileLiveTaskIds(known, new Set(['kept-a']), (id) => purged.push(id));
+  assert.deepEqual(purged, ['kept-b'], 'a real listing still purges genuinely deleted ids');
 });
 
 test('M5: reconcileLiveTaskIds purges only ids that disappeared after being seen', () => {

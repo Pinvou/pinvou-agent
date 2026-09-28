@@ -102,6 +102,16 @@ export const clearedIfSent = (current, text) => (current.trim() === text ? '' : 
 // (deleted ids dropped, new ids added), which is what makes the initial
 // empty sessions snapshot safe — "never seen" is not "deleted".
 export const reconcileLiveTaskIds = (knownIds, liveIds, purgeTask) => {
+  // A mid-life EMPTY listing is not a deletion report (round-32 review
+  // minor 14): refresh failures keep the previous list, so an empty slice
+  // now means the backend genuinely returned nothing — far more likely a
+  // listing fault than every known task having been deleted while the panel
+  // was mounted. Mass-purging every task's drafts/quotes/epochs on it would
+  // be exactly the "silently eat user input" outcome this module never
+  // produces; skip and wait for the next refresh. Real deletions still
+  // purge while this bail stands: the session:deleted event leg fires per
+  // id authoritatively.
+  if (liveIds.size === 0 && knownIds.size > 0) return;
   // Deleting from a Set mid-iteration is specified-safe (the iterator simply
   // skips removed entries), so no snapshot copy is needed here.
   for (const taskId of knownIds) {

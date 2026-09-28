@@ -283,11 +283,26 @@ test('defense-in-depth conjuncts stay pinned as such (round-33 MAJOR-4 residue)'
   // registration is per-task and unsubscribed on rebind. Their combined
   // deletion IS executing-test red, and each stays pinned here as documented
   // defense-in-depth (the same treatment commit 9ee1c8609 applied elsewhere).
-  const watchdog = controller.slice(controller.indexOf('armSendWatchdog(sentTaskId'), controller.indexOf('try {\n        await sendPromise;') > 0 ? controller.indexOf('try {\n        await sendPromise;') : controller.indexOf('await sendPromise;'));
+  // Anchor-resolution guards (the vacuous-slice class right_dock_occlusion_
+  // gate pins): a renamed anchor would make indexOf return -1 and the slice
+  // run to near-EOF, passing on unrelated copies (round-32 review minor 15).
+  const watchdogStart = controller.indexOf('armSendWatchdog(sentTaskId, sendPromise');
+  const watchdogEnd = controller.indexOf('await sendPromise;');
+  assert.ok(
+    watchdogStart >= 0 && watchdogEnd > watchdogStart,
+    'watchdog callback anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const watchdog = controller.slice(watchdogStart, watchdogEnd);
   assert.match(watchdog, /if \(!sendingLatch\) return;/);
   assert.match(watchdog, /if \(generation !== sendGeneration \|\| view\.auxId !== sentAuxId\) return;/);
   assert.match(watchdog, /if \(auxChatBusy\(normalizeAuxSnapshot\(auxChat\.snapshot\(sentAuxId\)\)\)\) return;/);
-  const draftListener = controller.slice(controller.indexOf('draftDeleteUnsubscribe = subscribeTaskListeners'), controller.indexOf('emit();\n      if (!auxChat || !sessionId) return;'));
+  const listenerStart = controller.indexOf('draftDeleteUnsubscribe = subscribeTaskListeners');
+  const listenerEnd = controller.indexOf('if (!auxChat || !sessionId) return;');
+  assert.ok(
+    listenerStart >= 0 && listenerEnd > listenerStart,
+    'draft-listener anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const draftListener = controller.slice(listenerStart, listenerEnd);
   assert.match(draftListener, /if \(sessionIdMirror !== sessionId\) return;/);
   assert.match(draftListener, /view\.draft = '';/);
 });
