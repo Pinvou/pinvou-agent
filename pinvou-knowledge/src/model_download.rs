@@ -332,10 +332,15 @@ where
             ));
 
             // 按序尝试各镜像基地址：当前基地址上下载或校验失败（含镜像内容被
-            // 篡改导致的 SHA-256 不符）都换下一个重试；全部失败才报最后一个
-            // 错误。取消是全局意图，任何一处出现都立即终止，不当作镜像故障。
-            let mut last_error = None;
+            // 篡改导致的 SHA-256 不符）都换下一个重试；全部失败才整体报错，
+            // 错误里带上源域名与已耗尽的源数，否则镜像被篡改这类失败会被误读
+            // 成官方源故障。取消是全局意图，任何一处出现都立即终止，不当作
+            // 镜像故障。
+            let mut failures: Vec<String> = Vec::new();
             let mut succeeded = false;
+            // 换基地址重试时该文件从头下载，进度若原样透传，前端看到的累计
+            // 字节会倒退（进度条回跳）；用跨基地址的峰值钳制保持单调不减。
+            let mut peak_downloaded = completed_bytes;
             for base_url in &base_urls {
                 if is_cancelled() {
                     return Err(CANCELLED.to_string());
@@ -343,6 +348,13 @@ where
                 // 上一个基地址的半截 `.part` 必须清掉再重试，避免续写混杂来源的字节。
                 let _ = std::fs::remove_file(&partial);
                 let url = knowledge_model_file_url(base_url, file.source_path)?;
+                let mut on_progress = |event: KnowledgeModelDownloadProgress| {
+                    peak_downloaded = peak_downloaded.max(event.downloaded_bytes);
+                    on_progress(KnowledgeModelDownloadProgress {
+                        downloaded_bytes: peak_downloaded,
+                        ..event
+                    });
+                };
                 match download_and_verify_manifest_file(
                     client,
                     &url,
@@ -365,13 +377,23 @@ where
                     // 取消是全局意图：标志位一旦置位就整体终止（即便本次错误
                     // 本身不是取消报文），不当作镜像故障换下一基地址。
                     Err(_) if is_cancelled() => return Err(CANCELLED.to_string()),
-                    Err(error) => last_error = Some(error),
+                    Err(error) => {
+                        let host = base_url.host_str().unwrap_or_else(|| base_url.as_str());
+                        failures.push(format!("[{host}] {error}"));
+                    }
                 }
             }
             if !succeeded {
-                // base_urls 非空且每次失败都会写入 last_error，此分支实际不可达；
-                // 兜底文案不得伪称「已取消」。
-                return Err(last_error.unwrap_or_else(|| "模型下载失败".to_string()));
+                // base_urls 非空且每次失败都会写入 failures；兜底文案不得伪称
+                // 「已取消」。
+                let detail = failures.join("；");
+                return Err(if base_urls.len() > 1 {
+                    format!("{} 个下载源均失败：{detail}", base_urls.len())
+                } else if detail.is_empty() {
+                    "模型下载失败".to_string()
+                } else {
+                    detail
+                });
             }
 
             if is_cancelled() {
@@ -922,16 +944,81 @@ mod tests {
         );
     }
 
-    /// 非法基地址必须在触网前整体失败：哪怕它排在存活镜像之后，也不允许
-    /// 「下到一半才报配置错误」。候选目录必须保持未创建。
+    /// 换基地址重试时该文件从头下载：进度事件的累计字节必须保持单调不减
+    /// （峰值钳制），否则前端进度条会在回退瞬间从已累计的高位倒跳回低位。
+    /// 首源发出 2MiB/4MiB/5MiB 三次事件后在 SHA 校验失败，重启源的事件若
+    /// 原样透传会从 2MiB 重新开始——钳制失效时本测试的窗口断言即失败。
     #[tokio::test]
-    async fn invalid_base_url_fails_before_any_download() {
+    async fn progress_events_stay_monotonic_across_base_fallback() {
+        const FILE_BYTES: usize = 5 * 1024 * 1024;
+        let good_body: &'static [u8] = Vec::leak(vec![b'a'; FILE_BYTES]);
+        let bad_body: &'static [u8] = Vec::leak(vec![b'z'; FILE_BYTES]);
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![bad_body]);
+        let (good_base, _good_requests, good_server) = serve_model_files(vec![good_body]);
         let root = tempfile::tempdir().unwrap();
         let candidate = root.path().join("candidate");
-        let bases = vec![
-            "http://127.0.0.1:1".to_string(),
-            "https://user:secret@example.com".to_string(),
-        ];
+        let (events_tx, events_rx) = mpsc::channel();
+        let bases = vec![bad_base, good_base];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: FILE_BYTES as u64,
+                sha256: {
+                    let mut hasher = Sha256::new();
+                    hasher.update(good_body);
+                    let hex: String = hasher
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    Box::leak(hex.into_boxed_str())
+                },
+            }],
+            move |event| {
+                if event.stage == KnowledgeModelDownloadStage::Download {
+                    let _ = events_tx.send(event.downloaded_bytes);
+                }
+            },
+            || false,
+        )
+        .await
+        .unwrap();
+        bad_server.join().unwrap();
+        good_server.join().unwrap();
+
+        assert_eq!(
+            std::fs::read(candidate.join("model.onnx")).unwrap(),
+            good_body
+        );
+        let events: Vec<u64> = events_rx.into_iter().collect();
+        assert_eq!(
+            events.len(),
+            6,
+            "两个源各发 2MiB/4MiB/5MiB 三次事件: {events:?}"
+        );
+        for pair in events.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "跨源回退时进度事件必须单调不减: {events:?}"
+            );
+        }
+    }
+
+    /// 非法基地址必须在触网前整体失败：哪怕它排在存活镜像之后，也不允许
+    /// 「下到一半才报配置错误」——存活源必须一个请求都收不到。候选目录必须
+    /// 保持未创建。
+    #[tokio::test]
+    async fn invalid_base_url_fails_before_any_download() {
+        // 排在首位的是存活的服务端：若基地址校验被错误地推迟到逐源下载阶段，
+        // 第一个源就会先被真实请求，本测试借请求通道抓住这一回归。
+        let (live_base, live_requests, live_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![live_base, "https://user:secret@example.com".to_string()];
         let result = download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
@@ -951,6 +1038,13 @@ mod tests {
             result.unwrap_err().contains("必须是不含账号"),
             "非法基地址必须在触网前失败"
         );
+        assert!(
+            live_requests.try_recv().is_err(),
+            "存活源排在非法基地址之前也不得收到任何请求"
+        );
+        // 服务线程此刻仍阻塞在 accept()（校验失败 = 永远不会有请求到来），
+        // 不得 join，泄漏到测试进程结束即可。
+        drop(live_server);
         assert!(!candidate.exists(), "候选目录不应在基地址校验前创建");
     }
 
