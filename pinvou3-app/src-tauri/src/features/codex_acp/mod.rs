@@ -2428,6 +2428,36 @@ impl AcpPool {
         };
         // 清掉上一次安装可能残留的取消标记：本次失败语义只来自本次取消。
         self.install_cancelled.lock().remove(&backend);
+        // 官方脚本安装的旧二进制先改名移开：CLI 解析优先脚本绝对路径
+        // （resolve_codex_cli/resolve_claude_cli），不移开的话 npm 装进全局
+        // 目录的新版本会被旧文件遮住，升级永远不生效，有效性校验只会误报
+        // 「被占用/被安全软件拦截」。官方脚本源不可达降级为 npm_upgrade 时
+        // 必然踩中该场景。机制与脚本路径一致：备份失败即中止、命令失败恢复
+        // 旧文件、验证通过才清理备份；全新安装（无旧文件）不移动任何文件。
+        let moved_backups = match move_official_binaries_aside(backend) {
+            Ok(moved) => {
+                if !moved.is_empty() {
+                    diagnostics::write(
+                        &operation_id,
+                        "npm:move_aside",
+                        format!(
+                            "agent={} backups={}",
+                            backend.agent_id().unwrap_or("unknown"),
+                            moved
+                                .iter()
+                                .map(|(_, backup)| backup.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                    );
+                }
+                moved
+            }
+            Err(error) => {
+                diagnostics::write(&operation_id, "npm:move_aside_failed", format!("{error:#}"));
+                return Err(error);
+            }
+        };
         diagnostics::write(
             &operation_id,
             "npm:start",
@@ -2441,14 +2471,40 @@ impl AcpPool {
             &self.install_cancelled,
         )
         .await;
+        if result.is_err() && !moved_backups.is_empty() {
+            // npm 安装失败（含用户取消）：恢复旧文件，避免旧版本丢失。
+            for (original, backup) in &moved_backups {
+                if backup.is_file() && !original.exists() {
+                    let _ = std::fs::rename(backup, original);
+                }
+            }
+            diagnostics::write(
+                &operation_id,
+                "npm:restore_backups",
+                format!(
+                    "agent={} restored={}",
+                    backend.agent_id().unwrap_or("unknown"),
+                    moved_backups.len()
+                ),
+            );
+        }
         drop(install_guard);
         // 无论成败都强制重新探测：npm 可能部分完成（已写入二进制但链接失败）。
         self.refresh_agent_cli_probe(backend).await;
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "npm:complete", "result=success");
-                self.finalize_agent_install(backend, previous_codex_version)
-                    .await
+                // 备份不在这里删：finalize 做版本/就绪校验，**验证通过后才
+                // 清理** .pre-upgrade 备份（与脚本路径同一先验后删原则）。
+                let finalized = self
+                    .finalize_agent_install(backend, previous_codex_version)
+                    .await;
+                if finalized.is_ok() {
+                    for (_, backup) in &moved_backups {
+                        let _ = std::fs::remove_file(backup);
+                    }
+                }
+                finalized
             }
             Err(error) => {
                 let detail = format!("{error:#}");
