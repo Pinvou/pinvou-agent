@@ -4076,7 +4076,11 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
     const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
     if (!splitMention) return raw;
     const split = splitMention(raw);
-    return split.refs.length ? split.text.trim() : raw;
+    // Gate on `matched`, not refs.length: a structurally valid block that
+    // parses to zero refs is still a block (the Rust titler and the bubble
+    // strip both treat it as one) — the restores must not hand the raw JSON
+    // contract back for it. (Mirrors the tauri bridge.)
+    return split.matched ? split.text.trim() : raw;
   }
   // Session-scoped composer text restore for sends abandoned by a session
   // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText).

@@ -57,7 +57,11 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
     if (!splitMention) return raw;
     const split = splitMention(raw);
-    return split.refs.length ? split.text.trim() : raw;
+    // Gate on `matched`, not refs.length: a structurally valid block that
+    // parses to zero refs is still a block (the Rust titler and the bubble
+    // strip both treat it as one) — the restores must not hand the raw JSON
+    // contract back for it.
+    return split.matched ? split.text.trim() : raw;
   }
 
   // Single observable, session-scoped path for restoring dropped/failed steer
@@ -73,9 +77,10 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // targets the active working set and would leak background text into the
   // active draft. Must be called outside runSyncOnSession(sid): inside it,
   // state.activeSessionId is temporarily sid even for background sessions.
-  // Returns whether anything went back: an empty text (attachment-only chip)
-  // or a missing background buffer restores nothing, and the caller's notice
-  // must say "lost" instead of claiming a restoration that did not happen.
+  // Returns whether anything went back: a refs-only message strips to ""
+  // (nothing recoverable to hand back), an attachment-only chip has no text,
+  // and a missing background buffer restores nothing — in all of them the
+  // caller's notice must not claim a restoration that did not happen.
   function restoreSteerText(sid, text) {
     const value = stripMentionBlockForComposerRestore(text);
     if (!sid || !value) return false;
@@ -626,6 +631,9 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       state.scheduledTaskCreationSessionId = snap.scheduledTaskCreationSessionId;
       state.activeSkill = snap.activeSkill;
     }
+    // Whether restoreSteerText actually handed the text back (a refs-only
+    // steer strips to nothing): routes the failure notice below.
+    let steerFailureNoticeRestored;
     if (failureIndex >= 0 && state.activeSessionId === sid &&
         String(state.composerDraft || "").trim() === "") {
       // Refill only when this callback actually took over the chip and the
@@ -634,7 +642,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       // resend already in flight. restoreSteerText makes the restore visible
       // (draftEpoch bump) without a prefill write-through.
       failureQueue.splice(failureIndex, 1);
-      restoreSteerText(sid, steerInputText);
+      steerFailureNoticeRestored = restoreSteerText(sid, steerInputText);
     } else if (failureIndex >= 0) {
       // Composer occupied or session switched away: degrade the chip in place
       // to a plain local queue entry (same semantics as the zap failure
@@ -649,8 +657,12 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     // false — the text was deliberately discarded (×) or is being re-sent by
     // the zap's own gated path.
     if (failureIndex >= 0) {
+      // A refs-only steer strips to nothing (nothing recoverable to hand
+      // back) — the notice must not claim a restoration that did not happen;
+      // that shape stays queued and is re-sent by flushQueued instead.
+      const steerFailedKey = steerFailureNoticeRestored ? "steerFailed" : "steerFailedQueued";
       runSyncOnSession(sid, function () {
-        addSystemItem("⚠️ " + bt("steerFailed"));
+        addSystemItem("⚠️ " + bt(steerFailedKey));
       });
     }
     notify();
