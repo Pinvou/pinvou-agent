@@ -588,7 +588,9 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| "load_session for workspace rebind".to_string())?;
         session.metadata.workspace = workspace;
-        self.persist_then_reconcile(&session, "workspace rebind")?;
+        // In-place workspace rewrite: no session created or removed, so the
+        // post-persist retention rescan is skipped (round-18 MAJOR-4).
+        self.persist_in_place(&session, "workspace rebind")?;
         Ok(())
     }
 
@@ -631,7 +633,8 @@ impl SessionStore {
             }
         }
         if rebased > 0 {
-            self.persist_then_reconcile(&session, "artifact-path rebase")?;
+            // In-place artifact-path rewrite: see persist_in_place (round-18 MAJOR-4).
+            self.persist_in_place(&session, "artifact-path rebase")?;
         }
         Ok(rebased)
     }

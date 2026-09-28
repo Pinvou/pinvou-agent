@@ -161,7 +161,11 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
                   </div>
                 )}
                 {partial.postBusy > 0 && (
-                  <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
+                  <div>
+                    {(partial.carryover
+                      ? t.uiProjects.rebindCarryoverPending(partial.postBusy)
+                      : t.uiProjects.rebindBusyAfter(partial.postBusy))}
+                  </div>
                 )}
               </div>
             </div>

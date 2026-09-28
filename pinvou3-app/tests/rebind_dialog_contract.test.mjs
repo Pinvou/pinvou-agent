@@ -191,6 +191,23 @@ test('the strong-confirm flag and the stay-open gate survive refactors', () => {
     /warnExisting: classified\.passedFence \? false : prev\.warnExisting/,
     'a copy-kind failure must clear the strong-confirm flag only past the fence',
   );
+  // round-18 test-strength: the ESCALATION arm of the two-phase handshake —
+  // an old-root-exists classification must SET the strong-confirm flag.
+  // Deleting it breaks the handshake while the !!warnExisting pin above
+  // stays green.
+  assert.match(
+    MAIN,
+    /\{ \.\.\.prev, warnExisting: true, error: null \}/,
+    'an old-root-exists rejection must escalate to the strong-confirm flag',
+  );
+  // round-18 test-strength: ALL THREE error arms must route the roots-error
+  // carryover through the union — deleting any single arm's spread passed
+  // the suite before.
+  const unionArms = (MAIN.match(/carryoverPartial \? \{ partial: carryoverPartial\(prev\) \} : \{\}/g) || []).length;
+  assert.ok(
+    unionArms >= 3,
+    `the busy/copy/raw arms must all feed the carryover union (found ${unionArms})`,
+  );
   assert.doesNotMatch(
     DIALOG,
     /onClick=\{\(\) => onConfirm\(true\)\}/,

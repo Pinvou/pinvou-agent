@@ -2626,14 +2626,22 @@ const NAV_PREFETCH = {
                 // trailing spread dragged the PREVIOUS run's rebound/failed
                 // counts into this error state — a mixed-run report where
                 // the same id could appear in two contradicting rows. This
-                // arm's only honest counts are the merged carryover.
+                // arm's only honest counts are the merged carryover. The
+                // spread tolerates a null partial natively (object spread
+                // ignores null/undefined; round-18 Blocker 1 — the explicit
+                // `|| {}` fallback trips unicorn/no-useless-fallback-in-spread).
                 return {
-                  ...(prev.partial || {}),
+                  ...prev.partial,
                   rebound: 0,
                   failed: 0,
                   failedIds: [],
                   postBusy: mergedIds.length,
                   postBusyIds: mergedIds,
+                  // Round-18 minor 1: the post-busy recheck never ran on an
+                  // error path, so the "started a new turn during the rebind"
+                  // diagnosis would be fabricated — the dialog renders the
+                  // neutral carryover copy for this shape.
+                  carryover: true,
                 };
               }
             : null;

@@ -359,6 +359,11 @@ impl SessionStore {
             }
         }) {
             let Ok(file_type) = entry.file_type() else {
+                // Same disclosure treatment as the read arm above: a silent
+                // drop here is a false absence for the orphan scan.
+                eprintln!(
+                    "[sessions] rebind workspace-binding scan dropped an unreadable entry type"
+                );
                 continue;
             };
             if !file_type.is_dir() {
@@ -384,6 +389,17 @@ impl SessionStore {
         matched
     }
 
+    /// Whether ANY durable plain-lane binding artifact still references the
+    /// session: a cache entry or the binding sidecar on disk (review #463
+    /// round-10 minor 4). Session deletion clears the cache and removes the
+    /// session directory (sidecar included), so `false` means the session
+    /// died mid-rebind — the report and the event stream must not count a
+    /// dead id as rebound.
+    pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
+        self.session_workspaces.read().contains_key(id)
+            || self.session_workspace_sidecar_path(id).exists()
+    }
+
     /// Test-only singular rebind (the production path is the plural
     /// [`Self::rebind_workspace_bindings`] directory scan; the remaining
     /// callers are test code pinning the sidecar/cache rewrite contract).
@@ -400,17 +416,6 @@ impl SessionStore {
     /// as [`Self::bind_session_workspace`] — and the caller must report the
     /// session as failed. The retry converges: the sidecar still matches the
     /// `from` prefix, so the next scan finds it again.
-    /// Whether ANY durable plain-lane binding artifact still references the
-    /// session: a cache entry or the binding sidecar on disk (review #463
-    /// round-10 minor 4). Session deletion clears the cache and removes the
-    /// session directory (sidecar included), so `false` means the session
-    /// died mid-rebind — the report and the event stream must not count a
-    /// dead id as rebound.
-    pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
-        self.session_workspaces.read().contains_key(id)
-            || self.session_workspace_sidecar_path(id).exists()
-    }
-
     #[cfg(test)]
     pub(crate) fn rebind_workspace_binding(&self, id: &str, next: PathBuf) -> bool {
         if validate_session_id(id).is_err() {
@@ -664,6 +669,17 @@ impl SessionStore {
                 eprintln!(
                     "[sessions] rebind workspace binding write failed (io kind: {io_kind:?})"
                 );
+                outcome.failed_session_ids.push(id);
+                continue;
+            }
+            // Post-write owner re-check (review #463 round-18 minor 7): a
+            // delete landing between the pre-write owner check and the
+            // sidecar write above recreated a dead id's sidecar via
+            // create_dir_all, and the cache insert below would then publish
+            // the ghost into resolution for the rest of the run. Shrinks the
+            // window to the classifier's own read; the recreated sidecar
+            // itself stays on record under the round-9 sf2 residual.
+            if !self.workspace_binding_owner_exists(&id) {
                 outcome.failed_session_ids.push(id);
                 continue;
             }

@@ -753,6 +753,15 @@ pub async fn rebind_workspace_root(
         .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
+    // Baseline recaptures deferred out of the loop (review #463 round-18
+    // MAJOR-3): each recapture is a `spawn_blocking` walk of up to
+    // WALK_LIMIT entries (or a SHA-256 pass over a git tree), and awaiting
+    // one per session serially inside the loop held the dialog busy for tens
+    // of seconds to minutes on large destinations with no progress. They are
+    // best-effort and order-independent — the walk reads only the destination
+    // directory written by set_workspace above — so the loop collects them
+    // and the bounded pool below drains them.
+    let mut deferred_baselines: Vec<(String, PathBuf)> = Vec::new();
     for (session_id, bound_path) in
         metadata_rebind_targets(&affected, &prefix_outcome.affected, &plain_rebind.rebound).iter()
     {
@@ -760,9 +769,53 @@ pub async fn rebind_workspace_root(
         // sidecar's target verbatim (SF-C): that path predates this run's
         // from→to geometry, so the from/to translation cannot map it.
         let repaired_target = repaired_index_target(&repaired_targets_folded, session_id);
-        let Some(new_path) = repaired_target
+        // Round-18 MAJOR-2: an out-of-geometry target needs the session's
+        // PRE-sync metadata workspace as the per-session rebase `from` — its
+        // artifacts/acp-state/baseline already sit on an EARLIER run's target
+        // (that is the strand shape), which the run-global from→to map cannot
+        // see. Loaded once here, before set_workspace overwrites it.
+        let mut per_session_from: Option<PathBuf> = None;
+        let new_path = match repaired_target
+            .clone()
             .or_else(|| SessionAgentStore::rebind_target_path(bound_path, &from, &to_display))
-        else {
+        {
+            Some(path) => {
+                if repaired_target.is_some() {
+                    per_session_from = sessions
+                        .load(session_id)
+                        .ok()
+                        .map(|session| session.metadata.workspace.clone());
+                }
+                Some(path)
+            }
+            None => {
+                // No geometry maps the binding: the index and sidecar agree on
+                // a path from an earlier run (a prior repair's target). The
+                // binding is authoritative — sync the metadata onto it rather
+                // than dropping the session from the run, but only when the
+                // metadata is actually behind (otherwise this is the
+                // healthy-eviction-candidate shape and `continue` is right).
+                match sessions.load(session_id) {
+                    Ok(session) => {
+                        let identity = |value: &str| {
+                            crate::platform::os::filesystem_path_identity_key(value)
+                                .trim_end_matches('/')
+                                .to_string()
+                        };
+                        if identity(&session.metadata.workspace.to_string_lossy())
+                            != identity(&bound_path.to_string_lossy())
+                        {
+                            per_session_from = Some(session.metadata.workspace.clone());
+                            Some(bound_path.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+        };
+        let Some(new_path) = new_path else {
             continue;
         };
         // An orphan (session JSON already gone) has no metadata to write; a
@@ -810,7 +863,12 @@ pub async fn rebind_workspace_root(
         // and retries both. Running it after would strand a rebase failure
         // forever: a metadata-healthy session is never admitted again.
         if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &|path: &Path| {
-            SessionAgentStore::rebind_target_path(path, &from, &to_display)
+            per_session_from
+                .as_ref()
+                .and_then(|session_from| {
+                    SessionAgentStore::rebind_target_path(path, session_from, &new_path)
+                })
+                .or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))
         }) {
             // Same CodeQL root-cause-only rule as set_workspace below.
             eprintln!(
@@ -831,7 +889,12 @@ pub async fn rebind_workspace_root(
         // metadata would strand the stale state file forever.
         if let Err(error) =
             crate::features::codex_acp::translate_acp_state_workspace(session_id, &|path: &Path| {
-                SessionAgentStore::rebind_target_path(path, &from, &to_display)
+                per_session_from
+                    .as_ref()
+                    .and_then(|session_from| {
+                        SessionAgentStore::rebind_target_path(path, session_from, &new_path)
+                    })
+                    .or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))
             })
         {
             // Same CodeQL root-cause-only rule as set_workspace below.
@@ -869,37 +932,39 @@ pub async fn rebind_workspace_root(
         }
         // Baseline recapture is gated to code sessions (#464 unify): plain
         // bound sessions do not consume workspace baselines, so no code-lane
-        // sidecar is created for them.
-        if code_rebound_ids.contains(session_id.as_str()) {
-            // Baseline recapture: best-effort, the git fingerprint is derivable
-            // again, and a failure does not block the rebind. Runs on
-            // spawn_blocking: a non-git directory synchronously walks tens of
-            // thousands of entries and must not run serially on the async
-            // command thread (same idiom as session creation in codex.rs).
-            let baseline_session_id = session_id.clone();
-            let baseline_root = new_path.clone();
-            match tauri::async_runtime::spawn_blocking(move || {
+        // sidecar is created for them. A repair-only session (round-18
+        // MAJOR-2) converges onto an out-of-geometry target, so its baseline
+        // must be recaptured at the repaired target verbatim too — the old
+        // baseline points at the vanished intermediate root.
+        if code_rebound_ids.contains(session_id.as_str()) || per_session_from.is_some() {
+            deferred_baselines.push((session_id.clone(), new_path.clone()));
+        }
+    }
+
+    // Drain the deferred baseline recaptures with bounded concurrency
+    // (review #463 round-18 MAJOR-3): each is a spawn_blocking walk of up to
+    // WALK_LIMIT entries (or a SHA-256 pass over a git tree); serially
+    // awaiting one per rebound session stalled the dialog for tens of
+    // seconds to minutes on large destinations. Best-effort and
+    // order-independent — a failure is logged (root cause only, same CodeQL
+    // rule) and never blocks the report.
+    if !deferred_baselines.is_empty() {
+        let mut in_flight = tokio::task::JoinSet::new();
+        for (baseline_session_id, baseline_root) in deferred_baselines {
+            in_flight.spawn_blocking(move || {
                 crate::features::codex_acp::workspace::capture_baseline(
                     &baseline_session_id,
                     &baseline_root,
                 )
-            })
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    // Same CodeQL constraint as set_workspace above: the chain
-                    // embeds sessions/<id>/…json.tmp paths; log the root cause
-                    // only.
-                    eprintln!(
-                        "[projects] rebind capture_baseline failed: {}",
-                        error.root_cause()
-                    )
-                }
-                Err(error) => {
-                    eprintln!("[projects] rebind capture_baseline task failed: {error}")
+            });
+            if in_flight.len() >= REBIND_BASELINE_RECAPTURE_CONCURRENCY {
+                if let Some(result) = in_flight.join_next().await {
+                    log_baseline_result(result);
                 }
             }
+        }
+        while let Some(result) = in_flight.join_next().await {
+            log_baseline_result(result);
         }
     }
 
@@ -1441,6 +1506,30 @@ fn metadata_rebind_targets(
     targets
 }
 
+/// Upper bound on concurrently running baseline recaptures after the rebind
+/// metadata loop (review #463 round-18 MAJOR-3): each recapture walks up to
+/// `WALK_LIMIT` entries on a blocking thread; four at a time keeps the
+/// post-rebind tail bounded on large destinations without saturating the
+/// blocking pool.
+const REBIND_BASELINE_RECAPTURE_CONCURRENCY: usize = 4;
+
+/// Baseline recaptures are best-effort (the fingerprint is derivable again):
+/// a failure is logged root-cause-only and never fails the run.
+fn log_baseline_result(result: Result<Result<(), anyhow::Error>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            // Same CodeQL constraint as set_workspace: the chain embeds
+            // sessions/<id>/…json.tmp paths; log the root cause only.
+            eprintln!(
+                "[projects] rebind capture_baseline failed: {}",
+                error.root_cause()
+            );
+        }
+        Err(error) => eprintln!("[projects] rebind capture_baseline task failed: {error}"),
+    }
+}
+
 /// The repaired (sidecar-target) path for a session the stranded-index
 /// repair re-keyed this run, if any (review #463 round-15 SF-C).
 fn repaired_index_target(repaired: &[(String, PathBuf)], session_id: &str) -> Option<PathBuf> {
@@ -1684,17 +1773,47 @@ mod tests {
     /// SIDECAR accessor — swapping it for code_project_workspace is verbatim
     /// the round-14 R1 bug, and every detector test injects hand-written
     /// closures, so only a wiring probe sees the swap.
+    ///
+    /// Round-18 MAJOR-1 rebuilt: the probe now runs against
+    /// [`production_source`] — production text only — and pins the accessor
+    /// ORDER, not mere presence, so the R1 swap fails red.
     #[test]
     fn stranded_detection_is_wired_to_the_sidecar_accessor() {
-        let src = include_str!("projects.rs");
-        let start = src
-            .find("detect_stranded_index_records(&codex_to_lane_hits")
-            .expect("the detector call site must exist");
-        let window = &src[start..(start + 800).min(src.len())];
+        let window = production_source();
+        let start = window
+            .find("detect_stranded_index_records(")
+            .expect("the production detector call site must exist");
+        let call = &window[start..(start + 700).min(window.len())];
+        let index_at = call
+            .find("code_project_workspace")
+            .expect("the index accessor must feed the detector");
+        let sidecar_at = call
+            .find("code_sidecar_workspace")
+            .expect("the detector must compare the index against the SIDECAR (R1)");
         assert!(
-            window.contains("code_sidecar_workspace"),
-            "the detector must compare the index against the sidecar (R1)"
+            index_at < sidecar_at,
+            "the sidecar accessor must be the later (authority) argument"
         );
+        let stale_at = call
+            .find("&prefix_outcome.sidecar_final_stale")
+            .expect("the finally-stale exclusion must be wired into the detector");
+        assert!(stale_at < index_at, "the exclusion precedes the accessors");
+    }
+
+    /// Production-source window for the wiring probes (review #463 round-18
+    /// MAJOR-1): everything before the test module. `include_str!` embeds the
+    /// WHOLE file, so an unanchored `find` matched the probe's own argument
+    /// literal and the window then contained the probe's own assertion
+    /// strings — the earlier versions of these two probes could never fail
+    /// (the round-12 phantom-pin class). Cutting at `#[cfg(test)]` makes the
+    /// window provably production text; an anchor that exists only in the
+    /// tests now fails with the expect message instead of self-matching.
+    fn production_source() -> &'static str {
+        let src = include_str!("projects.rs");
+        let tests = src
+            .find("#[cfg(test)]")
+            .expect("the test module marker must exist");
+        &src[..tests]
     }
 
     #[test]
@@ -2132,21 +2251,22 @@ mod tests {
 
     #[test]
     fn repaired_targets_fold_is_wired_into_the_command() {
-        // review #463 round-17 SF-7: the fold's call-site wiring was
-        // unpinned (asymmetric with the detector's own wiring probe), so
-        // deleting the call left every unit test green while the repaired
-        // session stayed an eviction-only candidate forever.
-        let src = include_str!("projects.rs");
-        let start = src
-            .find("let stranded = detect_stranded_index_records")
-            .expect("the detector call site must exist");
-        let window = &src[start..(start + 4000).min(src.len())];
+        // review #463 round-17 SF-7, rebuilt round-18 MAJOR-1: the fold's
+        // call-site wiring must hold in the PRODUCTION text (the window is
+        // cut before the test module, so the probe's own literals cannot
+        // satisfy it) — deleting the call left every unit test green while
+        // the repaired session stayed an eviction-only candidate forever.
+        let window = production_source();
+        let start = window
+            .find("let stranded: Vec<(String, PathBuf)> = detect_stranded_index_records(")
+            .expect("the production detector binding must exist");
+        let span = &window[start..(start + 4500).min(window.len())];
         assert!(
-            window.contains("fold_repaired_index_targets("),
+            span.contains("fold_repaired_index_targets("),
             "the repaired targets must be folded into the metadata sync set at the call site"
         );
         assert!(
-            window.contains("repair_target_is_backward("),
+            span.contains("repair_target_is_backward(target, &from)"),
             "the backward-repair guard must sit on the repair path (round-17 MAJOR-1)"
         );
     }
@@ -2232,6 +2352,29 @@ mod tests {
                 "an unloadable session is admitted, never silently evicted"
             );
         });
+    }
+
+    #[test]
+    fn runtime_starting_falls_back_to_busy_when_ids_are_known() {
+        // review #463 round-18 minor 3: an unreadable ACP half must not
+        // discard the engine-half busy set — when any session is known busy,
+        // the id-bearing REBIND_SESSIONS_BUSY marker wins; only a fully
+        // empty known set falls back to REBIND_RUNTIME_STARTING.
+        let window = production_source();
+        let start = window
+            .find("if acp_busy_unknown {")
+            .expect("the unknown-ACP-state arm must exist");
+        let arm = &window[start..(start + 900).min(window.len())];
+        let busy_at = arm
+            .find("REBIND_SESSIONS_BUSY")
+            .expect("known busy ids must ride the id-bearing marker");
+        let starting_at = arm
+            .find("REBIND_RUNTIME_STARTING")
+            .expect("the empty-known-set fallback must remain");
+        assert!(
+            busy_at < starting_at,
+            "the known-busy shortcut must precede the starting-up fallback"
+        );
     }
 
     #[test]

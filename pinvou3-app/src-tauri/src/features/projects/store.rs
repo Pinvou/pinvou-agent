@@ -289,6 +289,15 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// - 组内不得重复或互相嵌套;
 /// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
 ///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
+/// Alias-equality for the rebind no-op guards (review #463 round-18 minor 8):
+/// folded identity keys, so a case/spelling variant of the same directory is
+/// the same path even when the raw spellings differ.
+fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
+    let key_a = crate::platform::os::filesystem_path_identity_key(&a.to_string_lossy());
+    let key_b = crate::platform::os::filesystem_path_identity_key(&b.to_string_lossy());
+    key_a.trim_end_matches('/') == key_b.trim_end_matches('/')
+}
+
 fn validate_roots(
     projects: &[Project],
     skip_project_id: Option<&str>,
@@ -755,30 +764,86 @@ impl ProjectStore {
     /// unrelated rebind with a conflict whose copy cannot help.
     fn validate_rebind_candidates(
         candidate: &[Project],
+        original: &[Project],
         affected_projects: &[String],
     ) -> Result<()> {
+        // Legacy pre-existing overlaps (review #463 round-18 minor 4): a pair
+        // of TOUCHED projects whose PRE-translation roots already overlapped
+        // translates to an identical overlap, and rejecting it dead-ends the
+        // rebind — every rerun reproduces the same conflict whose copy
+        // suggests re-picking a destination that cannot fix it. Such pairs
+        // are skipped; a NEW overlap (either side untouched, or not
+        // overlapped before) stays a hard error, so the round-10 minor 5
+        // coverage is not loosened.
+        let legacy_pairs = Self::legacy_overlap_pairs(original, affected_projects);
         for project in candidate.iter().filter(|project| {
             affected_projects
                 .iter()
                 .any(|affected| affected == &project.id)
         }) {
-            validate_roots(candidate, Some(&project.id), &project.roots)?;
+            let peers: Vec<Project> = candidate
+                .iter()
+                .filter(|other| {
+                    other.id == project.id
+                        || !affected_projects.iter().any(|a| a == &other.id)
+                        || !legacy_pairs.iter().any(|(a, b)| {
+                            (a == &project.id && b == &other.id)
+                                || (a == &other.id && b == &project.id)
+                        })
+                })
+                .cloned()
+                .collect();
+            validate_roots(&peers, Some(&project.id), &project.roots)?;
         }
         Ok(())
     }
 
+    /// Touched project pairs whose ORIGINAL roots already overlap (review
+    /// #463 round-18 minor 4).
+    fn legacy_overlap_pairs(
+        original: &[Project],
+        affected_projects: &[String],
+    ) -> Vec<(String, String)> {
+        let touched: Vec<&Project> = original
+            .iter()
+            .filter(|project| {
+                affected_projects
+                    .iter()
+                    .any(|affected| affected == &project.id)
+            })
+            .collect();
+        let mut pairs = Vec::new();
+        for (index, a) in touched.iter().enumerate() {
+            for b in &touched[index + 1..] {
+                if a.roots.iter().any(|root_a| {
+                    let key_a = identity_key_of_display(&root_display(root_a));
+                    b.roots.iter().any(|root_b| {
+                        let key_b = identity_key_of_display(&root_display(root_b));
+                        key_is_same_or_nested(&key_a, &key_b)
+                            || key_is_same_or_nested(&key_b, &key_a)
+                    })
+                }) {
+                    pairs.push((a.id.clone(), b.id.clone()));
+                }
+            }
+        }
+        pairs
+    }
+
     pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
-        if from == to {
+        if paths_are_alias_equal(from, to) {
             return Ok(Vec::new());
         }
-        let (candidate, affected_projects) = {
+        let (candidate, affected_projects, original) = {
             let state = self.state.read();
-            Self::rebind_root_candidates(&state.projects, from, to)
+            let (candidate, affected_projects) =
+                Self::rebind_root_candidates(&state.projects, from, to);
+            (candidate, affected_projects, state.projects.clone())
         };
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
-        Self::validate_rebind_candidates(&candidate, &affected_projects)
+        Self::validate_rebind_candidates(&candidate, &original, &affected_projects)
             .context("rebind produced overlapping project roots")?;
         Ok(affected_projects)
     }
@@ -805,7 +870,10 @@ impl ProjectStore {
     /// for all three storage lanes) is what prevents a silent half-migration.
     pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>, RebindRootsError> {
         let mut state = self.state.write();
-        if from == to {
+        // Alias-equal display forms are the same no-op (review #463 round-18
+        // minor 8): the raw compare let a case/spelling variant bump
+        // `updated_at` and persist a null rewrite.
+        if paths_are_alias_equal(from, to) {
             return Ok(Vec::new());
         }
         // Rewrites happen on a candidate copy and commit only after
@@ -814,11 +882,12 @@ impl ProjectStore {
         let (candidate, affected_projects) =
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
-            Self::validate_rebind_candidates(&candidate, &affected_projects).map_err(|error| {
-                RebindRootsError::Overlap(
-                    error.context("rebind produced overlapping project roots"),
-                )
-            })?;
+            Self::validate_rebind_candidates(&candidate, &state.projects, &affected_projects)
+                .map_err(|error| {
+                    RebindRootsError::Overlap(
+                        error.context("rebind produced overlapping project roots"),
+                    )
+                })?;
             // Persist FIRST, commit the in-memory candidate only on success
             // (round-8 review M2, mirroring the codex lane): committing
             // before the write let a persist failure leave memory at `to`

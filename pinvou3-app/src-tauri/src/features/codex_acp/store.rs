@@ -714,7 +714,12 @@ impl SessionAgentStore {
     /// means the session died mid-rebind — the report and the event stream
     /// must not count a dead id as rebound.
     pub fn binding_artifacts_exist(&self, session_id: &str) -> bool {
-        self.records.read().contains_key(session_id)
+        // The index arm alone cannot vouch for the session: retention deletes
+        // purge the owner record WITHOUT touching this index (round-15 SF-B),
+        // so a stale record would classify a dead session as Rebound
+        // (review #463 round-18 minor 2). The record counts only while the
+        // owner exists — the same gate the scan and write passes apply.
+        (self.records.read().contains_key(session_id) && self.binding_owner_exists(session_id))
             || code_session_sidecar_path(&self.path, session_id).exists()
     }
 

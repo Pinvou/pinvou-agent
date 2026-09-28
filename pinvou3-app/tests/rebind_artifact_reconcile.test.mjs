@@ -18,6 +18,8 @@
 // features/sessions/tests.rs.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const read = relative => fs.readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
@@ -391,3 +393,47 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
 }
 
 console.log('rebind artifact reconcile contract passed');
+
+// review #463 round-18 test-strength: the mark payload identity was pinned
+// nowhere across the boundary — a backend rename of the action, the id key
+// or the event name would silently disarm the whole mark/transform system
+// with every behavioral test green. Read BOTH halves of the wire from
+// source: the Rust emitter and the shared consumer must agree.
+{
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const rust = fs.readFileSync(
+    path.join(root, 'src-tauri', 'src', 'app', 'commands', 'projects.rs'),
+    'utf8',
+  );
+  const shared = fs.readFileSync(
+    path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'),
+    'utf8',
+  );
+  const emitterStart = rust.indexOf('fn emit_workspace_rebound_events');
+  const emitterEnd = rust.indexOf(
+    '}',
+    rust.indexOf('forward_app_event(app, "session:list_changed", payload);'),
+  );
+  const emitter = rust.slice(emitterStart, emitterEnd);
+  assert.ok(emitter.includes('"workspace_rebound"'), 'the emitter must stamp action=workspace_rebound');
+  assert.ok(emitter.includes('"id"'), 'the emitter must key the session as id');
+  assert.ok(
+    emitter.includes('"from"') && emitter.includes('"to"'),
+    'the emitter must carry the rebind geometry',
+  );
+  assert.ok(emitter.includes('"session:list_changed"'), 'the emitter must ride session:list_changed');
+  assert.ok(
+    shared.includes('payload.action !== "workspace_rebound"'),
+    'the shared consumer must filter on the same action',
+  );
+  assert.ok(
+    shared.includes('!payload.id')
+      && shared.includes('!payload.from')
+      && shared.includes('!payload.to'),
+    'the shared consumer must require the same payload keys',
+  );
+  assert.ok(
+    shared.includes('session:list_changed'),
+    'the shared consumer must reference the same event',
+  );
+}
