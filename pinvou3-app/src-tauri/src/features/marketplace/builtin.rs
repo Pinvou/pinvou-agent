@@ -141,15 +141,17 @@ fn feature_registry_with_disabled(disabled: &BTreeSet<String>) -> Vec<BuiltinFea
 /// round-3 minor 5). `log::warn!` over `eprintln!`: packaged GUI builds have
 /// no stderr surface.
 fn embedded_builtin_manifests() -> &'static [super::types::ToolManifest] {
-    static CACHE: std::sync::OnceLock<Vec<super::types::ToolManifest>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Vec<super::types::ToolManifest>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
         mcp_catalog::MCP_PACKAGES
             .iter()
             .filter_map(|spec| {
                 serde_json::from_str::<super::types::ToolManifest>(spec.manifest_json)
                     .map_err(|e| {
-                        log::warn!("[builtin] embedded manifest parse failed ({}): {e}", spec.id);
+                        log::warn!(
+                            "[builtin] embedded manifest parse failed ({}): {e}",
+                            spec.id
+                        );
                         e
                     })
                     .ok()

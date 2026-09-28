@@ -46,8 +46,7 @@ pub(crate) fn turn_reminder(scope: ConnectorScope) -> String {
     // report enabled=true here — the model would be fed two contradictory
     // truth sources. Union semantics: the package counts as disabled only
     // when every one of its tools is feature-removed.
-    let feature_disabled =
-        crate::features::marketplace::builtin::feature_disabled_tool_names();
+    let feature_disabled = crate::features::marketplace::builtin::feature_disabled_tool_names();
     let unavailable = crate::features::marketplace::unavailable_bundles_for(scope);
     render_inventory(&tools, &unavailable, &feature_disabled)
 }
@@ -68,9 +67,10 @@ fn render_inventory(
             enabled: !unavailable.contains(&tool.id)
                 && !(tool.builtin
                     && !tool.mcp_tools.is_empty()
-                    && tool.mcp_tools.iter().all(|name| {
-                        feature_disabled.contains(&name.to_ascii_lowercase())
-                    })),
+                    && tool
+                        .mcp_tools
+                        .iter()
+                        .all(|name| feature_disabled.contains(&name.to_ascii_lowercase()))),
         })
         .collect();
     entries.sort_by_key(|entry| entry.id);
@@ -112,7 +112,10 @@ mod tests {
             "mcp_tools": ["mcp_session-reader_read_session", "mcp_session-reader_list_sessions"],
         }))
         .unwrap();
-        let all_off = ["mcp_session-reader_read_session", "mcp_session-reader_list_sessions"];
+        let all_off = [
+            "mcp_session-reader_read_session",
+            "mcp_session-reader_list_sessions",
+        ];
         let one_on = ["mcp_session-reader_read_session"];
         let reminder = render_inventory(&[builtin], &[], &all_off.map(String::from));
         assert!(reminder.contains(r#""enabled":false"#));
