@@ -72,6 +72,13 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 | Claude Code | 官方脚本 | macOS/Linux：`curl -fsSL https://claude.ai/install.sh \| bash`；Windows：`irm https://claude.ai/install.ps1 \| iex`；装到 `~/.local/bin` 等用户目录 |
 | Kimi | 官方脚本 | macOS/Linux：`curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash`；Windows：`irm https://code.kimi.com/kimi-code/install.ps1 \| iex`；装到 `~/.kimi-code/bin` |
 
+国内网络可达性：官方脚本源（chatgpt.com / claude.ai）不可达且系统存在 npm 时，
+Codex 与 Claude Code 的首次安装自动降级为 `npm install -g` 安装（Kimi 源在国内可达，
+不降级）。npm 全局安装 / 升级（含 tmeet 等连接器 CLI）在默认 registry 整体失败后，
+会对该次调用追加 `--registry=https://registry.npmmirror.com` 重试一次；registry 标志仅
+作用于单条命令，用户的 npm 配置不会被读写。npm 安装没有应用侧制品校验，完整性依赖
+TLS 与镜像源的同步保真。
+
 已安装但版本过旧时先判定安装来源，再按来源升级：
 
 | 来源 | 判定 | 升级方式 |
