@@ -1583,6 +1583,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
           else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
         }
+        // The voice task lane hands its operation id in alongside the text; it
+        // must ride on meta or the bridge's submission gate never sees it and
+        // a dispatched send can never settle its operation as accepted.
+        if (voiceMeta && voiceMeta.voiceOperationId != null) meta = Object.assign({}, meta, voiceMeta);
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
           const sceneCopy = t.uiChatScenes[requirements.key];
@@ -2319,6 +2323,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setInputText('');
           try {
             const result = await sendChatMessage(constrained.text, { ...context, draftOwner: owner });
+            if (result === true) {
+              // The composer was cleared before the await, so deliverVoiceTask's
+              // draftUntouched check can never fire onTaskAccepted; its one
+              // non-redundant duty — dropping the pinned personal-workbench
+              // template so the next send re-matches — moves here. Any text the
+              // user typed during the await is newer input and stays.
+              personalWorkbenchTemplateIdRef.current = null;
+              setPersonalWorkbenchTemplateId(null);
+            }
             if (result === false && bridge.chat.restoreTaskDraft) {
               bridge.chat.restoreTaskDraft(constrained.text, owner);
             }
@@ -2330,13 +2343,6 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
           }
-        },
-        onTaskAccepted: (sentText) => {
-          // The user may have typed new content during the await send window; clear only when
-          // the draft was not modified.
-          setInputText(prev => (prev === sentText ? '' : prev));
-          personalWorkbenchTemplateIdRef.current = null;
-          setPersonalWorkbenchTemplateId(null);
         },
       });
       const handleVoiceTrigger = chatVoice.triggerVoice;

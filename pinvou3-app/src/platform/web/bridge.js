@@ -2240,10 +2240,10 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
     function applyDraftOutcome(outcome) {
       if (!draftOwner || !outcome || draftOwner.draftEpoch !== outcome.epoch) return;
       draftOwner.createdSessionId = outcome.createdSessionId;
-      if (outcome.rollbackEpoch !== undefined) {
-        draftOwner.rollbackFromDraftEpoch = outcome.epoch;
-        draftOwner.draftEpoch = outcome.rollbackEpoch;
-      }
+      // No rollback branch here: outcome.rollbackEpoch is desktop-only (the
+      // multi-agent toggle rollback lives in the tauri sessions lane and
+      // setMultiAgentMode is desktopOnly), so the web applier carries the
+      // created-session binding only.
     }
     if (state.activeSessionId) return state.activeSessionId;
     if (ensureSessionInFlight) {
@@ -4016,9 +4016,9 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // Retained recovery for a task draft whose send was abandoned mid-await:
   // when the user moved on to another session (or the session creation
   // failed), the text cannot go into the unrelated active composer, so it is
-  // kept in memory keyed by the origin draft epoch. Reading the composer on
-  // the same epoch again consumes it once (append-only); a new epoch clears
-  // it, so a fresh draft never inherits old text or voice provenance.
+  // kept in this single in-memory slot. Returning to the draft consumes it
+  // once (append-only); the slot is not keyed by draft identity — the next
+  // draft return is the one chance to hand the text back before it is lost.
   const pendingTaskDraftRecovery = { buffer: null };
   function readComposerDraftWithRecovery() {
     // Consumed once on returning to the draft, never while an unrelated
@@ -4056,7 +4056,7 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
       const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
-      pendingTaskDraftRecovery.buffer = { epoch: owner.draftEpoch, text: [retained, text].filter(Boolean).join("\n") };
+      pendingTaskDraftRecovery.buffer = { text: [retained, text].filter(Boolean).join("\n") };
     } else {
       // Back in the draft — any epoch, because re-entering the draft
       // allocates a new one (enterDraft increments unconditionally).
@@ -7191,6 +7191,9 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
       trackVoiceTerminal("voice_cancelled", session, {
         stage: state.voiceInput && state.voiceInput.stage === "permission" ? "permission" : "recording",
       });
+      // The raw PCM is never needed again once the recording is torn down;
+      // the operation record (provenance) must not pin the audio buffers.
+      session.chunks = null;
       cleanupVoiceInputSession(session);
       activeVoiceInput = null;
       setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
@@ -7211,6 +7214,10 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
         emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
       }
       const raw = mergeFloatChunks(session.chunks);
+      // The merged buffer carries everything transcription needs; the PCM
+      // chunks must not stay pinned on the operation record for the rest of
+      // the app session (provenance keeps the record, not the audio).
+      session.chunks = null;
       const durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
         throw voiceFlowError("recording_failed", "recording", bt("voiceTooShort"));
@@ -7306,6 +7313,9 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
     });
     if (activeVoiceInput !== session) return false;
     if (shouldContinue !== false) return true;
+    // The gate refused before anything started: still end the remembered
+    // operation so it cannot sit unswept alongside the next one.
+    trackVoiceTerminal("voice_cancelled", session, { stage: "recognition" });
     cleanupVoiceInputSession(session);
     activeVoiceInput = null;
     setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
@@ -7406,6 +7416,7 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
       sampleRate: 16000,
       startedAt: Date.now(),
       audioContext: primedAudioContext,
+      permissionRecorded: false,
     };
     rememberVoiceOperation(session);
     state.voiceInput = Object.assign({}, state.voiceInput, { operationId: session.operationId });
@@ -7440,6 +7451,7 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
         cleanupVoiceInputSession(session);
         return;
       }
+      session.permissionRecorded = true;
       session.audioContext = session.audioContext || new AudioCtor();
       if (primedAudioResume) await primedAudioResume;
       if (session.audioContext.state === "suspended") await session.audioContext.resume();
@@ -7479,6 +7491,17 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
       const normalized = normalizeVoiceError(err, "recording");
+      // Same terminal taxonomy as the desktop start catch: the operation must
+      // not sit non-terminal after a failed start (permission / cancellation
+      // / recognition failure), or it lingers unswept.
+      if (!session.permissionRecorded && normalized.category !== "cancelled") {
+        session.permissionRecorded = true;
+        trackVoiceTerminal("voice_permission_result", session);
+      } else if (normalized.category === "cancelled") {
+        trackVoiceTerminal("voice_cancelled", session);
+      } else {
+        trackVoiceTerminal("voice_recognition_failed", session);
+      }
       setVoiceInputStatus("failed", {
         message: normalized.message,
         error: normalized.message,
@@ -7492,7 +7515,26 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
 
 function cancelVoiceInput() { return pinvouSharedweb().cancelVoiceInput(); }
 
-function clearVoiceInput() { return pinvouSharedweb().clearVoiceInput(); }
+  // Local override (mirrors the desktop lane): the shared helper only resets
+  // the status. Clearing the input on the idle notice is the user abandoning
+  // the unsent result, so that ends the operation here too — otherwise the
+  // cleared result would stay adoptable by a later manual send and only get
+  // reaped by the next recording (a pending submission keeps its admission
+  // outcome instead).
+  function clearVoiceInput() {
+    if (activeVoiceInput) {
+      finishVoiceInput(true, false);
+      return;
+    }
+    abandonCompletedVoiceResult("recognition");
+    setVoiceInputStatus("idle", {
+      message: "",
+      error: null,
+      category: null,
+      stage: null,
+      sessionId: null,
+    });
+  }
 
 function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(base, text); }
 

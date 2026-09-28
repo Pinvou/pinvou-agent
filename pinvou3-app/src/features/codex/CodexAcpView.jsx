@@ -2848,6 +2848,12 @@ export function CodexAcpView({
           workspaceReferencesAtSend,
           reference => reference,
         ));
+      } else if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+        // Existing-session send: park the operation before dispatch too, so a
+        // cancel during the in-flight send waits for the admission result
+        // instead of recording voice_cancelled for a message that was
+        // delivered (same contract as the first-turn branch above).
+        bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
       }
       await sendBody({ targetId, operation });
       updateAttachments(targetId, current => current.filter(

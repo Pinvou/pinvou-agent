@@ -196,7 +196,11 @@ function startVoiceInputSandbox(state, handlers) {
   sandbox.abandonCompletedVoiceResult = () => {};
   sandbox.trackVoiceTerminal = () => {};
   sandbox.statuses = [];
-  sandbox.setVoiceInputStatus = (status) => { sandbox.statuses.push(status); };
+  sandbox.statusPatches = [];
+  sandbox.setVoiceInputStatus = (status, patch) => {
+    sandbox.statuses.push(status);
+    sandbox.statusPatches.push(patch || null);
+  };
   const source = sources.desktop;
   const start = source.indexOf("  async function startVoiceInput(");
   const end = source.indexOf("function cancelVoiceInput()", start);
@@ -253,6 +257,58 @@ test("desktop: a start that fails after claiming releases the ownership claim", 
     "the failed start must release its claim, or every later start in every window fails closed",
   );
   assert.equal(sandbox.statuses[sandbox.statuses.length - 1], "failed");
+});
+
+test("desktop: a claim IPC failure fails closed without probing and reports the check, not another window", async () => {
+  let microphoneProbes = 0;
+  const sandbox = startVoiceInputSandbox({
+    activeSessionId: null,
+    draftEpoch: 4,
+    composerDraft: "",
+    voiceAsrSetup: { installing: false },
+    voiceInput: { status: "idle" },
+  }, {
+    sync: () => Promise.resolve("error"),
+    probe: () => { microphoneProbes += 1; return true; },
+    requestMedia: async () => ({}),
+  });
+  await sandbox.startVoiceInput("draft text", () => {}, { mode: "dictation" });
+  assert.equal(microphoneProbes, 0, "an unverifiable claim must still fail closed before the microphone");
+  assert.equal(sandbox.statuses[sandbox.statuses.length - 1], "failed");
+  assert.equal(
+    sandbox.statusPatches[sandbox.statusPatches.length - 1].message,
+    "voiceMicOwnershipUnavailable",
+    "a claim IPC failure must not be misattributed to another window recording",
+  );
+});
+
+// ── Web lane parity: clearing the notice ends the unsent operation ──
+test("web: clearing the finished notice abandons the unsent operation like the desktop lane", () => {
+  const webSource = sources.web;
+  const start = webSource.indexOf("  // Local override (mirrors the desktop lane)");
+  const bodyStart = webSource.indexOf("function clearVoiceInput() {", start);
+  assert.ok(start >= 0 && bodyStart > start, "web bridge must keep the local clearVoiceInput override");
+  const end = webSource.indexOf("\n  }\n", bodyStart);
+  assert.ok(end > bodyStart, "web clearVoiceInput override must stay a self-contained slice");
+  const state = { activeSessionId: "web-session", draftEpoch: 4, composerDraft: "", voiceInput: null };
+  const sandbox = baseSandbox(state);
+  const calls = { finished: [], abandoned: 0, stage: null, statuses: [] };
+  sandbox.activeVoiceInput = null;
+  sandbox.finishVoiceInput = (cancelled) => { calls.finished.push(cancelled); };
+  sandbox.abandonCompletedVoiceResult = (stage) => { calls.abandoned += 1; calls.stage = stage; };
+  sandbox.setVoiceInputStatus = (status) => { calls.statuses.push(status); };
+  vm.runInContext(`${webSource.slice(bodyStart, end + 4)}\nthis.clearVoiceInput = clearVoiceInput;`, sandbox);
+  // An idle-notice clear (nothing recording) ends the unsent operation.
+  sandbox.clearVoiceInput();
+  assert.equal(calls.abandoned, 1, "clearing the idle notice must abandon the unsent operation");
+  assert.equal(calls.stage, "recognition");
+  assert.deepEqual(calls.statuses, ["idle"], "the notice resets to idle");
+  assert.deepEqual(calls.finished, [], "nothing is recording, so no teardown fires");
+  // A live recording still tears down instead of abandoning.
+  sandbox.activeVoiceInput = { id: "voice_2" };
+  sandbox.clearVoiceInput();
+  assert.deepEqual(calls.finished, [true], "a live recording is cancelled by the clear");
+  assert.equal(calls.abandoned, 1, "no extra abandon while recording");
 });
 
 // ── Web first-turn admission certainty ──
@@ -474,6 +530,56 @@ test("restore: a bound session steers into its own session and settles there", (
   assert.deepEqual(calls.complete, [{ operationId: "voiceop-bound", sessionId: "voice-bound-session", accepted: false }]);
 });
 
+// ── Scoped task-draft restore, web lane (real web bridge code): the restore
+// branches settle the parked submission with the same polarity as desktop ──
+function webRestoreHarness(stateOverrides, boundSessionId = null) {
+  const state = { activeSessionId: null, draftEpoch: 4, composerDraft: "", ...stateOverrides };
+  const sandbox = { console, Math, Date, Promise, Object, Array, JSON, String, Number, Boolean };
+  vm.createContext(sandbox);
+  sandbox.state = state;
+  const calls = { complete: [], restore: [], prefill: [] };
+  sandbox.completeVoiceSubmission = (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted });
+  sandbox.voiceOperationSessionId = () => boundSessionId;
+  sandbox.restoreComposerText = (sid, text) => calls.restore.push({ sid, text });
+  sandbox.prefillComposer = (text, append) => calls.prefill.push({ text, append });
+  const start = sources.web.indexOf("  const pendingTaskDraftRecovery = { buffer: null };");
+  const end = sources.web.indexOf("  // Undo one queued message", start);
+  assert.ok(start >= 0 && end > start, "web bridge must keep the scoped task-draft restore block");
+  vm.runInContext(`${sources.web.slice(start, end)}
+    this.restoreTaskDraft = restoreTaskDraft;
+    this.readComposerDraftWithRecovery = readComposerDraftWithRecovery;`, sandbox);
+  return { sandbox, state, calls };
+}
+
+test("web restore: a bound session settles and restores into its own session", () => {
+  const { sandbox, calls } = webRestoreHarness({ activeSessionId: "web-session-b" }, "web-voice-bound-session");
+  const owner = { sessionId: null, createdSessionId: null, draftEpoch: 4, operationId: "voiceop-webrestore", restored: false };
+  assert.equal(sandbox.restoreTaskDraft("dictated text", owner), true);
+  assert.deepEqual(
+    calls.complete,
+    [{ operationId: "voiceop-webrestore", sessionId: "web-voice-bound-session", accepted: false }],
+    "the web restore settles the parked submission via the operation's session binding",
+  );
+  assert.deepEqual(calls.restore, [{ sid: "web-voice-bound-session", text: "dictated text" }]);
+});
+
+test("web restore: a departed draft retains once, settles unparked, and consumes on return", () => {
+  const { sandbox, state, calls } = webRestoreHarness({ activeSessionId: "web-unrelated" });
+  const owner = { sessionId: null, createdSessionId: null, draftEpoch: 4, operationId: "voiceop-webgone", restored: false };
+  assert.equal(sandbox.restoreTaskDraft("gone text", owner), true);
+  assert.deepEqual(
+    calls.complete,
+    [{ operationId: "voiceop-webgone", sessionId: null, accepted: false }],
+    "the departed-draft branch still settles — a rejected send must never stay parked",
+  );
+  assert.deepEqual(calls.prefill, [], "nothing lands in the unrelated active session");
+  state.activeSessionId = null;
+  assert.equal(sandbox.readComposerDraftWithRecovery(), "gone text", "the retained text is consumed once on the draft return");
+  assert.equal(state.composerDraft, "gone text");
+  state.composerDraft = "";
+  assert.equal(sandbox.readComposerDraftWithRecovery(), "", "the recovery slot is single-shot");
+});
+
 // ── Sent operations really end: the bridges settle acceptance at the point of truth ──
 test("sends: dispatched sends settle their voice operation as accepted in both lanes", () => {
   const desktopSettles = chatSource.match(/settleAcceptedVoiceSubmission\(meta, sid\);/g) || [];
@@ -497,6 +603,35 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
     /} catch \(err\) \{[\s\S]*?completeVoiceSubmission\(voiceOperationId, targetId \|\| null, false\);/,
     "a failed ACP send un-parks its voice operation and keeps the retryable association",
   );
+  assert.match(
+    codexSource,
+    /} else if \(voiceOperationId && bridge\.voice && typeof bridge\.voice\.beginVoiceSubmission === 'function'\) \{[\s\S]*?bridge\.voice\.beginVoiceSubmission\(voiceOperationId, targetId\);/,
+    "an existing-session ACP send parks its voice operation before dispatch too",
+  );
+  // The ChatView funnel is the only path that carries the operation id into
+  // bridge.sendMessage: dispatchChatMessage must merge voiceMeta into meta
+  // before the send, or every dispatched-exit settlement above is dead code
+  // (a source-regex count of the settle calls cannot see that — this pin can).
+  const chatViewSource = read("src/features/chat/ChatView.jsx");
+  const mergeAnchor = chatViewSource.indexOf("meta = Object.assign({}, meta, voiceMeta);");
+  const sendAnchor = chatViewSource.indexOf("bridge.chat.sendMessage(visibleOutgoing, meta, voiceOwner)");
+  assert.ok(mergeAnchor >= 0, "dispatchChatMessage must merge voiceMeta into meta");
+  assert.ok(sendAnchor > mergeAnchor, "the voiceMeta merge must happen before the sendMessage call");
+  // Accepted operations must not keep pinning the raw recording PCM for the
+  // rest of the app session: both lanes drop the chunks as soon as the merged
+  // buffer exists (and on the cancelled teardown).
+  for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
+    assert.match(
+      source,
+      /const raw = mergeFloatChunks\(session\.chunks\);[\s\S]{0,400}?session\.chunks = null;/,
+      `${lane} lane must release the PCM chunks right after the merge`,
+    );
+    assert.match(
+      source,
+      /trackVoiceTerminal\("voice_cancelled", session(?:, \{[^}]*\})?\);[\s\S]{0,200}?session\.chunks = null;[\s\S]{0,200}?cleanupVoiceInputSession\(session\);/,
+      `${lane} cancelled teardown must release the PCM chunks`,
+    );
+  }
   assert.match(
     read("src/features/chat/ChatView.jsx"),
     /if \(voiceOwner && \(\(activeSessionIdRef\.current \|\| null\) !== voiceOwner\.sessionId/,

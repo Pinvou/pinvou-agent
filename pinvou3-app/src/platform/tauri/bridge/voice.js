@@ -733,6 +733,9 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtau
     syncVoiceShortcutRecording(null, session.id);
     if (cancelled) {
       trackVoiceTerminal("voice_cancelled", session);
+      // The raw PCM is never needed again once the recording is torn down;
+      // the operation record (provenance) must not pin the audio buffers.
+      session.chunks = null;
       cleanupVoiceInputSession(session);
       activeVoiceInput = null;
       setVoiceInputStatus("cancelled", { message: bt("voiceCancelled"), completedAt: Date.now() });
@@ -749,6 +752,10 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtau
         emitVoiceDiagnostic("recording", "warn", "recording reached max duration", "", "timeout");
       }
       const raw = mergeFloatChunks(session.chunks);
+      // The merged buffer carries everything transcription needs; the PCM
+      // chunks must not stay pinned on the operation record for the rest of
+      // the app session (provenance keeps the record, not the audio).
+      session.chunks = null;
       const durationMs = raw.length / Math.max(1, session.sampleRate) * 1000;
       if (durationMs < 300) {
         throw voiceFlowError("recording_failed", "recording", bt("voiceRecordingTooShort"));
@@ -1079,6 +1086,9 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       });
       if (activeVoiceInput !== session) return;
       if (shouldContinue === false) {
+        // The gate refused before anything started: still end the remembered
+        // operation so it cannot sit unswept alongside the next one.
+        trackVoiceTerminal("voice_cancelled", session);
         cleanupVoiceInputSession(session);
         activeVoiceInput = null;
         setVoiceInputStatus("idle", { message: "", stage: null, sessionId: null });
@@ -1112,9 +1122,13 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
         cleanupVoiceInputSession(session);
         return;
       }
-      if (!claimed) {
-        // The mic is held by another Pinvou window, not by another app.
-        throw voiceFlowError("device_unavailable", "device", bt("voiceMicBusyOtherWindow"));
+      if (claimed !== true) {
+        // The mic is held by another Pinvou window — unless the ownership
+        // check itself failed, which must not be reported as "another
+        // window" (a transient IPC error would otherwise look like a
+        // cross-window lock and send the user hunting for it).
+        throw voiceFlowError("device_unavailable", "device",
+          claimed === "error" ? bt("voiceMicOwnershipUnavailable") : bt("voiceMicBusyOtherWindow"));
       }
       const hasAudioInput = await probeVoiceAudioInput(VOICE_DEVICE_PROBE_TIMEOUT_MS);
       if (activeVoiceInput !== session) return;
@@ -1247,11 +1261,17 @@ function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoi
   // the token still matches — a previous session's late teardown can never
   // wipe the claim the new session just registered, another WebView can never
   // overwrite it, and tokenless clears are rejected instead of clearing the
-  // current owner. Returns whether the claim/release landed.
+  // current owner. Returns whether the claim/release landed, or the string
+  // "error" when the IPC itself failed (the caller must still fail closed,
+  // but may tell the user the check failed instead of blaming another window).
   function syncVoiceShortcutRecording(label, token) {
     if (!token) return Promise.resolve(false);
     return Promise.resolve(invoke("set_voice_shortcut_recording", { label: label || null, token }))
-      .then(function (claimed) { return claimed === true; }, function () { return false; });
+      .then(function (claimed) { return claimed === true; }, function (error) {
+        console.warn("[voice] recording ownership sync failed", error);
+        emitVoiceDiagnostic("recording", "warn", "recording ownership sync failed: " + String((error && error.message) || error), "", "claim_error");
+        return "error";
+      });
   }
 
   function setVoiceShortcutEnabled(enabled) {

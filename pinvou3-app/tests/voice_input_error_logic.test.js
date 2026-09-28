@@ -1047,8 +1047,8 @@ assert.match(
 );
 assert.match(
   source,
-  /const claimed = await syncVoiceShortcutRecording\(currentVoiceWindowLabel\(\), session\.id\);[\s\S]*?if \(!claimed\)[\s\S]*?throw voiceFlowError\("device_unavailable"/,
-  "claim must succeed before microphone acquisition",
+  /const claimed = await syncVoiceShortcutRecording\(currentVoiceWindowLabel\(\), session\.id\);[\s\S]*?if \(claimed !== true\)[\s\S]*?throw voiceFlowError\("device_unavailable"/,
+  "claim must succeed before microphone acquisition (an IPC failure reports \"error\" and still fails closed)",
 );
 assert.match(
   source,

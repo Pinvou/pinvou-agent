@@ -77,9 +77,9 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // Retained recovery for a task draft whose send was abandoned mid-await:
   // when the user moved on to another session (or the session creation
   // failed), the text cannot go into the unrelated active composer, so it is
-  // kept in memory keyed by the origin draft epoch. Reading the composer on
-  // the same epoch again consumes it once (append-only); a new epoch clears
-  // it, so a fresh draft never inherits old text or voice provenance.
+  // kept in this single in-memory slot. Returning to the draft consumes it
+  // once (append-only); the slot is not keyed by draft identity — the next
+  // draft return is the one chance to hand the text back before it is lost.
   const pendingTaskDraftRecovery = { buffer: null };
   function readComposerDraftWithRecovery() {
     // Consumed once on returning to the draft, never while an unrelated
@@ -124,7 +124,7 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, null, false);
       const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
-      pendingTaskDraftRecovery.buffer = { epoch: owner.draftEpoch, text: [retained, text].filter(Boolean).join("\n") };
+      pendingTaskDraftRecovery.buffer = { text: [retained, text].filter(Boolean).join("\n") };
     } else {
       // Back in the draft — any epoch, because re-entering the draft
       // allocates a new one (enterDraft increments unconditionally).

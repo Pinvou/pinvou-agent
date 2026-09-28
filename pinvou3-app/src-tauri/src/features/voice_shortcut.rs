@@ -300,13 +300,30 @@ static RECORDING_OWNER: Mutex<Option<RecordingOwner>> = Mutex::new(None);
 /// matches the recorded owner, so a stale teardown cannot wipe a newer
 /// session's claim.
 pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
-    if !is_voice_shortcut_router_window(label) || token.trim().is_empty() || token.len() > 128 {
-        return Err("invalid voice recording owner".to_string());
+    if token.trim().is_empty() || token.len() > 128 {
+        return Err("invalid voice recording owner token".to_string());
+    }
+    if !is_voice_shortcut_router_window(label) {
+        // A release from a non-router window is a harmless no-op: the JS
+        // releases fire-and-forget, so an Err here would surface as an
+        // unhandled rejection. Only a claim from such a window is invalid.
+        return if claim {
+            Err("voice recording claim from a non-router window".to_string())
+        } else {
+            Ok(false)
+        };
     }
     let mut owner = RECORDING_OWNER
         .lock()
         .map_err(|_| "voice recording owner unavailable".to_string())?;
-    Ok(update_recording_owner(&mut owner, label, token, claim))
+    let landed = update_recording_owner(&mut owner, label, token, claim);
+    if !landed {
+        log::debug!(
+            "voice recording {} rejected for window {label} (stale token, or another window owns the recording)",
+            if claim { "claim" } else { "release" }
+        );
+    }
+    Ok(landed)
 }
 
 /// Pure state transition so the claim/release/steal rules stay testable
@@ -323,21 +340,25 @@ fn update_recording_owner(
     token: &str,
     claim: bool,
 ) -> bool {
-    let expected = RecordingOwner {
-        label: label.to_string(),
-        token: token.to_string(),
-    };
     if claim {
         if owner.as_ref().is_some_and(|current| current.label != label) {
             return false;
         }
-        *owner = Some(expected);
-        true
-    } else if owner.as_ref() == Some(&expected) {
-        *owner = None;
+        *owner = Some(RecordingOwner {
+            label: label.to_string(),
+            token: token.to_string(),
+        });
         true
     } else {
-        false
+        // Field borrows instead of building the expected owner first: a
+        // release that no-ops (stale token) must not allocate.
+        let matches = owner
+            .as_ref()
+            .is_some_and(|current| current.label == label && current.token == token);
+        if matches {
+            *owner = None;
+        }
+        matches
     }
 }
 
@@ -652,6 +673,18 @@ mod tests {
         );
         forget_owner_window(&mut owner, "detached-b");
         assert!(owner.is_none());
+    }
+
+    #[test]
+    fn recording_owner_command_rejects_invalid_claims_but_non_router_release_is_a_no_op() {
+        // Command-layer validation: a claim from a non-router window fails,
+        // while a release from one is a harmless no-op (the JS releases
+        // fire-and-forget and must not surface an unhandled rejection). Both
+        // branches return before taking the global, so this stays
+        // deterministic alongside the other tests.
+        assert!(set_recording_owner("pet", "tok", true).is_err());
+        assert_eq!(set_recording_owner("pet", "tok", false), Ok(false));
+        assert!(set_recording_owner("main", "   ", true).is_err());
     }
 
     #[test]
