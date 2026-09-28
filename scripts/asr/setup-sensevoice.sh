@@ -10,7 +10,8 @@
 #   GGML_CUDA=ON scripts/asr/setup-sensevoice.sh     # 带 GPU 的机器开 CUDA 加速
 #
 # 依赖: git / gcc / g++ / make / sha256sum（apt install build-essential git）; ffmpeg(转码,建议)。
-#       cmake 缺失会自动下预编译(免 root)。
+#       cmake 缺失会自动下预编译(免 root);若复用系统 cmake,需 ≥ 3.12
+#       (构建走 `cmake --build --parallel`)。
 set -euo pipefail
 
 QUANT="${1:-q4_k}"
@@ -56,13 +57,16 @@ else
   printf '%s  %s\n' "$CMAKE_SHA256" "$WORK/cmake.tgz" | sha256sum --check --status \
     || { echo "❌ CMake prebuilt archive sha256 check failed (corrupt download or changed upstream asset): expected $CMAKE_SHA256, actual $(sha256sum "$WORK/cmake.tgz" | cut -d' ' -f1)" >&2; exit 1; }
   tar xzf "$WORK/cmake.tgz" -C "$WORK"
-  # head -1 guards multi-match; the -x guard turns an unexpected upstream
-  # archive layout into a loud failure instead of a silent empty-substitution exit.
-  CMAKE="$WORK/$(ls "$WORK" | grep '^cmake-' | head -n 1)/bin/cmake"
-  if [[ ! -x "$CMAKE" ]]; then
-    echo "❌ CMake 预编译包解压后未找到可执行的 bin/cmake（上游资产布局可能已变化）: $CMAKE" >&2
+  # head -n 1 guards multi-match. The extraction must not be a bare
+  # assignment: when grep matches nothing its status aborts the script
+  # under set -e/pipefail before any guard runs, so capture with
+  # `|| true` and check the result explicitly instead.
+  cmake_dir="$(ls "$WORK" | grep '^cmake-' | head -n 1 || true)"
+  if [[ -z "$cmake_dir" || ! -x "$WORK/$cmake_dir/bin/cmake" ]]; then
+    echo "❌ CMake 预编译包解压后未找到可执行的 bin/cmake（上游资产布局可能已变化）: $WORK/${cmake_dir:-<no cmake-* directory>}/bin/cmake" >&2
     exit 1
   fi
+  CMAKE="$WORK/$cmake_dir/bin/cmake"
 fi
 
 echo "[2/5] 克隆 + 构建 SenseVoice.cpp@$SENSEVOICE_SOURCE_COMMIT（CUDA=${GGML_CUDA:-OFF}）…"
@@ -88,6 +92,11 @@ mkdir -p "$WORK/sv/build"
 
 echo "[3/5] 安装引擎 → $ASR_DIR …"
 mkdir -p "$ASR_DIR"
+# A previous run killed by SIGKILL (OOM, manual kill -9) skips the EXIT
+# trap and leaves its same-directory install temp files behind; the shim
+# ignores them, but a 174-292MB model temp is real disk waste. Sweep
+# them before installing.
+rm -f "$ASR_DIR"/.*.tmp.*
 # Install through a same-directory temp file + rename: an interrupted copy
 # must not leave a truncated file at the final path (the shim only checks
 # that the files exist, so a truncated engine/model/shim would surface only
