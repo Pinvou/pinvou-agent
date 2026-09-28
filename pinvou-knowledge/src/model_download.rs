@@ -1088,10 +1088,12 @@ mod tests {
             good_body
         );
         let events: Vec<u64> = events_rx.into_iter().collect();
-        assert_eq!(
-            events.len(),
-            6,
-            "两个源各发 2MiB/4MiB/5MiB 三次事件: {events:?}"
+        // 不钉事件个数：传输分块大小是实现细节，单个超过 2MiB 的大块会把
+        // 阈值事件合并。钳制失效的特征是回退后事件从低位重新开始，下面的
+        // 单调断言即可抓住；这里只要求事件流真实推进到完成值。
+        assert!(
+            events.last() == Some(&(FILE_BYTES as u64)),
+            "进度事件必须推进到完成值（{FILE_BYTES} 字节）: {events:?}"
         );
         for pair in events.windows(2) {
             assert!(
