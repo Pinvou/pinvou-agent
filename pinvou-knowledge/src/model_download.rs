@@ -19,8 +19,9 @@ pub const KNOWLEDGE_MODEL_HF_REVISION: &str = "25b9af8e87a38eb120cfe87125383677b
 pub const KNOWLEDGE_MODEL_HF_BASE_URL_ENV: &str = "PINVOU_KNOWLEDGE_HF_BASE_URL";
 pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
 
-/// 取消错误的统一报文。镜像回退循环靠错误值区分「用户取消」（终止整体流程）
-/// 与「单个镜像源故障」（换下一个基地址重试），因此必须集中定义、不得漂移。
+/// 取消状态的统一报文（面向用户的报错文案，各取消检查点共用）。回退循环
+/// 以 `is_cancelled` 标志位（而非错误字符串比对）区分「用户取消」（终止整体
+/// 流程）与「单个镜像源故障」（换下一个基地址重试），标志位不依赖本常量。
 const CANCELLED: &str = "已取消";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,12 +362,16 @@ where
                         succeeded = true;
                         break;
                     }
-                    Err(error) if error == CANCELLED => return Err(error),
+                    // 取消是全局意图：标志位一旦置位就整体终止（即便本次错误
+                    // 本身不是取消报文），不当作镜像故障换下一基地址。
+                    Err(_) if is_cancelled() => return Err(CANCELLED.to_string()),
                     Err(error) => last_error = Some(error),
                 }
             }
             if !succeeded {
-                return Err(last_error.unwrap_or_else(|| CANCELLED.to_string()));
+                // base_urls 非空且每次失败都会写入 last_error，此分支实际不可达；
+                // 兜底文案不得伪称「已取消」。
+                return Err(last_error.unwrap_or_else(|| "模型下载失败".to_string()));
             }
 
             if is_cancelled() {
@@ -947,6 +952,45 @@ mod tests {
             "非法基地址必须在触网前失败"
         );
         assert!(!candidate.exists(), "候选目录不应在基地址校验前创建");
+    }
+
+    /// 镜像尝试进行中用户取消：必须整体终止（不换下一基地址重试），
+    /// 候选目录照常清理。这是回退循环里最关键的语义分支。
+    #[tokio::test]
+    async fn cancel_during_mirror_attempt_aborts_without_falling_through() {
+        let (first_base, _first_requests, first_server) = serve_model_files(vec![b"abc"]);
+        let (second_base, second_requests, _second_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_flag = std::sync::Arc::clone(&cancelled);
+        let bases = vec![first_base, second_base];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            move |_| {
+                // 首个进度事件即视为用户点了取消（模拟下载中途取消）。
+                cancel_flag.store(true, std::sync::atomic::Ordering::Release);
+            },
+            || cancelled.load(std::sync::atomic::Ordering::Acquire),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), "已取消");
+        // 第二个基地址必须完全没有被请求。
+        assert!(
+            second_requests.try_recv().is_err(),
+            "取消后不得再尝试下一基地址"
+        );
+        assert!(!candidate.exists(), "取消后候选目录必须被清理");
+        first_server.join().unwrap();
     }
 
     #[tokio::test]
