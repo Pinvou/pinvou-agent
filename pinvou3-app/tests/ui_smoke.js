@@ -1532,7 +1532,12 @@ async function expand(page) {
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
     label && label.closest('div[class*="cursor-pointer"]')?.click();
   });
-  await clickText(page, '收纳'); await sleep(700);
+  await clickText(page, '收纳');
+  // The archive toast is a lazy chunk (Suspense fallback=null until it
+  // arrives), so poll for the toast text instead of a fixed sleep — the same
+  // contract the ⑤b archive flow below pins.
+  await page.evaluate(() => window.__uiWait__(() =>
+    document.body.innerText.includes('已收纳到【对话管理-已收纳】')));
   const codexBatchArchive = await page.evaluate(() => ({
     invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'set_session_archived' && call.args.id === 'codex-1' && call.args.archived === true),
     archived: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
