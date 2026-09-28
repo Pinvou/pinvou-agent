@@ -1327,6 +1327,13 @@ fn official_script_degrade(
     }
 }
 
+/// 脚本源不可达时是否具备 npm 兜底（纯函数核心，便于单测）：有对应 npm 包
+/// **且**找得到 npm 可执行，二者缺一不可——有包没 npm 时降级只会在安装中段
+/// 以「未检测到 npm」失败，不如预检直接报原始网络错误附手动安装提示。
+fn npm_fallback_available(npm_package: Option<&str>, npm_executable: bool) -> bool {
+    npm_package.is_some() && npm_executable
+}
+
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
@@ -2192,7 +2199,8 @@ impl AcpPool {
             unix_url
         };
         let script_reachable = script_url_reachable(url).await;
-        let npm_fallback_available = npm_package(backend).is_some() && npm_executable().is_some();
+        let npm_fallback_available =
+            npm_fallback_available(npm_package(backend), npm_executable().is_some());
         let effective = official_script_degrade(script_reachable, npm_fallback_available)
             .ok_or_else(|| {
                 let npm_pkg = npm_package(backend).unwrap_or("");
@@ -4903,6 +4911,16 @@ mod tests {
         assert_eq!(official_script_degrade(false, true), Some("npm_upgrade"));
         // 不可达且无 npm 兜底：无法降级，调用方报原始网络错误与手动安装提示。
         assert_eq!(official_script_degrade(false, false), None);
+    }
+
+    /// npm 兜底判定是「有包**且**有可执行」的合取：误改成析取会让无 npm 的
+    /// 机器跳过「原始网络错误 + 手动安装提示」直接进降级、在中段失败。
+    #[test]
+    fn npm_fallback_requires_both_package_and_executable() {
+        assert!(npm_fallback_available(Some("@openai/codex"), true));
+        assert!(!npm_fallback_available(Some("@openai/codex"), false));
+        assert!(!npm_fallback_available(None, true));
+        assert!(!npm_fallback_available(None, false));
     }
 
     #[test]
