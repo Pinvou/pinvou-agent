@@ -218,6 +218,12 @@ const SESSION_MENTION_CONTRACT_LINES: [&str; 3] = [
 /// session title; a refs-only first message yields an empty body and the
 /// default title is kept.
 pub(crate) fn strip_session_mention_block(text: &str) -> &str {
+    // Mirror of the JS splitter's 64 KB JSON-line pre-check
+    // (MAX_BLOCK_JSON_LINE_LENGTH in session-mention.js): a line beyond the
+    // bound is dirty data by the block's own construction (MAX_SESSION_REFS ×
+    // capped title), and both sides must agree that it is not a block —
+    // otherwise one side strips and the other keeps the raw contract.
+    const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 * 1024;
     let mut rest = match text.strip_prefix(SESSION_MENTION_BLOCK_HEADER) {
         Some(rest) if rest.starts_with('\n') => &rest[1..],
         _ => return text,
@@ -233,6 +239,9 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
         // JSON line is the last line (refs-only trimmed form).
         None => (rest, ""),
     };
+    if json_line.chars().count() > MAX_BLOCK_JSON_LINE_CHARS {
+        return text;
+    }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
         return text;
     };
@@ -451,6 +460,25 @@ mod session_mention_title_tests {
         // Ordinary text starting with a similar heading is untouched.
         let plain = "普通消息\n## Referenced chats\n[{\"sessionId\":\"x\"}]";
         assert_eq!(strip_session_mention_block(plain), plain);
+    }
+
+    #[test]
+    fn json_line_beyond_the_64kb_cap_is_not_a_block() {
+        // Mirror of the JS splitter's MAX_BLOCK_JSON_LINE_LENGTH pre-check: a
+        // structurally valid block whose JSON line exceeds the bound is dirty
+        // data, and both sides must keep it verbatim (stripping here but not
+        // in JS would make the two titlers diverge).
+        let huge_title = "t".repeat(70 * 1024);
+        let oversized = mention_block(&format!(
+            r#"[{{"sessionId":"abc123","title":"{huge_title}"}}]"#
+        ));
+        assert_eq!(strip_session_mention_block(&oversized), oversized);
+        // Just under the cap the block still strips.
+        let near_cap = mention_block(&format!(
+            r#"[{{"sessionId":"a","title":"{}"}}]"#,
+            "t".repeat(1000)
+        ));
+        assert_eq!(strip_session_mention_block(&near_cap), "");
     }
 
     #[test]
