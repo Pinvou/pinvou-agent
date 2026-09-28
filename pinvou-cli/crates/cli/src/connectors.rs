@@ -727,6 +727,12 @@ fn run_cli_bounded(
             )));
         }
         Err(error) => {
+            // An OS-level wait error leaves the child's fate unknown — it may
+            // still be running — so it goes down with the group before the
+            // registration is released (same convention as `run_npm_install`
+            // below). The child was never reaped by us, so the kill cannot
+            // race a recycled pid.
+            crate::support::kill_process_tree(&mut child);
             crate::support::supervise::forget_child_group(child.id());
             return Err(CliError::failed(format!(
                 "waiting for {} failed: {error}",
@@ -734,22 +740,23 @@ fn run_cli_bounded(
             )));
         }
     };
-    // The child exited, but a descendant that inherited the write end can
-    // keep EOF away forever — the deadline above only bounds the direct
-    // child. Bound the drain like `code`/`voice`: give the pipes a short
-    // grace to deliver EOF, then proceed with the bytes that arrived. A
-    // straggler is deliberately left alone — the child is already reaped
-    // here, so killing its process group would race a reused pid (the
-    // timeout branch above is the only place a group kill is safe).
+    // The child is reaped by the wait above, so an interrupt from here on
+    // must not signal a group the OS may have already recycled: release the
+    // registration BEFORE the drain grace, which can hold for up to 2×5s.
+    crate::support::supervise::forget_child_group(child.id());
+    // A descendant that inherited the write end can keep EOF away forever —
+    // the deadline above only bounds the direct child. Bound the drain like
+    // `code`/`voice`: give the pipes a short grace to deliver EOF, then
+    // proceed with the bytes that arrived. A straggler is deliberately left
+    // alone — the child is already reaped here, so killing its process group
+    // would race a reused pid (the timeout branch above is the only place a
+    // group kill is safe).
     const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let drain = |rx: std::sync::mpsc::Receiver<String>| -> String {
         rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
     };
     let stdout = drain(stdout_rx);
     let stderr = drain(stderr_rx);
-    // The child is reaped by the wait above, so an interrupt from here on
-    // must not signal a group the OS may have already recycled.
-    crate::support::supervise::forget_child_group(child.id());
     Ok((status.success(), stdout, stderr))
 }
 
@@ -1382,6 +1389,15 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                 entry["probe"] = json!(format!(
                     "unanswerable: the CLI is present but its --version probe failed or timed \
                      out; `pinvou connectors ensure-cli {}` re-checks the install",
+                    spec.id
+                ));
+                // The human row renders only `note` (same channel as
+                // `degrade_probe_failure` below), so the verdict and its
+                // remedy must land there too — stderr is invisible to a
+                // `--output json`-style consumer of the human table.
+                entry["note"] = json!(format!(
+                    "the CLI is present but its --version probe failed or timed out \
+                     (`pinvou connectors ensure-cli {}` re-checks the install)",
                     spec.id
                 ));
                 note!(
@@ -2089,34 +2105,41 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
 
     let staging = version_dir.join(format!(".{filename}.installing-{}", std::process::id()));
     let _ = std::fs::remove_file(&staging);
-    std::fs::rename(&extracted, &staging)
-        .map_err(|error| CliError::failed(format!("cannot stage connector binary: {error}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).map_err(
-            |error| CliError::failed(format!("cannot set executable permissions: {error}")),
-        )?;
-    }
-    // On posix `rename` replaces the destination atomically — the pre-`remove_file`
-    // this site used to do opened a window where a concurrent spawner resolved
-    // a MISSING binary (the Known limitations copy already promised "installed
-    // by atomic rename"). Windows' rename does not replace, so the explicit
-    // remove stays there.
-    #[cfg(unix)]
-    let replace = std::fs::rename(&staging, &destination);
-    #[cfg(windows)]
-    let replace = (|| {
-        if destination.exists() {
-            std::fs::remove_file(&destination).map_err(|error| {
-                CliError::failed(format!("cannot replace old connector binary: {error}"))
-            })?;
+    // The staging-to-destination section cleans up after itself on every
+    // error exit, like the extraction section above: a best-effort failure
+    // must not leave the `.installing-<pid>` file or the extract directory
+    // behind (a later run only cleans its own pid's leftovers).
+    let staging_result = (|| -> Result<(), CliError> {
+        std::fs::rename(&extracted, &staging)
+            .map_err(|error| CliError::failed(format!("cannot stage connector binary: {error}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).map_err(
+                |error| CliError::failed(format!("cannot set executable permissions: {error}")),
+            )?;
         }
-        std::fs::rename(&staging, &destination)
+        // On posix `rename` replaces the destination atomically — the pre-`remove_file`
+        // this site used to do opened a window where a concurrent spawner resolved
+        // a MISSING binary (the Known limitations copy already promised "installed
+        // by atomic rename"). Windows' rename does not replace, so the explicit
+        // remove stays there.
+        #[cfg(unix)]
+        let replace = std::fs::rename(&staging, &destination);
+        #[cfg(windows)]
+        let replace = (|| {
+            if destination.exists() {
+                std::fs::remove_file(&destination).map_err(|error| {
+                    CliError::failed(format!("cannot replace old connector binary: {error}"))
+                })?;
+            }
+            std::fs::rename(&staging, &destination)
+        })();
+        replace
+            .map_err(|error| CliError::failed(format!("cannot finish connector install: {error}")))
     })();
-    replace
-        .map_err(|error| CliError::failed(format!("cannot finish connector install: {error}")))?;
     let _ = std::fs::remove_dir_all(&extract_dir);
+    staging_result?;
     Ok(true)
 }
 
@@ -2386,7 +2409,12 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
 
 /// Bounded wait for a spawned child: on expiry the process group is killed
 /// (the child is verifiably still alive, so no reaped-pid hazard) and the
-/// caller gets an error naming the phase.
+/// caller gets an error naming the phase. A wait ERROR also kills: the
+/// child's fate is unknown — it may still be running — and the caller's
+/// paired forget would otherwise release a live group from the interrupt
+/// registry (the same convention as `run_cli_bounded` and the npm-install
+/// lane). The kill closes the child's pipe write ends, so the caller's
+/// drainer threads reach EOF instead of lingering.
 fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliError> {
     match child.wait_timeout(TAR_TIMEOUT) {
         Ok(Some(status)) if status.success() => Ok(()),
@@ -2397,7 +2425,10 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
                 "cannot run tar: timed out {phase}"
             )))
         }
-        Err(error) => Err(CliError::failed(format!("cannot run tar: {error}"))),
+        Err(error) => {
+            crate::support::kill_process_tree(child);
+            Err(CliError::failed(format!("cannot run tar: {error}")))
+        }
     }
 }
 
