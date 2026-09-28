@@ -79,7 +79,8 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 解析优先脚本绝对路径，不移开的话 npm 装的新版本会被旧文件遮住、升级永远不生效。
 npm 全局安装 / 升级（含 tmeet 等连接器 CLI）在默认 registry 整体失败后，会对该次
 调用追加 `--registry=https://registry.npmmirror.com` 重试一次（最坏耗时约为单次
-10 分钟超时的两倍）；registry 标志仅作用于单条命令，用户的 npm 配置不会被读写。
+10 分钟超时的两倍）；registry 标志仅作用于单条命令，Pinvou 不会写入或修改用户
+的 npm 配置（npm 自身仍会照常读取其 `.npmrc` 的 prefix/cache/auth 等配置）。
 npm 安装没有应用侧制品校验，完整性依赖 TLS 与镜像源的同步保真。
 
 已安装但版本过旧时先判定安装来源，再按来源升级：

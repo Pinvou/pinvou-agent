@@ -36,5 +36,5 @@ tmeet（`@tencentcloud/tmeet`，腾讯会议连接器使用）来自 npm，按�
 `--registry=https://registry.npmmirror.com` 重试一次。两次尝试的输出都保留在
 `~/.pinvou3/cli-install.log`（追加写，超过 8 MiB 自动轮转为 `.old`），阶段边界
 有标记行可区分。与上面的归档下载不同，npm 安装没有应用侧制品校验，完整性依赖
-TLS 与镜像源的同步保真；registry 标志仅作用于单条命令，用户的 npm 配置不会被
-读写。
+TLS 与镜像源的同步保真；registry 标志仅作用于单条命令，Pinvou 不会写入或修改
+用户的 npm 配置（npm 自身仍会照常读取其 `.npmrc` 的 prefix/cache/auth 等配置）。
