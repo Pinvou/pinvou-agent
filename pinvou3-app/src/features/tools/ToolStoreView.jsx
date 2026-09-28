@@ -376,14 +376,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             const authIncomplete = cfg.connectedMode !== 'applyAwait' && e && e.code === 'auth_failed';
             const failure = authIncomplete ? e : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'qr');
-            conn.setFlow(f => applyConnectorFailure(f, failure, 'qr'));
+            // Same null guard: a failure landing after the card was closed must not fabricate one.
+            conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
           }
         });
         ev.listen(cfg.events.error, (e) => {
           const p = e.payload || {};
           reportConnectorFailure(cfg.key, p, p.phase);
           conn.stopTick();
-          conn.setFlow(f => applyConnectorFailure(f, p, p.phase));
+          // Flow null = the card was closed (cancel/close) before the event landed;
+          // applyConnectorFailure would resurrect a fresh error card from nothing.
+          conn.setFlow(f => (f ? applyConnectorFailure(f, p, p.phase) : f));
         });
       };
       // Component-side quartet handlers: deps = { setBusyId, busyRef, detailCopy, ... } (injected from the component closure

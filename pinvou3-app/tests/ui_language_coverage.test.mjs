@@ -381,6 +381,25 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
   for (const connector of ['wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
     assert.match(tauriSource(`features/connectors/${connector}`), /"phase": "authorize", "code": "auth_failed"/, `${connector} error events must carry an error code`);
   }
+  // Source contract: every connector's error arm must consult BOTH the cancel
+  // flag and the generation (cancel alone is cleared by the next reset), and
+  // each file must gate at least two emit paths on the generation (the error
+  // emit plus the QR emit) — deleting either wiring must fail here, not just
+  // the mechanism unit test.
+  for (const connector of ['feishu.rs', 'wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
+    const src = tauriSource(`features/connectors/${connector}`);
+    assert.match(src, /conn\.is_cancelled\(ID\)\s*\|\|\s*conn\.flow_stale\(ID, generation\)/, `${connector} error arm must guard on cancel OR a superseded generation`);
+    assert.ok(
+      (src.match(/flow_stale\(ID, generation\)/g) || []).length >= 2,
+      `${connector} must consult the generation on both the error and the QR emit path`,
+    );
+  }
+  // The wrapped QR emits (feishu register / dingtalk / tmeet) gate on the same pair.
+  assert.match(feishu, /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
+  assert.match(tauriSource('features/connectors/dingtalk.rs'), /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
+  assert.match(tauriSource('features/connectors/tmeet.rs'), /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
+  // Frontend: a late error event must not fabricate a flow card from null.
+  assert.match(toolStore, /f \? applyConnectorFailure\(f, p, p\.phase\) : f\)/);
   assert.match(source('features/settings/SettingsView.jsx'), /item\.title \|\| presetProviderLabel\(p, t\)/);
 }
 

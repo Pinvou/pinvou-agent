@@ -283,6 +283,7 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   const { dict } = await import('./helpers/i18n-all.js');
   const tmeetAuthFailedCopy = dict.zh.uiToolStore.connectorErrors.auth_failed;
   const tmeetSkillsFailedCopy = dict.zh.uiToolStore.connectorErrors.skills_enable_failed;
+  const wecomAuthFailedCopy = dict.zh.uiToolStore.connectorErrors.auth_failed;
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({executablePath:CHROME,headless:'new',args:['--no-sandbox','--disable-gpu','--no-first-run'],userDataDir:PROFILE});
   const page = await browser.newPage();
@@ -549,11 +550,22 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         message: 'RAW后端诊断 payload secret_token=abcdef 授权流程中断',
       }));
       await sleep(150);
-      rec('WeCom backend error event renders localized copy without the raw payload', await page.evaluate(() => {
+      rec('WeCom backend error event renders localized copy without the raw payload', await page.evaluate((authFailedCopy) => {
         const text = document.body.innerText;
-        return text.includes('登录授权未完成，请重新连接') && !text.includes('secret_token') && !text.includes('RAW后端诊断');
-      }));
+        return text.includes(authFailedCopy) && !text.includes('secret_token') && !text.includes('RAW后端诊断');
+      }, wecomAuthFailedCopy));
       await clickExact(page, '关闭'); await sleep(150);
+      // A late backend error after the card was closed must not fabricate a
+      // fresh error card (the flow store is null; the listener drops the event).
+      await page.evaluate(() => window.__emitTauri('wecom:error', {
+        phase: 'authorize',
+        code: 'auth_failed',
+        message: 'RAW后端诊断 payload secret_token=abcdef 授权流程中断',
+      }));
+      await sleep(150);
+      rec('WeCom late backend error after close does not resurrect the card', await page.evaluate((authFailedCopy) => (
+        !document.body.innerText.includes(authFailedCopy)
+      ), wecomAuthFailedCopy));
       // Restore the QR card so the cancel-from-qr pin below runs unchanged.
       await page.evaluate(() => window.__emitTauri('wecom:qr', {
         phase: 'authorize',
