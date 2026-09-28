@@ -135,14 +135,16 @@ pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
 pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 
 /// 日志/报错里展示候选地址前抹掉 userinfo（`user:pass@host`）：用户可能在
-/// 加速前缀里带入凭据，诊断输出不应落凭据。解析失败时原样返回——该地址
-/// 本来也会在 HTTPS 门禁处被跳过，不会再被请求。放在 platform 供
-/// connectors 与 marketplace 两个 feature 的候选下载循环共用（feature 之间
-/// 不得互相依赖），两处跳过候选时的口径必须一致。
+/// 加速前缀里带入凭据，诊断输出不应落凭据。解析失败时同样不能回显原串——
+/// 无效串里可能正带着误粘的 userinfo（如 `https://user:secret@` 拼出空
+/// host），故 fail-closed 输出固定占位符；该地址本来也会在 HTTPS 门禁处被
+/// 跳过，不会再被请求。放在 platform 供 connectors 与 marketplace 两个
+/// feature 的候选下载循环共用（feature 之间不得互相依赖），两处跳过候选时
+/// 的口径必须一致。
 pub(crate) fn redact_url_credentials(url_text: &str) -> String {
     let mut parsed = match reqwest::Url::parse(url_text) {
         Ok(parsed) => parsed,
-        Err(_) => return url_text.to_string(),
+        Err(_) => return "<invalid URL>".to_string(),
     };
     if !parsed.username().is_empty() || parsed.password().is_some() {
         let _ = parsed.set_username("");
@@ -857,7 +859,18 @@ mod tests {
             redact_url_credentials("https://proxy.example/x"),
             "https://proxy.example/x"
         );
-        // 解析失败的串原样返回（不会被请求，只在 HTTPS 门禁处跳过）。
-        assert_eq!(redact_url_credentials("not a url"), "not a url");
+        // 解析失败一律 fail-closed 输出占位符，不回显原串：无效串可能带着
+        // 误粘的 userinfo（空 host / 非法端口等都会解析失败），回显即落凭据。
+        assert_eq!(redact_url_credentials("not a url"), "<invalid URL>");
+        for invalid_with_userinfo in [
+            // 空 host:加速前缀 `https://user:secret@` 直接拼接的典型产物。
+            "https://user:secret@/https://github.com/openai/dws/archive/v1.tar.gz",
+            // 非法端口:粘贴时多敲一位也会走到这里。
+            "https://user:secret@proxy.example:99999/x",
+        ] {
+            let redacted = redact_url_credentials(invalid_with_userinfo);
+            assert_eq!(redacted, "<invalid URL>", "{invalid_with_userinfo}");
+            assert!(!redacted.contains("user:secret"), "{redacted}");
+        }
     }
 }
