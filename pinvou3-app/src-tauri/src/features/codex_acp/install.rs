@@ -841,13 +841,18 @@ fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage
     };
     ManagedInstallStage {
         diag_stage,
+        // 展示口径与真实参数（npm_upgrade_args 的 `pkg@latest`）一致，进度
+        // 面板上的命令要能照抄复现。
         command_line: if mirror {
             format!(
-                "npm install -g {} --registry={NPM_MIRROR_REGISTRY}",
+                "npm install -g {}@latest --registry={NPM_MIRROR_REGISTRY}",
                 npm_package(backend).unwrap_or("")
             )
         } else {
-            format!("npm install -g {}", npm_package(backend).unwrap_or(""))
+            format!(
+                "npm install -g {}@latest",
+                npm_package(backend).unwrap_or("")
+            )
         },
         process_group: true,
         spawn_context: format!("failed to spawn {upgrade_kind}"),
