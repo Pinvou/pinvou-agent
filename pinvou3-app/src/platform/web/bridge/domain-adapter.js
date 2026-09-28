@@ -160,7 +160,7 @@
     voice: domain(["startVoiceInput", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "appendVoiceText"]),
     knowledge: domain(["mountCollection", "setCollectionEnabled", "removeCollection", "unmountCollection", "listCollections", "kbModelStatus"]),
     scheduled: domain(["loadScheduledTasks", "loadScheduledTaskRecentRuns", "selectScheduledTask", "refreshScheduledTaskData", "dismissScheduledTaskError", "createScheduledTask", "updateScheduledTask", "pauseScheduledTask", "resumeScheduledTask", "deleteScheduledTask", "runScheduledTaskNow", "startScheduledTaskChat", "openScheduledRunChat", "exitScheduledRunChat"]),
-    sessions: domain(["createNewSession", "switchToSession", "deleteSession", "renameSession", "toggleSessionPinned", "archiveSession", "restoreArchivedSession", "getSessionWorkspaceBinding"]),
+    sessions: domain(["createNewSession", "switchToSession", "deleteSession", "renameSession", "toggleSessionPinned", "archiveSession", "restoreArchivedSession", "onSessionDeleted", "getSessionWorkspaceBinding"]),
     monitor: domain(["startMonitorPolling", "stopMonitorPolling", "clearMonitorStats"]),
     settings: domain(["setSelectedPet", "saveSettings", "saveSearchSettings"]),
     feedback: domain(["submitFeedback"]),

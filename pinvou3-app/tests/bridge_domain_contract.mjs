@@ -7,7 +7,7 @@ export const desktopBridgeApi = {
   voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
+  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
   settings: ['saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setSelectedPet'],
   feedback: ['submitFeedback'],

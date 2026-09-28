@@ -409,7 +409,12 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     } catch (e) {
       if (seq !== historyListSeq) return;
       console.warn("list_sessions failed", e);
-      state.sessions = [];
+      // Keep the previously observed list on a transient refresh failure:
+      // publishing an empty snapshot here would read as "every task deleted"
+      // to the aux-chat purge reconcile (wireAuxSessionPurge), which would
+      // then purge every task's unsent drafts and staged quotes. The archived
+      // leg below keeps its previous list on failure for the same reason.
+      state.sessions = state.sessions || [];
     }
     try {
       const archivedSessions = await invoke("list_archived_sessions");
@@ -1019,6 +1024,8 @@ function leaveSessionView(id) { return pinvouSharedtauriSessions().leaveSessionV
 
 function applyDeletedSession(id) { return pinvouSharedtauriSessions().applyDeletedSession(id); }
 
+function onSessionDeleted(listener) { return pinvouSharedtauriSessions().onSessionDeleted(listener); }
+
   if (typeof listen === "function") {
     listen("session:deleted", function (event) {
       const payload = event && event.payload || {};
@@ -1133,6 +1140,7 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       recentScheduledRunForSession,
       leaveSessionView,
       applyDeletedSession,
+      onSessionDeleted,
       deleteSession,
       renameSession,
       toggleSessionPinned,
