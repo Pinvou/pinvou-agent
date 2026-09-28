@@ -1338,7 +1338,7 @@ impl KnowledgeService {
 
     pub async fn download_model(self: &Arc<Self>) -> Result<(), String> {
         self.download_model_with(
-            crate::model_download::knowledge_model_hf_base_url,
+            crate::model_download::knowledge_model_hf_base_url_candidates,
             || async { self.load_model_unlocked() },
         )
         .await?;
@@ -1349,11 +1349,11 @@ impl KnowledgeService {
 
     async fn download_model_with<F, L, Fut>(
         self: &Arc<Self>,
-        resolve_hf_base_url: F,
+        resolve_hf_base_urls: F,
         mut load_complete: L,
     ) -> Result<(), String>
     where
-        F: FnOnce() -> String + Send,
+        F: FnOnce() -> Vec<String> + Send,
         L: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<(), String>> + Send,
     {
@@ -1377,10 +1377,10 @@ impl KnowledgeService {
         std::fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
         let candidate = parent.join(format!(".{MODEL_NAME}.candidate-{}", random_secret(8)));
         let result = async {
-            let hf_base_url = resolve_hf_base_url();
+            let hf_base_urls = resolve_hf_base_urls();
             crate::model_download::download_knowledge_model_candidate(
                 &candidate,
-                &hf_base_url,
+                &hf_base_urls,
                 |_| {},
                 || false,
             )
@@ -2174,7 +2174,7 @@ mod tests {
             .download_model_with(
                 move || {
                     observed.store(true, Ordering::Release);
-                    String::new()
+                    Vec::new()
                 },
                 move || {
                     let loaded_observed = Arc::clone(&loaded_observed);
@@ -2226,7 +2226,7 @@ mod tests {
             .download_model_with(
                 move || {
                     observed.store(true, Ordering::Release);
-                    String::new()
+                    Vec::new()
                 },
                 || async { Err("invalid model".to_string()) },
             )
@@ -2234,13 +2234,7 @@ mod tests {
             .unwrap_err();
 
         assert!(resolved.load(Ordering::Acquire));
-        assert_eq!(
-            error,
-            format!(
-                "{} 不能为空",
-                crate::model_download::KNOWLEDGE_MODEL_HF_BASE_URL_ENV
-            )
-        );
+        assert_eq!(error, "镜像基地址列表为空");
         assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| {
             !entry
                 .unwrap()

@@ -161,6 +161,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // ② pip 安装,按序兜底,任一成功即 Ok:
         //    --user(常规)→ --user --break-system-packages(PEP 668:现代 Debian/Ubuntu 拦 --user,
         //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
+        //    默认源整轮失败后，再用清华 TUNA 镜像重跑同一梯度（仅追加 -i 参数，
+        //    不改用户 pip 配置）：国内网络对 pypi.org 官方源常不可达。默认源在前
+        //    是刻意的——尊重用户自己的 pip.conf/企业源，镜像只是最后兜底。
         let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
             let mut cmd = std::process::Command::new(python_cmd);
             cmd.args([
@@ -179,27 +182,35 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             &["--user", "--break-system-packages"],
             &["--break-system-packages"],
         ];
+        const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
+        let index_rounds: [&[&str]; 2] = [&[], &["-i", PIP_CN_MIRROR_INDEX]];
         let mut last_err = String::new();
-        for extra in attempts {
-            match run(extra) {
-                Ok(o) if o.status.success() => return Ok(()),
-                Ok(o) => {
-                    last_err = String::from_utf8_lossy(&o.stderr)
-                        .trim()
-                        .lines()
-                        .last()
-                        .unwrap_or("")
-                        .to_string();
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
-                    ));
+        for index_args in index_rounds {
+            for extra in attempts {
+                let mut args: Vec<&str> = Vec::with_capacity(extra.len() + index_args.len());
+                args.extend(extra.iter().copied());
+                args.extend(index_args.iter().copied());
+                match run(&args) {
+                    Ok(o) if o.status.success() => return Ok(()),
+                    Ok(o) => {
+                        last_err = String::from_utf8_lossy(&o.stderr)
+                            .trim()
+                            .lines()
+                            .last()
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
+                        ));
+                    }
                 }
             }
         }
         Err(format!(
-            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages;请确认网络可达且 python3 自带 pip）"
+            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages，\
+             并用清华镜像源重试;请确认网络可达且 python3 自带 pip）"
         ))
     }
 

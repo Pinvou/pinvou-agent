@@ -12,10 +12,16 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 pub const KNOWLEDGE_MODEL_HF_BASE_URL: &str = "https://huggingface.co";
+/// 国内可达的 Hugging Face 兼容镜像（路径结构与官方源完全一致，默认首选）。
+pub const KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL: &str = "https://hf-mirror.com";
 pub const KNOWLEDGE_MODEL_HF_REPOSITORY: &str = "onnx-community/bge-m3-ONNX";
 pub const KNOWLEDGE_MODEL_HF_REVISION: &str = "25b9af8e87a38eb120cfe87125383677b9cd309e";
 pub const KNOWLEDGE_MODEL_HF_BASE_URL_ENV: &str = "PINVOU_KNOWLEDGE_HF_BASE_URL";
 pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
+
+/// 取消错误的统一报文。镜像回退循环靠错误值区分「用户取消」（终止整体流程）
+/// 与「单个镜像源故障」（换下一个基地址重试），因此必须集中定义、不得漂移。
+const CANCELLED: &str = "已取消";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeModelFile {
@@ -78,21 +84,41 @@ pub struct KnowledgeModelDownloadProgress {
     pub source_path: &'static str,
 }
 
-/// 返回当前进程应使用的 Hugging Face 兼容镜像基地址。
-pub fn knowledge_model_hf_base_url() -> String {
-    std::env::var(KNOWLEDGE_MODEL_HF_BASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| KNOWLEDGE_MODEL_HF_BASE_URL.to_string())
+/// 返回按序尝试的 Hugging Face 兼容镜像基地址列表。
+///
+/// 显式设置 [`KNOWLEDGE_MODEL_HF_BASE_URL_ENV`] 时只返回该地址——用户明确指定的
+/// 源不做回退；否则先试国内镜像（[`KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL`]），失败
+/// 再回退官方源。每个文件都逐基地址重试，内容始终经逐文件 SHA-256 校验。
+pub fn knowledge_model_hf_base_url_candidates() -> Vec<String> {
+    ordered_hf_base_url_candidates(
+        std::env::var(KNOWLEDGE_MODEL_HF_BASE_URL_ENV)
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+    )
+}
+
+/// [`knowledge_model_hf_base_url_candidates`] 的纯函数核心（便于单测，不触环境变量）。
+fn ordered_hf_base_url_candidates(explicit: Option<String>) -> Vec<String> {
+    match explicit {
+        Some(value) => vec![value],
+        None => vec![
+            KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL.to_string(),
+            KNOWLEDGE_MODEL_HF_BASE_URL.to_string(),
+        ],
+    }
 }
 
 /// 将固定 revision 的五个文件下载并逐一校验到一个新建的候选目录。
 ///
 /// `candidate` 必须不存在。任何失败或取消都会清理本次创建的候选目录；调用方在
 /// 返回成功后负责真实加载候选模型，并将其原子替换到正式目录。
+///
+/// `hf_base_urls` 是按序尝试的镜像基地址列表（见
+/// [`knowledge_model_hf_base_url_candidates`]）：单个文件在某个基地址上下载或
+/// 校验失败时，自动换下一个基地址重试，全部失败才整体报错。
 pub async fn download_knowledge_model_candidate<P, C>(
     candidate: &Path,
-    hf_base_url: &str,
+    hf_base_urls: &[String],
     on_progress: P,
     is_cancelled: C,
 ) -> Result<(), String>
@@ -111,7 +137,7 @@ where
     download_knowledge_model_candidate_with(
         &client,
         candidate,
-        hf_base_url,
+        hf_base_urls,
         &KNOWLEDGE_MODEL_FILES,
         on_progress,
         is_cancelled,
@@ -252,7 +278,7 @@ pub fn install_model_candidate(
 async fn download_knowledge_model_candidate_with<P, C>(
     client: &reqwest::Client,
     candidate: &Path,
-    hf_base_url: &str,
+    hf_base_urls: &[String],
     manifest: &[KnowledgeModelFile],
     mut on_progress: P,
     is_cancelled: C,
@@ -261,7 +287,15 @@ where
     P: FnMut(KnowledgeModelDownloadProgress) + Send,
     C: Fn() -> bool + Send + Sync,
 {
-    let base_url = validate_hf_base_url(hf_base_url)?;
+    // 全部基地址先整体校验：任何一个镜像配置非法都在触网前失败，
+    // 不允许「前两个基地址下了一半，第三个才发现配置写错」。
+    if hf_base_urls.is_empty() {
+        return Err("镜像基地址列表为空".to_string());
+    }
+    let mut base_urls = Vec::with_capacity(hf_base_urls.len());
+    for value in hf_base_urls {
+        base_urls.push(validate_hf_base_url(value)?);
+    }
     let total_bytes = manifest.iter().map(|file| file.bytes).sum();
     let parent = candidate
         .parent()
@@ -280,9 +314,8 @@ where
         let mut completed_bytes = 0_u64;
         for (index, file) in manifest.iter().enumerate() {
             if is_cancelled() {
-                return Err("已取消".to_string());
+                return Err(CANCELLED.to_string());
             }
-            let url = knowledge_model_file_url(&base_url, file.source_path)?;
             let destination = safe_candidate_path(candidate, file.destination_path)?;
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| {
@@ -296,51 +329,49 @@ where
                     .and_then(|value| value.to_str())
                     .unwrap_or("download")
             ));
-            download_manifest_file(
-                client,
-                &url,
-                &partial,
-                file,
-                completed_bytes,
-                total_bytes,
-                index,
-                manifest.len(),
-                &mut on_progress,
-                &is_cancelled,
-            )
-            .await?;
+
+            // 按序尝试各镜像基地址：当前基地址上下载或校验失败（含镜像内容被
+            // 篡改导致的 SHA-256 不符）都换下一个重试；全部失败才报最后一个
+            // 错误。取消是全局意图，任何一处出现都立即终止，不当作镜像故障。
+            let mut last_error = None;
+            let mut succeeded = false;
+            for base_url in &base_urls {
+                if is_cancelled() {
+                    return Err(CANCELLED.to_string());
+                }
+                // 上一个基地址的半截 `.part` 必须清掉再重试，避免续写混杂来源的字节。
+                let _ = std::fs::remove_file(&partial);
+                let url = knowledge_model_file_url(base_url, file.source_path)?;
+                match download_and_verify_manifest_file(
+                    client,
+                    &url,
+                    &partial,
+                    &destination,
+                    file,
+                    completed_bytes,
+                    total_bytes,
+                    index,
+                    manifest.len(),
+                    &mut on_progress,
+                    &is_cancelled,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        succeeded = true;
+                        break;
+                    }
+                    Err(error) if error == CANCELLED => return Err(error),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            if !succeeded {
+                return Err(last_error.unwrap_or_else(|| CANCELLED.to_string()));
+            }
 
             if is_cancelled() {
-                return Err("已取消".to_string());
+                return Err(CANCELLED.to_string());
             }
-            on_progress(KnowledgeModelDownloadProgress {
-                stage: KnowledgeModelDownloadStage::Verify,
-                downloaded_bytes: completed_bytes + file.bytes,
-                total_bytes,
-                file_index: index + 1,
-                file_count: manifest.len(),
-                source_path: file.source_path,
-            });
-            let verify_path = partial.clone();
-            let actual = tokio::task::spawn_blocking(move || sha256_file(&verify_path))
-                .await
-                .map_err(|error| format!("模型校验任务失败: {error}"))??;
-            if !actual.eq_ignore_ascii_case(file.sha256) {
-                return Err(format!(
-                    "模型文件校验失败({}): 期望 {}，实际 {}",
-                    file.source_path, file.sha256, actual
-                ));
-            }
-            if is_cancelled() {
-                return Err("已取消".to_string());
-            }
-            std::fs::rename(&partial, &destination).map_err(|error| {
-                format!(
-                    "无法完成模型文件写入({} -> {}): {error}",
-                    partial.display(),
-                    destination.display()
-                )
-            })?;
             completed_bytes += file.bytes;
         }
         Ok(())
@@ -351,6 +382,75 @@ where
         let _ = std::fs::remove_dir_all(candidate);
     }
     result
+}
+
+/// 单文件在单一基地址上的完整尝试：下载到 `.part` → verify 进度事件 →
+/// SHA-256 校验 → 原子 `rename` 到 `destination`。任一步失败都返回 `Err`，
+/// 由调用方决定是否换下一个基地址重试。
+#[allow(clippy::too_many_arguments)]
+async fn download_and_verify_manifest_file<P, C>(
+    client: &reqwest::Client,
+    url: &Url,
+    partial: &Path,
+    destination: &Path,
+    file: &KnowledgeModelFile,
+    completed_bytes: u64,
+    total_bytes: u64,
+    file_index: usize,
+    file_count: usize,
+    on_progress: &mut P,
+    is_cancelled: &C,
+) -> Result<(), String>
+where
+    P: FnMut(KnowledgeModelDownloadProgress) + Send,
+    C: Fn() -> bool + Send + Sync,
+{
+    download_manifest_file(
+        client,
+        url,
+        partial,
+        file,
+        completed_bytes,
+        total_bytes,
+        file_index,
+        file_count,
+        on_progress,
+        is_cancelled,
+    )
+    .await?;
+
+    if is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    on_progress(KnowledgeModelDownloadProgress {
+        stage: KnowledgeModelDownloadStage::Verify,
+        downloaded_bytes: completed_bytes + file.bytes,
+        total_bytes,
+        file_index: file_index + 1,
+        file_count,
+        source_path: file.source_path,
+    });
+    let verify_path = partial.to_path_buf();
+    let actual = tokio::task::spawn_blocking(move || sha256_file(&verify_path))
+        .await
+        .map_err(|error| format!("模型校验任务失败: {error}"))??;
+    if !actual.eq_ignore_ascii_case(file.sha256) {
+        return Err(format!(
+            "模型文件校验失败({}): 期望 {}，实际 {}",
+            file.source_path, file.sha256, actual
+        ));
+    }
+    if is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    std::fs::rename(partial, destination).map_err(|error| {
+        format!(
+            "无法完成模型文件写入({} -> {}): {error}",
+            partial.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,7 +494,7 @@ where
     let mut last_emitted = 0_u64;
     while let Some(chunk) = stream.next().await {
         if is_cancelled() {
-            return Err("已取消".to_string());
+            return Err(CANCELLED.to_string());
         }
         let chunk = chunk
             .map_err(|error| format!("模型下载中断({}): {error}", manifest_file.source_path))?;
@@ -622,6 +722,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ordered_candidates_explicit_source_wins_over_mirror_chain() {
+        // 显式环境变量 = 用户明确指定的源，不做任何回退。
+        assert_eq!(
+            ordered_hf_base_url_candidates(Some("https://internal.example/hf".to_string())),
+            vec!["https://internal.example/hf".to_string()]
+        );
+        // 未指定：国内镜像优先，官方源兜底。
+        assert_eq!(
+            ordered_hf_base_url_candidates(None),
+            vec![
+                KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL.to_string(),
+                KNOWLEDGE_MODEL_HF_BASE_URL.to_string(),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn cancelled_download_removes_its_candidate_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -631,7 +748,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &client,
             &candidate,
-            "http://127.0.0.1:9",
+            &["http://127.0.0.1:9".to_string()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",
@@ -670,7 +787,7 @@ mod tests {
         download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &manifest,
             |value| progress.push(value),
             || false,
@@ -719,7 +836,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",
@@ -736,6 +853,102 @@ mod tests {
         assert!(!candidate.exists());
     }
 
+    /// 主镜像不可达（连接拒绝）时，单个文件必须自动换下一个基地址重试成功，
+    /// 且只向存活的镜像发请求。
+    #[tokio::test]
+    async fn unreachable_mirror_falls_back_to_next_base() {
+        let (base_url, requests, server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        // 127.0.0.1:1 无监听，连接立即被拒，等价于镜像宕机。
+        let bases = vec!["http://127.0.0.1:1".to_string(), base_url.clone()];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(std::fs::read(candidate.join("model.onnx")).unwrap(), b"abc");
+        let request = requests.recv().unwrap();
+        assert!(request.contains("GET /hf/onnx-community/bge-m3-ONNX/resolve/"));
+    }
+
+    /// 镜像返回被篡改/损坏的字节（SHA-256 不符）时同样回退到下一个基地址，
+    /// 最终落盘内容必须来自通过校验的源。
+    #[tokio::test]
+    async fn mirror_serving_corrupt_bytes_falls_back_to_next_base() {
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
+        let (good_base, _good_requests, good_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![bad_base, good_base];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await
+        .unwrap();
+        bad_server.join().unwrap();
+        good_server.join().unwrap();
+
+        assert_eq!(
+            std::fs::read(candidate.join("config.json")).unwrap(),
+            b"abc"
+        );
+    }
+
+    /// 非法基地址必须在触网前整体失败：哪怕它排在存活镜像之后，也不允许
+    /// 「下到一半才报配置错误」。候选目录必须保持未创建。
+    #[tokio::test]
+    async fn invalid_base_url_fails_before_any_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![
+            "http://127.0.0.1:1".to_string(),
+            "https://user:secret@example.com".to_string(),
+        ];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await;
+
+        assert!(
+            result.unwrap_err().contains("必须是不含账号"),
+            "非法基地址必须在触网前失败"
+        );
+        assert!(!candidate.exists(), "候选目录不应在基地址校验前创建");
+    }
+
     #[tokio::test]
     async fn size_mismatch_removes_candidate_directory() {
         let (base_url, _requests, server) = serve_model_files(vec![b"abcd"]);
@@ -744,7 +957,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",

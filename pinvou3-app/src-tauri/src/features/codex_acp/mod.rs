@@ -128,6 +128,10 @@ const KIMI_ACP_PACKAGE: &str = "kimi acp";
 const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
 const MIN_CLAUDE_VERSION: &str = "2.0.0";
+/// npm 国内镜像 registry（阿里云 npmmirror，包内容与官方 registry 字节一致）。
+/// 仅在官方 registry.npmjs.org 不可达时作为该次安装/升级调用的 `--registry`
+/// 重试源与 latest 版本探测兜底，不写入也不改变用户的 npm 配置。
+pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
 const MIN_KIMI_VERSION: &str = "0.9.0";
 const CODEX_INSTALL_SCRIPT_UNIX: &str = "https://chatgpt.com/codex/install.sh";
@@ -2139,16 +2143,22 @@ impl AcpPool {
     /// 安装前自检：把「脚本源不可达」和「目标路径存在不可用的坏残留」挡在
     /// 安装开始前，避免安装跑到一半才失败，或覆盖坏安装后依旧不可用。
     ///
+    /// 返回实际生效的安装动作：official_script 的脚本源不可达且本机 npm 可用时，
+    /// 自动降级为 `npm_upgrade`（`run_npm_global_upgrade` 自带 npmmirror 镜像
+    /// 重试），而不是在 chatgpt.com/claude.ai 这类国内不可达的脚本源上直接失败。
+    ///
     /// - official_script：HEAD 探测脚本 URL（连接 3s / 总 5s 超时，传输层失败
     ///   即视为不可达）；并检查官方脚本目标路径的残留是否可用——存在但探测
     ///   没解析到它（或该文件本身跑不起 `--version`）就是半成品/被替换的坏
-    ///   文件，覆盖安装未必能修复，先拦截并提示删除。
+    ///   文件，覆盖安装未必能修复，先拦截并提示删除。坏残留检查在降级为
+    ///   npm 安装时同样执行：早期脚本安装的坏文件在 PATH 上会遮住 npm 装的
+    ///   版本，放行会让升级有效性校验误报。
     /// - npm_upgrade：npm 可执行存在性由 run_npm_global_upgrade 保证；npm
     ///   全局安装幂等，半装残留会由 npm 自身收敛，不做额外检测。
     /// - brew_upgrade：brew 自身处理幂等与升级，无需预检。
-    async fn preflight_install(&self, backend: AgentBackend, action: &str) -> Result<()> {
+    async fn preflight_install(&self, backend: AgentBackend, action: &str) -> Result<String> {
         if action != "official_script" {
-            return Ok(());
+            return Ok(action.to_string());
         }
         let (unix_url, windows_url) = official_script_urls(backend);
         let url = if crate::platform::capabilities::is_windows() {
@@ -2156,14 +2166,31 @@ impl AcpPool {
         } else {
             unix_url
         };
-        if !script_url_reachable(url).await {
+        let script_reachable = script_url_reachable(url).await;
+        if !script_reachable {
             let npm_pkg = npm_package(backend).unwrap_or("");
-            bail!(
-                "无法连接 {} 官方安装脚本（{url}），请检查网络或稍后重试；\
-                 也可手动安装：npm install -g {npm_pkg}",
-                backend.display_name()
-            );
+            if !(npm_package(backend).is_some() && npm_executable().is_some()) {
+                bail!(
+                    "无法连接 {} 官方安装脚本（{url}），请检查网络或稍后重试；\
+                     也可手动安装：npm install -g {npm_pkg}",
+                    backend.display_name()
+                );
+            }
         }
+        self.ensure_no_stale_official_install(backend).await?;
+        if !script_reachable {
+            diagnostics::write(
+                "install-preflight",
+                "preflight:script_source_unreachable_degrade_npm",
+                format!("url={url} npm_pkg={}", npm_package(backend).unwrap_or("")),
+            );
+            return Ok("npm_upgrade".to_string());
+        }
+        Ok(action.to_string())
+    }
+
+    /// 官方脚本目标路径的坏残留检查（脚本安装与降级 npm 安装共用）。
+    async fn ensure_no_stale_official_install(&self, backend: AgentBackend) -> Result<()> {
         let pool = self.clone();
         let stale_install =
             tokio::task::spawn_blocking(move || pool.stale_official_install(backend))
@@ -2235,13 +2262,15 @@ impl AcpPool {
         // 分派前强制刷新探测，确保 install_action 基于当前真实环境。
         self.refresh_agent_cli_probe(backend).await;
         let status = self.status_for_async(backend).await;
-        let action = match action {
+        let requested_action = match action {
             Some(action) => parse_install_action(action)?,
             None => status.install_action,
         };
         // 安装前自检：把网络不可达与坏残留挡在开始前（见 preflight_install）。
         // 必须放在停会话之前——自检失败时不要白白关掉用户运行中的会话。
-        self.preflight_install(backend, action).await?;
+        // 官方脚本源不可达且 npm 可用时，自检会把动作降级为 npm_upgrade
+        // （自带 npmmirror 镜像重试），不再在不可达的脚本源上直接失败。
+        let action = self.preflight_install(backend, requested_action).await?;
         // 安装/升级前停掉该 Agent 的运行中会话：Windows 下被会话占用的
         // CLI 二进制无法替换（npm EBUSY / 脚本覆盖失败），先 shutdown 再安装，
         // 与卸载的前置检查同一原则。
@@ -2254,7 +2283,7 @@ impl AcpPool {
         let operation_id = diagnostics::operation_id("install");
         let previous_version = status.version.clone();
         let previous_installed = status.installed;
-        let result = match action {
+        let result = match action.as_str() {
             "none" => Ok(status),
             "brew_upgrade" => self.upgrade_via_homebrew(backend).await,
             "npm_upgrade" => self.upgrade_via_npm(backend).await,

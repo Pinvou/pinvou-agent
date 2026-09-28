@@ -261,14 +261,16 @@ pub async fn kb_model_download(
         std::fs::remove_dir_all(&tmp)
             .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
     }
-    let hf_base_url = std::env::var(DESKTOP_HF_BASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(pinvou_knowledge::model_download::knowledge_model_hf_base_url);
+    // 桌面端可单独指定镜像（显式指定 = 唯一源，不回退）；未配置时回退到
+    // 两端统一的候选链：国内镜像 hf-mirror.com 优先，官方 huggingface.co 兜底。
+    let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
+        Ok(value) if !value.trim().is_empty() => vec![value],
+        _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),
+    };
     let progress_app = app.clone();
     pinvou_knowledge::model_download::download_knowledge_model_candidate(
         &tmp,
-        &hf_base_url,
+        &hf_base_urls,
         move |progress| {
             let stage = match progress.stage {
                 pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {

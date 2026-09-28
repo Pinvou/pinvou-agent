@@ -832,7 +832,10 @@ pub(super) async fn run_official_install_script(
 }
 /// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
 /// Windows), 10-minute timeout, with the output tail written to the
-/// diagnostics log.
+/// diagnostics log. On failure (and not user-cancelled), retries once against
+/// the npmmirror China mirror: registry.npmjs.org is frequently unreachable on
+/// Chinese networks. The flag is per-invocation only — the user's npm
+/// configuration is never read or written.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -845,7 +848,7 @@ pub(super) async fn run_npm_global_upgrade(
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
-    run_managed_install(
+    let first = run_managed_install(
         app,
         backend,
         operation_id,
@@ -865,6 +868,54 @@ pub(super) async fn run_npm_global_upgrade(
                 backend.display_name()
             ),
             failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
+            failure_hint: false,
+            idempotent_ok: None,
+            failure_detail: managed_install_failure,
+        },
+    )
+    .await;
+    let primary = match first {
+        Ok(()) => return Ok(()),
+        Err(primary) => primary,
+    };
+    // 用户主动取消不是源故障：不得换镜像重试（否则取消后还会继续跑安装）。
+    if format!("{primary:#}").contains(INSTALL_CANCELLED_MARKER) {
+        return Err(primary);
+    }
+    diagnostics::write(
+        operation_id,
+        "npm:mirror_retry",
+        format!("primary failed, retrying via {NPM_MIRROR_REGISTRY}: {primary:#}"),
+    );
+    let mut mirror_command = crate::platform::process::external_tokio_command(&npm);
+    mirror_command.args(&args);
+    mirror_command.arg(format!("--registry={NPM_MIRROR_REGISTRY}"));
+    run_managed_install(
+        app,
+        backend,
+        operation_id,
+        install_children,
+        install_cancelled,
+        mirror_command,
+        ManagedInstallStage {
+            diag_stage: "npm-mirror",
+            command_line: format!(
+                "npm install -g {} --registry={NPM_MIRROR_REGISTRY}",
+                npm_package(backend).unwrap_or("")
+            ),
+            process_group: true,
+            spawn_context: "failed to spawn npm mirror upgrade".to_string(),
+            stdout_context: "failed to read npm mirror stdout",
+            stderr_context: "failed to read npm mirror stderr",
+            wait_context: "failed to wait for npm mirror upgrade process",
+            timeout_message: format!(
+                "{} npm mirror upgrade did not finish within 10 minutes; check the network and retry",
+                backend.display_name()
+            ),
+            failure_subject: format!(
+                "npm mirror upgrade of {} exited",
+                backend.display_name()
+            ),
             failure_hint: false,
             idempotent_ok: None,
             failure_detail: managed_install_failure,

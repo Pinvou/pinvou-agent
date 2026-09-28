@@ -16,6 +16,9 @@ use sha2::{Digest, Sha256};
 
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
+/// GitHub 资产加速前缀（如自建 gh-proxy）。设置后对官方源在 github.com 的制品，
+/// 下载顺序变为「前缀加速地址 → lock 表审核镜像 → 官方源」；不适用于其他站点。
+const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const DWS_LICENSE: &str =
     include_str!("../../../resources/common/bundle/dingtalk-skills/dws/LICENSE");
@@ -94,8 +97,50 @@ struct Artifact {
     name: String,
     version: String,
     url: String,
+    /// 已验证可达且字节与官方源一致的国内镜像（可选）。当前仅 wecom-cli 配置
+    /// npmmirror 镜像；dws/lark-cli 仅发布在 GitHub Release，暂无官方国内镜像，
+    /// 可用 [`GITHUB_ASSET_MIRROR_PREFIX_ENV`] 按环境加速。
+    mirror_url: Option<String>,
     archive_sha256: String,
     binary_sha256: String,
+}
+
+/// GitHub 加速前缀的纯函数核心：仅对官方源在 github.com 的地址生效，其余
+/// 地址原样返回 `None`（避免把任意站点误包进第三方代理）。前缀按用户原样
+/// 拼接（gh-proxy 惯例 `<proxy>https://github.com/...` 无分隔斜杠；带斜杠
+/// 的配置同样成立），拼错的加速地址会在校验失败后自然落到下一候选。
+fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str() != Some("github.com") {
+        return None;
+    }
+    Some(format!("{}{}", prefix, url))
+}
+
+/// 按序尝试的下载地址：环境变量显式指定的 GitHub 加速前缀 → lock 表审核过的
+/// 镜像 → 官方源兜底。官方源恒在列表末尾；每个候选下载后都要过
+/// `archive_sha256` 校验，镜像字节被篡改时会被校验拦截并落到下一候选。
+fn artifact_download_urls(artifact: &Artifact) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Ok(prefix) = std::env::var(GITHUB_ASSET_MIRROR_PREFIX_ENV)
+        && let Some(prefixed) = github_prefixed_url(&prefix, &artifact.url)
+    {
+        urls.push(prefixed);
+    }
+    if let Some(mirror) = artifact
+        .mirror_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|mirror| !mirror.is_empty())
+    {
+        urls.push(mirror.to_string());
+    }
+    urls.push(artifact.url.clone());
+    urls
 }
 
 /// 安装一个锁定版本的厂家原生 CLI。
@@ -134,7 +179,10 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
     fs::create_dir_all(&version_dir).map_err(|e| format!("创建连接器目录失败: {e}"))?;
     let staging_dir = crate::platform::paths::assets_staging_dir().join(&lock.platform);
     fs::create_dir_all(&staging_dir).map_err(|e| format!("创建连接器暂存目录失败: {e}"))?;
-    let archive_ext = if artifact.url.ends_with(".zip") {
+    // 归档格式按首个候选地址判定：镜像与官方源对同一制品的归档格式一致
+    // （wecom 同一 tgz、dws/lark 同一 tar.gz/zip），缓存文件名因此稳定。
+    let candidate_urls = artifact_download_urls(&artifact);
+    let archive_ext = if candidate_urls[0].ends_with(".zip") {
         "zip"
     } else {
         "tar.gz"
@@ -143,11 +191,13 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
         "{}-{}.{}",
         artifact.name, artifact.version, archive_ext
     ));
-    if !file_sha256_matches(&archive, &artifact.archive_sha256) {
-        download_verified(&artifact, &archive)?;
-    }
+    let source_url = if file_sha256_matches(&archive, &artifact.archive_sha256) {
+        candidate_urls[0].clone()
+    } else {
+        download_verified(&artifact, &archive)?
+    };
 
-    let binary = extract_expected_binary(&archive, &artifact)
+    let binary = extract_expected_binary(&archive, &source_url, &artifact)
         .map_err(|e| format!("解压 {} 失败: {e}", artifact.name))?;
     let actual = sha256_bytes(&binary);
     if actual != artifact.binary_sha256 {
@@ -266,11 +316,10 @@ fn load_lock() -> Result<ConnectorLock, String> {
     Ok(lock)
 }
 
-fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), String> {
-    let url = reqwest::Url::parse(&artifact.url).map_err(|e| format!("下载地址无效: {e}"))?;
-    if url.scheme() != "https" {
-        return Err("连接器下载仅允许 HTTPS".to_string());
-    }
+/// 按候选地址顺序下载归档并校验归档 SHA-256，返回实际命中的下载地址
+/// （调用方据此判定归档格式）。任何候选的网络失败或校验不符都会清掉 `.part`
+/// 并尝试下一候选；全部候选失败时返回最后一个错误。
+fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         // 15 分钟总量:归档上限 128 MiB,180s 只够 ~730 KB/s 的链路,慢网
@@ -287,8 +336,44 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), Stri
         .user_agent("Pinvou-Agent connector-installer")
         .build()
         .map_err(|e| format!("创建下载客户端失败: {e}"))?;
+
+    let mut last_error = None;
+    for url_text in artifact_download_urls(artifact) {
+        // 非法候选（环境变量前缀拼错、非 HTTPS 等）只跳过并告警，不整体失败：
+        // 后面的审核镜像/官方源兜底不受用户配置错误牵连。
+        let url = match reqwest::Url::parse(&url_text) {
+            Ok(url) if url.scheme() == "https" => url,
+            _ => {
+                let error = format!("下载地址无效或非 HTTPS: {url_text}");
+                log::warn!("[connectors] {} 跳过候选地址: {error}", artifact.name);
+                last_error = Some(error);
+                continue;
+            }
+        };
+        match download_from_url(&client, &url, artifact, destination) {
+            Ok(()) => return Ok(url_text),
+            Err(error) => {
+                log::warn!(
+                    "[connectors] {} 下载源失败，尝试下一候选地址: {error}",
+                    artifact.name
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "无可用下载地址".to_string()))
+}
+
+/// 从单一地址下载归档到 `destination`（`.part` 暂存 → SHA-256 校验 → 原子
+/// rename）。校验不符按失败处理，由调用方决定是否换下一候选地址。
+fn download_from_url(
+    client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+    artifact: &Artifact,
+    destination: &Path,
+) -> Result<(), String> {
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("下载 {} 失败: {e}", artifact.name))?;
@@ -325,10 +410,14 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), Stri
     fs::rename(&partial, destination).map_err(|e| format!("保存连接器缓存失败: {e}"))
 }
 
-fn extract_expected_binary(archive: &Path, artifact: &Artifact) -> io::Result<Vec<u8>> {
+fn extract_expected_binary(
+    archive: &Path,
+    source_url: &str,
+    artifact: &Artifact,
+) -> io::Result<Vec<u8>> {
     let expected = super::platform::archive_member(&artifact.name);
     let file = File::open(archive)?;
-    if artifact.url.ends_with(".zip") {
+    if source_url.ends_with(".zip") {
         extract_zip_member(file, expected)
     } else {
         extract_tar_member(GzDecoder::new(file), expected)
@@ -416,6 +505,91 @@ mod tests {
             assert_eq!(artifact.binary_sha256.len(), 64);
             assert!(!artifact.version.is_empty());
         }
+    }
+
+    /// wecom-cli 的 lock 镜像必须与官方 URL 同路径、仅域名换成 npmmirror
+    /// （npmmirror 字节级镜像 npm 包，两端归档 SHA-256 一致）；dws/lark-cli
+    /// 只发布在 GitHub Release，暂无审核过的国内镜像。
+    #[test]
+    fn wecom_lock_mirror_is_npmmirror_same_path_and_github_artifacts_have_none() {
+        let lock = load_lock().unwrap();
+        for artifact in &lock.artifacts {
+            if artifact.name != "wecom-cli" {
+                assert!(
+                    artifact.mirror_url.is_none(),
+                    "{} 不应有审核镜像",
+                    artifact.name
+                );
+                continue;
+            }
+            let mirror = artifact.mirror_url.as_deref().expect("wecom 应配置镜像");
+            assert!(
+                mirror.starts_with("https://registry.npmmirror.com/")
+                    && artifact.url.starts_with("https://registry.npmjs.org/"),
+                "mirror={mirror} url={}",
+                artifact.url
+            );
+            assert_eq!(
+                mirror.strip_prefix("https://registry.npmmirror.com/"),
+                artifact.url.strip_prefix("https://registry.npmjs.org/"),
+                "镜像与官方源必须同路径"
+            );
+        }
+    }
+
+    /// 候选顺序：GitHub 加速前缀（仅对 github.com 生效）→ 审核镜像 → 官方源；
+    /// 官方源恒在末尾，非 GitHub 制品不受前缀影响。
+    #[test]
+    fn artifact_download_urls_order_prefix_mirror_then_official() {
+        let artifact = Artifact {
+            name: "wecom-cli".into(),
+            version: "1.0.0".into(),
+            url: "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz".into(),
+            mirror_url: Some(
+                "https://registry.npmmirror.com/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz"
+                    .into(),
+            ),
+            archive_sha256: "0".repeat(64),
+            binary_sha256: "0".repeat(64),
+        };
+        assert_eq!(
+            artifact_download_urls(&artifact),
+            vec![
+                "https://registry.npmmirror.com/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz",
+                "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz",
+            ]
+        );
+
+        let github_artifact = Artifact {
+            name: "dws".into(),
+            version: "1.0.0".into(),
+            url: "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.0/dws-linux-amd64.tar.gz".into(),
+            mirror_url: None,
+            archive_sha256: "0".repeat(64),
+            binary_sha256: "0".repeat(64),
+        };
+        assert_eq!(
+            artifact_download_urls(&github_artifact),
+            vec![github_artifact.url.clone()]
+        );
+
+        // 前缀只作用于 github.com 官方源，且对镜像候选不加前缀。
+        assert_eq!(
+            github_prefixed_url(
+                "https://mirror.example/gh/",
+                "https://github.com/org/repo/releases/download/v1/a.tar.gz"
+            ),
+            Some("https://mirror.example/gh/https://github.com/org/repo/releases/download/v1/a.tar.gz".to_string())
+        );
+        assert_eq!(
+            github_prefixed_url(
+                "https://mirror.example/gh",
+                "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz"
+            ),
+            None,
+            "非 github.com 官方源不得套加速前缀"
+        );
+        assert_eq!(github_prefixed_url("  ", "https://github.com/o/r"), None);
     }
 
     #[test]

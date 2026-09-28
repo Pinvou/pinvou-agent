@@ -423,8 +423,38 @@ fn python_version_digits(python: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
+/// 信任的 wheel 下载源：PyPI 官方 CDN 与其国内镜像（清华 TUNA，路径结构一致）。
+/// lock 清单里的地址仍按官方 CDN 校验（见 validate_wheel）；镜像在下载时派生。
 fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
-    matches!(url.host_str(), Some("files.pythonhosted.org"))
+    matches!(
+        url.host_str(),
+        Some("files.pythonhosted.org") | Some("pypi.tuna.tsinghua.edu.cn")
+    )
+}
+
+/// files.pythonhosted.org 与清华 TUNA 镜像共享 `/packages/...` 路径结构，
+/// 仅需替换域名；其余地址不派生镜像（返回 `None`）。
+fn pythonhosted_mirror_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str() != Some("files.pythonhosted.org") {
+        return None;
+    }
+    Some(format!(
+        "https://pypi.tuna.tsinghua.edu.cn{}",
+        parsed.path()
+    ))
+}
+
+/// 按序尝试的 wheel 下载地址：国内镜像优先（国内网络对 PyPI 官方 CDN 常不可
+/// 达或极慢），官方源兜底。两处来源的字节都过同一 sha256 pin，镜像被篡改时
+/// 校验会拦截并落到下一候选。
+fn wheel_download_urls(wheel: &PythonWheel) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(mirror) = pythonhosted_mirror_url(&wheel.url) {
+        urls.push(mirror);
+    }
+    urls.push(wheel.url.clone());
+    urls
 }
 
 fn environment_key(target: &PythonDependencyTarget) -> Result<String, String> {
@@ -601,8 +631,6 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         return Ok(());
     }
 
-    let url = reqwest::Url::parse(&wheel.url)
-        .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         // 15 分钟总量(单只 wheel;整条安装是串行 wheel 链):wheels 上限
@@ -627,8 +655,36 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         .user_agent("Pinvou-Agent python-dependency-installer")
         .build()
         .map_err(|e| format!("failed to build the Python dependency download client: {e}"))?;
+
+    let mut last_error = None;
+    for url in wheel_download_urls(wheel) {
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
+        match download_wheel_from(&client, &parsed, destination, wheel) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                log::warn!(
+                    "[marketplace] Python dependency {} failed from {url}, trying next mirror: {error}",
+                    wheel.name
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| format!("Python dependency {} has no download URL", wheel.name)))
+}
+
+/// 从单一地址下载 wheel 到 `destination`（`.part` 暂存 → sha256 校验 → 原子
+/// rename）。校验不符按失败处理，由调用方决定是否换下一候选地址。
+fn download_wheel_from(
+    client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+    destination: &Path,
+    wheel: &PythonWheel,
+) -> Result<(), String> {
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("failed to download Python dependency {}: {e}", wheel.name))?;
@@ -1045,6 +1101,39 @@ mod tests {
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
+    }
+
+    /// wheel 下载候选：pythonhosted 地址派生 TUNA 镜像且镜像优先；完整路径
+    /// （含 hash 目录段）原样保留；非 pythonhosted 地址不派生镜像。
+    #[test]
+    fn wheel_download_urls_prefer_tuna_mirror_derived_from_pythonhosted() {
+        let lock = sample_lock();
+        let wheel = &lock.targets[0].wheels[0];
+        assert_eq!(
+            wheel_download_urls(wheel),
+            vec![
+                "https://pypi.tuna.tsinghua.edu.cn/packages/example-1.0.0-py3-none-any.whl"
+                    .to_string(),
+                wheel.url.clone(),
+            ]
+        );
+
+        let mut external = wheel.clone();
+        external.url = "https://mirror.example/whl/example.whl".to_string();
+        assert_eq!(
+            wheel_download_urls(&external),
+            vec![external.url.clone()],
+            "非 pythonhosted 地址不得派生镜像"
+        );
+
+        let nested =
+            "https://files.pythonhosted.org/packages/d0/00/abc/python_docx-1.2.0-py3-none-any.whl";
+        assert_eq!(
+            pythonhosted_mirror_url(nested).as_deref(),
+            Some(
+                "https://pypi.tuna.tsinghua.edu.cn/packages/d0/00/abc/python_docx-1.2.0-py3-none-any.whl"
+            )
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use agent_backend_api::SecretText;
 use fs2::FileExt;
 use hf_hub::api::sync::ApiBuilder;
-use hf_hub::{Cache, Repo, RepoType};
+use hf_hub::{Repo, RepoType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
 use rand::random;
@@ -499,7 +499,11 @@ fn hf_repo(
     }
     let cache_dir = scratch_root.join(".hf-cache").join("hub");
     fs::create_dir_all(&cache_dir).map_err(|_| ())?;
-    let api = ApiBuilder::from_cache(Cache::new(cache_dir))
+    // from_env 让 HF_ENDPOINT 生效（国内网络可设 https://hf-mirror.com 镜像；
+    // from_cache 会硬编码官方端点），缓存目录仍显式钉在评测 scratch 目录下，
+    // token 以显式参数为准（与原行为一致）。
+    let api = ApiBuilder::from_env()
+        .with_cache_dir(cache_dir)
         .with_progress(false)
         .with_token(Some(token.expose_to_backend().to_owned()))
         .build()
