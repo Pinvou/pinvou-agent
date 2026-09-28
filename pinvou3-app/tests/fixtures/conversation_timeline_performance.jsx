@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { ConversationTimeline } from '../../src/features/conversation/ConversationTimeline.jsx';
+import { CONVERSATION_VIRTUALIZATION_THRESHOLD } from '../../src/features/conversation/conversation-virtualization.js';
 
 const host = document.getElementById('root');
 const root = createRoot(host);
 let updateTurns = null;
 let updateBusy = null;
+let updateSessionId = null;
 const scrollElementRef = { current: null };
 const followOutputRef = { current: true };
 
@@ -36,8 +38,10 @@ function renderPerformanceItem(item) {
 function PerformanceTimeline() {
   const [visibleTurns, setVisibleTurns] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [sessionId, setSessionId] = useState('performance-session');
   updateTurns = setVisibleTurns;
   updateBusy = setBusy;
+  updateSessionId = setSessionId;
   return (
     <div
       ref={scrollElementRef}
@@ -46,7 +50,7 @@ function PerformanceTimeline() {
       <div data-testid="timeline-header" style={{ height: 96 }} />
       <ConversationTimeline
         turns={visibleTurns}
-        sessionId="performance-session"
+        sessionId={sessionId}
         scrollElementRef={scrollElementRef}
         followOutputRef={followOutputRef}
         busy={busy}
@@ -86,6 +90,10 @@ function commitConversation(nextTurns, nextBusy) {
     updateTurns(nextTurns);
   });
   return performance.now() - startedAt;
+}
+
+function commitSessionId(nextSessionId) {
+  flushSync(() => updateSessionId(nextSessionId));
 }
 
 function nextPaint() {
@@ -135,7 +143,7 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       - scrollElementRef.current.clientHeight
       - scrollElementRef.current.scrollTop;
     const nodes = host.querySelectorAll('*').length;
-    const shortContentVisibility = count <= 80
+    const shortContentVisibility = count <= CONVERSATION_VIRTUALIZATION_THRESHOLD
       ? getComputedStyle(host.querySelector('[data-conversation-turn]')).contentVisibility
       : null;
     const updatedTurns = baseTurns.slice();
@@ -150,7 +158,7 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       .some(element => element.dataset.conversationTurn === `turn-${count - 1}` && element.textContent.includes('tail-update'));
     const bottomIndexes = renderedTurnIndexes();
     const bottomRows = [...host.querySelectorAll('[data-conversation-virtual-row]')];
-    const virtualContentVisibility = count > 80
+    const virtualContentVisibility = count > CONVERSATION_VIRTUALIZATION_THRESHOLD
       ? [...host.querySelectorAll('[data-conversation-turn]')].map(element => getComputedStyle(element).contentVisibility)
       : [];
     const measuredGap = bottomRows.length > 1
@@ -209,6 +217,10 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
     };
   },
   async runCompletionMigration() {
+    // A fresh session id keeps every row key unseen by this virtualizer, so the
+    // completing row's first estimate really flows through the live-tail seed
+    // instead of a stale measured-size cache entry.
+    commitSessionId('completion-migration-session');
     const baseTurns = turns(100);
     baseTurns[baseTurns.length - 1] = {
       ...baseTurns[baseTurns.length - 1],
@@ -226,6 +238,12 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       button: beforeButton,
       mountId: beforeButton.dataset.mountId,
     };
+    // The row estimate for the completing turn must be seeded with the live
+    // tail's last measured height; read both before the completion commit and
+    // synchronously after it, before measureElement's observer corrects the
+    // row to its real height.
+    const liveTailHeight = host.querySelector('[data-conversation-live-tail]')
+      ?.getBoundingClientRect().height || 0;
     const completedTurns = baseTurns.slice();
     completedTurns[completedTurns.length - 1] = {
       ...baseTurns[baseTurns.length - 1],
@@ -235,6 +253,9 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
     };
     commitConversation(completedTurns, false);
     const immediateButton = host.querySelector('[data-stateful-probe="stateful-tail"]');
+    const immediateRow = host.querySelector('[data-conversation-turn="turn-99"]')
+      ?.closest('[data-conversation-virtual-row]');
+    const immediateRowSize = Number(immediateRow?.dataset.conversationVirtualSize || 0);
     const immediateScrollHeight = scrollElementRef.current.scrollHeight;
     const immediateBottomDistance = immediateScrollHeight
       - scrollElementRef.current.clientHeight
@@ -245,10 +266,34 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       sameElement: before.button === immediateButton && immediateButton === afterButton,
       statePreserved: afterButton?.getAttribute('aria-pressed') === 'true',
       mountPreserved: afterButton?.dataset.mountId === before.mountId,
+      liveTailHeight,
+      immediateRowSize,
       immediateBottomDistance,
       bottomDistance: scrollElementRef.current.scrollHeight
         - scrollElementRef.current.clientHeight
         - scrollElementRef.current.scrollTop,
+    };
+  },
+  async runBusyFallbackLiveTail() {
+    followOutputRef.current = true;
+    // Completed statuses but no terminal timestamps: the tail qualifies as live
+    // only through the busy flag, so this pins the component's busy wiring and
+    // the live tail's exclusion from the virtual rows.
+    const baseTurns = turns(100);
+    commitConversation(baseTurns, true);
+    const liveTail = host.querySelector('[data-conversation-live-tail]');
+    const liveTurnOutsideRows = Boolean(liveTail?.querySelector('[data-conversation-turn="turn-99"]'))
+      && !host.querySelector('[data-conversation-virtual-row] [data-conversation-turn="turn-99"]');
+    commitConversation(baseTurns, false);
+    scrollElementRef.current.scrollTop = scrollElementRef.current.scrollHeight;
+    await nextPaint();
+    return {
+      liveTailPresent: Boolean(liveTail),
+      liveTurnOutsideRows,
+      releasedTailGone: !host.querySelector('[data-conversation-live-tail]'),
+      releasedTurnInRows: Boolean(
+        host.querySelector('[data-conversation-turn="turn-99"]')?.closest('[data-conversation-virtual-row]'),
+      ),
     };
   },
 };

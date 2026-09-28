@@ -82,12 +82,28 @@ try {
   assert.ok(Math.abs(longTimeline.topTransformOffset) <= 1, `first row transform missed the header offset by ${longTimeline.topTransformOffset}px`);
   assert.ok(Math.abs(longTimeline.topScrollTop) <= 1, `top scroll position drifted by ${longTimeline.topScrollTop}px`);
 
+  const busyFallbackLiveTail = await page.evaluate(
+    () => window.__PINVOU_TIMELINE_PERFORMANCE__.runBusyFallbackLiveTail(),
+  );
+  assert.equal(busyFallbackLiveTail.liveTailPresent, true,
+    'a busy tail without a terminal must render through the live-tail escape (component busy wiring)');
+  assert.equal(busyFallbackLiveTail.liveTurnOutsideRows, true,
+    'the live tail turn must never render inside a virtual row');
+  assert.equal(busyFallbackLiveTail.releasedTailGone, true,
+    'releasing busy must return the tail to the virtualized history');
+  assert.equal(busyFallbackLiveTail.releasedTurnInRows, true,
+    'the released tail turn must mount as a virtual row');
+
   const completionMigration = await page.evaluate(
     () => window.__PINVOU_TIMELINE_PERFORMANCE__.runCompletionMigration(),
   );
   assert.equal(completionMigration.sameElement, true, 'live tail DOM identity must survive completion');
   assert.equal(completionMigration.statePreserved, true, 'live tail local UI state must survive completion');
   assert.equal(completionMigration.mountPreserved, true, 'live tail React subtree must not remount');
+  // The completing row's first estimate must be seeded with the live tail's
+  // last measured height (the default 240px estimate would read far lower).
+  assert.ok(completionMigration.immediateRowSize >= completionMigration.liveTailHeight - 4,
+    `row estimate was not seeded from the live tail: size ${completionMigration.immediateRowSize}px vs live tail ${completionMigration.liveTailHeight}px`);
   assert.ok(Math.abs(completionMigration.immediateBottomDistance) <= 1, `live tail completion drifted immediately by ${completionMigration.immediateBottomDistance}px`);
   assert.ok(Math.abs(completionMigration.bottomDistance) <= 1, `completed live tail drifted by ${completionMigration.bottomDistance}px`);
 

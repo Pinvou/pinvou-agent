@@ -14,6 +14,14 @@ test('conversation virtualization only activates for long scrollable timelines',
   assert.equal(shouldVirtualizeConversationTurns(CONVERSATION_VIRTUALIZATION_THRESHOLD + 1, scrollElementRef), true);
 });
 
+test('the virtualization threshold stays at its tuned literal', () => {
+  // Pinned on purpose: the helper's self-referential assertions above pass for
+  // any constant, while the perf fixture and the browser smoke calibrate their
+  // short/long scenarios to 80 turns. Retuning the threshold must be a
+  // conscious change that revisits those calibrations.
+  assert.equal(CONVERSATION_VIRTUALIZATION_THRESHOLD, 80);
+});
+
 test('the final running turn stays in the normal-flow live tail', () => {
   const turns = [
     { id: 'completed', status: 'completed' },
