@@ -4495,7 +4495,11 @@ fn retention_reclaims_an_unreadable_orphan_aux_by_filename_identity() {
 /// A transient read fault on the parent record must surface as a load
 /// error, never as "the parent session no longer exists" — misreporting a
 /// transient fault at panel-open as a deletion would flip the panel into
-/// the wrong failure class.
+/// the wrong failure class. The fault injection is the unix ELOOP symlink
+/// (same shape as the two probe tests above); the portable directory
+/// variant pins the probe side cross-platform in
+/// `fail_closed_probes_treat_a_non_file_record_as_present`.
+#[cfg(unix)]
 #[test]
 fn aux_creation_classifies_a_transient_parent_fault_as_not_deleted() {
     let (store, _g) = isolated_store();
