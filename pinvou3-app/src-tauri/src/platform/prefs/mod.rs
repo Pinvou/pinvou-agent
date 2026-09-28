@@ -388,8 +388,12 @@ impl SavedModel {
     /// non-local provider keeps its `off`:
     /// - official DeepSeek base URLs won provider resolution even for local
     ///   presets (old default `high`);
-    /// - vendor-tagged records resolve through the vendor table (old
-    ///   default `high`/null), which also covers coding-plan endpoints;
+    /// - known-vendor or coding-plan records resolved through the vendor
+    ///   table (old default `high`/null); unknown free-text vendors keep
+    ///   their `off` too — the old form fell through to the local check
+    ///   for those, but saved vendor values only come from catalog groups,
+    ///   and keeping a machine-written `off` merely preserves the old
+    ///   behavior;
     /// - public OpenAI-compatible endpoints had no tier control at all.
     pub(crate) fn legacy_machine_written_local_thinking_off(&self) -> bool {
         if self.reasoning_effort.as_deref() != Some("off") {
@@ -1984,11 +1988,13 @@ mod tests {
             reasoning_effort: reasoning_effort.map(str::to_string),
             model: "qwen3-32b".into(),
             base_url: base_url.into(),
-            provider_kind: Some(match preset {
-                ModelPreset::OpenaiCompatible => MODEL_PROVIDER_KIND_CUSTOM,
-                _ => MODEL_PROVIDER_KIND_OFFICIAL_API,
-            }
-            .into()),
+            provider_kind: Some(
+                match preset {
+                    ModelPreset::OpenaiCompatible => MODEL_PROVIDER_KIND_CUSTOM,
+                    _ => MODEL_PROVIDER_KIND_OFFICIAL_API,
+                }
+                .into(),
+            ),
             vendor: vendor.map(str::to_string),
             endpoint_mode: None,
             image_capability_override: ImageCapabilityOverride::default(),
@@ -1999,6 +2005,68 @@ mod tests {
             has_secret: false,
             credential_action: None,
         }
+    }
+
+    /// Pins each arm of the migration predicate individually, so a one-line
+    /// relaxation cannot slip past the end-to-end load test (whose fixtures
+    /// only exercise the arms on records the old UI could produce):
+    /// LocalVllm strips regardless of base URL — yet the official-DeepSeek
+    /// keep wins first — and the OpenaiCompatible strip requires a
+    /// non-coding-plan kind, an empty vendor, and a local route.
+    #[test]
+    fn legacy_machine_written_local_thinking_off_predicate_arms() {
+        let strips = |preset, base_url: &str, vendor: Option<&str>| {
+            legacy_model_fixture("m", preset, base_url, vendor, Some("off"))
+                .legacy_machine_written_local_thinking_off()
+        };
+        // LocalVllm: machine-written for every record, public URL included…
+        assert!(strips(
+            ModelPreset::LocalVllm,
+            "http://127.0.0.1:8000/v1",
+            None
+        ));
+        assert!(strips(
+            ModelPreset::LocalVllm,
+            "https://relay.example.com/v1",
+            None
+        ));
+        // …but the official DeepSeek URL keep wins even for LocalVllm.
+        assert!(!strips(
+            ModelPreset::LocalVllm,
+            "https://api.deepseek.com",
+            None
+        ));
+        // OpenaiCompatible: local route with an empty vendor strips…
+        assert!(strips(
+            ModelPreset::OpenaiCompatible,
+            "http://192.168.1.20:11434/v1",
+            None
+        ));
+        // …a known vendor keeps even on a local route…
+        assert!(!strips(
+            ModelPreset::OpenaiCompatible,
+            "http://192.168.1.20:11434/v1",
+            Some("glm")
+        ));
+        // …a coding-plan kind keeps even on a local route…
+        let mut coding_plan = legacy_model_fixture(
+            "plan",
+            ModelPreset::OpenaiCompatible,
+            "http://127.0.0.1:8317/v1",
+            None,
+            Some("off"),
+        );
+        coding_plan.provider_kind = Some(MODEL_PROVIDER_KIND_CODING_PLAN.into());
+        assert!(!coding_plan.legacy_machine_written_local_thinking_off());
+        // …and only the exact machine-written value strips.
+        let low = legacy_model_fixture(
+            "m",
+            ModelPreset::OpenaiCompatible,
+            "http://192.168.1.20:11434/v1",
+            None,
+            Some("low"),
+        );
+        assert!(!low.legacy_machine_written_local_thinking_off());
     }
 
     /// #622: the settings page machine-wrote the local default `off` into
@@ -2187,16 +2255,13 @@ mod tests {
 
         let mut prefs = UserPrefs::default();
         prefs.local_thinking_default_migrated = true;
-        prefs
-            .advanced
-            .saved_models
-            .push(legacy_model_fixture(
-                "explicit-off",
-                ModelPreset::LocalVllm,
-                "http://127.0.0.1:8000/v1",
-                None,
-                Some("off"),
-            ));
+        prefs.advanced.saved_models.push(legacy_model_fixture(
+            "explicit-off",
+            ModelPreset::LocalVllm,
+            "http://127.0.0.1:8000/v1",
+            None,
+            Some("off"),
+        ));
         let path = super::super::paths::settings_path();
         std::fs::write(
             &path,
@@ -2255,16 +2320,13 @@ mod tests {
         let _prefs_home = PrefsHomeGuard::set(home);
 
         let mut prefs = UserPrefs::default();
-        prefs
-            .advanced
-            .saved_models
-            .push(legacy_model_fixture(
-                "cloud-only",
-                ModelPreset::Deepseek,
-                "https://api.deepseek.com",
-                None,
-                Some("high"),
-            ));
+        prefs.advanced.saved_models.push(legacy_model_fixture(
+            "cloud-only",
+            ModelPreset::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            Some("high"),
+        ));
         let path = super::super::paths::settings_path();
         std::fs::write(
             &path,

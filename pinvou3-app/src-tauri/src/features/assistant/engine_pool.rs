@@ -1572,8 +1572,9 @@ impl EnginePool {
         // probe request carries a credential from the same origin as real
         // inference (bridge.api_key()): authenticated vLLM (--api-key) 401s
         // on /v1/models without credentials, and misclassifying it as a
-        // generic endpoint loses default-off thinking and the vLLM tiers
-        // (inference itself still succeeds with the configured key).
+        // generic endpoint loses the local default thinking tier and the
+        // vLLM tiers (inference itself still succeeds with the configured
+        // key).
         if bridge.provider() == "openai" && base_url_uses_local_or_private(&bridge.base_url()) {
             let api_key = bridge.api_key();
             bridge.probed_local_kind = Some(
