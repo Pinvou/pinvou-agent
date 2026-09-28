@@ -825,7 +825,11 @@ test('reconcileLiveTaskIds: a mid-life empty listing is skipped, not treated as 
   const purged = [];
   reconcileLiveTaskIds(known, new Set(), (id) => purged.push(id));
   assert.deepEqual(purged, [], 'an empty live listing must not purge every known task');
-  assert.deepEqual([...known].sort(), ['kept-a', 'kept-b'], 'known ids survive the empty listing');
+  assert.deepEqual(
+    [...known].sort((a, b) => a.localeCompare(b)),
+    ['kept-a', 'kept-b'],
+    'known ids survive the empty listing',
+  );
   // The guard is one-way: a non-empty listing still diffs normally, and the
   // initial-empty case (nothing known) never bailed in the first place.
   reconcileLiveTaskIds(known, new Set(['kept-a']), (id) => purged.push(id));
