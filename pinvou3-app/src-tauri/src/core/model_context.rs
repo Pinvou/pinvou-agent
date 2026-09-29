@@ -228,7 +228,9 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
 /// default (64K), so an over-documented row can only raise the wire cap to
 /// 64K, never above what the engine would ask for a catalogued model.
 /// Consumed by `bridge::route_limits_for_model` as the route output fact when
-/// the user declared no explicit value and the endpoint is not operator-owned.
+/// the user declared no explicit value and no operator-tier declaration
+/// resolved (the tier declines for tiny windows; this anchor then still
+/// supplies the documented fact).
 const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // GPT-6 family: 128,000 max output tokens — the same figure the base
     // documents for the gpt-5.5/gpt-5.6 rows (crates/tui/src/models.rs), and
@@ -242,10 +244,21 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("gpt-6-sol", 128_000),
     ("gpt-6-luna", 128_000),
     ("gpt-6-astra", 128_000),
+    // gpt-5.4-mini: 128,000 max output tokens — the figure on the official
+    // model page (developers.openai.com/api/docs/models/gpt-5.4-mini, per
+    // the 2026-09-29 search index; the page itself is bot-shielded from the
+    // dev environment — re-verify when reachable), matching the GPT-5.4
+    // family precedent (the full model documents 128K output). The id rides
+    // the Responses wire (`openai_responses_wire_model`) with reasoning
+    // metered as output, so without this row the engine's 8192 uncatalogued
+    // fail-close applies — a cap the Chat wire never metered reasoning
+    // against.
+    ("gpt-5.4-mini", 128_000),
 ];
 
-/// 解析 pinvou3 已知模型的官方最大输出档：底座 catalog 缺行的模型的 route
-/// output fact 补充锚点，避免未收录旗舰被 8192 兜底钳死。
+/// Documented max-output anchors for models the base catalog has no output
+/// row for: a route output fact that keeps uncatalogued flagships from the
+/// engine's conservative 8192 fail-close.
 #[must_use]
 pub fn resolved_output_limit(model: &str) -> Option<u32> {
     let lower = model.trim().to_ascii_lowercase();
@@ -415,6 +428,14 @@ mod tests {
         assert_eq!(resolved_output_limit("gpt-6-luna"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-astra"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-sol-2026-05-01"), Some(128_000));
+        // gpt-5.4-mini rides the Responses wire too (prefix predicate) and has
+        // no base output row; without the anchor it fail-closes to 8192 while
+        // reasoning meters as output on that wire.
+        assert_eq!(resolved_output_limit("gpt-5.4-mini"), Some(128_000));
+        assert_eq!(
+            resolved_output_limit("gpt-5.4-mini-2026-03-17"),
+            Some(128_000)
+        );
         assert_eq!(resolved_output_limit("gpt-5.6-terra"), None);
         assert_eq!(resolved_output_limit("my-aggregator-model"), None);
         assert_eq!(resolved_output_limit(""), None);

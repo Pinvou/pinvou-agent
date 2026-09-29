@@ -869,9 +869,11 @@ fn voice_reasoning_dialect(
         | crate::platform::prefs::ModelPreset::LocalVllm
         | crate::platform::prefs::ModelPreset::Deepseek
         | crate::platform::prefs::ModelPreset::Openai
-        // 自定义 Responses 端点只切换主会话引擎 route；本 wrapper 服务的
-        // 语音输出等辅助调用仍是单发 Chat Completions（无工具调用，gpt-6
-        // 家族在 Chat 协议下纯文本可用），按 URL/模型名回退判定。
+        // Custom Responses endpoints only switch the main-session engine
+        // route; the aux calls this wrapper serves (voice output etc.) stay
+        // single-shot Chat Completions (no tool calls; the gpt-6 family
+        // works plain-text on the Chat protocol), so resolution falls back
+        // to URL/model-name sniffing.
         | crate::platform::prefs::ModelPreset::OpenaiResponses
         | crate::platform::prefs::ModelPreset::Anthropic
         | crate::platform::prefs::ModelPreset::Gemini

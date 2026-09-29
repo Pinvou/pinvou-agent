@@ -64,9 +64,10 @@ const MODEL_PRESET_DEFS = {
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.6-pro' },
   openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6-sol' },
-  // 自定义 OpenAI Responses 兼容接口:协议为 /v1/responses(bridge 走底座
-  // named-custom route + wire="responses")。默认地址/模型预填官方端点即开即用,
-  // 指向聚合平台时用户会连同地址一起改掉模型。
+  // Custom OpenAI Responses endpoints: protocol is /v1/responses (the bridge
+  // lands on the foundation's named-custom route with wire="responses"). The
+  // default URL/model prefill the official endpoint so it works out of the
+  // box; users aiming at an aggregator change the model along with the URL.
   openai_responses: { baseUrl: 'https://api.openai.com/v1',         model: 'gpt-6-sol' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-opus-5-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
@@ -979,10 +980,12 @@ const MODEL_CATALOG = {
       ],
     },
     {
-      // 自定义 OpenAI Responses 兼容接口（/v1/responses 协议）。与 Chat
-      // Completions（openai_compatible）、Anthropic（Messages）并列的第三种
-      // 自定义协议面；bridge 走底座 named-custom route + wire="responses"
-      // （RESPONSES_ROUTE_PROVIDER），端点身份不做模型名判定。
+      // Custom OpenAI Responses endpoints (/v1/responses protocol). The
+      // third custom protocol surface beside Chat Completions
+      // (openai_compatible) and Anthropic (Messages); the bridge lands on
+      // the foundation's named-custom route with wire="responses"
+      // (RESPONSES_ROUTE_PROVIDER), with no model-name matching for the
+      // endpoint identity.
       key: 'openai_responses',
       section: 'custom',
       title: 'OpenAI Responses Compatible',
@@ -1169,8 +1172,9 @@ function selectorSubLabel(m, t) {
   if (m.preset === 'local_vllm') return localModelNameFn ? localModelNameFn(m.model) : m.model;
   const provider = findCloudProviderForModel(m);
   if (provider) return providerLabelForModel(m, t);
-  // 自定义 Responses 组与 openai_compatible 一样是自定义云端点：sub-label 按自身
-  // preset 归属，而不是把 Responses 协议的模型一律标成 Chat 兼容组。
+  // The custom Responses group is a custom cloud endpoint just like
+  // openai_compatible: attribute the sub-label to its own preset instead of
+  // labeling every Responses-protocol model as the Chat-compatible group.
   return presetProviderLabel(m.preset === 'openai_responses' ? m.preset : 'openai_compatible', t);
 }
 
@@ -1216,12 +1220,13 @@ const REASONING_EFFORT_TIERS = {
   // openai_compatible_reasoning_effort); the frontend exposes one unified max
   // label.
   openai: ['off', 'low', 'medium', 'high', 'max'],
-  // OpenAI Responses wire（GPT×Responses 命中的 openai preset 行 + 整个
-  // openai_responses 组；bridge RESPONSES_ROUTE_PROVIDER）。底座 Responses
-  // effort 映射（responses.rs responses_reasoning_effort 非 deepseek 分支）
-  // 没有 "none"：off 归一为 low，max/xhigh 归一为 xhigh，medium 原样透传。
-  // off 与 low 等效故不暴露（与「不展示实际相同的值」约定一致）；max 按统一
-  // 标签暴露（wire 发 xhigh）。
+  // OpenAI Responses wire (openai preset rows hit by GPT×Responses + the
+  // whole openai_responses group; bridge RESPONSES_ROUTE_PROVIDER). The
+  // foundation's Responses effort mapper (responses.rs
+  // responses_reasoning_effort, non-deepseek arm) has no "none": off
+  // normalizes to low, max/xhigh to xhigh, medium passes through. off is
+  // hidden because it equals low there (the "no lookalike tiers" rule); max
+  // is exposed under the unified label (the wire carries xhigh).
   openai_responses: ['low', 'medium', 'high', 'max'],
   // xai: the base apply_xai_grok_4_6_reasoning_effort injects reasoning_effort
   // only for grok-4.6 / grok-4.5 on the exact api.x.ai/v1
@@ -1244,10 +1249,12 @@ function isOpenaiReasoningFamilyModel(model) {
     || isOpenaiCodexModel(lower);
 }
 
-// 对齐 bridge.rs `openai_responses_wire_model`：OpenAI 官方口径下 Responses
-// API 支持函数调用的 GPT 模型（品悟目录收录 ∩ Responses 支持，2026-09-29
-// 逐模型页核验）。命中即切 Responses wire（bridge RESPONSES_ROUTE_PROVIDER），
-// 目录外的手输 id 不命中、保持 Chat wire。
+// Mirrors bridge.rs `openai_responses_wire_model`: GPT models for which the
+// Responses API supports function calling under OpenAI's official wording
+// (Pinvou catalog ∩ Responses support, verified 2026-09-29 against the
+// per-model pages). A hit switches to the Responses wire (bridge
+// RESPONSES_ROUTE_PROVIDER); hand-typed ids outside the catalog do not match
+// and keep the Chat wire.
 function isOpenaiResponsesWireModel(model) {
   const lower = String((model && model.model) || '').trim().toLowerCase();
   return lower.startsWith('gpt-6')
@@ -1416,9 +1423,10 @@ function vendorReasoningProvider(vendor, model) {
   if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
   if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
   if (vendor === 'xai' || vendor === 'grok') return 'xai'; // see reasoningEffortTiersForModel for exact-route tiers
-  // OpenAI 官方 vendor：Responses wire 命中（GPT 家族）走 openai_responses
-  // 档位表；其余 reasoning 家族（codex 等 Chat 路由）保持 openai 表；非
-  // reasoning 家族无档位（null）。
+  // Official OpenAI vendor: a Responses wire hit (the GPT family) takes the
+  // openai_responses tier table; other reasoning families (codex etc. on the
+  // Chat route) keep the openai table; non-reasoning families get no tiers
+  // (null).
   if (vendor === 'openai') {
     if (isOpenaiResponsesWireModel(model)) return 'openai_responses';
     return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
@@ -1535,8 +1543,9 @@ function reasoningProviderForModel(model) {
     case 'anthropic': return 'anthropic';
     case 'xai': return 'xai';
     case 'openai':
-      // 对齐 bridge engine_route_provider：GPT×Responses 命中走 openai_responses
-      // 档位表，其余 reasoning 家族保持 Chat 语义的 openai 表。
+      // Mirrors the bridge's engine_route_provider: a GPT×Responses hit takes
+      // the openai_responses tier table; other reasoning families keep the
+      // Chat-semantics openai table.
       if (isOpenaiResponsesWireModel(model)) return 'openai_responses';
       return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
     case 'openai_responses': return 'openai_responses';
@@ -1746,10 +1755,13 @@ function normalizeStoredReasoningEffort(model, stored) {
     if (canonical === 'off') canonical = 'low';
     else if (canonical === 'medium') canonical = 'high';
   }
-  // OpenAI Responses wire（GPT×Responses 命中的 openai 行 + 整个 openai_responses
-  // 组）：底座 Responses effort 映射没有 none（responses.rs codex_responses_reasoning_effort
-  // 的 off→low），故 off 的路由真实等价档位是 low——与上面 K3 是同一条规则。存量
-  // Chat 档 off 若按默认回落到 high，用户「最少思考」的意图会被静默反转成最多思考。
+  // OpenAI Responses wire (openai rows hit by GPT×Responses + the whole
+  // openai_responses group): the foundation's Responses effort mapper has no
+  // none (responses.rs codex_responses_reasoning_effort's off→low), so the
+  // route's wire-true equivalent of off is low — the same rule as the K3
+  // ladder above. A chat-era stored off falling back to the default high
+  // would silently invert the user's "minimal reasoning" intent into the
+  // most reasoning.
   if (canonical === 'off' && reasoningProviderForModel(model) === 'openai_responses') {
     canonical = 'low';
   }

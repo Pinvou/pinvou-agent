@@ -29,10 +29,11 @@ pub enum ModelPreset {
     Mimo,
     /// OpenAI 官方 API
     Openai,
-    /// 自定义 OpenAI Responses 兼容接口（`/v1/responses` 协议）。走底座
-    /// named-custom route + `wire = "responses"`（见 bridge `engine_route_provider`），
-    /// 与「OpenAI Compatible」(Chat Completions)、「Anthropic」(Messages) 并列的
-    /// 第三种自定义协议面。
+    /// Custom OpenAI Responses endpoints (the `/v1/responses` protocol).
+    /// Rides the foundation's named-custom route with
+    /// `wire = "responses"` (see the bridge's `engine_route_provider`) — the
+    /// third custom protocol surface beside "OpenAI Compatible" (Chat
+    /// Completions) and "Anthropic" (Messages).
     OpenaiResponses,
     /// Anthropic Claude（Messages 原生协议，底座内建 anthropic provider）
     Anthropic,
@@ -242,9 +243,11 @@ impl ModelPreset {
             // monitor `preset_default_models_resolve_engine_context_window`
             // test).
             ModelPreset::Openai => "gpt-6-sol",
-            // 自定义 Responses 端点的迁移兜底（前端模板同样预填）；协议与官方
-            // 端点一致，故预填官方旗舰即开即用，指向聚合平台时用户会连同
-            // base_url 一起改掉模型。
+            // Migration fallback for custom Responses endpoints (the frontend
+            // template prefills the same); the protocol matches the official
+            // endpoint, so prefilling the official flagship works out of the
+            // box, and users aiming at an aggregator change the model
+            // together with the base_url anyway.
             ModelPreset::OpenaiResponses => "gpt-6-sol",
             // claude-opus-5-5 (2026-09-22) per the official models overview
             // "start with Claude Opus 5.5 for most workloads".
@@ -280,9 +283,11 @@ impl ModelPreset {
                 }
                 _ => Some(1_050_000),
             },
-            // 自定义 Responses 端点：端点身份未知，与 OpenaiCompatible 同取保守
-            // 131072（官方端点的已知模型由底座 catalog / core::model_context
-            // 先行解析，兜底承接不到）。
+            // Custom Responses endpoints: the endpoint identity is unknown,
+            // so take the same conservative 131072 as OpenaiCompatible
+            // (known models on official endpoints resolve earlier via the
+            // base catalog / core::model_context; this fallback only catches
+            // what they miss).
             ModelPreset::OpenaiResponses => Some(131_072),
             // Anthropic 官方口径：haiku 200K，opus/sonnet/fable 1M
             // （claude-opus-5 由 model_context 的 PINVOU_OVERRIDES 先行覆盖，此处兜
@@ -355,9 +360,11 @@ mod tests {
         }
     }
 
-    /// 存量 settings.json 的往返序列化：新变体必须以 `as_str()` 的拼写字面
-    /// 序列化并原样解析回来。rename_all=snake_case 是隐式契约，拼错一个字母
-    /// 旧版本写入的档位就会在加载时被静默丢弃。
+    /// Round-trip serialization against stored settings.json: the new
+    /// variant must serialize to the exact `as_str()` spelling and parse
+    /// back unchanged. rename_all=snake_case is an implicit contract — one
+    /// misspelled letter and tiers written by older versions would be
+    /// silently dropped at load.
     #[test]
     fn model_preset_serialization_round_trips_through_settings_json() {
         for preset in [
@@ -376,12 +383,13 @@ mod tests {
         }
         // The JS-side cross-checks parse as_str() tables for defaults; this
         // pins the serde spelling itself for the variant this PR introduces.
-        let legacy_json = r#"{"preset":"openai_responses","model":"my-aggregator-model"}"#;
+        let openai_responses_json =
+            r#"{"preset":"openai_responses","model":"my-aggregator-model"}"#;
         #[derive(serde::Deserialize)]
         struct SavedPresetProbe {
             preset: ModelPreset,
         }
-        let probe: SavedPresetProbe = serde_json::from_str(legacy_json).unwrap();
+        let probe: SavedPresetProbe = serde_json::from_str(openai_responses_json).unwrap();
         assert_eq!(probe.preset, ModelPreset::OpenaiResponses);
     }
 
@@ -394,7 +402,8 @@ mod tests {
             (ModelPreset::Openai, Some("gpt-5.3-codex"), 400_000),
             (ModelPreset::Openai, Some("gpt-5.6-sol"), 1_050_000),
             (ModelPreset::Openai, None, 1_050_000),
-            // 自定义 Responses 端点兜底与 OpenaiCompatible 同取 131072
+            // Custom Responses endpoints take the same 131072 fallback as
+            // OpenaiCompatible
             (ModelPreset::OpenaiResponses, Some("gpt-6-sol"), 131_072),
             (ModelPreset::OpenaiResponses, None, 131_072),
             // Anthropic：haiku 200K；底座不认识的非 claude 命名模型兜底 1M

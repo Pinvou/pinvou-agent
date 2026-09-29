@@ -643,8 +643,9 @@ fn review_reasoning_dialect(
         | ModelPreset::LocalVllm
         | ModelPreset::Deepseek
         | ModelPreset::Openai
-        // 自定义 Responses 端点只切换主会话引擎 route；评审辅助调用仍是单发
-        // Chat Completions（无工具调用），按 URL/模型名回退判定。
+        // Custom Responses endpoints only switch the main-session engine
+        // route; review aux calls stay single-shot Chat Completions (no
+        // tool calls), so resolution falls back to URL/model-name sniffing.
         | ModelPreset::OpenaiResponses
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
