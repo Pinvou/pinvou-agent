@@ -310,11 +310,12 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 }
 
 {
-  // Voice-task sends: meta must carry voiceOperationId — the bridge's
-  // admission gate and the dispatch exit both settle against it. This is an
-  // execution-level regression anchor for the ChatView funnel: the moment
-  // voiceMeta stops being merged into meta (something a regex counting
-  // source call sites cannot detect), this case goes red.
+  // Voice-task sends: given meta already carries voiceOperationId, the
+  // bridge's admission gate must park the operation and the dispatched exit
+  // must settle it accepted. This pins the bridge-level contract only — the
+  // case builds meta itself, so a ChatView merge-drop stays green here. The
+  // funnel hop above the merge (resolve → begin → dispatch argument) is
+  // pinned by source anchors in voice_operation_lifecycle.test.mjs.
   const begins = [];
   const completes = [];
   const { feature, state } = createTauriChat({

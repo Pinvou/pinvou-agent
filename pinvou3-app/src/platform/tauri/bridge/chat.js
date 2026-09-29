@@ -88,6 +88,12 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     // could never fire and the retained text would be silently dropped.
     if (pendingTaskDraftRecovery.buffer && !state.activeSessionId) {
       state.composerDraft = [state.composerDraft, pendingTaskDraftRecovery.buffer.text].filter(Boolean).join("\n");
+      // The text is visibly back in the live draft: the voice association
+      // follows it, or a manual retry would be orphaned in the dead
+      // recording-time epoch.
+      if (pendingTaskDraftRecovery.buffer.operationId) {
+        voice().rebindVoiceOperationToDraft(pendingTaskDraftRecovery.buffer.operationId, state.draftEpoch);
+      }
       pendingTaskDraftRecovery.buffer = null;
     }
     return String(state.composerDraft || "");
@@ -124,11 +130,25 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, null, false);
       const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
-      pendingTaskDraftRecovery.buffer = { text: [retained, text].filter(Boolean).join("\n") };
+      const retainedOperationId = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.operationId : null;
+      pendingTaskDraftRecovery.buffer = {
+        text: [retained, text].filter(Boolean).join("\n"),
+        // The newest operation wins: the rebind on draft return adopts the
+        // most recent stranded send (one operation per manual send).
+        operationId: owner.operationId || retainedOperationId || null,
+      };
     } else {
       // Back in the draft — any epoch, because re-entering the draft
       // allocates a new one (enterDraft increments unconditionally).
-      if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, null, false);
+      if (owner.operationId) {
+        voice().completeVoiceSubmission(owner.operationId, null, false);
+        // The text is visibly back in the live draft: rebind the operation to
+        // the new epoch so a manual retry adopts it instead of orphaning the
+        // association in the dead recording-time epoch (the complete above
+        // may already have terminalized it via a queued cancel; the rebind
+        // refuses terminal operations).
+        voice().rebindVoiceOperationToDraft(owner.operationId, state.draftEpoch);
+      }
       prefillComposer(text, true);
     }
     owner.restored = true;

@@ -85,6 +85,7 @@ function operationHarness(lane) {
     rememberVoiceOperation, getVoiceOperationId, beginVoiceSubmission,
     voiceOperationSessionId, completeVoiceSubmission, trackVoiceTerminal,
     abandonCompletedVoiceResult, abandonVoiceResult, dismissVoiceInput,
+    rebindVoiceOperationToDraft,
     ...(typeof rebindVoiceDraftAfterRollback === "function" ? { rebindVoiceDraftAfterRollback } : {}),
   };`, sandbox);
   return withOperations({ api: sandbox.api, state });
@@ -163,6 +164,32 @@ test("desktop: only a proven same-draft rollback may rebind the draft associatio
   // A non-adjacent epoch jump is never a rollback.
   assert.equal(h.api.rebindVoiceDraftAfterRollback(operation.operationId, 5, 7), false);
   assert.equal(operation.draftEpoch, 5);
+});
+
+// ── The departed-draft rebind: a restored text carries its operation into the live epoch ──
+test("desktop: a draft-return rebind re-adopts the restored operation, and only that shape", () => {
+  const h = operationHarness("desktop");
+  const operation = h.operation("voiceop-departed");
+  h.state.draftEpoch = 9;
+  assert.equal(h.api.getVoiceOperationId(null, "chat"), null, "the dead recording-time epoch cannot adopt");
+  assert.equal(h.api.rebindVoiceOperationToDraft(operation.operationId, 9), true);
+  assert.equal(operation.draftEpoch, 9);
+  assert.equal(h.api.getVoiceOperationId(null, "chat"), operation.operationId, "the restored text's manual retry keeps its provenance");
+  // Refusals: a terminal operation, a session-bound operation, a non-chat operation.
+  h.api.trackVoiceTerminal("voice_cancelled", operation);
+  assert.equal(h.api.rebindVoiceOperationToDraft(operation.operationId, 9), false, "terminal operations never rebind");
+  const bound = h.operation("voiceop-bound", "chat", "session-a");
+  assert.equal(h.api.rebindVoiceOperationToDraft(bound.operationId, 9), false, "session-bound operations never rebind");
+  const codex = h.operation("voiceop-codex", "codex", null);
+  assert.equal(h.api.rebindVoiceOperationToDraft(codex.operationId, 9), false, "non-chat operations never rebind");
+});
+
+test("web: the departed-draft rebind keeps the restored operation adoptable too", () => {
+  const h = operationHarness("web");
+  const operation = h.operation("voiceop-webdeparted");
+  h.state.draftEpoch = 8;
+  assert.equal(h.api.rebindVoiceOperationToDraft(operation.operationId, 8), true);
+  assert.equal(h.api.getVoiceOperationId(null, "chat"), operation.operationId);
 });
 
 // ── Desktop ownership claim: the microphone must stay closed until the claim lands ──
@@ -421,11 +448,12 @@ test("chatview: the task lane consumes only its own draft and maps restored to n
 });
 
 // ── Rust ownership claim release/spoof rules (pure state machine mirror) ──
-test("ownership: tokenless clears are rejected and stale teardown cannot wipe a newer claim", async () => {
+test("ownership: the JS sync rejects tokenless clears; the claim/release rules stay in the Rust tests", async () => {
+  // The real stale-teardown/spoof rules are pinned by the Rust unit tests
+  // (update_recording_owner); this pin only covers the shipped JS guard
+  // surface: tokenless syncs are rejected outright and the IPC carries the
+  // operation token.
   const rustSource = read("src-tauri/src/features/voice_shortcut.rs");
-  // The rules live in the Rust unit tests (update_recording_owner); the
-  // frontend guard mirrors them: assert the shipped JS side rejects
-  // tokenless clears outright.
   const bridgeSource = sources.desktop;
   assert.match(
     bridgeSource,
@@ -441,6 +469,92 @@ test("ownership: tokenless clears are rejected and stale teardown cannot wipe a 
     rustSource,
     /fn update_recording_owner\(/,
     "Rust keeps the claim/release state machine testable (update_recording_owner)",
+  );
+});
+
+// ── Lane identity and cross-context cancellation wiring ──
+test("identity: the hook forwards lane identity and cancels an in-flight recording on context change", () => {
+  const hookSource = read("src/features/voice-composer/useComposerVoiceInput.js");
+  // startVoiceInput must carry the adapter's lane identity: without it every
+  // operation is booked under the chat lane, the bridge's ownerKind
+  // exemption is dead code, and the codex session binding silently no-ops.
+  const startCall = hookSource.indexOf("bridge.voice.startVoiceInput(");
+  const ownerOption = hookSource.indexOf("ownerKind: current.ownerKind || 'chat',", startCall);
+  const sessionOption = hookSource.indexOf("sessionId: current.sessionId || null,", startCall);
+  assert.ok(startCall >= 0, "the hook must start recordings through the bridge");
+  assert.ok(ownerOption > startCall, "the start options must forward the adapter's ownerKind");
+  assert.ok(sessionOption > ownerOption, "the start options must forward the adapter's sessionId");
+  // An identity change must cancel an in-flight recording: the seconds-long
+  // transcription window otherwise delivers (and in task mode auto-sends)
+  // into whichever context is active at writeback time.
+  const identityAnchor = hookSource.indexOf("const previous = voiceContextIdentityRef.current;");
+  const activeCheck = hookSource.indexOf("isVoiceActive({ status: voiceInput && voiceInput.status })", identityAnchor);
+  const cancelCall = hookSource.indexOf("cancelVoice();", activeCheck);
+  assert.ok(identityAnchor >= 0, "the identity-change effect must exist");
+  assert.ok(activeCheck > identityAnchor, "the identity-change effect must check for an in-flight recording");
+  assert.ok(cancelCall > activeCheck, "the identity-change effect must cancel the in-flight recording");
+  // The web session creation must honor the caller's identity exactly like
+  // the desktop lane (explicit null included).
+  assert.match(
+    sources.web,
+    /sessionId: options && Object\.prototype\.hasOwnProperty\.call\(options, "sessionId"\)\s*\?\s*options\.sessionId\s*:\s*state\.activeSessionId \|\| null,/,
+    "the web lane must read the caller's sessionId like the desktop lane",
+  );
+  // The claim must never carry an unreadable window label: the Rust command
+  // treats it as a release and the user would be told another window is
+  // recording.
+  assert.match(
+    sources.desktop,
+    /if \(label === ""\) return Promise\.resolve\("error"\);/,
+    "an empty window label must report the ownership check as unavailable",
+  );
+  for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
+    // A failed start must not leave partial PCM pinned on the terminal
+    // operation record; the release must follow the teardown (which detaches
+    // the audio callback first).
+    assert.match(
+      source,
+      /catch \(err\) \{\s*cleanupVoiceInputSession\(session\);[\s\S]{0,200}?session\.chunks = null;/,
+      `${lane} start failures must release the partial PCM after the teardown`,
+    );
+  }
+  // Web parity: a terminalized operation must not be overwritten by the
+  // completed notice during the writeback await.
+  assert.match(
+    sources.web,
+    /if \(session\.telemetryTerminal\) return;\s*setVoiceInputStatus\("completed"/,
+    "the web completed notice must respect the terminal latch like the desktop lane",
+  );
+  // The web enterDraft discard must close voice-carrying first-turn
+  // submissions: the submission record is gone, so a parked operation could
+  // never reconcile and would stay unadoptable and unsweepable until the
+  // page closes.
+  assert.match(
+    sources.web,
+    /const submission = firstTurnSubmissions\[item\.clientMessageId\];[\s\S]{0,300}?completeVoiceSubmission\(submission\.voiceOperationId, null, false\);\s*abandonVoiceResult\(submission\.voiceOperationId\);/,
+    "enterDraft must un-park and close the voice operation of a discarded first-turn submission",
+  );
+});
+
+test("desktop: an unreadable window label reports the ownership check unavailable instead of another window", async () => {
+  const source = sources.desktop;
+  const start = source.indexOf("  function syncVoiceShortcutRecording(label, token) {");
+  const end = source.indexOf("  function setVoiceShortcutEnabled(enabled) {", start);
+  assert.ok(start >= 0 && end > start, "desktop must keep the ownership sync helper");
+  const invokeCalls = [];
+  const sandbox = baseSandbox({ activeSessionId: null, draftEpoch: 4, composerDraft: "", voiceInput: null });
+  sandbox.invoke = async (command, args) => { invokeCalls.push([command, args]); return true; };
+  vm.runInContext(`${source.slice(start, end)}\nthis.sync = syncVoiceShortcutRecording;`, sandbox);
+  assert.equal(
+    await sandbox.sync("", "voice_1"), "error",
+    "an unreadable window label must not go over the wire as a claim",
+  );
+  assert.deepEqual(invokeCalls, [], "no ownership IPC may fire without a window label");
+  assert.equal(await sandbox.sync(null, "voice_1"), true, "a null label is a release and still dispatches");
+  assert.deepEqual(
+    invokeCalls,
+    [["set_voice_shortcut_recording", { label: null, token: "voice_1" }]],
+    "the release path keeps dispatching with an explicit null label",
   );
 });
 
@@ -475,9 +589,10 @@ function restoreHarness(stateOverrides) {
   const sandbox = { console, Math, Date, Promise, Object, Array, JSON, String, Number, Boolean };
   vm.createContext(sandbox);
   sandbox.state = state;
-  const calls = { complete: [], steer: [], prefill: [] };
+  const calls = { complete: [], steer: [], prefill: [], rebind: [] };
   sandbox.voice = () => ({
     rebindVoiceDraftAfterRollback: () => false,
+    rebindVoiceOperationToDraft: (operationId, toEpoch) => calls.rebind.push({ operationId, toEpoch }),
     completeVoiceSubmission: (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted }),
     voiceOperationSessionId: () => null,
   });
@@ -504,6 +619,8 @@ test("restore: a rejected send with an active session retains once and consumes 
   state.draftEpoch = 7;
   assert.equal(sandbox.readComposerDraftWithRecovery(), "dictated text");
   assert.equal(state.composerDraft, "dictated text", "the retained text lands in the composer draft");
+  // The text is visibly back: the voice association follows into the new epoch.
+  assert.deepEqual(calls.rebind, [{ operationId: "voiceop-restore", toEpoch: 7 }]);
   state.composerDraft = "";
   assert.equal(sandbox.readComposerDraftWithRecovery(), "", "the retained draft is consumed once");
   assert.equal(sandbox.restoreTaskDraft("again", owner), false, "the restore is once-only");
@@ -515,6 +632,9 @@ test("restore: back in the draft it prefills directly regardless of the epoch", 
   assert.equal(sandbox.restoreTaskDraft("dictated text", owner), true);
   assert.deepEqual(calls.prefill, [{ text: "dictated text", append: true }]);
   assert.deepEqual(calls.complete, [{ operationId: "voiceop-prefill", sessionId: null, accepted: false }]);
+  // The text is visibly back in the live draft: the operation must follow it
+  // to the new epoch, or a manual retry is orphaned in the dead epoch.
+  assert.deepEqual(calls.rebind, [{ operationId: "voiceop-prefill", toEpoch: 9 }]);
 });
 
 test("restore: a bound session steers into its own session and settles there", () => {
@@ -537,8 +657,9 @@ function webRestoreHarness(stateOverrides, boundSessionId = null) {
   const sandbox = { console, Math, Date, Promise, Object, Array, JSON, String, Number, Boolean };
   vm.createContext(sandbox);
   sandbox.state = state;
-  const calls = { complete: [], restore: [], prefill: [] };
+  const calls = { complete: [], restore: [], prefill: [], rebind: [] };
   sandbox.completeVoiceSubmission = (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted });
+  sandbox.rebindVoiceOperationToDraft = (operationId, toEpoch) => calls.rebind.push({ operationId, toEpoch });
   sandbox.voiceOperationSessionId = () => boundSessionId;
   sandbox.restoreComposerText = (sid, text) => calls.restore.push({ sid, text });
   sandbox.prefillComposer = (text, append) => calls.prefill.push({ text, append });
@@ -576,6 +697,8 @@ test("web restore: a departed draft retains once, settles unparked, and consumes
   state.activeSessionId = null;
   assert.equal(sandbox.readComposerDraftWithRecovery(), "gone text", "the retained text is consumed once on the draft return");
   assert.equal(state.composerDraft, "gone text");
+  // The voice association follows the restored text into the live epoch.
+  assert.deepEqual(calls.rebind, [{ operationId: "voiceop-webgone", toEpoch: 4 }]);
   state.composerDraft = "";
   assert.equal(sandbox.readComposerDraftWithRecovery(), "", "the recovery slot is single-shot");
 });
@@ -583,10 +706,12 @@ test("web restore: a departed draft retains once, settles unparked, and consumes
 // ── Sent operations really end: the bridges settle acceptance at the point of truth ──
 test("sends: dispatched sends settle their voice operation as accepted in both lanes", () => {
   const desktopSettles = chatSource.match(/settleAcceptedVoiceSubmission\(meta, sid\);/g) || [];
-  assert.ok(desktopSettles.length >= 4, "every dispatched exit of the desktop sendMessage must settle its voice operation");
+  // Exact count, not a lower bound: dropping one dispatched exit must go red,
+  // and adding an exit must force this pin to be revisited.
+  assert.equal(desktopSettles.length, 4, "every dispatched exit of the desktop sendMessage must settle its voice operation");
   const webSource = sources.web;
   const webSettles = webSource.match(/settleAcceptedVoiceSubmission\(meta, sid\);/g) || [];
-  assert.ok(webSettles.length >= 3, "every dispatched exit of the web sendMessage must settle its voice operation");
+  assert.equal(webSettles.length, 3, "every dispatched exit of the web sendMessage must settle its voice operation");
   assert.match(
     webSource,
     /acceptFirstTurnSubmission\(submission, metadata\);[\s\S]*?completeVoiceSubmission\(submission\.voiceOperationId, metadata\.id, true\);/,

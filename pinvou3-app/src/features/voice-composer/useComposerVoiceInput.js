@@ -356,6 +356,14 @@ function useComposerVoiceInput(adapter) {
         beforePermission: typeof current.beforePermission === 'function'
           ? current.beforePermission
           : undefined,
+        // Lane identity for the bridge's operation bookkeeping: the operation
+        // map keys adoption and the chat context guard by (sessionId,
+        // ownerKind), so a non-chat composer must not be booked under the
+        // chat lane's active session — its exemption from that guard and its
+        // own session binding (first-turn rebind) depend on these values.
+        ownerKind: current.ownerKind || 'chat',
+        sessionId: current.sessionId || null,
+        modelId: current.modelId || null,
       },
     );
     return true;
@@ -403,11 +411,16 @@ function useComposerVoiceInput(adapter) {
     return () => window.removeEventListener('keydown', handleEditPreviewKeyDown, true);
   }, [editPreview, cancelVoiceEditPreview, applyVoiceEditPreview]);
 
-  // When the session/workspace/target identity changes, a leftover voice rewrite preview
-  // belongs to the old context: applying its next into the new session's draft, or sending
-  // it into the new session via sendTask, would be cross-context data pollution, so cancel
-  // it automatically on identity change (explicit user apply/cancel is unaffected). On the
-  // first frame (previous is null) only register the identity, without cancelling.
+  // When the session/workspace/target identity changes, anything still owned
+  // by the old context must not leak into the new one: applying a leftover
+  // rewrite preview, or the writeback/auto-send of an in-flight recording,
+  // would land old-context content in the new session's composer —
+  // cross-context data pollution. The bridge's context_mismatch guard only
+  // watches the chat lane's activeSessionId and non-chat lanes do not
+  // materialize one, so the in-flight recording is cancelled here (explicit
+  // user apply/cancel is unaffected; a finished unsent result stays adoptable
+  // because it is keyed to its recording-time session). On the first frame
+  // (previous is null) only register the identity, without cancelling.
   const voiceContextIdentityRef = useRef(null);
   useEffect(() => {
     const identity = [
@@ -422,8 +435,13 @@ function useComposerVoiceInput(adapter) {
     if (editPreviewRef.current) {
       discardEditPreview();
       closeVoice();
+      return;
     }
-  }, [adapter.targetId, adapter.ownerKind, adapter.workspaceId, adapter.sessionId, closeVoice, discardEditPreview]);
+    const voiceInput = (adapterRef.current || {}).voiceInput;
+    if (isVoiceActive({ status: voiceInput && voiceInput.status })) {
+      cancelVoice();
+    }
+  }, [adapter.targetId, adapter.ownerKind, adapter.workspaceId, adapter.sessionId, closeVoice, discardEditPreview, cancelVoice]);
 
   useEffect(() => {
     const current = adapterRef.current || {};

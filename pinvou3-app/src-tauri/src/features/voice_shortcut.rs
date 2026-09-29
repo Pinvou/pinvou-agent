@@ -313,20 +313,23 @@ fn validate_recording_token(token: &str) -> Result<(), String> {
 /// matches the recorded owner, so a stale teardown cannot wipe a newer
 /// session's claim.
 pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
-    // A release from a non-router window is a harmless no-op whatever the
-    // token looks like: the JS releases fire-and-forget, so an Err here would
-    // surface as an unhandled rejection. Only a claim from such a window is
-    // invalid — a misbehaving renderer worth logging.
-    if !is_voice_shortcut_router_window(label) {
-        return if claim {
-            validate_recording_token(token)?;
+    // A release is a harmless no-op for any token shape from any window kind:
+    // the JS releases fire-and-forget, so an Err here would surface as an
+    // unhandled rejection, and a malformed token can never match a stored
+    // owner (claims always validate), so the exact-match release below
+    // already refuses it. Only a claim from a non-router window is invalid —
+    // a misbehaving renderer worth logging.
+    if !claim {
+        if !is_voice_shortcut_router_window(label) {
+            return Ok(false);
+        }
+    } else {
+        validate_recording_token(token)?;
+        if !is_voice_shortcut_router_window(label) {
             log::warn!("voice recording claim from non-router window {label}");
-            Err("voice recording claim from a non-router window".to_string())
-        } else {
-            Ok(false)
-        };
+            return Err("voice recording claim from a non-router window".to_string());
+        }
     }
-    validate_recording_token(token)?;
     let mut owner = RECORDING_OWNER.lock().map_err(|err| {
         log::warn!("voice recording owner mutex poisoned: {err}");
         "voice recording owner unavailable".to_string()
@@ -703,6 +706,11 @@ mod tests {
         // either: the fire-and-forget JS release never surfaces one.
         assert_eq!(set_recording_owner("pet", "   ", false), Ok(false));
         assert!(set_recording_owner("main", "   ", true).is_err());
+        // Router releases are equally no-ops for any token shape: the stored
+        // owner only ever holds validated tokens, so a malformed release can
+        // only miss — an Err would just risk an unhandled rejection.
+        assert_eq!(set_recording_owner("main", "   ", false), Ok(false));
+        assert_eq!(set_recording_owner("main", "", false), Ok(false));
     }
 
     #[test]

@@ -106,6 +106,21 @@ function pinvouSharedtauriVoice() {
     return true;
   }
 
+  // Re-entering a departed draft hands its retained text back under a new
+  // draft epoch (enterDraft increments unconditionally). Once the text is
+  // visibly back in the composer the operation follows it: a manual retry
+  // keeps the voice association instead of being orphaned in the dead
+  // recording-time epoch (unadoptable, and unreachable by the keyed abandon).
+  // Restricted to unsubmitted draft operations (no session binding, chat
+  // kind), mirroring the rollback rebind; terminal operations never rebind.
+  function rebindVoiceOperationToDraft(operationId, toEpoch) {
+    const operation = voiceOperations.get(operationId);
+    if (!operation || operation.telemetryTerminal || operation.pendingSubmission
+      || operation.sessionId || operation.ownerKind !== "chat") return false;
+    operation.draftEpoch = Number(toEpoch);
+    return true;
+  }
+
   function completeVoiceSubmission(operationId, sessionId, accepted) {
     const operation = voiceOperations.get(operationId);
     if (!operation || operation.telemetryTerminal) return;
@@ -1182,6 +1197,9 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
+      // The teardown above detached the audio callback first; release the PCM
+      // now so the terminal operation record never pins partial audio.
+      session.chunks = null;
       if (activeVoiceInput !== session) return;
       activeVoiceInput = null;
       // The start failed after the claim landed (claim rejection, device
@@ -1266,10 +1284,16 @@ function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoi
   // wipe the claim the new session just registered, another WebView can never
   // overwrite it, and tokenless clears are rejected instead of clearing the
   // current owner. Returns whether the claim/release landed, or the string
-  // "error" when the IPC itself failed (the caller must still fail closed,
-  // but may tell the user the check failed instead of blaming another window).
+  // "error" when the IPC itself failed or the window identity could not be
+  // read (the caller must still fail closed, but may tell the user the check
+  // failed instead of blaming another window).
   function syncVoiceShortcutRecording(label, token) {
     if (!token) return Promise.resolve(false);
+    // An unreadable window label must not go over the wire: the Rust command
+    // treats a null label as a release and would answer false, which the
+    // caller would misreport as "another window is recording". Report the
+    // ownership check as unavailable instead.
+    if (label === "") return Promise.resolve("error");
     return Promise.resolve(invoke("set_voice_shortcut_recording", { label: label || null, token }))
       .then(function (claimed) { return claimed === true; }, function (error) {
         console.warn("[voice] recording ownership sync failed", error);
@@ -1307,6 +1331,7 @@ function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoi
       getVoiceOperationId,
       voiceOperationSessionId,
       rebindVoiceDraftAfterRollback,
+      rebindVoiceOperationToDraft,
       beginVoiceSubmission,
       completeVoiceSubmission,
       dismissVoiceInput,

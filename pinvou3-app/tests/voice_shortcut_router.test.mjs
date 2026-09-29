@@ -41,4 +41,15 @@ assert.ok(
   'keyup clear_pending must keep passing combo tails through without preventDefault',
 );
 
+// The recording-route stale purge must exempt requesting_permission: the
+// claim now lands before the permission probe, so while the owner's permission
+// dialog is up the target is legitimately not "recording" yet. Purging there
+// would unregister a healthy claim; the intended semantic is that the routed
+// Alt cancels the owner's pending start (fall through to trigger below).
+const purge = source.indexOf("if (payload && payload.route === 'recording' && !recording");
+const exemption = source.indexOf("status !== 'requesting_permission'", purge);
+const fallthroughTrigger = source.indexOf("target.trigger('dictation');", purge);
+assert.ok(purge !== -1 && exemption > purge, 'the stale-recording-route purge must exist with the requesting_permission exemption');
+assert.ok(fallthroughTrigger > exemption, 'a recording-routed Alt during the permission probe must cancel the pending start, not purge the claim');
+
 console.log('voice_shortcut_router: ok');

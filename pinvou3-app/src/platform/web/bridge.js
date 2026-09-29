@@ -2200,7 +2200,18 @@ function timeStr() { return pinvouSharedweb().timeStr(); }
   // 永远不会堆积没用过的空「新对话」(ChatGPT/Claude 式 lazy session)。
   function enterDraft() {
     state.chatItems.forEach(function (item) {
-      if (item && item.clientMessageId) delete firstTurnSubmissions[item.clientMessageId];
+      if (item && item.clientMessageId) {
+        const submission = firstTurnSubmissions[item.clientMessageId];
+        if (submission && submission.voiceOperationId) {
+          // The submission record is discarded here, so its admission outcome
+          // can never reconcile. Un-park the operation (complete-as-rejected)
+          // and then close it outright: left parked it would stay unadoptable
+          // and unsweepable until the page closes.
+          completeVoiceSubmission(submission.voiceOperationId, null, false);
+          abandonVoiceResult(submission.voiceOperationId);
+        }
+        delete firstTurnSubmissions[item.clientMessageId];
+      }
     });
     sessionSwitchRequestToken += 1; // 新建/返回草稿会话使任何仍在等待的 load_session 结果失效
     state.scheduledRunContext = null;
@@ -4034,6 +4045,12 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
     // could never fire and the retained text would be silently dropped.
     if (pendingTaskDraftRecovery.buffer && !state.activeSessionId) {
       state.composerDraft = [state.composerDraft, pendingTaskDraftRecovery.buffer.text].filter(Boolean).join("\n");
+      // The text is visibly back in the live draft: the voice association
+      // follows it, or a manual retry would be orphaned in the dead
+      // recording-time epoch.
+      if (pendingTaskDraftRecovery.buffer.operationId) {
+        rebindVoiceOperationToDraft(pendingTaskDraftRecovery.buffer.operationId, state.draftEpoch);
+      }
       pendingTaskDraftRecovery.buffer = null;
     }
     return String(state.composerDraft || "");
@@ -4069,11 +4086,25 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
       const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
-      pendingTaskDraftRecovery.buffer = { text: [retained, text].filter(Boolean).join("\n") };
+      const retainedOperationId = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.operationId : null;
+      pendingTaskDraftRecovery.buffer = {
+        text: [retained, text].filter(Boolean).join("\n"),
+        // The newest operation wins: the rebind on draft return adopts the
+        // most recent stranded send (one operation per manual send).
+        operationId: owner.operationId || retainedOperationId || null,
+      };
     } else {
       // Back in the draft — any epoch, because re-entering the draft
       // allocates a new one (enterDraft increments unconditionally).
-      if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
+      if (owner.operationId) {
+        completeVoiceSubmission(owner.operationId, null, false);
+        // The text is visibly back in the live draft: rebind the operation to
+        // the new epoch so a manual retry adopts it instead of orphaning the
+        // association in the dead recording-time epoch (the complete above
+        // may already have terminalized it via a queued cancel; the rebind
+        // refuses terminal operations).
+        rebindVoiceOperationToDraft(owner.operationId, state.draftEpoch);
+      }
       prefillComposer(text, true);
     }
     owner.restored = true;
@@ -7092,6 +7123,21 @@ function voiceFlowError(category, stage, message) { return pinvouSharedweb().voi
     return voiceOperations.get(operationId)?.sessionId || null;
   }
 
+  // Re-entering a departed draft hands its retained text back under a new
+  // draft epoch (enterDraft increments unconditionally). Once the text is
+  // visibly back in the composer the operation follows it: a manual retry
+  // keeps the voice association instead of being orphaned in the dead
+  // recording-time epoch. Restricted to unsubmitted draft operations (no
+  // session binding, chat kind), mirroring the desktop lane's rollback and
+  // draft-return rebinds; terminal operations never rebind.
+  function rebindVoiceOperationToDraft(operationId, toEpoch) {
+    const operation = voiceOperations.get(operationId);
+    if (!operation || operation.telemetryTerminal || operation.pendingSubmission
+      || operation.sessionId || operation.ownerKind !== "chat") return false;
+    operation.draftEpoch = Number(toEpoch);
+    return true;
+  }
+
   // Terminal dedup bookkeeping only: the web lane has no behavior telemetry
   // pipeline, so terminal events do not go anywhere, but admission must still
   // consume any queued terminal to keep the operation state machine identical
@@ -7283,6 +7329,10 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
         // that terminal cancelled state with completed.
         if (activeVoiceInput !== session) return;
       }
+      // Same as desktop: an operation terminalized during the writeback await
+      // (e.g. accepted through another lane's settle) must not have its idle
+      // reset overwritten by the completed notice.
+      if (session.telemetryTerminal) return;
       setVoiceInputStatus("completed", {
         message: mode === "task" ? (bt("voiceTaskSent") || bt("voiceWritten")) : bt("voiceWritten"),
         completedAt: Date.now(),
@@ -7422,7 +7472,12 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
     const session = {
       id: webVoiceToken("voice_"),
       operationId: webVoiceToken("voiceop_"),
-      sessionId: state.activeSessionId || null,
+      // Same as the desktop lane: the caller's lane identity wins, so a
+      // non-chat composer is not booked under the chat lane's active session
+      // (adoption keys and the chat context guard depend on it).
+      sessionId: options && Object.prototype.hasOwnProperty.call(options, "sessionId")
+        ? options.sessionId
+        : state.activeSessionId || null,
       ownerKind: (options && options.ownerKind) || "chat",
       draftBeforeStart: String(draftText || ""),
       writeback,
@@ -7499,6 +7554,9 @@ function closeVoiceAsrSetup() { return pinvouSharedweb().closeVoiceAsrSetup(); }
       emitVoiceDiagnostic("recording", "info", "recording started", "", "");
     } catch (err) {
       cleanupVoiceInputSession(session);
+      // The teardown above detached the audio callback first; release the PCM
+      // now so the terminal operation record never pins partial audio.
+      session.chunks = null;
       // finishVoiceInput(cancelled) has already torn the session down as cancelled and cleared
       // activeVoiceInput; when the user cancels while permission is pending, this catch arrives
       // afterwards, and an early return without the session check would overwrite the
