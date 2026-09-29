@@ -972,6 +972,10 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
+      // Defense in depth: protection predicates make live stream timers
+      // unreachable here today, but a stray timer must not outlive its
+      // evicted buffer (purgeSessionBuffer does the same).
+      cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
@@ -1011,6 +1015,10 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
+      // Defense in depth: protection predicates make live stream timers
+      // unreachable here today, but a stray timer must not outlive its
+      // evicted buffer (purgeSessionBuffer does the same).
+      cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       // personaPlaceholderTitles survives capacity eviction (see the
@@ -4441,6 +4449,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     item.html = renderMarkdown(currentStreamText);
     return true;
   }
+  // Must run inside an onSessionEvent/runSyncOnSession extent: it flushes the
+  // extent's own session (the timer table is keyed by state.activeSessionId),
+  // so calling it outside an extent would target the visible session instead.
   function flushPendingStreamRender() {
     const sid = state.activeSessionId;
     if (sid && streamRenderTimers[sid]) {
@@ -4921,6 +4932,10 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       flushPendingStreamRender();
+      // The trailing notify() only cancels the visible session's frame; a
+      // background session's terminal must cancel its own pending frame or a
+      // redundant late round fires within 32ms.
+      cancelPendingStreamNotify(sid);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       // Refresh artifacts written in this turn in place when already presented.

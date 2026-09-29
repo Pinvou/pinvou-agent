@@ -1186,6 +1186,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       // html first (including the interrupted retention display) and cancel
       // the pending trailing edge
       flushPendingStreamRender();
+      // The trailing notify() only cancels the visible session's frame; a
+      // background session's terminal must cancel its own pending frame or a
+      // redundant late round fires within 32ms.
+      cancelPendingStreamNotify(sid);
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
