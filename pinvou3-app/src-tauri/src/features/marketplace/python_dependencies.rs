@@ -312,7 +312,7 @@ fn validate_wheel(wheel: &PythonWheel, target: &PythonDependencyTarget) -> Resul
     }
     let url = reqwest::Url::parse(&wheel.url)
         .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
-    if url.scheme() != "https" || !is_allowed_wheel_host(&url) {
+    if url.scheme() != "https" || !is_official_wheel_host(&url) {
         return Err(format!(
             "Python wheel '{}' must come from the trusted HTTPS host",
             wheel.name
@@ -423,8 +423,56 @@ fn python_version_digits(python: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
+/// Trust source for lock manifest URLs: the PyPI official CDN only. Manifest
+/// validation (validate_wheel) gates on this; the Tsinghua TUNA mirror is only
+/// a candidate derived at download time (see [`is_allowed_wheel_host`]) and
+/// must not be written into a lock directly.
+fn is_official_wheel_host(url: &reqwest::Url) -> bool {
     matches!(url.host_str(), Some("files.pythonhosted.org"))
+}
+
+/// Wheel sources trusted by the download path: the PyPI official CDN and its
+/// CN mirror (Tsinghua TUNA, identical path structure). Used to gate download
+/// candidates and redirects; bytes always pass the sha256 pin from the
+/// manifest.
+fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("files.pythonhosted.org") | Some("pypi.tuna.tsinghua.edu.cn")
+    )
+}
+
+/// files.pythonhosted.org and the Tsinghua TUNA mirror share the
+/// `/packages/...` path structure, so only the host needs replacing; other
+/// URLs derive no mirror (returns `None`).
+fn pythonhosted_mirror_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str() != Some("files.pythonhosted.org") {
+        return None;
+    }
+    // Path only: official CDN wheel URLs carry no query/fragment; even if one
+    // appears it does not become a mirror candidate (bytes from both sources
+    // pass the same sha256 pin, a missing query only affects the cache hit,
+    // not integrity), and the official candidate still carries the original
+    // query as fallback.
+    Some(format!(
+        "https://pypi.tuna.tsinghua.edu.cn{}",
+        parsed.path()
+    ))
+}
+
+/// Wheel download URLs tried in order: the CN mirror first (CN networks often
+/// cannot reach the PyPI official CDN or are extremely slow), with the
+/// official source as fallback. Bytes from both sources pass the same sha256
+/// pin; if the mirror is tampered with, verification intercepts it and the
+/// next candidate is tried.
+fn wheel_download_urls(wheel: &PythonWheel) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(mirror) = pythonhosted_mirror_url(&wheel.url) {
+        urls.push(mirror);
+    }
+    urls.push(wheel.url.clone());
+    urls
 }
 
 fn environment_key(target: &PythonDependencyTarget) -> Result<String, String> {
@@ -601,13 +649,14 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         return Ok(());
     }
 
-    let url = reqwest::Url::parse(&wheel.url)
-        .map_err(|e| format!("invalid Python wheel download URL: {e}"))?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // 15 分钟总量(单只 wheel;整条安装是串行 wheel 链):wheels 上限
-        // 64 MiB,180s 在常见慢链路上恰好不够;超时会让整条串行 wheel 链
-        // 反复从头重来。与 native_installer 共用同一常量。
+        // 15 minutes per candidate source (reqwest's client timeout counts per
+        // request; the whole install is a serial wheel chain): wheels are
+        // capped at 64 MiB and 180s falls just short on common slow links; a
+        // timeout would restart the whole serial wheel chain from scratch.
+        // Shares the same constant as native_installer; with multi-candidate
+        // fallback the worst case multiplies by the candidate count.
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let refused = attempt.previous().len() >= 10
@@ -627,8 +676,77 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         .user_agent("Pinvou-Agent python-dependency-installer")
         .build()
         .map_err(|e| format!("failed to build the Python dependency download client: {e}"))?;
+
+    let candidates = wheel_download_urls(wheel);
+    let total_candidates = candidates.len();
+    let mut failures: Vec<String> = Vec::new();
+    for url_text in candidates {
+        // Invalid candidates (parse failure/non-HTTPS) are only skipped and
+        // recorded in the aggregate, not a total failure (same convention as
+        // the connectors installer, including userinfo redaction): the
+        // official-source fallback must not be dragged down by one badly built
+        // candidate.
+        let url = match reqwest::Url::parse(&url_text) {
+            Ok(url) if url.scheme() == "https" => url,
+            _ => {
+                let error = format!(
+                    "invalid or non-HTTPS Python wheel URL: {}",
+                    crate::platform::download::redact_url_credentials(&url_text)
+                );
+                log::warn!(
+                    "[marketplace] skipping candidate for {}: {error}",
+                    wheel.name
+                );
+                failures.push(error);
+                continue;
+            }
+        };
+        match download_wheel_from(&client, &url, destination, wheel) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // Non-default ports go into the prefix so same-host candidates
+                // on different ports stay distinguishable in errors.
+                let host = match url.port() {
+                    Some(port) => {
+                        format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
+                    }
+                    None => url.host_str().unwrap_or("<unknown-host>").to_string(),
+                };
+                log::warn!(
+                    "[marketplace] Python dependency {} failed from {host}, trying next mirror: {error}",
+                    wheel.name
+                );
+                failures.push(format!("[{host}] {error}"));
+            }
+        }
+    }
+    // When every candidate fails, carry "how many sources were tried and each
+    // source's own failure reason" into the error (release builds have no
+    // logger, so per-candidate log::warn! is invisible; the error itself must
+    // show that the mirror was tried and at which layer it failed).
+    Err(match failures.as_slice() {
+        [] => format!("Python dependency {} has no download URL", wheel.name),
+        list => format!(
+            "Python dependency {} download failed ({} candidate source(s) exhausted): {}",
+            wheel.name,
+            total_candidates,
+            list.join("; ")
+        ),
+    })
+}
+
+/// Download a wheel from a single URL to `destination` (`.part` staging ->
+/// sha256 verification -> atomic rename). A verification mismatch is treated
+/// as a failure; the caller decides whether to switch to the next candidate
+/// URL.
+fn download_wheel_from(
+    client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+    destination: &Path,
+    wheel: &PythonWheel,
+) -> Result<(), String> {
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("failed to download Python dependency {}: {e}", wheel.name))?;
@@ -1042,9 +1160,73 @@ mod tests {
                 .contains("trusted HTTPS host")
         );
 
+        // Manifest URLs must still be the official CDN: TUNA is only a
+        // candidate derived at download time and must not be written into a
+        // lock (see is_official_wheel_host).
+        let mut lock = sample_lock();
+        lock.targets[0].wheels[0].url =
+            "https://pypi.tuna.tsinghua.edu.cn/packages/example-1.0.0-py3-none-any.whl".to_string();
+        assert!(
+            validate_lock(&lock)
+                .unwrap_err()
+                .contains("trusted HTTPS host")
+        );
+
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].sha256 = "not-a-hash".to_string();
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
+    }
+
+    /// Division of the two trust boundaries: manifest validation accepts only
+    /// the official CDN; the download/redirect path additionally allows the
+    /// TUNA mirror (candidates derived from pythonhosted URLs); every other
+    /// host is rejected on both sides.
+    #[test]
+    fn manifest_validation_stays_official_only_while_download_accepts_tuna() {
+        let official =
+            reqwest::Url::parse("https://files.pythonhosted.org/packages/a.whl").unwrap();
+        let tuna = reqwest::Url::parse("https://pypi.tuna.tsinghua.edu.cn/packages/a.whl").unwrap();
+        let other = reqwest::Url::parse("https://mirror.example/a.whl").unwrap();
+        assert!(is_official_wheel_host(&official));
+        assert!(!is_official_wheel_host(&tuna));
+        assert!(!is_official_wheel_host(&other));
+        assert!(is_allowed_wheel_host(&official));
+        assert!(is_allowed_wheel_host(&tuna));
+        assert!(!is_allowed_wheel_host(&other));
+    }
+
+    /// Wheel download candidates: pythonhosted URLs derive a TUNA mirror and
+    /// the mirror goes first; the full path (including hash directory
+    /// segments) is kept as-is; non-pythonhosted URLs derive no mirror.
+    #[test]
+    fn wheel_download_urls_prefer_tuna_mirror_derived_from_pythonhosted() {
+        let lock = sample_lock();
+        let wheel = &lock.targets[0].wheels[0];
+        assert_eq!(
+            wheel_download_urls(wheel),
+            vec![
+                "https://pypi.tuna.tsinghua.edu.cn/packages/example-1.0.0-py3-none-any.whl"
+                    .to_string(),
+                wheel.url.clone(),
+            ]
+        );
+
+        let mut external = wheel.clone();
+        external.url = "https://mirror.example/whl/example.whl".to_string();
+        assert_eq!(
+            wheel_download_urls(&external),
+            vec![external.url.clone()],
+            "non-pythonhosted URLs must not derive a mirror"
+        );
+
+        let nested =
+            "https://files.pythonhosted.org/packages/d0/00/abc/python_docx-1.2.0-py3-none-any.whl";
+        assert_eq!(
+            pythonhosted_mirror_url(nested).as_deref(),
+            Some(
+                "https://pypi.tuna.tsinghua.edu.cn/packages/d0/00/abc/python_docx-1.2.0-py3-none-any.whl"
+            )
+        );
     }
 
     #[test]
@@ -1294,6 +1476,34 @@ mod tests {
         persist_wheel_download(&mut Cursor::new(bytes), &destination, &wheel).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), bytes);
         assert!(!partial.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checksum_mismatch_rejects_tampered_bytes_and_cleans_staging() {
+        // If the mirror/network returns tampered bytes, the sha256 pin must
+        // intercept them before anything is written to disk and clean up the
+        // staging file: this directly tests the core security assertion that
+        // "mirror candidates pass the same pin as the official source" (this
+        // test must turn red if the actual comparison is removed).
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-python-checksum-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = b"tampered wheel bytes";
+        let destination = root.join("tampered-wheel.whl");
+        let partial = destination.with_extension(format!("part-{}", std::process::id()));
+        let mut wheel = sample_lock().targets.remove(0).wheels.remove(0);
+        wheel.sha256 =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+
+        let error =
+            persist_wheel_download(&mut Cursor::new(bytes), &destination, &wheel).unwrap_err();
+        assert!(error.contains("checksum mismatch"), "{error}");
+        assert!(!partial.exists());
+        assert!(!destination.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

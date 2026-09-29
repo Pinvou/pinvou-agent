@@ -72,6 +72,17 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 | Claude Code | 官方脚本 | macOS/Linux：`curl -fsSL https://claude.ai/install.sh \| bash`；Windows：`irm https://claude.ai/install.ps1 \| iex`；装到 `~/.local/bin` 等用户目录 |
 | Kimi | 官方脚本 | macOS/Linux：`curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash`；Windows：`irm https://code.kimi.com/kimi-code/install.ps1 \| iex`；装到 `~/.kimi-code/bin` |
 
+国内网络可达性：官方脚本源（chatgpt.com / claude.ai，Kimi 为 code.kimi.com）不可达
+且系统存在 npm 时，官方脚本安装动作自动降级为 `npm install -g` 安装。Kimi 官方源在
+国内通常可达，降级路径实际不会触发，但机制上一视同仁。降级安装 / 升级前会把官方
+脚本装的旧二进制改名移开（命令失败自动恢复旧文件、验证通过后才清理备份）：CLI
+解析优先脚本绝对路径，不移开的话 npm 装的新版本会被旧文件遮住、升级永远不生效。
+npm 全局安装 / 升级（含 tmeet 等连接器 CLI）在默认 registry 整体失败后，会对该次
+调用追加 `--registry=https://registry.npmmirror.com` 重试一次（最坏耗时约为单次
+10 分钟超时的两倍）；registry 标志仅作用于单条命令，Pinvou 不会写入或修改用户
+的 npm 配置（npm 自身仍会照常读取其 `.npmrc` 的 prefix/cache/auth 等配置）。
+npm 安装没有应用侧制品校验，完整性依赖 TLS 与镜像源的同步保真。
+
 已安装但版本过旧时先判定安装来源，再按来源升级：
 
 | 来源 | 判定 | 升级方式 |

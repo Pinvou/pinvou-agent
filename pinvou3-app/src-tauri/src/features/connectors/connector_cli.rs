@@ -15,7 +15,8 @@
 //! `lib.rs` 里 `.manage(ConnectorConn::default())` 注册一次,飞书 / 企微共用。
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -231,14 +232,24 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 /// 1. **stdin 显式接 null**。app 是无窗口 GUI 进程,继承来的 stdin 是坏句柄,
 ///    CLI 安装器(`@wecom/cli` / `@larksuite/cli` 等)读它会**死等 → 每次卡到超时**
 ///    (终端手动跑却几十秒就成)。给个立即 EOF 的 null stdin,安装器走非交互分支跑通。
-/// 2. **stdout/stderr 落日志文件**(不再 `null` 丢弃),失败可诊断:
-///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。
+/// 2. **stdout/stderr are appended to a log file** (no longer discarded to
+///    `null`), so failures are diagnosable: `~/.pinvou3/cli-install.log`.
+///    Writing to a file is not a pipe, so there is no risk of a deadlocked
+///    write on a full buffer. Appending instead of truncating on every run
+///    preserves each stage's output of a multi-stage install (mirror retry
+///    after the default registry fails); stage boundaries are distinguished
+///    by the marker lines of [`append_cli_install_log`].
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let (out, err) = match std::fs::File::create(&log_path) {
+    rotate_cli_install_log_if_oversized(&log_path);
+    let (out, err) = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
         Ok(f) => match f.try_clone() {
             Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
             Err(_) => (Stdio::null(), Stdio::null()),
@@ -285,6 +296,57 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
             }
         }
     }
+}
+
+/// Appends one stage marker line to `cli-install.log`. The log is
+/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// multi-stage install (mirror retry after the default registry fails) is
+/// attributed via its marker line. Write failures are likewise silently
+/// dropped and never block the install flow.
+pub fn append_cli_install_log(line: &str) {
+    let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// `cli-install.log` is append-only with no natural upper bound (output of
+/// multi-stage installs / repeated retries accumulates, growing for the
+/// application's entire lifetime). Once the size limit is exceeded it is
+/// rotated to `cli-install.log.old` (overwriting the previous copy): disk
+/// usage stays bounded while the latest output of the current install is
+/// still fully preserved.
+const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+    rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
+}
+
+fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if metadata.len() <= max_bytes {
+        return;
+    }
+    let mut rotated = log_path.as_os_str().to_owned();
+    rotated.push(".old");
+    // When two installs trigger rotation concurrently, the later rename
+    // fails: log rotation is not worth a lock, so ignore it.
+    // Relies on std::fs::rename's replace-existing-destination semantics: on
+    // Windows it also replaces (FileRenameInfoEx POSIX semantics, falling
+    // back to MoveFileExW + REPLACE_EXISTING), so the old `.old` is directly
+    // overwritten with no prior delete; failures are ignored only for cases
+    // such as the destination being held by another process, and the next
+    // rotation retries (the test below pins this overwrite semantics).
+    let _ = std::fs::rename(log_path, PathBuf::from(rotated));
 }
 
 /// Bounded reap of a killed connector child with the shared grace budget,
@@ -585,6 +647,44 @@ mod tests {
         envs: &[],
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
+
+    /// The append-only cli-install.log has no natural upper bound: over the
+    /// limit it must rotate to `.old` (overwriting the previous rotation);
+    /// under the limit it is left untouched.
+    #[test]
+    fn oversized_cli_install_log_rotates_to_old() {
+        let root = std::env::temp_dir().join(format!("pinvou-cli-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log_path = root.join("cli-install.log");
+        std::fs::write(&log_path, b"x").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(log_path.exists());
+        assert!(!root.join("cli-install.log.old").exists());
+
+        std::fs::write(&log_path, [b'a'; 2048]).unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        assert_eq!(
+            std::fs::read(root.join("cli-install.log.old"))
+                .unwrap()
+                .len(),
+            2048
+        );
+
+        // The second rotation must overwrite the existing `.old` (including
+        // on Windows: std::fs::rename has the same replace semantics there,
+        // covered by the CI Windows leg of this test); if a failed replace
+        // were swallowed, the main log would grow unboundedly from this
+        // point on.
+        std::fs::write(&log_path, [b'b'; 2048]).unwrap();
+        std::fs::write(root.join("cli-install.log.old"), b"stale-old-log").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        let rotated = std::fs::read(root.join("cli-install.log.old")).unwrap();
+        assert_eq!(rotated.len(), 2048);
+        assert!(rotated.iter().all(|&b| b == b'b'), "{rotated:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// extract_url three-branch matrix: whitelisted domain hits truncate at
     /// whitespace (QR-scan URLs often carry `&` query strings that must not be

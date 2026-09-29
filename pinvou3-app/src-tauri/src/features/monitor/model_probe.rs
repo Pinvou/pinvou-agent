@@ -204,6 +204,8 @@ async fn snapshot_for_model_config(
             request = request.bearer_auth(key);
         }
     }
+    let request =
+        crate::core::model_endpoint::with_opencode_session_header(request, upstream, "model-probe");
     let should_probe_models =
         target_kind == "local" || api_key.map(str::trim).is_some_and(|key| !key.is_empty());
     let models_resp = if should_probe_models {
@@ -1090,6 +1092,11 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
 
     /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，
     /// 依据为仓库 catalog + 底座启发式 + 各厂商官方文档，见 pinvou_known_context_window 注释）。
+    /// Exemptions: aggregator org-prefixed ids and the per-deployment context
+    /// figures behind self-hosted Coding Plan gateways are not mirrored one by
+    /// one (see the aggregator/Coding Plan group comments in model-catalog.js);
+    /// such ids not covered by the base chain fall to the preset fallback and
+    /// are pinned at the fallback values below.
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
@@ -1105,8 +1112,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
             (ModelPreset::Kimi, "kimi-k2.7-code-highspeed", 262_144),
             (ModelPreset::Kimi, "kimi-k2.6", 262_144),
-            // Kimi Coding Plan 走 openai_compatible 预设
-            (ModelPreset::OpenaiCompatible, "kimi-for-coding", 262_144),
+            // The Kimi Coding Plan rides the openai_compatible preset. Bare
+            // kimi-for-coding serves K2.8 Preview since 2026-09 (officially
+            // 1M on every plan tier), corrected by the PINVOU_OVERRIDES entry;
+            // the highspeed variant stays on K2.7 Code HighSpeed's 256K and
+            // must keep outranking it in the override table.
+            (ModelPreset::OpenaiCompatible, "kimi-for-coding", 1_048_576),
             (
                 ModelPreset::OpenaiCompatible,
                 "kimi-for-coding-highspeed",
@@ -1117,33 +1128,67 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
             // GLM: 5.2 / 5.3 are 1M, 5.1/5-turbo are 202,752, 4.7 is officially 200K
+            (ModelPreset::Glm, "glm-5.3-flashx", 1_000_000),
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
             (ModelPreset::Glm, "glm-5.3", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
-            // MiniMax：M3 是 1M，M2.x 全系 204,800
+            // MiniMax: M3 is 1M, the whole M2.x family is 204,800 (carried
+            // over from the 2026-09-11 verification; current official pages
+            // no longer publish per-model context figures for M2.x)
             (ModelPreset::Minimax, "MiniMax-M3", 1_000_000),
+            // M3.1 Flash Preview (2026-09-26) is 1M; the exact "MiniMax-M3"
+            // spelling cannot suffix-match the m3.1 wire id.
+            (
+                ModelPreset::Minimax,
+                "MiniMax-M3.1-Flash-Preview",
+                1_000_000,
+            ),
             (ModelPreset::Minimax, "MiniMax-M2.7", 204_800),
             (ModelPreset::Minimax, "MiniMax-M2.7-highspeed", 204_800),
             (ModelPreset::Minimax, "MiniMax-M2.5", 204_800),
             (ModelPreset::Minimax, "MiniMax-M2.5-highspeed", 204_800),
-            // MiMo：v2.5 全系 1M
+            // MiMo: the v2.5 family is 1M; v2.6 (2026-09-22 default) is 1M
+            // as well, carried by the core::model_context supplemental table
+            // (the base has no v2.6 rows)
             (ModelPreset::Mimo, "mimo-v2.5-pro", 1_000_000),
             (ModelPreset::Mimo, "mimo-v2.5", 1_000_000),
+            (ModelPreset::Mimo, "mimo-v2.6-pro", 1_000_000),
+            (ModelPreset::Mimo, "mimo-v2.6-flash", 1_000_000),
+            (ModelPreset::Mimo, "mimo-v2.6-pro-ultraspeed", 1_000_000),
             // Qwen：3.7 全系 / 3.6-flash 均 1M
             (ModelPreset::Qwen, "qwen3.7-plus", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // Doubao: evolving is already 1M; the 2.x family is officially 256k
-            // (volcengine 1330310, checked 2026-09-12), carried by the
-            // core::model_context supplemental table — the base has no doubao
-            // rows, and without the supplemental table the engine side falls to
-            // 128K, diverging from the monitor page
+            // New Token Plan rows (auto / the 0813 snapshot / v4.1-flash) and
+            // the Qwen Coding Plan group's exact-version rows: ids not covered
+            // by the base chain fall to the Qwen preset fallback (131,072),
+            // while the deepseek rows ride the base v4 heuristic.
+            (ModelPreset::Qwen, "auto", 131_072),
+            (ModelPreset::Qwen, "deepseek-v4-pro-0813", 1_000_000),
+            (ModelPreset::Qwen, "deepseek-v4.1-flash", 1_000_000),
+            (ModelPreset::Qwen, "qwen3.6-plus", 131_072),
+            (ModelPreset::Qwen, "qwen3-coder-plus", 131_072),
+            (ModelPreset::Qwen, "qwen3-coder-next", 131_072),
+            (ModelPreset::Qwen, "glm-5", 131_072),
+            // Doubao: evolving is already 1M; the 2-1 -260628 generation and
+            // the 2-0 snapshots are officially 256k, while the -260915
+            // snapshots moved to 1024k (volcengine 1330310, re-checked
+            // 2026-09-28), carried by the core::model_context supplemental
+            // table — the base has no doubao rows, and without the
+            // supplemental table the engine side falls to 128K, diverging
+            // from the monitor page
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
             (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260915", 1_048_576),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-1-lite-260915",
+                1_048_576,
+            ),
             (
                 ModelPreset::Doubao,
                 "doubao-seed-2-0-code-preview-260215",
@@ -1151,12 +1196,51 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             ),
             (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
+            // Ark Coding Plan dot spellings (same underlying models, plan
+            // model list) ride their own supplemental rows.
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.1-pro",
+                1_048_576,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.0-mini",
+                262_144,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "kimi-k2.8-preview",
+                1_048_576,
+            ),
+            // Remaining Ark Coding Plan rows: the lite dot spelling rides its
+            // supplemental row; glm-5.3-flash / deepseek-v4.1-flash go through
+            // the base exact row and the v4 heuristic; ark-code-latest is the
+            // Auto shell model with no official per-model context figure, so
+            // both sides keep the conservative fallback (the disclosed gateway
+            // pattern: engine 128K / monitor page 131,072).
+            (
+                ModelPreset::OpenaiCompatible,
+                "doubao-seed-2.1-lite",
+                1_048_576,
+            ),
+            (ModelPreset::OpenaiCompatible, "glm-5.3-flash", 1_000_000),
+            (
+                ModelPreset::OpenaiCompatible,
+                "deepseek-v4.1-flash",
+                1_000_000,
+            ),
+            (ModelPreset::OpenaiCompatible, "ark-code-latest", 131_072),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
             // xAI: the base known table lists grok-4.6 / grok-4.5 at 500K (checked 2026-09-11)
             (ModelPreset::Xai, "grok-4.6", 500_000),
+            // grok-4.7 (September 2026 default) is 500K per the release
+            // notes; the base has no row yet, filled by the
+            // core::model_context supplemental table.
+            (ModelPreset::Xai, "grok-4.7", 500_000),
             // The base known table still records grok-4.20-0309-* as 2M; the
             // core::model_context override table corrects it first to the 1M
             // re-checked from docs.x.ai on 2026-09-11 (matching the catalog desc).
@@ -1176,6 +1260,10 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // figures (the engine-side resolved was None → 128K, diverging from
             // the monitor page fallback).
             (ModelPreset::Openai, "gpt-6-astra", 1_050_000),
+            // The 2026-09-28 listing rows: same anchor logic as astra (no
+            // base gpt-6 row); official 1,050,000 per their model pages.
+            (ModelPreset::Openai, "gpt-6-sol", 1_050_000),
+            (ModelPreset::Openai, "gpt-6-luna", 1_050_000),
             (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
             // Anthropic models covered by the base catalog (haiku 200K) and the
             // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
@@ -1186,6 +1274,11 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
             (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
+            // 2026-09-22 default recommendation: rides the claude-opus-5
+            // override row via suffix tolerance (model_context tests pin it;
+            // listed here so the settings-page row is covered by this
+            // charter too).
+            (ModelPreset::Anthropic, "claude-opus-5-5", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(

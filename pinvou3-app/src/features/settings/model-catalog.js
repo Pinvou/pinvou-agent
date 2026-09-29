@@ -22,27 +22,35 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // endpoint identity is unknown; keep the old flagship gpt-5.6-terra instead
 // of following the official recommended slot, to avoid implying official
 // endorsement).
-// Default models (checked against each vendor's official docs on 2026-09-11):
-// - deepseek: V4.1-Flash (deepseek-flash) is the current mainline;
-//   per the official 2026-09-10 confirmation, deepseek-v4-pro keeps serving
-//   past 09-14 with unchanged billing
-//   (api-docs.deepseek.com updates/pricing, verified 2026-09-14; the
-//   news260910 announcement's "routed to V4.1-Flash billing" claim has been
-//   superseded by the updates/pricing pages).
+// Default models (checked against each vendor's official docs on 2026-09-28;
+// previous full re-check 2026-09-11):
+// - deepseek: V4.1-Flash (deepseek-flash) is still the mainline; the 09-10
+//   v4-pro phase-out news was superseded the same day by the changelog
+//   decision to keep serving v4-pro with unchanged billing (re-verified
+//   2026-09-28).
 // - glm: GLM-5.3 launched on 2026-08-19 (China) / 2026-08-18 (z.ai), and is
 //   the API enum default on both sites (docs.bigmodel.cn / docs.z.ai).
 // - gemini: gemini-3.8-flash launched on 2026-09-02 as the successor
 //   (ai.google.dev models page).
-// - xai: grok-4.6 holds the official "coding/agent recommended" slot
-//   (docs.x.ai models page).
-// - openai keeps gpt-5.6-terra: although the official recommended starting
-//   point is now gpt-6-astra, its tool calling is Responses-only
-//   (Using GPT-6 Astra guide verbatim: "GPT-6 Astra supports
-//   Chat Completions, but tool calling requires Responses",
-//   developers.openai.com/api/docs/guides/latest-model/gpt-6-astra; the
-//   models page's endpoint table listing Chat Completions "Supported" only
-//   means the endpoint exists, not function calling),
-//   and the Pinvou openai preset uses the Chat wire, so the default stays.
+// - xai: grok-4.7 holds the official "coding/agent recommended" slot since
+//   September 2026 (docs.x.ai models page: "For everything else, including
+//   code, use Grok 4.7"); grok-4.6 demotes to previous generation.
+// - openai: gpt-5.6-terra keeps the Chat-wire default. The gpt-6 family
+//   detail pages state verbatim "Chat Completions supports function calling
+//   only with reasoning_effort set to none" (developers.openai.com gpt-6-sol
+//   / gpt-6-luna model pages, 2026-09-28), so the gpt-6 rows cannot drive
+//   the agent tool loop on the Chat wire this preset uses (the engine sends
+//   no reasoning_effort for gpt-6 and the API default is medium). terra's
+//   page carries no such restriction ($2/$12 vs sol's $2/$10). gpt-6-sol /
+//   gpt-6-luna stay listed with the restriction in their descriptions;
+//   gpt-6-astra's tool calling remains Responses-only (Using GPT-6 Astra
+//   guide verbatim: "GPT-6 Astra supports Chat Completions, but its tool
+//   calling requires Responses", re-verified 2026-09-28).
+// - anthropic: claude-opus-5-5 (2026-09-22) takes the default per the
+//   official models overview "start with Claude Opus 5.5 for most workloads".
+// - mimo: mimo-v2.6-pro (2026-09-22 release) replaces the default; the whole
+//   v2.5 family hard-retires 2026-10-21 with no auto-replacement
+//   (mimo.mi.com deprecation page).
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -53,11 +61,11 @@ const MODEL_PRESET_DEFS = {
   doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
-  mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+  mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.6-pro' },
   openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
-  anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-sonnet-5' },
+  anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-opus-5-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
-  xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.6' },
+  xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.7' },
 };
 const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
@@ -80,6 +88,7 @@ const PROVIDER_KIND_CUSTOM = 'custom';
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',
+  aggregator: '聚合平台',
   custom: '自定义兼容接口',
 };
 // preset key → i18n label key: direct lookup instead of materializing the
@@ -158,16 +167,19 @@ const MODEL_CATALOG = {
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
       endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
       // bigmodel 是底座 zai kind 的自定义端点：模型名原样透传，必须用厂商
-      // documentation's lowercase wire ids. Official figures as of 2026-09
-      // (docs.bigmodel.cn/cn/coding-plan/
-      // overview): GLM-5.3 / GLM-5.3-Flash are native models on all plans;
-      // GLM-5.2/GLM-5.1 calls auto-switch to GLM-5.3 and GLM-5-Turbo/GLM-4.7
+      // documentation's lowercase wire ids. Official figures re-checked
+      // 2026-09-28 (docs.bigmodel.cn/cn/coding-plan/overview):
+      // GLM-5.3 / GLM-5.3-Flash are native models on all plans; GLM-5.2 /
+      // GLM-5.1 calls auto-switch to GLM-5.3 and GLM-5-Turbo/GLM-4.7
       // auto-switch to GLM-5.3-Flash, so the old rows stay as "legacy model"
-      // entries rather than being deleted.
+      // entries rather than being deleted. GLM-5.3-FlashX is explicitly NOT
+      // open on the plan (the official Flash page states the plan does not
+      // currently offer GLM-5.3-FlashX).
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
         { model: 'glm-5.2', imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动切换至 GLM-5.3' },
+        { model: 'glm-5.1', title: 'GLM-5.1', desc: '历史模型，请求自动切换至 GLM-5.3' },
         { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
@@ -185,10 +197,10 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
       // z.ai's official wire ids are all-lowercase (docs.z.ai API enum,
-      // checked 2026-09); existing configs may still hold the old uppercase
-      // catalog value (GLM-5.2), recognized via legacyAliases.
+      // re-checked 2026-09-28); existing configs may still hold the old
+      // uppercase catalog value (GLM-5.2), recognized via legacyAliases.
       // Old models auto-route per z.ai's official figures
-      // (docs.z.ai/devpack/overview, checked 2026-09-11): GLM-5.2/GLM-5.1
+      // (docs.z.ai/devpack/overview, re-checked 2026-09-28): GLM-5.2/GLM-5.1
       // requests auto-route to GLM-5.3, GLM-4.7 auto-routes to
       // GLM-5.3-Flash. GLM-5-Turbo is absent from z.ai's current model
       // overview/pricing/API enum (the base bundled assets still hold that
@@ -200,6 +212,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
         { model: 'glm-5.2', legacyAliases: ['GLM-5.2'], imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动路由至 GLM-5.3' },
+        { model: 'glm-5.1', title: 'GLM-5.1', desc: '历史模型，请求自动路由至 GLM-5.3' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动路由至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -257,9 +270,13 @@ const MODEL_CATALOG = {
       vendor: 'tencent',
       baseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions'],
-      // Row lineup mirrors the live 130119 general-tier table (checked
-      // 2026-09-11); GLM-5/GLM-5.1 retire 2026-10-09 per 130060. hy4-preview is
-      // flagged by Tencent as high-load (may be rate-limited at peak).
+      // Row lineup mirrors the live 130060 personal-plan table (re-checked
+      // 2026-09-28; the page updated 2026-09-24); GLM-5/GLM-5.1 retire
+      // 2026-10-09 per 130060 (the TokenHub platform list 130051 marks the
+      // underlying models 2026-10-08, so treat end of 10-08 as the safe
+      // cutoff). The old "high-load" flag on hy4-preview is gone from the
+      // current 130060 table, so the note is dropped. DeepSeek rows
+      // are first-party direct supply without SLA, per 130060.
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
         { model: 'glm-5.3', legacyAliases: ['glm-5-3'], imageCapable: false, title: 'glm-5.3', desc: '旗舰推理与编码' },
@@ -274,7 +291,7 @@ const MODEL_CATALOG = {
         { model: 'minimax-m3', legacyAliases: ['minimax-m-3-0'], imageCapable: true, title: 'minimax-m3', desc: 'MiniMax 最新旗舰' },
         { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], imageCapable: false, title: 'minimax-m2.7', desc: '通用能力' },
         { model: 'hy3', legacyAliases: ['hy3-preview', 'hy3-202608'], title: 'hy3', desc: 'Hy 套餐专属模型' },
-        { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览，高峰期可能限频' },
+        { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览' },
         { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
@@ -288,11 +305,22 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_CODING_PLAN,
       vendor: 'kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
-      endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions'],
+      // The overseas Kimi Code plan serves https://api.kimi.ai/coding/v1
+      // (kimi.com/code/docs, checked 2026-09-28); registered as an
+      // alias so saved configs classify into this group — note the alias
+      // only classifies; the exact-route K3 effort gate still pins
+      // api.kimi.com/coding/v1, so an overseas-host config gets no K3
+      // tiers until the base learns the new host.
+      endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions', 'https://api.kimi.ai/coding/v1'],
+      // kimi-for-coding is a stable alias whose underlying model rolls: it
+      // became K2.8 Preview on 2026-09-11 with 1M context on all tiers
+      // (kimi.com/code/docs models page), so the old "standard coding model,
+      // smaller context" framing is gone. k3 / k3-256k keep their own ids;
+      // the [1m] suffix variant is only for Claude Code-style clients.
       items: [
         { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
-        { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: '标准编码模型' },
+        { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，全档 1M 上下文' },
         { model: 'kimi-for-coding-highspeed', imageCapable: true, title: 'kimi-for-coding-highspeed', desc: '高速编码模型' },
         { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -375,15 +403,18 @@ const MODEL_CATALOG = {
       preset: 'glm',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'glm',
-      // Official figures as of 2026-09-11 (docs.bigmodel.cn API enum / pricing
-      // page): glm-5.3 is the current flagship (the API enum default) with
-      // forced thinking (disabled errors out) and effort limited to
-      // low/high/max; glm-5.3-flash is the multimodal cost-effective tier.
-      // GLM-5.2 drops to previous-generation flagship, all other rows are
-      // still on sale. GLM-5.1 / 5-Turbo / 4.7 do not support reasoning_effort.
+      // Official figures re-checked on 2026-09-28 (docs.bigmodel.cn API enum /
+      // pricing page): glm-5.3 is the current flagship (the text-model API
+      // enum default) with forced thinking (disabled errors out) and effort
+      // limited to low/high/max; glm-5.3-flash is the multimodal
+      // cost-effective tier and glm-5.3-flashx the new multimodal speed tier
+      // (200 tokens/s, 1M context, vision-enum default). GLM-5.2 drops to
+      // previous-generation flagship, all other rows are still on sale.
+      // GLM-5.1 / 5-Turbo / 4.7 do not support reasoning_effort.
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
+        { model: 'glm-5.3-flashx', imageCapable: true, title: 'glm-5.3-flashx', desc: '极速多模态，200 tokens/s' },
         { model: 'glm-5.2', imageCapable: false, title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
         { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
@@ -406,10 +437,13 @@ const MODEL_CATALOG = {
       // bundled assets is not grounds for inclusion) and is not listed;
       // existing glm-5-turbo configs fall back to the custom classification
       // (tier hints unaffected), consistent with how this file's
-      // glm_coding_plan_global group is handled.
+      // glm_coding_plan_global group is handled. glm-5.3-flashx is z.ai's
+      // vision-enum default (re-checked 2026-09-28) and, like bigmodel, is
+      // not open on the Coding Plan endpoint.
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
+        { model: 'glm-5.3-flashx', imageCapable: true, title: 'glm-5.3-flashx', desc: '极速多模态，200 tokens/s' },
         { model: 'glm-5.2', imageCapable: false, title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
         { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
@@ -425,16 +459,27 @@ const MODEL_CATALOG = {
       preset: 'minimax',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
-      // Official figures as of 2026-09-11 (platform.minimaxi.com /
-      // platform.minimax.io): M3 is the current flagship (1M context, native
-      // multimodal); the whole M2.x family is text-only with thinking always
-      // on. The official docs' current China domain is api.minimax.cn/v1 while
-      // api.minimaxi.com is still alive (same-shape 401 liveness probe,
-      // 2026-09-11); the status quo is kept and noted here; the international
-      // site api.minimax.io and the domestic site use separate account/key
-      // systems.
+      // Official figures re-checked 2026-09-28 (platform.minimax.cn / .io
+      // model intro + chat API reference): M3 stays the PAYG flagship (1M
+      // context, native multimodal); MiniMax-M3.1-Flash-Preview is the newer
+      // multimodal tier with real reasoning_effort tuning, but it is
+      // temporarily only served via the Token Plan and MiniMax Code
+      // subscriptions — a plain pay-as-you-go key may not invoke it (no
+      // dated announcement page exists; per the current model-intro pages).
+      // The whole M2.x family is text-only with thinking always on (M3
+      // accepts thinking.type=disabled; effort tuning is M3.1-only). The
+      // official China docs' primary domain moved to api.minimax.cn;
+      // api.minimaxi.com still answers (401 liveness probe, 2026-09-28) and
+      // stays the default because the base tiered route pins it, with the
+      // new domain registered as an alias below — note the alias only
+      // classifies configs into this group; the exact-route thinking gate
+      // still pins the two legacy hosts, so a saved api.minimax.cn config
+      // gets no M3 effort tiers until the base learns the new host.
+      // International and China use separate account/key systems.
+      endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
         { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M3.1-Flash-Preview', imageCapable: true, title: 'MiniMax-M3.1-Flash-Preview', desc: '新预览旗舰，仅订阅渠道' },
         { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
         { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
@@ -454,6 +499,7 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.minimax.io/v1',
       items: [
         { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M3.1-Flash-Preview', imageCapable: true, title: 'MiniMax-M3.1-Flash-Preview', desc: '新预览旗舰，仅订阅渠道' },
         { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
         { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
@@ -469,19 +515,23 @@ const MODEL_CATALOG = {
       preset: 'mimo',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'mimo',
-      // Official figures as of 2026-09-11 (mimo.mi.com model list):
-      // mimo-v2.5-pro is text-only (1M context, deep thinking by default);
-      // multimodal (image/audio/video understanding) lives on mimo-v2.5.
-      // Token Plan subscription keys (tp-) must switch to
-      // https://token-plan-cn.xiaomimimo.com/v1.
-      // mimo-v2.5's image capability is admitted by the backend exact-equality
-      // table (image_capability
-      // EXACT_VERIFIED_IMAGE_CAPABLE_MODELS, naturally distinct from the
-      // text-only -pro), and existing configs that never went through the form
-      // are also treated as Supported.
+      // Official figures re-checked 2026-09-28 (mimo.mi.com model list +
+      // deprecation page): the MiMo-V2.6 series launched 2026-09-22 and all
+      // three tiers are omni-modal (text/image/audio/video input) with 1M
+      // context; mimo-v2.5-pro is text-only and mimo-v2.5 multimodal. The
+      // two v2.5 chat models (both listed below) hard-retire Beijing time
+      // 2026-10-21 10:00 with NO system replacement (requests error out),
+      // so the v2.6 rows lead and the v2.5 rows carry the retirement
+      // notice.
+      // Token Plan subscription keys (tp-/ttp-) must switch to the cluster
+      // hosts (token-plan-cn / -sgp / -ams.xiaomimimo.com/v1); the console's
+      // displayed URL is authoritative.
       items: [
-        { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '最新旗舰，1M 上下文' },
-        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '全模态理解（图片/视频）' },
+        { model: 'mimo-v2.6-pro', imageCapable: true, title: 'mimo-v2.6-pro', desc: '最新旗舰，1M 上下文' },
+        { model: 'mimo-v2.6-flash', imageCapable: true, title: 'mimo-v2.6-flash', desc: '全模态，低成本' },
+        { model: 'mimo-v2.6-pro-ultraspeed', imageCapable: true, title: 'mimo-v2.6-pro-ultraspeed', desc: '旗舰效果，极速输出' },
+        { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '官方将于 2026-10-21 下线' },
+        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '官方将于 2026-10-21 下线' },
         { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -523,20 +573,29 @@ const MODEL_CATALOG = {
       // The ap-southeast-1 endpoint belongs to the international Token Plan
       // (Singapore region only), a separate subscription from the China
       // edition whose keys (sk-sp-) are not interchangeable. The list was
-      // checked against the 2026-09-11 personal/team plan allowlists; the
-      // "night half price" (22:00-08:00) is the personal plan's documented
-      // figure, and the team plan's night list currently has three DeepSeek
-      // models (v4-pro-0813 / v4-flash-0731 / v4.1-flash).
-      // deepseek-v4-flash-0731 does not yet support the Responses API.
+      // re-checked against the 2026-09-28 personal-plan allowlist
+      // (token-plan-personal-overview); the night discount (22:00-08:00) is
+      // now 40% off credits for qwen3.8-max AND qwen3.8-flash (was half
+      // price, max only), while the DeepSeek rows keep 50% off. The team
+      // plan's night list currently has three DeepSeek models
+      // (v4-pro-0813 / v4-flash-0731 / v4.1-flash). No official per-model
+      // Responses API support list is published, so no protocol claim is
+      // made on the deepseek-v4-flash-0731 row. Gateway deployments are not
+      // verified one by one, so glm/deepseek rows stay unannotated
+      // (image capability falls back to the same-id official-group rows).
       items: [
-        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间 22:00-08:00 五折（个人版）' },
-        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间 22:00-08:00 四折（个人版）' },
+        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比，夜间同样四折' },
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
+        { model: 'auto', title: 'auto', desc: '自动模型，智能路由' },
         { model: 'glm-5.2', title: 'glm-5.2', desc: '上代旗舰' },
+        { model: 'glm-5.3', title: 'glm-5.3', desc: '旗舰推理与编码' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
-        { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应，暂不支持 Responses API' },
+        { model: 'deepseek-v4-pro-0813', title: 'deepseek-v4-pro-0813', desc: '高能力模型' },
+        { model: 'deepseek-v4.1-flash', title: 'deepseek-v4.1-flash', desc: '快速响应' },
+        { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应' },
         { model: '', title: '自定义 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
@@ -552,16 +611,55 @@ const MODEL_CATALOG = {
       baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
       // qwen3.7-flash is listed in the international site's full model list
       // (alibabacloud.com model-studio text-generation-model recommended
-      // models section), re-checked and restored on 2026-09-11; the models
-      // index page that previously justified deleting the row is a curated
-      // 3-per-category page, not the full catalog.
+      // models section), re-checked and restored on 2026-09-11, re-verified
+      // 2026-09-28; the models index page that previously justified deleting
+      // the row is a curated 3-per-category page, not the full catalog.
+      // qwen3.6-flash is now listed internationally too (legacy section with
+      // its dated snapshot), so the row joins this group as well. Alibaba
+      // now recommends workspace-dedicated base URLs
+      // (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1);
+      // this legacy shared domain is still documented as available.
       items: [
         { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理（纯文本）' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
+        { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
+      ],
+    },
+    {
+      key: 'qwen_coding_plan',
+      section: 'coding_plan',
+      title: '通义千问 Coding Plan / Qwen Coding Plan',
+      configTitle: '通义千问 Coding Plan',
+      desc: '阿里百炼 Coding Plan 订阅接口',
+      preset: 'qwen',
+      providerKind: PROVIDER_KIND_CODING_PLAN,
+      vendor: 'qwen',
+      baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+      endpointAliases: ['https://coding-intl.dashscope.aliyuncs.com/v1'],
+      // Alibaba Model Studio Coding Plan (help.aliyun.com/zh/model-studio/
+      // coding-plan, checked 2026-09-28): a fixed-monthly subscription
+      // (Pro ¥200/mo; the Lite tier closed to new purchases 2026-03-20)
+      // separate from the Token Plan, usable only inside AI coding tools.
+      // Keys are also sk-sp- prefixed. The endpoint serves exact-version
+      // ids only; the rows are a deliberate subset of the official page
+      // list (the page additionally recommends kimi-k2.5 — not mirrored
+      // because Moonshot retired it platform-wide on 2026-08-31 — and
+      // lists qwen3.5-plus / qwen3-max-2026-01-23 under "more models").
+      // Gateway deployments are not verified one by one, so rows stay
+      // unannotated.
+      items: [
+        { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
+        { model: 'qwen3.6-plus', title: 'qwen3.6-plus', desc: '均衡性价比' },
+        { model: 'glm-5', title: 'glm-5', desc: '高能力模型' },
+        { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '通用能力' },
+        { model: 'qwen3-coder-plus', title: 'qwen3-coder-plus', desc: '代码场景' },
+        { model: 'qwen3-coder-next', title: 'qwen3-coder-next', desc: '代码场景' },
+        { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
+        { model: '', title: '自定义 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
     {
@@ -572,23 +670,69 @@ const MODEL_CATALOG = {
       preset: 'doubao',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'doubao',
-      // Official figures as of 2026-09-11 (volcengine docs 82379/1330310,
-      // 2549861): the five active rows' spellings match verbatim and their
-      // capability columns all include multimodal understanding;
-      // doubao-seed-evolving is the officially recommended Coding/Agent model
-      // whose Model ID rolls weekly; there is no 2-2 family. The
-      // coding-specialized preview doubao-seed-2-0-code-preview-260215 also
-      // lists multimodal understanding in its capability column, so the image
-      // capability is annotated. Thinking control uses thinking.type +
-      // reasoning_effort.
+      // Official figures re-checked 2026-09-28 (docs.volcengine.com/ark
+      // model list + release announcements 1159178): doubao-seed-evolving is
+      // the officially recommended Coding/Agent model — a permanent Model ID
+      // whose underlying version auto-updates (no update cadence is
+      // documented), so the old "rolls weekly" wording is gone. The 2-1 family gained -260915
+      // pro/lite snapshots (2026-09); the -260628 rows and the 2-1 -260915
+      // snapshots stay on sale, but every 2-0 -260215 snapshot on the model
+      // list now carries a "coming offline soon" badge, so those rows
+      // note the coming retirement. The coding-specialized preview
+      // doubao-seed-2-0-code-preview-260215 also lists multimodal
+      // understanding, so the image capability is annotated. Vendor docs now
+      // document seven reasoning_effort modes (none…max; default high for
+      // doubao-seed-evolving and the 2-1 generation, medium for 2-0); the
+      // base still normalizes to the off/high/max exposure below, so no tier
+      // change is made here.
       items: [
-        { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐，周级滚动升级' },
+        { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐，统一模型 ID 自动升级' },
+        { model: 'doubao-seed-2-1-pro-260915', imageCapable: true, title: 'doubao-seed-2-1-pro-260915', desc: '高能力模型' },
         { model: 'doubao-seed-2-1-pro-260628', imageCapable: true, title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
         { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '低成本低时延，效果比肩 2-1-pro' },
-        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览）' },
-        { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
+        { model: 'doubao-seed-2-1-lite-260915', imageCapable: true, title: 'doubao-seed-2-1-lite-260915', desc: '轻量模型' },
+        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览），官方即将下线' },
+        { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用，官方即将下线' },
         { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
         { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
+      ],
+    },
+    {
+      key: 'volcengine_coding_plan',
+      section: 'coding_plan',
+      title: '火山方舟 Coding Plan / Volcengine Ark Coding Plan',
+      configTitle: '火山方舟 Coding Plan',
+      desc: '火山方舟编码套餐专用端点',
+      preset: 'openai_compatible',
+      providerKind: PROVIDER_KIND_CODING_PLAN,
+      vendor: 'doubao',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+      // Ark Coding Plan (volcengine docs coding-plan-personal-get-started +
+      // activity/codingplan, checked 2026-09-28): an Agent/Coding
+      // subscription separate from pay-as-you-go /api/v3 — the official
+      // quick start explicitly warns NOT to point coding tools at the plain
+      // /api/v3 host. ark-code-latest is the console-managed Auto shell
+      // model; the plan's real-time switchable model list below mirrors the
+      // official page verbatim (Doubao/Kimi/GLM/DeepSeek/MiniMax included).
+      // The same page also documents an Anthropic-compatible
+      // https://ark.cn-beijing.volces.com/api/coding endpoint, unused by
+      // this repo's OpenAI route.
+      items: [
+        { model: 'ark-code-latest', title: 'ark-code-latest', desc: 'Coding Plan 自动模型' },
+        { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐，统一模型 ID 自动升级' },
+        { model: 'doubao-seed-2.1-pro', title: 'doubao-seed-2.1-pro', desc: '高能力模型' },
+        { model: 'doubao-seed-2.1-lite', title: 'doubao-seed-2.1-lite', desc: '轻量模型' },
+        { model: 'doubao-seed-2.0-mini', title: 'doubao-seed-2.0-mini', desc: '轻量模型' },
+        { model: 'kimi-k3', title: 'kimi-k3', desc: 'Kimi 最新旗舰' },
+        { model: 'kimi-k2.8-preview', title: 'kimi-k2.8-preview', desc: '代码场景' },
+        { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
+        { model: 'glm-5.3', legacyAliases: ['glm-latest'], title: 'glm-5.3', desc: '旗舰推理与编码' },
+        { model: 'glm-5.3-flash', title: 'glm-5.3-flash', desc: '多模态高性价比' },
+        { model: 'deepseek-v4.1-flash', title: 'deepseek-v4.1-flash', desc: '快速响应' },
+        { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
+        { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
+        { model: 'minimax-m3', title: 'minimax-m3', desc: 'MiniMax 最新旗舰' },
+        { model: '', title: '自定义火山方舟 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
     {
@@ -601,18 +745,29 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
-      // Official figures as of 2026-09-11 (developers.openai.com/api/docs/models):
-      // gpt-6-astra is the current strongest flagship, but its tool calling is
-      // Responses-only (Using GPT-6 Astra
-      // guide verbatim: "GPT-6 Astra supports Chat Completions, but tool calling
-      // requires Responses"; the models page's endpoint table's Chat
-      // Completions "Supported" only means the endpoint exists, not function
-      // calling) — the Pinvou openai preset uses the Chat wire, so it is
-      // listed but not the default, with the desc noting the restriction.
-      // gpt-5.6-sol/terra/luna match the official positioning; gpt-5.5 /
-      // gpt-5.4-mini are on sale and not deprecated. gpt-5.3-codex is
-      // Responses-only and is not listed.
+      // Official figures re-checked 2026-09-28 (developers.openai.com
+      // models/pricing/guides): the GPT-6 family expanded — gpt-6-sol
+      // ("built to power complex coding and agentic workflows", $2/$10) and
+      // gpt-6-luna ($0.10/$0.50) joined, but their model detail pages state
+      // verbatim "Chat Completions supports function calling only with
+      // reasoning_effort set to none" (the family-wide "Using GPT-6" guide
+      // states the same restriction explicitly).
+      // The engine sends no reasoning_effort for gpt-6 (outside the base
+      // reasoning-family predicate) and the API default is medium, so the
+      // gpt-6 rows cannot drive the agent tool loop on the Chat wire this
+      // preset uses — gpt-5.6-terra ($2/$12, no such restriction on its
+      // page) keeps the default. gpt-6-astra additionally has Responses-only
+      // tool calling ("GPT-6 Astra supports Chat Completions, but its tool
+      // calling requires Responses") and rejects effort "none". The 5.6
+      // family and gpt-5.5 / gpt-5.4-mini are on sale and not deprecated
+      // (5.6-sol promo pricing documented through at least 2026-11-21).
+      // gpt-5.3-codex remains Responses-only and is not listed.
+      // Note: the base's openai reasoning-family predicate does not cover
+      // the gpt-6 ids yet, so these rows get no effort-tier UI (mirroring
+      // the base; re-check when the base learns the 6 family).
       items: [
+        { model: 'gpt-6-sol', imageCapable: true, title: 'gpt-6-sol', desc: '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用' },
+        { model: 'gpt-6-luna', imageCapable: true, title: 'gpt-6-luna', desc: '低价高效；Chat 协议仅 effort=none 支持函数调用' },
         { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰；仅 Responses 协议支持函数调用' },
         { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
         { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
@@ -632,18 +787,26 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
-      // Official figures as of 2026-09-11 (platform.claude.com models
-      // overview): claude-fable-5-1 is the current top flagship and
-      // claude-fable-5 drops to previous generation (on sale at least until
-      // 2027-06); every current model supports image input (the base bundled
-      // offline seed recording them as text-only is stale; the official docs
-      // win). From the 4.6 generation on, IDs without a date are fixed
-      // snapshots; haiku-4-5 still has a
-      // 200K context and no effort support (extended thinking only).
+      // Official figures re-checked 2026-09-28 (platform.claude.com models
+      // overview + per-model pages): claude-opus-5-5 (released 2026-09-22,
+      // "costs 40% less to run than Opus 5") is the new default
+      // recommendation ("start with Claude Opus 5.5 for most workloads");
+      // claude-fable-5-1 remains the highest-capability tier for demanding
+      // reasoning and long-horizon agentic work. claude-fable-5 and
+      // claude-opus-5 are both Legacy (retirement floors 2027-06/2027-07).
+      // claude-haiku-4-5 keeps its 200K context / no-effort figures; watch
+      // item: its retirement floor is 2026-10-15, and Sonnet 5.5 / Haiku 5.5
+      // were both announced as "coming weeks" on 2026-09-22 — re-check both
+      // slots at the next refresh. Every current model supports image input
+      // (the base bundled offline seed recording them as text-only is
+      // stale; the official docs win). From the 4.6 generation on, IDs
+      // without a date are fixed snapshots (claude-haiku-4-5 predates that
+      // and stays an alias).
       items: [
+        { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
         { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },
-        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '复杂 Agent 编码，默认推荐' },
+        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '官方已转 Legacy，兼容保留' },
         { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '速度与智能均衡' },
         { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
@@ -686,20 +849,113 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'xai',
       baseUrl: 'https://api.x.ai/v1',
-      // Official figures as of 2026-09-11 (docs.x.ai models and each model's
-      // detail page): grok-4.6 is the "everything including coding"
-      // recommended flagship (500K, effort low/medium/high/xhigh, reasoning
-      // cannot be turned off); grok-4.5 drops to the previous generation; the
-      // grok-4.20-0309-* and grok-build-0.1 detail pages all state
-      // text, image → text, so image capability can be annotated.
+      // Official figures re-checked 2026-09-28 (docs.x.ai models + release
+      // notes): grok-4.7 (September 2026) holds the official recommended
+      // slot — "For everything else, including code, use Grok 4.7. It is
+      // the most capable model we've built" (500K, effort low/medium/high/
+      // xhigh, reasoning cannot be turned off); grok-4.6 demotes to the
+      // previous generation. The reasoning guide's summary table still lists
+      // xhigh on the grok-4.5/grok-4.6 row, but its caveat is authoritative
+      // ("xhigh is available on grok-4.6 and later"; grok-4.5 requests with
+      // xhigh are treated as high; the grok-4.5 model page itself lists no
+      // reasoning-effort row) — the app follows the caveat and keeps
+      // exposing low/medium/high for grok-4.5, matching the base's downgrade.
+      // The grok-4.20-0309-* and grok-build-0.1 detail pages all state
+      // text, image → text, so image capability is annotated.
+      // Note: the base's effort injection (apply_xai_grok_4_6_reasoning_effort)
+      // covers only grok-4.6 / grok-4.5, so grok-4.7 gets no tier UI until
+      // the base learns it.
       items: [
-        { model: 'grok-4.6', imageCapable: true, title: 'grok-4.6', desc: '旗舰，编码与 Agent 默认推荐' },
+        { model: 'grok-4.7', imageCapable: true, title: 'grok-4.7', desc: '旗舰，编码与 Agent 默认推荐' },
+        { model: 'grok-4.6', imageCapable: true, title: 'grok-4.6', desc: '上代旗舰，编码与 Agent' },
         { model: 'grok-4.5', imageCapable: true, title: 'grok-4.5', desc: '上代旗舰，编码与 Agent' },
         { model: 'grok-4.20-0309-reasoning', imageCapable: true, title: 'grok-4.20-0309-reasoning', desc: '4.20 推理，1M 上下文' },
         { model: 'grok-4.20-0309-non-reasoning', imageCapable: true, title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理，1M 上下文' },
         { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '快速可靠，强工具调用' },
         { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent，256K 上下文' },
         { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
+      ],
+    },
+    {
+      key: 'openrouter',
+      section: 'aggregator',
+      title: 'OpenRouter',
+      desc: 'OpenRouter 聚合平台官方 API',
+      preset: 'openai_compatible',
+      providerKind: PROVIDER_KIND_OFFICIAL_API,
+      vendor: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      // OpenRouter (openrouter.ai/docs + rankings, checked 2026-09-28): one
+      // key, many vendors; ids are org-prefixed (deepseek/deepseek-v4.1-flash)
+      // and rankings shift weekly, so the rows are the current top usage
+      // plus stable vendor flagships — treat them as suggestions, the custom
+      // row covers everything else. Rows stay unannotated: deployments
+      // behind the aggregator are not verified one by one, and their
+      // per-deployment context figures are likewise not mirrored (the
+      // engine keeps its conservative fallback for these ids). The engine
+      // has a dedicated openrouter route (reasoning_effort passthrough low/
+      // medium/high, thinking toggle at off), exposed via REASONING_EFFORT_TIERS.
+      items: [
+        { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应' },
+        { model: 'deepseek/deepseek-v4-pro', title: 'deepseek/deepseek-v4-pro', desc: '高能力模型' },
+        { model: 'deepseek/deepseek-v4-flash', title: 'deepseek/deepseek-v4-flash', desc: '快速响应' },
+        { model: 'z-ai/glm-5.3', title: 'z-ai/glm-5.3', desc: '旗舰推理与编码' },
+        { model: 'z-ai/glm-5.3-flash', title: 'z-ai/glm-5.3-flash', desc: '多模态高性价比' },
+        { model: 'qwen/qwen3.8-flash', title: 'qwen/qwen3.8-flash', desc: '快速高性价比' },
+        { model: 'minimax/minimax-m3', title: 'minimax/minimax-m3', desc: 'MiniMax 最新旗舰' },
+        { model: 'moonshotai/kimi-k2.7-code', title: 'moonshotai/kimi-k2.7-code', desc: '代码场景' },
+        { model: 'openai/gpt-5.6-luna', title: 'openai/gpt-5.6-luna', desc: '低成本高并发' },
+        { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发' },
+        { model: '', title: '自定义 OpenRouter 模型', desc: '手动填写模型 ID（org/model 格式）', custom: true },
+      ],
+    },
+    {
+      key: 'siliconflow',
+      section: 'aggregator',
+      title: '硅基流动 SiliconFlow',
+      desc: '硅基流动国内站官方 API',
+      preset: 'openai_compatible',
+      providerKind: PROVIDER_KIND_OFFICIAL_API,
+      vendor: 'siliconflow',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      // SiliconFlow China (docs.siliconflow.cn, checked 2026-09-28): the
+      // cheapest hosted DeepSeek/GLM/Kimi/Qwen source with a free tier.
+      // Ids are case-sensitive org-prefixed spellings; the Pro/ prefix marks
+      // the accelerated tier. The engine has dedicated siliconflow kinds
+      // (thinking toggle at off; low/medium/high collapse to high), exposed
+      // via REASONING_EFFORT_TIERS. Rows stay unannotated: deployments
+      // behind the platform are not verified one by one, and their
+      // per-deployment context figures are likewise not mirrored (the
+      // engine keeps its conservative fallback for these ids).
+      items: [
+        { model: 'deepseek-ai/DeepSeek-V4-Pro', title: 'deepseek-ai/DeepSeek-V4-Pro', desc: '高能力模型' },
+        { model: 'deepseek-ai/DeepSeek-V4-Flash', title: 'deepseek-ai/DeepSeek-V4-Flash', desc: '快速响应' },
+        { model: 'Pro/deepseek-ai/DeepSeek-V4', title: 'Pro/deepseek-ai/DeepSeek-V4', desc: '高能力模型' },
+        { model: 'Pro/zai-org/GLM-5.2', title: 'Pro/zai-org/GLM-5.2', desc: '上代旗舰' },
+        { model: 'moonshotai/Kimi-K2.7-Code', title: 'moonshotai/Kimi-K2.7-Code', desc: '代码场景' },
+        { model: 'Qwen/Qwen3.6-27B', title: 'Qwen/Qwen3.6-27B', desc: '通用能力' },
+        { model: '', title: '自定义硅基流动模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
+      ],
+    },
+    {
+      key: 'siliconflow_global',
+      section: 'aggregator',
+      title: '硅基流动国际版 / SiliconFlow Global',
+      desc: '硅基流动国际站 API（与国内 Key 不通用）',
+      preset: 'openai_compatible',
+      providerKind: PROVIDER_KIND_OFFICIAL_API,
+      vendor: 'siliconflow',
+      baseUrl: 'https://api.siliconflow.com/v1',
+      // SiliconFlow global site (docs.siliconflow.com, checked 2026-09-28):
+      // separate account/key system from the China site, modeled as its own
+      // group like MiniMax/Kimi. Same case-sensitive id scheme.
+      items: [
+        { model: 'deepseek-ai/DeepSeek-V4-Pro', title: 'deepseek-ai/DeepSeek-V4-Pro', desc: '高能力模型' },
+        { model: 'deepseek-ai/DeepSeek-V4-Flash', title: 'deepseek-ai/DeepSeek-V4-Flash', desc: '快速响应' },
+        { model: 'Pro/deepseek-ai/DeepSeek-V4', title: 'Pro/deepseek-ai/DeepSeek-V4', desc: '高能力模型' },
+        { model: 'Pro/zai-org/GLM-5.2', title: 'Pro/zai-org/GLM-5.2', desc: '上代旗舰' },
+        { model: 'moonshotai/Kimi-K2.7-Code', title: 'moonshotai/Kimi-K2.7-Code', desc: '代码场景' },
+        { model: '', title: '自定义硅基流动模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
       ],
     },
     {
@@ -913,6 +1169,17 @@ const REASONING_EFFORT_TIERS = {
   zai: ['off', 'high'],
   minimax: ['off', 'high'],
   'xiaomi-mimo': ['off', 'high'],
+  // siliconflow (same set on the CN and global sites): the base maps off →
+  // thinking.disabled and folds low/medium/high uniformly into
+  // reasoning_effort=high + thinking.enabled (client.rs
+  // apply_reasoning_effort), so only off/high make a real difference.
+  siliconflow: ['off', 'high'],
+  // openrouter: the base passes low/medium/high through on OpenRouter's
+  // unified scale (off → thinking.disabled); the base also passes max/xhigh
+  // through as xhigh verbatim, but only some upstream models behind the
+  // aggregator accept xhigh, so the UI stays conservative and exposes only
+  // off/low/medium/high.
+  openrouter: ['off', 'low', 'medium', 'high'],
   // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
   anthropic: ['low', 'medium', 'high', 'max'],
   // openai: only gpt-5.x reasoning-family models get the base injection;
@@ -1093,6 +1360,12 @@ function vendorReasoningProvider(vendor, model) {
   if (['kimi', 'moonshot'].includes(vendor)) return 'moonshot';
   if (['glm', 'zai', 'zhipu'].includes(vendor)) return 'zai';
   if (vendor === 'minimax') return 'minimax';
+  // Aggregators: the base has dedicated openrouter / siliconflow(+CN)
+  // routes (the vendor arms in bridge.rs provider()), so the vendor alone
+  // decides and no URL gating is needed (consistent with the base's
+  // kind-based injection behavior).
+  if (vendor === 'openrouter') return 'openrouter';
+  if (vendor === 'siliconflow') return 'siliconflow';
   if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';
   if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
   if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
@@ -1125,13 +1398,16 @@ function baseUrlUsesLoopback(baseUrl) {
   }
 }
 
-// 对齐 Rust bridge.rs `base_url_uses_local_or_private`：loopback / RFC1918 私网
-// （10/8、172.16/12、192.168/16）/ Docker 宿主别名（host.docker.internal 等）。
-// 这些端点通常跑在用户自己的机器/内网，探测成本低且值得默认关思考；公网
-// OpenAI 兼容端点不在此列（保持默认 high）。与 `baseUrlUsesLoopback` 的区别：
-// 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
-// 回环部分复用 `baseUrlUsesLoopback`，本函数只补 Docker 别名与 RFC1918，
-// 避免两份回环规则漂移。
+// Mirrors Rust bridge.rs `base_url_uses_local_or_private`: loopback, RFC1918
+// private ranges (10/8, 172.16/12, 192.168/16), and Docker host aliases
+// (host.docker.internal etc.). These endpoints usually run on the user's own
+// machine/intranet where probing is cheap, so it is worth sending a real
+// thinking effort (defaulting to the lowest thinking tier); public
+// OpenAI-compatible endpoints are excluded (keep the default high).
+// Difference from `baseUrlUsesLoopback`: the latter only gates the
+// "auth optional" decision, this predicate covers probing and thinking
+// control. The loopback part reuses `baseUrlUsesLoopback`; this function only
+// adds Docker aliases and RFC1918, so the two loopback rule sets cannot drift.
 function baseUrlUsesLocalOrPrivate(baseUrl) {
   if (baseUrlUsesLoopback(baseUrl)) return true;
   if (!baseUrl) return false;
@@ -1350,24 +1626,36 @@ function isAlwaysThinkingK3Route(model) {
   return isExactMoonshotK3Route(model, modelName);
 }
 
-// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认 off
-// （防 SSE timeout / 思考 trace 抢占首包），其余 high。
+// Default thinking effort for a model: local models (vLLM / local loopback
+// endpoints) default to the lowest thinking tier (static four-tier table →
+// low), everything else high. The local default is no longer off: real-machine
+// testing shows local models like the Qwen3.8 family cannot reliably turn
+// thinking off, and silent thinking both stalls the first packet and leaks
+// reasoning into plain text; off remains available as an explicit choice.
+// When Ollama is probed the runtime default is high (the think wire boolean
+// only has off/on, on=high; see Rust request_reasoning_effort); this
+// function's static low maps to a high highlight via
+// reasoningEffortDisplayForTiers on the ['off','high'] probed tier table,
+// consistent with the runtime.
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (provider === 'vllm' || provider === 'local') {
-    // Always-thinking models with controllable tiers (knowledge table): off is
-    // unavailable, default to the lowest tier.
+    // Always-thinking models with controllable tiers (knowledge table):
+    // tiers[0] is the lowest tier the model allows.
     const spec = alwaysThinkingSpecForModel(model && model.model);
     if (spec && spec.tiers) return spec.tiers[0];
-    return 'off';
+    return 'low';
   }
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
-// 切换模型时的思考深度重置：丢弃旧档位，按新 model 的 route 回落到默认档位
-// （vllm→off，其余支持档位的模型→high；无档位模型→null = 未显式设置）。K2.6 选 off 后
-// 切 K3，off 不在 K3 档位表（low/high/max）内，必须重置为 high，否则界面无高亮且保存
-// 仍写旧值。单独成函数以便对「模型切换归一」这一状态迁移做行为测试。
+// Thinking-effort reset on model switch: drop the old tier and fall back to
+// the default for the new model's route (vllm→low (lowest thinking tier),
+// other models with tiers→high; models without tiers→null = not explicitly
+// set). After picking off for K2.6 and switching to K3, off is not in K3's
+// tier table (low/high/max) and must reset to high — otherwise the UI has no
+// highlight and saving keeps the stale value. A separate function so the
+// "normalize on model switch" state transition can be behavior-tested.
 function reasoningEffortForModelSwitch(model) {
   return defaultReasoningEffortForModel(model) || null;
 }
