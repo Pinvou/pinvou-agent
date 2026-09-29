@@ -2243,8 +2243,10 @@ mod release_env_defaults_guard {
 
         let path = std::env::var_os("PATH").expect("ensure_release_env must rewrite PATH");
         let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
-        let legacy = crate::platform::paths::managed_connector_bin_dir()
-            .expect("test platform must have a managed connector bin dir");
+        // 平台不支持（无旧布局目录/lock 表）时与迁移测试同样软跳过
+        let Some(legacy) = crate::platform::paths::managed_connector_bin_dir() else {
+            return;
+        };
         let legacy_idx = dirs
             .iter()
             .position(|d| d == &legacy)
