@@ -608,6 +608,8 @@ dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', ena
 
 dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
 
+// Retained for parity with the private implementation this tree aligns with; it has
+// no consumer in the public tree (the flow card always renders localized copy).
 dictEn.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictEn.uiToolDetails.tools, {
