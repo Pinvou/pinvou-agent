@@ -86,9 +86,10 @@ fn ensure_release_env() {
             // is the authoritative runtime. With the legacy dir first, a stale
             // old-version binary left there shadows the upgraded CLI for every
             // PATH-based consumer (observed: a leftover wecom-cli 0.1.9 kept
-            // running after the upgrade to 1.2.1). The legacy dir stays at the
-            // tail: binaries not yet migrated, or whose pinned version is not
-            // installed, still resolve by name (it is their only local runtime).
+            // running after the upgrade to 1.2.1). The legacy dir itself stays
+            // on PATH (after the versioned dirs): binaries not yet migrated,
+            // or whose pinned version is not installed, still resolve by name
+            // (it is their only local runtime).
             for (name, pin) in crate::platform::connector_lock::all_artifact_pins() {
                 dirs.push(crate::platform::paths::assets_cli_dir(&name, &pin.version));
             }

@@ -726,7 +726,8 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
 /// 内置 CLI 连接器 → Builtin 包记录。安装态判定：companion 技能目录在盘
 /// （连接时才解包）或 CLI 二进制在盘。存量二进制对照 lock 表验 SHA-256：
 /// 匹配 → 正常登记；不匹配/无法校验 → 记 `degraded`（§9.3，
-/// 修复动作 = 重新下载，物理搬移 `assets/cli/` 在后续 PR）。
+/// 修复动作 = 重新下载；旧布局搬移与同名残留清理由 connectors 侧
+/// `migrate_legacy_binary` 按 lock 校验执行）。
 fn legacy_cli_records() -> Vec<BundleRecord> {
     let skills_dir = paths::bundle_skills_dir();
     let now = now_iso8601();
