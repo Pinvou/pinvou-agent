@@ -143,7 +143,11 @@ export function createAuxChatController(options = {}) {
   } = options;
 
   const withSettleBound = (promise) => new Promise((resolve, reject) => {
-    const timer = setTimeoutFn(() => reject(new Error('reset settle bound exceeded')), settleWatchdogMs);
+    const timer = setTimeoutFn(() => {
+      const error = new Error('reset settle bound exceeded');
+      error.settleBound = true;
+      reject(error);
+    }, settleWatchdogMs);
     promise.then(
       (value) => { clearTimeoutFn(timer); resolve(value); },
       (error) => { clearTimeoutFn(timer); reject(error); },
@@ -223,6 +227,11 @@ export function createAuxChatController(options = {}) {
   // it, and the next bind re-ensures the truth). Controller-scoped like
   // the registries: a rebind/remount must not forget a live hazard.
   const settleTimedOutResets = new Set();
+  // task -> the live raw backend reset promises (round-36 MAJOR-2): the
+  // hazard marker retires only when this set empties, because the backend
+  // serializes resets in issue order — an older R1 settling first must not
+  // retire the marker while a newer R2 can still delete the record.
+  const liveResetsByTask = new Map();
 
   // taskId -> unsent composer draft, module-scoped for the same reason as
   // the send registry above: a draft belongs to the task, not to this
@@ -799,12 +808,36 @@ export function createAuxChatController(options = {}) {
       const rawReset = auxChat.reset(sessionId);
       const resetPromise = withSettleBound(rawReset);
       resetInFlightByTask.set(sessionId, resetPromise);
-      // When the BACKEND settles — long after the UI bound rejected, any
-      // outcome — the hazard marker retires: the disk now holds whatever
-      // the reset made of it, and the next bind shows the truthful state.
+      // Track the live backend call per task (round-36 MAJOR-2): when the
+      // LAST one settles — long after any UI bound, either outcome — the
+      // disk holds whatever the resets made of it and the marker retires;
+      // the next bind shows the truthful state. An older reset settling
+      // first retires nothing while a newer one is still live.
+      let live = liveResetsByTask.get(sessionId);
+      if (!live) {
+        live = new Set();
+        liveResetsByTask.set(sessionId, live);
+      }
+      live.add(rawReset);
       rawReset.then(
-        () => settleTimedOutResets.delete(sessionId),
-        () => settleTimedOutResets.delete(sessionId),
+        () => {
+          const set = liveResetsByTask.get(sessionId);
+          if (!set) return;
+          set.delete(rawReset);
+          if (set.size === 0) {
+            liveResetsByTask.delete(sessionId);
+            settleTimedOutResets.delete(sessionId);
+          }
+        },
+        () => {
+          const set = liveResetsByTask.get(sessionId);
+          if (!set) return;
+          set.delete(rawReset);
+          if (set.size === 0) {
+            liveResetsByTask.delete(sessionId);
+            settleTimedOutResets.delete(sessionId);
+          }
+        },
       );
       try {
         try {
@@ -821,15 +854,17 @@ export function createAuxChatController(options = {}) {
           emit();
         } catch (error) {
           console.warn('[pinvou3][aux-chat] restart reset failed', error);
-          if (generation !== restartGeneration) return;
-          // A settle-bound rejection means the backend reset is still
-          // alive (a long aux answer alone can outrun 180 s via the turn
-          // gate). Mark the task: the banner's "switch tasks or reopen"
-          // advice must not walk the user silently back into the reset's
-          // delete window (round-35 MAJOR-1).
-          if (String(error) === 'Error: reset settle bound exceeded') {
+          // The settle-bound marker is CONTROLLER state and must be set
+          // BEFORE the generation gate (round-36 MAJOR-1): the defeating
+          // path is exactly "user rebinds before the bound fires" — the
+          // same instance's generation bumps, and a gated add would never
+          // run, leaving the rebind free to auto-clear the banner while
+          // the backend reset is still pending. The view writes below
+          // stay gated.
+          if (error && error.settleBound) {
             settleTimedOutResets.add(sessionId);
           }
+          if (generation !== restartGeneration) return;
           // Honest failure surface (M6): the folded backend error cannot say
           // whether the delete half ran, so the safest assumption is "the old
           // transcript was possibly discarded". The binding stays cleared and

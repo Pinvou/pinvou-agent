@@ -680,6 +680,14 @@ fn aux_refusal_guards_stay_in_their_commands() {
         projects.contains("move_session_to_project: auxiliary conversations are managed through their main session"),
         "move_session_to_project must keep its aux refusal",
     );
+    // Round-36 minor 3: the newest campaign member (round-34 minor 6).
+    let settings = include_str!("settings.rs");
+    assert!(
+        settings.contains(
+            "set_session_model: auxiliary conversations inherit the main session's model"
+        ),
+        "set_session_model must keep its aux refusal",
+    );
     // The sched- send gates go through the alias-defeating predicate, not
     // exact prefix matching (round-34 minor 4; the contains() form was
     // corrected to the exact call shape — a re-spelled prefix would

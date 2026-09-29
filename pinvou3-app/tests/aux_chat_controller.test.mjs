@@ -243,6 +243,79 @@ test('M6 truth table: a send ack landing inside or after a completed reset can n
   assert.equal(panel.view.sendFailed, false, 'the restart-window rejection stays silent');
 });
 
+test('round-36 MAJOR-1: the marker is set even when the panel rebinds before the bound fires', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'rebind-bound');
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 1);
+  // The banner's own advice (switch tasks) rebinds the SAME instance —
+  // the generation bumps — so the marker add must live above the
+  // generation gate (round-35 shipped it below; the replay left the
+  // rebind free to auto-clear the banner while the reset was pending).
+  panel.bind('rebind-bound-other');
+  await h.flush();
+  h.timers.advance(SETTLE_WATCHDOG_MS);
+  await h.flush();
+  panel.bind('rebind-bound');
+  await h.flush();
+  assert.equal(
+    panel.view.discardFailed,
+    true,
+    'the post-bound rebind keeps the honest banner',
+  );
+  h.auxChat.calls.reset[0].resolve('aux-rebind-bound');
+  await h.flush();
+  panel.bind('rebind-bound-other');
+  await h.flush();
+  panel.bind('rebind-bound');
+  await h.flush();
+  assert.equal(panel.view.discardFailed, false, 'the marker retires when the backend settles');
+});
+
+test('round-36 MAJOR-2: the marker retires only when the LAST live reset settles (R1-first serialization)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'serialize-r');
+  // R1: dispatched, wedged past the bound, marker set.
+  panel.setDraftText('warmup');
+  void panel.send();
+  h.auxChat.calls.send[0].resolve({});
+  await h.flush();
+  h.auxChat.snapshots.set('aux-serialize-r', { chatItems: [], busy: true, queued: [] });
+  h.notifyChat();
+  h.auxChat.snapshots.set('aux-serialize-r', { chatItems: [], busy: false, queued: [] });
+  h.notifyChat();
+  confirmRestart(panel);
+  h.timers.advance(SETTLE_WATCHDOG_MS);
+  await h.flush();
+  assert.equal(panel.view.discardFailed, true, 'the bound marks the task');
+  // R2: the banner invites the retry while R1's backend call is alive.
+  // (The binding is nulled inside the reset window, so a send attempt here
+  // would no-op — the retry the copy invites is the New Topic retry.)
+  panel.setDraftText('retry');
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 2, 'the retry issues a second reset');
+  // Backend serialization: R1 lands FIRST — and must not retire the
+  // marker while R2 is still able to delete the record.
+  h.auxChat.calls.reset[0].resolve('aux-serialize-r');
+  await h.flush();
+  panel.bind('serialize-r-other');
+  await h.flush();
+  panel.bind('serialize-r');
+  await h.flush();
+  assert.equal(
+    panel.view.discardFailed,
+    true,
+    'R1 settling first must not retire the marker while R2 is pending',
+  );
+  h.auxChat.calls.reset[1].resolve('aux-serialize-r');
+  await h.flush();
+  panel.bind('serialize-r-other');
+  await h.flush();
+  panel.bind('serialize-r');
+  await h.flush();
+  assert.equal(panel.view.discardFailed, false, 'the last settle retires the marker');
+});
+
 test('a settle-bound reset keeps the failure banner across rebinds until the backend settles (round-35 MAJOR-1)', async () => {
   const h = createHarness();
   const panel = await mountBoundPanel(h, 'settle-bound');

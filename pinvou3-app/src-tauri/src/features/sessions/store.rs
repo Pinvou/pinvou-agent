@@ -430,7 +430,12 @@ impl SessionStore {
         // An aux session is never a scheduled session, so this refusal guard
         // applies to cascade targets naturally and the auxiliary-conversation
         // path cannot bypass it.
-        if self.is_scheduled_session(id)? {
+        // The prefix leg is alias-defeating (round-36 minor 2): on a
+        // case-insensitive filesystem a hand-copied `SCHED-<id>.json` IS the
+        // automation's record file, and the exact registry check alone
+        // would let `delete("SCHED-<id>")` remove it without the
+        // automation-owned path.
+        if super::validators::is_sched_session_id(id) || self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
         // Auxiliary-conversation cascade: deleting a main session first
@@ -838,18 +843,30 @@ impl SessionStore {
         // the sidecar before publishing the session JSON; when a later step
         // fails and the session is rolled back, `purge_session_side_maps`
         // removes this binding along with it.
+        // Concurrent-ensure narrowing (round-34 minor 1, hoisted above the
+        // model-sidecar write per round-36 minor 1): a lagging ensure that
+        // observed NotFound at its own entry load must not overwrite a
+        // record a concurrent ensure (or a turn on it) just published at
+        // the same derived path — a healthy record is reused, and a record
+        // that loads with any other error fails closed exactly like the
+        // entry probe (never overwrite what cannot be read). The hoist also
+        // stops a losing creator from overwriting the winner's
+        // `_session_models.json` binding with the parent's current choice
+        // before returning the winner's metadata (sidecar and metadata must
+        // not disagree). This re-check is not an atomic create: a save
+        // landing after another creator's first transcript write can still
+        // clobber, and closing that residual window needs a
+        // foundation-level exclusive-create — disclosed.
+        match self.load(&id) {
+            Ok(existing) => return Ok(existing.metadata),
+            Err(error) if !is_not_found_error(&error) => {
+                return Err(error).with_context(|| "re-check the aux record before create");
+            }
+            Err(_) => {}
+        }
         if let Some(model_id) = self.session_model_override(parent_id) {
             self.set_session_model_id(&id, Some(model_id))?;
         }
-        // Concurrent-ensure narrowing (round-34 minor 1): a lagging ensure
-        // that observed NotFound at its own entry load must not overwrite a
-        // record a concurrent ensure (or a turn on it) just published at the
-        // same derived path — a healthy record is reused, and a record that
-        // loads with any other error fails closed exactly like the entry
-        // probe (never overwrite what cannot be read). This re-check is not
-        // an atomic create: a save landing after another creator's first
-        // transcript write can still clobber, and closing that residual
-        // window needs a foundation-level exclusive-create — disclosed.
         match self.load(&id) {
             Ok(existing) => return Ok(existing.metadata),
             Err(error) if !is_not_found_error(&error) => {
