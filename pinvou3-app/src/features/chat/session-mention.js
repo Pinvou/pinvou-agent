@@ -72,7 +72,11 @@ export function buildSessionMentionBlock(refs) {
   const items = (Array.isArray(refs) ? refs : [])
     .map((ref) => ({
       sessionId: String((ref && ref.sessionId) || ''),
-      title: String((ref && ref.title) || ''),
+      // Cap here, not just in dedupe: an uncapped (pasted) session rename
+      // could otherwise produce a block this module's own 64 KB/200-char
+      // parser rejects — raw contract in the bubble, refs silently dropped
+      // on edit-resend.
+      title: capRefTitle(String((ref && ref.title) || '')),
     }))
     .filter((ref) => ref.sessionId);
   if (!items.length) return '';
