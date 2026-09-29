@@ -252,7 +252,12 @@ export function createAuxChatController(options = {}) {
   // for the SPA's lifetime. The staged conversation quotes go through the
   // same purge. The in-flight registries (send/reset) are deliberately NOT
   // touched: their entries belong to the exact operation that registered
-  // them and leave through the identity-gated settle paths.
+  // them and leave through the identity-gated settle paths. The settle-bound
+  // hazard marker is deliberately NOT purged either (round-36 MAJOR-2
+  // disposition): while the old backend reset is still live it genuinely
+  // threatens a recreated same-id task's fresh record, so the lingering
+  // banner is truthful, not stale — and it self-retires through the
+  // live-reset set the moment the last live reset settles.
   const purgeTask = (taskId) => {
     restartEpochByTask.delete(taskId);
     if (draftByTask.has(taskId)) deleteDraftAndNotify(taskId);

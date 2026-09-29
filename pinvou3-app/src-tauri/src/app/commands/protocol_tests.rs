@@ -733,3 +733,26 @@ fn delete_chat_session_keeps_its_aux_cascade_wrapper() {
         "delete_chat_session must route through the aux-cascade wrapper (the gate call inside it is the wrapper's own closure argument — the reviewed mutation removes the wrapper call entirely, which fails this pin)",
     );
 }
+
+// Round-36 minors 4+5: the two aux-classification surfaces an independent
+// re-enumeration found beyond the 26 guard sites. The deliverables index is a
+// cross-session surface, so it must skip aux records by the derived-id rule;
+// the ACP classification must never call an aux id ACP — an aux of an ACP
+// main inherits the exact ACP model string, so sniffing alone would let a
+// raw-metadata scan hand a full-tool ACP agent an aux id outside the
+// EnginePool pins.
+#[test]
+fn aux_stays_out_of_the_deliverables_index_and_acp_classification() {
+    let deliverables = include_str!("../../features/deliverables.rs");
+    assert!(
+        deliverables.contains("crate::features::sessions::is_aux_session_id"),
+        "the deliverables index must skip aux records (round-36 minor 4)",
+    );
+    let acp = include_str!("../../features/codex_acp/mod.rs");
+    assert!(
+        acp.matches("crate::features::sessions::is_aux_session_id")
+            .count()
+            >= 2,
+        "is_acp_metadata and is_acp must both reject aux ids (round-36 minor 5)",
+    );
+}

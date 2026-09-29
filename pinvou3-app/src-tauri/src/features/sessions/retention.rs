@@ -707,7 +707,12 @@ impl SessionStore {
         if self.scheduled_profiles.read().contains_key(id) {
             return Ok(true);
         }
-        if !id.starts_with("sched-") {
+        // The prefix leg is alias-defeating (round-36 minor 2): on a
+        // case-insensitive filesystem a hand-copied `SCHED-<id>.json` IS the
+        // automation's record file, so an exact `sched-` prefix here would
+        // let a case-variant alias skip every gate built on this predicate
+        // (the delete refusal among them).
+        if !super::validators::is_sched_session_id(id) {
             return Ok(false);
         }
         Ok(scheduled_session_file(&self.manager, id)?.exists())

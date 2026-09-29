@@ -87,6 +87,15 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
+  // Count guard (round-36 minor 9): the pin above lists 23 keys but cannot
+  // see additions — a 24th key added to all three dictionaries passes the
+  // existence loop silently and drifts the parity surface. Any key change
+  // must update this count with the list in the same commit.
+  assert.equal(
+    Object.keys(dict[language].uiAuxChat).length,
+    23,
+    `${language}.uiAuxChat must hold exactly the 23 pinned keys`,
+  );
   assert.ok(dict[language].uiSettings.providers, `${language}.uiSettings.providers must exist`);
   for (const key of [
     'addProvider', 'switch', 'official', 'current', 'export', 'import',

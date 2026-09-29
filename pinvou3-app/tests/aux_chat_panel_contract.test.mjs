@@ -153,7 +153,10 @@ test('busy, in-flight and failure banners render straight from the controller vi
 });
 
 test('M6: the stuck banner died with the two-invoke restart', () => {
-  assert.doesNotMatch(auxChatPanel, /discardStuck/);
+  // Negative pins run raw (round-36 minor 9): the stripped text can hide a
+  // residue inside a comment, and the dead name must be gone from the file
+  // entirely — the sibling pin below already runs raw for the same reason.
+  assert.doesNotMatch(auxChatPanelRaw, /discardStuck/);
   assert.doesNotMatch(auxChatPanelRaw, /aux-chat-discard-stuck/);
   assert.match(auxChatPanel, /copy\.discardFailed/);
 });
