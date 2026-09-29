@@ -360,9 +360,9 @@ mod tests {
         }
     }
 
-    /// Round-trip serialization against stored settings.json: the new
-    /// variant must serialize to the exact `as_str()` spelling and parse
-    /// back unchanged. rename_all=snake_case is an implicit contract — one
+    /// Round-trip serialization against stored settings.json: every variant
+    /// must serialize to the exact `as_str()` spelling and parse back
+    /// unchanged. rename_all=snake_case is an implicit contract — one
     /// misspelled letter and tiers written by older versions would be
     /// silently dropped at load.
     #[test]
@@ -372,9 +372,16 @@ mod tests {
             ModelPreset::Deepseek,
             ModelPreset::Kimi,
             ModelPreset::OpenaiCompatible,
-            ModelPreset::OpenaiResponses,
+            ModelPreset::Qwen,
+            ModelPreset::Doubao,
+            ModelPreset::Minimax,
+            ModelPreset::Glm,
+            ModelPreset::Mimo,
             ModelPreset::Openai,
+            ModelPreset::OpenaiResponses,
             ModelPreset::Anthropic,
+            ModelPreset::Gemini,
+            ModelPreset::Xai,
         ] {
             let serialized = serde_json::to_string(&preset).unwrap();
             assert_eq!(serialized, format!("\"{}\"", preset.as_str()));
