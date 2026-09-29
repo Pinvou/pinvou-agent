@@ -1,9 +1,12 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! 模型不再随安装包打包；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。固定 revision 的五个文件由
-//! `pinvou-knowledge` 统一流式下载并逐文件校验。候选目录通过真实
-//! embedding 加载后才带回滚地替换托管模型并刷新工具门控，**免重启**即可建库/入库/检索。
+//! Models are no longer bundled with the installer; users download them
+//! from the knowledge page into `super::model_dir`
+//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files at the pinned
+//! revision are streamed and per-file verified by `pinvou-knowledge`. Only
+//! after the candidate directory passes a real embedding load is the managed
+//! model replaced with rollback and the tool gating refreshed, so index
+//! building, ingestion, and search all gain the model **without a restart**.
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 
@@ -264,10 +267,10 @@ pub async fn kb_model_download(
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
+    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }
-    // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
     let guard = DownloadGuard;
 
     let parent = dir
@@ -351,7 +354,7 @@ pub async fn kb_model_download(
                     }),
                 );
             },
-            || false, // 取消入口已随 kb_model_cancel 命令移除
+            || false, // no in-process cancel entry: cross-process cancel stays a consumer-side design (CLI/GUI command)
         )
         .await?;
         if !model_directory_is_complete(&tmp) {

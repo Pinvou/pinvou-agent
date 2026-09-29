@@ -504,12 +504,22 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(
     sessionsSource,
-    /deepseek_tui::utils::write_atomic\(&file, json\.as_bytes\(\)/,
-    '开关清单必须原子替换落盘（write_atomic：tmp+rename+fsync），进程中途退出不得留半个 JSON',
+    /fn save_multi_agent_flags_locked[\s\S]{0,800}atomic_write_private\(&file,/,
+    '开关清单落盘必须走私有 atomic_write_private 助手，进程中途退出不得留半个 JSON',
+  );
+  const filesystemSource = read('src-tauri', 'src', 'platform', 'filesystem.rs');
+  assert.match(
+    filesystemSource,
+    /create_new\(true\)[\s\S]{0,600}replace_file_atomically\(/,
+    '原子写助手必须先写 staging 临时文件再原子换名，任何时刻落盘的都是完整内容',
   );
   assert.match(
     sessionsSource,
-    /pub fn set_multi_agent\([\s\S]{0,420}multi_agent_flags_io\.lock\(\)/,
+    // The window spans the hoisted `resolved_default_mode` (resolved before
+    // the lock, per clear_mode_and_persist's deadlock rationale) plus its
+    // rationale comment, then the lock that must still wrap the whole
+    // 改内存→落盘→回滚 transaction.
+    /pub fn set_multi_agent\([\s\S]{0,620}multi_agent_flags_io\.lock\(\)/,
     '「改内存→落盘→回滚」整个事务必须持有互斥，回滚不得覆盖并发新状态',
   );
   assert.match(

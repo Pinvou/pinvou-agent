@@ -36,6 +36,13 @@ mod headless_bridge_contract_tests;
 pub struct SessionSpec {
     pub session_id: String,
     pub model_selection: Option<EvalModelSelection>,
+    /// Workspace recorded in the new session's `metadata.workspace`. `None`
+    /// keeps the pool's default (bridge) workspace — right for scratch
+    /// sessions. Only the display/binding metadata is affected here; the
+    /// durable `--workspace` binding is a separate sidecar the caller writes
+    /// (see `bind_session_workspace`). Recording the task directory in both
+    /// places keeps the GUI list/detail honest for bound headless sessions.
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 /// 单轮提交输入（产品级，不暴露 Op/EngineConfig）
@@ -264,8 +271,22 @@ impl EnginePoolRuntime {
         self.pool.discard_eval_suite_model(suite);
     }
 
+    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
+        self.pool.pin_eval_model_selection(model_id)
+    }
+
     pub(crate) async fn close_eval_session_result(&self, session_id: &str) -> Result<()> {
         self.pool.delete_eval_session(session_id).await
+    }
+
+    /// Headless stub-cleanup delete: the durable delete is guarded — under
+    /// the turn gate a record that carries messages is a started transcript
+    /// and is kept (only the engine reclaimed), never destroyed as a stub.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_headless_stub_session(&self, session_id: &str) -> Result<()> {
+        self.pool
+            .delete_chat_session_if_still_empty(session_id)
+            .await
     }
 
     pub(crate) fn eval_session_execution_root(
@@ -310,7 +331,11 @@ impl EnginePoolRuntime {
     /// 确保会话已创建并就绪
     pub(crate) async fn prepare(&self, spec: &SessionSpec) -> Result<()> {
         self.pool
-            .prepare_eval_session(&spec.session_id, spec.model_selection.as_ref())
+            .prepare_eval_session(
+                &spec.session_id,
+                spec.model_selection.as_ref(),
+                spec.workspace.as_deref(),
+            )
             .await
     }
 
