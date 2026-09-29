@@ -968,6 +968,10 @@ fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
         "内层",
         std::slice::from_ref(&abs("legacy-inner-original")),
     );
+    // The injected spelling is derived from the STORED root's display form
+    // (round-22 CI: canonicalized spellings differ per platform — matching
+    // happens in the stored domain, so the injected root must live there).
+    let inner_stored_root = store.get(&outer.id).unwrap().roots[0].join("sub");
     // create_project validates, so the legacy nested overlap is introduced
     // AFTER the fact by editing the persisted file directly — the legacy-data
     // shape load_state accepts without revalidation.
@@ -980,7 +984,8 @@ fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
         .expect("projects array")
         .iter_mut()
         .find(|project| project["id"].as_str() == Some(inner.id.as_str()))
-        .expect("find inner")["roots"][0] = serde_json::Value::String(sub.display().to_string());
+        .expect("find inner")["roots"][0] =
+        serde_json::Value::String(inner_stored_root.display().to_string());
     std::fs::write(
         &store_path,
         serde_json::to_vec(&file).expect("serialize store"),
