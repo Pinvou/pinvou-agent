@@ -1942,6 +1942,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // frontend), but as a default_model() output it must likewise pass
             // the shared resolution entry (base gpt-5.6 exact list → 1.05M).
             (ModelPreset::OpenaiCompatible, 1_050_000),
+            // The openai preset default is gpt-6-sol since 2026-09-29
+            // (resolved via the core::model_context supplemental anchor, same
+            // 1.05M); the openai_responses custom-endpoint fallback prefills
+            // the same id and must resolve through the same entry.
+            (ModelPreset::Openai, 1_050_000),
+            (ModelPreset::OpenaiResponses, 1_050_000),
         ];
         for (preset, expected) in cases {
             let model = preset.default_model();

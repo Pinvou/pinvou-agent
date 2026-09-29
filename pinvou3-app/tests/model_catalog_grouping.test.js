@@ -257,9 +257,11 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6-luna')), true);
   assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-opus-5-5')), true);
   assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.7')), true);
-  // Reasoning tiers stay mirrored with the base: gpt-6 / grok-4.7 rows get
-  // no tier exposure until the base learns them; aggregator vendors do.
-  assert.strictEqual(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6-sol' }), null);
+  // Reasoning tiers: since 2026-09-29 the GPT family rides the Responses
+  // wire (openai_responses ladder — off is absent, it maps to low), while
+  // grok-4.7 keeps no tier exposure until the base learns it; aggregator
+  // vendors do.
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6-sol' }) || [])], ['low', 'medium', 'high', 'max']);
   assert.strictEqual(reasoningEffortTiersForModel({ vendor: 'xai', model: 'grok-4.7' }), null);
   // vm-realm arrays must be spread into host arrays before deepStrictEqual
   // (same normalization as the tier tests below).
@@ -282,7 +284,8 @@ test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (defa
     minimax: 'MiniMax-M3',
     glm: 'glm-5.3',
     mimo: 'mimo-v2.6-pro',
-    openai: 'gpt-5.6-terra',
+    openai: 'gpt-6-sol',
+    openai_responses: 'gpt-6-sol',
     anthropic: 'claude-opus-5-5',
     gemini: 'gemini-3.8-flash',
     xai: 'grok-4.7',
@@ -300,9 +303,9 @@ test('MODEL_PRESET_DEFS and the Rust default_model table cross-check their sourc
   // eliminating the last cross-language mirror.
   const variantToKey = {
     LocalVllm: 'local_vllm', Deepseek: 'deepseek', Kimi: 'kimi',
-    OpenaiCompatible: 'openai_compatible', Qwen: 'qwen', Doubao: 'doubao',
-    Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo', Openai: 'openai',
-    Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
+    OpenaiCompatible: 'openai_compatible', OpenaiResponses: 'openai_responses',
+    Qwen: 'qwen', Doubao: 'doubao', Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo',
+    Openai: 'openai', Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
   };
   const rustSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'model.rs'), 'utf8',
@@ -348,9 +351,9 @@ test('MODEL_PRESET_DEFS and the Rust default_base_url table cross-check their so
   // only one side and drift silently.
   const variantToKey = {
     LocalVllm: 'local_vllm', Deepseek: 'deepseek', Kimi: 'kimi',
-    OpenaiCompatible: 'openai_compatible', Qwen: 'qwen', Doubao: 'doubao',
-    Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo', Openai: 'openai',
-    Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
+    OpenaiCompatible: 'openai_compatible', OpenaiResponses: 'openai_responses',
+    Qwen: 'qwen', Doubao: 'doubao', Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo',
+    Openai: 'openai', Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
   };
   const rustSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'model.rs'), 'utf8',
@@ -564,17 +567,21 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(vllm), ['off', 'low', 'medium', 'high']);
   const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
   assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
+  // GPT×Responses 命中的 openai 行切 openai_responses 档位表（Responses
+  // effort 映射无 none：off 归一为 low 故不暴露；max 发 xhigh）。
   const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
-  assert.deepStrictEqual(tiers(openai56), ['off', 'low', 'medium', 'high', 'max']);
-  // 品悟目录收录的 reasoning 家族模型（gpt-5.5 / gpt-5.6-sol/terra/luna）提供切换
+  assert.deepStrictEqual(tiers(openai56), ['low', 'medium', 'high', 'max']);
   const openai55 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5' };
-  assert.deepStrictEqual(tiers(openai55), ['off', 'low', 'medium', 'high', 'max']);
+  assert.deepStrictEqual(tiers(openai55), ['low', 'medium', 'high', 'max']);
   const openai56Sol = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-sol' };
-  assert.deepStrictEqual(tiers(openai56Sol), ['off', 'low', 'medium', 'high', 'max']);
-  // OpenAI non-reasoning models (gpt-5.4-mini) and qwen/gemini/custom
-  // compatible offer no switching
+  assert.deepStrictEqual(tiers(openai56Sol), ['low', 'medium', 'high', 'max']);
+  // gpt-5.4-mini 同样命中 Responses wire（2026-09-29 起整个 GPT 家族切
+  // Responses，模型页确认 function calling），不再按 Chat reasoning 家族返回 null。
   const openaiMini = { preset: 'openai', vendor: 'openai', model: 'gpt-5.4-mini' };
-  assert.strictEqual(reasoningEffortTiersForModel(openaiMini), null);
+  assert.deepStrictEqual(tiers(openaiMini), ['low', 'medium', 'high', 'max']);
+  // openai_responses 组：任意模型 id 都按 Responses 档位表提供切换。
+  const responsesCustom = { preset: 'openai_responses', model: 'my-aggregator-model' };
+  assert.deepStrictEqual(tiers(responsesCustom), ['low', 'medium', 'high', 'max']);
   // xai: only grok-4.6 on the exact https://api.x.ai/v1 (low/medium/high/max,
   // max sends xhigh on the wire)
   // and grok-4.5 (low/medium/high; xhigh/max are downgraded to high so not
@@ -663,27 +670,38 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.strictEqual(reasoningEffortTiersForModel(remoteCustom), null);
 });
 
-test('OpenAI reasoning 家族判定对齐底座 model_is_openai_reasoning_family（含手输自定义模型）', () => {
+test('OpenAI 档位路由：Responses wire 家族切 openai_responses 表，Chat 家族保持 openai 表（含手输自定义模型）', () => {
   const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const openai = model => ({ preset: 'openai', vendor: 'openai', model });
-  // 官方 OpenAI 支持手输自定义模型 ID：这些模型底座会注入多档 reasoning_effort，
-  // 前端必须提供切换，不能因「不在目录内」返回 null（否则后端注入、前端不可控）。
-  const reasoningFamily = [
+  // Responses wire 家族（bridge openai_responses_wire_model：gpt-6 / gpt-5.6 /
+  // gpt-5.5 / gpt-5.4-mini 前缀，含日期快照拼写）：整个家族切 Responses，
+  // 档位为 openai_responses 表（off 归一为 low 故不暴露）。官方 OpenAI 支持
+  // 手输自定义模型 ID，前端必须提供切换，不能因「不在目录内」返回 null
+  // （否则后端注入、前端不可控）。
+  const responsesFamily = [
+    'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra',
     'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
     'gpt-5.5', 'gpt-5.5-pro',
     'gpt-5.5-2026-01-01', 'gpt-5.5-pro-2026-01-01',
+    'gpt-5.5-codex', 'gpt-5.5-codex-preview', 'gpt-5.4-mini',
+    'gpt-5.4-mini-2026-01-01',
+  ];
+  responsesFamily.forEach(id => {
+    assert.deepStrictEqual(tiers(openai(id)), ['low', 'medium', 'high', 'max'], `Responses 家族应提供 openai_responses 档位: ${id}`);
+  });
+  // Chat 路由的 codex 拼写（不以 gpt-5.5/gpt-5.6 开头）：保持底座 Chat
+  // reasoning 家族语义（off=none 注入），即 openai 五档表。
+  const chatFamily = [
     'gpt-5-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max',
     'gpt-5.2-codex', 'gpt-5.3-codex', 'codex-gpt-5.5', 'chatgpt-gpt-5.5',
-    'gpt-5.5-codex', 'gpt-5.5-codex-preview', 'codex-gpt-5.5-preview', 'chatgpt-gpt-5.5-preview',
+    'codex-gpt-5.5-preview', 'chatgpt-gpt-5.5-preview',
   ];
-  reasoningFamily.forEach(id => {
-    assert.deepStrictEqual(tiers(openai(id)), ['off', 'low', 'medium', 'high', 'max'], `reasoning 家族正例应提供切换: ${id}`);
+  chatFamily.forEach(id => {
+    assert.deepStrictEqual(tiers(openai(id)), ['off', 'low', 'medium', 'high', 'max'], `Chat reasoning 家族应保持 openai 档位: ${id}`);
   });
-  // 非 reasoning 家族（含名称近似但底座 predicate 不命中的）不提供切换
-  const nonReasoning = [
-    'gpt-5.4-mini', 'gpt-4o', 'gpt-4.1', 'o3', 'o4-mini',
-    'gpt-5.5-2026-1-1', 'gpt-5.5-pro-20260101', 'gpt-5.5-codex-preview-extra',
-  ];
+  // 既非 Responses wire 家族也非 Chat reasoning 家族（名称近似但底座
+  // predicate 不命中的）不提供切换。
+  const nonReasoning = ['gpt-4o', 'gpt-4.1', 'o3', 'o4-mini'];
   nonReasoning.forEach(id => {
     assert.strictEqual(reasoningEffortTiersForModel(openai(id)), null, `非 reasoning 模型应为 null: ${id}`);
   });

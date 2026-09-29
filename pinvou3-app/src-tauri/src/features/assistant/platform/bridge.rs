@@ -62,6 +62,19 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
+// 引擎侧 named-custom route 名：OpenAI Responses wire 的统一落点。
+//
+// 底座内建 `openai` provider 的 wire policy 固定为 Chat Completions
+// （codewhale-config `Openai::wire_policy`），而 named-custom route
+// （`[providers.<name>] kind="openai-compatible"`）按配置尊重
+// `wire = "responses"`（tui client `provider_wire_format_for_config` 的
+// Custom 臂）。按 fork-policy「app bridge 能解决就不动底座」，GPT 模型走
+// Responses 协议在本层完成：build_dt_config 把该表整体覆盖为当前 route 的
+// base_url / api_key / model，`cfg.provider` 指向表名后底座按
+// ApiProvider::Custom + WireFormat::Responses 驱动 `/responses` 客户端
+// （工具调用、reasoning.effort、图片输入、加密 reasoning 回放均为通用路径）。
+const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
+
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
@@ -132,6 +145,28 @@ fn is_siliconflow_cn_base_url(base_url: &str) -> bool {
     let normalized = base_url.trim().to_ascii_lowercase();
     normalized.starts_with("https://api.siliconflow.cn/")
         || normalized == "https://api.siliconflow.cn"
+}
+
+/// OpenAI 官方口径下「Responses API 支持函数调用」的 GPT 模型判定
+/// （OpenAI preset 是否切 Responses wire 的模型谓词）。
+///
+/// 范围 = 品悟目录收录 ∩ OpenAI Responses 官方支持（2026-09-29 逐模型页核验，
+/// developers.openai.com/api/docs/models/*：每个模型的 endpoint 表均列
+/// `v1/responses` Supported 且 supported features 含 function_calling）：
+/// - gpt-6 家族（sol/luna/astra 及后续 gpt-6* 命名）：astra 的工具调用
+///   Responses-only，sol/luna 在 Chat 协议仅 effort=none 支持函数调用；
+/// - gpt-5.6 家族（sol/terra/luna 及日期快照）、gpt-5.5 家族（含 -pro 与
+///   日期快照，对齐底座 `is_openai_gpt_55_api_model` 的快照判定口径）、
+///   gpt-5.4-mini。
+/// 目录外的手输 id（可能指向 Chat-only 旧模型）不匹配，继续走 Chat wire；
+/// 需要强行 Responses 的端点应使用专用 `openai_responses` 预设。
+/// 前端镜像：model-catalog.js `isOpenaiResponsesWireModel`（分档 UI 依赖）。
+fn openai_responses_wire_model(model: &str) -> bool {
+    let lower = model.trim().to_ascii_lowercase();
+    lower.starts_with("gpt-6")
+        || lower.starts_with("gpt-5.6")
+        || lower.starts_with("gpt-5.5")
+        || lower.starts_with("gpt-5.4-mini")
 }
 
 pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
@@ -1094,6 +1129,54 @@ impl Pinvou3Bridge {
             // Gemini uses the official OpenAI-compatible endpoint, reusing the
             // openai wire route.
             ModelPreset::Qwen | ModelPreset::Openai | ModelPreset::Gemini => "openai".to_string(),
+            // 自定义 OpenAI Responses 兼容接口：整组按定义走 Responses wire
+            // （named-custom route，见 `RESPONSES_ROUTE_PROVIDER`）；模型 id 与
+            // 端点完全由用户填写，不做模型名判定。
+            ModelPreset::OpenaiResponses => RESPONSES_ROUTE_PROVIDER.to_string(),
+        }
+    }
+
+    /// 当前 route 是否切到 OpenAI Responses wire（底座 named-custom route）。
+    ///
+    /// 两条入口：
+    /// - `ModelPreset::OpenaiResponses`（自定义 Responses 兼容接口组）按定义
+    ///   整组成立；
+    /// - OpenAI 官方 route（vendor=openai 或 preset=openai）×
+    ///   [`openai_responses_wire_model`] 命中的 GPT 模型。目录外的手输 id 不
+    ///   判定成立，保持 Chat wire。
+    ///
+    /// `DEEPSEEK_PROVIDER` 环境变量显式钉死引擎 provider 时让位（与
+    /// [`Self::provider`] 的 env 优先级一致），官方 DeepSeek 端点守卫同理。
+    fn uses_responses_wire(&self) -> bool {
+        if std::env::var("DEEPSEEK_PROVIDER").is_ok()
+            || is_official_deepseek_base_url(&self.base_url())
+        {
+            return false;
+        }
+        let model = self.effective_model();
+        let preset = model
+            .map(|m| m.preset)
+            .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default());
+        if preset == ModelPreset::OpenaiResponses {
+            return true;
+        }
+        let is_openai_route = preset == ModelPreset::Openai
+            || model
+                .and_then(|m| m.vendor.as_deref())
+                .is_some_and(|vendor| vendor.trim().eq_ignore_ascii_case("openai"));
+        is_openai_route && openai_responses_wire_model(&self.model())
+    }
+
+    /// 引擎 route 身份：[`Self::provider`] 是供应商语义（tier 判定、思考字段、
+    /// 测试与日志的口径），本方法只在 GPT×Responses 命中时把引擎落点重映射到
+    /// [`RESPONSES_ROUTE_PROVIDER`]（named-custom + `wire = "responses"`）。
+    /// 仅 `build_dt_config` 消费；两者分叉已由本注释与 `uses_responses_wire`
+    /// 文档显式声明。
+    fn engine_route_provider(&self) -> String {
+        if self.uses_responses_wire() {
+            RESPONSES_ROUTE_PROVIDER.to_string()
+        } else {
+            self.provider()
         }
     }
 
@@ -2574,7 +2657,9 @@ impl Pinvou3Bridge {
     /// `DEEPSEEK_*` settings in run-dev.sh).
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
-        let provider = self.provider();
+        // 引擎落点（GPT×Responses 命中时为 RESPONSES_ROUTE_PROVIDER named-custom
+        // route）可能与供应商语义的 provider() 分叉，见 `engine_route_provider`。
+        let provider = self.engine_route_provider();
         cfg.provider = Some(provider.clone());
         let api_key = self.api_key();
         cfg.api_key = Some(api_key.clone());
@@ -2582,39 +2667,53 @@ impl Pinvou3Bridge {
         let model = self.model();
         let reasoning_stream_style = self.reasoning_stream_style(&provider);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
-        // Write base_url + api_key into the provider config matching the provider
-        let provider_config = match provider.as_str() {
-            "vllm" => &mut providers.vllm,
-            "ollama" => &mut providers.ollama,
-            "openai" => &mut providers.openai,
-            "deepseek" => &mut providers.deepseek,
-            "moonshot" => &mut providers.moonshot,
-            "volcengine" => &mut providers.volcengine,
-            "zai" => &mut providers.zai,
-            "minimax" => &mut providers.minimax,
-            "xiaomi-mimo" => &mut providers.xiaomi_mimo,
-            "anthropic" => &mut providers.anthropic,
-            "xai" => &mut providers.xai,
-            // Aggregator kinds must keep their own foundation slots: the
-            // credential chain reads the provider table of the resolved kind
-            // (the root api_key belongs to DeepSeek), so falling into the
-            // vllm catch-all would strand the user's key in a slot these
-            // routes never read and redirect custom base URLs to the
-            // official defaults.
-            "openrouter" => &mut providers.openrouter,
-            "siliconflow" => &mut providers.siliconflow,
-            "siliconflow-cn" => &mut providers.siliconflow_cn,
-            // Unknown providers uniformly fall through to vllm (consistent with the
-            // existing catch-all behavior).
-            _ => &mut providers.vllm,
-        };
-        configure_provider(
-            provider_config,
-            &base_url,
-            &api_key,
-            &model,
-            reasoning_stream_style,
-        );
+        if provider == RESPONSES_ROUTE_PROVIDER {
+            // OpenAI Responses wire 的 named-custom 表：kind + wire 每次重建
+            // （底座按 cfg.provider 精确键读取该表，ApiProvider::Custom +
+            // WireFormat::Responses 由 wire 字段驱动）；base_url / api_key /
+            // model 与其余 route 同一份当前 route 值。
+            let entry = providers
+                .custom
+                .entry(RESPONSES_ROUTE_PROVIDER.to_string())
+                .or_default();
+            entry.kind = Some("openai-compatible".to_string());
+            entry.wire = Some("responses".to_string());
+            configure_provider(entry, &base_url, &api_key, &model, reasoning_stream_style);
+        } else {
+            // Write base_url + api_key into the provider config matching the provider
+            let provider_config = match provider.as_str() {
+                "vllm" => &mut providers.vllm,
+                "ollama" => &mut providers.ollama,
+                "openai" => &mut providers.openai,
+                "deepseek" => &mut providers.deepseek,
+                "moonshot" => &mut providers.moonshot,
+                "volcengine" => &mut providers.volcengine,
+                "zai" => &mut providers.zai,
+                "minimax" => &mut providers.minimax,
+                "xiaomi-mimo" => &mut providers.xiaomi_mimo,
+                "anthropic" => &mut providers.anthropic,
+                "xai" => &mut providers.xai,
+                // Aggregator kinds must keep their own foundation slots: the
+                // credential chain reads the provider table of the resolved kind
+                // (the root api_key belongs to DeepSeek), so falling into the
+                // vllm catch-all would strand the user's key in a slot these
+                // routes never read and redirect custom base URLs to the
+                // official defaults.
+                "openrouter" => &mut providers.openrouter,
+                "siliconflow" => &mut providers.siliconflow,
+                "siliconflow-cn" => &mut providers.siliconflow_cn,
+                // Unknown providers uniformly fall through to vllm (consistent with the
+                // existing catch-all behavior).
+                _ => &mut providers.vllm,
+            };
+            configure_provider(
+                provider_config,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+            );
+        }
         if is_opencode_gateway_base_url(&base_url) {
             cfg.http_headers.get_or_insert_with(HashMap::new).insert(
                 "x-opencode-session".to_string(),
@@ -7930,6 +8029,136 @@ mod tests {
             "session-a",
             "session-bound bridges share the conversation's session ID"
         );
+    }
+
+    /// OpenAI Responses wire routing (2026-09-29 #620 follow-up): catalog GPT
+    /// ids on the OpenAI preset and the whole `openai_responses` preset ride
+    /// the foundation's named-custom Responses route (`RESPONSES_ROUTE_PROVIDER`
+    /// + `wire = "responses"`); vendor semantics (`provider()`) stay "openai"
+    /// for tiers/logs; uncatalogued ids keep the Chat wire; an explicit
+    /// `DEEPSEEK_PROVIDER` pin wins over the remap.
+    #[test]
+    fn openai_responses_wire_routing() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+
+        // A. OpenAI preset × catalog GPT id → named-custom Responses route.
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.openai.com/v1",
+            "sk-openai",
+        );
+        assert_eq!(b.provider(), "openai", "vendor semantics stay openai");
+        assert_eq!(b.engine_route_provider(), RESPONSES_ROUTE_PROVIDER);
+        let cfg = b.build_dt_config();
+        assert_eq!(cfg.provider.as_deref(), Some(RESPONSES_ROUTE_PROVIDER));
+        assert_eq!(
+            cfg.api_provider(),
+            ApiProvider::Custom,
+            "the foundation must resolve the named table to the dynamic custom identity"
+        );
+        let table = cfg
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.custom.get(RESPONSES_ROUTE_PROVIDER))
+            .expect("named responses table must be populated");
+        assert_eq!(table.wire.as_deref(), Some("responses"));
+        assert_eq!(table.kind.as_deref(), Some("openai-compatible"));
+        assert_eq!(table.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(table.model.as_deref(), Some("gpt-6-sol"));
+        assert_eq!(table.api_key.as_deref(), Some("sk-openai"));
+        assert_eq!(table.reasoning_stream_style, None);
+        assert_eq!(cfg.default_text_model.as_deref(), Some("gpt-6-sol"));
+
+        // B. the responses predicate covers the supported catalog families
+        // (incl. date-snapshot spellings) and nothing else; chat-only or
+        // unknown ids stay on the Chat wire (provider == table "openai").
+        for model in [
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-5.6-terra",
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gpt-5.5-2026-01-01",
+        ] {
+            assert!(openai_responses_wire_model(model), "{model}");
+        }
+        for model in [
+            "totally-unregistered-cloud-model",
+            "gpt-5.3-codex",
+            "my-finetune",
+        ] {
+            assert!(!openai_responses_wire_model(model), "{model}");
+        }
+        let mut c = fixture_bridge();
+        set_active_model(
+            &mut c,
+            ModelPreset::Openai,
+            "totally-unregistered-cloud-model",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        assert_eq!(c.build_dt_config().provider.as_deref(), Some("openai"));
+
+        // D. vendor metadata routes like the preset arm (provider()'s
+        // vendor-first parity; comparison is case-insensitive).
+        let mut d = fixture_bridge();
+        set_active_model(
+            &mut d,
+            ModelPreset::OpenaiCompatible,
+            "gpt-6-luna",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        d.prefs.advanced.saved_models[0].vendor = Some("OpenAI".to_string());
+        assert_eq!(d.engine_route_provider(), RESPONSES_ROUTE_PROVIDER);
+
+        // E. the openai_responses preset routes EVERY model id over the
+        // Responses wire with the user endpoint preserved.
+        let mut e = fixture_bridge();
+        set_active_model(
+            &mut e,
+            ModelPreset::OpenaiResponses,
+            "my-aggregator-model",
+            "https://gw.example.com/v1",
+            "k",
+        );
+        assert_eq!(e.provider(), RESPONSES_ROUTE_PROVIDER);
+        let cfg_e = e.build_dt_config();
+        assert_eq!(cfg_e.provider.as_deref(), Some(RESPONSES_ROUTE_PROVIDER));
+        let table_e = cfg_e
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.custom.get(RESPONSES_ROUTE_PROVIDER))
+            .expect("named responses table must be populated");
+        assert_eq!(table_e.wire.as_deref(), Some("responses"));
+        assert_eq!(
+            table_e.base_url.as_deref(),
+            Some("https://gw.example.com/v1")
+        );
+        assert_eq!(table_e.model.as_deref(), Some("my-aggregator-model"));
+
+        // F. an explicit DEEPSEEK_PROVIDER pin wins over the remap (same
+        // priority as provider()'s env arm).
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "openai") };
+        let mut f = fixture_bridge();
+        set_active_model(
+            &mut f,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        assert_eq!(f.engine_route_provider(), "openai");
     }
 
     /// Verifies the bridge-side Browser MCP gate: Work-mode sessions use a session-specific

@@ -544,7 +544,8 @@ function hasStoredCredential(record) {
       const isLocalPreset = preset === 'local_vllm';
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
-      const showBaseUrlField = isLocalPreset || (customModel && preset === 'openai_compatible' && !isCodingPlan);
+      const showBaseUrlField = isLocalPreset
+        || (customModel && (preset === 'openai_compatible' || preset === 'openai_responses') && !isCodingPlan);
       const showCustomCloudKeyField = !isLocalPreset && customModel;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showDisplayNameField = isLocalPreset && !initial.__new;
