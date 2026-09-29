@@ -1417,5 +1417,18 @@ mod voice_postprocess_tests {
             ),
             crate::core::reasoning_dialect::ReasoningDialect::None
         );
+        // The custom Responses preset rides the same URL-sniff fallback:
+        // voice postprocess stays single-shot Chat (no tools), so the
+        // dialect follows the endpoint/model, not the preset (the compiler
+        // only pins arm exhaustiveness — this pins the semantics).
+        assert_eq!(
+            voice_reasoning_dialect(
+                ModelPreset::OpenaiResponses,
+                "openai",
+                "https://example.com/v1",
+                "qwen2.5-72b-instruct"
+            ),
+            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
+        );
     }
 }

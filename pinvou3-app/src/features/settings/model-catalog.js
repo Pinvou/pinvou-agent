@@ -1168,7 +1168,10 @@ function selectorSubLabel(m, t) {
   // 自定义:主=model -> 副=provider 归属
   if (m.preset === 'local_vllm') return localModelNameFn ? localModelNameFn(m.model) : m.model;
   const provider = findCloudProviderForModel(m);
-  return provider ? providerLabelForModel(m, t) : presetProviderLabel('openai_compatible', t);
+  if (provider) return providerLabelForModel(m, t);
+  // 自定义 Responses 组与 openai_compatible 一样是自定义云端点：sub-label 按自身
+  // preset 归属，而不是把 Responses 协议的模型一律标成 Chat 兼容组。
+  return presetProviderLabel(m.preset === 'openai_responses' ? m.preset : 'openai_compatible', t);
 }
 
 // ── 思考深度（reasoning effort）档位 ─────────────────────────────
@@ -1742,6 +1745,13 @@ function normalizeStoredReasoningEffort(model, stored) {
   if (isAlwaysThinkingK3Route(model)) {
     if (canonical === 'off') canonical = 'low';
     else if (canonical === 'medium') canonical = 'high';
+  }
+  // OpenAI Responses wire（GPT×Responses 命中的 openai 行 + 整个 openai_responses
+  // 组）：底座 Responses effort 映射没有 none（responses.rs codex_responses_reasoning_effort
+  // 的 off→low），故 off 的路由真实等价档位是 low——与上面 K3 是同一条规则。存量
+  // Chat 档 off 若按默认回落到 high，用户「最少思考」的意图会被静默反转成最多思考。
+  if (canonical === 'off' && reasoningProviderForModel(model) === 'openai_responses') {
+    canonical = 'low';
   }
   if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;

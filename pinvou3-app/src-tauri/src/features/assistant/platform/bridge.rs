@@ -1748,6 +1748,11 @@ impl Pinvou3Bridge {
                         )
                     })
             })
+            // Documented-output anchors (core::model_context): cloud models the
+            // base catalog has no output row for would otherwise ride the
+            // engine's 8192 uncatalogued fail-close, which starves the
+            // Responses wire where reasoning meters as output.
+            .or_else(|| crate::core::model_context::resolved_output_limit(model))
             // The endpoint's self-reported output limit (the `/v1/models`
             // probe) only min-tightens: when the API rejects over-limit
             // requests, the declaration must yield.
@@ -7735,8 +7740,9 @@ mod tests {
     /// ids on the OpenAI preset and the whole `openai_responses` preset ride
     /// the foundation's named-custom Responses route (`RESPONSES_ROUTE_PROVIDER`
     /// + `wire = "responses"`); vendor semantics (`provider()`) stay "openai"
-    /// for tiers/logs; uncatalogued ids keep the Chat wire; an explicit
-    /// `DEEPSEEK_PROVIDER` pin wins over the remap.
+    /// for tiers/logs; uncatalogued ids keep the Chat wire; the
+    /// `DEEPSEEK_PROVIDER` env pin and the official-DeepSeek endpoint guard
+    /// both win over the remap.
     #[test]
     fn openai_responses_wire_routing() {
         let (_lock, _env) = locked_env(&[
@@ -7776,16 +7782,27 @@ mod tests {
         assert_eq!(table.api_key.as_deref(), Some("sk-openai"));
         assert_eq!(table.reasoning_stream_style, None);
         assert_eq!(cfg.default_text_model.as_deref(), Some("gpt-6-sol"));
+        // Default tier stays high (Responses mapper has no none), and the
+        // route carries the documented output fact so the engine's 8192
+        // uncatalogued fail-close is replaced (128_000 documented; the
+        // engine's automatic-request default keeps the wire cap at 64K).
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
+        let limits = b
+            .route_limits_for_model("gpt-6-sol")
+            .expect("gpt-6-sol must resolve route limits");
+        assert_eq!(limits.output_tokens, Some(128_000));
 
         // B. the responses predicate covers the supported catalog families
-        // (incl. date-snapshot spellings) and nothing else; chat-only or
-        // unknown ids stay on the Chat wire (provider == table "openai").
+        // (incl. date-snapshot spellings and the gpt-5.5-codex overlap id,
+        // which also matches the base's Chat reasoning family — responses
+        // wins) and nothing else.
         for model in [
             "gpt-6-sol",
             "gpt-6-luna",
             "gpt-6-astra",
             "gpt-5.6-terra",
             "gpt-5.5",
+            "gpt-5.5-codex",
             "gpt-5.4-mini",
             "gpt-5.5-2026-01-01",
         ] {
@@ -7798,6 +7815,8 @@ mod tests {
         ] {
             assert!(!openai_responses_wire_model(model), "{model}");
         }
+        // C. chat-only or unknown ids stay on the Chat wire (provider ==
+        // table "openai").
         let mut c = fixture_bridge();
         set_active_model(
             &mut c,
@@ -7845,6 +7864,9 @@ mod tests {
             Some("https://gw.example.com/v1")
         );
         assert_eq!(table_e.model.as_deref(), Some("my-aggregator-model"));
+        assert_eq!(table_e.api_key.as_deref(), Some("k"));
+        assert_eq!(table_e.reasoning_stream_style, None);
+        assert_eq!(cfg_e.reasoning_effort.as_deref(), Some("high"));
 
         // F. an explicit DEEPSEEK_PROVIDER pin wins over the remap (same
         // priority as provider()'s env arm).
@@ -7859,6 +7881,47 @@ mod tests {
             "k",
         );
         assert_eq!(f.engine_route_provider(), "openai");
+
+        // G. the official-DeepSeek endpoint guard also wins over the remap,
+        // and the rebuilt config carries no stale named table (DtConfig is
+        // rebuilt from default(), so switching away cannot leave the
+        // pinvou_responses entry behind).
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        let mut g = fixture_bridge();
+        set_active_model(
+            &mut g,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.deepseek.com",
+            "k",
+        );
+        assert_eq!(g.provider(), "deepseek");
+        assert_eq!(g.engine_route_provider(), "deepseek");
+        let cfg_g = g.build_dt_config();
+        assert_eq!(cfg_g.provider.as_deref(), Some("deepseek"));
+        assert!(
+            cfg_g
+                .providers
+                .as_ref()
+                .is_none_or(|providers| providers.custom.is_empty()),
+            "no stale pinvou_responses table may survive a switch away"
+        );
+
+        // H. a set-but-empty DEEPSEEK_PROVIDER degrades exactly like
+        // provider()'s own env arm (the value is returned verbatim; both
+        // consumers treat "set" the same way).
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_PROVIDER", "") };
+        let mut h = fixture_bridge();
+        set_active_model(
+            &mut h,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        assert_eq!(h.provider(), "");
+        assert_eq!(h.engine_route_provider(), "");
     }
 
     /// Verifies the bridge-side Browser MCP gate: Work-mode sessions use a session-specific

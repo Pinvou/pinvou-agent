@@ -50,12 +50,14 @@ const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_CATALOG_SEC
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
   modelPresetOpenaiCompatible: 'OpenAI 兼容',
+  modelPresetOpenaiResponses: 'OpenAI Responses 兼容',
   uiSettingsDetail: {
     localModelName: name => (name ? `本地 ${name}` : '本地模型'),
   },
 };
 const tEn = {
   modelPresetOpenaiCompatible: 'OpenAI Compatible',
+  modelPresetOpenaiResponses: 'OpenAI Responses Compatible',
   uiSettingsDetail: {
     localModelName: name => (name ? `Local ${name}` : 'Local model'),
   },
@@ -75,6 +77,14 @@ test('OpenAI Compatible 未知 ID -> 自定义', () => {
 });
 test('OpenAI Compatible 命中目录 ID 仍为自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'custom', base_url: 'https://openrouter.ai/api/v1', model: 'deepseek-v4-pro' })), false);
+});
+test('OpenAI Responses 自定义行 -> 自定义，sub-label 按自身 preset 归属', () => {
+  const responsesCustom = mk({ preset: 'openai_responses', provider_kind: 'custom', base_url: 'https://gw.example.com/v1', model: 'my-aggregator-model' });
+  assert.strictEqual(isPresetModel(responsesCustom), false);
+  // 聚合器 URL 命中不了任何目录组：sub-label 必须按 openai_responses 自身归属
+  // （presetProviderLabel 兜底），而不是硬编码回落成 Chat 兼容组。
+  assert.strictEqual(selectorSubLabel(responsesCustom, t), 'OpenAI Responses 兼容');
+  assert.strictEqual(selectorSubLabel(responsesCustom, tEn), 'OpenAI Responses Compatible');
 });
 test('Coding Plan 命中目录(glm-5.2) -> 预设', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.2' })), true);
@@ -582,6 +592,13 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // openai_responses 组：任意模型 id 都按 Responses 档位表提供切换。
   const responsesCustom = { preset: 'openai_responses', model: 'my-aggregator-model' };
   assert.deepStrictEqual(tiers(responsesCustom), ['low', 'medium', 'high', 'max']);
+  // loopback 端点也不切本地探测档：openai_responses 是显式 Responses 协议
+  // opt-in（本地 Ollama/vLLM 只讲 Chat），与 openai_compatible 的本地探测路径
+  // 是两个不同的门。
+  assert.deepStrictEqual(
+    tiers({ preset: 'openai_responses', model: 'my-aggregator-model', base_url: 'http://127.0.0.1:9200/v1' }),
+    ['low', 'medium', 'high', 'max'],
+  );
   // xai: only grok-4.6 on the exact https://api.x.ai/v1 (low/medium/high/max,
   // max sends xhigh on the wire)
   // and grok-4.5 (low/medium/high; xhigh/max are downgraded to high so not
@@ -978,6 +995,20 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // off is not in the grok-4.6 tier table: normalized to high, matching the
   // base sending off as wire high
   assert.strictEqual(normalizeStoredReasoningEffort(xai46, 'off'), 'high');
+  // OpenAI Responses wire（GPT 家族 / openai_responses 组）：底座 Responses
+  // effort 映射没有 none（off→low），存量 Chat 档 off 按路由真实等价值归一为
+  // low（与 K3 同一条规则），而不是回落默认 high 把「最少思考」静默反转成
+  // 「最多思考」。
+  const openaiResponsesRow = { preset: 'openai', vendor: 'openai', model: 'gpt-6-sol' };
+  assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'off'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'disabled'), 'low');
+  assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'none'), 'low');
+  const responsesGroup = { preset: 'openai_responses', model: 'my-aggregator-model' };
+  assert.strictEqual(normalizeStoredReasoningEffort(responsesGroup, 'off'), 'low');
+  // Chat 路由（codex 拼写命中底座 Chat reasoning 家族）的 openai 档位表仍含
+  // off：原样保留，不参与 Responses 的 off→low 归一。
+  const openaiChatRow = { preset: 'openai', vendor: 'openai', model: 'gpt-5.3-codex' };
+  assert.strictEqual(normalizeStoredReasoningEffort(openaiChatRow, 'off'), 'off');
   // non-xai official endpoints / other Grok models have no tiers → null
   assert.strictEqual(normalizeStoredReasoningEffort({ preset: 'xai', vendor: 'xai', model: 'grok-4.3', base_url: 'https://api.x.ai/v1' }, 'high'), null);
 });
@@ -1164,6 +1195,29 @@ test('modelDescriptions has no stale keys left from the refresh (desc renames mu
     const dead = [...extractModelDescriptionKeys(file)].filter(k => !descs.has(k));
     assert.deepStrictEqual(dead, [], `${file} has unreferenced modelDescriptions dead keys: ${dead.join(', ')}`);
   }
+});
+
+test('OpenAI Responses wire 谓词的前缀集跨语言一致（bridge.rs ↔ model-catalog.js）', () => {
+  // 前端档位路由与引擎落点必须命中同一模型集：两侧各自维护 starts_with 前缀，
+  // 单侧新增家族（如未来的 gpt-7）时另一侧会静默漂移——直接从两侧源码提取
+  // 字面前缀做机械比对（与上方 MODEL_PRESET_DEFS 跨语言 guard 同一手法）。
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs'),
+    'utf8',
+  );
+  const jsSrc = fs.readFileSync(srcPath, 'utf8');
+  const rustStart = rustSrc.indexOf('fn openai_responses_wire_model(');
+  assert.notStrictEqual(rustStart, -1, 'bridge.rs predicate moved — update this guard');
+  const rustBody = rustSrc.slice(rustStart, rustSrc.indexOf('\n}', rustStart));
+  const rustPrefixes = [...rustBody.matchAll(/starts_with\("([^"]+)"\)/g)].map(m => m[1]).sort((a, b) => a.localeCompare(b));
+
+  const jsStart = jsSrc.indexOf('function isOpenaiResponsesWireModel(');
+  assert.notStrictEqual(jsStart, -1, 'model-catalog.js predicate moved — update this guard');
+  const jsBody = jsSrc.slice(jsStart, jsSrc.indexOf('\n}', jsStart));
+  const jsPrefixes = [...jsBody.matchAll(/startsWith\('([^']+)'\)/g)].map(m => m[1]).sort((a, b) => a.localeCompare(b));
+
+  assert.ok(rustPrefixes.length >= 4, `rust prefixes parsed: ${rustPrefixes.join(', ')}`);
+  assert.deepStrictEqual(jsPrefixes, rustPrefixes);
 });
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);
