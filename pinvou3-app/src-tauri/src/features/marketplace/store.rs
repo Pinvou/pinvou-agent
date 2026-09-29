@@ -2,8 +2,8 @@
 //!
 //! 设计依据：`docs/marketplace-unification.md` §3.1（存储层 BundleRecord）、§4（存储
 //! 布局）、§9（首启一次性导入）。本模块只管 `~/.pinvou3/marketplace/bundles.json`
-//! 的读写与旧布局**登记**；物理目录搬移（`bundles/<id>/`、`assets/cli/`）与旧布局
-//! 删除在后续 PR，本刀一律不动磁盘上的包内容。
+//! 的读写与旧布局**登记**，一律不动磁盘上的包内容；物理搬移与旧布局同名残留
+//! 清理由 connectors 侧 `migrate_legacy_binary` 按 lock 校验执行。
 //!
 //! 纪律（§10）：
 //! - 原子写（tmp + rename，走底座 `write_atomic`）+ 进程内 FILE_LOCK 串行化读-改-写；
@@ -423,7 +423,9 @@ impl BundleStore {
     ///
     /// - **幂等**：`legacy_imported` 闸置位后直接跳过；闸未置位时也只补缺失 id，
     ///   已存在的记录永远保留（用户/新管线写入的赢）。
-    /// - **非破坏性**：只读旧布局、只写 bundles.json；目录搬移与旧布局删除在后续 PR。
+    /// - **非破坏性**：只读旧布局、只写 bundles.json；目录搬移与同名残留清理由
+    ///   connectors 侧 `migrate_legacy_binary` 按 lock 校验执行（boot 序列在
+    ///   本 import 之后）。
     /// - 全程持 FILE_LOCK（"读到即迁移"必须持锁，§9.4 / #287 竞态教训前置）。
     pub fn import_legacy(&self) -> Result<LegacyImportReport, String> {
         let _guard = file_lock();
@@ -726,7 +728,8 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
 /// 内置 CLI 连接器 → Builtin 包记录。安装态判定：companion 技能目录在盘
 /// （连接时才解包）或 CLI 二进制在盘。存量二进制对照 lock 表验 SHA-256：
 /// 匹配 → 正常登记；不匹配/无法校验 → 记 `degraded`（§9.3，
-/// 修复动作 = 重新下载，物理搬移 `assets/cli/` 在后续 PR）。
+/// 修复动作 = 重新下载；旧布局搬移与同名残留清理由 connectors 侧
+/// `migrate_legacy_binary` 按 lock 校验执行）。
 fn legacy_cli_records() -> Vec<BundleRecord> {
     let skills_dir = paths::bundle_skills_dir();
     let now = now_iso8601();
