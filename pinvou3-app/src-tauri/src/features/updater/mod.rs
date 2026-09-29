@@ -163,7 +163,7 @@ pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult,
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
+        .map_err(|e| format!("failed to build the HTTP client: {e}"))?;
     platform::report_pending_update_result_info(&client, env!("CARGO_PKG_VERSION")).await
 }
 

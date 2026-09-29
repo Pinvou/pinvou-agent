@@ -684,6 +684,10 @@ async function modalWidth(page, headingText) {
     && !updateFailureText.includes('RAW update diagnostics')
     && !updateFailureText.includes('proxy.internal'),
     JSON.stringify(updateFailureText));
+  // Note: bs.updateError stays set on the bridge after this rec (the bridge only
+  // clears it at the start of the next download). Harmless today because no
+  // later test reads the update card, but any future update-section test must
+  // run a fresh downloadAndInstallUpdate (or reset state) before asserting.
 
   await clickSettingsSection(page, '模型');
   const modelList = await page.evaluate(() => {
