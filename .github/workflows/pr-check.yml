@@ -1639,6 +1639,7 @@ jobs:
       # lib+bins only, and `required-features` can only filter targets out of
       # the selected set, never add the test target in.
       - name: pinvou-cli Windows compile check (adapter-gaia test-support)
+        if: ${{ matrix.phase == 'all-targets-check' }}
         run: >-
           cargo check --manifest-path pinvou-cli/Cargo.toml
           -p adapter-gaia --features test-support --all-targets --locked
