@@ -278,10 +278,14 @@ impl KnowledgeService {
         match load() {
             Ok(embedder) => {
                 self.install_embedder(embedder);
+                model_download::set_model_load_error(None);
                 eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
             }
             Err(error) => {
-                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。失败诊断必须
+                // 落 MODEL_LOAD_ERROR——否则状态停在 installed+未就绪且 error=None，
+                // 失败门上的 Retry/Repair 按钮虽在，却显示不出任何失败原因。
+                model_download::set_model_load_error(Some(error.clone()));
                 eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
             }
         }
@@ -879,6 +883,9 @@ mod tests {
     /// 纯全文降级，起巡检只会空转）。
     #[test]
     fn import_reload_skips_when_installed_or_ready_and_survives_load_failure() {
+        // 本测试向进程级 MODEL_LOAD_ERROR 写入失败诊断并精确断言其值，与
+        // model_download 的 leased_reload 测试互斥，避免并行读到对方写入值。
+        let _guard = model_download::MODEL_LOAD_ERROR_TEST_LOCK.blocking_lock();
         let svc = service();
         let mut calls = 0;
         svc.reload_embedder_if_import_needed_with(false, || {
@@ -895,9 +902,21 @@ mod tests {
             svc.embedder_reaper.lock().is_none(),
             "加载失败不应启动空闲巡检"
         );
+        // 失败诊断必须落 MODEL_LOAD_ERROR：否则状态停在 installed+未就绪且
+        // error=None，前端失败门给得出 Retry/Repair 却显示不了失败原因
+        // （回归锚点：崩溃中断安装后 installed+未就绪+error=None 的僵尸状态）。
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("模拟加载失败")
+        );
 
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("再次失败"),
+            "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
+        );
     }
 }

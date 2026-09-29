@@ -251,6 +251,7 @@ export const dictZh = {
         kbModelItem1: 'bge-m3 多语言向量模型（int8 量化 ONNX）', kbModelItem2: '分词器与模型配置文件', kbModelItem3: 'CPU 推理，无需联网与显卡',
         kbModelDownloadBtn: '下载并部署资源包', kbModelFoot: '一次安装，后续离线可用 · 下载期间可继续使用其他功能',
         kbModelRetryBtn: '重试加载', kbModelRepairBtn: '重新下载并修复', kbModelLoading: '正在加载模型…',
+        kbModelNotLoadedTitle: '模型已安装 · 尚未加载', kbModelNotLoadedDesc: 'Embedding 模型已在本机，但尚未加载进内存（暂时没有语义检索需求；安装中途被中断也会停在这个状态）。可立即加载，导入文件时也会自动加载。', kbModelLoadNowBtn: '立即加载',
         kbModelStageDownload: '正在下载模型文件…', kbModelStageVerify: '正在校验完整性…', kbModelStagePrepare: '正在准备模型…', kbModelStageDone: '部署完成',
         sysStatus: '系统状态',  gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', 
         cpu: '处理器 (CPU)',    
