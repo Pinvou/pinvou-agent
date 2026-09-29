@@ -252,6 +252,7 @@ export const dictEn = {
         kbModelItem1: 'bge-m3 multilingual vector model (int8 ONNX)', kbModelItem2: 'Tokenizer & model config files', kbModelItem3: 'CPU inference, no network or GPU',
         kbModelDownloadBtn: 'Download & deploy', kbModelFoot: 'Install once, then offline · keep using other features while it downloads',
         kbModelRetryBtn: 'Retry loading', kbModelRepairBtn: 'Download & repair', kbModelLoading: 'Loading model…',
+        kbModelNotLoadedTitle: 'Model installed · not loaded yet', kbModelNotLoadedDesc: 'The embedding model is on this device but has not been loaded (nothing needed semantic search yet; an interrupted install also stops here). Load it now, or just import files — loading starts automatically.', kbModelLoadNowBtn: 'Load now',
         kbModelStageDownload: 'Downloading model files…', kbModelStageVerify: 'Verifying…', kbModelStagePrepare: 'Preparing model…', kbModelStageDone: 'Done',
         sysStatus: 'System Status',  gpu: 'GPU', gpuUnavail: 'Unavailable', 
         cpu: 'CPU',    

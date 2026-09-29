@@ -1363,6 +1363,27 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   </span>
                 </div>
 
+                {/* 模型已安装但本进程未加载（首帧门控 deferred 或上次加载失败后的静默态）。
+                    崩溃中断安装后常停在这一状态：此前页面只剩上面的徽标，没有任何
+                    继续/修复入口——加载动作只能靠用户自己想到「导入文件触发补载」。
+                    canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染。 */}
+                {canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && (
+                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04] flex flex-wrap items-center justify-between gap-3`}>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-[14px] font-bold ${ink}`}>{t.kbModelNotLoadedTitle}</div>
+                      <div className={`mt-1 text-[12px] ${muted}`}>{t.kbModelNotLoadedDesc}</div>
+                    </div>
+                    <button type="button" onClick={() => startModelDownload(false)}
+                      className={`rounded-full px-4 py-2 text-[13px] font-semibold shrink-0 ${accent}`}>{t.kbModelLoadNowBtn}</button>
+                  </div>
+                )}
+                {(downloading || modelLoading) && (
+                  <div className="mb-5 max-w-[480px]">
+                    <ModelProgressIndicator downloading={downloading} percent={dlPct}
+                      label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel} />
+                  </div>
+                )}
+
                 {importError && (
                   <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#d63a3a]">
                     {importError}

@@ -278,10 +278,14 @@ impl KnowledgeService {
         match load() {
             Ok(embedder) => {
                 self.install_embedder(embedder);
+                model_download::set_model_load_error(None);
                 eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
             }
             Err(error) => {
-                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。失败诊断必须
+                // 落 MODEL_LOAD_ERROR——否则状态停在 installed+未就绪且 error=None，
+                // 用户只看到「语义检索未配置」徽标，无从得知失败原因、也没有修复入口。
+                model_download::set_model_load_error(Some(error.clone()));
                 eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
             }
         }
@@ -895,9 +899,21 @@ mod tests {
             svc.embedder_reaper.lock().is_none(),
             "加载失败不应启动空闲巡检"
         );
+        // 失败诊断必须落 MODEL_LOAD_ERROR：否则状态停在 installed+未就绪且
+        // error=None，前端既显示不了失败原因，也给不出修复入口（回归锚点：
+        // 崩溃中断安装后用户只能看到「语义检索未配置」徽标的死胡同状态）。
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("模拟加载失败")
+        );
 
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("再次失败"),
+            "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
+        );
     }
 }

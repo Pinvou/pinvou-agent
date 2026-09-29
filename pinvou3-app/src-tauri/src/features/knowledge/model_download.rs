@@ -68,14 +68,17 @@ impl Drop for ModelLoadLease<'_> {
     }
 }
 
-fn model_load_error() -> Option<String> {
+pub(super) fn model_load_error() -> Option<String> {
     MODEL_LOAD_ERROR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
-fn set_model_load_error(error: Option<String>) {
+/// 最近一次真实加载失败的诊断落位入口。导入补载（`reload_embedder_if_import_needed`）
+/// 与首帧加载同语义：失败必须可见（KbModelStatus.error → 前端失败门 + 修复入口），
+/// 不能只在导入线程 eprintln 后留下 installed+未就绪且无错误的「僵尸状态」。
+pub(super) fn set_model_load_error(error: Option<String>) {
     *MODEL_LOAD_ERROR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
@@ -257,47 +260,87 @@ pub async fn kb_model_download(
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建目录失败: {e}"))?;
     // ── 1. 固定 revision 五文件清单下载 + 逐文件大小/SHA-256 校验 ──
     let tmp = dir.with_extension("tmp");
-    if tmp.exists() {
-        std::fs::remove_dir_all(&tmp)
-            .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
-    }
-    // The desktop app can specify its own mirror (explicit = the only source, no
-    // fallback); when unset, fall back to the candidate chain shared by both ends:
-    // the mainland China mirror hf-mirror.com first, official huggingface.co as the
-    // final fallback.
-    let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
-        Ok(value) if !value.trim().is_empty() => vec![value],
-        _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),
+    // 崩溃恢复：上次安装若在「下载校验完成之后、真实加载/部署之前」被中断（进程
+    // 崩溃/被杀），tmp 里留着已逐文件 SHA-256 校验过的完整候选。重校验通过就直接
+    // 复用续上安装（免去每次重试都重新下载 ~585MB）；不完整或不符（含下载中途的
+    // `.part` 残留、清单换版）则清理后全新下载。哈希为阻塞操作，放 blocking 线程；
+    // 复查进度映射到既有 verify 阶段事件，避免 UI 停在 0%。
+    let reused_candidate = if tmp.exists() {
+        let verify_app = app.clone();
+        let verify_dir = tmp.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            pinvou_knowledge::model_download::recover_interrupted_candidate_dir(
+                &verify_dir,
+                &pinvou_knowledge::model_download::KNOWLEDGE_MODEL_FILES,
+                |done, total| {
+                    let cumulative = pinvou_knowledge::model_download::KNOWLEDGE_MODEL_FILES
+                        .iter()
+                        .take(done)
+                        .map(|file| file.bytes)
+                        .sum::<u64>();
+                    let _ = verify_app.emit(
+                        "kb_model:progress",
+                        serde_json::json!({
+                            "stage": "verify",
+                            "downloaded": cumulative,
+                            "total": DISPLAY_DOWNLOAD_BYTES,
+                            "fileIndex": done,
+                            "fileCount": total,
+                        }),
+                    );
+                },
+            )
+        })
+        .await
+        .map_err(|e| format!("模型候选目录复查任务失败: {e}"))??;
+        matches!(
+            verified,
+            pinvou_knowledge::model_download::InterruptedCandidate::Reuse
+        )
+    } else {
+        false
     };
-    let progress_app = app.clone();
-    pinvou_knowledge::model_download::download_knowledge_model_candidate(
-        &tmp,
-        &hf_base_urls,
-        move |progress| {
-            let stage = match progress.stage {
-                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {
-                    "download"
-                }
-                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Verify => "verify",
-            };
-            let _ = progress_app.emit(
-                "kb_model:progress",
-                serde_json::json!({
-                    "stage": stage,
-                    "downloaded": progress.downloaded_bytes,
-                    "total": progress.total_bytes,
-                    "fileIndex": progress.file_index,
-                    "fileCount": progress.file_count,
-                    "file": progress.source_path,
-                }),
-            );
-        },
-        || false, // 取消入口已随 kb_model_cancel 命令移除
-    )
-    .await?;
-    if !model_directory_is_complete(&tmp) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
+    if !reused_candidate {
+        // The desktop app can specify its own mirror (explicit = the only source, no
+        // fallback); when unset, fall back to the candidate chain shared by both ends:
+        // the mainland China mirror hf-mirror.com first, official huggingface.co as the
+        // final fallback.
+        let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
+            Ok(value) if !value.trim().is_empty() => vec![value],
+            _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),
+        };
+        let progress_app = app.clone();
+        pinvou_knowledge::model_download::download_knowledge_model_candidate(
+            &tmp,
+            &hf_base_urls,
+            move |progress| {
+                let stage = match progress.stage {
+                    pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {
+                        "download"
+                    }
+                    pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Verify => {
+                        "verify"
+                    }
+                };
+                let _ = progress_app.emit(
+                    "kb_model:progress",
+                    serde_json::json!({
+                        "stage": stage,
+                        "downloaded": progress.downloaded_bytes,
+                        "total": progress.total_bytes,
+                        "fileIndex": progress.file_index,
+                        "fileCount": progress.file_count,
+                        "file": progress.source_path,
+                    }),
+                );
+            },
+            || false, // 取消入口已随 kb_model_cancel 命令移除
+        )
+        .await?;
+        if !model_directory_is_complete(&tmp) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
+        }
     }
 
     // ── 2. 真实加载候选模型，再原子换入并热加载（失败时保留旧模型）──

@@ -241,6 +241,7 @@ const jaBase = {
         kbModelItem1: 'bge-m3 多言語ベクトルモデル（int8 ONNX）', kbModelItem2: 'トークナイザーとモデル設定ファイル', kbModelItem3: 'CPU 推論・ネットワークと GPU 不要',
         kbModelDownloadBtn: 'ダウンロードしてセットアップ', kbModelFoot: '一度インストールすればオフラインで利用可 · ダウンロード中も他機能を利用可能',
         kbModelRetryBtn: '再読み込み', kbModelRepairBtn: '再ダウンロードして修復', kbModelLoading: 'モデルを読み込み中…',
+        kbModelNotLoadedTitle: 'モデルはインストール済み · 未読み込み', kbModelNotLoadedDesc: 'Embedding モデルはこの端末にありますが、まだメモリに読み込まれていません（意味検索の需要がまだなかったため。インストール途中の中断でもこの状態で止まります）。今すぐ読み込むか、ファイルを取り込むと自動的に読み込まれます。', kbModelLoadNowBtn: '今すぐ読み込む',
         kbModelStageDownload: 'モデルファイルをダウンロード中…', kbModelStageVerify: '検証中…', kbModelStagePrepare: 'モデルを準備中…', kbModelStageDone: '完了',
         kbStep1: 'ローカルファイル選択', kbStep2: 'AI 解析とインデックス', kbStep3: '会話で自動引用',
         kbMyColls: 'マイコレクション', kbNoColls: 'コレクションがありません。「新規コレクション」で開始。', kbNoCollsShort: 'コレクションがありません。まず作成してください。',
