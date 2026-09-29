@@ -609,8 +609,17 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       // refilling here would resurrect abandoned text or duplicate a zap
       // resend already in flight. restoreSteerText makes the restore visible
       // (draftEpoch bump) without a prefill write-through.
-      failureQueue.splice(failureIndex, 1);
+      // Restore FIRST, splice only on success (review round-6 M1): a
+      // refs-only steer strips to nothing and restores nothing — the chip
+      // must stay queued (degraded to a plain entry, re-sent by flushQueued)
+      // so the queued notice variant below is truthful.
       steerFailureNoticeRestored = restoreSteerText(sid, steerInputText);
+      if (steerFailureNoticeRestored) {
+        failureQueue.splice(failureIndex, 1);
+      } else {
+        queuedItem.steered = false;
+        queuedItem.steerId = null;
+      }
     } else if (failureIndex >= 0) {
       // Composer occupied or session switched away: degrade the chip in place
       // to a plain local queue entry (same semantics as the zap failure
@@ -625,9 +634,10 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     // false — the text was deliberately discarded (×) or is being re-sent by
     // the zap's own gated path.
     if (failureIndex >= 0) {
-      // A refs-only steer strips to nothing (nothing recoverable to hand
-      // back) — the notice must not claim a restoration that did not happen;
-      // that shape stays queued and is re-sent by flushQueued instead.
+      // Route by what actually happened: restored → the input holds the
+      // stripped body; not restored (refs-only strip, occupied composer,
+      // session switched) → the chip stays queued and is re-sent by
+      // flushQueued — both variants below are truthful on every path.
       const steerFailedKey = steerFailureNoticeRestored ? "steerFailed" : "steerFailedQueued";
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt(steerFailedKey));
