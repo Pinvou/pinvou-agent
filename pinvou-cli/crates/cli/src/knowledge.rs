@@ -946,7 +946,12 @@ fn render_scan_state(state: &ScanState) -> String {
             if state.roots.is_empty() {
                 "-".to_owned()
             } else {
-                state.roots.join(", ")
+                state
+                    .roots
+                    .iter()
+                    .map(|root| crate::support::collapse_control_characters(root))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
         ),
     ];
@@ -1086,6 +1091,31 @@ fn parse_date_epoch(value: &str, flag: &str) -> Result<i64, CliError> {
         return Err(invalid());
     }
     Ok(days_from_civil(year, month, day) * 86_400)
+}
+
+#[cfg(test)]
+mod date_math_tests {
+    use super::{days_from_civil, days_in_month, parse_date_epoch};
+
+    /// The calendar math has no value-level pin anywhere in the contract
+    /// suites (they only pin the invalid shapes): these are hand-computed
+    /// anchors — epoch day 0, a leap day, a modern date, and the seconds
+    /// conversion.
+    #[test]
+    fn civil_date_math_pins_known_epoch_values() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 2, 29), 11_016);
+        assert_eq!(days_from_civil(2026, 9, 1), 20_697);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(parse_date_epoch("1970-01-01", "--before").unwrap(), 0);
+        assert_eq!(parse_date_epoch("1970-01-02", "--after").unwrap(), 86_400);
+        assert_eq!(
+            parse_date_epoch("2000-02-29", "--before").unwrap(),
+            11_016 * 86_400
+        );
+    }
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
@@ -1878,7 +1908,13 @@ fn render_index_state(state: &IndexState) -> String {
         format!("failed: {}", state.failed),
     ];
     if let Some(path) = &state.current_path {
-        lines.push(format!("current: {path}"));
+        // The path originates from DB import rows (a Unix filename may
+        // legally carry tab/newline/ESC): collapse it like every other
+        // human cell in this CLI. JSON keeps the verbatim path.
+        lines.push(format!(
+            "current: {}",
+            crate::support::collapse_control_characters(path)
+        ));
     }
     lines.join("\n")
 }

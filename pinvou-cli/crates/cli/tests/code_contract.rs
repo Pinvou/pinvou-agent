@@ -324,6 +324,8 @@ fn every_code_subcommand_parses() {
             "gpt-test",
             "--context-window",
             "128000",
+            "--api-key-env",
+            "MY_KEY",
         ],
         vec![
             "pinvou",
@@ -566,6 +568,21 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
             "https://a.com",
         ],
         vec!["pinvou", "code", "providers", "add", "--agent", "codex"],
+        // A keyless add is a usage error (the usage text marks the key
+        // source required): it would create a provider that only fails at
+        // the next switch.
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+            "--base-url",
+            "https://a.com",
+        ],
         vec![
             "pinvou",
             "code",
@@ -1414,7 +1431,7 @@ fn per_file_diff_composes_staged_and_unstaged_sections() {
     assert!(git(&["add", "tracked.txt"]), "git add must succeed");
     std::fs::write(project.join("tracked.txt"), "v2 staged\nv3 unstaged\n").unwrap();
 
-    let value = run_json(&["pinvoy", "code", "workspace", "diff", &id, "tracked.txt"]);
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
     assert_eq!(value["truncated"], serde_json::json!(false));
     let text = value["text"].as_str().unwrap();
     let staged_at = text.find("# staged").expect("staged section header");
@@ -1877,8 +1894,24 @@ fn checkpoints_refuse_non_native_code_sessions() {
 
 #[test]
 fn providers_round_trip_against_temp_home() {
+    struct KeyVar(Option<std::ffi::OsString>);
+    impl Drop for KeyVar {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_ROUNDTRIP_KEY", value) },
+                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_ROUNDTRIP_KEY") },
+            }
+        }
+    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("providers");
+    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_ROUNDTRIP_KEY"));
+    unsafe {
+        std::env::set_var(
+            "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
+            "sk-test-roundtrip-1234567890",
+        );
+    }
     let store_path = home.root.join("acp-providers.json");
 
     // Zero-state list is valid JSON for every agent.
@@ -1903,6 +1936,8 @@ fn providers_round_trip_against_temp_home() {
         "gpt-test",
         "--context-window",
         "128000",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
     ]);
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
@@ -1924,7 +1959,7 @@ fn providers_round_trip_against_temp_home() {
     let providers = value["providers"]["providers"].as_array().unwrap();
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0]["id"], added_id.as_str());
-    assert_eq!(providers[0]["hasCredential"], false);
+    assert_eq!(providers[0]["hasCredential"], true);
     assert_eq!(
         value["providers"]["currentProviderId"],
         serde_json::Value::Null
@@ -1949,15 +1984,6 @@ fn providers_round_trip_against_temp_home() {
         "unspecified fields keep their stored values"
     );
 
-    // switch without a stored key fails honestly and leaves the state alone.
-    let error = run(&["pinvou", "code", "providers", "switch", "codex", &added_id]).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    let raw = std::fs::read_to_string(&store_path).unwrap();
-    assert!(
-        !raw.contains("current_provider_id"),
-        "a failed switch must not persist a current provider"
-    );
-
     // import merges entries (no keys in the fixture file: hermetic).
     let import_file = home.root.join("import.json");
     std::fs::write(
@@ -1977,6 +2003,34 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(value["result"]["imported"], 1);
     let raw = std::fs::read_to_string(&store_path).unwrap();
     assert!(raw.contains("Imported"));
+
+    // switch without a stored key fails honestly and leaves the state alone;
+    // the imported provider is the hermetic keyless one (the add above now
+    // carries a credential, as the usage text always required).
+    let listing = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = listing["providers"]["providers"].as_array().unwrap();
+    let imported_id = providers
+        .iter()
+        .find(|entry| entry["name"] == "Imported")
+        .expect("the imported provider is listed")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "switch",
+        "codex",
+        &imported_id,
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let raw = std::fs::read_to_string(&store_path).unwrap();
+    assert!(
+        !raw.contains("current_provider_id"),
+        "a failed switch must not persist a current provider"
+    );
 
     // export writes the JSON payload to --output.
     let export_file = home.root.join("export.json");
@@ -2939,8 +2993,21 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
 /// `store_error`.
 #[test]
 fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
+    struct KeyVar(Option<std::ffi::OsString>);
+    impl Drop for KeyVar {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_RULES_KEY", value) },
+                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_RULES_KEY") },
+            }
+        }
+    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("providers-english-mirrors");
+    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_RULES_KEY"));
+    unsafe {
+        std::env::set_var("PINVOU_CLI_TEST_RULES_KEY", "sk-test-rules-1234567890");
+    }
 
     // Refined model slots are claude-only (`--model-slot` on codex/kimi).
     let error = run(&[
@@ -2956,6 +3023,8 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
         "https://api.example.com",
         "--model-slot",
         "sonnet=claude-sonnet-4",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_RULES_KEY",
     ])
     .expect_err("--model-slot must be refused for non-claude agents");
     let message = error.to_string();
@@ -2978,6 +3047,8 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
         "Relay",
         "--base-url",
         "https://api.example.com",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_RULES_KEY",
     ]);
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
     let error = run(&[
