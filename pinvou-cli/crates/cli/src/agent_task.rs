@@ -297,13 +297,30 @@ fn run_agent(
             pinvou3_lib::agentic_task::AgenticTaskMode::Agent
         }
     });
+    // The credential-path policy every other model-context ingest lane
+    // applies (`files ingest`, `feedback --attach`, `artifacts`): the GUI's
+    // picker refuses credential paths before a chat send, and this lane must
+    // not be the one surface that copies `~/.aws/credentials` into a session
+    // ledger and renders it into the prompt. Canonicalized first so the
+    // component check cannot be escaped by a symlink or a `..` hop.
     let attachments = attachments
         .into_iter()
-        .map(|path| pinvou3_lib::agentic_task::AgenticTaskAttachment {
-            path,
-            remove_after_ingest: false,
+        .map(|path| {
+            let resolved = std::fs::canonicalize(&path).map_err(|error| {
+                CliError::failed(format!(
+                    "agent run: cannot resolve attachment {}: {error}",
+                    path.display()
+                ))
+            })?;
+            crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
+                CliError::failed(format!("agent run: refusing attachment: {reason}"))
+            })?;
+            Ok(pinvou3_lib::agentic_task::AgenticTaskAttachment {
+                path: resolved,
+                remove_after_ingest: false,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, CliError>>()?;
     let request = pinvou_product_backend::AgenticTaskRequest {
         // The consumed persona body travels inside the prompt (prepended
         // above, same point the GUI injects): the headless engine call has

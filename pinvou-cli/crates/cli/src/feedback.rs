@@ -138,6 +138,19 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // feedback paths are resolved.
     sandbox_home()?;
     let submit = command.submit;
+    // The body file gets the same credential-path policy as `--attach` (the
+    // canonicalized gate below): its content is embedded in the same
+    // permanent receipt, and a scripted `--body-file ~/.aws/credentials`
+    // is the same footgun the attachment lane refuses.
+    let body_canonical = std::fs::canonicalize(&submit.body_file).map_err(|error| {
+        CliError::failed(format!(
+            "feedback submit: cannot resolve body file {}: {error}",
+            submit.body_file.display()
+        ))
+    })?;
+    crate::artifacts::check_sensitive_path(&body_canonical).map_err(|reason| {
+        CliError::failed(format!("feedback submit: refusing body file: {reason}"))
+    })?;
     // The body is validated/truncated further down; the cap only stops an
     // unbounded file from being loaded in the first place.
     let description =

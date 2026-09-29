@@ -61,8 +61,8 @@ use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
     AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS, CodexWorkspaceKind,
-    GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager,
-    ProviderWireApi, SessionAgentStore,
+    GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION,
+    ProviderManager, ProviderWireApi, SessionAgentStore,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -1551,6 +1551,7 @@ fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
 /// none. The GUI distinguishes probe failure/timeout from a genuinely
 /// too-old version (and retries timeouts); the CLI at least must not label
 /// a cold or hanging binary "version-too-old".
+#[derive(Clone, Debug)]
 enum VersionProbe {
     Version(String),
     /// The binary exited non-zero, could not be spawned, or produced no
@@ -1621,8 +1622,28 @@ fn nonempty_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// One-shot memo of the codex override's passing `--version` verdict,
+/// written by [`override_passes_version_gate`] and read by
+/// [`memoized_override_probe`]: `probe_agent` needs the same `--version`
+/// for the override resolution the gate just handed back, and without the
+/// memo the codex lanes spawn the override twice (two 15 s-bounded spawns;
+/// the app avoids the same double spawn in `runtime::probe_codex_runtime`
+/// by threading the verdict). Only a PASSING verdict is cached, keyed by
+/// the resolved path, so the gate can never read a stale success.
+static LAST_OVERRIDE_PROBE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::path::PathBuf, VersionProbe)>>,
+> = std::sync::OnceLock::new();
+
 fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
-    let version = match probe_cli_version(path) {
+    let probe = probe_cli_version(path);
+    if let VersionProbe::Version(_) = &probe {
+        let mut last = LAST_OVERRIDE_PROBE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = Some((path.to_owned(), probe.clone()));
+    }
+    let version = match probe {
         VersionProbe::Version(version) => version,
         VersionProbe::Failed | VersionProbe::TimedOut => return false,
     };
@@ -1633,6 +1654,20 @@ fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
     match minimum {
         Some(minimum) => version_supported_for(agent, &version, minimum),
         None => true,
+    }
+}
+
+/// The memoized verdict of the codex override gate, when the path being
+/// probed is exactly the override that gate just passed (see
+/// [`LAST_OVERRIDE_PROBE`]).
+fn memoized_override_probe(path: &Path) -> Option<VersionProbe> {
+    let last = LAST_OVERRIDE_PROBE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match last.as_ref() {
+        Some((cached_path, probe)) if cached_path == path => Some(probe.clone()),
+        _ => None,
     }
 }
 
@@ -1854,7 +1889,11 @@ fn kimi_data_root() -> PathBuf {
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
     let cli_path = resolve_agent_cli(agent, cli_name);
-    let probe = cli_path.as_deref().map(probe_cli_version);
+    // Reuse the verdict the codex override gate just produced for this exact
+    // path instead of spawning the same `--version` twice.
+    let probe = cli_path
+        .as_deref()
+        .map(|path| memoized_override_probe(path).unwrap_or_else(|| probe_cli_version(path)));
     let version = match &probe {
         Some(VersionProbe::Version(text)) => Some(text.clone()),
         _ => None,
@@ -2107,19 +2146,18 @@ enum LoginDrainEvent {
 /// that must run over a text slice, not a line.
 ///
 /// Nothing else from the stream is streamed live — only the URL and the code
-/// — and the authorization code is never re-emitted as a "device code". For
-/// the lanes that hold their code when the CLI is invoked (`--code` /
-/// `--code-env`, passed here in `code`), each scanned slice is stripped
-/// before matching, so a vendor CLI that echoes it back cannot have it
-/// re-emitted live. The `--code-stdin` lane cannot do that — the code has
-/// not been read yet while these scans run, so `code` is `None` here — and
-/// relies on the final-transcript strip alone instead (see the exact-value
-/// `strip_login_code` at the end of `code login`).
+/// — and the authorization code is never re-emitted as a "device code".
+/// `code` is the live strip set shared with the stdin writer: the
+/// `--code`/`--code-env` lanes pre-load the value they already hold, and the
+/// `--code-stdin` lane publishes the value it reads later (the scans re-read
+/// the slot for every completed line), so a vendor CLI that echoes the code
+/// back cannot have it re-emitted live on any lane. The final-transcript
+/// exact-value strip at the end of `code login` stays as the second net.
 fn spawn_login_drain<R: Read + Send + 'static>(
     agent: String,
     stream: LoginStream,
     pipe: Option<R>,
-    code: Option<String>,
+    code: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     tx: std::sync::mpsc::Sender<LoginDrainEvent>,
 ) {
     std::thread::spawn(move || {
@@ -2173,7 +2211,11 @@ fn spawn_login_drain<R: Read + Send + 'static>(
             };
             let completed: Vec<u8> = scan.drain(..=end).collect();
             let text = String::from_utf8_lossy(&completed);
-            let text = strip_login_code(&text, code.as_deref());
+            let held_code = code
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let text = strip_login_code(&text, held_code.as_deref());
             let mut artifacts: Vec<LoginArtifact> = Vec::new();
             if !url_sent && let Some(found) = extract_login_url(&agent, &text) {
                 url_sent = true;
@@ -2437,18 +2479,25 @@ fn login(
     // code while the child is still waiting on the user (see
     // `spawn_login_drain`).
     let (events_tx, events_rx) = std::sync::mpsc::channel::<LoginDrainEvent>();
+    // The live strip set shared by both drain scanners and the stdin
+    // writer: the immediate lanes pre-load the code they already hold, and
+    // the `--code-stdin` lane publishes the value it reads later — so a
+    // vendor CLI that echoes the pasted code back cannot have it re-emitted
+    // live as a "device code" either (the header invariant above).
+    let login_code_slot: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(code.as_deref().map(str::to_owned)));
     spawn_login_drain(
         agent.to_owned(),
         LoginStream::Stdout,
         stdout,
-        code.clone(),
+        login_code_slot.clone(),
         events_tx.clone(),
     );
     spawn_login_drain(
         agent.to_owned(),
         LoginStream::Stderr,
         stderr,
-        code.clone(),
+        login_code_slot.clone(),
         events_tx,
     );
     // The stdin writer runs on its own thread so it can never park the
@@ -2482,13 +2531,12 @@ fn login(
     // included.
     let (code_gate_tx, code_gate_rx) = std::sync::mpsc::channel::<()>();
     let (stdin_park_tx, stdin_park_rx) = std::sync::mpsc::channel::<()>();
-    // Where the deferred lane parks its value for the transcript redaction
-    // below: the immediate lanes carry theirs in `code`, and either value
-    // must be stripped from the echoed transcript for the same reason — a
-    // short, non-secret-shaped code the vendor CLI echoed back would survive
-    // `redact_secret` alone.
-    let deferred_code_slot: std::sync::Arc<std::sync::Mutex<Option<String>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
+    // The same slot doubles as the parking spot for the transcript
+    // redaction below: the immediate lanes carry theirs in `code`, and
+    // either value must be stripped from the echoed transcript for the same
+    // reason — a short, non-secret-shaped code the vendor CLI echoed back
+    // would survive `redact_secret` alone.
+    let deferred_code_slot = login_code_slot;
     {
         use std::io::Write as _;
         let stdin = child.stdin.take();
@@ -2609,6 +2657,11 @@ fn login(
     // gate close unwinds the writer thread without touching the invoker's
     // stdin.
     drop(code_gate_tx);
+    // The child is reaped (or killed-and-reaped) by the wait loop above, so
+    // the registration is released BEFORE the drain grace, which can hold
+    // for seconds — an interrupt in that window must not forward-signal a
+    // pgid the OS may already have recycled.
+    crate::support::supervise::forget_child_group(child.id());
     let grace = Instant::now() + Duration::from_secs(5);
     while finished_streams < 2 {
         let remaining = grace.saturating_duration_since(Instant::now());
@@ -2626,9 +2679,6 @@ fn login(
             Err(_) => break,
         }
     }
-    // The child's exit paths have taken it down, so an interrupt from here on
-    // must not signal a group the OS may have already recycled.
-    crate::support::supervise::forget_child_group(child.id());
     let combined = format!("{out_text}\n{err_text}");
     // Exact-value strip of the authorization code this process wrote to the
     // child's stdin before the heuristic pass: a short, non-secret-shaped
@@ -4040,7 +4090,11 @@ fn workspace_preview(
     let value = serde_json::to_value(&preview)
         .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
     let human = match (&preview.text, &preview.data_url) {
-        (Some(text), _) => text.clone(),
+        // The workspace is agent-writable: the text arm gets the same block
+        // sanitizer `sessions`/`artifacts` apply at the terminal boundary
+        // (JSON keeps the verbatim bytes). The data-url arm is base64 by
+        // construction and needs no sanitizing.
+        (Some(text), _) => crate::support::collapse_block_control_characters(text),
         (None, Some(url)) => url.clone(),
         _ => format!(
             "{} ({}, {} bytes)",
@@ -4101,11 +4155,18 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
         .current_dir(root)
         .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"]);
     strip_git_redirection_env(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
+    // Supervised and bounded like every other capture in this module: a
+    // hostile config cannot buffer unbounded, and an interrupt that targets
+    // the CLI takes the probe down with it.
+    let capture = run_git_captured(
+        command,
+        &["config", "--null", "--get-regexp", r"^user\.(name|email)$"],
+    )
+    .ok()?;
+    if !capture.success {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = capture.stdout;
     let mut name = None;
     let mut email = None;
     for record in text.split('\0') {
@@ -4162,17 +4223,12 @@ fn strip_git_redirection_env(command: &mut std::process::Command) {
     }
 }
 
-/// Identity/date variables. They outrank `-c user.name=` / `-c user.email=` on
-/// the command line, so only the commit lane removes them — see
-/// [`git_commit_output`].
-const GIT_IDENTITY_KEYS: [&str; 6] = [
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_AUTHOR_DATE",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    "GIT_COMMITTER_DATE",
-];
+// Identity/date variables are the facade re-export of
+// `platform::process::GIT_IDENTITY_KEYS` (imported above): they outrank
+// `-c user.name=` / `-c user.email=` on the command line, so only the commit
+// lane removes them — see [`git_commit_output`]. Consuming the facade list
+// (instead of the hand copy this file carried) closes the drift window the
+// same way `GIT_OVERRIDE_KEYS` does.
 
 /// Every git call of the workspace read and mutate lanes (`rev-parse`,
 /// `status`, `diff`, `branch`, `checkout`, `stash`, `add`).
@@ -4226,26 +4282,90 @@ fn git_commit_output(root: &Path, arguments: &[&str]) -> Result<String, CliError
     run_git_output(command, arguments)
 }
 
-fn run_git_output(
+fn run_git_output(command: std::process::Command, arguments: &[&str]) -> Result<String, CliError> {
+    let capture = run_git_captured(command, arguments)?;
+    if !capture.success {
+        return Err(CliError::failed(format!(
+            "code workspace: git {} failed: {}",
+            arguments.join(" "),
+            pinvou3_lib::platform::credential_store::redact_secret(capture.stderr.trim()),
+        )));
+    }
+    Ok(capture.stdout)
+}
+
+/// Upper bound for the small-output git lanes (identity probe, rev-parse,
+/// branch and stash lists, status): far above any real repository's payload,
+/// while the drain-past-cap discipline in [`read_capped_to_eof`] keeps a
+/// pathological repo from buffering unbounded into memory.
+const GIT_CAPTURE_CAP: u64 = 16 * 1024 * 1024;
+
+/// One supervised, bounded git capture: the exit status plus both streams
+/// (lossy-decoded, matching `Command::output`'s `from_utf8_lossy` contract)
+/// and whether the stdout cut fired.
+struct GitCapture {
+    success: bool,
+    stdout: String,
+    stderr: String,
+    truncated: bool,
+}
+
+/// Supervised bounded capture for the non-diff git lanes — the same
+/// process-group supervision every vendor child in this CLI runs under:
+/// `set_process_group` + `spawn_supervised` (which closes the spawn→register
+/// window) with a paired `forget_child_group` on every exit, so an interrupt
+/// that targets the CLI alone (CI timeout, process manager, `kill $pid`)
+/// takes in-flight git — and any user hook it is running on the real working
+/// tree — down with it instead of orphaning it. A wait error kills too: the
+/// child's fate is unknown and the group must not leave the registry live
+/// (the same convention as `run_cli_bounded`/`wait_or_kill` in connectors).
+/// Unlike the diff lane there is no deadline: these commands are expected to
+/// finish, and the user's own hooks may legitimately be slow. Output past
+/// the cap is drained and discarded, so a writer that outproduces the cap
+/// still finishes instead of blocking on a full pipe.
+fn run_git_captured(
     mut command: std::process::Command,
     arguments: &[&str],
-) -> Result<String, CliError> {
-    let output = command.output().map_err(|error| {
+) -> Result<GitCapture, CliError> {
+    crate::support::set_process_group(&mut command);
+    let mut child = crate::support::supervise::spawn_supervised(
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .map_err(|error| {
         CliError::failed(format!(
             "code workspace: git {}: {error}",
             arguments.join(" ")
         ))
     })?;
-    if !output.status.success() {
-        return Err(CliError::failed(format!(
-            "code workspace: git {} failed: {}",
-            arguments.join(" "),
-            pinvou3_lib::platform::credential_store::redact_secret(
-                String::from_utf8_lossy(&output.stderr).trim(),
-            )
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let stdout_pipe = child.stdout.take().expect("git stdout is piped");
+    let stderr_pipe = child.stderr.take().expect("git stderr is piped");
+    let stderr_thread =
+        std::thread::spawn(move || read_capped_to_eof(stderr_pipe, GIT_CAPTURE_CAP));
+    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, GIT_CAPTURE_CAP);
+    let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            crate::support::kill_process_tree(&mut child);
+            crate::support::supervise::forget_child_group(child.id());
+            return Err(CliError::failed(format!(
+                "code workspace: git {}: {error}",
+                arguments.join(" ")
+            )));
+        }
+    };
+    // Reaped by the wait (or the kill above reaps before forgetting), so the
+    // registration must not outlive this call.
+    crate::support::supervise::forget_child_group(child.id());
+    let truncated = stdout_total > GIT_CAPTURE_CAP;
+    Ok(GitCapture {
+        success: status.success(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+        truncated,
+    })
 }
 
 /// Bounded capture for the tracked-diff lane: `Command::output()` would
@@ -4265,27 +4385,43 @@ fn git_output_capped(
     arguments: &[&str],
     cap: u64,
 ) -> Result<(String, bool), CliError> {
-    let mut child = git_command(root, arguments)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            CliError::failed(format!(
-                "code workspace: git {}: {error}",
-                arguments.join(" ")
-            ))
-        })?;
-    let stdout_pipe = child.stdout.take().expect("git stdout is piped");
-    let stderr_pipe = child.stderr.take().expect("git stderr is piped");
-    let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
-    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, cap);
-    let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
-    let status = child.wait().map_err(|error| {
+    let mut command = git_command(root, arguments);
+    // Supervised like every other vendor child (see `run_git_captured`): the
+    // spawn→register window is closed, so an interrupt aimed at the CLI takes
+    // the diff — and any filter process or hook git is running on the user's
+    // real working tree — down with it.
+    crate::support::set_process_group(&mut command);
+    let mut child = crate::support::supervise::spawn_supervised(
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .map_err(|error| {
         CliError::failed(format!(
             "code workspace: git {}: {error}",
             arguments.join(" ")
         ))
     })?;
+    let stdout_pipe = child.stdout.take().expect("git stdout is piped");
+    let stderr_pipe = child.stderr.take().expect("git stderr is piped");
+    let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
+    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, cap);
+    let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            // Fate unknown: down with the group, like every wait-error path
+            // (the child was never reaped by us, so the kill is safe).
+            crate::support::kill_process_tree(&mut child);
+            crate::support::supervise::forget_child_group(child.id());
+            return Err(CliError::failed(format!(
+                "code workspace: git {}: {error}",
+                arguments.join(" ")
+            )));
+        }
+    };
+    // Reaped by the wait above: release the registration before returning.
+    crate::support::supervise::forget_child_group(child.id());
     if !status.success() {
         return Err(CliError::failed(format!(
             "code workspace: git {} failed: {}",
@@ -4331,13 +4467,18 @@ fn read_capped_to_eof(mut pipe: impl std::io::Read, cap: u64) -> (Vec<u8>, u64) 
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
-    let output = git_command(root, &["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    // Supervised like every git lane (see `run_git_captured`): the probe is
+    // normally instant, but an interrupt aimed at the CLI must not leave it
+    // orphaned, and a pathological `rev-parse` cannot buffer unbounded.
+    let capture = run_git_captured(
+        git_command(root, &["rev-parse", "--show-toplevel"]),
+        &["rev-parse", "--show-toplevel"],
+    )
+    .ok()?;
+    if !capture.success {
         return None;
     }
-    std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok()
+    std::fs::canonicalize(capture.stdout.trim()).ok()
 }
 
 fn git_status_label(x: char, y: char) -> &'static str {
@@ -4359,8 +4500,18 @@ fn git_status_label(x: char, y: char) -> &'static str {
 }
 
 fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliError> {
-    let output = git_command(
-        root,
+    let capture = run_git_captured(
+        git_command(
+            root,
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--",
+                ".",
+            ],
+        ),
         &[
             "status",
             "--porcelain=v1",
@@ -4369,18 +4520,24 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
             "--",
             ".",
         ],
-    )
-    .output()
-    .map_err(|error| CliError::failed(format!("code workspace: git status: {error}")))?;
-    if !output.status.success() {
+    )?;
+    if !capture.success {
         return Err(CliError::failed(format!(
             "code workspace: git status failed: {}",
-            pinvou3_lib::platform::credential_store::redact_secret(
-                String::from_utf8_lossy(&output.stderr).trim(),
-            )
+            pinvou3_lib::platform::credential_store::redact_secret(capture.stderr.trim())
         )));
     }
-    let records = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    if capture.truncated {
+        // A cut mid-record would parse as garbage (the `-z` stream is
+        // NUL-terminated, so only a whole-record boundary is safe), and a
+        // silently shortened listing would misstate which paths are dirty.
+        // The cap is 16 MiB of porcelain — millions of paths — so hitting it
+        // means a pathological tree, and the honest error names it.
+        return Err(CliError::failed(format!(
+            "code workspace: git status output exceeded the {GIT_CAPTURE_CAP}-byte capture cap"
+        )));
+    }
+    let records = capture.stdout.split('\0').collect::<Vec<_>>();
     let mut changes = Vec::new();
     let mut index = 0;
     while index < records.len() {
@@ -4389,9 +4546,13 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
         if record.len() < 4 {
             continue;
         }
-        let x = record[0] as char;
-        let y = record[1] as char;
-        let path = String::from_utf8_lossy(&record[3..]).replace('\\', "/");
+        // The `XY ` prefix is ASCII even when the path is not, so byte
+        // indexing stays safe; the path keeps the lossy decode the old
+        // whole-buffer `from_utf8_lossy` produced.
+        let bytes = record.as_bytes();
+        let x = bytes[0] as char;
+        let y = bytes[1] as char;
+        let path = record[3..].replace('\\', "/");
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             index += 1;
         }
@@ -4629,7 +4790,13 @@ fn workspace_diff(
                 "text": diff.1,
                 "truncated": diff.2,
             });
-            Ok(success(render(output, diff.1, &value)))
+            // Diff text is agent-authored workspace content rendered on a
+            // terminal: same block sanitizer as the preview lane above.
+            Ok(success(render(
+                output,
+                crate::support::collapse_block_control_characters(&diff.1),
+                &value,
+            )))
         }
         None => {
             // Whole-workspace diff: concatenate per-file diffs of every change
@@ -4706,7 +4873,11 @@ fn workspace_diff(
                 // from "an older build that never reported them".
                 "failures": failures,
             });
-            Ok(success(render(output, combined, &value)))
+            Ok(success(render(
+                output,
+                crate::support::collapse_block_control_characters(&combined),
+                &value,
+            )))
         }
     }
 }

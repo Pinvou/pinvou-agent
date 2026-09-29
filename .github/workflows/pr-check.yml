@@ -248,11 +248,12 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/personas/**'
               - 'pinvou3-app/src-tauri/src/features/pet/**'
               # The CLI compiles the connector lock tables in with
-              # `include_str!` (connectors.rs), so editing or deleting one is
-              # a CLI source change in all but name. Without this entry such a
-              # PR skips cli-test, windows-rust-test AND macos-cli-check — the
-              # very leg whose reason for existing is those per-target files —
-              # and required-gate passes on `skipped`.
+              # `include_str!` (src-tauri/src/platform/connector_lock.rs), so
+              # editing or deleting one is a CLI source change in all but
+              # name. Without this entry such a PR skips cli-test,
+              # windows-rust-test AND macos-cli-check — the very leg whose
+              # reason for existing is those per-target files — and
+              # required-gate passes on `skipped`.
               - 'pinvou3-app/src-tauri/resources/platforms/**'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'

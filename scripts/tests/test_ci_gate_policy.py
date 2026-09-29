@@ -175,6 +175,11 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        # required-gate's display `name:` is the branch-protection check name;
+        # the suite locates the job only by its YAML key, so a display-name
+        # rename would silently orphan the required check. Pin it in every
+        # test that asserts on this block.
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- release-contract-test", required_gate)
         self.assertIn(
             '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
@@ -444,6 +449,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertNotIn("完整门禁已在 PR 入队前验证", required_gate)
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
@@ -492,6 +498,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
@@ -540,10 +547,10 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("- 'CodeWhale'", cli_paths)
         # The connector lock tables are compiled into the CLI with include_str!
-        # (connectors.rs), so editing or deleting one is a CLI source change in
-        # all but name — and macos-cli-check, the leg whose reason for existing
-        # is exactly those per-target files, is the first thing skipped without
-        # this entry.
+        # from src-tauri/src/platform/connector_lock.rs, so editing or
+        # deleting one is a CLI source change in all but name — and
+        # macos-cli-check, the leg whose reason for existing is exactly those
+        # per-target files, is the first thing skipped without this entry.
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/platforms/**'",
             cli_paths,
@@ -673,6 +680,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
         self.assertIn("- macos-cli-check", required_gate)
@@ -725,6 +733,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- macos-cli-check", required_gate)
         self.assertIn(
             "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
@@ -842,6 +851,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- cli-lint", required_gate)
         self.assertIn("CLI_LINT_RESULT: ${{ needs.cli-lint.result }}", required_gate)
         self.assertIn(
@@ -1464,6 +1474,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- windows-rust-test", required_gate)
         self.assertIn("WINDOWS_RUST_RESULT", required_gate)
         self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
@@ -1480,6 +1491,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- macos-rust-check", required_gate)
         self.assertIn("MACOS_RUST_CHECK_RESULT", required_gate)
         self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
@@ -1518,6 +1530,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- windows-codex-runtime-test", required_gate)
         self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
 
@@ -1555,6 +1568,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
+        self.assertIn("name: required-gate", required_gate)
         self.assertIn("- windows-codex-runtime-test", required_gate)
 
     def test_windows_rustup_repair_runs_in_required_native_job(self):

@@ -2396,6 +2396,7 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     // the refusal carries the family's Failed exit class.
     let target = _home.root.join("pre-existing-export.json");
     std::fs::write(&target, "do not destroy me\n").unwrap();
+    let mode_before = std::fs::metadata(&target).unwrap().permissions().mode();
     let error = run(&[
         "pinvou",
         "code",
@@ -2421,8 +2422,12 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
         "do not destroy me\n",
         "the refused destination must be byte-for-byte untouched"
     );
-    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o644, "a refused destination keeps its mode");
+    let mode_after = std::fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(
+        mode_after & 0o777,
+        mode_before & 0o777,
+        "a refused destination keeps its mode"
+    );
 
     // The fresh-create lane still lands 0600: `create_new` guarantees the
     // open is the create, so `mode` applies to exactly this file.

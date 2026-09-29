@@ -555,6 +555,50 @@ fn pause_and_resume_reject_unknown_task_ids_like_the_rest_of_the_family() {
     let _ = home;
 }
 
+/// Human rows must not be forgeable: the name is the one fully
+/// user-controlled cell (the row/column contract must not depend on it),
+/// the same rule models/sessions/memory pin for their families.
+#[test]
+fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("collapse-hostile-name");
+
+    let hostile = "ok\n*m_fake\tEvil\u{1b}[2JEsc";
+    let created = create_task(&home, hostile);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // The store keeps the original bytes — only the human rendering
+    // sanitizes (the JSON consumer gets the verbatim name back).
+    assert_eq!(created["name"].as_str(), Some(hostile));
+
+    // One task, one row: a raw newline in the name must not forge an extra
+    // row, a raw tab must not forge a column, and ESC must not reach the
+    // terminal.
+    let listed = run_human(&["scheduled", "list"]);
+    assert_eq!(
+        listed.lines().count(),
+        1,
+        "the hostile name must not forge extra rows: {listed:?}"
+    );
+    assert!(
+        listed.contains("ok *m_fake Evil [2JEsc"),
+        "the collapsed name must render on one row: {listed:?}"
+    );
+    assert!(
+        !listed.contains('\u{1b}'),
+        "ESC must not reach the terminal: {listed:?}"
+    );
+
+    let shown = run_human(&["scheduled", "show", &task_id]);
+    assert!(
+        shown.contains("name: ok *m_fake Evil [2JEsc"),
+        "show must render the collapsed name: {shown:?}"
+    );
+    assert!(
+        !shown.contains('\u{1b}'),
+        "ESC must not reach the terminal: {shown:?}"
+    );
+}
+
 #[test]
 fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -2406,6 +2450,73 @@ fn update_with_model_id_moves_both_the_definition_and_the_pin() {
     assert_eq!(def["model"].as_str(), Some("other-wire-name"));
 
     let _ = prompt;
+}
+
+/// A failed binding write must not leave the definition and the pin
+/// inconsistent: `update` commits the definition's new model wire name first,
+/// so a binding-write failure has to restore the captured pre-update
+/// definition (mirroring create's rollback) instead of leaving the executor's
+/// pair split between old and new values. The seam that forces the binding
+/// write to fail is a newer-schema model-bindings.json: the registry read
+/// keeps it (valid shape) and the write refuses it with
+/// `scheduled_storage_unavailable`.
+#[test]
+fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("model-id-update-binding-failure");
+    let created = create_task(&home, "Rollback task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let def_before: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+
+    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    add.args([
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Rollback model",
+        "--model",
+        "rollback-wire-name",
+        "--base-url",
+        "https://api.deepseek.com",
+    ])
+    .env("PINVOU3_HOME", home.path());
+    let added = add.output().expect("models add runs");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let model_id = String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned();
+
+    let bindings = home.path().join("automations").join("model-bindings.json");
+    let future_format = r#"{"schema_version": 99, "tasks": {}}"#;
+    std::fs::write(&bindings, future_format).unwrap();
+
+    let error = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
+    assert!(error.contains("scheduled_storage_unavailable"), "{error}");
+    assert!(
+        error.contains("newer than supported"),
+        "the binding write must fail on the newer-schema registry: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bindings).unwrap(),
+        future_format,
+        "the refused binding write must leave the future-format file untouched"
+    );
+    let def_after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        def_after, def_before,
+        "the failed binding write must restore the pre-update definition"
+    );
 }
 
 /// `update`/`resume` must PERSIST the workspace repair: the GUI's

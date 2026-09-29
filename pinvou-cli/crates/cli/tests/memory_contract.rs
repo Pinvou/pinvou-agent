@@ -488,6 +488,67 @@ fn memory_add_work_context_from_file_and_positional_arguments() {
     assert_eq!(items[0]["text"], "Reviewing the cli contract");
 }
 
+/// Stored memory text can legitimately contain control characters: the
+/// feature writers only collapse Unicode whitespace on write, so an ESC or a
+/// bidi override is kept verbatim. The human TSV rows must collapse them —
+/// the same `support::collapse_control_characters` hygiene the sessions rows
+/// apply — so user content can neither split the row into two lines nor
+/// reorder it in the terminal, while the JSON output carries the stored text
+/// untouched.
+#[test]
+fn memory_list_collapses_control_characters_in_human_rows() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("list-control-chars");
+
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer \u{1b}concise \u{202E}answers",
+    ]);
+    // Fixture sanity: the writers keep every non-whitespace control, so both
+    // characters really are in the store for the rows to leak.
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1);
+    assert!(
+        stored[0].text.contains('\u{1b}') && stored[0].text.contains('\u{202E}'),
+        "the control characters must be stored verbatim: {:?}",
+        stored[0].text
+    );
+
+    let human = run_ok(&["pinvou", "memory", "list", "--store", "preferences"]);
+    // Header line plus exactly one row: a leaked control could not split it.
+    assert_eq!(human.lines().count(), 2, "{human:?}");
+    assert!(
+        !human.contains('\u{1b}') && !human.contains('\u{202E}'),
+        "the human row must collapse control characters: {:?}",
+        human
+    );
+    assert!(
+        human.contains("Prefer concise answers"),
+        "collapsed controls read as plain spaces: {:?}",
+        human
+    );
+
+    let json = run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "preferences",
+        "--output",
+        "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        envelope["items"][0]["text"],
+        serde_json::json!(stored[0].text),
+        "JSON output carries the stored text verbatim"
+    );
+}
+
 #[test]
 fn memory_pending_confirm_ignore_and_never_resolve_fixture_entries() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -722,6 +783,18 @@ fn memory_organize_refuses_when_memory_is_disabled() {
 /// command to refuse with `memory_organize_busy` rather than start a second
 /// pass. Reachable without a display or a model because the lock precedes
 /// the host boot, so the default no-host/no-model test policy holds.
+///
+/// The OTHER busy lane — the feature layer's `.organize.lock` held by the GUI
+/// button or the scheduled executor — has no executable coverage here, and
+/// not for the lock's sake (it is a plain flock on
+/// `$PINVOU3_HOME/user/memory/.organize.lock` this test could hold the same
+/// way): the CLI reaches that lock only INSIDE
+/// `headless_bridge::run_windowless_host`, i.e. after booting the Tauri host,
+/// which needs a display and violates the no-host policy above. The busy
+/// contract is pinned by this test (same refusal, same code), and the
+/// `ORGANIZE_LOCK_BUSY` marker mapping that turns the feature layer's anyhow
+/// error into the same `memory_organize_busy` is exercised only by the
+/// manually-run organize.
 #[test]
 fn memory_organize_refuses_when_another_process_holds_the_lock() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -1035,6 +1108,91 @@ fn memory_update_refuses_content_that_normalizes_away_like_add_does() {
     assert!(
         add.to_string().contains("empty after normalization"),
         "{add}"
+    );
+}
+
+/// `memory update` must disclose a writer rewrite that is not a truncation:
+/// when the content carries a 请记住-style leading prefix, the store's
+/// `clean_candidate_sentence` strips it and stores fewer characters than
+/// submitted while nothing was lost. Both output channels say so — the JSON
+/// gains `normalized` plus the exact `submitted_characters`/
+/// `stored_characters` pair (consistent with the stored text), and the human
+/// output carries the same normalization note. Without the disclosure a
+/// consumer diffing submitted against stored text would conclude content was
+/// lost (the misreading the truncation note guards for the cap case).
+#[test]
+fn memory_update_discloses_prefix_normalization_on_both_output_channels() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("update-normalization");
+
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+    let id = pinvou3_lib::features::memory::list_preferences().unwrap()[0]
+        .id
+        .clone();
+
+    // In-cap content whose only reduction is the stripped 请记住 prefix: the
+    // normalization branch, not the truncation branch, must fire.
+    let submitted = "请记住 Prefer terse answers";
+    let json = run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        &id,
+        "--content",
+        submitted,
+        "--output",
+        "json",
+    ]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["normalized"], serde_json::json!(true));
+    assert!(
+        value.get("truncated").is_none(),
+        "nothing was truncated; the truncation flag must stay absent: {value}"
+    );
+
+    // The counts must describe the real write: submitted is the
+    // whitespace-collapsed input, stored is exactly the stored text.
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    let stored_text = stored[0].text.clone();
+    assert_eq!(stored_text, "Prefer terse answers");
+    assert_eq!(value["text"], serde_json::json!(stored_text));
+    let submitted_chars = value["submitted_characters"].as_u64().unwrap();
+    let stored_chars = value["stored_characters"].as_u64().unwrap();
+    assert_eq!(submitted_chars as usize, submitted.chars().count());
+    assert_eq!(stored_chars as usize, stored_text.chars().count());
+    assert!(
+        stored_chars < submitted_chars,
+        "the stripped prefix is the disclosed reduction: {submitted_chars} -> {stored_chars}"
+    );
+
+    // The human lane carries the same disclosure, worded as normalization
+    // (rewrite, not loss), with the same counts as the JSON.
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "preferences",
+        &id,
+        "--content",
+        submitted,
+    ]);
+    assert!(
+        human.contains("content was normalized before storing"),
+        "{human}"
+    );
+    assert!(
+        human.contains(&format!(
+            "{stored_chars} of {submitted_chars} characters stored"
+        )),
+        "{human}"
     );
 }
 

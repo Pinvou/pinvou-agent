@@ -1524,6 +1524,12 @@ fn remove<S: CredentialStore>(
     // the usage exit code does not depend on string-matching the
     // transaction error below (which stays as a backstop). A plain load —
     // not `safe_prefs` — keeps the check free of credential-store refreshes.
+    // Disclosed side effect (same one the `settings set` comment at
+    // `settings_set` documents): `load()` is the persisting variant, so this
+    // read-classified classification can run the (idempotent) migrations and
+    // rewrite settings.json before its verdict. The prefs layer exposes no
+    // read-only load that skips the migrations, only one that skips the
+    // save — so the honest state is this disclosure, not a pretense.
     let prefs = UserPrefs::load();
     if prefs.model_by_id(id).is_some() && prefs.advanced.saved_models.len() <= 1 {
         return Err(CliError::usage(REMOVE_LAST_MODEL_MESSAGE));
@@ -3407,6 +3413,12 @@ fn resolve_search_key<S: CredentialStore>(
             }
         }
     }
+    // Disclosed side effect (same one the `settings set` comment at
+    // `settings_set` documents): `load()` is the persisting variant, so this
+    // read lane can run the (idempotent) migrations and rewrite
+    // settings.json on the way to a verdict. The prefs layer exposes no
+    // read-only load that skips the migrations, only one that skips the
+    // save — so the honest state is this disclosure, not a pretense.
     let mut prefs = UserPrefs::load();
     prefs.refresh_credential_states_with_store(store);
     let Some(credential) = prefs.search.credentials.get(&provider) else {

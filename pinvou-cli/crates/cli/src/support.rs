@@ -268,6 +268,36 @@ pub fn collapse_control_characters(value: &str) -> String {
         .collect()
 }
 
+/// Human-mode sanitizer for agent-authored text rendered as a BLOCK (a
+/// readable file body, a transcript dump, a workspace diff) rather than as
+/// one cell of a tab-separated row — the artifacts/code counterparts of the
+/// same rule `sessions` applies to transcripts at the terminal boundary.
+///
+/// Why not [`collapse_control_characters`]: that one flattens every control
+/// character including `\n` and `\t`, which is right for a single-line
+/// column but would destroy the layout of the very content the caller asked
+/// to read — a document legitimately spans many lines and indents code
+/// blocks. So newline and tab survive, and everything else in the C0/C1
+/// control range collapses to a space. What this keeps out is the
+/// attacker-controlled part: ESC (terminal escape sequences — cursor
+/// moves, colour, window-title rewrites, and on some terminals clipboard or
+/// response injection), CR (redraws the current line), BEL, and the
+/// remaining C0/DEL noise, from content the model or a tool wrote.
+///
+/// JSON mode needs no equivalent — `serde_json` escapes everything below
+/// 0x20 — so this stays strictly a human-rendering choice and the stored
+/// file and the JSON payload keep the verbatim bytes.
+pub fn collapse_block_control_characters(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\n' | '\t' => ch,
+            _ if ch.is_control() => ' ',
+            _ => ch,
+        })
+        .collect()
+}
+
 /// The display-hygiene set behind [`collapse_control_characters`], copied —
 /// not invented — from the GUI's `features::marketplace::store::
 /// is_display_unsafe_char` (crate-private there), which this crate already

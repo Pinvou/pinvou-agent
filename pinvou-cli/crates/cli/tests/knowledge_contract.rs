@@ -543,6 +543,18 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
             "--offset",
             "-1",
         ],
+        // usize::MAX parses but cannot be a SQLite i64 OFFSET: upstream it
+        // would wrap negative and silently serve page 0, so it is a usage
+        // error here (same out-of-range stance as `--limit 0`).
+        vec![
+            "pinvou",
+            "knowledge",
+            "index",
+            "failed",
+            "j",
+            "--offset",
+            "18446744073709551615",
+        ],
         vec![
             "pinvou",
             "knowledge",
@@ -781,6 +793,46 @@ fn collections_crud_round_trip_on_a_temp_home() {
     let collections = listed["collections"].as_array().expect("collections array");
     assert_eq!(collections.len(), 1);
     assert_eq!(collections[0]["id"], serde_json::json!(first_id));
+}
+
+/// The human rows of the read lanes run user/store-sourced cells through
+/// `collapse_control_characters` (same display hygiene as every other
+/// family): a name carrying a control character must not be able to forge
+/// extra rows or columns in the tab block. JSON keeps the original; this
+/// pins the human lane through the cheapest fixture — a collection name —
+/// while `search`/`documents` route their name/path cells through the
+/// identical helper call.
+#[test]
+fn collections_human_list_collapses_control_characters_in_names() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("control-char-name");
+
+    let bell = '\u{0007}';
+    run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        &format!("papers{bell}2026"),
+    ]);
+
+    let human = run_ok(&["pinvou", "knowledge", "collections", "list"]);
+    // Tabs and newlines are the row's own separators; every other control
+    // character (the BEL the fixture planted, an ESC, a CR) must have been
+    // collapsed into a space inside the cell.
+    let in_cells: String = human
+        .chars()
+        .filter(|ch| !matches!(ch, '\t' | '\n'))
+        .collect();
+    assert!(
+        !in_cells.chars().any(char::is_control),
+        "cells must not carry raw control characters: {human:?}"
+    );
+    assert!(
+        human.contains("papers 2026"),
+        "the collapsed name must stay readable: {human:?}"
+    );
 }
 
 #[test]
@@ -1532,6 +1584,26 @@ fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
     assert!(settled["jobId"].is_string(), "stalled job missing its id");
     assert_eq!(settled["phase"], serde_json::json!("interrupted"));
     assert_eq!(settled["resumable"], serde_json::json!(true));
+
+    // The interrupt must also park the collection GUI-visibly at `pending`
+    // (documented behavior: imports interrupted by the CLI park their
+    // collection at pending instead of indexing — the close-out that resets
+    // the status belongs to the dead import thread, so without the park the
+    // GUI would show a permanently "indexing" collection until the next
+    // resume/cancel).
+    let collections = run_json(&["pinvou", "knowledge", "collections", "list"]);
+    let status = collections["collections"]
+        .as_array()
+        .expect("collections array")
+        .iter()
+        .find(|collection| collection["id"] == serde_json::json!(id))
+        .map(|collection| collection["status"].clone())
+        .expect("the stalled collection is still listed");
+    assert_eq!(
+        status,
+        serde_json::json!("pending"),
+        "an interrupted import must park its collection at pending"
+    );
 }
 
 /// `scan start` waits for the scan to finish inside the invocation (a

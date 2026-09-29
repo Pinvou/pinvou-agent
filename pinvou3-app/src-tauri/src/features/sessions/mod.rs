@@ -87,7 +87,6 @@ pub use self::scheduled::{
 /// retention keys the separate headless eviction budget on it, so the two must
 /// not drift into separate literals.
 #[cfg(feature = "benchmark-hooks")]
-#[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
 /// Re-export the headless retention cap: it is the number the runner's
 /// eviction warning quotes, and quoting the chat cap there would name a budget

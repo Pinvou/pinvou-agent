@@ -33,7 +33,7 @@
 //! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::support::{read_text_file_capped, render, success};
@@ -507,8 +507,20 @@ fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
             skipped.push(stem);
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&file) else {
-            continue;
+        let raw = match read_record_capped(&file, MAX_LIST_SCAN_BYTES) {
+            RecordRead::Text(raw) => raw,
+            RecordRead::TooLarge => {
+                // The record passed the stat probe but grew past the cap
+                // before this read landed; identical skip contract to the
+                // probe above.
+                note!(
+                    "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
+                    file.display()
+                );
+                skipped.push(stem);
+                continue;
+            }
+            RecordRead::Unreadable => continue,
         };
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {
             continue;
@@ -595,6 +607,47 @@ fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
     rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
     skipped.sort();
     DeliverableIndex { rows, skipped }
+}
+
+/// Outcome of a capped session-record read for [`deliverable_index`].
+#[derive(Debug)]
+enum RecordRead {
+    /// The record ends within the cap and decodes as UTF-8.
+    Text(String),
+    /// The record does not end within the cap; the read was cut off before
+    /// EOF instead of slurping an unbounded file.
+    TooLarge,
+    /// The record is unreadable or not valid UTF-8 — the silent skip the
+    /// previous uncapped `read_to_string` took on the same conditions.
+    Unreadable,
+}
+
+/// Reads at most `cap + 1` bytes of `path` and decodes it as UTF-8.
+///
+/// The stat probe in [`deliverable_index`] only sees the size at stat time,
+/// so a record under the cap at probe time that grows past it before the
+/// read lands must not be slurped whole by an uncapped `read_to_string`.
+/// The take allows one extra byte so a record of exactly `cap` bytes still
+/// reaches EOF inside the read and counts as a full read; only a strictly
+/// larger file reports [`RecordRead::TooLarge`]. `cap` is a parameter so
+/// the boundary can be unit-tested with small fixtures; the production
+/// caller passes `MAX_LIST_SCAN_BYTES`.
+fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
+    let Ok(file) = std::fs::File::open(path) else {
+        return RecordRead::Unreadable;
+    };
+    let mut taken = file.take(cap.saturating_add(1));
+    let mut raw = Vec::new();
+    if taken.read_to_end(&mut raw).is_err() {
+        return RecordRead::Unreadable;
+    }
+    if raw.len() as u64 > cap {
+        return RecordRead::TooLarge;
+    }
+    match String::from_utf8(raw) {
+        Ok(text) => RecordRead::Text(text),
+        Err(_) => RecordRead::Unreadable,
+    }
 }
 
 /// Resolves `<session-id> <relative-path>` to a canonical artifact file,
@@ -807,7 +860,12 @@ fn read(session_id: &str, relative_path: &str, output: OutputMode) -> Result<Cli
         "path": path.display().to_string(),
         "content": content,
     });
-    Ok(success(render(output, content, &value)))
+    // Stdout is a terminal and the content is agent-writable: the human arm
+    // gets the same block sanitizer `sessions show`/`export` apply at this
+    // boundary (newlines/indent survive, ESC/CR and the rest of the control
+    // range do not). JSON and the stored file keep the verbatim bytes.
+    let human = crate::support::collapse_block_control_characters(&content);
+    Ok(success(render(output, human, &value)))
 }
 
 fn write(
@@ -1069,6 +1127,41 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
         assert_eq!(std::fs::read(&victim).unwrap(), b"do not clobber");
         assert!(!target.exists(), "the write must not have landed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A record that passes the stat probe can still grow past the scan cap
+    /// before the read lands (TOCTOU between `metadata().len()` and the
+    /// open). The capped read must cut off at the cap instead of slurping
+    /// the grown file whole, while a record of exactly the cap still reads
+    /// end to end. `read_record_capped` takes the cap as a parameter so this
+    /// boundary is testable without a 32 MiB fixture; the production call
+    /// site passes `MAX_LIST_SCAN_BYTES`.
+    #[test]
+    fn capped_record_read_cuts_off_past_the_cap() {
+        let dir = scratch("capped-read");
+        let record = dir.join("s-1.json");
+        let body = r#"{"metadata":{"id":"s-1"}}"#;
+        std::fs::write(&record, body).unwrap();
+        let size = std::fs::metadata(&record).unwrap().len();
+
+        match read_record_capped(&record, size) {
+            RecordRead::Text(raw) => assert_eq!(raw, body),
+            other => panic!("a record of exactly the cap must read whole, got {other:?}"),
+        }
+        // One byte below the file size, the record cannot end within the
+        // cap: the read must report TooLarge, not return truncated text.
+        match read_record_capped(&record, size - 1) {
+            RecordRead::TooLarge => {}
+            other => panic!("a record past the cap must read as TooLarge, got {other:?}"),
+        }
+        // Unreadable-as-text content keeps the silent-skip shape the old
+        // `read_to_string` error path had.
+        std::fs::write(&record, b"\xff\xfe not utf8").unwrap();
+        assert!(matches!(
+            read_record_capped(&record, size),
+            RecordRead::Unreadable
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
