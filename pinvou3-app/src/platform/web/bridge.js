@@ -4425,11 +4425,21 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
       cancelPendingStreamNotify(sid);
       let didRun = false;
       const wasBackground = sid !== state.activeSessionId;
-      runSyncOnSession(sid, function () {
-        didRun = true;
-        immediateNotify();
-      });
-      if (didRun && wasBackground) immediateNotify();
+      // A throwing subscriber must not escape as an unhandled rAF/timer
+      // error (the synchronous first-delta path keeps the dispatch-loop
+      // throw semantics). runSyncOnSession's finally restores the working
+      // set before the error lands here.
+      try {
+        runSyncOnSession(sid, function () {
+          didRun = true;
+          immediateNotify();
+        });
+      } catch (error) {
+        console.error("[chat] coalesced stream notify failed", error);
+      }
+      if (didRun && wasBackground) {
+        try { immediateNotify(); } catch (error) { console.error("[chat] coalesced stream notify failed", error); }
+      }
     }
     if (typeof window.requestAnimationFrame === "function") {
       pending.frame = window.requestAnimationFrame(publish);
