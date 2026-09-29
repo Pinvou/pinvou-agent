@@ -1302,7 +1302,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               </div>
             ) : (
               <div className={`px-4 py-8 text-center text-[14px] ${mutedValue}`}>
-                {loading ? scheduledCopy.loading : scheduledCopy.empty}
+                {bridge?.available ? (loading ? scheduledCopy.loading : scheduledCopy.empty) : t.uiMonitor.bridgeNotReady}
               </div>
             )}
           </div>
