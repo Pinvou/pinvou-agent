@@ -81,8 +81,9 @@ test('OpenAI Compatible 命中目录 ID 仍为自定义', () => {
 test('OpenAI Responses 自定义行 -> 自定义，sub-label 按自身 preset 归属', () => {
   const responsesCustom = mk({ preset: 'openai_responses', provider_kind: 'custom', base_url: 'https://gw.example.com/v1', model: 'my-aggregator-model' });
   assert.strictEqual(isPresetModel(responsesCustom), false);
-  // 聚合器 URL 命中不了任何目录组：sub-label 必须按 openai_responses 自身归属
-  // （presetProviderLabel 兜底），而不是硬编码回落成 Chat 兼容组。
+  // Aggregator URLs match no catalog group: the sub-label must attribute to
+  // the openai_responses preset itself (the presetProviderLabel fallback)
+  // instead of hard-coding a fall-back to the Chat-compatible group.
   assert.strictEqual(selectorSubLabel(responsesCustom, t), 'OpenAI Responses 兼容');
   assert.strictEqual(selectorSubLabel(responsesCustom, tEn), 'OpenAI Responses Compatible');
 });
@@ -577,24 +578,27 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(vllm), ['off', 'low', 'medium', 'high']);
   const anthropic = { preset: 'anthropic', vendor: 'anthropic', model: 'claude-sonnet-5' };
   assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
-  // GPT×Responses 命中的 openai 行切 openai_responses 档位表（Responses
-  // effort 映射无 none：off 归一为 low 故不暴露；max 发 xhigh）。
+  // GPT×Responses hits on openai rows take the openai_responses tier table
+  // (the Responses effort mapper has no none: off normalizes to low so it is
+  // not exposed; max sends xhigh).
   const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
   assert.deepStrictEqual(tiers(openai56), ['low', 'medium', 'high', 'max']);
   const openai55 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5' };
   assert.deepStrictEqual(tiers(openai55), ['low', 'medium', 'high', 'max']);
   const openai56Sol = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-sol' };
   assert.deepStrictEqual(tiers(openai56Sol), ['low', 'medium', 'high', 'max']);
-  // gpt-5.4-mini 同样命中 Responses wire（2026-09-29 起整个 GPT 家族切
-  // Responses，模型页确认 function calling），不再按 Chat reasoning 家族返回 null。
+  // gpt-5.4-mini hits the Responses wire too (the whole GPT family has been
+  // Responses since 2026-09-29, function calling confirmed on the model
+  // pages) instead of returning null via the Chat reasoning family.
   const openaiMini = { preset: 'openai', vendor: 'openai', model: 'gpt-5.4-mini' };
   assert.deepStrictEqual(tiers(openaiMini), ['low', 'medium', 'high', 'max']);
-  // openai_responses 组：任意模型 id 都按 Responses 档位表提供切换。
+  // openai_responses group: any model id gets the Responses tier table.
   const responsesCustom = { preset: 'openai_responses', model: 'my-aggregator-model' };
   assert.deepStrictEqual(tiers(responsesCustom), ['low', 'medium', 'high', 'max']);
-  // loopback 端点也不切本地探测档：openai_responses 是显式 Responses 协议
-  // opt-in（本地 Ollama/vLLM 只讲 Chat），与 openai_compatible 的本地探测路径
-  // 是两个不同的门。
+  // Loopback endpoints do not switch to the local-probe tiers either:
+  // openai_responses is an explicit Responses-protocol opt-in (local
+  // Ollama/vLLM only speak Chat), a different gate from openai_compatible's
+  // local-probe path.
   assert.deepStrictEqual(
     tiers({ preset: 'openai_responses', model: 'my-aggregator-model', base_url: 'http://127.0.0.1:9200/v1' }),
     ['low', 'medium', 'high', 'max'],
@@ -690,11 +694,14 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
 test('OpenAI 档位路由：Responses wire 家族切 openai_responses 表，Chat 家族保持 openai 表（含手输自定义模型）', () => {
   const tiers = model => [...reasoningEffortTiersForModel(model) || []];
   const openai = model => ({ preset: 'openai', vendor: 'openai', model });
-  // Responses wire 家族（bridge openai_responses_wire_model：gpt-6 / gpt-5.6 /
-  // gpt-5.5 / gpt-5.4-mini 前缀，含日期快照拼写）：整个家族切 Responses，
-  // 档位为 openai_responses 表（off 归一为 low 故不暴露）。官方 OpenAI 支持
-  // 手输自定义模型 ID，前端必须提供切换，不能因「不在目录内」返回 null
-  // （否则后端注入、前端不可控）。
+  // Responses wire family (bridge openai_responses_wire_model: the gpt-6 /
+  // gpt-5.6 / gpt-5.5 / gpt-5.4-mini prefixes, incl. date-snapshot
+  // spellings): the whole family switches to Responses with the
+  // openai_responses tier table (off normalizes to low so it is not
+  // exposed). Official OpenAI accepts hand-typed custom model ids, so the
+  // frontend must offer the switch and must not return null for "not in the
+  // catalog" (otherwise the backend injects effort with no frontend
+  // control).
   const responsesFamily = [
     'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra',
     'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
@@ -706,8 +713,9 @@ test('OpenAI 档位路由：Responses wire 家族切 openai_responses 表，Chat
   responsesFamily.forEach(id => {
     assert.deepStrictEqual(tiers(openai(id)), ['low', 'medium', 'high', 'max'], `Responses 家族应提供 openai_responses 档位: ${id}`);
   });
-  // Chat 路由的 codex 拼写（不以 gpt-5.5/gpt-5.6 开头）：保持底座 Chat
-  // reasoning 家族语义（off=none 注入），即 openai 五档表。
+  // Chat-route codex spellings (not starting with gpt-5.5/gpt-5.6): keep the
+  // base Chat reasoning family semantics (off=none injected), i.e. the
+  // five-tier openai table.
   const chatFamily = [
     'gpt-5-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max',
     'gpt-5.2-codex', 'gpt-5.3-codex', 'codex-gpt-5.5', 'chatgpt-gpt-5.5',
@@ -716,8 +724,8 @@ test('OpenAI 档位路由：Responses wire 家族切 openai_responses 表，Chat
   chatFamily.forEach(id => {
     assert.deepStrictEqual(tiers(openai(id)), ['off', 'low', 'medium', 'high', 'max'], `Chat reasoning 家族应保持 openai 档位: ${id}`);
   });
-  // 既非 Responses wire 家族也非 Chat reasoning 家族（名称近似但底座
-  // predicate 不命中的）不提供切换。
+  // Neither the Responses wire family nor the Chat reasoning family
+  // (near-miss names the base predicate does not match) gets no switch.
   const nonReasoning = ['gpt-4o', 'gpt-4.1', 'o3', 'o4-mini'];
   nonReasoning.forEach(id => {
     assert.strictEqual(reasoningEffortTiersForModel(openai(id)), null, `非 reasoning 模型应为 null: ${id}`);
@@ -995,18 +1003,20 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // off is not in the grok-4.6 tier table: normalized to high, matching the
   // base sending off as wire high
   assert.strictEqual(normalizeStoredReasoningEffort(xai46, 'off'), 'high');
-  // OpenAI Responses wire（GPT 家族 / openai_responses 组）：底座 Responses
-  // effort 映射没有 none（off→low），存量 Chat 档 off 按路由真实等价值归一为
-  // low（与 K3 同一条规则），而不是回落默认 high 把「最少思考」静默反转成
-  // 「最多思考」。
+  // OpenAI Responses wire (the GPT family / the openai_responses group): the
+  // foundation's Responses effort mapper has no none (off→low), so a
+  // chat-era stored off normalizes to the route's wire-true equivalent low
+  // (same rule as K3) instead of falling back to the default high and
+  // silently inverting "minimal reasoning" into "most reasoning".
   const openaiResponsesRow = { preset: 'openai', vendor: 'openai', model: 'gpt-6-sol' };
   assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'off'), 'low');
   assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'disabled'), 'low');
   assert.strictEqual(normalizeStoredReasoningEffort(openaiResponsesRow, 'none'), 'low');
   const responsesGroup = { preset: 'openai_responses', model: 'my-aggregator-model' };
   assert.strictEqual(normalizeStoredReasoningEffort(responsesGroup, 'off'), 'low');
-  // Chat 路由（codex 拼写命中底座 Chat reasoning 家族）的 openai 档位表仍含
-  // off：原样保留，不参与 Responses 的 off→low 归一。
+  // The openai tier table of Chat-route rows (codex spellings hitting the
+  // base Chat reasoning family) still contains off: keep it verbatim; it does
+  // not participate in the Responses off→low normalization.
   const openaiChatRow = { preset: 'openai', vendor: 'openai', model: 'gpt-5.3-codex' };
   assert.strictEqual(normalizeStoredReasoningEffort(openaiChatRow, 'off'), 'off');
   // non-xai official endpoints / other Grok models have no tiers → null
@@ -1197,10 +1207,51 @@ test('modelDescriptions has no stale keys left from the refresh (desc renames mu
   }
 });
 
+test('providerCatalog overlays and preset labels for the custom Responses group exist in every language', () => {
+  // ui_language_coverage only walks zh leaf keys, and zh's providerCatalog is
+  // deliberately {} (zh copy lives in the catalog source). Nothing else pins
+  // the en/ja providerCatalog overlays, so deleting e.g.
+  // providerCatalog.openai_responses from en.js/ja.js would serve en/ja users
+  // the raw Chinese catalog copy with a green suite (the exact regression
+  // class the round-2 review caught). Extract the block and require the
+  // custom-endpoint group rows (both siblings, so neither can silently go).
+  const extractProviderCatalog = file => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
+    const start = src.indexOf('providerCatalog:{');
+    assert.notStrictEqual(start, -1, `${file} must keep a providerCatalog table`);
+    const end = src.indexOf('\n  },', start);
+    assert.notStrictEqual(end, -1, `${file} providerCatalog table appears unterminated`);
+    return src.slice(start, end);
+  };
+  for (const file of ['en.js', 'ja.js']) {
+    const block = extractProviderCatalog(file);
+    for (const group of ['openai_compatible', 'openai_responses']) {
+      const entry = block.match(new RegExp(`${group}:\\{title:'([^']+)',desc:'([^']+)'\\}`));
+      assert.ok(entry, `${file} providerCatalog is missing the ${group} title/desc overlay`);
+      assert.ok(entry[1].trim(), `${file} ${group} overlay title must be non-empty`);
+      assert.ok(entry[2].trim(), `${file} ${group} overlay desc must be non-empty`);
+    }
+  }
+  // The preset label and customModelTitles row must exist in all three
+  // dictionaries (the sub-label assertions above use stub dictionaries, so a
+  // simultaneous deletion from all three real dicts would otherwise stay
+  // green).
+  for (const file of ['en.js', 'ja.js', 'zh.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
+    assert.ok(/modelPresetOpenaiResponses:\s*'[^']+'/.test(src), `${file} is missing the modelPresetOpenaiResponses label`);
+    const titles = src.match(/customModelTitles\s*=?\s*\{([^}]*)\}/);
+    assert.ok(titles, `${file} must keep a customModelTitles table`);
+    assert.ok(/openai_responses:'[^']+'/.test(titles[1]), `${file} customModelTitles is missing the openai_responses row`);
+  }
+});
+
 test('OpenAI Responses wire 谓词的前缀集跨语言一致（bridge.rs ↔ model-catalog.js）', () => {
-  // 前端档位路由与引擎落点必须命中同一模型集：两侧各自维护 starts_with 前缀，
-  // 单侧新增家族（如未来的 gpt-7）时另一侧会静默漂移——直接从两侧源码提取
-  // 字面前缀做机械比对（与上方 MODEL_PRESET_DEFS 跨语言 guard 同一手法）。
+  // The frontend tier routing and the engine landing must hit the same model
+  // set: each side maintains its own starts_with prefixes, and a new family
+  // added on one side (a future gpt-7, say) would silently drift on the
+  // other — so extract the literal prefixes from both sources and compare
+  // them mechanically (same technique as the MODEL_PRESET_DEFS cross-language
+  // guard above).
   const rustSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'platform', 'bridge.rs'),
     'utf8',

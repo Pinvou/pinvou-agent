@@ -62,17 +62,21 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
-// 引擎侧 named-custom route 名：OpenAI Responses wire 的统一落点。
+// Engine-side named-custom route name: the single landing point for the
+// OpenAI Responses wire.
 //
-// 底座内建 `openai` provider 的 wire policy 固定为 Chat Completions
-// （codewhale-config `Openai::wire_policy`），而 named-custom route
-// （`[providers.<name>] kind="openai-compatible"`）按配置尊重
-// `wire = "responses"`（tui client `provider_wire_format_for_config` 的
-// Custom 臂）。按 fork-policy「app bridge 能解决就不动底座」，GPT 模型走
-// Responses 协议在本层完成：build_dt_config 把该表整体覆盖为当前 route 的
-// base_url / api_key / model，`cfg.provider` 指向表名后底座按
-// ApiProvider::Custom + WireFormat::Responses 驱动 `/responses` 客户端
-// （工具调用、reasoning.effort、图片输入、加密 reasoning 回放均为通用路径）。
+// The foundation's builtin `openai` provider has a wire policy fixed to Chat
+// Completions (codewhale-config `Openai::wire_policy`), while a named-custom
+// route (`[providers.<name>] kind="openai-compatible"`) honors
+// `wire = "responses"` from configuration (the Custom arm of the tui client's
+// `provider_wire_format_for_config`). Per the fork policy ("if the app bridge
+// can solve it, don't touch the foundation"), routing GPT models over the
+// Responses protocol happens in this layer: build_dt_config overwrites this
+// table wholesale with the current route's base_url / api_key / model, and
+// once `cfg.provider` points at the table name the foundation drives its
+// `/responses` client as ApiProvider::Custom + WireFormat::Responses (tool
+// calls, reasoning.effort, image input, and encrypted reasoning replay are
+// all provider-generic paths).
 const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
 // Multi-agent is an agent cluster where the main session stays the overall
@@ -147,20 +151,26 @@ fn is_siliconflow_cn_base_url(base_url: &str) -> bool {
         || normalized == "https://api.siliconflow.cn"
 }
 
-/// OpenAI 官方口径下「Responses API 支持函数调用」的 GPT 模型判定
-/// （OpenAI preset 是否切 Responses wire 的模型谓词）。
+/// GPT-model predicate for "the Responses API supports function calling"
+/// under OpenAI's official wording (whether the OpenAI preset switches to
+/// the Responses wire for a model id).
 ///
-/// 范围 = 品悟目录收录 ∩ OpenAI Responses 官方支持（2026-09-29 逐模型页核验，
-/// developers.openai.com/api/docs/models/*：每个模型的 endpoint 表均列
-/// `v1/responses` Supported 且 supported features 含 function_calling）：
-/// - gpt-6 家族（sol/luna/astra 及后续 gpt-6* 命名）：astra 的工具调用
-///   Responses-only，sol/luna 在 Chat 协议仅 effort=none 支持函数调用；
-/// - gpt-5.6 家族（sol/terra/luna 及日期快照）、gpt-5.5 家族（含 -pro 与
-///   日期快照，对齐底座 `is_openai_gpt_55_api_model` 的快照判定口径）、
-///   gpt-5.4-mini。
-/// 目录外的手输 id（可能指向 Chat-only 旧模型）不匹配，继续走 Chat wire；
-/// 需要强行 Responses 的端点应使用专用 `openai_responses` 预设。
-/// 前端镜像：model-catalog.js `isOpenaiResponsesWireModel`（分档 UI 依赖）。
+/// Scope = Pinvou catalog ∩ official OpenAI Responses support (verified
+/// 2026-09-29 against the per-model pages,
+/// developers.openai.com/api/docs/models/*: every model's endpoint table
+/// lists `v1/responses` Supported with supported features including
+/// function_calling):
+/// - gpt-6 family (sol/luna/astra and later gpt-6* names): astra's tool
+///   calling is Responses-only, and sol/luna support function calling on the
+///   Chat protocol only at effort=none;
+/// - gpt-5.6 family (sol/terra/luna and date snapshots), gpt-5.5 family
+///   (incl. -pro and date snapshots, matching the base
+///   `is_openai_gpt_55_api_model` snapshot rule), and gpt-5.4-mini.
+/// Hand-typed ids outside the catalog (possibly Chat-only legacy models) do
+/// not match and keep the Chat wire; endpoints that must force Responses
+/// should use the dedicated `openai_responses` preset.
+/// Frontend mirror: model-catalog.js `isOpenaiResponsesWireModel` (the tier
+/// UI depends on it).
 fn openai_responses_wire_model(model: &str) -> bool {
     let lower = model.trim().to_ascii_lowercase();
     lower.starts_with("gpt-6")
@@ -1129,24 +1139,27 @@ impl Pinvou3Bridge {
             // Gemini uses the official OpenAI-compatible endpoint, reusing the
             // openai wire route.
             ModelPreset::Qwen | ModelPreset::Openai | ModelPreset::Gemini => "openai".to_string(),
-            // 自定义 OpenAI Responses 兼容接口：整组按定义走 Responses wire
-            // （named-custom route，见 `RESPONSES_ROUTE_PROVIDER`）；模型 id 与
-            // 端点完全由用户填写，不做模型名判定。
+            // Custom OpenAI Responses endpoints: the whole group rides the
+            // Responses wire by definition (named-custom route, see
+            // `RESPONSES_ROUTE_PROVIDER`); the model id and endpoint are
+            // entirely user-entered, with no model-name matching.
             ModelPreset::OpenaiResponses => RESPONSES_ROUTE_PROVIDER.to_string(),
         }
     }
 
-    /// 当前 route 是否切到 OpenAI Responses wire（底座 named-custom route）。
+    /// Whether the current route switches to the OpenAI Responses wire (the
+    /// foundation's named-custom route).
     ///
-    /// 两条入口：
-    /// - `ModelPreset::OpenaiResponses`（自定义 Responses 兼容接口组）按定义
-    ///   整组成立；
-    /// - OpenAI 官方 route（vendor=openai 或 preset=openai）×
-    ///   [`openai_responses_wire_model`] 命中的 GPT 模型。目录外的手输 id 不
-    ///   判定成立，保持 Chat wire。
+    /// Two entries:
+    /// - `ModelPreset::OpenaiResponses` (the custom Responses-compatible
+    ///   group) qualifies as a whole, by definition;
+    /// - the official OpenAI route (vendor=openai or preset=openai) × a GPT
+    ///   model matched by [`openai_responses_wire_model`]. Hand-typed ids
+    ///   outside the catalog do not match and keep the Chat wire.
     ///
-    /// `DEEPSEEK_PROVIDER` 环境变量显式钉死引擎 provider 时让位（与
-    /// [`Self::provider`] 的 env 优先级一致），官方 DeepSeek 端点守卫同理。
+    /// Yields to an explicit `DEEPSEEK_PROVIDER` env pin (same env precedence
+    /// as [`Self::provider`]); the official-DeepSeek endpoint guard likewise
+    /// wins.
     fn uses_responses_wire(&self) -> bool {
         if std::env::var("DEEPSEEK_PROVIDER").is_ok()
             || is_official_deepseek_base_url(&self.base_url())
@@ -1167,11 +1180,14 @@ impl Pinvou3Bridge {
         is_openai_route && openai_responses_wire_model(&self.model())
     }
 
-    /// 引擎 route 身份：[`Self::provider`] 是供应商语义（tier 判定、思考字段、
-    /// 测试与日志的口径），本方法只在 GPT×Responses 命中时把引擎落点重映射到
-    /// [`RESPONSES_ROUTE_PROVIDER`]（named-custom + `wire = "responses"`）。
-    /// 仅 `build_dt_config` 消费；两者分叉已由本注释与 `uses_responses_wire`
-    /// 文档显式声明。
+    /// Engine route identity: [`Self::provider`] carries vendor semantics
+    /// (tier decisions, thinking-field handling, tests, logs) — except for
+    /// the `OpenaiResponses` preset, where it already returns
+    /// [`RESPONSES_ROUTE_PROVIDER`]. This method only remaps the engine
+    /// landing to [`RESPONSES_ROUTE_PROVIDER`] (named-custom +
+    /// `wire = "responses"`) on a GPT×Responses hit. Consumed solely by
+    /// `build_dt_config`; the divergence from `provider()` is declared here
+    /// and in the [`Self::uses_responses_wire`] docs.
     fn engine_route_provider(&self) -> String {
         if self.uses_responses_wire() {
             RESPONSES_ROUTE_PROVIDER.to_string()
@@ -2662,8 +2678,9 @@ impl Pinvou3Bridge {
     /// `DEEPSEEK_*` settings in run-dev.sh).
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
-        // 引擎落点（GPT×Responses 命中时为 RESPONSES_ROUTE_PROVIDER named-custom
-        // route）可能与供应商语义的 provider() 分叉，见 `engine_route_provider`。
+        // The engine landing (the RESPONSES_ROUTE_PROVIDER named-custom route
+        // on a GPT×Responses hit) may diverge from the vendor-semantics
+        // provider(); see `engine_route_provider`.
         let provider = self.engine_route_provider();
         cfg.provider = Some(provider.clone());
         let api_key = self.api_key();
@@ -2673,10 +2690,12 @@ impl Pinvou3Bridge {
         let reasoning_stream_style = self.reasoning_stream_style(&provider);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         if provider == RESPONSES_ROUTE_PROVIDER {
-            // OpenAI Responses wire 的 named-custom 表：kind + wire 每次重建
-            // （底座按 cfg.provider 精确键读取该表，ApiProvider::Custom +
-            // WireFormat::Responses 由 wire 字段驱动）；base_url / api_key /
-            // model 与其余 route 同一份当前 route 值。
+            // Named-custom table for the OpenAI Responses wire: kind + wire
+            // are rebuilt every time (the foundation reads this table by the
+            // exact cfg.provider key, and ApiProvider::Custom +
+            // WireFormat::Responses is driven by the wire field);
+            // base_url / api_key / model carry the same current-route values
+            // as every other route.
             let entry = providers
                 .custom
                 .entry(RESPONSES_ROUTE_PROVIDER.to_string())
@@ -8091,6 +8110,13 @@ mod tests {
             .route_limits_for_model("gpt-6-sol")
             .expect("gpt-6-sol must resolve route limits");
         assert_eq!(limits.output_tokens, Some(128_000));
+        // gpt-5.4-mini rides the same anchor (official model page: 128K max
+        // output); without it the engine fail-closes to 8192 on the Responses
+        // wire, where reasoning meters as output.
+        let mini_limits = b
+            .route_limits_for_model("gpt-5.4-mini")
+            .expect("gpt-5.4-mini must resolve route limits");
+        assert_eq!(mini_limits.output_tokens, Some(128_000));
 
         // B. the responses predicate covers the supported catalog families
         // (incl. date-snapshot spellings and the gpt-5.5-codex overlap id,
@@ -8222,6 +8248,75 @@ mod tests {
         );
         assert_eq!(h.provider(), "");
         assert_eq!(h.engine_route_provider(), "");
+    }
+
+    /// The documented-output anchor is the LAST resort of the route output
+    /// chain: an explicit SavedModel.max_output_tokens and the operator
+    /// window-tier declaration must both outrank it for anchor-covered ids,
+    /// otherwise a tighter user/deployer declaration would be silently
+    /// widened to the documented 128K figure.
+    #[test]
+    fn responses_route_output_anchor_loses_to_higher_precedence_facts() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+
+        // A user's explicit output declaration beats the anchor.
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.openai.com/v1",
+            "sk-openai",
+        );
+        let saved = b
+            .prefs
+            .advanced
+            .saved_models
+            .first_mut()
+            .expect("active model");
+        saved.max_output_tokens = Some(24_576);
+        let limits = b
+            .route_limits_for_model("gpt-6-sol")
+            .expect("gpt-6-sol must resolve route limits");
+        assert_eq!(
+            limits.output_tokens,
+            Some(24_576),
+            "configured output must outrank the documented-output anchor"
+        );
+
+        // On an operator-owned endpoint the window-tier declaration also
+        // beats the anchor (>=500K window tier declares 131_072).
+        let mut op = fixture_bridge();
+        set_active_model(
+            &mut op,
+            ModelPreset::OpenaiCompatible,
+            "gpt-6-sol",
+            "https://gw.example.com/v1",
+            "k",
+        );
+        let saved = op
+            .prefs
+            .advanced
+            .saved_models
+            .first_mut()
+            .expect("active model");
+        saved.provider_kind = Some("custom".into());
+        saved.context_window_tokens = Some(600_000);
+        let limits = op
+            .route_limits_for_model("gpt-6-sol")
+            .expect("gpt-6-sol must resolve route limits");
+        assert_eq!(
+            limits.output_tokens,
+            Some(131_072),
+            "operator window tier must outrank the documented-output anchor"
+        );
     }
 
     /// Verifies the bridge-side Browser MCP gate: Work-mode sessions use a session-specific
