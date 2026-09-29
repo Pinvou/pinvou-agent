@@ -81,13 +81,20 @@ fn ensure_release_env() {
     {
         if let Some(old) = env::var_os("PATH") {
             let mut dirs = Vec::new();
-            if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
-                // 旧布局（过渡期保留：未迁移的存量二进制还能按名解析）
-                dirs.push(connector_bin);
-            }
-            // 版本化 CLI 资产目录进 PATH（按 lock 表当前版本逐个登记）
+            // Versioned CLI asset dirs (one per lock-pinned artifact) must come
+            // BEFORE the legacy-layout dir: the pinned copy is hash-verified and
+            // is the authoritative runtime. With the legacy dir first, a stale
+            // old-version binary left there shadows the upgraded CLI for every
+            // PATH-based consumer (observed: a leftover wecom-cli 0.1.9 kept
+            // running after the upgrade to 1.2.1). The legacy dir itself stays
+            // on PATH (after the versioned dirs): binaries not yet migrated,
+            // or whose pinned version is not installed, still resolve by name
+            // (it is their only local runtime).
             for (name, pin) in crate::platform::connector_lock::all_artifact_pins() {
                 dirs.push(crate::platform::paths::assets_cli_dir(&name, &pin.version));
+            }
+            if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
+                dirs.push(connector_bin);
             }
             if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
                 dirs.push(std::path::Path::new(&prefix).join("bin"));
@@ -2212,6 +2219,61 @@ mod release_env_defaults_guard {
             "ensure_release_env must not re-inject PINVOU3_MAX_OUTPUT_TOKENS (the Pinvou cap travels only via prefs/route)"
         );
         // 退出时 EnvSnapshot::drop 按快照完整还原（含 PATH / UI env / 常量表变量）。
+    }
+
+    /// PATH assembly order guard: lock-pinned versioned CLI asset dirs must
+    /// precede the legacy `connectors/<platform>/bin/` dir. A stale old-version
+    /// binary left in the legacy dir must not shadow the upgraded runtime
+    /// (observed: a leftover wecom-cli 0.1.9 kept running after the upgrade to
+    /// 1.2.1); the legacy dir itself must stay on PATH — connectors whose
+    /// pinned version is not installed resolve through it by name.
+    #[test]
+    fn release_env_path_orders_versioned_cli_dirs_before_legacy_bin() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
+        // The PATH branch only runs when var_os("PATH") exists; set a sentinel
+        // first so the assertions cover exactly what ensure_release_env
+        // assembled. PINVOU3_HOME is repointed at a nonexistent test path —
+        // directory existence plays no part in PATH assembly.
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line); env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-path-order-test") };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+        super::ensure_release_env();
+
+        let path = std::env::var_os("PATH").expect("ensure_release_env must rewrite PATH");
+        let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
+        // 软跳过仅限真正不支持的架构；受支持平台上 wrapper 回归会在此硬断言
+        // 失败（契约见 platform::test_support 同名 helper）。
+        let Some(legacy) =
+            crate::platform::test_support::managed_connector_bin_dir_or_assert_unsupported()
+        else {
+            return;
+        };
+        let legacy_idx = dirs
+            .iter()
+            .position(|d| d == &legacy)
+            .expect("legacy bin dir must stay on PATH for not-yet-migrated binaries");
+        let pins = crate::platform::connector_lock::all_artifact_pins();
+        assert!(
+            !pins.is_empty(),
+            "test platform lock must pin at least one CLI artifact"
+        );
+        for (name, pin) in &pins {
+            let versioned = crate::platform::paths::assets_cli_dir(&name, &pin.version);
+            let idx = dirs
+                .iter()
+                .position(|d| d == &versioned)
+                .unwrap_or_else(|| panic!("versioned {name} asset dir must be on PATH"));
+            assert!(
+                idx < legacy_idx,
+                "versioned {name} dir must precede the legacy bin dir (stale legacy binaries must not shadow the pinned runtime)"
+            );
+        }
+        // EnvSnapshot::drop restores the full snapshot on exit (PATH / PINVOU3_HOME included).
     }
 
     /// `startup_process_env` is the sole injection funnel for

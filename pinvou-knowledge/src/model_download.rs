@@ -296,6 +296,94 @@ pub fn install_model_candidate(
     })
 }
 
+/// 上次安装中断遗留候选目录的处置结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptedCandidate {
+    /// 目录与清单逐文件一致（存在性 + 大小 + SHA-256），可直接进入真实加载 + 部署。
+    Reuse,
+    /// 目录不存在，或校验不符已被清理；调用方应重新下载。
+    Cleaned,
+}
+
+/// 崩溃恢复：安装流程在「五文件下载加逐文件 SHA-256 校验完成」之后、「真实加载
+/// 与部署」之前被中断（进程崩溃 / 被杀 / 断电）时，候选目录会完整留在磁盘上。
+/// 下载阶段本就逐文件校验通过后才重命名落位，因此与清单一致的候选目录必然来自
+/// 一次完整下载——重校验（大小 + SHA-256，~585MB 秒级）通过后直接复用即可续上
+/// 安装，不必每次重试都重新下载全量模型；任何不符（含下载中途的 `.part` 残留、
+/// 磁盘损坏、应用升级后清单换版）都会清掉该目录并按 `Cleaned` 走全新下载。
+/// 清单之外的多余条目不参与校验，`Reuse` 时会随部署一并保留——加载器只读固定
+/// 文件名、清单内文件哈希钉死，多余文件仅占磁盘。清单为编译期常量，非空由
+/// 调用方保证。
+///
+/// `on_progress(file_index, file_count)` 在每个文件校验通过后回调（`file_index`
+/// 从 1 开始），供调用方把复查进度映射到既有进度事件。调用方负责跨进程安装锁；
+/// 返回 `Reuse` 后候选目录的所有权移交调用方（与下载成功后的语义一致）。
+pub fn recover_interrupted_candidate_dir(
+    candidate: &Path,
+    manifest: &[KnowledgeModelFile],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<InterruptedCandidate, String> {
+    if !candidate.exists() {
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    if candidate.is_file() {
+        // 残留是同名普通文件（异常产物）：清掉即可走全新下载，不必让整次安装失败。
+        std::fs::remove_file(candidate).map_err(|error| {
+            format!(
+                "清理残留的模型候选文件失败({}): {error}",
+                candidate.display()
+            )
+        })?;
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    if let Err(reason) = verify_manifest_dir(candidate, manifest, &mut on_progress) {
+        // 复查不通过意味着要付出 ~585MB 全新下载的代价，失败原因必须留痕可查。
+        eprintln!("[knowledge] 模型候选目录复查未通过，清理后重新下载: {reason}");
+        std::fs::remove_dir_all(candidate).map_err(|error| {
+            format!(
+                "清理未通过校验的模型候选目录失败({}): {error}",
+                candidate.display()
+            )
+        })?;
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    Ok(InterruptedCandidate::Reuse)
+}
+
+/// 逐文件校验候选目录与清单一致（存在、是文件、大小一致、SHA-256 一致），
+/// 首个不一致即返回 `Err`。
+fn verify_manifest_dir(
+    dir: &Path,
+    manifest: &[KnowledgeModelFile],
+    on_progress: &mut impl FnMut(usize, usize),
+) -> Result<(), String> {
+    for (index, file) in manifest.iter().enumerate() {
+        let path = safe_candidate_path(dir, file.destination_path)?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| format!("模型候选文件缺失({}): {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("模型候选路径不是文件({})", path.display()));
+        }
+        if metadata.len() != file.bytes {
+            return Err(format!(
+                "模型候选文件大小不符({}): 期望 {} 字节，实际 {} 字节",
+                path.display(),
+                file.bytes,
+                metadata.len()
+            ));
+        }
+        let actual = sha256_file(&path)?;
+        if !actual.eq_ignore_ascii_case(file.sha256) {
+            return Err(format!(
+                "模型候选文件校验失败({}): 期望 {}，实际 {}",
+                file.destination_path, file.sha256, actual
+            ));
+        }
+        on_progress(index + 1, manifest.len());
+    }
+    Ok(())
+}
+
 async fn download_knowledge_model_candidate_with<P, C>(
     client: &reqwest::Client,
     candidate: &Path,
@@ -1321,5 +1409,161 @@ mod tests {
         // A dangling symlink does not resolve and stays incomplete.
         std::fs::remove_dir_all(&target).unwrap();
         assert!(!model_directory_is_complete(&link));
+    }
+
+    fn write_manifest_fixture(dir: &std::path::Path, manifest: &[KnowledgeModelFile]) {
+        for file in manifest {
+            let path = dir.join(file.destination_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"payload").unwrap();
+        }
+    }
+
+    fn tiny_manifest() -> Vec<KnowledgeModelFile> {
+        let payload = b"payload";
+        // 清单结构的 sha256 是 &'static str（生产清单是编译期常量）；测试清单
+        // 用 Box::leak 换得等价生命周期（测试进程一次性的少量泄漏，无碍）。
+        let digest: &'static str = Box::leak(
+            Sha256::digest(payload)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                .into_boxed_str(),
+        );
+        vec![
+            KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: payload.len() as u64,
+                sha256: digest,
+            },
+            KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: payload.len() as u64,
+                sha256: digest,
+            },
+        ]
+    }
+
+    // 回归锚点：安装中断（下载校验完成、加载/部署前进程死亡）留下的完整候选
+    // 目录必须被识别为可复用——否则每次重试都会清掉 ~585MB 已验证数据重新下载。
+    #[test]
+    fn interrupted_candidate_matching_manifest_is_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+
+        let mut progress = Vec::new();
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |done, total| {
+            progress.push((done, total));
+        })
+        .unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Reuse);
+        assert_eq!(progress, vec![(1, 2), (2, 2)]);
+        assert!(candidate.exists(), "复用语义不得删除候选目录");
+    }
+
+    #[test]
+    fn interrupted_candidate_missing_file_is_cleaned_for_fresh_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::remove_file(candidate.join("config.json")).unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists(), "不完整的残留必须清理后才能重新下载");
+    }
+
+    #[test]
+    fn interrupted_candidate_corrupted_content_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        // 同长度篡改：绕过大小检查，确保命中 SHA-256 比对分支（清单校验的安全核心）。
+        std::fs::write(candidate.join("model.onnx"), b"payloaX").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_non_file_entry_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::remove_file(candidate.join("config.json")).unwrap();
+        std::fs::create_dir(candidate.join("config.json")).unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_stray_file_is_cleaned_for_fresh_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        std::fs::write(&candidate, b"not a directory").unwrap();
+
+        let outcome =
+            recover_interrupted_candidate_dir(&candidate, &tiny_manifest(), |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists(), "同名普通文件残留也应被清理");
+    }
+
+    #[test]
+    fn interrupted_candidate_extra_entries_are_carried_by_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::write(candidate.join("stale.part"), b"leftover").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(
+            outcome,
+            InterruptedCandidate::Reuse,
+            "清单外多余条目不阻断复用（部署后仅占磁盘，见 recover 文档）"
+        );
+        assert!(candidate.join("stale.part").exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_wrong_size_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::write(candidate.join("config.json"), b"payload-extra").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_absent_dir_reports_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+
+        let outcome =
+            recover_interrupted_candidate_dir(&candidate, &tiny_manifest(), |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
     }
 }

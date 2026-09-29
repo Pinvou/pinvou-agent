@@ -397,13 +397,17 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:bundle_extract:done");
         // One-time migration of old-layout CLI binaries
         // (connectors/<platform>/bin/) to the versioned asset library
-        // (marketplace-unification §9.3): only moved after SHA-256
-        // verification; mismatches stay in place (store-side degraded
-        // semantics, re-downloaded on reconnect). Done in the app-side boot
+        // (marketplace-unification §9.3): a legacy file matching the pin is
+        // moved in; a mismatch is kept only while the pinned version is absent
+        // (the connector's only local runtime; store-side degraded semantics,
+        // re-downloaded on reconnect) and removed once the pinned copy is
+        // verified in place (kept, it would only shadow the upgraded runtime).
+        // Done in the app-side boot
         // rather than inside runtime_bundle: the connectors → runtime_bundle
         // dependency already exists and a reverse call would form a cycle
         // (the architecture guard's rust_feature_cycles baseline is empty).
-        // Idempotent, returns no error internally, does not block startup.
+        // Idempotent, returns no error internally; microsecond-scale in
+        // steady state (per-artifact stat, early return) on the boot path.
         crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_values() {

@@ -423,9 +423,13 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     /late sweep of deleted chat/,
     '普通会话删除一律延迟清扫（裸 agent 对所有会话可用，不只开关开启的）',
   );
+  // The gap spans the whole spawn + SyncSession block, so code and comment
+  // bytes ride along (engine cold-start phase timing is inserted between the
+  // declaration and the EngineEntry insert). Keep headroom: this pins
+  // "computed once at spawn and recorded", not byte distance.
   assert.match(
     poolSource,
-    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,4800}spawned_at_ms,/,
     'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
   );
   assert.match(
