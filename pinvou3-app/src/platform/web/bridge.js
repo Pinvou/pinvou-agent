@@ -3182,6 +3182,7 @@ function basename(p) { return pinvouSharedweb().basename(p); }
 function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
 function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
+function sessionRecentlyRebound(sid) { return pinvouSharedweb().sessionRecentlyRebound(sid); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
 function artifactBelongsToSession(path, sid) { return pinvouSharedweb().artifactBelongsToSession(path, sid); }
@@ -3250,10 +3251,12 @@ function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresente
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        // 相对→绝对 open 可靠;绝对→同 basename 的 live workspace 文件仅在
-        // sessionRecentlyRebound 的窗口内(tauri artifact-tracker 的同口径
-        // heal 臂,review #463 round-20 minor 9:web 侧此前引入了该判断却
-        // 从未调用,视图内的陈旧绝对路径永不愈合)。
+        // Relative→absolute opens reliably; an absolute stale entry may
+        // take over the same-basename live workspace file ONLY inside the
+        // sessionRecentlyRebound window (the tauri artifact-tracker's
+        // identical heal arm — review #463 round-20 minor 9: the web lane
+        // previously carried the condition without ever calling it, so a
+        // stale absolute view path never healed).
         else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) { ex.path = p; added = true; }
       });
       if (added) {
@@ -4141,9 +4144,6 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
-  // Trailing debounce (review #463 round-20 R3): same rationale as the tauri
-  // lane — the rebind bursts one event per affected id, and each undebounced
-  // refresh costs an O(n) backend round trip plus a React commit.
   // Burst coalescing (review #463 round-20 R3): the rebind command emits one
   // session:list_changed per affected id, and each undebounced refresh costs
   // an IPC round trip + an O(n) backend list_sessions + a React commit — a
@@ -4164,18 +4164,18 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
       runRefresh();
       return;
     }
-    if (!historyRefreshTimer) {
-      runRefresh();
-      historyRefreshTimer = setTimeout(function () {
-        historyRefreshTimer = null;
-        if (historyRefreshPending) {
-          historyRefreshPending = false;
-          scheduleHistoryRefresh();
-        }
-      }, 200);
-    } else {
+    if (historyRefreshTimer) {
       historyRefreshPending = true;
+      return;
     }
+    runRefresh();
+    historyRefreshTimer = setTimeout(function () {
+      historyRefreshTimer = null;
+      if (historyRefreshPending) {
+        historyRefreshPending = false;
+        scheduleHistoryRefresh();
+      }
+    }, 200);
   }
   listen("session:list_changed", function (e) {
     const payload = e && e.payload || {};

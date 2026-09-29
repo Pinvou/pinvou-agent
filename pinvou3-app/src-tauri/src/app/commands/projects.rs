@@ -392,8 +392,12 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
 /// - project roots must not end up overlapping other projects, or the whole
 ///   rebind fails and rolls back.
 /// Historical paths in transcripts are not rewritten; the workspace baseline
-/// is recaptured per session (failures are only logged — the baseline is
-/// derivable again).
+/// is recaptured per session (failures are only logged). Precision (review
+/// #463 round-21 SF-8): "derivable again" means a LATER run whose geometry
+/// reaches the session recaptures it — a session whose baseline capture
+/// fails after set_workspace succeeded, and that no rerun re-admits, keeps
+/// the stale baseline until then (load_baseline self-invalidates, so
+/// nothing resurrects; the residual is on record).
 ///
 /// Write order: session bindings (codex lane, then the plain-chat binding
 /// sidecars) → SavedSession metadata (+ baseline) → project roots LAST
@@ -508,7 +512,19 @@ pub async fn rebind_workspace_root(
     // codex index record and no code-session sidecar — and the execution-root
     // resolver reads its cwd from exactly that binding. Without this lane the
     // next turn would keep using the vanished folder and recreate it.
-    let plain_bindings_under_from = sessions.workspace_bindings_under(&from);
+    // Round-21 SF-1: the snapshot gates the run on a READABLE sessions root —
+    // a transient EACCES during a cold-cache, post-restart run would
+    // otherwise translate nothing while the run reported success, and the
+    // roots-last order would then remove the only re-entry. Aborting here is
+    // clean: nothing has moved yet, and the retry redoes the run.
+    let plain_bindings_under_from = sessions
+        .try_workspace_bindings_under(&from)
+        .map_err(|error| {
+            format!(
+                "rebind_workspace_root: the sessions directory is unreadable ({}); nothing was moved — retry once it is accessible",
+                error.kind()
+            )
+        })?;
     for (session_id, path) in &plain_bindings_under_from {
         if !affected.iter().any(|(sid, _)| sid == session_id) {
             affected.push((session_id.clone(), path.clone()));
@@ -886,8 +902,14 @@ pub async fn rebind_workspace_root(
         if sessions.durable_session_record_is_absent(session_id) {
             match classify_absent_record_session(
                 final_stale.iter().any(|sid| sid == session_id),
-                acp_pool.agents().binding_artifacts_exist(session_id)
-                    || sessions.workspace_binding_artifacts_exist(session_id),
+                // Round-21 SF-6: the codex term is structurally dead here —
+                // `binding_artifacts_exist` now begins with
+                // `binding_owner_exists`, which stats the same
+                // sessions/<id>.json whose NotFound routed us into this arm,
+                // so only the plain term can ever be live. The owner-gate
+                // invariant makes the codex arm unreachable, not the plain
+                // one.
+                sessions.workspace_binding_artifacts_exist(session_id),
                 prefix_outcome
                     .affected
                     .iter()
@@ -915,6 +937,18 @@ pub async fn rebind_workspace_root(
         // convergent — the to-lane scan re-admits it (metadata ≠ binding)
         // and retries both. Running it after would strand a rebase failure
         // forever: a metadata-healthy session is never admitted again.
+        // Round-21 R2: resolve and record the per-session event geometry
+        // BEFORE the rebase calls — a strand-repaired session that fails the
+        // artifact or acp-state step continues past the loop's tail, and its
+        // failure event must still carry the geometry its (divergent-vintage)
+        // buffer can match, not the run-level pair.
+        if let Some(session_from) = &per_session_from {
+            per_id_event_geometry.push((
+                session_id.clone(),
+                session_from.clone(),
+                new_path.clone(),
+            ));
+        }
         if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &|path: &Path| {
             per_session_from
                 .as_ref()
@@ -997,16 +1031,19 @@ pub async fn rebind_workspace_root(
         // since, and the boot-recovery fallback would keep pointing at the
         // vanished root — but only for code sessions, never for the plain
         // lane's rebound set.
-        if let Some(session_from) = &per_session_from {
-            per_id_event_geometry.push((
-                session_id.clone(),
-                session_from.clone(),
-                new_path.clone(),
-            ));
-        }
+        // Arm 3 is code-gated (review #463 round-21 SF-4): a plain chat
+        // admitted from the to-scan is in neither the plain rebound nor the
+        // plain failed set, so without the codex-record probe it captured a
+        // codex-workspace-baseline.json the plain lane never reads — the
+        // exact stray-file-plus-wasted-walk this gate exists to prevent.
+        let is_code_session = acp_pool
+            .agents()
+            .code_project_workspace(session_id)
+            .is_some();
         if code_rebound_ids.contains(session_id.as_str())
             || per_session_from.is_some()
             || (synced_this_loop
+                && is_code_session
                 && !plain_rebind
                     .rebound
                     .iter()
@@ -1047,8 +1084,10 @@ pub async fn rebind_workspace_root(
     // Project roots LAST (review #463 round-8 M3): committing them earlier
     // made an interrupted run unreachable — the root would already sit at
     // `to` (available, so no badge) while the session lanes still pointed at
-    // `from`, and re-adding the old root to retry collides with the moved one
-    // and rolls back. With the roots last, a crash anywhere above still shows
+    // `from`. Recovery for the finally-stale stragglers this ordering can
+    // strand (review #463 round-21 SF-9): re-adding the OLD path as a
+    // project root re-arms the unavailable-root badge, whose rebind entry
+    // then converges the remaining sessions via the on-disk prefix scan. With the roots last, a crash anywhere above still shows
     // the old root as unavailable and the badge reruns the remaining lanes
     // (every step is idempotent). The overlap invariant was pre-flighted
     // before any write and is revalidated under the write lock here.
@@ -2504,6 +2543,33 @@ mod tests {
             window
                 .contains("RebindRootsError::Overlap(context) => format!(\"REBIND_ROOTS_CONFLICT"),
             "the Overlap arm must keep producing the typed REBIND_ROOTS_CONFLICT marker"
+        );
+    }
+
+    #[test]
+    fn baseline_arm_three_is_code_gated() {
+        // review #463 round-21 SF-4: the metadata-loop admittee arm must
+        // probe the codex record before capturing a baseline — a plain
+        // to-lane admittee would otherwise gain a stray
+        // codex-workspace-baseline.json the plain lane never reads.
+        let window = production_source();
+        let arm = window[window
+            .find("// Arm 3 is code-gated")
+            .expect("the arm-3 gate must exist")..]
+            .lines()
+            .take(30)
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        assert!(
+            arm.contains("code_project_workspace(session_id)"),
+            "arm 3 must be gated on the codex record probe"
+        );
+        assert!(
+            arm.contains("synced_this_loop"),
+            "the gate must still require this loop's metadata sync"
         );
     }
 

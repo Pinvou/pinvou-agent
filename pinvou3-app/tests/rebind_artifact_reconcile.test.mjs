@@ -276,6 +276,36 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
   );
 }
 
+// 7b. UNC network-share paths are absolute for the transform (round-20
+//    minor 6, round-21 R1 — the arm had shipped with no pin, so deleting it
+//    kept every suite green while a UNC artifact path silently lost rebase
+//    protection): both the STAMP and the REBASE must accept \\server\\share
+//    spellings.
+{
+  const state = {
+    reboundSessionIds: {
+      's-unc': {
+        at: Date.now(),
+        chain: [
+          { from: '\\\\server\\share\\old-root', to: '\\\\server\\share\\new-root' },
+        ],
+      },
+    },
+  };
+  const { tracker } = makeTracker(state, []);
+  assert.deepEqual(
+    tracker.rebaseArtifactPathsForRebind('s-unc', [
+      '\\\\server\\share\\old-root\\report.html',
+    ]),
+    // The suffix cut joins with `/`, so the mapped spelling normalizes
+    // separators — functionally the same UNC target on Windows, and the
+    // point of the pin is that the path is PROTECTED (mapped at all)
+    // rather than returned unmapped.
+    ['//server/share/new-root/report.html'],
+    'a UNC artifact path must rebase along the UNC segment',
+  );
+}
+
 // 8. The segment chain resolves EVERY buffer vintage in order (round-D
 //    Major 1): after chained rebinds A→B→C, an A-era path maps A→B→C, a
 //    buffer re-vintaged from the durable JSON between the two rebinds

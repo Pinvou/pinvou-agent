@@ -317,6 +317,29 @@ impl SessionStore {
     /// skipped — their binding is inert (see
     /// [`Self::workspace_binding_owner_exists`]).
     pub(crate) fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        // Lossy form (review #463 round-21 SF-1): a sessions-root read
+        // failure degrades to the cache-only matches, disclosed via the log.
+        // The SNAPSHOT and PLAN callers use `try_workspace_bindings_under`
+        // instead — a run that translated nothing is not healthy, and those
+        // two can still abort cleanly before anything moves.
+        self.try_workspace_bindings_under(from)
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "[sessions] sessions root unreadable during rebind workspace-binding scan: {error}"
+                );
+                Vec::new()
+            })
+    }
+
+    /// Checked form of [`Self::workspace_bindings_under`]: `Err` when the
+    /// sessions root itself is unreadable (a transient EACCES during a
+    /// cold-cache, post-restart run would otherwise translate nothing while
+    /// the run reports success). `NotFound` is `Ok(empty)` — no session
+    /// directory yet is normal.
+    pub(crate) fn try_workspace_bindings_under(
+        &self,
+        from: &Path,
+    ) -> std::io::Result<Vec<(String, PathBuf)>> {
         let sessions_dir = self.manager.sessions_dir();
         let mut matched: Vec<(String, PathBuf)> = Vec::new();
         {
@@ -338,13 +361,9 @@ impl SessionStore {
         let entries = match std::fs::read_dir(&sessions_dir) {
             Ok(entries) => entries,
             // No sessions directory yet is normal (no session ever created).
-            Err(error) if error.kind() == ErrorKind::NotFound => return matched,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(matched),
             Err(error) => {
-                eprintln!(
-                    "[sessions] sessions root unreadable during rebind workspace-binding scan: {} ({error})",
-                    sessions_dir.display()
-                );
-                return matched;
+                return Err(error);
             }
         };
         // An entry that cannot be stat-ed is disclosed, not silently skipped
@@ -386,7 +405,7 @@ impl SessionStore {
                 matched.push((id, sidecar.path));
             }
         }
-        matched
+        Ok(matched)
     }
 
     /// Whether ANY durable plain-lane binding artifact still references the
@@ -483,9 +502,12 @@ impl SessionStore {
     ///
     /// The candidate scan is the tolerant one shared with the command layer's
     /// fence (`workspace_bindings_under`): an unreadable sessions root
-    /// is logged and yields the entries already found, so a transient
-    /// `read_dir` failure cannot abort an otherwise healthy rebind. The `?` on
-    /// the planning signature is reserved for the legacy-table sync.
+    /// is logged and yields the entries already found — the FENCE keeps this
+    /// lossy form (it runs last, when aborting can no longer help); the
+    /// snapshot and plan callers use the checked form and abort the run
+    /// cleanly (review #463 round-21 SF-1: a run that translated nothing is
+    /// not healthy). The `?` on the planning signature is reserved for the
+    /// legacy-table sync.
     #[cfg(test)]
     pub(crate) fn inject_rebind_crash_after_legacy_rewrite(&self) {
         REBIND_CRASH_AFTER_LEGACY_REWRITE.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -512,7 +534,17 @@ impl SessionStore {
         // written yet: the plan is what the legacy-table rewrite must publish
         // BEFORE the sidecars move, and an invalid id is rejected here instead
         // of half-way through the write phase.
-        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        // Round-21 SF-1: the plan still precedes the codex lane, so a scan
+        // failure here aborts the run with nothing moved (same clean-retry
+        // contract as the snapshot gate at the command layer).
+        let mut candidates: Vec<(String, PathBuf)> = self
+            .try_workspace_bindings_under(from)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "the sessions directory is unreadable ({}); nothing was moved — retry once it is accessible",
+                    error.kind()
+                )
+            })?;
         // A binding that exists only as a legacy-table line (no sidecar, not in
         // the cache — e.g. a table repaired out-of-band) is invisible to that
         // scan: preserving the line in the synced table while leaving it at
