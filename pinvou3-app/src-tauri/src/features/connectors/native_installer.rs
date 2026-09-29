@@ -602,7 +602,9 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::test_support::with_temp_home;
+    use crate::platform::test_support::{
+        managed_connector_bin_dir_or_assert_unsupported, with_temp_home,
+    };
 
     #[test]
     fn lock_matches_current_target_and_has_three_pinned_artifacts() {
@@ -807,7 +809,7 @@ mod tests {
     #[test]
     fn migrate_legacy_binary_moves_match_and_reaps_stale_leftover() {
         with_temp_home("pinvou3-native-installer-test", || {
-            let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
+            let Some(bin_dir) = managed_connector_bin_dir_or_assert_unsupported() else {
                 return; // 当前平台无旧布局目录（不支持的架构），无从断言
             };
             let exe = crate::platform::connector_lock::executable_name("test-cli");
@@ -865,7 +867,7 @@ mod tests {
     #[test]
     fn mismatched_legacy_binary_kept_without_verified_pinned_copy() {
         with_temp_home("pinvou3-native-installer-test-keep", || {
-            let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
+            let Some(bin_dir) = managed_connector_bin_dir_or_assert_unsupported() else {
                 return;
             };
             let exe = crate::platform::connector_lock::executable_name("test-cli");
@@ -884,8 +886,8 @@ mod tests {
             );
             assert!(!dest.exists());
 
-            // Same file, matching hash (for another pinned version) → the move
-            // semantics are unaffected by this change
+            // Same file, matching hash → the move semantics are unaffected by
+            // this change
             migrate_legacy_binary("test-cli", "9.9.9", &legacy_sha);
             assert!(
                 dest.is_file(),

@@ -2243,8 +2243,11 @@ mod release_env_defaults_guard {
 
         let path = std::env::var_os("PATH").expect("ensure_release_env must rewrite PATH");
         let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
-        // 平台不支持（无旧布局目录/lock 表）时与迁移测试同样软跳过
-        let Some(legacy) = crate::platform::paths::managed_connector_bin_dir() else {
+        // 软跳过仅限真正不支持的架构；受支持平台上 wrapper 回归会在此硬断言
+        // 失败（契约见 platform::test_support 同名 helper）。
+        let Some(legacy) =
+            crate::platform::test_support::managed_connector_bin_dir_or_assert_unsupported()
+        else {
             return;
         };
         let legacy_idx = dirs

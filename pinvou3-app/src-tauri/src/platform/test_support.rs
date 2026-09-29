@@ -42,6 +42,29 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 连接器旧布局 bin 目录的测试入口：返回 `managed_connector_bin_dir()`；为
+/// `None` 时硬断言当前目标平台确实不受 lock 表覆盖。消费方测试（存量迁移、
+/// PATH 次序等）据此软跳过——受支持平台上的 wrapper 回归在这里失败，而不是
+/// 被各消费方测试的 `else { return }` 静默吞掉（否则 PATH 注入、存量迁移/
+/// 残留清理、spawn 回退解析的回归会全部变哑）。
+#[cfg(test)]
+pub(crate) fn managed_connector_bin_dir_or_assert_unsupported() -> Option<std::path::PathBuf> {
+    let dir = crate::platform::paths::managed_connector_bin_dir();
+    if dir.is_none() {
+        assert!(
+            crate::platform::paths::connector_platform_dir(
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+            .is_none(),
+            "managed_connector_bin_dir must be Some on a lock-covered platform (os={}, arch={})",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    }
+    dir
+}
+
 /// RAII 快照/恢复一组环境变量：`capture` 记录现值，`Drop`（含 panic 路径）
 /// 逐一恢复。调用方测试必须先持有 `platform::paths::tests::ENV_LOCK` 再
 /// capture，保证 env 写全程在锁内串行。
