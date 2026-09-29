@@ -400,6 +400,26 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
   assert.match(tauriSource('features/connectors/tmeet.rs'), /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
   // Frontend: a late error event must not fabricate a flow card from null.
   assert.match(toolStore, /f \? applyConnectorFailure\(f, p, p\.phase\) : f\)/);
+  // Frontend: the same guard family on the remaining fabrication points — a
+  // late QR event, a connect-catch rejection after the card was closed, and
+  // the connected listeners' done write (the smoke only exercises the error
+  // path end-to-end, so these three are pinned at source level).
+  assert.match(toolStore, /if \(!f\) return f;/, 'the qr listener must drop events onto a closed flow instead of fabricating a card');
+  assert.match(toolStore, /f \? applyConnectorFailure\(f, e, stage\) : f\)/, 'the connect catch must not fabricate a card from a closed flow');
+  assert.ok(
+    (toolStore.match(/f \? \{ \.\.\.f, phase: 'done'/g) || []).length >= 2,
+    'both connected listeners must guard the done write against a closed flow',
+  );
+  // Source contract: every pid-slot cleanup must be the compare-and-set. A
+  // superseded round's plain set_pid(ID, None) would clear the pid a newer
+  // round registered, making its cancel tree-kill a no-op (connector_cli.rs
+  // unit-tests the CAS mechanism; this pins that every flow uses it).
+  for (const connector of ['feishu.rs', 'wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
+    const src = tauriSource(`features/connectors/${connector}`);
+    assert.doesNotMatch(src, /set_pid\(ID, None\)/, `${connector} pid cleanup must use the clear_pid_if compare-and-set`);
+    assert.match(src, /let pid = child\.id\(\);/, `${connector} must capture its child pid for the CAS clear`);
+    assert.match(src, /clear_pid_if\(ID, pid\)/, `${connector} must clear the pid slot via clear_pid_if`);
+  }
   assert.match(source('features/settings/SettingsView.jsx'), /item\.title \|\| presetProviderLabel\(p, t\)/);
 }
 

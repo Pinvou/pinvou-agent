@@ -566,7 +566,10 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       rec('WeCom late backend error after close does not resurrect the card', await page.evaluate((authFailedCopy) => (
         !document.body.innerText.includes(authFailedCopy)
       ), wecomAuthFailedCopy));
-      // Restore the QR card so the cancel-from-qr pin below runs unchanged.
+      // Re-open the flow card through the real connect path first: a late QR
+      // event must not fabricate a card from a closed flow (the listener drops
+      // it), so the QR restore below only works on a card opened by a connect.
+      await clickExact(page, '连接'); await sleep(260);
       await page.evaluate(() => window.__emitTauri('wecom:qr', {
         phase: 'authorize',
         url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',

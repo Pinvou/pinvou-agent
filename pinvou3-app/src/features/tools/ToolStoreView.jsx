@@ -335,8 +335,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               console.error('open tmeet auth url failed');
             });
           }
+          // Flow null = the card was closed (cancel/close) before the event landed;
+          // a late QR would fabricate a fresh card (and re-open wecom's modal) that
+          // the backend generation guards cannot cover across a reconnect.
           conn.setFlow(f => {
-            const prev = (f && f.steps) || {};
+            if (!f) return f;
+            const prev = f.steps || {};
             return {
               ...f, phase: 'qr', active: 'qr',
               steps: { ...prev, runtime: prev.runtime || 'done', cli: prev.cli === 'active' ? 'done' : (prev.cli || 'done'), ...(cfg.qrStepsExtra), qr: 'active' },
@@ -410,6 +414,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // ① Ensure CLI (installed online on first use)
           conn.setFlow(f => ({ ...f, active: 'cli', pct: 0, log: detailCopy.flow.installStarting, steps: { ...(f && f.steps), runtime: 'done', cli: 'active' } }));
           await invokeTauri(cfg.commands.ensureCli);
+          // A cancel/close during the (potentially long) CLI install closed the
+          // card; resetFlow already stopped the tick and released the busy slot.
+          // Starting a backend round now would run invisibly and emit onto
+          // nothing — stop instead of connecting for a dismissed card.
+          if (!conn.flow) return;
           conn.setFlow(cfg.twoStep
             // ② Connection orchestration (two-stage: advance the connect step; the backend emits qr / connected / error)
             ? f => ({ ...f, active: 'connect', pct: 100, steps: { ...(f && f.steps), cli: 'done', connect: 'active' } })
@@ -420,7 +429,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           reportConnectorFailure(cfg.key, e, stage);
           conn.stopTick();
           setBusyId((current) => releaseBusy(current, cfg.key));
-          conn.setFlow(f => applyConnectorFailure(f, e, stage));
+          // Same null guard as the listeners: a rejection landing after the card
+          // was closed (cancel during ensureCli/begin) must not fabricate one.
+          conn.setFlow(f => (f ? applyConnectorFailure(f, e, stage) : f));
         }
       };
       // Cancel/close the flow card: mark cancelled + kill child processes + clear state.
