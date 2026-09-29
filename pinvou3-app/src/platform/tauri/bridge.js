@@ -2457,6 +2457,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       beginVoiceSubmission: voiceFeature.beginVoiceSubmission,
       completeVoiceSubmission: voiceFeature.completeVoiceSubmission,
       dismissVoiceInput: voiceFeature.dismissVoiceInput,
+      hasVoiceSubmissionPending: voiceFeature.hasVoiceSubmissionPending,
       setVoiceShortcutEnabled,
       syncVoiceShortcutRecording,
       appendVoiceText,

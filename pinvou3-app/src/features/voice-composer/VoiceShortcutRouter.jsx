@@ -215,8 +215,11 @@ function VoiceShortcutRouter({ enabled = true }) {
       // stayed (native clears it only on window destroy). Clear the stale registration and
       // drop this gesture; the next press routes by focused window again. Never ghost-open
       // the mic in the background. A recording-routed event whose claim token does not
-      // match this window's active ownership token is stale the same way: drop it.
-      if (payload && payload.route === 'recording'
+      // match this window's ACTIVE recording is stale the same way: drop it. The check is
+      // gated on `recording` so an idle window always falls through to the purge below —
+      // with a token held from an earlier recording, an ungated drop would dead-end on a
+      // stale native registration that only that purge can release.
+      if (payload && payload.route === 'recording' && recording
         && voiceInput.ownershipToken && voiceInput.ownershipToken !== payload.recording_token) return;
       if (payload && payload.route === 'recording' && !recording
         && status !== 'requesting_permission') {

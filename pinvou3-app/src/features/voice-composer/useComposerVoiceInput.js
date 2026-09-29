@@ -363,7 +363,6 @@ function useComposerVoiceInput(adapter) {
         // own session binding (first-turn rebind) depend on these values.
         ownerKind: current.ownerKind || 'chat',
         sessionId: current.sessionId || null,
-        modelId: current.modelId || null,
       },
     );
     return true;
@@ -437,9 +436,19 @@ function useComposerVoiceInput(adapter) {
       closeVoice();
       return;
     }
-    const voiceInput = (adapterRef.current || {}).voiceInput;
+    const current = adapterRef.current || {};
+    const voiceInput = current.voiceInput;
     if (isVoiceActive({ status: voiceInput && voiceInput.status })) {
-      cancelVoice();
+      // A parked submission is already committed to its admission outcome:
+      // first-turn materialization flips this adapter's identity mid-send,
+      // and cancelling here would only kill the completion notice of a
+      // message that still lands (the bridge settles it accepted). A context
+      // switch before the park still cancels — that is the wrong-session
+      // auto-send protection.
+      const voiceApi = current.bridge && current.bridge.voice;
+      const parked = typeof (voiceApi && voiceApi.hasVoiceSubmissionPending) === 'function'
+        && voiceApi.hasVoiceSubmissionPending();
+      if (!parked) cancelVoice();
     }
   }, [adapter.targetId, adapter.ownerKind, adapter.workspaceId, adapter.sessionId, closeVoice, discardEditPreview, cancelVoice]);
 

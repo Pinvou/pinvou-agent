@@ -1094,7 +1094,7 @@ assert.match(
 // stale teardown can never release the claim a newer session just registered.
 assert.match(
   source,
-  /function syncVoiceShortcutRecording\(label, token\) \{[\s\S]*?if \(!token\) return Promise\.resolve\(false\);/,
+  /function syncVoiceShortcutRecording\(label, token\) \{[\s\S]*?if \(!token\) return false;/,
   "tokenless ownership syncs must be rejected rather than clearing another WebView's claim",
 );
 

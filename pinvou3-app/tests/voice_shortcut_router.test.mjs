@@ -52,4 +52,16 @@ const fallthroughTrigger = source.indexOf("target.trigger('dictation');", purge)
 assert.ok(purge !== -1 && exemption > purge, 'the stale-recording-route purge must exist with the requesting_permission exemption');
 assert.ok(fallthroughTrigger > exemption, 'a recording-routed Alt during the permission probe must cancel the pending start, not purge the claim');
 
+// The ownership-token drop must be gated on an ACTIVE recording, and the gate
+// must sit before the token check: an idle window whose held token no longer
+// matches the routed one must fall through to the purge above — with the
+// token from an earlier recording still on voiceInput, an ungated drop would
+// dead-end on a stale native registration that only that purge can release.
+const tokenDrop = source.indexOf('voiceInput.ownershipToken !== payload.recording_token');
+const tokenGate = source.indexOf("payload.route === 'recording' && recording");
+const dropReturn = source.indexOf(') return;', tokenDrop);
+assert.ok(tokenDrop !== -1, 'the recording-route token check must exist');
+assert.ok(tokenGate !== -1 && tokenGate < tokenDrop, 'the token check must be gated on an active recording');
+assert.ok(dropReturn > tokenDrop, 'the gated token check must still drop the stale gesture');
+
 console.log('voice_shortcut_router: ok');

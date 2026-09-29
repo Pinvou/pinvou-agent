@@ -91,6 +91,17 @@ function pinvouSharedtauriVoice() {
     return voiceOperations.get(operationId)?.sessionId || null;
   }
 
+  // Whether the composer's current voice operation is parked on an in-flight
+  // send admission. The composer hook skips its identity-change auto-cancel
+  // for a parked operation: first-turn materialization flips the adapter
+  // identity mid-send, and cancelling here would only kill the completion
+  // notice of a message that still lands. A context switch before the park
+  // still cancels — that is the wrong-session auto-send protection.
+  function hasVoiceSubmissionPending() {
+    const operation = voiceOperations.get((state.voiceInput || {}).operationId);
+    return !!(operation && operation.pendingSubmission);
+  }
+
   // Only ensureSession's proven same-draft rollback may advance this binding:
   // the multi-agent toggle save failing rolls the materialization back into the
   // same logical draft (navigation token unchanged), so a manual retry keeps
@@ -787,7 +798,13 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtau
         },
       });
       const asrDurationMs = roundedMs(asrStartedAt);
-      if (activeVoiceInput !== session) return;
+      if (activeVoiceInput !== session) {
+        // Superseded mid-transcription (a new recording owns the composer now,
+        // so this continuation can never deliver): end the operation here, or
+        // it sits non-terminal, unadoptable and unswept forever.
+        trackVoiceTerminal("voice_cancelled", session);
+        return;
+      }
       const text = String((res && res.text) || "").trim();
       if (!text) throw voiceFlowError("empty_result", "transcribing", "未识别到语音内容");
       if (session.ownerKind === "chat" && state.activeSessionId !== session.sessionId) {
@@ -1042,7 +1059,6 @@ function closeVoiceAsrSetup() { return pinvouSharedtauriVoice().closeVoiceAsrSet
         ? options.sessionId
         : state.activeSessionId || null,
       ownerKind: (options && options.ownerKind) || "chat",
-      modelId: (options && options.modelId) || null,
       draftBeforeStart: String(draftText || ""),
       writeback,
       mode: normalizeVoiceMode(options && options.mode),
@@ -1287,19 +1303,29 @@ function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoi
   // "error" when the IPC itself failed or the window identity could not be
   // read (the caller must still fail closed, but may tell the user the check
   // failed instead of blaming another window).
+  // Ownership syncs are serialized through one promise chain: the
+  // release-then-reclaim handoff (a fire-and-forget release racing the next
+  // start's claim) relies on the backend receiving the syncs in call order,
+  // and per-webview IPC ordering alone does not guarantee that once the
+  // runtime dispatches invokes concurrently.
+  let voiceOwnershipSyncTail = Promise.resolve();
   function syncVoiceShortcutRecording(label, token) {
-    if (!token) return Promise.resolve(false);
-    // An unreadable window label must not go over the wire: the Rust command
-    // treats a null label as a release and would answer false, which the
-    // caller would misreport as "another window is recording". Report the
-    // ownership check as unavailable instead.
-    if (label === "") return Promise.resolve("error");
-    return Promise.resolve(invoke("set_voice_shortcut_recording", { label: label || null, token }))
-      .then(function (claimed) { return claimed === true; }, function (error) {
-        console.warn("[voice] recording ownership sync failed", error);
-        emitVoiceDiagnostic("recording", "warn", "recording ownership sync failed: " + String((error && error.message) || error), "", "claim_error");
-        return "error";
-      });
+    const attempt = voiceOwnershipSyncTail.then(function () {
+      if (!token) return false;
+      // An unreadable window label must not go over the wire: the Rust command
+      // treats a null label as a release and would answer false, which the
+      // caller would misreport as "another window is recording". Report the
+      // ownership check as unavailable instead.
+      if (label === "") return "error";
+      return Promise.resolve(invoke("set_voice_shortcut_recording", { label: label || null, token }))
+        .then(function (claimed) { return claimed === true; }, function (error) {
+          console.warn("[voice] recording ownership sync failed", error);
+          emitVoiceDiagnostic("recording", "warn", "recording ownership sync failed: " + String((error && error.message) || error), "", "claim_error");
+          return "error";
+        });
+    });
+    voiceOwnershipSyncTail = attempt.then(function () {}, function () {});
+    return attempt;
   }
 
   function setVoiceShortcutEnabled(enabled) {
@@ -1335,6 +1361,7 @@ function appendVoiceText(base, text) { return pinvouSharedtauriVoice().appendVoi
       beginVoiceSubmission,
       completeVoiceSubmission,
       dismissVoiceInput,
+      hasVoiceSubmissionPending,
       setVoiceShortcutEnabled,
       syncVoiceShortcutRecording,
       appendVoiceText

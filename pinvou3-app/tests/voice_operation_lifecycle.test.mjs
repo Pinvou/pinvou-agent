@@ -15,7 +15,11 @@ import vm from "node:vm";
 import test from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..");
-const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
+// Normalize CRLF like the other source-slicing suites do (web_access_contract,
+// project_session_drag_contract, …): the slice anchors below search LF-only
+// delimiters, and a Windows checkout with core.autocrlf=true must not break
+// the suite.
+const read = (file) => fs.readFileSync(path.join(root, file), "utf8").replace(/\r\n/g, "\n");
 
 const sources = {
   desktop: read("src/platform/tauri/bridge/voice.js"),
@@ -85,7 +89,7 @@ function operationHarness(lane) {
     rememberVoiceOperation, getVoiceOperationId, beginVoiceSubmission,
     voiceOperationSessionId, completeVoiceSubmission, trackVoiceTerminal,
     abandonCompletedVoiceResult, abandonVoiceResult, dismissVoiceInput,
-    rebindVoiceOperationToDraft,
+    hasVoiceSubmissionPending, rebindVoiceOperationToDraft,
     ...(typeof rebindVoiceDraftAfterRollback === "function" ? { rebindVoiceDraftAfterRollback } : {}),
   };`, sandbox);
   return withOperations({ api: sandbox.api, state });
@@ -457,7 +461,7 @@ test("ownership: the JS sync rejects tokenless clears; the claim/release rules s
   const bridgeSource = sources.desktop;
   assert.match(
     bridgeSource,
-    /function syncVoiceShortcutRecording\(label, token\) \{[\s\S]*?if \(!token\) return Promise\.resolve\(false\);/,
+    /function syncVoiceShortcutRecording\(label, token\) \{[\s\S]*?if \(!token\) return false;/,
     "tokenless ownership syncs must be rejected rather than clearing another WebView's claim",
   );
   assert.match(
@@ -486,13 +490,18 @@ test("identity: the hook forwards lane identity and cancels an in-flight recordi
   assert.ok(sessionOption > ownerOption, "the start options must forward the adapter's sessionId");
   // An identity change must cancel an in-flight recording: the seconds-long
   // transcription window otherwise delivers (and in task mode auto-sends)
-  // into whichever context is active at writeback time.
+  // into whichever context is active at writeback time. The cancel must be
+  // gated on the parked-submission check: first-turn materialization flips
+  // this adapter's identity mid-send, and an ungated cancel would kill the
+  // completion notice of a message that still lands.
   const identityAnchor = hookSource.indexOf("const previous = voiceContextIdentityRef.current;");
   const activeCheck = hookSource.indexOf("isVoiceActive({ status: voiceInput && voiceInput.status })", identityAnchor);
-  const cancelCall = hookSource.indexOf("cancelVoice();", activeCheck);
+  const parkedGate = hookSource.indexOf("hasVoiceSubmissionPending", activeCheck);
+  const cancelCall = hookSource.indexOf("if (!parked) cancelVoice();", activeCheck);
   assert.ok(identityAnchor >= 0, "the identity-change effect must exist");
   assert.ok(activeCheck > identityAnchor, "the identity-change effect must check for an in-flight recording");
-  assert.ok(cancelCall > activeCheck, "the identity-change effect must cancel the in-flight recording");
+  assert.ok(parkedGate > activeCheck, "the identity-change cancel must consult the parked-submission gate");
+  assert.ok(cancelCall > parkedGate, "the identity-change effect must cancel only when no submission is parked");
   // The web session creation must honor the caller's identity exactly like
   // the desktop lane (explicit null included).
   assert.match(
@@ -505,7 +514,7 @@ test("identity: the hook forwards lane identity and cancels an in-flight recordi
   // recording.
   assert.match(
     sources.desktop,
-    /if \(label === ""\) return Promise\.resolve\("error"\);/,
+    /if \(label === ""\) return "error";/,
     "an empty window label must report the ownership check as unavailable",
   );
   for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
@@ -525,25 +534,37 @@ test("identity: the hook forwards lane identity and cancels an in-flight recordi
     /if \(session\.telemetryTerminal\) return;\s*setVoiceInputStatus\("completed"/,
     "the web completed notice must respect the terminal latch like the desktop lane",
   );
-  // The web enterDraft discard must close voice-carrying first-turn
-  // submissions: the submission record is gone, so a parked operation could
-  // never reconcile and would stay unadoptable and unsweepable until the
-  // page closes.
-  assert.match(
-    sources.web,
-    /const submission = firstTurnSubmissions\[item\.clientMessageId\];[\s\S]{0,300}?completeVoiceSubmission\(submission\.voiceOperationId, null, false\);\s*abandonVoiceResult\(submission\.voiceOperationId\);/,
-    "enterDraft must un-park and close the voice operation of a discarded first-turn submission",
-  );
+  // A transcription that lands after supersession must terminalize its
+  // operation (the continuation can never deliver; an early plain return
+  // would leave the record non-terminal, unadoptable and unswept forever).
+  for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
+    assert.match(
+      source,
+      /if \(activeVoiceInput !== session\) \{\s*\/\/ Superseded mid-transcription[\s\S]{0,200}?trackVoiceTerminal\("voice_cancelled", session\);\s*return;\s*\}/,
+      `${lane} must terminalize an operation whose transcription lands after supersession`,
+    );
+  }
+  // The web enterDraft discard is exercised against the real bridge slice in
+  // the dedicated test below (a source-regex pin here broke on a comment edit
+  // inside its own window).
 });
 
 test("desktop: an unreadable window label reports the ownership check unavailable instead of another window", async () => {
   const source = sources.desktop;
-  const start = source.indexOf("  function syncVoiceShortcutRecording(label, token) {");
+  // The slice must include the serialization chain variable: the sync helper
+  // queues every attempt through it.
+  const start = source.indexOf("  let voiceOwnershipSyncTail = Promise.resolve();");
   const end = source.indexOf("  function setVoiceShortcutEnabled(enabled) {", start);
   assert.ok(start >= 0 && end > start, "desktop must keep the ownership sync helper");
   const invokeCalls = [];
   const sandbox = baseSandbox({ activeSessionId: null, draftEpoch: 4, composerDraft: "", voiceInput: null });
-  sandbox.invoke = async (command, args) => { invokeCalls.push([command, args]); return true; };
+  // Copy the args into the host realm: objects created inside the vm context
+  // carry the sandbox's Object.prototype, and deepStrictEqual compares
+  // prototypes across realms.
+  sandbox.invoke = async (command, args) => {
+    invokeCalls.push([command, { label: args.label, token: args.token }]);
+    return true;
+  };
   vm.runInContext(`${source.slice(start, end)}\nthis.sync = syncVoiceShortcutRecording;`, sandbox);
   assert.equal(
     await sandbox.sync("", "voice_1"), "error",
@@ -556,6 +577,98 @@ test("desktop: an unreadable window label reports the ownership check unavailabl
     [["set_voice_shortcut_recording", { label: null, token: "voice_1" }]],
     "the release path keeps dispatching with an explicit null label",
   );
+});
+
+test("desktop: ownership syncs reach the backend in call order", async () => {
+  // The release-then-reclaim handoff relies on backend ordering: the chain
+  // must not resolve a later sync before the earlier one finished its IPC.
+  const source = sources.desktop;
+  const start = source.indexOf("  let voiceOwnershipSyncTail = Promise.resolve();");
+  const end = source.indexOf("  function setVoiceShortcutEnabled(enabled) {", start);
+  const sandbox = baseSandbox({ activeSessionId: null, draftEpoch: 4, composerDraft: "", voiceInput: null });
+  const order = [];
+  let releaseIpc;
+  const releaseGate = new Promise((resolve) => { releaseIpc = resolve; });
+  sandbox.invoke = async (command, args) => {
+    order.push(`start:${args.label}`);
+    if (args.label === null) await releaseGate;
+    order.push(`end:${args.label}`);
+    return true;
+  };
+  vm.runInContext(`${source.slice(start, end)}\nthis.sync = syncVoiceShortcutRecording;`, sandbox);
+  const claim = sandbox.sync("detached-b", "voice_1");
+  await claim;
+  const release = sandbox.sync(null, "voice_1");
+  const reclaim = sandbox.sync("detached-b", "voice_2");
+  let reclaimSettled = false;
+  reclaim.then(() => { reclaimSettled = true; });
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(reclaimSettled, false, "the reclaim must wait behind the in-flight release IPC");
+  releaseIpc();
+  await Promise.all([release, reclaim]);
+  assert.deepEqual(order, [
+    "start:detached-b", "end:detached-b",
+    "start:null", "end:null",
+    "start:detached-b", "end:detached-b",
+  ], "syncs must run strictly one at a time, in call order");
+});
+
+// ── Web enterDraft discard: executed against the real bridge slice ──
+test("web: enterDraft closes the operation of a finished first-turn submission and leaves an in-flight one to its RPC", () => {
+  const webSource = sources.web;
+  const start = webSource.indexOf("  function enterDraft() {");
+  const end = webSource.indexOf("  let ensureSessionInFlight = null;", start);
+  assert.ok(start >= 0 && end > start, "web bridge must keep the enterDraft function");
+  const state = {
+    chatItems: [{ clientMessageId: "c-finished" }, { clientMessageId: "c-inflight" }, { clientMessageId: "c-novoice" }],
+    activeSessionId: "web-session",
+    messages: [{ id: "m1" }],
+    draftEpoch: 4,
+    composerDraft: "",
+    scheduledRunContext: null,
+    scheduledTaskPendingGuide: null,
+    modeState: null,
+  };
+  const sandbox = baseSandbox(state);
+  const calls = { complete: [], abandoned: [] };
+  sandbox.firstTurnSubmissions = Object.create(null);
+  sandbox.firstTurnSubmissions["c-finished"] = { voiceOperationId: "voiceop-finished", inFlight: false };
+  sandbox.firstTurnSubmissions["c-inflight"] = { voiceOperationId: "voiceop-inflight", inFlight: true };
+  sandbox.sessionSwitchRequestToken = 0;
+  sandbox.completeVoiceSubmission = (operationId, sessionId, accepted) => calls.complete.push({ operationId, sessionId, accepted });
+  sandbox.abandonVoiceResult = (operationId) => calls.abandoned.push(operationId);
+  sandbox.saveWorkingSetTo = () => {};
+  sandbox.loadWorkingSetFrom = () => {};
+  sandbox.freshBuffer = () => ({});
+  sandbox.getBuffer = () => ({});
+  sandbox.currentDraftModeState = () => "chat";
+  vm.runInContext(`${webSource.slice(start, end)}\nthis.enterDraft = enterDraft;`, sandbox);
+  sandbox.enterDraft();
+  assert.deepEqual(
+    calls.complete,
+    [{ operationId: "voiceop-finished", sessionId: null, accepted: false }],
+    "a finished submission's voice operation is un-parked and closed",
+  );
+  assert.deepEqual(calls.abandoned, ["voiceop-finished"], "the closed operation is abandoned outright");
+  assert.equal("c-finished" in sandbox.firstTurnSubmissions, false, "the submission record is discarded");
+  assert.equal("c-inflight" in sandbox.firstTurnSubmissions, false, "the in-flight record is discarded too");
+  assert.equal(
+    calls.complete.some((call) => call.operationId === "voiceop-inflight"),
+    false,
+    "an in-flight submission is left to its own RPC settlement (closing it here would mark a delivered message cancelled)",
+  );
+  assert.equal(state.draftEpoch, 5, "enterDraft still advances the draft epoch");
+});
+
+test("desktop: the identity-cancel gate reports exactly a parked submission", () => {
+  const h = operationHarness("desktop");
+  const operation = h.operation("voiceop-gate");
+  h.state.voiceInput = { status: "transcribing", operationId: operation.operationId };
+  assert.equal(h.api.hasVoiceSubmissionPending(), false, "an unparked operation does not gate the cancel");
+  h.api.beginVoiceSubmission(operation.operationId);
+  assert.equal(h.api.hasVoiceSubmissionPending(), true, "a parked submission gates the identity-change cancel");
+  h.api.completeVoiceSubmission(operation.operationId, null, true);
+  assert.equal(h.api.hasVoiceSubmissionPending(), false, "settlement un-parks the gate");
 });
 
 test("web: an accepted submission ends the operation like the desktop lane", () => {
@@ -787,11 +900,14 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
     "the web sendMessage must keep the in-bridge submission gate so future dispatch paths park too",
   );
   // A re-trigger during an ASR model install must not end the previous
-  // adoptable operation: its text is still sitting in the composer.
+  // adoptable operation: its text is still sitting in the composer. Both
+  // needles are asserted present — a bare indexOf comparison goes green when
+  // a line is deleted (both sides become -1).
+  const installGuard = sources.desktop.indexOf("if (state.voiceAsrSetup.installing) {");
+  const previousAbandon = sources.desktop.indexOf("if (previousOperationId) abandonVoiceResult(previousOperationId);");
   assert.ok(
-    sources.desktop.indexOf("if (state.voiceAsrSetup.installing) {") <
-      sources.desktop.indexOf("if (previousOperationId) abandonVoiceResult(previousOperationId);"),
-    "the install guard must precede the previous-operation abandon",
+    installGuard >= 0 && previousAbandon > installGuard,
+    "the install guard must exist and precede the previous-operation abandon",
   );
   for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
     assert.match(

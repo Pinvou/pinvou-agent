@@ -312,6 +312,10 @@ fn validate_recording_token(token: &str) -> Result<(), String> {
 /// `claim` false releases the claim, but only when (label, token) still
 /// matches the recorded owner, so a stale teardown cannot wipe a newer
 /// session's claim.
+/// A claim also cannot resurrect a destroyed window's entry: sync commands
+/// and window events serialize on the main thread, and a destroyed webview's
+/// pending IPC dies with it, so `forget_recording_window` (window destroy)
+/// always lands before any later claim from the same label.
 pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
     // A release is a harmless no-op for any token shape from any window kind:
     // the JS releases fire-and-forget, so an Err here would surface as an
@@ -495,9 +499,12 @@ fn emit_shortcut_event(
                         window_label,
                         error
                     );
-                    // Target window already destroyed: if it is still recorded
-                    // as the recording owner, release the stale claim so later
-                    // gestures are not black-holed.
+                    // Emit failed: the target webview is most likely
+                    // mid-teardown (an already-destroyed label emits Ok and
+                    // never reaches this branch — full destroy is handled by
+                    // forget_recording_window). Release the token-matched
+                    // claim so the teardown race cannot leave gestures routed
+                    // into a dying window.
                     if let Some(token) = recording_token.as_deref() {
                         let _ = set_recording_owner(window_label, token, false);
                     }
@@ -697,9 +704,10 @@ mod tests {
     fn recording_owner_command_rejects_invalid_claims_but_non_router_release_is_a_no_op() {
         // Command-layer validation: a claim from a non-router window fails,
         // while a release from one is a harmless no-op (the JS releases
-        // fire-and-forget and must not surface an unhandled rejection). Both
-        // branches return before taking the global, so this stays
-        // deterministic alongside the other tests.
+        // fire-and-forget and must not surface an unhandled rejection). Only
+        // the non-router and malformed-token *claim* branches return before
+        // taking the global; the router-label releases below do lock it,
+        // which stays deterministic because no other test writes the global.
         assert!(set_recording_owner("pet", "tok", true).is_err());
         assert_eq!(set_recording_owner("pet", "tok", false), Ok(false));
         // A malformed token must not turn the no-op release into an Err

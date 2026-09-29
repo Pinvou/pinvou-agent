@@ -2202,11 +2202,13 @@ function timeStr() { return pinvouSharedweb().timeStr(); }
     state.chatItems.forEach(function (item) {
       if (item && item.clientMessageId) {
         const submission = firstTurnSubmissions[item.clientMessageId];
-        if (submission && submission.voiceOperationId) {
-          // The submission record is discarded here, so its admission outcome
-          // can never reconcile. Un-park the operation (complete-as-rejected)
-          // and then close it outright: left parked it would stay unadoptable
-          // and unsweepable until the page closes.
+        // A submission still in flight settles its own operation from the RPC
+        // outcome; closing it here would mark a message that is about to be
+        // delivered as cancelled. Finished submissions (rejected or parked on
+        // an unknown outcome) are closed: the record is discarded, so a
+        // parked operation could never reconcile and would stay unadoptable
+        // and unsweepable until the page closes.
+        if (submission && submission.voiceOperationId && !submission.inFlight) {
           completeVoiceSubmission(submission.voiceOperationId, null, false);
           abandonVoiceResult(submission.voiceOperationId);
         }
@@ -2340,8 +2342,8 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
       }
       return result;
     } finally {
-      // Reset on every path: a rejection that skipped the reset would make
-      // every future draft send await the same dead promise forever.
+      // Reset on every path: a lingering in-flight entry would make every
+      // future draft send await a dead promise forever.
       if (ensureSessionInFlight === p) ensureSessionInFlight = null;
     }
   }
@@ -7123,6 +7125,16 @@ function voiceFlowError(category, stage, message) { return pinvouSharedweb().voi
     return voiceOperations.get(operationId)?.sessionId || null;
   }
 
+  // Whether the composer's current voice operation is parked on an in-flight
+  // send admission (mirrors the desktop lane): the composer hook skips its
+  // identity-change auto-cancel for a parked operation — first-turn
+  // materialization flips the adapter identity mid-send, and cancelling here
+  // would only kill the completion notice of a message that still lands.
+  function hasVoiceSubmissionPending() {
+    const operation = voiceOperations.get((state.voiceInput || {}).operationId);
+    return !!(operation && operation.pendingSubmission);
+  }
+
   // Re-entering a departed draft hands its retained text back under a new
   // draft epoch (enterDraft increments unconditionally). Once the text is
   // visibly back in the composer the operation follows it: a manual retry
@@ -7292,7 +7304,13 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedweb
         audioBase64: encodeBase64Bytes(wavBytes),
         sessionId: session.sessionId,
       });
-      if (activeVoiceInput !== session) return;
+      if (activeVoiceInput !== session) {
+        // Superseded mid-transcription (a new recording owns the composer now,
+        // so this continuation can never deliver): end the operation here, or
+        // it sits non-terminal, unadoptable and unswept forever.
+        trackVoiceTerminal("voice_cancelled", session);
+        return;
+      }
       const text = String((res && res.text) || "").trim();
       if (!text) throw voiceFlowError("empty_result", "transcribing", "未识别到语音内容");
       if (session.ownerKind === "chat" && state.activeSessionId !== session.sessionId) {
@@ -7772,6 +7790,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     beginVoiceSubmission,
     completeVoiceSubmission,
     dismissVoiceInput,
+    hasVoiceSubmissionPending,
     appendVoiceText,
     loadScheduledTasks,
     loadScheduledTaskRecentRuns,
