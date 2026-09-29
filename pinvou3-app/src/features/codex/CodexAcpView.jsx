@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
@@ -87,9 +87,10 @@ import { ModalDialogShell } from './ModalDialogShell.jsx';
 import {
   ConversationMarkdown,
   ConversationStatusBadge,
-  ConversationTurn,
+  ConversationTimeline,
   LiveConversationActivityIndicator,
 } from '../conversation/ConversationTimeline.jsx';
+import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import {
   transitionConversationScrollState,
   useConversationBottomFollower,
@@ -2697,7 +2698,11 @@ export function CodexAcpView({
     if (!element) return;
     autoScrollRef.current = true;
     setShowScrollBottom(false);
-    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    // Smooth gliding through a virtualized document mounts and unmounts
+    // rows for its whole duration while estimates go stale; jump instead
+    // (same decision as the overflowAnchor gate below).
+    const virtualized = shouldVirtualizeConversationTurns(visibleTurns.length, scroller);
+    element.scrollTo({ top: element.scrollHeight, behavior: virtualized ? 'auto' : 'smooth' });
   }
 
   function beginRuntimeOperation(agentId, operation) {
@@ -3417,7 +3422,11 @@ export function CodexAcpView({
 
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
-        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar" style={{
+          // Must match the timeline's own virtualization decision: anchoring off
+          // only while absolute virtual rows own the positioning.
+          overflowAnchor: shouldVirtualizeConversationTurns(visibleTurns.length, scroller) ? 'none' : undefined,
+        }}>
           <div ref={conversationContentRef} className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             {workspaceUnavailable ? (
               <div
@@ -3498,9 +3507,15 @@ export function CodexAcpView({
                 </div>
               </div>
             )}
-            {visibleTurns.map(turn => (
-                  <Fragment key={turn.id}>
-                    {isNativeAgent && rewindEntries.has(turn.id) && (
+            {visibleTurns.length > 0 && (
+                  <ConversationTimeline
+                    turns={visibleTurns}
+                    sessionId={activeId}
+                    scrollElementRef={scroller}
+                    busy={busy}
+                    turnGapPx={28}
+                    followOutputRef={autoScrollRef}
+                    renderBeforeTurn={turn => isNativeAgent && rewindEntries.has(turn.id) ? (
                       // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
                       // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
                       <RewindChip
@@ -3509,9 +3524,7 @@ export function CodexAcpView({
                         copy={codexCopy}
                         onOpen={openRewindDialog}
                       />
-                    )}
-                    <ConversationTurn
-                      turn={turn}
+                    ) : null}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3561,9 +3574,8 @@ export function CodexAcpView({
                       agentLabel={activeAgentName}
                       onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                       onOpenResource={isWeb ? undefined : openWorkspaceResource}
-                    />
-                  </Fragment>
-                ))}
+                  />
+                )}
             {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
               // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
               // 与 RewindChip 同门控（仅原生代码车道）；undoState 为 null 即消失。

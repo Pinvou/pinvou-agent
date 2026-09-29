@@ -972,6 +972,10 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
+      // Defense in depth: protection predicates make live stream timers
+      // unreachable here today, but a stray timer must not outlive its
+      // evicted buffer (purgeSessionBuffer does the same).
+      cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
@@ -1011,6 +1015,10 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       const buf = sessionStates[id];
       if (!buf || id === keepId || isProtectedScheduledBuffer(id, buf)) continue;
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
+      // Defense in depth: protection predicates make live stream timers
+      // unreachable here today, but a stray timer must not outlive its
+      // evicted buffer (purgeSessionBuffer does the same).
+      cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
       // personaPlaceholderTitles survives capacity eviction (see the
@@ -1025,6 +1033,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
+    cancelStreamTimers(id);
     delete sessionStates[id];
     // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
     delete evictedSessionDrafts[id];
@@ -1469,7 +1478,7 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
   }
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
 function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) { return pinvouSharedweb().markRemoteTurn(sid, buf, preserveCommittedRevision, cause); }
-function onSessionEvent(e, fn) { return pinvouSharedweb().onSessionEvent(e, fn); }
+function onSessionEvent(e, fn, options) { return pinvouSharedweb().onSessionEvent(e, fn, options); }
 function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSession(sid); }
 
   // Transcript persistence is authoritative in Rust. The UI only persists the
@@ -1827,7 +1836,24 @@ function copySubscriptionStateObject(source) { return pinvouSharedweb().copySubs
   }
   let notificationQueue = [];
   let notificationDispatching = false;
+  // Stream coalescing state lives next to notify() so it is initialized
+  // before the first publication can run (see scheduleStreamNotify).
+  const STREAM_NOTIFY_MAX_WAIT_MS = 32;
+  const pendingStreamNotifications = Object.create(null);
+  const STREAM_RENDER_THROTTLE_MS = 180;
+  const streamRenderTimers = Object.create(null);
   function notify() {
+    // Any ordinary publication is a semantic stream boundary. Its snapshot
+    // already contains all accumulated text, so cancel the pending frame to
+    // avoid a duplicate callback after done/error/tool/session events. The
+    // cancel runs before the suppression check on purpose — the desktop
+    // bridge also cancels the pending frame while a background working set
+    // has suppressed callbacks, because the semantic publication that
+    // follows the restore carries the accumulated content.
+    cancelPendingStreamNotify(state.activeSessionId);
+    immediateNotify();
+  }
+  function immediateNotify() {
     if (suppressNotify) return;
     if (startupNotificationBatching) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
@@ -3427,6 +3453,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
           state.chatItems = state.chatItems.filter(function (item) {
             return item.id !== submittedUserItemId && item.id !== submittedStreamId;
           });
+          flushPendingStreamRender(); // admission reject mid-stream: emit final html before the reset
           resetPendingAssistant();
           state.busy = false;
           stopThinking();
@@ -4227,12 +4254,18 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
               break;
             }
           }
+          // Stream throttle invariant: the flush must precede the stream
+          // state reset. The old streaming bubble was already removed by the
+          // splice above, so the flush has no render target and only cancels
+          // the session's trailing-edge timer.
+          flushPendingStreamRender();
           resetPendingAssistant();
         }
         addChatItem({ type: "user", text: content, time: timeStr() });
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();
+      flushPendingStreamRender(); // the old streaming bubble gets its final html before the new turn resets stream state
       currentStreamText = "";
       currentStreamId = 0;
     });
@@ -4360,7 +4393,110 @@ function streamingReasoningItem(index) { return pinvouSharedweb().streamingReaso
 
 function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeStreamingReasoning(index); }
 
+  // Keep Web and Tauri streaming cadence aligned. requestAnimationFrame gives
+  // foreground rendering one update per paint; the timer keeps hidden tabs
+  // and throttled WebViews bounded. State is isolated per session so remote
+  // background streams cannot overwrite the visible working set.
+  function cancelPendingStreamNotify(sid) {
+    const pending = sid && pendingStreamNotifications[sid];
+    if (!pending) return;
+    if (pending.frame !== null && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(pending.frame);
+    }
+    if (pending.timer !== null && typeof clearTimeout === "function") clearTimeout(pending.timer);
+    delete pendingStreamNotifications[sid];
+  }
+  function scheduleStreamNotify(sid, firstDelta) {
+    // A first delta publishes immediately so the visible bubble paints
+    // without waiting for a frame. Inside a background working set the
+    // immediate notify is suppressed and schedules no frame at all, so the
+    // session's first delta would never publish — a suppressed first delta
+    // must fall through to the coalesced frame below, whose publish() runs
+    // after the working set is restored and carries the accumulated text.
+    if (!sid || (firstDelta && !suppressNotify) || typeof setTimeout !== "function") {
+      notify();
+      return;
+    }
+    if (pendingStreamNotifications[sid]) return;
+    const pending = { frame: null, timer: null };
+    pendingStreamNotifications[sid] = pending;
+    function publish() {
+      if (pendingStreamNotifications[sid] !== pending) return;
+      cancelPendingStreamNotify(sid);
+      let didRun = false;
+      const wasBackground = sid !== state.activeSessionId;
+      // A throwing subscriber must not escape as an unhandled rAF/timer
+      // error (the synchronous first-delta path keeps the dispatch-loop
+      // throw semantics). runSyncOnSession's finally restores the working
+      // set before the error lands here.
+      try {
+        runSyncOnSession(sid, function () {
+          didRun = true;
+          immediateNotify();
+        });
+      } catch (error) {
+        console.error("[chat] coalesced stream notify failed", error);
+      }
+      if (didRun && wasBackground) {
+        try { immediateNotify(); } catch (error) { console.error("[chat] coalesced stream notify failed", error); }
+      }
+    }
+    if (typeof window.requestAnimationFrame === "function") {
+      pending.frame = window.requestAnimationFrame(publish);
+    }
+    pending.timer = setTimeout(publish, STREAM_NOTIFY_MAX_WAIT_MS);
+  }
+
+  // Markdown parsing is substantially heavier than snapshot publication in a
+  // real browser. Match the desktop bridge: render the first delta immediately
+  // and accumulate subsequent text behind one trailing-edge render per
+  // session. Every stream transition flushes synchronously before resetting
+  // the bubble, so final text and terminal cards cannot observe stale HTML.
+  function renderStreamItemHtml() {
+    const item = state.chatItems.find(function (candidate) { return candidate.id === currentStreamId; });
+    if (!item) return false;
+    item.text = currentStreamText;
+    item.html = renderMarkdown(currentStreamText);
+    return true;
+  }
+  // Must run inside an onSessionEvent/runSyncOnSession extent: it flushes the
+  // extent's own session (the timer table is keyed by state.activeSessionId),
+  // so calling it outside an extent would target the visible session instead.
+  function flushPendingStreamRender() {
+    const sid = state.activeSessionId;
+    if (sid && streamRenderTimers[sid]) {
+      clearTimeout(streamRenderTimers[sid]);
+      delete streamRenderTimers[sid];
+    }
+    if (!currentStreamId || !currentStreamText) return false;
+    return renderStreamItemHtml();
+  }
+  function scheduleStreamRender(sid) {
+    if (!sid || typeof setTimeout !== "function") {
+      if (currentStreamId && currentStreamText) renderStreamItemHtml();
+      return;
+    }
+    if (streamRenderTimers[sid]) return;
+    streamRenderTimers[sid] = setTimeout(function () {
+      delete streamRenderTimers[sid];
+      let rendered = false;
+      runSyncOnSession(sid, function () {
+        if (!currentStreamId || !currentStreamText) return;
+        rendered = renderStreamItemHtml();
+      });
+      if (rendered) notify();
+    }, STREAM_RENDER_THROTTLE_MS);
+  }
+  function cancelStreamTimers(sid) {
+    cancelPendingStreamNotify(sid);
+    if (sid && streamRenderTimers[sid]) {
+      clearTimeout(streamRenderTimers[sid]);
+      delete streamRenderTimers[sid];
+    }
+  }
+
   function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingStreamRender();
     flushPendingTextBlock();
     const item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (item) {
@@ -4409,10 +4545,11 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     if (!item) {
       item = startReasoningBlock(index);
     }
+    const firstDelta = !item.text;
     item.text += text;
     appendReasoningBlock(text);
-    notify();
-  }); });
+    scheduleStreamNotify(e.payload && e.payload.session_id || state.activeSessionId, firstDelta);
+  }, { deferBackgroundNotify: true }); });
 
   listen("chat:reasoning_done", function (e) { onSessionEvent(e, function () {
     const index = reasoningEventIndex(e);
@@ -4433,9 +4570,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     currentStreamText += text;
     // Update the streaming chat item
     const item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
+    const firstDelta = !item;
     if (item) {
       item.text = currentStreamText;
-      item.html = renderMarkdown(currentStreamText);
+      if (!item.html) item.html = renderMarkdown(currentStreamText);
       item.streaming = true;
     } else {
       // New bubble needed (after tool card)
@@ -4449,8 +4587,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
         streaming: true,
       });
     }
-    notify();
-  }); });
+    scheduleStreamRender(e.payload && e.payload.session_id || state.activeSessionId);
+    scheduleStreamNotify(e.payload && e.payload.session_id || state.activeSessionId, firstDelta);
+  }, { deferBackgroundNotify: true }); });
 
   listen("scheduled_task:run_updated", function () {
     scheduleScheduledRunRefresh();
@@ -4512,6 +4651,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
+    flushPendingStreamRender();
     const streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
@@ -4569,6 +4709,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
         { resolved: true, cardState: p.success ? "submitted" : "cancelled" }
       );
       delete toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       currentStreamText = ""; currentStreamId = 0;
       notify();
       return;
@@ -4597,6 +4738,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
         if (presentedPath) trackArtifact(presentedPath);
         delete toolMeta[p.id];
+        flushPendingStreamRender(); // terminal path: emit final html before the reset
         currentStreamText = ""; currentStreamId = 0;
         notify();
         // Keep the web adapter aligned with desktop: an in-place card update does
@@ -4616,6 +4758,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
         output: p.output, success: false, state: "done",
       });
       delete toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       currentStreamText = ""; currentStreamId = 0;
       notify();
       return;
@@ -4701,6 +4844,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       }
 
     delete toolMeta[p.id];
+    flushPendingStreamRender(); // terminal path: emit final html before the reset
     currentStreamText = "";
     currentStreamId = 0;
     notify();
@@ -4797,6 +4941,11 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       }
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
+      flushPendingStreamRender();
+      // The trailing notify() only cancels the visible session's frame; a
+      // background session's terminal must cancel its own pending frame or a
+      // redundant late round fires within 32ms.
+      cancelPendingStreamNotify(sid);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       // Refresh artifacts written in this turn in place when already presented.
