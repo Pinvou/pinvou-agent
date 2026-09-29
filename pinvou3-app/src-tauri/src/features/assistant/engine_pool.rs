@@ -1521,16 +1521,38 @@ impl EnginePool {
         scheduled_unattended: bool,
         explicit_model_override: Option<SavedModel>,
     ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
-        let mut bridge = self.bridge.clone();
+        Self::prepare_runtime_model_with(
+            &self.store,
+            self.bridge.clone(),
+            session_id,
+            scheduled_unattended,
+            explicit_model_override,
+        )
+        .await
+    }
+
+    /// The preparation body behind [`Self::prepare_runtime_model`], as an
+    /// associated function so tests can drive the real funnel — including the
+    /// session-affinity latch — without a pool (a real EnginePool needs a
+    /// Tauri AppHandle; see `install_session_affinity_key`).
+    async fn prepare_runtime_model_with(
+        store: &SessionStore,
+        base_bridge: Pinvou3Bridge,
+        session_id: &str,
+        scheduled_unattended: bool,
+        explicit_model_override: Option<SavedModel>,
+    ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
+        let mut bridge = base_bridge;
         bridge.prefs = UserPrefs::load();
-        let scheduled_profile = self.store.scheduled_profile(session_id);
+        Self::install_session_affinity_key(&mut bridge, session_id);
+        let scheduled_profile = store.scheduled_profile(session_id);
         // Same caliber as the command layer chat.rs's is_scheduled (a
         // scheduled_profile existing is enough): a scheduled session's images
         // always take the image_analyze hard rule, even with an interactive
         // model override, so the always flag must not use the narrower
         // pins_scheduled_model.
         bridge.image_analyze_always = scheduled_profile.is_some();
-        let interactive_model_override = self.store.session_model_override(session_id);
+        let interactive_model_override = store.session_model_override(session_id);
         let pins_scheduled_model = scheduled_profile.is_some()
             && (scheduled_unattended || interactive_model_override.is_none());
         bridge.session_model = resolve_runtime_model_override(explicit_model_override, || {
@@ -1550,6 +1572,17 @@ impl EnginePool {
             .context("No effective model is available for runtime preparation")?;
         let prepared = PreparedRuntimeModel::unchanged(selected);
         Ok((bridge, prepared, pins_scheduled_model))
+    }
+
+    /// One OpenCode gateway session-affinity ID per conversation: key the
+    /// `x-opencode-session` header by session id so engine respawns of the
+    /// same session keep a single stable value
+    /// (`core::model_endpoint::opencode_session_id_for`). Associated function
+    /// (no pool state); the funnel wiring — this latch being reached on every
+    /// spawn — is pinned by driving the real preparation body
+    /// (`prepare_runtime_model_with`) in tests.
+    fn install_session_affinity_key(bridge: &mut Pinvou3Bridge, session_id: &str) {
+        bridge.session_affinity_key = Some(session_id.to_string());
     }
 
     /// No `&self`: this function does not read pool state, it only
@@ -3566,6 +3599,7 @@ mod scheduled_model_tests {
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
+    use crate::platform::paths::tests::ENV_LOCK;
     use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use crate::platform::test_support::EnvRestore;
     use std::path::PathBuf;
@@ -3601,6 +3635,84 @@ mod scheduled_model_tests {
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
+    }
+
+    /// The spawn funnel installs the session id as the OpenCode gateway
+    /// affinity key, so every respawn of one session reuses the same
+    /// `x-opencode-session` value instead of silently falling back to the
+    /// shared `engine-default` conversation.
+    #[test]
+    fn install_session_affinity_key_pins_session_id_on_bridge() {
+        let mut bridge = Pinvou3Bridge::test_fixture(None);
+        assert!(
+            bridge.session_affinity_key.is_none(),
+            "fixture bridges start without a session affinity key"
+        );
+        super::EnginePool::install_session_affinity_key(&mut bridge, "session-a");
+        assert_eq!(bridge.session_affinity_key.as_deref(), Some("session-a"));
+        let mut respawned = Pinvou3Bridge::test_fixture(None);
+        super::EnginePool::install_session_affinity_key(&mut respawned, "session-a");
+        assert_eq!(
+            respawned.session_affinity_key, bridge.session_affinity_key,
+            "a respawned bridge for the same session must reuse the same key"
+        );
+    }
+
+    /// Drives the real spawn-funnel preparation body (the same code
+    /// `prepare_runtime_model` runs for every spawn/respawn) and asserts the
+    /// produced bridge carries the session id as the gateway affinity key.
+    /// Without the latch this fails: an unlatched bridge keys every gateway
+    /// request onto the shared default conversation.
+    #[tokio::test]
+    async fn prepare_runtime_model_keys_bridge_by_session_id() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = EnvRestore::capture(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-runtime-model-affinity-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let model = SavedModel {
+            id: "affinity-wiring-model".into(),
+            name: "Affinity Wiring".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "affinity-model".into(),
+            base_url: String::new(),
+            provider_kind: Some("custom".into()),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        let bridge = Pinvou3Bridge::test_fixture(Some(model));
+        let (prepared, _prepared_model, _pins) = super::EnginePool::prepare_runtime_model_with(
+            &store,
+            bridge,
+            "session-affinity-under-test",
+            false,
+            None,
+        )
+        .await
+        .expect("runtime model preparation succeeds");
+        assert_eq!(
+            prepared.session_affinity_key.as_deref(),
+            Some("session-affinity-under-test"),
+            "every spawned bridge must be keyed by its session id for the gateway affinity header"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// ADR-0006: an engine reclaim must cancel all sub-agents **first** and
