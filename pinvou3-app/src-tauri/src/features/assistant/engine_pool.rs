@@ -372,17 +372,51 @@ fn record_is_message_free(_store: &SessionStore, _session_id: &str) -> bool {
     true
 }
 
-/// `only_if_still_empty` guards the headless stub cleanup: the disposition
-/// sampled `has_messages` OUTSIDE the turn gate, so a turn admitted between
-/// that sample and this gate would make the record a started transcript —
-/// the only copy. Under the gate the emptiness is re-checked, and such a
-/// record is kept (`Ok(false)`, engine reclaimed, nothing deleted) instead
-/// of being destroyed as a stub.
+/// Adoption probe for the one-shot delete gate. Same headless-surface split
+/// as [`record_is_message_free`]: the store method only exists for the
+/// headless builds, and GUI builds stub it to "titled", so the guarded
+/// branch can never fire there (a GUI user deleting a renamed chat through
+/// `delete_chat_session` takes the unconditional arm anyway).
+#[cfg(any(feature = "benchmark-hooks", test))]
+fn record_is_factory_titled(store: &SessionStore, session_id: &str) -> bool {
+    store
+        .chat_session_factory_titled(session_id)
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(feature = "benchmark-hooks", test)))]
+fn record_is_factory_titled(_store: &SessionStore, _session_id: &str) -> bool {
+    true
+}
+
+/// What the delete gate re-verifies before the durable delete fires. Every
+/// disposition that reaches this gate sampled its fact OUTSIDE the turn
+/// lock, and a live turn can hold that lock for the turn's whole wall
+/// clock — so each sampled fact must be re-verified under the gate before
+/// it may destroy the record.
+enum DeleteGateRecheck {
+    /// An explicit deletion (GUI chat delete, eval temp session): whatever
+    /// the caller asked to delete may be deleted.
+    Unconditional,
+    /// Headless stub cleanup: keep unless the record is still a message-free
+    /// stub wearing the factory title — a turn admitted under the gate made
+    /// it a started transcript, and a rename under the gate made it an
+    /// adopted (GUI-owned) session.
+    StillAStub,
+    /// One-shot falsy cleanup: keep unless the record still wears the
+    /// factory title. A read error keeps too: deleting on unknown state is
+    /// the unsafe direction.
+    StillFactoryTitled,
+}
+
+/// Turn-gated durable delete. Under the gate the sampled fact is re-checked
+/// (per [`DeleteGateRecheck`]), and a record that no longer matches is kept
+/// (`Ok(false)`, engine reclaimed, nothing deleted) instead of destroyed.
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
     session_id: &str,
-    only_if_still_empty: bool,
+    recheck: DeleteGateRecheck,
     evict_locked: F,
     forget: G,
 ) -> Result<bool>
@@ -393,15 +427,21 @@ where
 {
     let turn_lock = turn_locks.for_session(session_id).await;
     let _turn = turn_lock.lock().await;
-    if only_if_still_empty && !record_is_message_free(store, session_id) {
-        // A read error also keeps: deleting on unknown state is the unsafe
-        // direction. The engine teardown below is everything the keep path
-        // would have done, so the skip reports success — the caller's
-        // cleanup-failure lane stays reserved for genuine delete faults.
-        eprintln!(
-            "[agent-task] stub cleanup skipped: the record carries messages \
-             under the delete gate; keeping the session"
-        );
+    let holds = match recheck {
+        DeleteGateRecheck::Unconditional => true,
+        DeleteGateRecheck::StillAStub => {
+            record_is_message_free(store, session_id) && record_is_factory_titled(store, session_id)
+        }
+        DeleteGateRecheck::StillFactoryTitled => record_is_factory_titled(store, session_id),
+    };
+    if !holds {
+        // The engine teardown below is everything the keep path would have
+        // done, so the skip reports success — the caller's cleanup-failure
+        // lane stays reserved for genuine delete faults.
+        crate::features::assistant::product_runtime::note_stderr(&format!(
+            "[agent-task] cleanup skipped under the delete gate: the record no \
+             longer matches the sampled disposition; keeping the session"
+        ));
         evict_locked().await;
         return Ok(false);
     }
@@ -2135,7 +2175,7 @@ impl EnginePool {
             &self.turn_locks,
             &self.store,
             session_id,
-            false,
+            DeleteGateRecheck::Unconditional,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
         )
@@ -2159,14 +2199,14 @@ impl EnginePool {
     /// the durable delete is guarded — under the turn gate a record that
     /// carries messages (or whose state is unloadable) is a started
     /// transcript, not a stub, and is kept with only the engine reclaimed
-    /// (`delete_chat_session_with_gate` with `only_if_still_empty`).
+    /// ([`DeleteGateRecheck::StillAStub`]).
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_chat_session_if_still_empty(&self, session_id: &str) -> Result<()> {
         let deleted = delete_chat_session_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
-            true,
+            DeleteGateRecheck::StillAStub,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
         )
@@ -2189,6 +2229,48 @@ impl EnginePool {
             Self::schedule_late_sweep(
                 crate::platform::paths::sessions_root().join(session_id),
                 "late sweep of deleted stub",
+            );
+        }
+        Ok(())
+    }
+
+    /// One-shot falsy delete for the teardown arms: like
+    /// [`Self::delete_chat_session_if_still_empty`], the durable delete is
+    /// guarded under the turn gate — the disposition sampled the adoption
+    /// marker outside the gate, and a live turn can hold that gate for the
+    /// turn's whole wall clock, so a rename landing during the wait makes
+    /// the record an adopted (GUI-owned) session that must be kept. The
+    /// late sweep only fires on the delete outcome (or the failed-delete
+    /// backstop), never on the keep outcome.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_chat_session_unless_adopted(&self, session_id: &str) -> Result<()> {
+        let deleted = delete_chat_session_with_gate(
+            &self.turn_locks,
+            &self.store,
+            session_id,
+            DeleteGateRecheck::StillFactoryTitled,
+            || self.evict_locked(session_id),
+            || self.forget_session(session_id),
+        )
+        .await;
+        let deleted = match deleted {
+            Ok(deleted) => deleted,
+            // Same failed-delete backstop as the stub twin: the in-memory
+            // entry must not linger on a failed delete, and the late sweep
+            // retries the disk cleanup.
+            Err(error) => {
+                self.forget_session(session_id);
+                Self::schedule_late_sweep(
+                    crate::platform::paths::sessions_root().join(session_id),
+                    "late sweep of failed one-shot delete",
+                );
+                return Err(error);
+            }
+        };
+        if deleted {
+            Self::schedule_late_sweep(
+                crate::platform::paths::sessions_root().join(session_id),
+                "late sweep of deleted one-shot session",
             );
         }
         Ok(())
@@ -3792,8 +3874,8 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        BoundedJoinOutcome, EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op,
-        Pinvou3Bridge, PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT,
+        BoundedJoinOutcome, DeleteGateRecheck, EvalModelSnapshots, ModelIdentity,
+        ModelUpdateRevisions, Op, Pinvou3Bridge, PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT,
         SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard, SessionShellManagers,
         SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT,
         TranscriptOperation, TurnIdentity, bounded_join_while_holding_turn_gate,
@@ -5167,7 +5249,7 @@ mod scheduled_model_tests {
                 &delete_locks,
                 &delete_store,
                 &delete_id,
-                false,
+                DeleteGateRecheck::Unconditional,
                 || async move {
                     delete_engine.store(false, Ordering::Release);
                 },
@@ -5243,9 +5325,16 @@ mod scheduled_model_tests {
         );
 
         let locks = SessionTurnLocks::default();
-        delete_chat_session_with_gate(&locks, &store, &session_id, false, || async {}, || {})
-            .await
-            .expect("delete chat");
+        delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &session_id,
+            DeleteGateRecheck::Unconditional,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("delete chat");
 
         assert!(
             !crate::features::assistant::timing::has_queued_active_turn(&session_id),
@@ -5262,7 +5351,7 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// The headless stub-cleanup guard: `only_if_still_empty` re-checks
+    /// The headless stub-cleanup guard: `StillMessageFree` re-checks
     /// emptiness UNDER the turn gate, so a record whose transcript landed
     /// between the disposition's outside-the-gate sample and the delete is
     /// kept (started transcript, the only copy) while a genuine zero-message
@@ -5312,10 +5401,16 @@ mod scheduled_model_tests {
         store.save_session_atomic(&started).expect("seed messages");
 
         let locks = SessionTurnLocks::default();
-        let deleted =
-            delete_chat_session_with_gate(&locks, &store, &session_id, true, || async {}, || {})
-                .await
-                .expect("guarded delete");
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &session_id,
+            DeleteGateRecheck::StillAStub,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("guarded delete");
         assert!(
             !deleted,
             "a record that carries messages under the gate must be kept"
@@ -5331,12 +5426,119 @@ mod scheduled_model_tests {
             .expect("empty session")
             .metadata
             .id;
-        let deleted =
-            delete_chat_session_with_gate(&locks, &store, &empty_id, true, || async {}, || {})
-                .await
-                .expect("guarded delete");
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &empty_id,
+            DeleteGateRecheck::StillAStub,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("guarded delete");
         assert!(deleted, "a zero-message stub is still deleted");
         assert!(store.load(&empty_id).is_err());
+
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// The one-shot adoption guard: `DeleteGateRecheck::StillFactoryTitled`
+    /// re-checks the `NEW_CHAT_TITLE` marker UNDER the turn gate, so a
+    /// rename landing while the delete waited on a live turn keeps the
+    /// record (a GUI user adopted it), while a record that still wears the
+    /// factory title deletes.
+    #[tokio::test]
+    async fn one_shot_delete_gate_rechecks_the_adoption_marker() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvRestore::capture(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-adoption-guard-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let adopted_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        store
+            .set_title(&adopted_id, "Adopted by the GUI user".to_owned())
+            .expect("rename the session away from the factory title");
+
+        let locks = SessionTurnLocks::default();
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &adopted_id,
+            DeleteGateRecheck::StillFactoryTitled,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("guarded delete");
+        assert!(
+            !deleted,
+            "a record renamed under the gate was adopted and must be kept"
+        );
+        assert!(
+            store.load(&adopted_id).is_ok(),
+            "the adopted session survives the guarded one-shot delete"
+        );
+
+        // A record that still wears the factory title deletes normally.
+        let fresh_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("factory-titled session")
+            .metadata
+            .id;
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &fresh_id,
+            DeleteGateRecheck::StillFactoryTitled,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("guarded delete");
+        assert!(
+            deleted,
+            "a record that still wears the factory title is not adopted"
+        );
+        assert!(store.load(&fresh_id).is_err());
+
+        // The stub twin re-checks BOTH stub facts under the gate: a renamed
+        // zero-message record is an adopted session, not a stub.
+        let adopted_stub_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("stub session")
+            .metadata
+            .id;
+        store
+            .set_title(&adopted_stub_id, "Renamed empty chat".to_owned())
+            .expect("rename the stub away from the factory title");
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &adopted_stub_id,
+            DeleteGateRecheck::StillAStub,
+            || async {},
+            || {},
+        )
+        .await
+        .expect("guarded stub delete");
+        assert!(
+            !deleted,
+            "a renamed zero-message record is adopted, not a stub"
+        );
+        assert!(store.load(&adopted_stub_id).is_ok());
 
         let _ = std::fs::remove_dir_all(home);
     }
