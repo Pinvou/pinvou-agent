@@ -72,10 +72,14 @@ import {
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 
-// 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
-// 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。哨兵是跨语言的后端
-// 契约而非当前 UI 文案,直接使用 shared/i18n.js 的静态集合,与词典装载进度无关
-// (zh 主用户不会装载 en/ja chunk,不能从 dict 派生)。
+// Backend default-chat-title sentinel set. The backend always persists the
+// fixed zh sentinel (store.rs's NEW_CHAT_TITLE) and auto-rename targets only
+// that exact zh match; the trilingual set is a display-layer superset — at
+// render time any sentinel title maps to the current language's "new chat"
+// copy. The sentinels are a cross-language backend contract, not current UI
+// copy: use the static set from shared/i18n.js directly, independent of
+// dictionary load progress (zh-primary users never load the en/ja chunks, so
+// the set cannot be derived from the dict).
 function isDefaultChatTitle(title) {
   return DEFAULT_CHAT_TITLES.has(title);
 }
