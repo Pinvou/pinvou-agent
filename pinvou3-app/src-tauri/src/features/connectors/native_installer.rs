@@ -876,7 +876,7 @@ mod tests {
 
             fs::create_dir_all(&bin_dir).unwrap();
             fs::write(&legacy, b"only-local-runtime").unwrap();
-            let legacy_sha = crate::platform::connector_lock::file_sha256_hex(&legacy).unwrap();
+            let legacy_sha = crate::platform::hashing::sha256_file(&legacy).unwrap();
 
             // Hash mismatch + pinned version absent → keep the legacy file
             migrate_legacy_binary("test-cli", "9.9.9", "deadbeef");
