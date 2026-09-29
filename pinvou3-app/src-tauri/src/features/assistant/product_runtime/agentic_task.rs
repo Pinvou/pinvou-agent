@@ -721,8 +721,9 @@ fn keep_session_from_env() -> bool {
 /// wears the factory title. A rename is ownership: a GUI user who renamed
 /// the session (or whose first send already triggered the auto-rename)
 /// adopted it, and `factory_titled != Ok(true)` keeps it on the delete lane
-/// too. An unreadable record is not proven factory-titled and keeps for the
-/// same reason.
+/// too — the stub arm above applies the same rule, so an adopted record
+/// keeps on EVERY never-started path. An unreadable record is not proven
+/// factory-titled and keeps for the same reason.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NeverStartedDisposition {
     CleanupStub,
@@ -743,7 +744,16 @@ fn never_started_disposition(
         Err(_) => return NeverStartedDisposition::KeepInspectable,
     };
     match (started, keep_session) {
-        (false, _) => NeverStartedDisposition::CleanupStub,
+        // A stub is the run's to delete only while it still wears the
+        // factory title: a rename is ownership on this lane too, the same
+        // rule the started lane below and the one-shot decision apply. An
+        // unreadable title is not proven factory-titled and keeps. Residual:
+        // the rename is sampled here and re-checked (as emptiness) at the
+        // guarded delete, so a rename landing in the sample→delete window is
+        // the same TOCTOU class the delete-lane doc already discloses for
+        // first messages.
+        (false, _) if factory_titled == Ok(true) => NeverStartedDisposition::CleanupStub,
+        (false, _) => NeverStartedDisposition::KeepInspectable,
         (true, true) => NeverStartedDisposition::KeepInspectable,
         // The one-shot lane deletes a started transcript only while it still
         // wears the factory title; adopted (renamed) and unreadable records
@@ -805,7 +815,31 @@ fn one_shot_cleanup_decision(
     }
 }
 
-/// The retention-eviction warning for a run's recorded sweep deletions:
+/// The panic arm of the setup await, extracted verbatim so its SEQUENCING —
+/// gate on `submit_entered`, run BOTH pin restores to completion, and only
+/// then resume the unwind — is pinned by a test that drives a real panicking
+/// future through it (round-25 review: the previous test called the restore
+/// helper directly, so deleting this arm or dropping its gate left the whole
+/// suite green). A panic past the submit boundary must NOT roll the pins
+/// back: the turn may already be admitted, and a mid-turn pin rollback would
+/// evict the engine under it — there the pins stay, like those of any
+/// submitted run.
+async fn resume_unwind_after_pinned_restore<Fut>(
+    submit_entered: &AtomicBool,
+    panic_payload: Box<dyn std::any::Any + Send>,
+    restore: impl FnOnce(&'static str) -> Fut,
+) -> !
+where
+    Fut: std::future::Future<Output = ()>,
+{
+    if !submit_entered.load(Ordering::SeqCst) {
+        // Best-effort: a failing restore must not mask the panic (the
+        // unwind is resumed regardless).
+        restore("panic").await;
+    }
+    std::panic::resume_unwind(panic_payload)
+}
+
 /// Put a caller-provided session's `--mode plan` and `--model` pins back after
 /// a setup that provably never reached the turn: a setup failure, or a setup
 /// timeout that fired before the submit was entered. Nothing ran, so leaving
@@ -1354,21 +1388,20 @@ async fn run_turn(
                 // Past the boundary (a panic between submit and report
                 // construction) the turn may already be admitted, and rolling
                 // the pins back mid-turn would evict the engine under it —
-                // there the pins stay, like those of any submitted run.
-                // Best-effort: a failing restore must not mask the panic (the
-                // unwind is resumed regardless).
-                if !submit_entered.load(Ordering::SeqCst) {
+                // there the pins stay, like those of any submitted run. The
+                // sequencing itself is extracted (and pinned) in
+                // [`resume_unwind_after_pinned_restore`].
+                resume_unwind_after_pinned_restore(&submit_entered, panic, |reason| {
                     restore_pre_run_pins(
                         runtime,
                         store,
                         session_id,
                         plan_restore.take(),
                         model_restore.take(),
-                        "panic",
+                        reason,
                     )
-                    .await;
-                }
-                std::panic::resume_unwind(panic);
+                })
+                .await
             }
         };
     let handle = match setup_result {
@@ -1902,8 +1935,8 @@ mod tests {
         arm_retention_eviction_observer, ensure_existing_chat_session, ensure_model_exists,
         ensure_stage_size, fresh_session_id, keep_session_from_env, never_started_disposition,
         one_shot_cleanup_decision, refuse_ingest_without_a_surviving_copy, restore_plan_mode,
-        retention_eviction_warning, stage_and_ingest_batch, stage_refusal_means_cap_growth,
-        sweep_unreferenced_staged_copies, validate_attachments,
+        resume_unwind_after_pinned_restore, retention_eviction_warning, stage_and_ingest_batch,
+        stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies, validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -1981,17 +2014,19 @@ mod tests {
     }
 
     /// The never-started decision, pinned over the branch order that is the
-    /// contract: a zero-message stub cleans up regardless of `KEEP_SESSION`,
-    /// a started transcript keeps under the default contract, the one-shot
-    /// opt-in deletes it — but only while the record still wears the factory
-    /// title (a rename is adoption), and an unloadable record keeps on every
-    /// path.
+    /// contract: a zero-message FACTORY-TITLED stub cleans up regardless of
+    /// `KEEP_SESSION`, a renamed (adopted) zero-message record keeps — the
+    /// rename is ownership on this lane too — a started transcript keeps
+    /// under the default contract, the one-shot opt-in deletes it — but only
+    /// while the record still wears the factory title — and an unloadable
+    /// record keeps on every path.
     #[test]
     fn never_started_disposition_matrix_is_pinned() {
         // (has_messages, engine_active, keep_session, factory_titled).
         let matrix = [
-            // Zero-message stub: cleanup-eligible regardless of KEEP_SESSION
-            // (it would litter the shared store with eviction bait).
+            // Zero-message factory-titled stub: cleanup-eligible regardless
+            // of KEEP_SESSION (it would litter the shared store with
+            // eviction bait).
             (
                 Ok(false),
                 false,
@@ -2005,6 +2040,31 @@ mod tests {
                 false,
                 Ok(true),
                 NeverStartedDisposition::CleanupStub,
+            ),
+            // Zero-message + adopted (renamed): the rename is ownership on
+            // the stub lane too — the record keeps.
+            (
+                Ok(false),
+                false,
+                true,
+                Ok(false),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            (
+                Ok(false),
+                false,
+                false,
+                Ok(false),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Zero-message + unreadable title: not proven factory-titled,
+            // keep (deleting on unknown state is the unsafe direction).
+            (
+                Ok(false),
+                false,
+                true,
+                Err(()),
+                NeverStartedDisposition::KeepInspectable,
             ),
             // Started (durable messages) + default keep: inspectable.
             (
@@ -3434,21 +3494,29 @@ mod tests {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
         let (store, tmp) = lifecycle_home("unsubmitted");
 
-        // Zero-message stub + default keep → deleted anyway (CleanupStub):
-        // a stub has no transcript to inspect and becomes eviction bait.
+        // Zero-message FACTORY-TITLED stub + default keep → deleted anyway
+        // (CleanupStub): a stub has no transcript to inspect and becomes
+        // eviction bait. (The factory title is what makes it the run's to
+        // delete — see the adopted-stub row below.)
         set_keep_session(None);
         seed_record(&store, "agentic_stub_keep", &[]);
+        store
+            .set_title("agentic_stub_keep", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         let executor = RecordingTeardown::new(&store);
         super::run_session_lifecycle(&executor, &store, "agentic_stub_keep", false, false, false)
             .await;
         assert!(
             !store.chat_session_record_exists("agentic_stub_keep"),
-            "a zero-message stub must clean up after itself even under default keep"
+            "a zero-message factory-titled stub must clean up even under default keep"
         );
 
-        // Zero-message stub + falsy → same delete (already covered by
-        // CleanupStub before KEEP_SESSION is even consulted).
+        // Zero-message factory-titled stub + falsy → same delete (already
+        // covered by CleanupStub before KEEP_SESSION is even consulted).
         seed_record(&store, "agentic_stub_falsy", &[]);
+        store
+            .set_title("agentic_stub_falsy", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         set_keep_session(Some("0"));
         let executor = RecordingTeardown::new(&store);
         super::run_session_lifecycle(&executor, &store, "agentic_stub_falsy", false, false, false)
@@ -3456,6 +3524,30 @@ mod tests {
         assert!(
             !store.chat_session_record_exists("agentic_stub_falsy"),
             "a zero-message stub is cleanup-eligible regardless of KEEP_SESSION"
+        );
+
+        // Zero-message ADOPTED stub (renamed before the run faults) + falsy →
+        // KEEPS: the rename is ownership on the never-started lane too — the
+        // round-25 review hole, pinned end-to-end (the pure matrix pins the
+        // decision; this pins the whole lifecycle path).
+        seed_record(&store, "agentic_stub_adopted", &[]);
+        store
+            .set_title("agentic_stub_adopted", "User renamed this".to_string())
+            .unwrap();
+        set_keep_session(Some("0"));
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_stub_adopted",
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_stub_adopted"),
+            "a renamed zero-message stub keeps even under the falsy opt-in"
         );
 
         // Started transcript (durable record carries admitted messages) +
@@ -3845,10 +3937,12 @@ mod tests {
         // `Handle::block_on`, which panics inside the runtime worker that
         // always drives this code — the model pin was never restored and the
         // original panic was masked. The arm now diverts the panic payload
-        // out of the unwind closure and calls the SAME async
+        // out of the closure and calls the SAME async
         // `restore_pre_run_pins` the Err and timeout arms use, so the model
-        // half is the already-covered pool path and the arm's own logic is
-        // only the sequencing this test pins.
+        // half is the already-covered pool path. The arm's own sequencing
+        // (gate → restore → resume) is pinned separately by
+        // `the_panic_arm_restores_before_resuming_and_gates_on_submit_entered`,
+        // which drives a real panicking setup future.
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-panic-restore-test-{}",
@@ -3907,6 +4001,92 @@ mod tests {
             store.mode_state(&id).mode,
             SerializableMode::Plan,
             "an unarmed panic restore must not touch the session"
+        );
+    }
+
+    /// Round-25 review finding: the store-side test above calls the restore
+    /// helper directly, so nothing pinned the arm's own sequencing — a
+    /// deleted `catch_unwind` arm, a dropped `submit_entered` gate, or a
+    /// `resume_unwind` moved ahead of the restore would all have left the
+    /// suite green. This test drives a REAL panicking setup future through
+    /// the extracted arm ([`resume_unwind_after_pinned_restore`]) and
+    /// observes the gate, the restore-before-resume ordering, and the
+    /// resumed payload.
+    #[test]
+    fn the_panic_arm_restores_before_resuming_and_gates_on_submit_entered() {
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        // Pre-submit (gate clear): the restore must COMPLETE before the
+        // payload surfaces, and the payload must be the original one — not
+        // masked by a restore failure or replaced by a synthetic error.
+        let gate = std::sync::atomic::AtomicBool::new(false);
+        let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = restored.clone();
+        let resumed = runtime
+            .block_on(futures_util::FutureExt::catch_unwind(
+                std::panic::AssertUnwindSafe(async move {
+                    let inner = futures_util::FutureExt::catch_unwind(
+                        std::panic::AssertUnwindSafe(async {
+                            panic!("setup exploded before the submit");
+                        }),
+                    )
+                    .await;
+                    let payload = inner.expect_err("the setup future must panic");
+                    resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                        let flag = flag.clone();
+                        async move {
+                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    })
+                    .await
+                }),
+            ))
+            .expect_err("the resumed panic must surface after the restore");
+        assert!(
+            restored.load(std::sync::atomic::Ordering::SeqCst),
+            "the panic arm must run the restore to completion BEFORE resuming the unwind"
+        );
+        assert_eq!(
+            resumed.downcast_ref::<&'static str>(),
+            Some(&"setup exploded before the submit"),
+            "the original panic payload must be resumed, not masked"
+        );
+
+        // Past the submit boundary (gate set): the pins stay — no restore —
+        // and the payload still resumes untouched.
+        let gate = std::sync::atomic::AtomicBool::new(true);
+        let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = restored.clone();
+        let resumed = runtime
+            .block_on(futures_util::FutureExt::catch_unwind(
+                std::panic::AssertUnwindSafe(async move {
+                    let inner = futures_util::FutureExt::catch_unwind(
+                        std::panic::AssertUnwindSafe(async {
+                            panic!("setup exploded past the submit");
+                        }),
+                    )
+                    .await;
+                    let payload = inner.expect_err("the setup future must panic");
+                    resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                        let flag = flag.clone();
+                        async move {
+                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    })
+                    .await
+                }),
+            ))
+            .expect_err("the resumed panic must surface even when the gate holds the restore");
+        std::panic::set_hook(quiet);
+        assert!(
+            !restored.load(std::sync::atomic::Ordering::SeqCst),
+            "a panic past the submit boundary must NOT roll the pins back"
+        );
+        assert_eq!(
+            resumed.downcast_ref::<&'static str>(),
+            Some(&"setup exploded past the submit"),
         );
     }
 }
