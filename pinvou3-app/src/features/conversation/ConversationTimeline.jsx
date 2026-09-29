@@ -853,6 +853,26 @@ function areConversationTurnPropsEqual(prev, next) {
   return true;
 }
 
+// Aux-chat quote chips inside a user bubble (selected-text quoting).
+// Extracted from ConversationTurnView so the aux branch's conditionals do
+// not push the turn renderer over the cognitive-complexity cap.
+function ConversationUserQuotes({ quotes, hasBody }) {
+  if (!Array.isArray(quotes) || quotes.length === 0) return null;
+  return (
+    <div className={`flex flex-col gap-1.5 ${hasBody ? 'mb-2' : ''}`}>
+      {quotes.map((quote, index) => (
+        <div
+          key={`${index}-${String(quote.text || '').slice(0, 24)}`}
+          data-testid="conversation-user-quote"
+          className="rounded-lg border border-black/[0.06] bg-white/70 px-2.5 py-1.5 text-[12px] leading-5 text-gray-500 line-clamp-3 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-400"
+        >
+          {String(quote.text || '')}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ConversationTurnView({
   turn,
   virtualized = false,
@@ -914,19 +934,7 @@ function ConversationTurnView({
       ? (
           <div className="flex justify-end">
             <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-              {userQuotes.length > 0 && (
-                <div className={`flex flex-col gap-1.5 ${turn.userText ? 'mb-2' : ''}`}>
-                  {userQuotes.map((quote, index) => (
-                    <div
-                      key={`${index}-${String(quote.text || '').slice(0, 24)}`}
-                      data-testid="conversation-user-quote"
-                      className="rounded-lg border border-black/[0.06] bg-white/70 px-2.5 py-1.5 text-[12px] leading-5 text-gray-500 line-clamp-3 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-400"
-                    >
-                      {String(quote.text || '')}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <ConversationUserQuotes quotes={userQuotes} hasBody={Boolean(turn.userText)} />
               {turn.userText && <div>{turn.userText}</div>}
               {userAttachments.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>

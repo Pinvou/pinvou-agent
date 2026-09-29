@@ -262,7 +262,11 @@ test('ConversationTimeline renders aux quote chips in the user bubble', () => {
   // text remains.
   assert.match(conversation, /const userQuotes = Array\.isArray\(turn\.userQuotes\) \? turn\.userQuotes : \[\];/);
   assert.match(conversation, /turn\.userText \|\| userAttachments\.length \|\| userQuotes\.length/);
-  assert.match(conversation, /userQuotes\.map\(\(quote, index\)/);
+  // Round-36: the chips render through the extracted ConversationUserQuotes
+  // component (the aux branch pushed the turn renderer over the
+  // cognitive-complexity cap); the map + testid moved into it.
+  assert.match(conversation, /function ConversationUserQuotes\(/);
+  assert.match(conversation, /<ConversationUserQuotes quotes=\{userQuotes\} hasBody=\{Boolean\(turn\.userText\)\} \/>/);
   assert.match(conversation, /data-testid="conversation-user-quote"/);
 });
 
