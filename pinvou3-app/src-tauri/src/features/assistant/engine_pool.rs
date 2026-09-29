@@ -588,7 +588,11 @@ where
     if !holds {
         // The engine teardown below is everything the keep path would have
         // done, so the skip reports success — the caller's cleanup-failure
-        // lane stays reserved for genuine delete faults.
+        // lane stays reserved for genuine delete faults. The skip can only
+        // fire on the headless builds (the GUI stubs both probes to "holds"),
+        // so the notice is gated with them; note_stderr keeps a closed
+        // stderr from panicking the await chain under the report.
+        #[cfg(any(feature = "benchmark-hooks", test))]
         crate::features::assistant::product_runtime::note_stderr(&format!(
             "[agent-task] cleanup skipped under the delete gate: the record no \
              longer matches the sampled disposition; keeping the session"
