@@ -620,16 +620,38 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Difference from the app on purpose, recorded rather than fixed:
-        // `platform::process::kill_process_tree` resolves `taskkill`
-        // through its hardened `external_command` PATH helper and gives it
-        // a 2s budget, but `platform::process` is `pub(crate)` in the app
-        // crate and unreachable from here. `.output()` keeps the helper's
-        // streams off our stdio (a bare spawn would inherit them) but is
-        // unbounded, so a wedged WMI/RPC can stall this call.
-        let _ = std::process::Command::new("taskkill")
+        // The app's `platform::process::kill_process_tree` resolves
+        // `taskkill` through its hardened `external_command` PATH helper,
+        // which stays `pub(crate)` in the app crate; the 2s budget is the
+        // part that matters here and is reproduced directly. A wedged
+        // WMI/RPC must not stall the caller's own timeout path, so
+        // taskkill itself is killed when its budget expires. Null stdio
+        // keeps the helper's streams off ours (a bare spawn would inherit
+        // them), like the app's detached spawn.
+        const TASKKILL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+        let spawned = std::process::Command::new("taskkill")
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .output();
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut taskkill) = spawned {
+            let deadline = std::time::Instant::now() + TASKKILL_BUDGET;
+            loop {
+                match taskkill.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() >= deadline => {
+                        let _ = taskkill.kill();
+                        let _ = taskkill.wait();
+                        break;
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
     }
     let _ = child.kill();
     let _ = child.wait();

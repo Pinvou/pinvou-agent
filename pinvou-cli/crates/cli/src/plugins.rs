@@ -1607,7 +1607,7 @@ fn default_export_name(id: &str) -> PathBuf {
 /// `unavailable_in_cli` means the verdict is a headless under-approximation:
 /// the desktop reaches the real answer through a live probe this crate cannot
 /// run, so `ready: false` on such a row means "not determined here", not
-/// "known broken" — `pinvoy connectors ... status` is the authority. Every row
+/// "known broken" — `pinvou connectors ... status` is the authority. Every row
 /// carries the field so the JSON shape does not depend on the kind.
 const PROBE_REGISTRY: &str = "registry";
 const PROBE_UNAVAILABLE_IN_CLI: &str = "unavailable_in_cli";

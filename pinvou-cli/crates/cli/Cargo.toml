@@ -31,6 +31,7 @@ pinvou3-lib = { package = "pinvou3-tauri", path = "../../../pinvou3-app/src-taur
 # test`): standalone HTTP mirroring app/commands/settings.rs; blocking client
 # so the CLI needs no async runtime. TLS stack unifies with pinvou3-tauri's
 # rustls configuration.
+url = "2"
 reqwest = { version = "0.13", default-features = false, features = [
     "blocking",
     "json",

@@ -457,7 +457,11 @@ fn json_entries(personas: serde_json::Value, source: SourceFilter) -> serde_json
 fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let card = get(id).ok_or_else(|| CliError::failed(format!("unknown persona: {id}")))?;
-    let human = card.body.clone();
+    // The body is the full card markdown (whatever a card file can carry,
+    // including hand-placed or synced files): block-sanitize the human
+    // render like the sibling block surfaces (sessions show, artifacts
+    // read). JSON keeps the verbatim body.
+    let human = crate::support::collapse_block_control_characters(&card.body);
     let value = serde_json::json!({
         "id": card.id,
         "name": card.name,

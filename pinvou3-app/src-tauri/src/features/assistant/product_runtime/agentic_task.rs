@@ -63,9 +63,16 @@ use crate::platform::prefs::UserPrefs;
 /// - `teardown_delete` → `EnginePoolRuntime::close_eval_session_result`
 ///   (turn gate → engine evict → `store.delete` → forget; the durable delete
 ///   happens INSIDE this call)
-/// - `teardown_schedule_delete` → `schedule_eval_cleanup` (timing unregister
-///   + background late sweeps) followed by the same awaited durable delete
-///   the runner's `log_cleanup_delete` performed
+/// - `teardown_schedule_delete` → the timing unregister followed by the
+///   adoption-guarded durable delete: under the turn gate the record's
+///   factory title is RE-CHECKED, and a record renamed between the
+///   disposition's outside-the-gate sample and the delete (a live turn can
+///   hold the gate for the turn's whole wall clock) is kept as an adopted
+///   session — only the engine is reclaimed. Like the stub twin, the late
+///   sweep must NOT be pre-armed here: when the guard keeps the record, a
+///   pre-armed sweep would delete `sessions/<id>/` under the kept session.
+///   The guarded delete schedules the sweep itself on its own delete and
+///   failed-delete outcomes.
 /// - `teardown_delete_stub_if_still_empty` → the timing unregister followed
 ///   by the guarded stub delete: under the turn gate the record's emptiness
 ///   is RE-CHECKED, and a record that gained messages (a turn admitted
@@ -84,11 +91,13 @@ pub(crate) trait AgenticTeardownExecutor {
     fn teardown_turn_active(&self, session_id: &str) -> bool;
     /// Delete the session (record + directory), returning best-effort errors.
     async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error>;
-    /// Delete the session through the cleanup lane (scheduled sweeps plus the
-    /// awaited durable delete), returning best-effort errors. Delete-on-entry
-    /// is deliberate: the caller has already consulted the adoption and
-    /// unreadable-record guards, so a transcript that still wears the factory
-    /// title is the legacy one-shot contract's to delete.
+    /// Delete the session through the one-shot lane, returning best-effort
+    /// errors. Delete-on-entry is deliberate: the caller has already
+    /// consulted the adoption and unreadable-record guards, so a transcript
+    /// that still wears the factory title is the legacy one-shot contract's
+    /// to delete. The gate re-checks the adoption marker under the turn
+    /// lock, because a live turn can hold that lock long enough for a GUI
+    /// rename to land after the sample.
     async fn teardown_schedule_delete(
         &self,
         session_id: &str,
@@ -119,8 +128,13 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
         &self,
         session_id: &str,
     ) -> std::result::Result<(), anyhow::Error> {
-        self.schedule_eval_cleanup(session_id);
-        self.close_eval_session_result(session_id).await
+        // Timing teardown only — no pre-armed late sweep. The guarded delete
+        // schedules the sweep itself when it deletes (or fails to); on the
+        // keep outcome a pre-armed sweep would delete `sessions/<id>/`
+        // (timeline, staged attachments, workspace) under the kept session.
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
+        self.delete_headless_session_unless_adopted(session_id)
+            .await
     }
 
     async fn teardown_delete_stub_if_still_empty(
@@ -146,10 +160,10 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
             // `evict_bounded` reports a failure to acquire the session's turn
             // gate, not necessarily a live turn — a long in-flight submit
             // holds it too.
-            eprintln!(
+            super::note_stderr(&format!(
                 "[agent-task] engine reclaim skipped: the session's turn gate did not \
                  free up within {CANCEL_SETTLE_SECS}s; the session stays inspectable"
-            );
+            ));
         }
     }
 }
@@ -490,7 +504,7 @@ pub async fn run_agentic_task(
     // outcome — the report may carry an error, and the run may have cleaned
     // its own session up afterwards.
     if let Some(warning) = disarm_retention_eviction_observer(&store, &evictions) {
-        eprintln!("{warning}");
+        super::note_stderr(&warning);
     }
     outcome
 }
@@ -573,7 +587,10 @@ async fn run_session_lifecycle(
         ) {
             FreshSessionDisposition::Cleanup => {
                 if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
@@ -618,7 +635,10 @@ async fn run_session_lifecycle(
                     .teardown_delete_stub_if_still_empty(session_id)
                     .await
                 {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             NeverStartedDisposition::LegacyCleanupStarted => {
@@ -627,7 +647,10 @@ async fn run_session_lifecycle(
                 // title: the disposition has already classified a renamed
                 // record as adopted and kept it.
                 if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             NeverStartedDisposition::KeepInspectable => {
@@ -652,7 +675,10 @@ async fn run_session_lifecycle(
         ) {
             FreshSessionDisposition::Cleanup => {
                 if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
@@ -747,11 +773,13 @@ fn never_started_disposition(
         // A stub is the run's to delete only while it still wears the
         // factory title: a rename is ownership on this lane too, the same
         // rule the started lane below and the one-shot decision apply. An
-        // unreadable title is not proven factory-titled and keeps. Residual:
-        // the rename is sampled here and re-checked (as emptiness) at the
-        // guarded delete, so a rename landing in the sample→delete window is
-        // the same TOCTOU class the delete-lane doc already discloses for
-        // first messages.
+        // unreadable title is not proven factory-titled and keeps. Both
+        // facts are re-checked UNDER the turn gate at the guarded delete
+        // (`DeleteGateRecheck::StillAStub`), so a rename or a first message
+        // landing in the sample→delete window keeps the record; the
+        // residual window is only the store read racing the rename inside
+        // the gate, the same cross-process store race the delete lane's
+        // docs already disclose.
         (false, _) if factory_titled == Ok(true) => NeverStartedDisposition::CleanupStub,
         (false, _) => NeverStartedDisposition::KeepInspectable,
         (true, true) => NeverStartedDisposition::KeepInspectable,
@@ -937,10 +965,10 @@ fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<RetentionE
         // arm and disarm would do it). Its record was never reported (and may
         // be empty) — say so instead of silently adopting a dead receiver.
         drop(stale);
-        eprintln!(
+        super::note_stderr(
             "[pinvou agent run] warning: replaced a stale retention-eviction \
              observer; any eviction record the previous run left unreported \
-             was discarded"
+             was discarded",
         );
     }
     evictions

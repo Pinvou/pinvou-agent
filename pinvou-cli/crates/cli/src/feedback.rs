@@ -151,8 +151,9 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     crate::artifacts::check_sensitive_path(&body_canonical).map_err(|reason| {
         CliError::failed(format!("feedback submit: refusing body file: {reason}"))
     })?;
-    // The body is validated/truncated further down; the cap only stops an
-    // unbounded file from being loaded in the first place.
+    // The body is validated further down — oversized bodies are REJECTED,
+    // not truncated; the cap only stops an unbounded file from being loaded
+    // in the first place.
     let description =
         crate::support::read_text_file_capped(&submit.body_file, 64 * 1024, "feedback submit")?;
     let mut attachments = Vec::new();

@@ -1067,18 +1067,29 @@ fn safe_prefs<S: CredentialStore>(store: &S) -> UserPrefs {
     prefs
 }
 
-/// One `models list` JSON row, mirroring the GUI's `ModelListItem` DTO
-/// (`credential_state` included, same semantics as `models show`) minus the
-/// GUI-only presentation fields.
+/// One `models list`/`show` JSON row. Field names are the GUI's
+/// `ModelListItem` DTO (a flatten of `SavedModel`), so a script can read
+/// back every field `models add`/`edit` accepts without maintaining a
+/// second key map: `alias`/`provider_kind`/`vendor`/`endpoint_mode`/
+/// `vision_model_id` are CLI-writable, and the token fields keep the
+/// GUI's `*_tokens` names. Secret material stays out (`has_secret`/
+/// `credential_state` only), and the GUI-only presentation fields
+/// (`readonly`/`system`/`kind`, `image_capability_override`) stay
+/// GUI-side.
 fn model_entry_json(model: &SavedModel, active_id: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "id": model.id,
         "name": model.name,
+        "alias": model.alias,
         "preset": model.preset.as_str(),
         "model": model.model,
         "base_url": model.base_url,
-        "context_window": model.context_window_tokens,
-        "max_output": model.max_output_tokens,
+        "provider_kind": model.provider_kind,
+        "vendor": model.vendor,
+        "endpoint_mode": model.endpoint_mode,
+        "vision_model_id": model.vision_model_id,
+        "context_window_tokens": model.context_window_tokens,
+        "max_output_tokens": model.max_output_tokens,
         "reasoning_effort": model.reasoning_effort,
         "active": active_id == Some(model.id.as_str()),
         "has_secret": model.has_secret,

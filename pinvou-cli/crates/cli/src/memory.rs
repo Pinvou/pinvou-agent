@@ -1967,36 +1967,59 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             ))
         }
     })?;
-    let report = pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
-        // Same shared-bridge fallback as the GUI command and the scheduled
-        // executor; fresh_bridge_for is crate-private to pinvou3_lib, so the
-        // CLI always organizes with the shared bridge plus current global prefs.
-        let mut bridge = pool.bridge.clone();
-        bridge.prefs = pinvou3_lib::platform::prefs::UserPrefs::load();
-        bridge.session_model = None;
-        feature::organize_memory_with_llm(&bridge, None).await
-        // No runtime prompt refresh here: the previous `store.active_id()`
-        // branch was dead (the active session is process-local state a
-        // one-shot CLI process never owns), and the live GUI's cached prompt
-        // can only be refreshed by the GUI process itself. The snapshot
-        // document refresh happens below, outside the host.
-    })
-    .map_err(|error| {
-        let detail = pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
-        // A lock held by another SURFACE (the GUI button or the scheduled
-        // executor) surfaces here, not at the CLI lock above: the feature
-        // layer's `.organize.lock` is taken inside `organize_memory_with_llm`,
-        // on the host path, and reaches this map as an anyhow error carrying
-        // [`ORGANIZE_LOCK_BUSY_MARKER`]. That is the same "another organize is
-        // in flight" situation as the CLI-vs-CLI `WouldBlock`, so it must get
-        // the same documented `memory_organize_busy` refusal instead of a
-        // generic `memory_organize_failed` that reads like a crashed pass.
-        if detail.contains(ORGANIZE_LOCK_BUSY_MARKER) {
-            organize_busy_error()
-        } else {
-            CliError::failed(format!("memory_organize_failed: {detail}"))
+    // The host bootstrap panics (tauri's EventLoop refuses a non-main
+    // thread in some embedded environments) rather than returning Err — a
+    // panic here would take the whole process down with exit 101, outside
+    // the exit-code contract. Same catch_unwind wrap as the scheduled lane's
+    // `organize_headless`, downgraded to the command's ordinary failure.
+    let host_result = std::panic::catch_unwind(|| {
+        pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
+            // Same shared-bridge fallback as the GUI command and the scheduled
+            // executor; fresh_bridge_for is crate-private to pinvou3_lib, so the
+            // CLI always organizes with the shared bridge plus current global prefs.
+            let mut bridge = pool.bridge.clone();
+            bridge.prefs = pinvou3_lib::platform::prefs::UserPrefs::load();
+            bridge.session_model = None;
+            feature::organize_memory_with_llm(&bridge, None).await
+            // No runtime prompt refresh here: the previous `store.active_id()`
+            // branch was dead (the active session is process-local state a
+            // one-shot CLI process never owns), and the live GUI's cached prompt
+            // can only be refreshed by the GUI process itself. The snapshot
+            // document refresh happens below, outside the host.
+        })
+    });
+    let report = match host_result {
+        Ok(Ok(report)) => report,
+        Ok(Err(error)) => {
+            let detail =
+                pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
+            // A lock held by another SURFACE (the GUI button or the scheduled
+            // executor) surfaces here, not at the CLI lock above: the feature
+            // layer's `.organize.lock` is taken inside `organize_memory_with_llm`,
+            // on the host path, and reaches this map as an anyhow error carrying
+            // [`ORGANIZE_LOCK_BUSY_MARKER`]. That is the same "another organize is
+            // in flight" situation as the CLI-vs-CLI `WouldBlock`, so it must get
+            // the same documented `memory_organize_busy` refusal instead of a
+            // generic `memory_organize_failed` that reads like a crashed pass.
+            if detail.contains(ORGANIZE_LOCK_BUSY_MARKER) {
+                return Err(organize_busy_error());
+            }
+            return Err(CliError::failed(format!(
+                "memory_organize_failed: {detail}"
+            )));
         }
-    })?;
+        Err(panic) => {
+            let reason = panic
+                .downcast_ref::<&str>()
+                .map(|reason| (*reason).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            return Err(CliError::failed(format!(
+                "memory_organize_failed: the windowless host bootstrap panicked: {}",
+                pinvou3_lib::platform::credential_store::redact_secret(&reason)
+            )));
+        }
+    };
     // Same post-organize refresh as the GUI command (app/commands/memory.rs
     // `organize_memory` → `refresh_memory_snapshot_document`): reload every
     // authoritative source and rewrite the snapshot document so it reflects
@@ -2004,13 +2027,26 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     // organize — the GUI treats it the same way.
     refresh_snapshot_document_after_organize();
     let mut lines = vec![
-        organize_summary(&report),
+        support::collapse_control_characters(&organize_summary(&report)),
         format!("Started: {}", report.started_at),
         format!("Finished: {}", report.finished_at),
-        format!("Model: {}", report.model),
+        format!(
+            "Model: {}",
+            support::collapse_control_characters(&report.model)
+        ),
     ];
     if !report.warnings.is_empty() {
-        lines.push(format!("Warnings: {}", report.warnings.join("; ")));
+        // Warnings quote store ids and pass names: collapse like every
+        // other human row.
+        lines.push(format!(
+            "Warnings: {}",
+            report
+                .warnings
+                .iter()
+                .map(|warning| support::collapse_control_characters(warning))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
     }
     let value = serde_json::to_value(&report).unwrap_or_default();
     Ok(success(render(output, lines.join("\n"), &value)))
@@ -2090,8 +2126,8 @@ fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
                 format!(
                     "{}\t{}\t{}",
                     report.started_at,
-                    report.model,
-                    organize_summary(report)
+                    support::collapse_control_characters(&report.model),
+                    support::collapse_control_characters(&organize_summary(report))
                 )
             })
             .collect::<Vec<_>>()

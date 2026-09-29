@@ -378,10 +378,13 @@ fn run_agent(
     // app's. The session id below identifies the run; naming it is the GUI's
     // job (or the caller's, via `pinvou sessions rename`).
     //
-    // The reported id is resolvable: the engine only deletes a fresh session
-    // when the run returned no report at all (exit 1, nothing printed). The
-    // one exception is the caller's own `PINVOU3_AGENT_TASK_KEEP_SESSION=0`,
-    // whose entire purpose is to remove this run's session afterwards.
+    // The reported id is resolvable once the record exists: the engine only
+    // deletes a fresh session when the run returned no report at all (exit
+    // 1, nothing printed). A setup timeout that lands before the record's
+    // first durable write leaves nothing to resolve, and the run fails
+    // loudly. The one exception is the caller's own
+    // `PINVOU3_AGENT_TASK_KEEP_SESSION=0`, whose entire purpose is to remove
+    // this run's session afterwards.
     //
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
     // in-turn errors live in the report fields and are settled by the
@@ -467,7 +470,12 @@ fn render_agent_report(
                 report.session_id, report.status
             )];
             if let Some(error) = &report.error {
-                lines.push(format!("error: {error}"));
+                // Error text embeds engine/host diagnostics; collapse it like
+                // every other human row.
+                lines.push(format!(
+                    "error: {}",
+                    crate::support::collapse_control_characters(error)
+                ));
             }
             if let Some(usage) = &report.usage {
                 lines.push(format!(
@@ -478,7 +486,14 @@ fn render_agent_report(
                 ));
             }
             lines.push(String::new());
-            lines.push(report.assistant_text.trim_end().to_string());
+            // The assistant answer quotes whatever the turn read (files,
+            // web pages, tool output), so it is model-controlled terminal
+            // input: give it the same block sanitization as every other
+            // agent-authored block in this CLI (artifacts read, code
+            // diff/preview). JSON mode keeps the verbatim text.
+            lines.push(crate::support::collapse_block_control_characters(
+                report.assistant_text.trim_end(),
+            ));
             Ok(lines.join("\n"))
         }
     }
@@ -531,6 +546,57 @@ mod tests {
             serde_json::from_str(&json).expect("json mode must render a single-line JSON report");
         assert_eq!(value["session_id"], serde_json::json!("s-1"));
         assert_eq!(value["status"], serde_json::json!("completed"));
+    }
+
+    /// The human block is model-controlled terminal input (the answer
+    /// quotes whatever the turn read), so control characters must be
+    /// collapsed before they reach the terminal; JSON keeps the verbatim
+    /// text behind serde's escaping.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn agent_report_collapses_control_characters_in_the_human_block() {
+        fn report_with(
+            assistant_text: &str,
+            error: Option<String>,
+        ) -> pinvou_product_backend::AgenticTaskReport {
+            pinvou_product_backend::AgenticTaskReport {
+                session_id: "s-1".to_owned(),
+                status: "completed".to_owned(),
+                timed_out: false,
+                completed_after_deadline: false,
+                assistant_text: assistant_text.to_owned(),
+                tool_events: Vec::new(),
+                usage: None,
+                error,
+            }
+        }
+        let hostile = report_with(
+            "ok\n\u{1b}[2JEsc\u{1b}]0;title\u{7}\rInjected",
+            Some("boom\u{1b}[31mred".to_owned()),
+        );
+        let human = render_agent_report(&hostile, OutputMode::Human).unwrap();
+        assert!(
+            !human.contains('\u{1b}'),
+            "ESC must not reach the terminal: {human:?}"
+        );
+        assert!(
+            !human.contains('\r'),
+            "CR must not forge a carrier return: {human:?}"
+        );
+        // Each control character collapses to one space; the visible text
+        // around it survives.
+        assert!(human.contains("ok"), "{human:?}");
+        assert!(human.contains("[2JEsc"), "{human:?}");
+        assert!(human.contains("Injected"), "{human:?}");
+        assert!(human.contains("error: boom [31mred"), "{human:?}");
+
+        let json = render_agent_report(&hostile, OutputMode::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["assistant_text"],
+            serde_json::json!("ok\n\u{1b}[2JEsc\u{1b}]0;title\u{7}\rInjected"),
+            "JSON mode keeps the verbatim text"
+        );
     }
 
     /// The flag-less contract: only the three historical fields are set;

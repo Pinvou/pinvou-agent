@@ -98,7 +98,7 @@ fn load_prefs() -> UserPrefs {
 }
 
 const ADD_ARGS: &[&str] = &[
-    "pinvoy",
+    "pinvou",
     "models",
     "add",
     "--preset",
@@ -118,9 +118,9 @@ const ADD_ARGS: &[&str] = &[
 #[test]
 fn parses_every_models_subcommand() {
     for args in [
-        vec!["pinvoy", "models", "list"],
+        vec!["pinvou", "models", "list"],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -134,7 +134,7 @@ fn parses_every_models_subcommand() {
         ],
         // Every optional GUI-form field the model editor writes.
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -156,27 +156,27 @@ fn parses_every_models_subcommand() {
             "--vision-model-id",
             "m_other",
         ],
-        vec!["pinvoy", "models", "edit", "m1", "--name", "Renamed"],
-        vec!["pinvoy", "models", "edit", "m1", "--alias", "none"],
-        vec!["pinvoy", "models", "edit", "m1", "--clear-api-key"],
-        vec!["pinvoy", "models", "edit", "m1", "--api-key-stdin"],
-        vec!["pinvoy", "models", "edit", "m1", "--set-active"],
-        vec!["pinvoy", "models", "remove", "m1", "--yes"],
-        vec!["pinvoy", "models", "remove", "m1"],
-        vec!["pinvoy", "models", "use", "m1"],
-        vec!["pinvoy", "models", "show", "m1"],
-        vec!["pinvoy", "models", "show", "m1", "--reveal-key"],
-        vec!["pinvoy", "models", "test", "m1"],
-        vec!["pinvoy", "models", "probe-local"],
+        vec!["pinvou", "models", "edit", "m1", "--name", "Renamed"],
+        vec!["pinvou", "models", "edit", "m1", "--alias", "none"],
+        vec!["pinvou", "models", "edit", "m1", "--clear-api-key"],
+        vec!["pinvou", "models", "edit", "m1", "--api-key-stdin"],
+        vec!["pinvou", "models", "edit", "m1", "--set-active"],
+        vec!["pinvou", "models", "remove", "m1", "--yes"],
+        vec!["pinvou", "models", "remove", "m1"],
+        vec!["pinvou", "models", "use", "m1"],
+        vec!["pinvou", "models", "show", "m1"],
+        vec!["pinvou", "models", "show", "m1", "--reveal-key"],
+        vec!["pinvou", "models", "test", "m1"],
+        vec!["pinvou", "models", "probe-local"],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "probe-local",
             "--url",
             "http://127.0.0.1:8000/v1",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "probe-local",
             "--url",
@@ -191,25 +191,25 @@ fn parses_every_models_subcommand() {
 
 #[test]
 fn models_without_subcommand_is_a_usage_error() {
-    let message = usage_error(&["pinvoy", "models"]);
+    let message = usage_error(&["pinvou", "models"]);
     assert!(message.contains("models"), "unexpected message: {message}");
     assert!(message.contains("list"), "usage must name subcommands");
 }
 
 #[test]
 fn models_rejects_unknown_subcommands_and_options() {
-    assert!(usage_error(&["pinvoy", "models", "bogus"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "models", "list", "extra"]).contains("no arguments"));
-    assert!(usage_error(&["pinvoy", "models", "list", "--json"]).contains("unknown option"));
-    assert!(usage_error(&["pinvoy", "models", "use"]).contains("requires an id"));
-    assert!(usage_error(&["pinvoy", "models", "show", "a", "b"]).contains("one id"));
+    assert!(usage_error(&["pinvou", "models", "bogus"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "models", "list", "extra"]).contains("no arguments"));
+    assert!(usage_error(&["pinvou", "models", "list", "--json"]).contains("unknown option"));
+    assert!(usage_error(&["pinvou", "models", "use"]).contains("requires an id"));
+    assert!(usage_error(&["pinvou", "models", "show", "a", "b"]).contains("one id"));
 }
 
 /// Duplicate boolean flags exit 2 like duplicate value flags and like every
 /// `support::parse_family_flags` family.
 #[test]
 fn models_reject_duplicate_boolean_flags() {
-    let message = usage_error(&["pinvoy", "models", "remove", "m1", "--yes", "--yes"]);
+    let message = usage_error(&["pinvou", "models", "remove", "m1", "--yes", "--yes"]);
     assert!(
         message.contains("--yes"),
         "the duplicate-flag usage error must name the flag"
@@ -219,7 +219,7 @@ fn models_reject_duplicate_boolean_flags() {
 #[test]
 fn models_add_rejects_bad_presets_and_efforts() {
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -238,7 +238,7 @@ fn models_add_rejects_bad_presets_and_efforts() {
     );
 
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -262,7 +262,7 @@ fn models_add_rejects_bad_presets_and_efforts() {
 fn models_add_requires_core_fields() {
     for missing in [
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--name",
@@ -273,7 +273,7 @@ fn models_add_requires_core_fields() {
             "U",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -284,7 +284,7 @@ fn models_add_requires_core_fields() {
             "U",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -295,7 +295,7 @@ fn models_add_requires_core_fields() {
             "U",
         ],
         vec![
-            "pinvoy", "models", "add", "--preset", "deepseek", "--name", "N", "--model", "M",
+            "pinvou", "models", "add", "--preset", "deepseek", "--name", "N", "--model", "M",
         ],
     ] {
         let error = parse_args(missing).expect_err("missing required field");
@@ -308,7 +308,7 @@ fn models_add_requires_core_fields() {
 fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
     for args in [
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -323,7 +323,7 @@ fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
             "abc",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -338,7 +338,7 @@ fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
             "0",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -353,7 +353,7 @@ fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
             "-3",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -381,56 +381,56 @@ fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
 #[test]
 fn parses_settings_get_set_and_search() {
     for args in [
-        vec!["pinvoy", "settings", "get"],
-        vec!["pinvoy", "settings", "get", "theme"],
-        vec!["pinvoy", "settings", "set", "theme", "liquid-dark"],
+        vec!["pinvou", "settings", "get"],
+        vec!["pinvou", "settings", "get", "theme"],
+        vec!["pinvou", "settings", "set", "theme", "liquid-dark"],
         // snake_case alias of the canonical kebab-case value
-        vec!["pinvoy", "settings", "set", "theme", "liquid_dark"],
-        vec!["pinvoy", "settings", "set", "color_scheme", "system"],
-        vec!["pinvoy", "settings", "set", "language", "zh-Hans"],
-        vec!["pinvoy", "settings", "set", "memory_enabled", "true"],
+        vec!["pinvou", "settings", "set", "theme", "liquid_dark"],
+        vec!["pinvou", "settings", "set", "color_scheme", "system"],
+        vec!["pinvou", "settings", "set", "language", "zh-Hans"],
+        vec!["pinvou", "settings", "set", "memory_enabled", "true"],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "set",
             "notifications.enabled",
             "false",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "set",
             "notifications.task_completed",
             "true",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "set",
             "sidebar.date_grouping",
             "false",
         ],
-        vec!["pinvoy", "settings", "set", "mode_defaults.work", "plan"],
-        vec!["pinvoy", "settings", "set", "mode_defaults.work", "none"],
+        vec!["pinvou", "settings", "set", "mode_defaults.work", "plan"],
+        vec!["pinvou", "settings", "set", "mode_defaults.work", "none"],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "set",
             "code_permission.last_mode",
             "yolo",
         ],
-        vec!["pinvoy", "settings", "set", "advanced.allow_shell", "none"],
+        vec!["pinvou", "settings", "set", "advanced.allow_shell", "none"],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "set",
             "voice_shortcut_enabled",
             "false",
         ],
-        vec!["pinvoy", "settings", "set", "pet.enabled", "true"],
-        vec!["pinvoy", "settings", "search", "list"],
+        vec!["pinvou", "settings", "set", "pet.enabled", "true"],
+        vec!["pinvou", "settings", "search", "list"],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "search",
             "set",
@@ -440,7 +440,7 @@ fn parses_settings_get_set_and_search() {
             "METASO_API_KEY",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "search",
             "set",
@@ -449,7 +449,7 @@ fn parses_settings_get_set_and_search() {
             "--clear",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "settings",
             "search",
             "set",
@@ -458,7 +458,7 @@ fn parses_settings_get_set_and_search() {
             "--clear",
             "--yes",
         ],
-        vec!["pinvoy", "settings", "search", "test", "bing"],
+        vec!["pinvou", "settings", "search", "test", "bing"],
     ] {
         parse_args(args).unwrap_or_else(|error| panic!("valid command rejected: {error}"));
     }
@@ -466,44 +466,44 @@ fn parses_settings_get_set_and_search() {
 
 #[test]
 fn settings_rejects_unknown_subcommands_and_keys() {
-    let message = usage_error(&["pinvoy", "settings"]);
+    let message = usage_error(&["pinvou", "settings"]);
     assert!(
         message.contains("settings"),
         "unexpected message: {message}"
     );
-    assert!(usage_error(&["pinvoy", "settings", "bogus"]).contains("get|set|search"));
-    let message = usage_error(&["pinvoy", "settings", "get", "bogus_key"]);
+    assert!(usage_error(&["pinvou", "settings", "bogus"]).contains("get|set|search"));
+    let message = usage_error(&["pinvou", "settings", "get", "bogus_key"]);
     assert!(message.contains("bogus_key") && message.contains("theme"));
-    let message = usage_error(&["pinvoy", "settings", "set", "bogus_key", "true"]);
+    let message = usage_error(&["pinvou", "settings", "set", "bogus_key", "true"]);
     assert!(message.contains("bogus_key") && message.contains("pet.enabled"));
 }
 
 #[test]
 fn settings_set_rejects_bad_values_naming_valid_ones() {
     // dark is a color_scheme value, not a theme
-    let message = usage_error(&["pinvoy", "settings", "set", "theme", "dark"]);
+    let message = usage_error(&["pinvou", "settings", "set", "theme", "dark"]);
     assert!(
         message.contains("genesis") && message.contains("liquid-light"),
         "{message}"
     );
-    let message = usage_error(&["pinvoy", "settings", "set", "color_scheme", "blue"]);
+    let message = usage_error(&["pinvou", "settings", "set", "color_scheme", "blue"]);
     assert!(message.contains("light") && message.contains("dark") && message.contains("system"));
-    let message = usage_error(&["pinvoy", "settings", "set", "language", "zh"]);
+    let message = usage_error(&["pinvou", "settings", "set", "language", "zh"]);
     assert!(message.contains("zh-Hans") && message.contains("en") && message.contains("ja"));
-    let message = usage_error(&["pinvoy", "settings", "set", "memory_enabled", "yes"]);
+    let message = usage_error(&["pinvou", "settings", "set", "memory_enabled", "yes"]);
     assert!(
         message.contains("true") && message.contains("false"),
         "{message}"
     );
-    let message = usage_error(&["pinvoy", "settings", "set", "mode_defaults.work", "auto"]);
+    let message = usage_error(&["pinvou", "settings", "set", "mode_defaults.work", "auto"]);
     assert!(message.contains("plan") && message.contains("yolo") && message.contains("none"));
-    let message = usage_error(&["pinvoy", "settings", "set", "advanced.allow_shell", "maybe"]);
+    let message = usage_error(&["pinvou", "settings", "set", "advanced.allow_shell", "maybe"]);
     assert!(
         message.contains("true") && message.contains("none"),
         "{message}"
     );
     // type mismatch: bool key with an enum value
-    let message = usage_error(&["pinvoy", "settings", "set", "pet.enabled", "plan"]);
+    let message = usage_error(&["pinvou", "settings", "set", "pet.enabled", "plan"]);
     assert!(
         message.contains("true") && message.contains("false"),
         "{message}"
@@ -512,23 +512,23 @@ fn settings_set_rejects_bad_values_naming_valid_ones() {
 
 #[test]
 fn settings_set_requires_key_and_value() {
-    assert!(usage_error(&["pinvoy", "settings", "set"]).contains("<key> <value>"));
-    assert!(usage_error(&["pinvoy", "settings", "set", "theme"]).contains("<key> <value>"));
+    assert!(usage_error(&["pinvou", "settings", "set"]).contains("<key> <value>"));
+    assert!(usage_error(&["pinvou", "settings", "set", "theme"]).contains("<key> <value>"));
 }
 
 #[test]
 fn settings_search_rejects_bad_providers_and_conflicting_sources() {
-    assert!(usage_error(&["pinvoy", "settings", "search"]).contains("list|set|test"));
-    assert!(usage_error(&["pinvoy", "settings", "search", "bogus"]).contains("list|set|test"));
-    let message = usage_error(&["pinvoy", "settings", "search", "set"]);
+    assert!(usage_error(&["pinvou", "settings", "search"]).contains("list|set|test"));
+    assert!(usage_error(&["pinvou", "settings", "search", "bogus"]).contains("list|set|test"));
+    let message = usage_error(&["pinvou", "settings", "search", "set"]);
     assert!(message.contains("--provider"), "{message}");
-    let message = usage_error(&["pinvoy", "settings", "search", "set", "--provider", "nope"]);
+    let message = usage_error(&["pinvou", "settings", "search", "set", "--provider", "nope"]);
     assert!(
         message.contains("bing") && message.contains("tavily"),
         "{message}"
     );
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "search",
         "set",
@@ -539,7 +539,7 @@ fn settings_search_rejects_bad_providers_and_conflicting_sources() {
         "--clear",
     ]);
     assert!(message.contains("--clear"), "{message}");
-    let message = usage_error(&["pinvoy", "settings", "search", "test", "google"]);
+    let message = usage_error(&["pinvou", "settings", "search", "test", "google"]);
     assert!(
         message.contains("bing") && message.contains("metaso"),
         "{message}"
@@ -551,15 +551,15 @@ fn settings_search_rejects_bad_providers_and_conflicting_sources() {
 /// accepted any word.
 #[test]
 fn settings_alias_only_accepts_settings_subcommands() {
-    let message = usage_error(&["pinvoy", "settings", "list"]);
+    let message = usage_error(&["pinvou", "settings", "list"]);
     assert!(message.contains("get|set|search"), "{message}");
-    let message = usage_error(&["pinvoy", "settings", "probe-local"]);
+    let message = usage_error(&["pinvou", "settings", "probe-local"]);
     assert!(message.contains("get|set|search"), "{message}");
 }
 
 #[test]
 fn models_token_only_accepts_models_subcommands() {
-    let message = usage_error(&["pinvoy", "models", "get"]);
+    let message = usage_error(&["pinvou", "models", "get"]);
     assert!(message.contains("models"), "{message}");
     assert!(message.contains("probe-local"), "{message}");
     assert!(
@@ -576,7 +576,7 @@ fn models_token_only_accepts_models_subcommands() {
 fn models_list_reports_fresh_default_model() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("list-fresh");
-    let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     let models = value["models"].as_array().expect("models array");
     assert_eq!(models.len(), 1, "fresh home migrates one default model");
@@ -593,7 +593,7 @@ fn models_list_reports_fresh_default_model() {
         "no key field in list"
     );
 
-    let human = run_ok(&["pinvoy", "models", "list"]);
+    let human = run_ok(&["pinvou", "models", "list"]);
     assert!(
         human.contains("*default"),
         "models list should mark the active model"
@@ -610,8 +610,8 @@ fn models_list_reports_fresh_default_model() {
     let _restore_deepseek_key =
         RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
-    let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
-    let human = run_ok(&["pinvoy", "models", "list"]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
+    let human = run_ok(&["pinvou", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     assert_eq!(
         value["models"][0]["credential_state"], "env_override",
@@ -633,7 +633,7 @@ fn settings_get_all_and_single_key_round_trip() {
     let _home = SandboxHome::new("settings-roundtrip");
 
     // All-settings get is JSON even in human mode.
-    let all = run_ok(&["pinvoy", "settings", "get"]);
+    let all = run_ok(&["pinvou", "settings", "get"]);
     let value: serde_json::Value = serde_json::from_str(&all).expect("json settings dump");
     assert!(value.get("theme").is_some());
     assert!(value.get("notifications").is_some());
@@ -641,19 +641,19 @@ fn settings_get_all_and_single_key_round_trip() {
 
     // set -> prefs layer persists -> get reflects it; assert through
     // UserPrefs::load to prove the write went through the prefs layer.
-    run_ok(&["pinvoy", "settings", "set", "theme", "liquid-dark"]);
+    run_ok(&["pinvou", "settings", "set", "theme", "liquid-dark"]);
     assert_eq!(load_prefs().theme, Theme::LiquidDark);
-    let single = run_ok(&["pinvoy", "--output", "json", "settings", "get", "theme"]);
+    let single = run_ok(&["pinvou", "--output", "json", "settings", "get", "theme"]);
     assert_eq!(single, r#"{"theme":"liquid-dark"}"#);
-    let human = run_ok(&["pinvoy", "settings", "get", "theme"]);
+    let human = run_ok(&["pinvou", "settings", "get", "theme"]);
     assert_eq!(human, "theme = liquid-dark");
 
-    run_ok(&["pinvoy", "settings", "set", "color_scheme", "dark"]);
+    run_ok(&["pinvou", "settings", "set", "color_scheme", "dark"]);
     assert_eq!(load_prefs().color_scheme, ColorScheme::Dark);
-    run_ok(&["pinvoy", "settings", "set", "language", "ja"]);
+    run_ok(&["pinvou", "settings", "set", "language", "ja"]);
     assert_eq!(load_prefs().language.locale_tag(), "ja");
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "set",
         "notifications.task_completed",
@@ -661,7 +661,7 @@ fn settings_get_all_and_single_key_round_trip() {
     ]);
     assert!(!load_prefs().notifications.task_completed);
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "set",
         "sidebar.date_grouping",
@@ -669,22 +669,22 @@ fn settings_get_all_and_single_key_round_trip() {
     ]);
     assert!(!load_prefs().sidebar.date_grouping);
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "set",
         "voice_shortcut_enabled",
         "true",
     ]);
     assert!(load_prefs().voice_shortcut_enabled);
-    run_ok(&["pinvoy", "settings", "set", "pet.enabled", "true"]);
+    run_ok(&["pinvou", "settings", "set", "pet.enabled", "true"]);
     assert!(load_prefs().pet.enabled);
-    run_ok(&["pinvoy", "settings", "set", "mode_defaults.work", "yolo"]);
+    run_ok(&["pinvou", "settings", "set", "mode_defaults.work", "yolo"]);
     assert_eq!(
         load_prefs().mode_defaults.work,
         Some(SerializableMode::Yolo)
     );
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "set",
         "code_permission.last_mode",
@@ -694,9 +694,9 @@ fn settings_get_all_and_single_key_round_trip() {
         load_prefs().code_permission.last_mode,
         Some(SerializableMode::Plan)
     );
-    run_ok(&["pinvoy", "settings", "set", "advanced.allow_shell", "true"]);
+    run_ok(&["pinvou", "settings", "set", "advanced.allow_shell", "true"]);
     assert_eq!(load_prefs().advanced.allow_shell, Some(true));
-    run_ok(&["pinvoy", "settings", "set", "advanced.allow_shell", "none"]);
+    run_ok(&["pinvou", "settings", "set", "advanced.allow_shell", "none"]);
     assert_eq!(load_prefs().advanced.allow_shell, None);
 }
 
@@ -707,13 +707,13 @@ fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
 
     // Non-zh-Hans language does not support memory: the prefs layer
     // normalizes memory_enabled back to false on save.
-    run_ok(&["pinvoy", "settings", "set", "language", "en"]);
-    run_ok(&["pinvoy", "settings", "set", "memory_enabled", "true"]);
+    run_ok(&["pinvou", "settings", "set", "language", "en"]);
+    run_ok(&["pinvou", "settings", "set", "memory_enabled", "true"]);
     assert!(!load_prefs().memory_enabled, "locale policy must win");
 
     // zh-Hans supports memory: the value sticks.
-    run_ok(&["pinvoy", "settings", "set", "language", "zh-Hans"]);
-    run_ok(&["pinvoy", "settings", "set", "memory_enabled", "true"]);
+    run_ok(&["pinvou", "settings", "set", "language", "zh-Hans"]);
+    run_ok(&["pinvou", "settings", "set", "memory_enabled", "true"]);
     assert!(load_prefs().memory_enabled);
 }
 
@@ -721,7 +721,7 @@ fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
 fn settings_json_get_reports_a_bad_key_as_usage_error() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("settings-bad-key");
-    let parsed = parse_args(["pinvoy", "settings", "get", "nope"].to_vec()).unwrap_err();
+    let parsed = parse_args(["pinvou", "settings", "get", "nope"].to_vec()).unwrap_err();
     assert_eq!(parsed.exit_code(), ExitCode::Usage);
 }
 
@@ -743,7 +743,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     );
 
     // list shows the entry with the requested limits.
-    let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let entry = value["models"]
         .as_array()
@@ -761,14 +761,14 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
 
     // use -> active marker flips and prefs state matches.
     assert_eq!(
-        run_ok(&["pinvoy", "models", "use", &added_id]),
+        run_ok(&["pinvou", "models", "use", &added_id]),
         format!("active: {added_id}")
     );
     assert_eq!(
         load_prefs().advanced.active_model_id.as_deref(),
         Some(added_id.as_str())
     );
-    let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     let active_entry = value["models"]
         .as_array()
@@ -783,7 +783,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     );
 
     // show prints config, never a key.
-    let human = run_ok(&["pinvoy", "models", "show", &added_id]);
+    let human = run_ok(&["pinvou", "models", "show", &added_id]);
     assert!(
         human.contains("preset: deepseek"),
         "models show should print the preset line"
@@ -798,7 +798,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     );
 
     // remove enforces --yes and the min-1 rule.
-    let (message, code) = run_err(&["pinvoy", "models", "remove", &added_id]);
+    let (message, code) = run_err(&["pinvou", "models", "remove", &added_id]);
     assert_eq!(code, ExitCode::Usage);
     assert!(
         message.contains("--yes"),
@@ -810,14 +810,14 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     );
 
     assert_eq!(
-        run_ok(&["pinvoy", "models", "remove", &added_id, "--yes"]),
+        run_ok(&["pinvou", "models", "remove", &added_id, "--yes"]),
         format!("removed: {added_id}")
     );
     assert!(load_prefs().model_by_id(&added_id).is_none());
 
     // Fresh home still has the migrated default model: removing it violates
     // the GUI's min-1 rule.
-    let (message, code) = run_err(&["pinvoy", "models", "remove", "default", "--yes"]);
+    let (message, code) = run_err(&["pinvou", "models", "remove", "default", "--yes"]);
     assert_eq!(code, ExitCode::Usage);
     assert!(
         message.contains("last remaining model"),
@@ -834,7 +834,7 @@ fn models_remove_refuses_the_only_model_without_changes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("remove-only-model");
     let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
-    let (message, code) = run_err(&["pinvoy", "models", "remove", "default", "--yes"]);
+    let (message, code) = run_err(&["pinvou", "models", "remove", "default", "--yes"]);
     assert_eq!(
         code,
         ExitCode::Usage,
@@ -861,7 +861,7 @@ fn models_add_set_active_and_unknown_ids() {
     let _home = SandboxHome::new("model-set-active");
 
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -889,9 +889,9 @@ fn models_add_set_active_and_unknown_ids() {
     assert_eq!(model.reasoning_effort.as_deref(), Some("high"));
 
     for command in [
-        vec!["pinvoy", "models", "use", "missing-id"],
-        vec!["pinvoy", "models", "show", "missing-id"],
-        vec!["pinvoy", "models", "remove", "missing-id", "--yes"],
+        vec!["pinvou", "models", "use", "missing-id"],
+        vec!["pinvou", "models", "show", "missing-id"],
+        vec!["pinvou", "models", "remove", "missing-id", "--yes"],
     ] {
         let (message, code) = run_err(&command);
         // Unknown ids exit 1 like every other family: a lookup miss against
@@ -913,7 +913,7 @@ fn models_add_reports_missing_secret_env_as_host_failure() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("missing-secret-env");
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -958,7 +958,7 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
         "http://192.168.1.5:8000/v1",
         "http://example.invalid:8000/v1",
     ] {
-        let (message, code) = run_err(&["pinvoy", "models", "probe-local", "--url", url]);
+        let (message, code) = run_err(&["pinvou", "models", "probe-local", "--url", url]);
         assert_eq!(
             code,
             ExitCode::Usage,
@@ -971,7 +971,7 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
     }
 
     // Malformed URL is a usage error too.
-    let (message, code) = run_err(&["pinvoy", "models", "probe-local", "--url", "not a url"]);
+    let (message, code) = run_err(&["pinvou", "models", "probe-local", "--url", "not a url"]);
     assert_eq!(code, ExitCode::Usage);
     assert!(
         message.contains("not a valid url"),
@@ -981,7 +981,7 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
     // Usage validation precedes env resolution: a broken --api-key-env must
     // not downgrade the non-loopback refusal from usage (2) to failed (1).
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--url",
@@ -1024,7 +1024,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
 
     // No key is passed, so `models add` never touches the credential store.
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1043,7 +1043,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     // missing. Usage (2) must win, exactly as it does on the --url branch.
     // Before the fix this exits 1 with the env-var message.
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--api-key-env",
@@ -1058,7 +1058,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
 
     // Same refusal without the broken env override, so the ordering fix is
     // not the only reason the assertion above passes.
-    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    let (message, code) = run_err(&["pinvou", "models", "probe-local"]);
     assert_eq!(code, ExitCode::Usage, "message: {message}");
     assert!(message.contains("loopback"), "message: {message}");
 
@@ -1066,7 +1066,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     // matching `models test`'s invalid_url, not a usage error about argv.
     // Before the fix this exits 2.
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1085,7 +1085,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
         .expect("prints the new id")
         .trim()
         .to_owned();
-    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    let (message, code) = run_err(&["pinvou", "models", "probe-local"]);
     assert_eq!(
         code,
         ExitCode::Failed,
@@ -1097,7 +1097,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     );
     // A malformed value supplied on the command line stays a usage error:
     // the classification follows where the url came from, not its shape.
-    let (_, code) = run_err(&["pinvoy", "models", "probe-local", "--url", "not a url"]);
+    let (_, code) = run_err(&["pinvou", "models", "probe-local", "--url", "not a url"]);
     assert_eq!(code, ExitCode::Usage);
 
     // Channel pinning (round-20 finding M-MINOR-a): the exact same defect —
@@ -1108,7 +1108,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     // guard classifies the stored value before any probe request can run).
     // The two commands agree on the code and the exit code; only the
     // channel differs, which docs/pinvou-cli.md discloses.
-    let (stdout, code) = run_outcome(&["pinvoy", "--output", "json", "models", "test", &broken_id]);
+    let (stdout, code) = run_outcome(&["pinvou", "--output", "json", "models", "test", &broken_id]);
     assert_eq!(
         code,
         ExitCode::Failed,
@@ -1123,7 +1123,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
             .is_some_and(|detail| !detail.is_empty()),
         "the parse error itself is the detail: {stdout}"
     );
-    let (message, code) = run_err(&["pinvoy", "models", "probe-local"]);
+    let (message, code) = run_err(&["pinvou", "models", "probe-local"]);
     assert_eq!(
         code,
         ExitCode::Failed,
@@ -1148,7 +1148,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
 fn models_rejects_empty_option_values() {
     for args in [
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -1161,7 +1161,7 @@ fn models_rejects_empty_option_values() {
             "https://example.com",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "models",
             "add",
             "--preset",
@@ -1175,8 +1175,8 @@ fn models_rejects_empty_option_values() {
             "--api-key-env",
             "",
         ],
-        vec!["pinvoy", "models", "probe-local", "--url", ""],
-        vec!["pinvoy", "settings", "search", "set", "--provider", ""],
+        vec!["pinvou", "models", "probe-local", "--url", ""],
+        vec!["pinvou", "settings", "search", "set", "--provider", ""],
     ] {
         let error = parse_args(args.clone()).expect_err("an empty option value is a usage error");
         assert_eq!(error.exit_code(), ExitCode::Usage, "{args:?}: {error}");
@@ -1207,9 +1207,9 @@ fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
     let _home = SandboxHome::new("settings-get-all");
 
     for mode in [
-        vec!["pinvoy", "settings", "get"],
-        vec!["pinvoy", "--output", "human", "settings", "get"],
-        vec!["pinvoy", "--output", "json", "settings", "get"],
+        vec!["pinvou", "settings", "get"],
+        vec!["pinvou", "--output", "human", "settings", "get"],
+        vec!["pinvou", "--output", "json", "settings", "get"],
     ] {
         let stdout = run_ok(&mode);
         assert!(
@@ -1226,7 +1226,7 @@ fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
 
     // The always-JSON rule is stated where a caller looks for it rather than
     // left to be discovered from output that did not change.
-    let message = usage_error(&["pinvoy", "settings"]);
+    let message = usage_error(&["pinvou", "settings"]);
     assert!(
         message.contains("always prints JSON") && message.contains("--output"),
         "the settings usage must disclose that the keyless dump ignores --output: {message}"
@@ -1237,12 +1237,12 @@ fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
 fn settings_search_list_reports_defaults() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("search-list");
-    let human = run_ok(&["pinvoy", "settings", "search", "list"]);
+    let human = run_ok(&["pinvou", "settings", "search", "list"]);
     assert!(
         human.contains("provider: bing"),
         "search list should default to provider bing"
     );
-    let json = run_ok(&["pinvoy", "--output", "json", "settings", "search", "list"]);
+    let json = run_ok(&["pinvou", "--output", "json", "settings", "search", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["provider"], "bing");
     assert_eq!(value["enabled_providers"][0], "bing");
@@ -1279,7 +1279,7 @@ fn settings_search_test_without_a_key_verifies_only_credential_presence() {
 
     for provider in ["metaso", "bocha", "baidu", "tavily"] {
         let (stdout, code) = run_outcome(&[
-            "pinvoy", "--output", "json", "settings", "search", "test", provider,
+            "pinvou", "--output", "json", "settings", "search", "test", provider,
         ]);
         let value: serde_json::Value =
             serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{provider}: {e}: {stdout}"));
@@ -1296,7 +1296,7 @@ fn settings_search_test_without_a_key_verifies_only_credential_presence() {
             "{provider}: the row must say nothing was contacted: {stdout}"
         );
 
-        let (human, _) = run_outcome(&["pinvoy", "settings", "search", "test", provider]);
+        let (human, _) = run_outcome(&["pinvou", "settings", "search", "test", provider]);
         assert!(
             human.contains("verified: credential_presence"),
             "{provider}: the human line must carry the same disclosure: {human}"
@@ -1327,7 +1327,7 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
     );
 
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "--output",
         "json",
         "settings",
@@ -1357,7 +1357,7 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
     // Selecting is still selecting: the non-clear form does switch. Bing
     // takes no api key, so this exercises the selection path without any
     // credential-store write.
-    run_ok(&["pinvoy", "settings", "search", "set", "--provider", "bing"]);
+    run_ok(&["pinvou", "settings", "search", "set", "--provider", "bing"]);
     assert_eq!(load_prefs().search.provider, SearchProvider::Bing);
 }
 
@@ -1387,7 +1387,7 @@ fn models_edit_clear_api_key_requires_yes() {
     // The bare form must refuse like `models remove`: a usage error whose
     // message names --yes, with nothing written.
     let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
-    let (message, code) = run_err(&["pinvoy", "models", "edit", "default", "--clear-api-key"]);
+    let (message, code) = run_err(&["pinvou", "models", "edit", "default", "--clear-api-key"]);
     assert_eq!(
         code,
         ExitCode::Usage,
@@ -1406,7 +1406,7 @@ fn models_edit_clear_api_key_requires_yes() {
     // With --yes the same command proceeds and reports the credential as
     // cleared.
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "edit",
         "default",
@@ -1426,7 +1426,7 @@ fn models_edit_clear_api_key_requires_yes() {
     // happens at execute, exactly like `models remove`).
     parse_args(
         [
-            "pinvoy",
+            "pinvou",
             "models",
             "edit",
             "m1",
@@ -1454,7 +1454,7 @@ fn settings_search_set_clear_requires_yes() {
 
     let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "settings",
         "search",
         "set",
@@ -1481,7 +1481,7 @@ fn settings_search_set_clear_requires_yes() {
     // provider — that contract is pinned separately in
     // settings_search_set_clear_does_not_switch_the_active_provider).
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "--output",
         "json",
         "settings",
@@ -1513,7 +1513,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
     let _home = SandboxHome::new("models-row-hygiene");
     let hostile = "ok\n*m_fake\tEvil";
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1527,7 +1527,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
     ]);
     let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
 
-    let human = run_ok(&["pinvoy", "models", "list"]);
+    let human = run_ok(&["pinvou", "models", "list"]);
     assert_eq!(
         human.lines().count(),
         2,
@@ -1546,7 +1546,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
         "the control characters must be collapsed to spaces, not dropped: {row:?}"
     );
 
-    let shown = run_ok(&["pinvoy", "models", "show", &id]);
+    let shown = run_ok(&["pinvou", "models", "show", &id]);
     assert!(
         shown.contains("name: ok *m_fake Evil"),
         "models show must collapse the same cells: {shown:?}"
@@ -1554,7 +1554,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
 
     // JSON output still carries the original untouched — the hygiene is a
     // rendering concern, not a storage one.
-    let json = run_ok(&["pinvoy", "--output", "json", "models", "show", &id]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     assert_eq!(value["name"], hostile);
 }
@@ -1572,13 +1572,13 @@ fn models_show_reveal_key_names_the_credential_source() {
     unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
 
     // No credential reference at all: genuinely nothing stored.
-    let human = run_ok(&["pinvoy", "models", "show", "default", "--reveal-key"]);
+    let human = run_ok(&["pinvou", "models", "show", "default", "--reveal-key"]);
     assert!(human.contains("api_key_source: none"), "{human}");
     assert!(human.contains("api_key: (not stored)"), "{human}");
 
     // The env override is what used to be misreported.
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
-    let human = run_ok(&["pinvoy", "models", "show", "default", "--reveal-key"]);
+    let human = run_ok(&["pinvou", "models", "show", "default", "--reveal-key"]);
     assert!(
         human.contains("api_key_source: environment"),
         "an env-overridden model must name the environment as the source: {human}"
@@ -1592,7 +1592,7 @@ fn models_show_reveal_key_names_the_credential_source() {
         "the line must name the variable that supplies it: {human}"
     );
     let json = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "--output",
         "json",
         "models",
@@ -1617,7 +1617,7 @@ fn models_add_writes_the_gui_form_metadata() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("models-add-metadata");
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1651,7 +1651,7 @@ fn models_add_writes_the_gui_form_metadata() {
     // A vision fallback must name a model that exists, or it is a routing
     // preference that silently never fires.
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1671,7 +1671,7 @@ fn models_add_writes_the_gui_form_metadata() {
     // An unrecognized provider_kind is a typo, not a value the prefs layer
     // will keep.
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1700,7 +1700,7 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("models-edit");
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "add",
         "--preset",
@@ -1721,7 +1721,7 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
     let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
 
     let json = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "--output",
         "json",
         "models",
@@ -1766,7 +1766,7 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
     );
 
     // --set-active works through edit too, still on the same id.
-    run_ok(&["pinvoy", "models", "edit", &id, "--set-active"]);
+    run_ok(&["pinvou", "models", "edit", &id, "--set-active"]);
     assert_eq!(load_prefs().advanced.active_model_id.as_deref(), Some(&*id));
 }
 
@@ -1776,12 +1776,12 @@ fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
     let _home = SandboxHome::new("models-edit-guards");
 
     // No field flag at all: a mistyped command, not a successful no-op write.
-    let message = usage_error(&["pinvoy", "models", "edit", "default"]);
+    let message = usage_error(&["pinvou", "models", "edit", "default"]);
     assert!(message.contains("--base-url"), "{message}");
 
     // Three mutually exclusive credential intents.
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "edit",
         "default",
@@ -1791,12 +1791,12 @@ fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
     assert!(message.contains("--clear-api-key"), "{message}");
 
     // Identity fields are not clearable; the model would stop being a model.
-    let message = usage_error(&["pinvoy", "models", "edit", "default", "--name", "   "]);
+    let message = usage_error(&["pinvou", "models", "edit", "default", "--name", "   "]);
     assert!(message.contains("--name"), "{message}");
 
     // A model cannot be its own vision fallback.
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "edit",
         "default",
@@ -1806,7 +1806,7 @@ fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
     assert!(message.contains("different model"), "{message}");
 
     // Unknown ids exit 1 like every other family.
-    let (message, code) = run_err(&["pinvoy", "models", "edit", "missing-id", "--name", "X"]);
+    let (message, code) = run_err(&["pinvou", "models", "edit", "missing-id", "--name", "X"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("model not found"), "{message}");
 }
@@ -1826,13 +1826,13 @@ fn probe_local_model_flag_names_a_saved_credential() {
     // endpoint to present it to. Without --url the active model's own
     // credential is already used, and naming another model there would send
     // that model's key to a different model's endpoint.
-    let message = usage_error(&["pinvoy", "models", "probe-local", "--model", "default"]);
+    let message = usage_error(&["pinvou", "models", "probe-local", "--model", "default"]);
     assert!(message.contains("--url"), "{message}");
 
     // Two credential sources at once would leave the choice to evaluation
     // order.
     let message = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--url",
@@ -1847,7 +1847,7 @@ fn probe_local_model_flag_names_a_saved_credential() {
     // An unknown id FAILS instead of degrading to an anonymous probe, which
     // is how the misclassification comes back.
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--url",
@@ -1861,7 +1861,7 @@ fn probe_local_model_flag_names_a_saved_credential() {
     // A known model with no stored key cannot present one either: say so
     // rather than probe anonymously and report a kind.
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--url",
@@ -1889,7 +1889,7 @@ fn probe_local_model_flag_names_a_saved_credential() {
 fn bing_probe_hits_live_endpoint() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("ignored-bing-test");
-    let stdout = run_ok(&["pinvoy", "settings", "search", "test", "bing"]);
+    let stdout = run_ok(&["pinvou", "settings", "search", "test", "bing"]);
     assert!(
         stdout.contains("ok: true"),
         "search test should report ok: true"
@@ -1910,7 +1910,7 @@ fn search_api_probe_validates_a_live_key() {
     let provider =
         std::env::var("PINVOU_CLI_SEARCH_TEST_PROVIDER").unwrap_or_else(|_| "metaso".to_owned());
     let (stdout, code) = run_outcome(&[
-        "pinvoy", "--output", "json", "settings", "search", "test", &provider,
+        "pinvou", "--output", "json", "settings", "search", "test", &provider,
     ]);
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
     assert_eq!(
@@ -1932,7 +1932,7 @@ fn probe_local_identifies_local_server() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("ignored-probe-local");
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "models",
         "probe-local",
         "--url",
@@ -1951,7 +1951,7 @@ fn search_provider_surface_matches_gui() {
     assert_eq!(SearchProvider::default().as_str(), "bing");
     for provider in ["metaso", "bocha", "baidu", "tavily"] {
         // parse accepts every documented provider spelling
-        parse_args(["pinvoy", "settings", "search", "test", provider].to_vec())
+        parse_args(["pinvou", "settings", "search", "test", provider].to_vec())
             .unwrap_or_else(|error| panic!("provider {provider} must parse: {error}"));
     }
 }
