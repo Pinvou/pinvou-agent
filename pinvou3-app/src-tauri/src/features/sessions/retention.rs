@@ -153,7 +153,7 @@ impl SessionStore {
         // than because there are no pins): refuse to evict. Sitting over the
         // cap is recoverable; deleting the sessions the user marked
         // keep-forever is not.
-        let Some(pinned) = self.durable_pinned_sessions() else {
+        let Some(mut pinned) = self.durable_pinned_sessions() else {
             // stderr, not `log::warn!`: the sweep's operator is the headless
             // CLI process, which installs no logger — a log-framework line
             // would never reach it, defeating the fail-safe's own notice.
@@ -197,21 +197,27 @@ impl SessionStore {
                 // delete: a pin landing mid-sweep (the GUI user pinning the
                 // oldest session while a headless batch sweeps) must protect
                 // it — the snapshot taken at sweep start predates it. The
-                // read is a tiny JSON file against an fsync'd record delete,
-                // and it never widens the eviction set: when the boot-time
-                // load succeeded, an unusable — or quarantined-away, or
-                // otherwise absent — file falls back to the boot snapshot (a
-                // subset — a pin persisted after boot is invisible to it, so
-                // that pin can be evicted in this window; the accepted
-                // tradeoff documented on `durable_pinned_sessions`), and only
-                // when the boot load failed too does it yield `None`, which
-                // stops the sweep below. Residual window: a pin that
-                // lands AFTER this re-read but before the delete below is not
-                // seen by either (no cross-process lock exists); that pin is
-                // then swept along with its session — inherent to the
-                // lock-free design and closed only by flock.
+                // read is a tiny JSON file against an fsync'd record delete.
+                // Every successful read is unioned into the exemption set, so
+                // the set only grows over the sweep's life: when a later
+                // re-read fails (file broken or quarantined away), the
+                // fallback — the boot map, when the boot load succeeded — is
+                // staler than what earlier re-reads already saw, and evicting
+                // a session a re-read protected would be the exact loss this
+                // fail-safe exists to prevent. Over-protecting a pin the GUI
+                // removed mid-sweep costs one sweep of delay, not data.
+                // Residual window: a pin that lands AFTER this re-read but
+                // before the delete below is not seen by either (no
+                // cross-process lock exists); that pin is then swept along
+                // with its session — inherent to the lock-free design and
+                // closed only by flock.
                 match self.durable_pinned_sessions() {
-                    Some(fresh) if fresh.contains(&metadata.id) => continue,
+                    Some(fresh) => {
+                        pinned.extend(fresh);
+                        if pinned.contains(&metadata.id) {
+                            continue;
+                        }
+                    }
                     None => {
                         // The pin file's state became unknown MID-sweep
                         // (unreadable, or absent after a fault) and the
@@ -231,7 +237,6 @@ impl SessionStore {
                         );
                         break;
                     }
-                    Some(_) => {}
                 }
                 let id = metadata.id;
                 let (committed, result) = self.delete_session_record(&id);

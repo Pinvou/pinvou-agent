@@ -6231,20 +6231,65 @@ fn seed_session(store: &SessionStore, id: &str, older_by_seconds: i64) {
 /// array of `{id, pinned_at}` entries). Parsing (instead of substring
 /// matching) makes value corruption and dropped entries visible to the tests.
 fn parse_pin_file(file: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    parse_timestamped_sidecar(file, "pinned_at")
+}
+
+/// Same shape as [`parse_pin_file`] for the other timestamped id sidecars —
+/// the ts key is the only difference between the pin and hidden files.
+fn parse_timestamped_sidecar(
+    file: &std::path::Path,
+    ts_key: &str,
+) -> std::collections::BTreeMap<String, String> {
     let entries: Vec<serde_json::Value> =
-        serde_json::from_str(&std::fs::read_to_string(file).expect("read pin file"))
-            .expect("durable pin file must stay valid JSON");
+        serde_json::from_str(&std::fs::read_to_string(file).expect("read sidecar file"))
+            .expect("durable sidecar file must stay valid JSON");
     entries
         .into_iter()
         .map(|entry| {
-            let id = entry["id"].as_str().expect("pin entry id").to_string();
-            let ts = entry["pinned_at"]
+            let id = entry["id"].as_str().expect("sidecar entry id").to_string();
+            let ts = entry[ts_key]
                 .as_str()
-                .expect("pin entry timestamp")
+                .expect("sidecar entry timestamp")
                 .to_string();
             (id, ts)
         })
         .collect()
+}
+
+#[test]
+fn hidden_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_hidden_sessions.json");
+    // Simulate a GUI process archiving two sessions after this process booted
+    // with an empty hidden map. `set_hidden` shares the pins'
+    // `apply_timestamped_id_mutation_locked` machinery — the pin merge test
+    // covers the mechanism, this one covers the hidden file as its own
+    // sidecar, so a revert of any one file cannot hide behind the others.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "hidden_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "hidden_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent hidden file");
+    store.set_hidden("headless-c", true).expect("hide");
+    let durable = parse_timestamped_sidecar(&file, "hidden_at");
+    assert_eq!(
+        durable.len(),
+        3,
+        "all three entries must survive: {durable:?}"
+    );
+    assert_eq!(
+        durable.get("gui-a").map(String::as_str),
+        Some("2026-09-20T00:00:00Z"),
+        "an archive from this process must not revert entries persisted after boot"
+    );
+    assert_eq!(
+        durable.get("gui-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z")
+    );
+    assert!(durable.contains_key("headless-c"));
 }
 
 #[test]
@@ -6449,6 +6494,36 @@ fn retention_purge_removes_durable_only_pins_of_evicted_sessions() {
 }
 
 #[test]
+fn retention_purge_removes_durable_only_multi_agent_ghosts() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "ghost-victim", 10);
+    seed_session(&store, "survivor", 20);
+    // A multi-agent flag another process persisted after this one booted: the
+    // boot-time map never sees it, but the durable purge must still remove it
+    // when its session is evicted — a surviving ghost flag would re-arm
+    // multi-agent for the id on reuse. The pin and mode maps each have this
+    // coverage; `_multi_agent.json` is its own file, so a purge that skips it
+    // cannot hide behind the others.
+    let file = paths::sessions_root().join("_multi_agent.json");
+    std::fs::write(
+        &file,
+        serde_json::to_string_pretty(&["ghost-victim", "survivor"]).expect("seed flags"),
+    )
+    .expect("seed durable-only multi-agent flags");
+    store
+        .delete("ghost-victim")
+        .expect("delete evicted session");
+    let durable: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read flags file"))
+            .expect("durable flags file must stay valid JSON");
+    assert_eq!(
+        durable,
+        vec!["survivor".to_string()],
+        "the evicted session's durable-only flag must not survive as a ghost"
+    );
+}
+
+#[test]
 fn pin_mutation_refuses_to_rewrite_a_corrupt_file() {
     let (store, _g) = isolated_store();
     let file = paths::sessions_root().join("_pinned_sessions.json");
@@ -6583,6 +6658,103 @@ fn retention_rechecks_a_pin_that_lands_mid_sweep() {
     assert!(
         pins.expect("a readable pin file yields a known set")
             .contains(&victims[2])
+    );
+}
+
+#[test]
+fn retention_pin_seen_by_an_earlier_reread_survives_a_later_pin_file_fault() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Same shape as `retention_rechecks_a_pin_that_lands_mid_sweep`: the cap
+    // seeded via save(), four older candidates written directly so the single
+    // sweep evicts them newest-first: victims[3] → victims[2] → victims[1] →
+    // victims[0].
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("pinfault-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    let mut victims = Vec::new();
+    for index in 0..4 {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("pinfault-victim-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(2000 - index as i64);
+        let record = serde_json::to_vec(&session).expect("serialize candidate");
+        std::fs::write(
+            crate::platform::paths::sessions_root().join(format!("{}.json", session.metadata.id)),
+            record,
+        )
+        .expect("write candidate record");
+        victims.push(session.metadata.id.clone());
+    }
+    store.invalidate_list_cache();
+
+    // The pin for victims[1] lands mid-sweep and IS seen: victims[2]'s
+    // re-read reads it successfully and must record it. The file then breaks
+    // before victims[1]'s own re-read — so that re-read falls back to the
+    // boot map, which never held the pin. The exemption set every successful
+    // read fed must still protect victims[1]: evicting a session a re-read
+    // protected is the exact loss the fail-safe exists to prevent.
+    let pinned_victim = victims[1].clone();
+    let deletions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_deletions = deletions.clone();
+    store.register_session_deleted_hook(Arc::new(move |_deleted: &str| {
+        let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+        match hook_deletions.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            // After the first delete: the GUI pins victims[1]; the file is
+            // readable here, so the NEXT candidate's re-read sees it.
+            0 => {
+                let payload = serde_json::json!([
+                    { "id": pinned_victim, "pinned_at": "2026-09-21T00:00:00+00:00" }
+                ]);
+                std::fs::write(&pin_file, payload.to_string())
+                    .expect("write the mid-sweep pin from the hook");
+            }
+            // After the second delete: the file breaks before victims[1]'s
+            // own re-read.
+            1 => {
+                std::fs::write(&pin_file, "{\"ids\": [").expect("corrupt the pin file");
+            }
+            _ => {}
+        }
+    }));
+
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+
+    assert!(
+        store.load(&victims[1]).is_ok(),
+        "a pin a successful re-read saw must survive a later pin-file fault"
+    );
+    assert!(
+        store.load(&victims[0]).is_err(),
+        "victims[0] (deleted last, never pinned) is still evicted"
+    );
+    assert!(
+        store.load(&victims[2]).is_err(),
+        "victims[2] stays evicted: the pin names victims[1] only"
+    );
+    assert!(
+        store.load(&victims[3]).is_err(),
+        "victims[3] (deleted first) stays evicted"
     );
 }
 

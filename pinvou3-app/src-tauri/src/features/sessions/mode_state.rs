@@ -365,13 +365,20 @@ impl SessionStore {
     }
 
     pub fn set_multi_agent(&self, id: &str, enabled: bool) -> Result<()> {
+        // Resolved BEFORE the io lock, mirroring `clear_mode_and_persist`:
+        // `resolved_default_mode` invokes the host-registered code-session
+        // predicate and reads the workspace binding sidecar, so computing it
+        // under the multi-agent lock would hold that lock across an extension
+        // callback — and a predicate that ever touches a mode or multi-agent
+        // writer would deadlock on a non-reentrant mutex.
+        let default = self.resolved_default_mode(id);
         let _io = self.multi_agent_flags_io.lock();
         let previous = {
             let mut m = self.mode_states.write();
             // 与本文件其他 setter 同惯例：物化条目时用解析出的默认 mode，
             // 不得 or_default()——那会把从未切换过 mode 的 code 会话从
             // Plan 只读默认静默翻成 Yolo 自动批准。
-            let entry = Self::mode_state_entry(&mut m, id, self.resolved_default_mode(id));
+            let entry = Self::mode_state_entry(&mut m, id, default);
             let previous = entry.multi_agent;
             entry.multi_agent = enabled;
             previous

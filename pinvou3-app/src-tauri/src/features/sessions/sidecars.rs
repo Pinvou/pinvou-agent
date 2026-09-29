@@ -75,6 +75,7 @@ fn write_timestamped_id_map(
 /// mutation paths must go through [`apply_timestamped_id_mutation_locked`], because
 /// the in-memory maps are boot-time snapshots and a wholesale write would
 /// revert concurrent changes persisted by another process.
+#[cfg(test)]
 fn save_timestamped_id_map(map: &HashMap<String, String>, file_name: &str, ts_key: &str) {
     let file = crate::platform::paths::sessions_root().join(file_name);
     if let Err(error) = write_timestamped_id_map(&file, map, file_name, ts_key) {
@@ -361,6 +362,35 @@ impl SessionStore {
         })
     }
 
+    /// `session_model_id` resolved against the durable `_session_models.json`
+    /// instead of the boot-time cache.
+    ///
+    /// This — not [`Self::session_model_id`]'s cache read — is what a failed
+    /// run's model-pin restore must put back. The cache is this process's view
+    /// from startup, so against a live GUI it goes stale the moment the user
+    /// re-pins a model, and the restore would then write that stale value back
+    /// over the newer pin — the same divergence [`Self::durable_mode_entry`]
+    /// exists to prevent for modes, and with the same fallback shape: a parse
+    /// or read failure falls to the cache (a stale answer still beats
+    /// inventing an absence), while an absent file is authoritative because
+    /// the save path removes the file exactly when the map empties.
+    pub fn durable_session_model_id(&self, id: &str) -> Option<String> {
+        let file = crate::platform::paths::sessions_root().join(SESSION_MODELS_FILE);
+        let durable = match std::fs::read_to_string(&file) {
+            Ok(content) => serde_json::from_str::<HashMap<String, String>>(&content)
+                .ok()
+                .and_then(|entries| entries.get(id).cloned()),
+            // Absent is authoritative — the mutation path removes the file
+            // when its last entry goes away.
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(_) => self.session_models.read().get(id).cloned(),
+        };
+        durable.or_else(|| {
+            self.scheduled_profile(id)
+                .and_then(|profile| profile.model_id)
+        })
+    }
+
     pub fn session_model_override(&self, id: &str) -> Option<String> {
         self.session_models.read().get(id).cloned()
     }
@@ -411,6 +441,7 @@ impl SessionStore {
     /// and tests should reach for this — production mutations go through
     /// [`Self::set_session_model_id`] / [`apply_session_model_mutation`] so
     /// entries persisted by another process after this one booted survive.
+    #[cfg(test)]
     pub(crate) fn persist_session_models(models: &HashMap<String, String>) -> Result<()> {
         let file = crate::platform::paths::sessions_root().join(SESSION_MODELS_FILE);
         if models.is_empty() {
@@ -426,6 +457,9 @@ impl SessionStore {
             .with_context(|| format!("persist per-session model bindings to {}", file.display()))
     }
 
+    /// Test-only: whole-map rewrite without the io mutex — see
+    /// [`Self::save_pinned_sessions`].
+    #[cfg(test)]
     pub fn save_session_models(&self) {
         if let Err(error) = Self::persist_session_models(&self.session_models.read()) {
             eprintln!("[sessions] save_session_models failed: {error:#}");
@@ -519,6 +553,11 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Test-only: rewrites the whole file from this process's in-memory map
+    /// without the pin io mutex — the stale-snapshot revert the id-level
+    /// mutations exist to prevent. Production pin writes go through
+    /// [`Self::set_pinned`].
+    #[cfg(test)]
     pub fn save_pinned_sessions(&self) {
         let pins = self.pinned_sessions.read();
         save_timestamped_id_map(&pins, PINNED_SESSIONS_FILE, "pinned_at");
@@ -654,6 +693,9 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Test-only: whole-map rewrite without the io mutex — see
+    /// [`Self::save_pinned_sessions`].
+    #[cfg(test)]
     pub fn save_hidden_sessions(&self) {
         let hidden_sessions = self.hidden_sessions.read();
         save_timestamped_id_map(&hidden_sessions, HIDDEN_SESSIONS_FILE, "hidden_at");

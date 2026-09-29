@@ -515,7 +515,11 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(
     sessionsSource,
-    /pub fn set_multi_agent\([\s\S]{0,420}multi_agent_flags_io\.lock\(\)/,
+    // The window spans the hoisted `resolved_default_mode` (resolved before
+    // the lock, per clear_mode_and_persist's deadlock rationale) plus its
+    // rationale comment, then the lock that must still wrap the whole
+    // 改内存→落盘→回滚 transaction.
+    /pub fn set_multi_agent\([\s\S]{0,620}multi_agent_flags_io\.lock\(\)/,
     '「改内存→落盘→回滚」整个事务必须持有互斥，回滚不得覆盖并发新状态',
   );
   assert.match(
