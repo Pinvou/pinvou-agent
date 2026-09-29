@@ -3417,6 +3417,10 @@ mod tests {
         assert!(policy.events.contains("chat:reasoning_start"));
         assert!(policy.events.contains("chat:reasoning_delta"));
         assert!(policy.events.contains("chat:reasoning_done"));
+        assert!(
+            RUST_FORWARDED_EVENTS.contains(&"remote_control:tools_changed"),
+            "the tools_changed broadcast must be relayed (web hot refresh) but deduped against the app.emit leg"
+        );
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_start"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_delta"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"chat:reasoning_done"));
