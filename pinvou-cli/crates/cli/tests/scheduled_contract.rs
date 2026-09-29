@@ -73,6 +73,57 @@ impl Drop for TempHome {
     }
 }
 
+/// The documented busy fast-fail: a mutating command refuses with
+/// `scheduled_store_busy` while another holder owns the store write lock
+/// (the minutes-long `run` hold is the reason every other mutation must
+/// not block behind it).
+#[test]
+fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("store-busy");
+    let locks_dir = home.root.join("locks");
+    std::fs::create_dir_all(&locks_dir).unwrap();
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(locks_dir.join("scheduled-store.lock"))
+        .expect("open the store lock file");
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let guard = lock.write().expect("hold the store write lock");
+
+    let prompt = write_prompt_file(&home, "busy.md", "Summarize the reports.");
+    let owned: Vec<String> = [
+        "pinvou",
+        "scheduled",
+        "create",
+        "--name",
+        "Busy",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+        "--output",
+        "json",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect();
+    let parsed = parse_args(owned).expect("valid scheduled create");
+    let error =
+        execute(parsed).expect_err("a held store lock must fail the mutation fast, not block");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("scheduled_store_busy"),
+        "the busy refusal must carry the documented error code: {error}"
+    );
+
+    // Releasing the lock lets the same mutation through end to end.
+    drop(guard);
+    let created = create_task(&home, "AfterRelease");
+    assert_eq!(created["name"], serde_json::json!("AfterRelease"));
+}
+
 fn parsed_scheduled(arguments: &[&str]) -> CliCommand {
     let owned: Vec<String> = std::iter::once("pinvou".to_owned())
         .chain(arguments.iter().map(|value| value.to_string()))

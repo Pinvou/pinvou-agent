@@ -1801,25 +1801,47 @@ enabled in settings",
     if validated_model_id.as_deref().is_some() {
         if let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref()) {
             // Roll back the just-created task so no kind-less/binding-less task
-            // lingers, mirroring the GUI create rollback.
+            // lingers, mirroring the GUI create rollback. The file-head policy
+            // bans silent failures, so a failed rollback step is disclosed on
+            // stderr even though the primary error propagates either way.
             if let Ok(path) = store_holder.def_path(&id) {
-                let _ = std::fs::remove_file(path);
+                if let Err(remove_error) = std::fs::remove_file(&path) {
+                    note!(
+                        "warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                    );
+                }
             }
-            let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
+            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
+                note!(
+                    "warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+                );
+            }
             return Err(error);
         }
     }
     if let Some(stored_kind) = kind.stored_kind() {
         if let Err(error) = persist_task_kind(&store_holder, &id, Some(stored_kind)) {
             if let Ok(path) = store_holder.def_path(&id) {
-                let _ = std::fs::remove_file(path);
+                if let Err(remove_error) = std::fs::remove_file(&path) {
+                    note!(
+                        "warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                    );
+                }
             }
-            let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
+            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
+                note!(
+                    "warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+                );
+            }
             // A binding written above must not outlive the rolled-back task:
             // clear it so no binding for a nonexistent id lingers in the
             // shared registry.
             if validated_model_id.as_deref().is_some() {
-                let _ = write_model_binding(&store_holder, &id, None);
+                if let Err(clear_error) = write_model_binding(&store_holder, &id, None) {
+                    note!(
+                        "warning: scheduled create: rollback could not clear the model binding: {clear_error}"
+                    );
+                }
             }
             return Err(error);
         }
@@ -1932,8 +1954,14 @@ fn update(
             // propagating the failure as-is would leave the pair the executor
             // resolves (definition model + pin) inconsistent. Restore the
             // captured pre-update definition, mirroring create's rollback;
-            // the restore itself is best-effort like create's cleanup.
-            let _ = store_holder.write_def(&pre_update_def);
+            // the restore itself is best-effort like create's cleanup — and
+            // like every best-effort step here, a failure is disclosed
+            // instead of silently leaving the inconsistent pair in place.
+            if let Err(restore_error) = store_holder.write_def(&pre_update_def) {
+                note!(
+                    "warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
+                );
+            }
             return Err(error);
         }
     }
@@ -2172,7 +2200,11 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 }
             }
         }
-        let _ = store_holder.write_def(&restored);
+        if let Err(restore_error) = store_holder.write_def(&restored) {
+            note!(
+                "warning: scheduled delete: the rollback could not restore the pre-delete status: {restore_error}"
+            );
+        }
     };
     // list_runs can fail on a corrupt/unsupported run record; that failure
     // is a blocked delete like any other, so it must restore the pre-delete
