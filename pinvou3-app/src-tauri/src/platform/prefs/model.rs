@@ -84,6 +84,16 @@ pub(super) fn migrated_minimax_base_url(value: &str) -> Option<String> {
 /// vendor/coding_plan metadata and does not take part in wire routing;
 /// dropping either arm makes stored configs lose separate reasoning-field
 /// parsing.
+/// The Volcengine Ark Coding Plan (coding-plan-personal-get-started,
+/// 2026-09-28) and the Alibaba Model Studio Coding Plan
+/// (help.aliyun.com/zh/model-studio/coding-plan, 2026-09-28) are modeled the
+/// same way; both have dedicated /api/coding hosts distinct from their
+/// pay-as-you-go endpoints. The China Alibaba host is canonical; the intl
+/// host (coding-intl) and the overseas Kimi host (api.kimi.ai) are separate
+/// subscriptions and are identified as their own canonical URLs — never
+/// rewritten to the China hosts, so saved configs keep coding_plan
+/// classification on reload instead of being re-derived to
+/// official_api/custom.
 pub(super) fn identify_coding_plan_endpoint(
     base_url: &str,
 ) -> Option<(&'static str, &'static str)> {
@@ -102,6 +112,19 @@ pub(super) fn identify_coding_plan_endpoint(
         }
         "https://api.lkeap.cloud.tencent.com/plan/v3" => {
             Some(("tencent", "https://api.lkeap.cloud.tencent.com/plan/v3"))
+        }
+        "https://ark.cn-beijing.volces.com/api/coding/v3" => {
+            Some(("doubao", "https://ark.cn-beijing.volces.com/api/coding/v3"))
+        }
+        "https://coding.dashscope.aliyuncs.com/v1" => {
+            Some(("qwen", "https://coding.dashscope.aliyuncs.com/v1"))
+        }
+        // Separate-subscription hosts registered as frontend endpointAliases:
+        // identity-canonical, so the kind survives normalize_provider_metadata
+        // on reload.
+        "https://api.kimi.ai/coding/v1" => Some(("kimi", "https://api.kimi.ai/coding/v1")),
+        "https://coding-intl.dashscope.aliyuncs.com/v1" => {
+            Some(("qwen", "https://coding-intl.dashscope.aliyuncs.com/v1"))
         }
         _ => None,
     }
@@ -172,17 +195,17 @@ impl ModelPreset {
     /// ⚠️ ops 同步要求:vLLM 启动也要带 `--served-model-name qwen36_35b_256k`,
     /// 否则 OpenAI-compat API 报 `model_not_found`。
     ///
-    /// Checked against the official docs on 2026-09-11 (synced in the same
-    /// batch as the frontend model-catalog.js MODEL_PRESET_DEFS). Of the two
-    /// frontend consumers, main.jsx's legacy-draft backfill now reuses
-    /// MODEL_PRESET_DEFS directly; this table is the only hand-written Rust-side
-    /// mirror, locked by
-    /// `default_model_matches_vendor_docs_2026_09`.
+    /// Checked against the official docs on 2026-09-28 (previous full check
+    /// 2026-09-11; synced in the same batch as the frontend model-catalog.js
+    /// MODEL_PRESET_DEFS). This table is the only hand-written Rust-side
+    /// mirror, locked by `default_model_matches_vendor_docs_2026_09_28`.
     pub fn default_model(&self) -> &'static str {
         match self {
             ModelPreset::LocalVllm => "qwen36_35b_256k",
-            // V4.1-Flash is the official mainline; v4-pro has been routed to
-            // V4.1-Flash billing since 2026-09-14.
+            // V4.1-Flash is still the mainline; the 09-10 v4-pro phase-out
+            // news was superseded the same day by the changelog decision to
+            // keep serving v4-pro with unchanged billing (re-verified
+            // 2026-09-28).
             ModelPreset::Deepseek => "deepseek-flash",
             ModelPreset::Kimi => "kimi-k3",
             ModelPreset::OpenaiCompatible => "gpt-5.6-terra",
@@ -191,21 +214,35 @@ impl ModelPreset {
             ModelPreset::Minimax => "MiniMax-M3",
             // API enum default shared by both Zhipu endpoints.
             ModelPreset::Glm => "glm-5.3",
-            ModelPreset::Mimo => "mimo-v2.5-pro",
-            // OpenAI keeps gpt-5.6-terra: the official recommended starting
-            // point gpt-6-astra supports tool calling only over the Responses
-            // wire protocol (developers.openai.com function-calling guide),
-            // while this preset uses the Chat wire; before changing the
-            // default, confirm the new id supports tool calling on the Chat
-            // wire and is recognized by the core::model_context resolution
+            // The V2.6 series (2026-09-22) replaces the default: the two
+            // v2.5 chat models (v2.5-pro / v2.5) hard-retire 2026-10-21
+            // with no auto-replacement (mimo.mi.com deprecation page).
+            ModelPreset::Mimo => "mimo-v2.6-pro",
+            // gpt-5.6-terra stays the default (re-verified 2026-09-28): the
+            // gpt-6 family detail pages state verbatim "Chat Completions
+            // supports function calling only with reasoning_effort set to
+            // none" (developers.openai.com gpt-6-sol / gpt-6-luna model
+            // pages), so the gpt-6 rows cannot drive the agent tool loop on
+            // the Chat wire this preset uses (the engine never sends
+            // reasoning_effort for gpt-6, and the API default is medium).
+            // terra's page carries no such restriction, so Chat tool calling
+            // and reasoning coexist there. gpt-6-sol / gpt-6-luna remain
+            // listed with the restriction in their descriptions. Before
+            // changing the default again, confirm the new id supports tool
+            // calling on the Chat wire at the effort the engine actually
+            // sends, and is recognized by the core::model_context resolution
             // chain (see the monitor
             // `preset_default_models_resolve_engine_context_window` test).
             ModelPreset::Openai => "gpt-5.6-terra",
-            ModelPreset::Anthropic => "claude-sonnet-5",
+            // claude-opus-5-5 (2026-09-22) per the official models overview
+            // "start with Claude Opus 5.5 for most workloads".
+            ModelPreset::Anthropic => "claude-opus-5-5",
             // Released 2026-09-02.
             ModelPreset::Gemini => "gemini-3.8-flash",
-            // xAI's official coding/agent recommended slot.
-            ModelPreset::Xai => "grok-4.6",
+            // xAI's official coding/agent recommended slot since September
+            // 2026 ("For everything else, including code, use Grok 4.7");
+            // grok-4.6 demotes to previous generation.
+            ModelPreset::Xai => "grok-4.7",
         }
     }
 }
@@ -240,18 +277,26 @@ impl ModelPreset {
             },
             // Gemini 全系标称 1M。
             ModelPreset::Gemini => Some(1_048_576),
-            // xAI official figures: the grok-4.20 family is 1M (grok-4.20-0309-*
-            // is corrected first by the core::model_context override table; this
-            // fallback only carries other 4.20 spellings the base does not know),
-            // grok-4.3 is 1M, grok-4.5 / grok-4.6 are 500K, grok-build-0.1 is
-            // 256K (re-checked against the docs.x.ai model detail page on
-            // 2026-09-11; the base known table has a separate stale 512K row for
-            // bare "grok-build", which the catalog does not list, so the actual
-            // wire id grok-build-0.1 lands on this 256K fallback).
+            // xAI official figures (re-checked 2026-09-28): the grok-4.20
+            // family is 1M (grok-4.20-0309-* is corrected first by the
+            // core::model_context override table; this fallback only carries
+            // other 4.20 spellings the base does not know), grok-4.3 is 1M,
+            // grok-4.7 / grok-4.6 / grok-4.5 are 500K, grok-build-0.1 is
+            // 256K (the base known table has a separate stale 512K row for
+            // bare "grok-build"; the actual wire id grok-build-0.1 resolves
+            // before this fallback via the core::model_context override at
+            // the same 256K, so this arm only carries ids the resolution
+            // chain misses).
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
                 Some(m) if m.contains("grok-4.20") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),
-                Some(m) if m.contains("grok-4.6") || m.contains("grok-4.5") => Some(500_000),
+                Some(m)
+                    if m.contains("grok-4.7")
+                        || m.contains("grok-4.6")
+                        || m.contains("grok-4.5") =>
+                {
+                    Some(500_000)
+                }
                 Some(m) if m.contains("grok-build") => Some(256_000),
                 _ => Some(256_000),
             },
@@ -268,7 +313,7 @@ mod tests {
     /// explicitly pass through here, preventing another long-lived drift of
     /// the qwen default.
     #[test]
-    fn default_model_matches_vendor_docs_2026_09() {
+    fn default_model_matches_vendor_docs_2026_09_28() {
         let cases: &[(ModelPreset, &str)] = &[
             (ModelPreset::LocalVllm, "qwen36_35b_256k"),
             (ModelPreset::Deepseek, "deepseek-flash"),
@@ -278,11 +323,11 @@ mod tests {
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.3"),
-            (ModelPreset::Mimo, "mimo-v2.5-pro"),
+            (ModelPreset::Mimo, "mimo-v2.6-pro"),
             (ModelPreset::Openai, "gpt-5.6-terra"),
-            (ModelPreset::Anthropic, "claude-sonnet-5"),
+            (ModelPreset::Anthropic, "claude-opus-5-5"),
             (ModelPreset::Gemini, "gemini-3.8-flash"),
-            (ModelPreset::Xai, "grok-4.6"),
+            (ModelPreset::Xai, "grok-4.7"),
         ];
         for (preset, expected) in cases {
             assert_eq!(
@@ -312,13 +357,14 @@ mod tests {
             // Gemini 全系标称 1M
             (ModelPreset::Gemini, Some("gemini-3.6-flash"), 1_048_576),
             // xAI preset fallback: grok-4.20 family 1M, grok-4.3 1M,
-            // grok-4.5 / grok-4.6 500K, grok-build 256K
+            // grok-4.7 / grok-4.5 / grok-4.6 500K, grok-build 256K
             (
                 ModelPreset::Xai,
                 Some("grok-4.20-0309-reasoning"),
                 1_000_000,
             ),
             (ModelPreset::Xai, Some("grok-4.3"), 1_000_000),
+            (ModelPreset::Xai, Some("grok-4.7"), 500_000),
             (ModelPreset::Xai, Some("grok-4.5"), 500_000),
             (ModelPreset::Xai, Some("grok-4.6"), 500_000),
             (ModelPreset::Xai, Some("grok-build-0.1"), 256_000),
@@ -373,6 +419,16 @@ mod tests {
                 "tencent",
                 "https://api.lkeap.cloud.tencent.com/plan/v3",
             ),
+            (
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "doubao",
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+            ),
+            (
+                "https://coding.dashscope.aliyuncs.com/v1",
+                "qwen",
+                "https://coding.dashscope.aliyuncs.com/v1",
+            ),
         ];
         for (input, expected_vendor, expected_base) in cases {
             let (vendor, base) = identify_coding_plan_endpoint(input)
@@ -383,6 +439,22 @@ mod tests {
         assert_eq!(
             identify_coding_plan_endpoint("https://api.deepseek.com"),
             None
+        );
+        // The intl Alibaba / overseas Kimi coding hosts are separate
+        // subscriptions: identified as their own canonical URLs (kind kept
+        // on reload) and never rewritten to the China endpoints.
+        assert_eq!(
+            identify_coding_plan_endpoint("https://coding-intl.dashscope.aliyuncs.com/v1"),
+            Some(("qwen", "https://coding-intl.dashscope.aliyuncs.com/v1")),
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://api.kimi.ai/coding/v1"),
+            Some(("kimi", "https://api.kimi.ai/coding/v1")),
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://coding-intl.dashscope.aliyuncs.com/other"),
+            None,
+            "only the exact intl coding path is identified"
         );
         assert_eq!(
             identify_coding_plan_endpoint("https://api.lkeap.cloud.tencent.com/other/v3"),

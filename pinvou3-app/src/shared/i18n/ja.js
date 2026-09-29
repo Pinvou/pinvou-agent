@@ -992,7 +992,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   autoDetectLocalModel:'ローカルモデルを自動検出',
   codingPlanTestUnavailable:'現在このプロバイダーの接続テストはできませんが、設定は保存できます',
   connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', billing:'アカウント残高が不足しています。チャージするか、別のモデルに切り替えてください', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', redirect:'サービスアドレスがリダイレクトされ、可用性を確認できませんでした', request_invalid:'リクエスト形式が受け付けられませんでした。モデル設定を確認してください', timeout:'接続がタイムアウトしました。ネットワークまたはローカルサービスの起動を確認してください', tls_error:'セキュリティ証明書の検証に失敗しました。プロキシまたはネットワーク環境を確認してください', dns_failed:'サービスアドレスを解決できませんでした。ネットワークを確認してください', connection_refused:'サービスに接続できませんでした。ローカルのモデルサービスが起動しているか確認してください', server_unavailable:'サービスが一時的に利用できません。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
-  catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', custom:'カスタム互換エンドポイント' },
+  catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', aggregator:'集約プラットフォーム', custom:'カスタム互換エンドポイント' },
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},
     tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud のコーディングプラン用エンドポイント'},
@@ -1012,6 +1012,11 @@ Object.assign(dictJa.uiSettingsDetail, {
     anthropic:{title:'Anthropic Claude',configTitle:'Anthropic Claude',desc:'Anthropic 公式 API（Messages ネイティブプロトコル）'},
     gemini:{title:'Google Gemini',configTitle:'Google Gemini',desc:'Gemini API（OpenAI 互換エンドポイント）'},
     xai:{title:'xAI Grok',configTitle:'xAI Grok',desc:'xAI 公式 API'},
+    volcengine_coding_plan:{title:'Volcengine Ark Coding Plan',configTitle:'Volcengine Ark Coding Plan',desc:'Volcengine Ark のコーディングプラン用エンドポイント'},
+    qwen_coding_plan:{title:'Qwen Coding Plan',configTitle:'Qwen Coding Plan',desc:'Alibaba Cloud Model Studio のコーディングプラン専用エンドポイント'},
+    openrouter:{title:'OpenRouter',configTitle:'OpenRouter',desc:'OpenRouter アグリゲーター公式 API'},
+    siliconflow:{title:'SiliconFlow China',configTitle:'SiliconFlow',desc:'SiliconFlow 中国公式 API'},
+    siliconflow_global:{title:'SiliconFlow Global',configTitle:'SiliconFlow Global',desc:'SiliconFlow 国際 API（キーは地域別）'},
     openai_compatible:{title:'OpenAI Compatible',desc:'カスタム OpenAI 互換エンドポイント'},
   },
   imageCapability:'画像入力', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応', imageCapabilityPinvou:'自動処理',
@@ -1040,7 +1045,11 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   'Coding Plan 自动模型':'Coding Plan 自動モデル',
   '自动模型，智能路由':'自動モデル（スマートルーティング）',
   'Hy 套餐专属模型':'Hy プラン専用モデル',
-  '标准编码模型':'標準コーディングモデル',
+  'K2.8 Preview，全档 1M 上下文':'K2.8 Preview、全ティア 1M コンテキスト',
+  '极速多模态，200 tokens/s':'高速マルチモーダル、200 tokens/s',
+  '新预览旗舰，仅订阅渠道':'新プレビューフラッグシップ、サブスクリプション専用',
+  '快速高性价比，夜间同样四折':'高速で高コストパフォーマンス、夜間も通常の 40%',
+  '官方将于 2026-10-21 下线':'2026-10-21 に提供終了予定',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
   'K3 256K 上下文，价格更低':'K3 256K コンテキスト、より低価格',
   '官方已转 Legacy，兼容保留':'公式レガシー化済み。互換性のため保持',
@@ -1061,23 +1070,26 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '通用推理，官方将于 2026-10-09 下线':'汎用推論、2026-10-09 に提供終了予定',
   '多模态高性价比':'マルチモーダルで高コストパフォーマンス', '最新多模态高性价比':'最新マルチモーダル、高コストパフォーマンス',
   'Kimi 最新旗舰':'Kimi 最新フラッグシップ', 'Kimi 编码模型':'Kimi コーディングモデル', 'MiniMax 最新旗舰':'MiniMax 最新フラッグシップ',
-  'Hy4 预览，高峰期可能限频':'Hy4 プレビュー、混雑時はレート制限の可能性あり',
   'V4.1-Flash 主力，1M 上下文，支持图片输入':'V4.1-Flash の主力モデル。1M コンテキスト、画像入力対応', '在售；官方确认 2026-09-14 后继续提供且计费不变':'販売中。公式に 2026-09-14 以降も提供継続・課金は変更なし',
   '最新旗舰，强制思考':'最新フラッグシップ、思考は常時オン', '最新旗舰，1M 上下文多模态':'最新フラッグシップ、1M コンテキスト・マルチモーダル',
-  '最新旗舰，1M 上下文':'最新フラッグシップ、1M コンテキスト', '全模态理解（图片/视频）':'全モーダル理解（画像・動画）',
+  '最新旗舰，1M 上下文':'最新フラッグシップ、1M コンテキスト',
+  'Hy4 预览':'Hy4 プレビュー',
   '上代旗舰推理（纯文本）':'前世代フラッグシップ推論（テキストのみ）', '上代快速款':'前世代の高速モデル',
-  '正式旗舰，夜间 22:00-08:00 五折（个人版）':'正式フラッグシップ、22:00-08:00 は半額（個人版）',
-  '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応', '快速响应，暂不支持 Responses API':'高速応答、Responses API は未対応',
-  '最新推荐，周级滚动升级':'最新の推奨モデル、週次ローリング更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
-  '编程特化（预览）':'コーディング特化（プレビュー）', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
+  '正式旗舰，夜间 22:00-08:00 四折（个人版）':'正式フラッグシップ、22:00-08:00 は通常の 40%（個人版）',
+  '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応',
+  '最新推荐，统一模型 ID 自动升级':'最新の推奨モデル、統一モデル ID で自動更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
+  '编程特化（预览），官方即将下线':'コーディング特化（プレビュー）。公式によりまもなく提供終了予定', '稳定通用，官方即将下线':'安定した汎用モデル。公式によりまもなく提供終了予定', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
+  '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用':'コーディング/ Agent の新フラッグシップ。Chat プロトコルの関数呼び出しは effort=none のみ',
+  '低价高效；Chat 协议仅 effort=none 支持函数调用':'低価格かつ高速。Chat プロトコルの関数呼び出しは effort=none のみ',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 ファミリーのフラッグシップ、推論とコーディング',
   '最强旗舰，高难推理与长程 Agent':'最強フラッグシップ、高難度推論と長時間エージェント',
-  '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '复杂 Agent 编码，默认推荐':'複雑なエージェントコーディング、デフォルト推奨',
+  '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '官方默认推荐，复杂 Agent 编码':'公式のデフォルト推奨、複雑なエージェントコーディング',
   '最快，200K 上下文':'最速、200K コンテキスト', '上一代 Flash':'前世代 Flash',
   '基线速度，兼容保留':'ベースライン速度、互換性のため保持',
   '旗舰，编码与 Agent 默认推荐':'フラッグシップ、コーディングと Agent のデフォルト推奨', '上代旗舰，编码与 Agent':'前世代フラッグシップ、コーディングと Agent',
   '4.20 推理，1M 上下文':'4.20 推論、1M コンテキスト', '4.20 非推理，1M 上下文':'4.20 非推論、1M コンテキスト',
   '快速可靠，强工具调用':'高速で安定、ツール呼び出しに強い', '代码 Agent，256K 上下文':'コーディングエージェント、256K コンテキスト',
+  '全模态，低成本':'フルモーダル、低コスト', '旗舰效果，极速输出':'フラッグシップ品質、超高速出力',
 });
 
 dictJa.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手動入力';
@@ -1089,6 +1101,8 @@ dictJa.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', tencent_token_plan:'カスタム Tencent Cloud Token Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
+  volcengine_coding_plan:'カスタム Volcengine Ark Coding Plan モデル', qwen_coding_plan:'カスタム Qwen Coding Plan モデル',
+  openrouter:'カスタム OpenRouter モデル', siliconflow:'カスタム SiliconFlow モデル', siliconflow_global:'カスタム SiliconFlow モデル',
 };
 
 // features/chat バックグラウンドタスク表示の辞書項目（uiChat は既存のためマージ）
@@ -1100,5 +1114,5 @@ Object.assign(dictJa.uiChat, {
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'ローカルサービスのデフォルトモデル'
 });
 // restored: inline catalog descriptions from jaBase (referenced by the model catalog)
-Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '高速响应': '高速応答', '稳定通用': '安定した汎用モデル', '轻量模型': '軽量モデル'
+Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '高速响应': '高速応答', '轻量模型': '軽量モデル'
 });
