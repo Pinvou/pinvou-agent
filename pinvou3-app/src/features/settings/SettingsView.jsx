@@ -767,7 +767,7 @@ function hasStoredCredential(record) {
           ? copy.customCodingPlanDesc
           : (group && group.preset === 'local_vllm'
             ? copy.customLocalDesc
-            : (group && group.preset === 'openai_compatible' ? copy.customCompatibleDesc : copy.customModelDesc))));
+            : (group && (group.preset === 'openai_compatible' || group.preset === 'openai_responses') ? copy.customCompatibleDesc : copy.customModelDesc))));
       const renderProviderModelField = () => {
         const items = activeProvider ? activeProvider.items : [];
         const known = items.some(item => !item.custom && catalogItemMatchesModel(item, model));

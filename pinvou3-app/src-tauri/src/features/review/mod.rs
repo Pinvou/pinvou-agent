@@ -1091,6 +1091,28 @@ mod tests {
             ),
             crate::core::reasoning_dialect::ReasoningDialect::None
         );
+        // The custom Responses preset rides the same URL-sniff fallback:
+        // review's single-shot calls stay plain Chat (no tools), so the
+        // dialect follows the endpoint/model, not the preset (the compiler
+        // only pins arm exhaustiveness — this pins the semantics).
+        assert_eq!(
+            review_reasoning_dialect(
+                ModelPreset::OpenaiResponses,
+                "openai",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen3.6-flash",
+            ),
+            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
+        );
+        assert_eq!(
+            review_reasoning_dialect(
+                ModelPreset::OpenaiResponses,
+                "openai",
+                "https://api.openai.com/v1",
+                "gpt-6-sol",
+            ),
+            crate::core::reasoning_dialect::ReasoningDialect::None
+        );
     }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余

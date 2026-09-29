@@ -355,6 +355,36 @@ mod tests {
         }
     }
 
+    /// 存量 settings.json 的往返序列化：新变体必须以 `as_str()` 的拼写字面
+    /// 序列化并原样解析回来。rename_all=snake_case 是隐式契约，拼错一个字母
+    /// 旧版本写入的档位就会在加载时被静默丢弃。
+    #[test]
+    fn model_preset_serialization_round_trips_through_settings_json() {
+        for preset in [
+            ModelPreset::LocalVllm,
+            ModelPreset::Deepseek,
+            ModelPreset::Kimi,
+            ModelPreset::OpenaiCompatible,
+            ModelPreset::OpenaiResponses,
+            ModelPreset::Openai,
+            ModelPreset::Anthropic,
+        ] {
+            let serialized = serde_json::to_string(&preset).unwrap();
+            assert_eq!(serialized, format!("\"{}\"", preset.as_str()));
+            let parsed: ModelPreset = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(parsed, preset);
+        }
+        // The JS-side cross-checks parse as_str() tables for defaults; this
+        // pins the serde spelling itself for the variant this PR introduces.
+        let legacy_json = r#"{"preset":"openai_responses","model":"my-aggregator-model"}"#;
+        #[derive(serde::Deserialize)]
+        struct SavedPresetProbe {
+            preset: ModelPreset,
+        }
+        let probe: SavedPresetProbe = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(probe.preset, ModelPreset::OpenaiResponses);
+    }
+
     /// 预设上下文窗口兜底：各厂商官方口径与未知型号的缺省值。
     #[test]
     fn context_window_fallback_matches_vendor_defaults() {
