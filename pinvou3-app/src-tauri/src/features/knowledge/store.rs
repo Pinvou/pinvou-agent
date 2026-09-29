@@ -369,7 +369,10 @@ impl Store {
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
                     Some(format!(
                         "knowledge store is in '{mode}' journal mode, not WAL; refusing to \
-                         apply synchronous=NORMAL (unsafe without WAL)"
+                         apply synchronous=NORMAL (unsafe without WAL). To recover, set \
+                         `PRAGMA journal_mode=WAL;` on the store file by hand (keeps the \
+                         knowledge sets), or delete the store and rescan (rebuilds the \
+                         index but loses the knowledge sets)"
                     )),
                 ));
             }
@@ -545,7 +548,15 @@ impl Store {
             sql.push_str(" AND f.size <= ?");
             vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
-        sql.push_str(" ORDER BY f.mtime DESC LIMIT ?");
+        // `id` breaks mtime ties: mtime is second-resolution, so bulk copies
+        // land in ties, and `mtime_before` is exactly the keyset-cursor
+        // callers page with — without a total order the cursor re-returns or
+        // skips every row tied at the page boundary. `f.id` is the rowid, so
+        // `idx_files_mtime` still serves the scan. (SQLite's index order
+        // happens to sort ties by rowid today; naming it in the ORDER BY
+        // makes the total order contractual for whatever plan the optimizer
+        // picks, instead of an artifact of the current index layout.)
+        sql.push_str(" ORDER BY f.mtime DESC, f.id DESC LIMIT ?");
         vals.push(Value::Integer(limit));
 
         let guard = self.read.lock();
@@ -940,6 +951,37 @@ mod tests {
             .unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].name, "notes.md");
+    }
+
+    #[test]
+    fn search_orders_mtime_ties_by_rowid() {
+        // `mtime` is second-resolution, so ties are routine (bulk copies
+        // preserve mtimes), and `mtime_before` is the keyset cursor callers
+        // page with. A mtime-only ORDER BY leaves tie rows to the query plan:
+        // identical queries could reorder same-second hits, shuffling the
+        // cursor boundary between pages. The `f.id` tiebreak makes the order
+        // total — insert a/b/c in that order, expect the tie read back
+        // id-DESC — so a repeated query must replay it exactly. SQLite's
+        // current index layout satisfies this by accident; the clause and
+        // this test pin it as a contract against plan drift.
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[
+            rec("/t/a.pdf", "a.pdf", Some("pdf"), 10, 500),
+            rec("/t/b.pdf", "b.pdf", Some("pdf"), 11, 500),
+            rec("/t/c.pdf", "c.pdf", Some("pdf"), 12, 500),
+            rec("/t/older.md", "older.md", Some("md"), 13, 400),
+        ])
+        .unwrap();
+        let q = SearchQuery {
+            mtime_before: Some(500),
+            limit: 10,
+            ..Default::default()
+        };
+        let hits = s.search(&q).unwrap();
+        let names: Vec<_> = hits.iter().map(|hit| hit.name.as_str()).collect();
+        assert_eq!(names, vec!["c.pdf", "b.pdf", "a.pdf", "older.md"]);
+        let again = s.search(&q).unwrap();
+        assert_eq!(hits, again, "a repeated query must not reorder tie rows");
     }
 
     #[test]
