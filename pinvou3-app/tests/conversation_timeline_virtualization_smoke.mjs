@@ -72,7 +72,8 @@ try {
   assert.ok(longTimeline.topIndexes.includes(0), 'scrolling to the top must mount the first turn');
   assert.ok(longTimeline.middleIndexes.some(index => index > 200 && index < 800), 'middle scrolling must mount middle turns');
   assert.equal(longTimeline.middleRowUnderViewport, true,
-    'a virtual row must really sit under the viewport at a mid-history offset (dropped positioning classes must fail here)');
+    `a virtual row must sit at its owned offset under the viewport at a mid-history offset `
+    + `(in-view rows: ${longTimeline.middleRowsInViewport}; dropped positioning classes must fail here)`);
   assert.ok(longTimeline.bottomIndexes.includes(999), 'scrolling to the bottom must mount the final turn');
   assert.ok(Math.abs(longTimeline.bottomDistanceAfterMount) <= 1, `initial bottom drifted by ${longTimeline.bottomDistanceAfterMount}px`);
   assert.ok(Math.abs(longTimeline.measuredGap - 28) <= 1, `virtual row gap was ${longTimeline.measuredGap}px instead of 28px`);

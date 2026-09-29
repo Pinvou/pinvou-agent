@@ -194,19 +194,20 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
     );
     // Pin real row positioning, not just transform strings: with the layout
     // utilities missing, rows stack in flow far below the viewport while
-    // every attribute assertion still passes. Probing several heights keeps
-    // the check deterministic across row-gap alignments.
-    const viewportRect = scrollElementRef.current.getBoundingClientRect();
-    const centerX = viewportRect.left + viewportRect.width / 2;
-    const centerY = viewportRect.top + viewportRect.height / 2;
-    const probeHitsRowInView = offset => {
-      const element = document.elementFromPoint(centerX, centerY + offset);
-      const row = element?.closest('[data-conversation-virtual-row]');
-      if (!row) return false;
-      const rowRect = row.getBoundingClientRect();
-      return rowRect.bottom > viewportRect.top && rowRect.top < viewportRect.bottom;
-    };
-    const middleRowUnderViewport = [-120, 0, 120].some(probeHitsRowInView);
+    // every attribute assertion still passes. Every in-view row must sit
+    // exactly at its virtualizer-owned offset (translateY(start - margin)
+    // within the scrolled content), not at a normal-flow stacking position.
+    const containerRect = scrollElementRef.current.getBoundingClientRect();
+    const inViewRows = [...host.querySelectorAll('[data-conversation-virtual-row]')].filter(row => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+    });
+    const middleRowUnderViewport = inViewRows.length > 0 && inViewRows.every(row => {
+      const rect = row.getBoundingClientRect();
+      const expectedTop = containerRect.top + Number(row.dataset.conversationVirtualStart) - middleScrollTop;
+      return Math.abs(rect.top - expectedTop) <= 2;
+    });
+    const middleRowsInViewport = inViewRows.length;
     followOutputRef.current = true;
     return {
       count,
@@ -223,6 +224,7 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       middleIndexes,
       middleScrollTop,
       middleRowUnderViewport,
+      middleRowsInViewport,
       bottomIndexes,
       bottomDistanceAfterMount,
       measuredGap,
