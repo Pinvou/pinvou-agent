@@ -930,3 +930,16 @@ fn alias_equal_paths_are_the_no_op_guard() {
         Path::new("/vault/alphabet")
     ));
 }
+
+#[test]
+fn alias_no_op_guards_are_wired_at_both_store_entries() {
+    // review #463 round-20 minor 15: the round-18 minor-8 guard was pinned
+    // only as a pure helper; reverting either call site to the raw compare
+    // stayed green.
+    let src = include_str!("store.rs");
+    let calls = src.matches("paths_are_alias_equal(from, to)").count();
+    assert_eq!(
+        calls, 2,
+        "plan_rebind_roots and rebind_roots must both guard on alias equality"
+    );
+}

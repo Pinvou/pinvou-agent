@@ -223,3 +223,24 @@ test('the strong-confirm flag and the stay-open gate survive refactors', () => {
     'the stay-open gate must cover the post-busy state, not just failures',
   );
 });
+
+test('the busy controls cannot be bypassed mid-run', () => {
+  // review #463 round-20 minor 8: deleting the backdrop busy gate, dropping
+  // disabled={busy} from the confirm button alone, or reverting the focus
+  // trap to a leaky hand-rolled copy each kept the suite green.
+  assert.match(
+    DIALOG,
+    /if \(!busy\) onCancel\(\)/,
+    'the backdrop must not cancel an in-flight run',
+  );
+  const busyDisabled = (DIALOG.match(/disabled=\{busy\}/g) || []).length;
+  assert.ok(
+    busyDisabled >= 3,
+    `X, confirm and cancel must all disable while busy (found ${busyDisabled})`,
+  );
+  assert.match(
+    DIALOG,
+    /useDialogFocusTrap\(dialogRef\)/,
+    'the focus trap must stay the shared hook',
+  );
+});

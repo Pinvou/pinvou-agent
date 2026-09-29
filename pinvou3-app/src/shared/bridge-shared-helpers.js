@@ -1817,7 +1817,14 @@
 
   // web+tauriArtifactTracker 共享
   function isAbsPath(p) {
-    return typeof p === "string" && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p));
+    // UNC network-share paths (\\server\\share\...) are absolute too —
+    // validate_codex_project_workspace stores them after platform_compat_path,
+    // and without this arm the rebase transform returned them unmapped
+    // (review #463 round-20 minor 6; Windows network-share workspaces only).
+    return (
+      typeof p === "string"
+        && (p.charAt(0) === "/" || /^[A-Za-z]:[\\/]/.test(p) || /^\\\\[^\\]/.test(p))
+    );
   }
 
   // web+tauriArtifactTracker 共享

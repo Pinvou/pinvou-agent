@@ -283,12 +283,6 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     stack.into_iter().collect()
 }
 
-/// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
-/// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
-/// - 必须是绝对路径;
-/// - 组内不得重复或互相嵌套;
-/// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
-///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
 /// Alias-equality for the rebind no-op guards (review #463 round-18 minor 8):
 /// folded identity keys, so a case/spelling variant of the same directory is
 /// the same path even when the raw spellings differ.
@@ -298,6 +292,15 @@ pub(crate) fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
     key_a.trim_end_matches('/') == key_b.trim_end_matches('/')
 }
 
+/// Validate one project's root set against the invariants (review #463
+/// round-20 SF-5: the alias-equality helper had rustdoc-attached this
+/// contract onto itself — validate_roots had no doc of its own): heavy and
+/// nesting checks run on identity keys (case/separator-folded on Windows).
+/// - every root must be absolute;
+/// - no duplicates or intra-set nesting;
+/// - no duplicate/nesting against any other project (outside
+///   `skip_project_id`) — grouping matches by root prefix, and a cross-
+///   project overlap makes assignment ambiguous.
 fn validate_roots(
     projects: &[Project],
     skip_project_id: Option<&str>,
@@ -860,6 +863,12 @@ impl ProjectStore {
     /// translated root may collide with another project's territory, in which
     /// case the whole rebind fails and rolls back (memory untouched, nothing
     /// persisted). Returns the affected project ids.
+    ///
+    /// Layering note (review #463 round-20 minor 12): the nesting guard and
+    /// the empty-`from` hazard live at the COMMAND layer — this store fn
+    /// performs no nesting validation, and a raw empty `from` would match
+    /// every absolute root via the empty-base rule. Only the command calls
+    /// it today; the guard is deliberately not duplicated here.
     ///
     /// Idempotent: no matching root is an empty Ok, not an error. The retry
     /// contract depends on this — a rerun after a partially failed run finds

@@ -734,9 +734,24 @@ impl SessionAgentStore {
     /// never rewritten and never classified Rebound.
     fn binding_owner_exists(&self, session_id: &str) -> bool {
         crate::features::sessions::validate_session_id(session_id).is_ok()
-            && code_session_sidecar_root(&self.path)
+            && match code_session_sidecar_root(&self.path)
                 .join(format!("{session_id}.json"))
-                .is_file()
+                .metadata()
+            {
+                Ok(meta) => meta.is_file(),
+                // Round-20 minor 10: a transient stat error must not read a
+                // live session as dead across the scan, both write passes and
+                // the fence — disclose non-NotFound failures like the plain
+                // lane's adjacent arms do.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    eprintln!(
+                        "[codex] rebind owner probe failed (io kind: {})",
+                        error.kind()
+                    );
+                    false
+                }
+            }
     }
 
     /// Directory rebind (broken-link repair): translates every project

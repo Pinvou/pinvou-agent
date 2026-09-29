@@ -59,7 +59,10 @@ const REBIND_MARKER_MESSAGE_KEYS = {
 // `copy` markers (IN_PROGRESS / TO_ROOT / TO_NESTED / TO_UNUSABLE) all fire
 // BEFORE `require_confirm_existing`, so on those the run never proceeded past
 // the old-root warning and its strong-confirm flag must be preserved, not
-// consumed.
+// consumed. Deliberate conservatism (round-20 minor 14): SESSIONS_BUSY also
+// fires after the old-root check, but stays OUT of this set — keeping the
+// flag for busy rejections costs one extra confirm round-trip, never a
+// skipped one.
 const REBIND_POST_FENCE_MARKERS = new Set([
   REBIND_ROOTS_CONFLICT,
   REBIND_ROOTS_PERSIST,

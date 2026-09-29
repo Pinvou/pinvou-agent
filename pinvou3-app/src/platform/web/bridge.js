@@ -3250,7 +3250,11 @@ function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresente
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+        // 相对→绝对 open 可靠;绝对→同 basename 的 live workspace 文件仅在
+        // sessionRecentlyRebound 的窗口内(tauri artifact-tracker 的同口径
+        // heal 臂,review #463 round-20 minor 9:web 侧此前引入了该判断却
+        // 从未调用,视图内的陈旧绝对路径永不愈合)。
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) { ex.path = p; added = true; }
       });
       if (added) {
         notify();
@@ -4137,6 +4141,42 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
+  // Trailing debounce (review #463 round-20 R3): same rationale as the tauri
+  // lane — the rebind bursts one event per affected id, and each undebounced
+  // refresh costs an O(n) backend round trip plus a React commit.
+  // Burst coalescing (review #463 round-20 R3): the rebind command emits one
+  // session:list_changed per affected id, and each undebounced refresh costs
+  // an IPC round trip + an O(n) backend list_sessions + a React commit — a
+  // large rebind burst translated into hundreds of full history refreshes
+  // exactly while the report dialog opens. Leading + trailing: the first
+  // event refreshes immediately (single-event semantics unchanged), events
+  // inside the window set a pending flag collapsed into ONE trailing
+  // refresh. Harnesses without timers fall back to the immediate refresh.
+  let historyRefreshTimer = null;
+  let historyRefreshPending = false;
+  function scheduleHistoryRefresh() {
+    function runRefresh() {
+      refreshHistoryList().catch(function (error) {
+        console.error("[sessions] session:list_changed refresh failed", error);
+      });
+    }
+    if (typeof setTimeout !== "function") {
+      runRefresh();
+      return;
+    }
+    if (!historyRefreshTimer) {
+      runRefresh();
+      historyRefreshTimer = setTimeout(function () {
+        historyRefreshTimer = null;
+        if (historyRefreshPending) {
+          historyRefreshPending = false;
+          scheduleHistoryRefresh();
+        }
+      }, 200);
+    } else {
+      historyRefreshPending = true;
+    }
+  }
   listen("session:list_changed", function (e) {
     const payload = e && e.payload || {};
     // The rebind command's mark (review #463 round-B Major 1 + round-C
@@ -4148,9 +4188,7 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
     // owns the stamp (round-13 — previously byte-duplicated with the tauri
     // listener).
     applyWorkspaceReboundMark(payload);
-    refreshHistoryList().catch(function (error) {
-      console.error("[sessions] session:list_changed refresh failed", error);
-    });
+    scheduleHistoryRefresh();
   });
   listen("session:model_changed", function (e) {
     const payload = e && e.payload || {};

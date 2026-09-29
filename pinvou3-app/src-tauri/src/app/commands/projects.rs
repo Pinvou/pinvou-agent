@@ -457,7 +457,15 @@ pub async fn rebind_workspace_root(
     // vanished directory behind a symlinked ancestor (macOS /var) still
     // resolves into the stored key domain.
     let from = crate::features::projects::rebind_source_display(&from);
-    if from == to_display {
+    // Alias-equal display forms are the same no-op (review #463 round-20
+    // minor 7): the raw compare let a case-only alias destination reach the
+    // folded nesting rejection and die on a misleading "inside the original
+    // folder" copy for the same directory.
+    if crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy())
+        .trim_end_matches('/')
+        == crate::platform::os::filesystem_path_identity_key(&to_display.to_string_lossy())
+            .trim_end_matches('/')
+    {
         return Ok(RebindWorkspaceReport::default());
     }
     reject_nested_rebind_target(&from, &to_display)?;
@@ -662,6 +670,11 @@ pub async fn rebind_workspace_root(
     // below, and the next run's `from` scan still matches it.
     let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
+    // Round-20 minor 2: plain chats whose sidecar move FAILED must not
+    // capture a codex-lane baseline when their metadata sync succeeds —
+    // the plain lane never reads one, and the stray file plus the wasted
+    // walk contradict the gate's own comment below.
+    let plain_lane_failed = binding_final_stale.clone();
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
     // self-healing path remains in this run (backfill only fills missing
@@ -789,6 +802,12 @@ pub async fn rebind_workspace_root(
     // directory written by set_workspace above — so the loop collects them
     // and the bounded pool below drains them.
     let mut deferred_baselines: Vec<(String, PathBuf)> = Vec::new();
+    // Per-session event geometry for strand-repaired sessions (review #463
+    // round-20 R4): their target predates this run's from→to pair, so the
+    // events must carry the id's ACTUAL (per-session from, new_path) —
+    // otherwise the FE chain has no segment matching a repaired session's
+    // buffered vintage and a live stale buffer durably reverts the rebase.
+    let mut per_id_event_geometry: Vec<(String, PathBuf, PathBuf)> = Vec::new();
     for (session_id, bound_path) in
         metadata_rebind_targets(&affected, &prefix_outcome.affected, &plain_rebind.rebound).iter()
     {
@@ -838,7 +857,14 @@ pub async fn rebind_workspace_root(
                             None
                         }
                     }
-                    Err(_) => None,
+                    // Round-20 minor 1: an ADMITTED session whose metadata
+                    // cannot be read is reported failed like any other —
+                    // silently dropping it let the run claim full success
+                    // over a session this run explicitly admitted.
+                    Err(_) => {
+                        failed_session_ids.push(session_id.clone());
+                        continue;
+                    }
                 }
             }
         };
@@ -971,13 +997,21 @@ pub async fn rebind_workspace_root(
         // since, and the boot-recovery fallback would keep pointing at the
         // vanished root — but only for code sessions, never for the plain
         // lane's rebound set.
+        if let Some(session_from) = &per_session_from {
+            per_id_event_geometry.push((
+                session_id.clone(),
+                session_from.clone(),
+                new_path.clone(),
+            ));
+        }
         if code_rebound_ids.contains(session_id.as_str())
             || per_session_from.is_some()
             || (synced_this_loop
                 && !plain_rebind
                     .rebound
                     .iter()
-                    .any(|(sid, _)| sid == session_id))
+                    .any(|(sid, _)| sid == session_id)
+                && !plain_lane_failed.iter().any(|sid| sid == session_id))
         {
             deferred_baselines.push((session_id.clone(), new_path.clone()));
         }
@@ -1057,6 +1091,7 @@ pub async fn rebind_workspace_root(
                 rebound_session_ids.iter().chain(&failed_session_ids),
                 &from,
                 &to_display,
+                &per_id_event_geometry,
             );
             let marker = match error {
                 RebindRootsError::Overlap(context) => format!("REBIND_ROOTS_CONFLICT: {context:#}"),
@@ -1198,6 +1233,7 @@ pub async fn rebind_workspace_root(
             .chain(&post_busy_session_ids),
         &from,
         &to_display,
+        &per_id_event_geometry,
     );
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
@@ -1216,13 +1252,24 @@ fn emit_workspace_rebound_events<'a>(
     session_ids: impl Iterator<Item = &'a String>,
     from: &Path,
     to: &Path,
+    // Per-id geometry overrides (review #463 round-20 R4): strand-repaired
+    // sessions converge onto a target from an EARLIER run's geometry, so
+    // their events must carry the pair the FE chain can actually match —
+    // the run-level from→to pair would leave their buffered vintages
+    // unresolvable and let a live stale buffer revert the rebase durably.
+    per_id_geometry: &[(String, PathBuf, PathBuf)],
 ) {
     for session_id in session_ids {
+        let (event_from, event_to) = per_id_geometry
+            .iter()
+            .find(|(id, _, _)| id == session_id)
+            .map(|(_, session_from, session_to)| (session_from.to_owned(), session_to.to_owned()))
+            .unwrap_or_else(|| (from.to_path_buf(), to.to_path_buf()));
         let payload = serde_json::json!({
             "id": session_id,
             "action": "workspace_rebound",
-            "from": from.display().to_string(),
-            "to": to.display().to_string(),
+            "from": event_from.display().to_string(),
+            "to": event_to.display().to_string(),
         });
         let _ = app.emit("session:list_changed", payload.clone());
         crate::features::remote_control::forward_app_event(app, "session:list_changed", payload);
@@ -2271,6 +2318,22 @@ mod tests {
     }
 
     #[test]
+    fn suffix_helper_is_wired_at_the_roots_error_arm() {
+        // review #463 round-20 R2: the helper pin alone is hollow —
+        // reverting the sole production call site to a bare marker (the
+        // round-14 SF1 bug: the dialog reports "up to date" while an
+        // old-cwd runtime stays resident) left every test green. The
+        // production text must carry the wrapped call, exactly once.
+        let calls = production_source()
+            .matches("append_rebound_ids_suffix(marker, &rebound_session_ids)")
+            .count();
+        assert_eq!(
+            calls, 1,
+            "the roots-error arm must wrap the marker with the moved-id suffix"
+        );
+    }
+
+    #[test]
     fn rebound_ids_suffix_wire_shape_is_pinned_end_to_end() {
         // review #463 round-17 SF-1: the producer string had no test, so
         // deleting the suffix passed the whole suite and silently resurrected
@@ -2427,16 +2490,59 @@ mod tests {
 
     #[test]
     fn persist_roots_error_maps_to_the_typed_marker() {
-        // review #463 round-17 SF-6: a Persist→Other regression would drop
-        // the disk-failure copy for raw error prose and pass the suite. Pin
-        // the command's marker mapping; the store-level Persist
-        // classification is asserted positively in
-        // features/projects/tests.rs (`rebind_roots_rolls_back_memory_when_
-        // persist_fails`).
-        let src = include_str!("projects.rs");
+        // review #463 round-17 SF-6; round-20 minor 15 rebuild: the pin now
+        // runs on PRODUCTION text (the uncut include_str could have matched
+        // its own assertion text) and covers both arms — a Persist→Other
+        // regression drops the disk-failure copy, an Overlap→Other regression
+        // drops the conflict dialog.
+        let window = production_source();
         assert!(
-            src.contains("RebindRootsError::Persist(context) => format!(\"REBIND_ROOTS_PERSIST"),
+            window.contains("RebindRootsError::Persist(context) => format!(\"REBIND_ROOTS_PERSIST"),
             "the Persist arm must keep producing the typed REBIND_ROOTS_PERSIST marker"
+        );
+        assert!(
+            window
+                .contains("RebindRootsError::Overlap(context) => format!(\"REBIND_ROOTS_CONFLICT"),
+            "the Overlap arm must keep producing the typed REBIND_ROOTS_CONFLICT marker"
+        );
+    }
+
+    #[test]
+    fn per_session_rebase_closures_are_wired_in_production() {
+        // review #463 round-20 minor 15: the per-session rebase remained the
+        // unprobed round-14-R2 shape — a hand-copied-closure test passes
+        // while the production closure drifts. Both closures (artifact rebase
+        // and acp-state translate) must consult the per-session from with the
+        // run-global pair as the fallback.
+        let window = production_source();
+        let closures = window
+            .matches("SessionAgentStore::rebind_target_path(path, session_from, &new_path)")
+            .count();
+        assert!(
+            closures >= 2,
+            "the artifact and acp-state rebase closures must both map through the per-session from"
+        );
+        let fallbacks = window
+            .matches("or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))")
+            .count();
+        assert!(
+            fallbacks >= 2,
+            "both closures must keep the run-global pair as the fallback"
+        );
+    }
+
+    #[test]
+    fn entry_no_op_compares_folded_identity_keys() {
+        // review #463 round-20 minor 7's pin: the entry no-op must compare
+        // folded identity keys (the raw `from == to_display` compare let a
+        // case-only alias destination dead-end on misleading nesting copy).
+        let window = production_source();
+        let folded = window
+            .matches("filesystem_path_identity_key(&to_display.to_string_lossy())")
+            .count();
+        assert!(
+            folded >= 2,
+            "the entry no-op must fold both sides before comparing"
         );
     }
 

@@ -5738,6 +5738,70 @@ fn rebind_publishes_cache_only_legacy_entry_translation() {
     let _ = std::fs::remove_dir_all(&to);
 }
 #[test]
+fn workspace_bindings_under_finds_a_cold_cache_disk_sidecar() {
+    // review #463 round-18 test-strength / round-20 R1 (the round-18 attempt
+    // was lost to a mis-anchored insertion — this time grepped for
+    // immediately after the write): the COLD-cache arm is what every
+    // post-restart rebind actually runs — the binding exists only as an
+    // on-disk sidecar and no in-process bind ever warmed the read cache.
+    // Deleting the disk-scan loop from `workspace_bindings_under` must fail
+    // red here.
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-coldcache-from");
+    std::fs::create_dir_all(&from).expect("create from");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let dir = store.manager.sessions_dir().join(&session.metadata.id);
+    std::fs::create_dir_all(&dir).expect("create session dir");
+    // Hand-write the sidecar WITHOUT calling bind_session_workspace, then
+    // clear the cache outright: the scan must surface the binding purely
+    // from disk.
+    let sidecar = dir.join("workspace-binding.json");
+    let payload = serde_json::json!({
+        "version": 1,
+        "path": from.display().to_string(),
+    });
+    std::fs::write(
+        &sidecar,
+        serde_json::to_vec(&payload).expect("serialize sidecar"),
+    )
+    .expect("write sidecar");
+    store.session_workspaces.write().clear();
+
+    let hits = store.workspace_bindings_under(&from);
+    assert!(
+        hits.iter().any(|(id, _)| id == &session.metadata.id),
+        "the cold-cache disk-scan arm must surface an on-disk sidecar"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+}
+
+#[test]
+fn rebind_persists_skip_the_retention_rescan() {
+    // review #463 round-18 MAJOR-4 / round-20 minor 15: the retention skip
+    // is wired at exactly the two rebind persist sites — flipping
+    // persist_in_place back to persist_then_reconcile silently restored the
+    // O(affected x on-disk sessions) rescan under the rebind gate.
+    let workspace = include_str!("store.rs");
+    assert!(
+        workspace.contains("persist_in_place(&session, \"workspace rebind\")"),
+        "set_workspace must use the retention-free persist",
+    );
+    assert!(
+        workspace.contains("\"artifact-path rebase\""),
+        "the artifact rebase must use the retention-free persist",
+    );
+    let retention = include_str!("retention.rs");
+    assert!(
+        retention.contains("fn persist_in_place"),
+        "the retention-free variant must exist",
+    );
+}
+
+#[test]
 fn rebind_translates_an_entry_absent_from_both_disk_shapes() {
     // review #463 round-17 SF-5: the pin above seeds the on-disk table
     // too, so dropping the CACHE arm from the merged view stays green

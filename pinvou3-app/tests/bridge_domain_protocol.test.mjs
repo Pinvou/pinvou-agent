@@ -233,7 +233,7 @@ const expectedProtocolHashes = {
   // no new invoke or listen entries (the extractor scans raw source, so
   // body/comment text is part of the digest). Verified unchanged by the
   // #576 merge.
-  sessions: 'af869efe2446b3025f7dff7d009f788dacd7a7e204f6cb7d83535620a48c4d10',
+  sessions: 'd0742252276cfc1fe3831cbaaa9ff6c7b89aa2ac0c465c4567c5679b50edbaa8',
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production

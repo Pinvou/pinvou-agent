@@ -103,7 +103,7 @@ assert.match(
 );
 assert.match(
   projectsRs,
-  /"from": from\.display\(\)\.to_string\(\),\n\s*"to": to\.display\(\)\.to_string\(\),/,
+  /"from": (?:event_)?from\.display\(\)\.to_string\(\),\n\s*"to": (?:event_)?to\.display\(\)\.to_string\(\),/,
   'the event payload must carry the rebind geometry',
 );
 assert.match(
@@ -418,8 +418,20 @@ console.log('rebind artifact reconcile contract passed');
   assert.ok(emitter.includes('"workspace_rebound"'), 'the emitter must stamp action=workspace_rebound');
   assert.ok(emitter.includes('"id"'), 'the emitter must key the session as id');
   assert.ok(
-    emitter.includes('"from"') && emitter.includes('"to"'),
-    'the emitter must carry the rebind geometry',
+    /"from": event_from\.display\(\)\.to_string\(\)/.test(emitter)
+      && /"to": event_to\.display\(\)\.to_string\(\)/.test(emitter),
+    'the emitter must carry the (possibly per-session) rebind geometry',
+  );
+  // round-20 R4: strand-repaired sessions converge onto an out-of-geometry
+  // target, so the emitter must consult per-id geometry overrides with the
+  // run-level pair only as the fallback.
+  assert.ok(
+    emitter.includes('per_id_geometry'),
+    'the emitter must accept per-id geometry overrides',
+  );
+  assert.ok(
+    emitter.includes('unwrap_or_else(|| (from.to_path_buf(), to.to_path_buf()))'),
+    'non-repaired ids keep the run-level geometry as the fallback',
   );
   assert.ok(emitter.includes('"session:list_changed"'), 'the emitter must ride session:list_changed');
   assert.ok(

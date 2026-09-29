@@ -2651,8 +2651,11 @@ const NAV_PREFETCH = {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
             // marker, and they are shown verbatim for troubleshooting.
-            // The run never passed the fence, so warnExisting is kept
-            // as-is (the old-root check may not have run at all).
+            // warnExisting is kept as-is out of deliberate conservatism
+            // (round-20 minor 14): both busy emission sites actually fire
+            // AFTER the old-root check, so the flag is already consumed —
+            // keeping it costs one extra confirm round-trip, never a
+            // skipped one.
             setRebindDraft(prev => prev && {
               ...prev,
               busySessionIds: classified.busySessionIds,

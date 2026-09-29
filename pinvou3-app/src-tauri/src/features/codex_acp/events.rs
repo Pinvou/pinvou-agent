@@ -1174,7 +1174,16 @@ pub fn translate_acp_state_workspace(
     if !path.exists() {
         return Ok(false);
     }
-    let mut state: Value = serde_json::from_slice(&fs::read(&path)?)
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        // Round-20 minor 11: a session deleted between the exists() probe
+        // and this read is a benign race, not a failed session.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context("read acp-state for workspace rebind"));
+        }
+    };
+    let mut state: Value = serde_json::from_slice(&raw)
         .with_context(|| "parse acp-state for workspace rebind".to_string())?;
     let Some(current) = state["workspace"]["path"]
         .as_str()
