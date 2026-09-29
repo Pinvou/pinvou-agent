@@ -68,24 +68,26 @@ async function runSceneSync(block, { readFails = false, saveFails = false } = {}
 // no steer persistence), so there is no byte twin to compare against. Run the
 // real source block through the same failure paths as the scene sidecar: a read
 // failure degrades to the cache, and a migration-write failure must never throw
-// across the bare await in the session-switch path.
+// across the bare await in the session-switch path. The reporting helpers live
+// before the scene block, outside the steered span, so they are extracted too and
+// the sandbox executes the real reporter wording rather than mirrored stubs.
+function extractSidecarReporters(source) {
+  const match = source.match(
+    /function reportSidecarReadFailure\(kind, sid, error\) \{[\s\S]*?function reportSidecarWriteFailure\(kind, sid, error\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
 function extractSteeredSyncBlock(source) {
   const match = source.match(
     /const STEERED_MESSAGES_STORAGE_PREFIX[\s\S]*?async function syncSteeredMessagesForSession\(sid\) \{[\s\S]*?\n {2}\}\n/,
   );
   return match ? match[0] : '';
 }
-async function runSteeredSync(block, { readFails = false, saveFails = false, cachedEvents = [] } = {}) {
+async function runSteeredSync(reporters, block, { readFails = false, saveFails = false, cachedEvents = [] } = {}) {
   const warnings = [];
   const sandbox = {
     console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
     window: { localStorage: { setItem() {}, getItem: () => JSON.stringify(cachedEvents) } },
-    reportSidecarReadFailure(kind, sid, error) {
-      warnings.push(`[sidecar] ${kind} read failed for session ${sid}; falling back to the local cache`, error);
-    },
-    reportSidecarWriteFailure(kind, sid, error) {
-      warnings.push(`[sidecar] ${kind} migration write failed for session ${sid}; keeping the local cache`, error);
-    },
     async invoke(command) {
       if (command === 'get_session_steered_messages') {
         if (readFails) throw new Error('sidecar unreadable');
@@ -98,7 +100,7 @@ async function runSteeredSync(block, { readFails = false, saveFails = false, cac
       return null;
     },
   };
-  vm.runInNewContext(`${block}\nthis.__syncSteered = syncSteeredMessagesForSession;`, sandbox, {
+  vm.runInNewContext(`${reporters}\n${block}\nthis.__syncSteered = syncSteeredMessagesForSession;`, sandbox, {
     filename: 'steered-sidecar-block.js',
   });
   try {
@@ -363,17 +365,18 @@ function rec(name, pass, detail = '') {
   }
 
   const tauriSteeredSync = extractSteeredSyncBlock(tauriBridgeSource);
-  rec('steered sidecar 同步块存在于 tauri 桥源码',
-    tauriSteeredSync !== '',
-    'tauri steered sidecar block');
+  const tauriSidecarReporters = extractSidecarReporters(tauriBridgeSource);
+  rec('steered sidecar 同步块与上报助手存在于 tauri 桥源码',
+    tauriSteeredSync !== '' && tauriSidecarReporters !== '',
+    'tauri steered sidecar block + reporters');
   {
     const cached = [{ pos: 3, text: '调整一下' }];
-    const read = await runSteeredSync(tauriSteeredSync, { readFails: true, cachedEvents: cached });
+    const read = await runSteeredSync(tauriSidecarReporters, tauriSteeredSync, { readFails: true, cachedEvents: cached });
     rec('tauri: steered 读失败时上报后降级到本地缓存',
       !read.threw && JSON.stringify(read.value) === JSON.stringify(cached) &&
         read.warnings.some(text => text.includes('read failed')),
       JSON.stringify(read));
-    const write = await runSteeredSync(tauriSteeredSync, { saveFails: true, cachedEvents: cached });
+    const write = await runSteeredSync(tauriSidecarReporters, tauriSteeredSync, { saveFails: true, cachedEvents: cached });
     rec('tauri: steered 迁移写失败时上报后降级，绝不抛给会话切换',
       !write.threw && JSON.stringify(write.value) === JSON.stringify(cached) &&
         write.warnings.some(text => text.includes('migration write failed')),
