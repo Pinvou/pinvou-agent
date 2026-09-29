@@ -1029,7 +1029,16 @@ function findCloudProviderForModel(model) {
     const urls = [providerBaseUrl(provider), ...(provider.endpointAliases || [])]
       .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
     const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
-    if (compareBase && urls.includes(compareBase)) return true;
+    // Custom-kind groups are explicit opt-ins: a saved record only matches the
+    // custom group whose preset it actually carries. URL-only matching would
+    // re-route a record to a sibling custom group that happens to share the
+    // default endpoint (e.g. an `openai_compatible` record at api.openai.com
+    // picked up by the `openai_responses` group) and silently re-stamp its
+    // preset — and wire — on save.
+    const customKindMatch = !provider.providerKind
+      || provider.providerKind !== PROVIDER_KIND_CUSTOM
+      || provider.preset === (model.preset || '');
+    if (compareBase && customKindMatch && urls.includes(compareBase)) return true;
     return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && catalogItemMatchesModel(item, model.model));
   }) || null;
 }

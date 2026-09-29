@@ -615,7 +615,12 @@
       .filter(Boolean);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i].replaceAll(/\s+/g, "_");
-      if (key === "openai_compatible") return defaultProviderLabel(language);
+      // Both custom-endpoint presets are operator-owned services, not the
+      // OpenAI brand: the substring fallback below would attribute them to
+      // "OpenAI" otherwise.
+      if (key === "openai_compatible" || key === "openai_responses") {
+        return defaultProviderLabel(language);
+      }
       const direct = providerLabel(key, language);
       if (direct) return direct;
       if (key.includes("deepseek")) return providerLabel("deepseek", language);

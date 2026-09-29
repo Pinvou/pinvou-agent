@@ -66,17 +66,20 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // OpenAI Responses wire.
 //
 // The foundation's builtin `openai` provider has a wire policy fixed to Chat
-// Completions (codewhale-config `Openai::wire_policy`), while a named-custom
-// route (`[providers.<name>] kind="openai-compatible"`) honors
-// `wire = "responses"` from configuration (the Custom arm of the tui client's
-// `provider_wire_format_for_config`). Per the fork policy ("if the app bridge
-// can solve it, don't touch the foundation"), routing GPT models over the
-// Responses protocol happens in this layer: build_dt_config overwrites this
-// table wholesale with the current route's base_url / api_key / model, and
-// once `cfg.provider` points at the table name the foundation drives its
-// `/responses` client as ApiProvider::Custom + WireFormat::Responses (tool
-// calls, reasoning.effort, image input, and encrypted reasoning replay are
-// all provider-generic paths).
+// Completions (codewhale-config `Openai::wire_policy`), so routing GPT models
+// over the Responses protocol happens in this layer, per the fork policy
+// ("if the app bridge can solve it, don't touch the foundation"):
+// build_dt_config overwrites this table wholesale with the current route's
+// base_url / api_key / model, and once `cfg.provider` points at the table
+// name the foundation's runtime-route resolver honors the table's
+// `wire = "responses"` dialect (RouteRequest.wire_override). The minted
+// candidate is wire-true, so the per-turn `DeepSeekClient::from_candidate`
+// client binds ApiProvider::Custom + WireFormat::Responses and drives the
+// generic `/responses` client: tool calls, reasoning.effort, image input,
+// and encrypted reasoning-item capture/replay are provider-generic on that
+// wire (capture applies to every Responses route that sends
+// `include: ["reasoning.encrypted_content"]`; replay matches the captured
+// provider tag). Foundation side: CodeWhale PR #79 (candidate head; re-pin to pinvou3-clean on merge).
 const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
 // Multi-agent is an agent cluster where the main session stays the overall
@@ -131,6 +134,20 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     // so it must not trigger the official DeepSeek provider/model-name
     // rewriting.
     matches!(normalized.as_str(), "https://api.deepseek.com")
+}
+
+/// Official-OpenAI endpoint check for the Responses remap. The remap must not
+/// silently switch a hand-edited `preset = "openai"` (or vendor-stamped)
+/// record pointed at an aggregator or private host: those keep the Chat wire
+/// today, and a strictly-Responses-only feature set is exactly what the
+/// `openai_responses` preset group is the explicit opt-in for.
+fn is_official_openai_base_url(base_url: &str) -> bool {
+    let normalized = base_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_ascii_lowercase();
+    matches!(normalized.as_str(), "https://api.openai.com")
 }
 
 /// Conversation key for engine configs that carry no session identity
@@ -1161,16 +1178,22 @@ impl Pinvou3Bridge {
     ///
     /// Two entries:
     /// - `ModelPreset::OpenaiResponses` (the custom Responses-compatible
-    ///   group) qualifies as a whole, by definition;
-    /// - the official OpenAI route (vendor=openai or preset=openai) × a GPT
-    ///   model matched by [`openai_responses_wire_model`]. Hand-typed ids
-    ///   outside the catalog do not match and keep the Chat wire.
+    ///   group) qualifies as a whole, by definition — the group is the
+    ///   explicit opt-in for arbitrary user endpoints;
+    /// - the official OpenAI endpoint (vendor=openai or preset=openai, at
+    ///   `api.openai.com`) × a GPT model matched by
+    ///   [`openai_responses_wire_model`]. Hand-typed ids outside the
+    ///   prefix set keep the Chat wire, and so does any non-official host:
+    ///   a hand-edited `preset = "openai"` record pointed at an aggregator
+    ///   must not silently change wire.
     ///
-    /// Yields to an explicit `DEEPSEEK_PROVIDER` env pin (same env precedence
-    /// as [`Self::provider`]); the official-DeepSeek endpoint guard likewise
-    /// wins.
+    /// Yields to explicit `DEEPSEEK_PROVIDER` / `DEEPSEEK_MODEL` env pins
+    /// (same env precedence as [`Self::provider`] / [`Self::model`], where
+    /// the model itself is operator-owned and out of scope for the GPT
+    /// prefix match); the official-DeepSeek endpoint guard likewise wins.
     fn uses_responses_wire(&self) -> bool {
         if std::env::var("DEEPSEEK_PROVIDER").is_ok()
+            || std::env::var("DEEPSEEK_MODEL").is_ok()
             || is_official_deepseek_base_url(&self.base_url())
         {
             return false;
@@ -1186,7 +1209,9 @@ impl Pinvou3Bridge {
             || model
                 .and_then(|m| m.vendor.as_deref())
                 .is_some_and(|vendor| vendor.trim().eq_ignore_ascii_case("openai"));
-        is_openai_route && openai_responses_wire_model(&self.model())
+        is_openai_route
+            && openai_responses_wire_model(&self.model())
+            && is_official_openai_base_url(&self.base_url())
     }
 
     /// Engine route identity: [`Self::provider`] carries vendor semantics
@@ -7948,6 +7973,118 @@ mod tests {
         );
         assert_eq!(h.provider(), "");
         assert_eq!(h.engine_route_provider(), "");
+    }
+
+    /// A `DEEPSEEK_MODEL` env pin means the model id is operator-owned, not a
+    /// user selection: the GPT-prefix match must not run on it (the env is
+    /// read unconditionally by `model()`), or a leftover pin would silently
+    /// rewire the route onto the Responses wire.
+    #[test]
+    fn responses_wire_yields_to_a_deepseek_model_env_pin() {
+        // DEEPSEEK_MODEL must be in the locked list: locked_env serializes
+        // the env lock for it AND restores the original value on drop, so
+        // other model()-reading tests never observe this pin.
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "gpt-6-sol") };
+        let mut i = fixture_bridge();
+        set_active_model(
+            &mut i,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        assert_eq!(i.model(), "gpt-6-sol");
+        assert_eq!(
+            i.engine_route_provider(),
+            "openai",
+            "env-owned model ids never drive the wire predicate"
+        );
+    }
+
+    /// The Openai-arm remap is scoped to the official endpoint: a hand-edited
+    /// `preset = "openai"` (or vendor-stamped) record pointed at an aggregator
+    /// or private host keeps the Chat wire, exactly as on the base branch.
+    #[test]
+    fn responses_wire_never_switches_a_non_official_openai_host() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        // Hand-edited preset=openai at an aggregator host.
+        let mut j = fixture_bridge();
+        set_active_model(
+            &mut j,
+            ModelPreset::Openai,
+            "gpt-6-sol",
+            "https://aggregator.example.test/v1",
+            "k",
+        );
+        assert_eq!(
+            j.engine_route_provider(),
+            "openai",
+            "non-official hosts keep the Chat wire on the openai preset"
+        );
+        let cfg_j = j.build_dt_config();
+        assert!(
+            cfg_j
+                .providers
+                .as_ref()
+                .is_none_or(|providers| providers.custom.is_empty()),
+            "the non-official openai route must not mint a pinvou_responses table"
+        );
+
+        // The vendor-stamped parity corner on a custom record: Chat off the
+        // official endpoint, Responses on it (vendor-first routing mirrored).
+        let mut k = fixture_bridge();
+        set_active_model(
+            &mut k,
+            ModelPreset::OpenaiCompatible,
+            "gpt-6-luna",
+            "https://aggregator.example.test/v1",
+            "k",
+        );
+        k.prefs.advanced.saved_models[0].vendor = Some("OpenAI".to_string());
+        assert_eq!(
+            k.engine_route_provider(),
+            "openai",
+            "the vendor corner needs the official endpoint"
+        );
+        let mut l = fixture_bridge();
+        set_active_model(
+            &mut l,
+            ModelPreset::OpenaiCompatible,
+            "gpt-6-luna",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        l.prefs.advanced.saved_models[0].vendor = Some("OpenAI".to_string());
+        assert_eq!(l.engine_route_provider(), RESPONSES_ROUTE_PROVIDER);
+
+        // Negative pin for the deliberately-unchanged boundary: a custom
+        // record carrying NO vendor metadata stays Chat even at the official
+        // endpoint.
+        let mut m = fixture_bridge();
+        set_active_model(
+            &mut m,
+            ModelPreset::OpenaiCompatible,
+            "gpt-6-luna",
+            "https://api.openai.com/v1",
+            "k",
+        );
+        assert_ne!(
+            m.engine_route_provider(),
+            RESPONSES_ROUTE_PROVIDER,
+            "OpenaiCompatible without vendor metadata must not switch wire"
+        );
     }
 
     /// The documented-output anchor is the LAST resort of the route output

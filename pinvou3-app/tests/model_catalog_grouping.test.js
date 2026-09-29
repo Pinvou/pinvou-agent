@@ -45,7 +45,7 @@ vm.runInContext(
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_CATALOG_SECTIONS, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_CATALOG_SECTIONS, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, findCloudProviderForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -86,6 +86,22 @@ test('OpenAI Responses 自定义行 -> 自定义，sub-label 按自身 preset �
   // instead of hard-coding a fall-back to the Chat-compatible group.
   assert.strictEqual(selectorSubLabel(responsesCustom, t), 'OpenAI Responses 兼容');
   assert.strictEqual(selectorSubLabel(responsesCustom, tEn), 'OpenAI Responses Compatible');
+});
+test('自定义组 URL 匹配必须同 preset:openai_compatible 记录不会被 openai_responses 组收编', () => {
+  // The openai_responses group is the first custom-kind group with a real
+  // default URL (api.openai.com/v1). URL-only matching would adopt a valid
+  // `openai_compatible` record at the official endpoint, mislabel it in the
+  // edit form, and re-stamp its preset — a silent Chat→Responses wire
+  // switch — on the next save.
+  const chatCompatible = mk({ preset: 'openai_compatible', provider_kind: 'custom', base_url: 'https://api.openai.com/v1', model: 'gpt-6-sol' });
+  assert.strictEqual(findCloudProviderForModel(chatCompatible), null);
+  // Same preset matches its own group (positive pin).
+  const responsesRecord = mk({ preset: 'openai_responses', provider_kind: 'custom', base_url: 'https://api.openai.com/v1', model: 'gpt-6-sol' });
+  const matched = findCloudProviderForModel(responsesRecord);
+  assert.notStrictEqual(matched, null);
+  assert.strictEqual(matched.key, 'openai_responses');
+  // And an openai_responses record at an aggregator still matches nothing.
+  assert.strictEqual(findCloudProviderForModel(mk({ preset: 'openai_responses', provider_kind: 'custom', base_url: 'https://gw.example.com/v1', model: 'my-aggregator-model' })), null);
 });
 test('Coding Plan 命中目录(glm-5.2) -> 预设', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.2' })), true);
