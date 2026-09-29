@@ -509,6 +509,7 @@ impl KnowledgeService {
         let panic_imports = imports.clone();
         let panic_active = active.clone();
         let panic_job_id = job_id.clone();
+        let panic_l1 = self.l1.clone();
         thread::spawn(move || {
             // 导入线程处理任意用户文件（PDF/Office/图片 OCR 等），底层解析可能 panic。
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
@@ -596,7 +597,17 @@ impl KnowledgeService {
             if outcome.is_err() {
                 // panic 与正常退出走同样的中断+清理：把任务退回 interrupted，清空 active_import，
                 // 下次启动（或用户续作）仍可恢复，导入子系统不会卡死。
-                panic_imports.interrupt(&panic_job_id);
+                let state = panic_imports.state(&panic_job_id).ok();
+                let applied = panic_imports.interrupt(&panic_job_id);
+                // 与 `interrupt_index` 同款 applied-parking：中断落地时集合停回
+                // "pending"（可续作），而不是卡死在线程 panic 前已置上的
+                // "indexing"。interrupt 未落地说明最后一个条目恰好在读态与中断
+                // 之间完成，close-out 的语义仍然成立，集合保持原状。
+                if applied && state.as_ref().is_some_and(|s| s.running) {
+                    if let Some(state) = state {
+                        panic_l1.set_collection_status(state.collection_id, "pending");
+                    }
+                }
                 let mut current = panic_active.lock();
                 if current.as_deref() == Some(panic_job_id.as_str()) {
                     *current = None;

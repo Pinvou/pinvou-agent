@@ -880,7 +880,7 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("voice-postprocess-empty");
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "voice",
         "postprocess",
         "--mode",
@@ -901,7 +901,7 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     // — the module header promises it on EVERY postprocess result, the
     // empty short-circuit included.
     let outcome = run(&[
-        "pinvoy",
+        "pinvou",
         "voice",
         "postprocess",
         "--mode",

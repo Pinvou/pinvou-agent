@@ -1249,7 +1249,7 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
 /// the secret from the environment and persists it via the OS keyring.
 /// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
 #[test]
-#[ignore]
+#[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn tools_install_with_secret_persists_credential() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-secret");
@@ -1286,7 +1286,7 @@ fn tools_install_with_secret_persists_credential() {
 /// MCP handshake was skipped instead of performing it.
 /// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
 #[test]
-#[ignore]
+#[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn tools_install_warns_when_remote_validation_is_skipped() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-validate");
@@ -1931,7 +1931,7 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
 /// `tools_install_with_secret_persists_credential`.
 /// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
 #[test]
-#[ignore]
+#[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
     use pinvou3_lib::platform::credential_store::{
         CredentialReference, CredentialStore, SystemCredentialStore,

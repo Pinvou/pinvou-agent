@@ -289,6 +289,23 @@ impl EnginePoolRuntime {
             .await
     }
 
+    /// One-shot falsy delete for the teardown arms: the durable delete
+    /// re-checks the adoption marker UNDER the turn gate — the disposition
+    /// sampled it outside the gate, and a live turn can hold the gate for
+    /// the turn's whole wall clock, so a rename landing during the wait
+    /// makes the record an adopted (GUI-owned) session that must be kept.
+    /// No late sweep is pre-armed: the guarded delete schedules it itself
+    /// on the delete outcome only.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_headless_session_unless_adopted(
+        &self,
+        session_id: &str,
+    ) -> Result<()> {
+        self.pool
+            .delete_chat_session_unless_adopted(session_id)
+            .await
+    }
+
     pub(crate) fn eval_session_execution_root(
         &self,
         session_id: &str,

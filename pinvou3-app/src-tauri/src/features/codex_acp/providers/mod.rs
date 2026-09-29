@@ -297,6 +297,7 @@ impl AcpProvidersStore {
     }
 
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
             let state = agents.entry(agent.to_string()).or_default();
@@ -314,6 +315,7 @@ impl AcpProvidersStore {
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
+        self.reload_from_disk();
         let removed = {
             let mut agents = self.agents.write();
             let Some(state) = agents.get_mut(agent) else {
@@ -333,6 +335,7 @@ impl AcpProvidersStore {
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
+        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
             let state = agents.entry(agent.to_string()).or_default();
@@ -356,6 +359,7 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
+        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
             let state = agents.entry(agent.to_string()).or_default();
@@ -363,6 +367,25 @@ impl AcpProvidersStore {
             state.official_default_model = official_default_model.map(str::to_string);
         }
         self.persist()
+    }
+
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore re-reads the disk state
+    /// first: mutations on both surfaces persist immediately, so at any
+    /// quiescent point the file is the latest truth and re-reading it can
+    /// only pull in the other surface's writes. Best-effort: an unreadable
+    /// or unparsable file keeps the in-memory state (the same stance
+    /// `load_or_empty` takes, with its first-boot backup).
+    fn reload_from_disk(&self) {
+        let Ok(raw) = fs::read_to_string(&self.path) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<AcpProvidersFile>(&raw) else {
+            return;
+        };
+        *self.agents.write() = file.agents;
     }
 
     fn persist(&self) -> Result<()> {
@@ -1264,6 +1287,72 @@ mod tests {
         let raw = fs::read_to_string(&store.path).unwrap();
         assert!(!raw.contains("api_key"));
         assert!(raw.contains("pinvou3-acp-provider-key"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The GUI holds one store for the app lifetime while the CLI builds a
+    /// fresh one per process; the long-lived side must pull the fresh
+    /// side's write in before its next whole-table persist, or that persist
+    /// silently reverts it minutes later.
+    #[test]
+    fn mutators_reload_the_disk_state_the_other_surface_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-gui", "GUI record")).unwrap();
+        // The CLI-side store never saw the GUI record; its own write must
+        // not wipe it.
+        cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert!(
+            names.contains(&"GUI record".to_string()) && names.contains(&"CLI record".to_string()),
+            "the CLI write must not revert the GUI record: {names:?}"
+        );
+
+        // A removal is equally authoritative: the long-lived side's next
+        // mutation reloads the removal instead of resurrecting the id.
+        cli.remove("codex", "pv-gui").unwrap();
+        gui.set_current("codex", Some("pv-cli")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["CLI record".to_string()],
+            "the removed provider must stay removed: {names:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
