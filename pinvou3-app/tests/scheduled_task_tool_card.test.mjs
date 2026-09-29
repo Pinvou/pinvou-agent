@@ -52,12 +52,12 @@ test('update summary shows target id and changed fields', () => {
 
 test('delete summary shows the target id', () => {
   assert.equal(scheduledTaskDeleteSummary({ task_id: 't-9' }), 't-9');
-  assert.equal(scheduledTaskDeleteSummary(undefined), '');
+  assert.equal(scheduledTaskDeleteSummary({}), '');
 });
 
 test('list summary names the tool with optional limit', () => {
   assert.equal(scheduledTaskListSummary({ limit: 5 }), 'list · limit 5');
-  assert.equal(scheduledTaskListSummary(undefined), 'list');
+  assert.equal(scheduledTaskListSummary({}), 'list');
 });
 
 test('output parser maps the CRUD payload shapes', () => {

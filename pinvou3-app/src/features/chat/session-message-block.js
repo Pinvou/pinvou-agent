@@ -34,7 +34,7 @@ const MAX_SENDER_TITLE_LENGTH = 200;
 export function splitSessionMessageBlock(text) {
   // CRLF-tolerant: history normalized by external tooling may carry \r\n,
   // which would defeat both the startsWith check and the blank-line compare.
-  const raw = String(text || '').replace(/\r\n/g, '\n');
+  const raw = String(text || '').replaceAll('\r\n', '\n');
   const untouched = { sender: null, text: String(text || '') };
   if (!raw.startsWith(MESSAGE_BLOCK_HEADER + '\n')) return untouched;
   const lines = raw.split('\n');
