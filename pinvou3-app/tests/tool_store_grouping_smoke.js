@@ -39,7 +39,6 @@ function injectSource() {
         case 'check_for_update': return Promise.resolve({available:false});
         case 'get_mode_state': return Promise.resolve({mode:'yolo',plan_phase:'none'});
         case 'get_super_permission_status': return Promise.resolve(false);
-        case 'detect_local_vllm_setup': return Promise.resolve({eligible:false});
         case 'list_marketplace_tools': return Promise.resolve(TOOLS.map(([id,cs])=>({id,name:id,description:'',version:'1.0.0',icon:'',category:'test',installed:false,companion_skills:cs})));
         case 'get_marketplace_tool_auth_status': return Promise.resolve({status:'not_installed'});
         case 'list_marketplace_skills': return Promise.resolve([{id:'government-writing',title:'党政机关公文写作',installed:false,user_uploaded:false},{id:'pptx',title:'PPT 生成',installed:false,user_uploaded:false},{id:'visualizer',title:'数据分析可视化',installed:false,user_uploaded:false},{id:'ima-skills',title:'腾讯 ima',installed:false,user_uploaded:false}]);

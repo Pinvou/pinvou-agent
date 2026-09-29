@@ -22,7 +22,7 @@
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
     models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
-    vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
+    vllm: [],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     computerUse: ["computerUse"],
     personas: ["activePersona", "personaEvents", "personaPool"],
