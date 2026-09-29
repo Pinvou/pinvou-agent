@@ -182,8 +182,9 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
         .cloned()
         .ok_or_else(|| format!("当前平台没有 {name} 的已审核安装记录"))?;
 
-    // 连接时自愈：旧布局（connectors/<platform>/bin/）里已验证的存量二进制
-    // 先迁移到版本目录（幂等；已持 INSTALL_LOCK，走 locked 实现）。
+    // 连接时自愈：旧布局（connectors/<platform>/bin/）里的存量二进制按 lock
+    // 校验迁移到版本目录；钉住版本已在版本目录时，同名残留（滞留旧版本）被
+    // 清除（幂等；已持 INSTALL_LOCK，走 locked 实现）。
     migrate_legacy_binary(&artifact.name, &artifact.version, &artifact.binary_sha256);
 
     let version_dir = crate::platform::paths::assets_cli_dir(&artifact.name, &artifact.version);
@@ -294,10 +295,16 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
     let version_dir = crate::platform::paths::assets_cli_dir(name, version);
     let destination = version_dir.join(&exe);
     if file_sha256_matches(&destination, expected_sha256) {
-        let _ = fs::remove_file(&legacy);
-        log::info!(
-            "[connectors] legacy CLI leftover removed (pinned version in place): {name}@{version}"
-        );
+        match fs::remove_file(&legacy) {
+            Ok(()) => log::info!(
+                "[connectors] legacy CLI leftover removed (pinned version in place): {name}@{version}"
+            ),
+            // 例：Windows 上残留正在执行（共享冲突）；下次启动/连接重试，
+            // PATH 次序修复保证窗口期内按名解析仍命中钉住版本。
+            Err(e) => log::warn!(
+                "[connectors] legacy CLI leftover removal failed (retried on next boot/connect): {name}@{version}: {e}"
+            ),
+        }
     } else if file_sha256_matches(&legacy, expected_sha256)
         && fs::create_dir_all(&version_dir).is_ok()
         && fs::rename(&legacy, &destination).is_ok()
