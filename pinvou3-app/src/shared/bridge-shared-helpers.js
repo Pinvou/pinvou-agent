@@ -2062,8 +2062,15 @@
         const split = splitMention(user);
         if (split && split.refs.length && split.text) {
           const blockText = user.slice(0, user.length - split.text.length);
-          const bodyIndex = payload.indexOf(split.text);
-          if (blockText && payload.startsWith(blockText) && bodyIndex >= blockText.length) {
+          // Anchor on the FIRST occurrence after the block, and only when it
+          // is unique — the legacy exact-match path refused ambiguous
+          // payloads, and a body string that also occurs inside the template
+          // scaffold would silently land the edit at the boilerplate spot.
+          const bodyIndex = payload.indexOf(split.text, blockText.length);
+          if (
+            bodyIndex >= blockText.length &&
+            payload.indexOf(split.text, bodyIndex + 1) === -1
+          ) {
             return {
               blockPrefix: blockText,
               before: payload.slice(blockText.length, bodyIndex),
