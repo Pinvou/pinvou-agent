@@ -406,7 +406,8 @@ impl Pinvou3Bridge {
         // rather than inside runtime_bundle: the connectors → runtime_bundle
         // dependency already exists and a reverse call would form a cycle
         // (the architecture guard's rust_feature_cycles baseline is empty).
-        // Idempotent, returns no error internally, does not block startup.
+        // Idempotent, returns no error internally; microsecond-scale in
+        // steady state (per-artifact stat, early return) on the boot path.
         crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_values() {
