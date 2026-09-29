@@ -213,3 +213,44 @@
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 变更，无需更新 `docs/fork-modifications.md`；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
+
+
+---
+
+## 9. 实施扩展记录：CRUD 全覆盖（2026-09-29，同分支追加定稿）
+
+首版设计（§1–§8）只覆盖创建 + 列表。按评审意见扩展为完整增删改查，本节为其评审基线；§1–§8 中与本文冲突之处以本节为准。
+
+### 9.1 工具面（替换 §3.1）
+
+| 工具全名 | 等级 | 参数 |
+|---|---|---|
+| `mcp_app-automations_create_scheduled_task` | L1 | 同 §3.1 |
+| `mcp_app-automations_read_scheduled_task` | L0 | `task_id`(必填)；返回单任务全量字段，**含 prompt**（更新前检视用） |
+| `mcp_app-automations_list_scheduled_tasks` | L0 | 同 §3.1（不含 prompt） |
+| `mcp_app-automations_update_scheduled_task` | L1 | `task_id`(必填) + `name`/`prompt`/`rrule`/`model_id`/`paused`（均可选，至少其一）；rrule 同产品子集 |
+| `mcp_app-automations_delete_scheduled_task` | L1 | `task_id`(必填)；归档后删除，破坏性 |
+
+### 9.2 设计决策补充
+
+| 决策点 | 结论 | 理由 |
+|---|---|---|
+| 粒度 | 五个 `verb_noun` 工具，不合入 mode 枚举 | 契约 §4.2 偏好 one tool + mode，但读写审批语义不同：合入会让 L0 读也吃 L1 Ask 门（骚扰）或写操作失去门控；session-reader 三工具先例同理 |
+| 删除授权 | delete 为 L1 + 逐次 Ask（非 L2 默认拒绝） | typed Ask 逐次确认即契约 §5 的"显式授权机制"：用户在批准时看到确切删除对象；且走面板同一条 archive-then-delete 管线（历史可追溯） |
+| spool 扩展 | 记录加 `kind`(`create`/`update`/`delete`) + `task_id`，其余字段全部可选 | 契约 §4.4 只允许增字段：旧 create 记录经 watcher 默认 `kind=create` 继续有效 |
+| 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")` | 同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
+| 目标预检 | update/delete 在 server 侧先探测目标存在 | 快速失败省一轮 spool；watcher 与领域层仍重检（不信任 server 侧） |
+| Ask 规则 | update/delete 同 create 一样逐次 Ask；read/list 不加 | 读操作不加门（不打扰）；无人值守对三个写工具一律拒绝（递归自改被挡） |
+
+### 9.3 验收矩阵追加（接续 §5 编号）
+
+| # | 场景 | 预期结果 | 验证方式 | 优先级 |
+|---|---|---|---|---|
+| I1 | 更新端到端 | update 改名/rrule/paused 落库并实时刷新 | ◇Rust `update_request_changes_the_existing_task` + 手工 | P0 |
+| I2 | 删除端到端 | delete 走 archive-then-delete，任务从面板消失、历史可追溯 | ◇Rust `delete_request_archives_and_removes_the_task` + 手工 | P0 |
+| I3 | 读详情 | read 返回含 prompt 的全量字段；未知 id 显式 not found | ◇python + 手工 | P0 |
+| I4 | update 校验 | 缺 task_id / 零字段 / CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
+| I5 | delete 校验 | 缺 task_id、带多余字段均拒绝 | ◇python + ◇Rust `delete_request_validation_rejects_extra_fields` | P1 |
+| I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
+
+§6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。

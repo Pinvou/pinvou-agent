@@ -15,7 +15,9 @@ import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
 import {
   SCHEDULED_TASK_CREATE_TOOL,
-  parseScheduledTaskCreateOutput,
+  SCHEDULED_TASK_DELETE_TOOL,
+  SCHEDULED_TASK_UPDATE_TOOL,
+  parseScheduledTaskToolOutput,
   scheduledTaskPromptExcerpt,
 } from './scheduled-task-tool-logic.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
@@ -192,28 +194,34 @@ const ComputerUseScreenshotCard = ({ item, path, t }) => {
 };
 
 /**
- * app-automations 创建卡（docs/builtin-toolset-contract.md §3.2 执行可见性）：
- * L1 写操作的完整草稿（name/rrule/prompt 摘要）与应用侧结果（已建 / 待确认）
- * 全部上时间线。
+ * app-automations 结果卡（docs/builtin-toolset-contract.md §3.2 执行可见性）：
+ * L1 写操作（create/update/delete）的完整草稿（name/rrule/prompt 摘要）与
+ * 应用侧结果（已建/已改/已删/待确认）全部上时间线；解析失败回退默认视图。
  */
-const ScheduledTaskCreateCard = ({ parsed, args, t }) => {
+const SCHEDULED_TASK_TOOL_OPS = {
+  [SCHEDULED_TASK_CREATE_TOOL]: 'created',
+  [SCHEDULED_TASK_UPDATE_TOOL]: 'updated',
+  [SCHEDULED_TASK_DELETE_TOOL]: 'deleted',
+};
+const ScheduledTaskToolCard = ({ op, parsed, args, t }) => {
   const copy = t.uiScheduledTaskTool;
   const rrule = typeof args?.rrule === 'string' ? args.rrule.trim() : '';
   const excerpt = scheduledTaskPromptExcerpt(args);
+  const doneLine = parsed.kind === 'pending' || parsed.kind === 'failed' ? null : (
+    <div className={parsed.kind === 'deleted' ? 'text-[#C5221F] dark:text-[#F28B82]' : 'text-[#137333] dark:text-[#93D5A6]'}>
+      {copy[parsed.kind]}
+      {parsed.taskId ? <span className="ml-1 font-mono text-[11px] opacity-70">{parsed.taskId}</span> : null}
+    </div>
+  );
   return (
-    <div data-testid="scheduled-task-create-card" className="my-1 text-[12px] leading-relaxed">
-      {parsed.kind === 'created' ? (
-        <div className="text-[#137333] dark:text-[#93D5A6]">
-          {copy.created}
-          {parsed.taskId ? <span className="ml-1 font-mono text-[11px] opacity-70">{parsed.taskId}</span> : null}
-        </div>
-      ) : parsed.kind === 'pending' ? (
-        <div className="text-[#757575] dark:text-[#8E8E8E]">{copy.pending}</div>
-      ) : (
-        <div className="text-[#C5221F] dark:text-[#F28B82]">{copy.failed}</div>
-      )}
+    <div data-testid="scheduled-task-tool-card" className="my-1 text-[12px] leading-relaxed">
+      {doneLine}
+      {parsed.kind === 'pending' ? <div className="text-[#757575] dark:text-[#8E8E8E]">{copy.pending}</div> : null}
+      {parsed.kind === 'failed' ? <div className="text-[#C5221F] dark:text-[#F28B82]">{copy.failed}</div> : null}
       {rrule ? <div className="mt-0.5 break-all font-mono text-[11px] text-[#757575] dark:text-[#8E8E8E]">{rrule}</div> : null}
       {excerpt ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.promptLabel}: {excerpt}</div> : null}
+      {op === 'deleted' && parsed.kind !== 'pending' && parsed.kind !== 'failed'
+        ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.deletedNote}</div> : null}
     </div>
   );
 };
@@ -223,10 +231,13 @@ const ToolOutput = ({ item, t }) => {
       const computerUseEnabled = useComputerUseToolCardEnabled();
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
-      // app-automations 创建卡：解析成功才接管，结构漂移回退默认视图。
-      if (item.name === SCHEDULED_TASK_CREATE_TOOL && item.state === 'done') {
-        const parsed = parseScheduledTaskCreateOutput(out);
-        if (parsed) return <ScheduledTaskCreateCard parsed={parsed} args={item.args} t={t} />;
+      // app-automations 结果卡：解析成功才接管，结构漂移回退默认视图。
+      const scheduledTaskOp = SCHEDULED_TASK_TOOL_OPS[item.name];
+      if (scheduledTaskOp && item.state === 'done') {
+        const parsed = parseScheduledTaskToolOutput(out);
+        if (parsed) {
+          return <ScheduledTaskToolCard op={scheduledTaskOp} parsed={parsed} args={item.args} t={t} />;
+        }
       }
       // computer_use: render the screenshot card when the output references
       // attachments/computer_use/*.png; with no screenshot or the feature off, fall back to

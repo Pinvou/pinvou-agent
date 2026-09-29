@@ -335,7 +335,7 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             )
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
-        expected = hashlib.sha256(b"reqsrc01|k1").hexdigest()
+        expected = hashlib.sha256(b"reqsrc01|create||k1").hexdigest()
         self.assertEqual(self._spooled()[0].stem, expected)
 
     def test_spool_write_is_atomic_json(self):
@@ -366,6 +366,138 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
         self.assertTrue(Path(self.requests, "spool").is_dir())
+
+
+class ReadScheduledTaskTests(unittest.TestCase):
+    """I3: read projects the full detail including the prompt."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-read-test-")
+        self.automations = Path(self.tmp) / "automations"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_read_projects_full_fields_including_prompt(self):
+        _write_automation(self.automations, "task-1")
+        payload, error = server.read_scheduled_task(str(self.automations), "task-1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["id"], "task-1")
+        self.assertEqual(payload["name"], "早报任务")
+        self.assertEqual(payload["prompt"], "机密的提示词内容不应出现在 list 输出")
+        self.assertEqual(payload["rrule"], "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=30")
+        self.assertEqual(payload["status"], "active")
+        self.assertEqual(payload["nextRunAt"], "2026-09-29T08:30:00Z")
+
+    def test_read_unknown_and_invalid_ids(self):
+        payload, error = server.read_scheduled_task(str(self.automations), "nosuch")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+        for bad in ("../escape", "with space", "a" * 300, ""):
+            payload, error = server.read_scheduled_task(str(self.automations), bad)
+            self.assertIsNone(payload, bad)
+            self.assertIn("invalid task_id", error, bad)
+
+    def test_read_corrupt_store_entry(self):
+        (Path(self.automations, "automations")).mkdir(parents=True)
+        (Path(self.automations, "automations", "broken.json")).write_text(
+            "{not json", encoding="utf-8"
+        )
+        payload, error = server.read_scheduled_task(str(self.automations), "broken")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+
+
+class UpdateDeleteRequestTests(unittest.TestCase):
+    """I4/I5: kind-aware validation for update and delete, and the spool record shape."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-upd-test-")
+        self.requests = Path(self.tmp) / "task-requests"
+        self.automations = Path(self.tmp) / "automations"
+        _write_automation(self.automations, "task-1")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _schedule(self, kind, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "kind": kind,
+            "automations_dir": str(self.automations),
+            "task_id": "task-1",
+        }
+        args.update(overrides)
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            return server.schedule_task_request(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_update_requires_target_and_at_least_one_field(self):
+        payload, error = self._schedule("update", task_id=None)
+        self.assertIsNone(payload)
+        self.assertIn("invalid task_id", error)
+        payload, error = self._schedule("update")
+        self.assertIsNone(payload)
+        self.assertIn("at least one field", error)
+        for bad in ("../escape", "a" * 300):
+            payload, error = self._schedule("update", task_id=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIn("invalid task_id", error, bad)
+
+    def test_update_validates_rrule_and_caps(self):
+        payload, error = self._schedule("update", rrule="FREQ=CRON;EXPR=* * * * *")
+        self.assertIsNone(payload)
+        self.assertIn("CRON", error)
+        payload, error = self._schedule("update", name="n" * (server.MAX_NAME_CHARS + 1))
+        self.assertIsNone(payload)
+        self.assertIn("character limit", error)
+        payload, error = self._schedule("update", paused="sometimes")
+        self.assertIsNone(payload)
+        self.assertIn("invalid paused", error)
+
+    def test_update_spools_kind_and_target(self):
+        payload, error = self._schedule("update", name="新名字", paused=True)
+        self.assertIsNone(error)
+        self.assertEqual(payload["kind"], "update")
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["kind"], "update")
+        self.assertEqual(record["task_id"], "task-1")
+        self.assertEqual(record["name"], "新名字")
+        self.assertTrue(record["paused"])
+        self.assertIsNone(record["rrule"])
+
+    def test_update_paused_false_counts_as_a_field(self):
+        payload, error = self._schedule("update", paused=False)
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertFalse(record["paused"])
+
+    def test_delete_rejects_extra_fields_and_unknown_target(self):
+        payload, error = self._schedule("delete")
+        self.assertIsNone(error)
+        self.assertEqual(payload["kind"], "delete")
+        payload, error = self._schedule("delete", name="不应有名字")
+        self.assertIsNone(payload)
+        self.assertIn("no extra fields", error)
+        payload, error = self._schedule("delete", task_id="nosuch")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+
+    def test_idempotency_key_scopes_operation_kind(self):
+        self._schedule("update", name="a", idempotency_key="k1")
+        self._schedule("delete", idempotency_key="k1")
+        self.assertEqual(len(self._spooled()), 2, "same key, different kind: no clobber")
+        import hashlib
+
+        expected = hashlib.sha256(b"|delete|task-1|k1").hexdigest()
+        stems = [path.stem for path in self._spooled()]
+        self.assertIn(expected, stems)
+
+    def _spooled(self):
+        return sorted(Path(self.requests, "spool").glob("*.json"))
 
 
 class ListScheduledTasksTests(unittest.TestCase):
@@ -427,7 +559,10 @@ class FeatureGateTests(unittest.TestCase):
 
     TOOL_FEATURES = {
         "mcp_app-automations_create_scheduled_task": ["scheduled-task-automation"],
+        "mcp_app-automations_read_scheduled_task": ["scheduled-task-automation"],
         "mcp_app-automations_list_scheduled_tasks": ["scheduled-task-automation"],
+        "mcp_app-automations_update_scheduled_task": ["scheduled-task-automation"],
+        "mcp_app-automations_delete_scheduled_task": ["scheduled-task-automation"],
     }
 
     def setUp(self):
@@ -559,7 +694,13 @@ class StdioContractTests(unittest.TestCase):
 
             tools = self._rpc(proc, "tools/list")
             names = [tool["name"] for tool in tools["result"]["tools"]]
-            self.assertEqual(names, ["create_scheduled_task", "list_scheduled_tasks"])
+            self.assertEqual(names, [
+                "create_scheduled_task",
+                "read_scheduled_task",
+                "list_scheduled_tasks",
+                "update_scheduled_task",
+                "delete_scheduled_task",
+            ])
 
             call = self._rpc(proc, "tools/call", {
                 "name": "list_scheduled_tasks",

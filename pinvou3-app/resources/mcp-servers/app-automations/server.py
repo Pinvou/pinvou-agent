@@ -112,6 +112,16 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
 MAX_SESSION_ID_LEN = 128
 MAX_SENDER_TITLE_CHARS = 200
 
+# Task ids are AutomationManager-allocated UUIDs, but the watcher feeds them
+# back into storage paths, so the same charset/length discipline as session
+# ids applies (anti-empty / anti-traversal; `\Z` anchors the true end).
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
+MAX_TASK_ID_LEN = 128
+
+# Request kinds behind the create/update/delete tools (the spool record's
+# `kind` field; the watcher maps each to its domain entry point).
+REQUEST_KINDS = ("create", "update", "delete")
+
 # Task field caps (mirrored by the Rust watcher, which re-checks because the
 # spool directory is user-writable). The prompt cap matches the messaging
 # channel's 32k body cap — a task prompt becomes the recurring user turn.
@@ -194,6 +204,24 @@ TOOL_DEFS = [
         },
     },
     {
+        "name": "read_scheduled_task",
+        "description": (
+            "Read one Pinvou scheduled task's full detail by id, including its prompt "
+            "(read-only). Use it to inspect a task before updating it; use "
+            "list_scheduled_tasks to discover ids."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task's id (from list_scheduled_tasks).",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "list_scheduled_tasks",
         "description": (
             "List the user's existing Pinvou scheduled tasks (read-only; id, name, rrule, "
@@ -208,6 +236,92 @@ TOOL_DEFS = [
                     "description": "(optional) Max entries to return, default 20, max 100.",
                 },
             },
+        },
+    },
+    {
+        "name": "update_scheduled_task",
+        "description": (
+            "Update an existing Pinvou scheduled task by id (write operation, requires "
+            "user approval). Provide only the fields to change: name, prompt, rrule "
+            "(same product subset as create_scheduled_task), model_id, or paused. Read "
+            "the task first when the user asks to change a task they describe by name "
+            "but you only have list data. Returns the updated task's id and name once "
+            "the app confirms, or delivery:'pending' when confirmation has not landed "
+            "within a few seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task's id to update (from list_scheduled_tasks/read_scheduled_task).",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "(optional) New task name (max 200 chars).",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "(optional) New per-run instruction (max 32k chars).",
+                },
+                "rrule": {
+                    "type": "string",
+                    "description": "(optional) New recurrence, same product subset as create (HOURLY/WEEKLY/ONCE).",
+                },
+                "model_id": {
+                    "type": "string",
+                    "description": "(optional) New saved-model id to pin every run to.",
+                },
+                "paused": {
+                    "type": "boolean",
+                    "description": "(optional) true pauses the task, false resumes it.",
+                },
+                "from_session": {
+                    "type": "string",
+                    "description": "(optional) Your own session's sessionId, for the audit trail.",
+                },
+                "from_title": {
+                    "type": "string",
+                    "description": "(optional) Your own session's title, for the audit trail.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "(optional) Opaque key (max 128 chars) making retries safe.",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "delete_scheduled_task",
+        "description": (
+            "Permanently delete a Pinvou scheduled task by id and archive its run "
+            "history (destructive, requires user approval). The task stops scheduling "
+            "immediately and is removed from the Scheduled Tasks panel. Confirm with "
+            "the user before calling; runs already in flight are cancelled. Returns "
+            "the deleted task's id and name once the app confirms."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task's id to delete.",
+                },
+                "from_session": {
+                    "type": "string",
+                    "description": "(optional) Your own session's sessionId, for the audit trail.",
+                },
+                "from_title": {
+                    "type": "string",
+                    "description": "(optional) Your own session's title, for the audit trail.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "(optional) Opaque key (max 128 chars) making retries safe.",
+                },
+            },
+            "required": ["task_id"],
         },
     },
 ]
@@ -525,6 +639,65 @@ def validate_rrule(rrule):
     return normalized, None
 
 
+def validate_task_id(task_id):
+    """Charset + length validation for a target task id (update/delete); the
+    id flows back into storage paths on the watcher side, so anti-traversal
+    rules apply here too."""
+    if not task_id or len(task_id) > MAX_TASK_ID_LEN or not TASK_ID_RE.match(task_id):
+        return "invalid task_id: %r" % (
+            task_id[:64] + "..." if len(task_id) > 64 else task_id,)
+    return None
+
+
+def read_scheduled_task(automations_dir, task_id):
+    """Reads one task's full detail from the AutomationManager store
+    (read-only). Unlike list_scheduled_tasks this projects the prompt: the
+    caller addresses a specific task the user owns, and the prompt is the
+    main thing to inspect before an update. Returns (payload, error)."""
+    task_id = str(task_id or "").strip()
+    id_error = validate_task_id(task_id)
+    if id_error:
+        return None, id_error
+    path = os.path.join(automations_dir, "automations", "%s.json" % task_id)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError, RecursionError):
+        # Deliberately no raw exception text: OSError messages embed absolute
+        # local paths, which must not leak into tool responses.
+        return None, "not found: no scheduled task with id %s" % task_id
+    if not isinstance(record, dict):
+        return None, "not found: no scheduled task with id %s" % task_id
+    status = record.get("status")
+    return {
+        "id": record.get("id") if isinstance(record.get("id"), str) else task_id,
+        "name": str(record.get("name") or ""),
+        "prompt": str(record.get("prompt") or ""),
+        "rrule": str(record.get("rrule") or ""),
+        "status": str(status) if isinstance(status, str) else "",
+        "nextRunAt": (
+            str(record.get("next_run_at"))
+            if isinstance(record.get("next_run_at"), str) else None
+        ),
+        "lastRunAt": (
+            str(record.get("last_run_at"))
+            if isinstance(record.get("last_run_at"), str) else None
+        ),
+        "model": (
+            str(record.get("model"))
+            if isinstance(record.get("model"), str) else None
+        ),
+        "createdAt": (
+            str(record.get("created_at"))
+            if isinstance(record.get("created_at"), str) else None
+        ),
+        "updatedAt": (
+            str(record.get("updated_at"))
+            if isinstance(record.get("updated_at"), str) else None
+        ),
+    }, None
+
+
 def validate_sender_session_id(session_id):
     """Charset + length validation for the audit-trail sender id, plus the
     isolated-prefix rejection (contract §4.3/§5, case-insensitive): a sched-
@@ -542,13 +715,19 @@ def validate_sender_session_id(session_id):
 
 
 def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
-                   from_session, from_title, idempotency_key):
+                   from_session, from_title, idempotency_key, kind="create",
+                   task_id=None):
     """Spool record shape — the app-side Rust watcher
     (features/scheduled/creation_requests.rs) re-validates this schema before
-    creating anything; additive fields only (contract §4.4)."""
+    touching anything; additive fields only (contract §4.4). `kind` selects
+    the watcher operation ("create" | "update" | "delete"; create records
+    written before the field existed stay valid via the watcher's default).
+    `task_id` is the target task for update/delete, None for create."""
     return {
         "schema_version": 1,
+        "kind": kind,
         "id": spool_id,
+        "task_id": task_id,
         "name": name,
         "prompt": prompt,
         "rrule": rrule,
@@ -578,33 +757,92 @@ def _read_result_marker(path):
 
 def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
                           paused=False, from_session=None, from_title=None,
-                          idempotency_key=None):
+                          idempotency_key=None, automations_dir=None):
     """Validates a creation request and spools it for the app-side watcher,
     then waits briefly for the creation result marker. Returns
     (payload, error); nothing else is written.
 
     Idempotency (contract §6): with an idempotency_key the spool file name is
-    the sender-scoped sha256 of "<from_session>|<key>", so a retried call
-    replaces its own pending request (same-session dedup) and can never
-    clobber another session's.
+    the sha256 of "<from_session>|<kind>|<task_id>|<key>", so a retried call
+    replaces its own pending request and can never clobber another session's
+    (nor a different operation that happens to reuse the key).
     """
-    name = str(name or "").strip()
-    prompt = str(prompt or "").strip()
-    rrule = str(rrule or "").strip()
+    return schedule_task_request(
+        requests_dir,
+        "create",
+        automations_dir=automations_dir,
+        name=name,
+        prompt=prompt,
+        rrule=rrule,
+        model_id=model_id,
+        paused=paused,
+        from_session=from_session,
+        from_title=from_title,
+        idempotency_key=idempotency_key,
+    )
+
+
+def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
+                          prompt=None, rrule=None, model_id=None, paused=None,
+                          task_id=None, from_session=None, from_title=None,
+                          idempotency_key=None):
+    """Kind-aware request path behind the create/update/delete tools: validate
+    → spool → wait for the watcher's result marker. Returns (payload, error);
+    nothing else is written. `paused` is tri-state here (None = not provided,
+    meaningful for update); create callers pass False explicitly."""
+    kind = str(kind or "").strip()
+    if kind not in REQUEST_KINDS:
+        return None, "invalid request kind: %s" % kind[:32]
+    name = str(name).strip() if name is not None else None
+    prompt = str(prompt).strip() if prompt is not None else None
+    rrule = str(rrule).strip() if rrule is not None else None
     model_id = str(model_id or "").strip() or None
     from_session = str(from_session or "").strip() or None
     from_title = str(from_title or "").strip() or None
     idempotency_key = str(idempotency_key or "").strip() or None
-    paused = _parse_bool_arg(paused)
+    if paused is not None:
+        paused = _parse_bool_arg(paused, default=None)
+        if paused is None:
+            return None, "invalid paused: must be a boolean"
 
-    if not name:
-        return None, "invalid name: the task name is empty"
-    if len(name) > MAX_NAME_CHARS:
-        return None, "invalid name: exceeds the %d character limit" % MAX_NAME_CHARS
-    if not prompt:
-        return None, "invalid prompt: the task prompt is empty"
-    if len(prompt) > MAX_PROMPT_CHARS:
-        return None, "invalid prompt: exceeds the %d character limit" % MAX_PROMPT_CHARS
+    if kind == "create":
+        if task_id is not None:
+            return None, "invalid task_id: create requests must not target an existing task"
+        if not name:
+            return None, "invalid name: the task name is empty"
+        if not prompt:
+            return None, "invalid prompt: the task prompt is empty"
+        if not rrule:
+            return None, "invalid rrule: the recurrence is empty"
+    elif kind in ("update", "delete"):
+        task_id = str(task_id or "").strip()
+        id_error = validate_task_id(task_id)
+        if id_error:
+            return None, id_error
+        if kind == "update":
+            if all(field is None for field in (name, prompt, rrule, model_id, paused)):
+                return None, (
+                    "invalid update: provide at least one field to change "
+                    "(name, prompt, rrule, model_id, paused)"
+                )
+        else:
+            for field_name, field in (("name", name), ("prompt", prompt),
+                                      ("rrule", rrule), ("model_id", model_id)):
+                if field:
+                    return None, (
+                        "invalid %s: delete takes no extra fields" % field_name
+                    )
+
+    if name is not None:
+        if not name:
+            return None, "invalid name: the task name is empty"
+        if len(name) > MAX_NAME_CHARS:
+            return None, "invalid name: exceeds the %d character limit" % MAX_NAME_CHARS
+    if prompt is not None:
+        if not prompt:
+            return None, "invalid prompt: the task prompt is empty"
+        if len(prompt) > MAX_PROMPT_CHARS:
+            return None, "invalid prompt: exceeds the %d character limit" % MAX_PROMPT_CHARS
     if model_id is not None and len(model_id) > MAX_MODEL_ID_CHARS:
         return None, "invalid model_id: exceeds %d characters" % MAX_MODEL_ID_CHARS
     if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
@@ -615,9 +853,20 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
             return None, error
     if from_title is not None and len(from_title) > MAX_SENDER_TITLE_CHARS:
         return None, "invalid from_title: exceeds %d characters" % MAX_SENDER_TITLE_CHARS
-    normalized_rrule, error = validate_rrule(rrule)
-    if error:
-        return None, error
+    if rrule is not None:
+        rrule, error = validate_rrule(rrule)
+        if error:
+            return None, error
+
+    # Fail fast on an unknown target instead of spooling into a guaranteed
+    # failure (the watcher re-checks against the live store anyway).
+    if kind in ("update", "delete") and automations_dir is not None:
+        target = os.path.join(automations_dir, "automations", "%s.json" % task_id)
+        try:
+            if not os.path.isfile(target):
+                return None, "not found: no scheduled task with id %s" % task_id
+        except OSError:
+            return None, "scheduled task store is not readable"
 
     spool_dir = os.path.join(requests_dir, "spool")
     try:
@@ -627,14 +876,16 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
         return None, "task request queue is not writable"
     if idempotency_key is not None:
         spool_id = hashlib.sha256(
-            ("%s|%s" % (from_session or "", idempotency_key)).encode("utf-8")
+            ("%s|%s|%s|%s" % (from_session or "", kind, task_id or "",
+                              idempotency_key)).encode("utf-8")
         ).hexdigest()
     else:
         spool_id = uuid.uuid4().hex
     target = os.path.join(spool_dir, "%s.json" % spool_id)
     duplicate = os.path.exists(target)
-    payload = _spool_payload(spool_id, name, prompt, normalized_rrule, model_id,
-                             paused, from_session, from_title, idempotency_key)
+    payload = _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
+                             from_session, from_title, idempotency_key,
+                             kind=kind, task_id=task_id if kind != "create" else None)
     try:
         # Atomic write (tmp + rename): the watcher must never observe a torn file.
         fd, tmp = tempfile.mkstemp(dir=spool_dir, suffix=".tmp")
@@ -657,34 +908,69 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
         marker, marker_error = _read_result_marker(done_marker)
         if marker is not None:
             if marker.get("ok"):
-                return {
+                result = {
                     "ok": True,
+                    "kind": kind,
                     "taskId": marker.get("task_id"),
-                    "taskName": marker.get("task_name") or name,
+                    "taskName": marker.get("task_name") or name or task_id,
                     "duplicate": duplicate,
-                    "note": (
+                }
+                if kind == "create":
+                    result["note"] = (
                         "The scheduled task has been created and is visible in the "
                         "Scheduled Tasks panel."
                         if not duplicate else
                         "A request with the same idempotency key was already queued; "
                         "no second task was created."
-                    ),
-                }, None
-            return None, str(marker.get("error") or "scheduled task creation failed")
+                    )
+                elif kind == "update":
+                    result["note"] = (
+                        "The scheduled task has been updated and the change is "
+                        "visible in the Scheduled Tasks panel."
+                        if not duplicate else
+                        "A request with the same idempotency key was already queued; "
+                        "the update was not applied twice."
+                    )
+                else:
+                    result["deleted"] = True
+                    result["note"] = (
+                        "The scheduled task has been deleted; its run history is "
+                        "archived and it no longer schedules."
+                        if not duplicate else
+                        "A request with the same idempotency key was already queued; "
+                        "the task was not deleted twice."
+                    )
+                return result, None
+            return None, str(marker.get("error") or "scheduled task request failed")
         # marker_error only means "not there yet / unreadable" — keep polling.
         time.sleep(RESULT_POLL_INTERVAL_SECONDS)
-    return {
+    pending = {
         "ok": True,
+        "kind": kind,
         "taskId": None,
-        "taskName": name,
+        "taskName": name or task_id,
         "delivery": "pending",
         "duplicate": duplicate,
-        "note": (
+    }
+    if kind == "create":
+        pending["note"] = (
             "The creation request is queued; the app has not confirmed the result "
             "within a few seconds. Tell the user the task '%s' is being created and "
             "they can check the Scheduled Tasks panel." % name
-        ),
-    }, None
+        )
+    elif kind == "update":
+        pending["note"] = (
+            "The update request is queued; the app has not confirmed the result "
+            "within a few seconds. Tell the user the change to '%s' is being "
+            "applied and they can check the Scheduled Tasks panel." % (name or task_id)
+        )
+    else:
+        pending["note"] = (
+            "The delete request is queued; the app has not confirmed the result "
+            "within a few seconds. Tell the user '%s' is being deleted and they "
+            "can check the Scheduled Tasks panel." % task_id
+        )
+    return pending, None
 
 
 def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
@@ -777,6 +1063,27 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
             rrule=args.get("rrule"),
             model_id=args.get("model_id"),
             paused=args.get("paused"),
+            from_session=args.get("from_session"),
+            from_title=args.get("from_title"),
+            idempotency_key=args.get("idempotency_key"),
+            automations_dir=automations_dir,
+        )
+    elif name == "read_scheduled_task":
+        payload, error = read_scheduled_task(
+            automations_dir,
+            task_id=args.get("task_id"),
+        )
+    elif name in ("update_scheduled_task", "delete_scheduled_task"):
+        payload, error = schedule_task_request(
+            requests_dir,
+            "update" if name == "update_scheduled_task" else "delete",
+            automations_dir=automations_dir,
+            name=args.get("name"),
+            prompt=args.get("prompt"),
+            rrule=args.get("rrule"),
+            model_id=args.get("model_id"),
+            paused=args.get("paused"),
+            task_id=args.get("task_id"),
             from_session=args.get("from_session"),
             from_title=args.get("from_title"),
             idempotency_key=args.get("idempotency_key"),

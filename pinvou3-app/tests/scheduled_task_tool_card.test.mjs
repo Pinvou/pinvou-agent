@@ -1,9 +1,10 @@
 /**
  * app-automations scheduled-task tool card logic (E1, execution visibility):
- * - toolSummary wiring exists for the create/list tool names (the timeline
- *   header must show name + rrule without opening the card);
- * - the create output parser maps the server's three payload shapes
- *   (created / pending / failed) and degrades to null on anything unparseable
+ * - toolSummary wiring exists for the create/update/delete/list tool names
+ *   (the timeline header must show name + rrule / target id without opening
+ *   the card);
+ * - the output parser maps the server's payload shapes (created / updated /
+ *   deleted / pending / failed) and degrades to null on anything unparseable
  *   (drift defense — the card must never take over on unknown output);
  * - the prompt excerpt bounds a 32k prompt to a timeline-safe prefix.
  *
@@ -15,11 +16,16 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   SCHEDULED_TASK_CREATE_TOOL,
+  SCHEDULED_TASK_DELETE_TOOL,
   SCHEDULED_TASK_LIST_TOOL,
-  parseScheduledTaskCreateOutput,
+  SCHEDULED_TASK_READ_TOOL,
+  SCHEDULED_TASK_UPDATE_TOOL,
+  parseScheduledTaskToolOutput,
   scheduledTaskCreateSummary,
+  scheduledTaskDeleteSummary,
   scheduledTaskListSummary,
   scheduledTaskPromptExcerpt,
+  scheduledTaskUpdateSummary,
 } from '../src/features/tools/scheduled-task-tool-logic.js';
 
 const read = rel => readFileSync(new URL(`../src/${rel}`, import.meta.url), 'utf8');
@@ -34,34 +40,57 @@ test('create summary shows task name and rrule', () => {
   assert.equal(scheduledTaskCreateSummary(null), '');
 });
 
+test('update summary shows target id and changed fields', () => {
+  assert.equal(
+    scheduledTaskUpdateSummary({ task_id: 't-1', name: '新名', paused: true }),
+    't-1 · name/paused',
+  );
+  assert.equal(scheduledTaskUpdateSummary({ task_id: 't-1' }), 't-1');
+  assert.equal(scheduledTaskUpdateSummary({}), '');
+  assert.equal(scheduledTaskUpdateSummary(null), '');
+});
+
+test('delete summary shows the target id', () => {
+  assert.equal(scheduledTaskDeleteSummary({ task_id: 't-9' }), 't-9');
+  assert.equal(scheduledTaskDeleteSummary(undefined), '');
+});
+
 test('list summary names the tool with optional limit', () => {
   assert.equal(scheduledTaskListSummary({ limit: 5 }), 'list · limit 5');
   assert.equal(scheduledTaskListSummary(undefined), 'list');
 });
 
-test('create output parser maps the three payload shapes', () => {
+test('output parser maps the CRUD payload shapes', () => {
   assert.deepEqual(
-    parseScheduledTaskCreateOutput(JSON.stringify({ ok: true, taskId: 't-1', taskName: '早报' })),
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: 't-1', taskName: '早报' })),
     { kind: 'created', taskId: 't-1', taskName: '早报' },
   );
   assert.deepEqual(
-    parseScheduledTaskCreateOutput(JSON.stringify({ ok: true, taskId: null, delivery: 'pending', taskName: '早报' })),
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'update', taskId: 't-1', taskName: '早报' })),
+    { kind: 'updated', taskId: 't-1', taskName: '早报' },
+  );
+  assert.deepEqual(
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'delete', taskId: 't-1', taskName: '早报' })),
+    { kind: 'deleted', taskId: 't-1', taskName: '早报' },
+  );
+  assert.deepEqual(
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: null, delivery: 'pending', taskName: '早报' })),
     { kind: 'pending', taskName: '早报' },
   );
   assert.deepEqual(
-    parseScheduledTaskCreateOutput(JSON.stringify({ ok: false, error: 'invalid rrule' })),
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: false, error: 'invalid rrule' })),
     { kind: 'failed', error: 'invalid rrule' },
   );
 });
 
-test('create output parser degrades to null on drift', () => {
-  assert.equal(parseScheduledTaskCreateOutput('not json'), null);
-  assert.equal(parseScheduledTaskCreateOutput(''), null);
-  assert.equal(parseScheduledTaskCreateOutput(null), null);
-  assert.equal(parseScheduledTaskCreateOutput(JSON.stringify({ hello: 1 })), null);
+test('output parser degrades to null on drift', () => {
+  assert.equal(parseScheduledTaskToolOutput('not json'), null);
+  assert.equal(parseScheduledTaskToolOutput(''), null);
+  assert.equal(parseScheduledTaskToolOutput(null), null);
+  assert.equal(parseScheduledTaskToolOutput(JSON.stringify({ hello: 1 })), null);
   // ok:true without taskId and without delivery:"pending" is not a shape the
   // server ever produces — the card must not guess.
-  assert.equal(parseScheduledTaskCreateOutput(JSON.stringify({ ok: true })), null);
+  assert.equal(parseScheduledTaskToolOutput(JSON.stringify({ ok: true })), null);
 });
 
 test('prompt excerpt bounds long prompts', () => {
@@ -80,24 +109,46 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     new RegExp(`case ${'SCHEDULED_TASK_CREATE_TOOL'}:`),
     'toolSummary must route the create tool through the logic module',
   );
+  assert.match(
+    common,
+    new RegExp(`case ${'SCHEDULED_TASK_UPDATE_TOOL'}:`),
+    'toolSummary must route the update tool through the logic module',
+  );
+  assert.match(
+    common,
+    new RegExp(`case ${'SCHEDULED_TASK_DELETE_TOOL'}:`),
+    'toolSummary must route the delete tool through the logic module',
+  );
   const renderers = read('features/tools/tool-renderers.jsx');
-  assert.match(renderers, /ScheduledTaskCreateCard/, 'the create card must be defined');
-  assert.match(renderers, /data-testid="scheduled-task-create-card"/, 'the card must be testable');
+  assert.match(renderers, /ScheduledTaskToolCard/, 'the result card must be defined');
+  assert.match(renderers, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
   assert.match(
     renderers,
-    /import \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*\} from '\.\/scheduled-task-tool-logic\.js'/,
-    'the renderer must import the shared tool names (no literal drift)',
+    /SCHEDULED_TASK_TOOL_OPS = \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*SCHEDULED_TASK_UPDATE_TOOL[\s\S]*SCHEDULED_TASK_DELETE_TOOL/,
+    'create/update/delete must route to the result card',
   );
-  // The L1 create tool must never join the quiet-tool set (execution
+  assert.match(
+    renderers,
+    /import \{[\s\S]*parseScheduledTaskToolOutput[\s\S]*\} from '\.\/scheduled-task-tool-logic\.js'/,
+    'the renderer must import the shared parser (no literal drift)',
+  );
+  // The L1 write tools must never join the quiet-tool set (execution
   // visibility is mandatory).
   const quietList = common.slice(common.indexOf('QUIET_TOOLS'), common.indexOf(']);'));
-  assert.ok(!quietList.includes('app-automations'), 'the create tool must not be a quiet tool');
+  assert.ok(!quietList.includes('app-automations'), 'the write tools must not be quiet tools');
 });
 
 test('tool names match the manifest registration', () => {
   const manifest = JSON.parse(
     readFileSync(new URL('../resources/mcp-servers/app-automations/manifest.json', import.meta.url), 'utf8'),
   );
-  assert.ok(manifest.mcp_tools.includes(SCHEDULED_TASK_CREATE_TOOL));
-  assert.ok(manifest.mcp_tools.includes(SCHEDULED_TASK_LIST_TOOL));
+  for (const name of [
+    SCHEDULED_TASK_CREATE_TOOL,
+    SCHEDULED_TASK_READ_TOOL,
+    SCHEDULED_TASK_LIST_TOOL,
+    SCHEDULED_TASK_UPDATE_TOOL,
+    SCHEDULED_TASK_DELETE_TOOL,
+  ]) {
+    assert.ok(manifest.mcp_tools.includes(name), `${name} must be registered`);
+  }
 });

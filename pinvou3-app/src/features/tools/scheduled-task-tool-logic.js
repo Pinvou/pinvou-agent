@@ -1,15 +1,18 @@
 /**
  * Pure logic for the app-automations scheduled-task tool cards
- * (docs/builtin-toolset-contract.md §3.2 execution visibility; the create
- * tool is L1, so what the model asked for and what the app answered must be
- * fully visible on the timeline).
+ * (docs/builtin-toolset-contract.md §3.2 execution visibility; the
+ * state-changing tools are L1, so what the model asked for and what the app
+ * answered must be fully visible on the timeline).
  *
  * Kept framework-free (mirroring spawn-aggregation.mjs / session-message-block.js)
  * so tests/ can exercise it directly.
  */
 
 export const SCHEDULED_TASK_CREATE_TOOL = 'mcp_app-automations_create_scheduled_task';
+export const SCHEDULED_TASK_READ_TOOL = 'mcp_app-automations_read_scheduled_task';
 export const SCHEDULED_TASK_LIST_TOOL = 'mcp_app-automations_list_scheduled_tasks';
+export const SCHEDULED_TASK_UPDATE_TOOL = 'mcp_app-automations_update_scheduled_task';
+export const SCHEDULED_TASK_DELETE_TOOL = 'mcp_app-automations_delete_scheduled_task';
 
 const PROMPT_EXCERPT_CHARS = 120;
 
@@ -27,6 +30,29 @@ export const scheduledTaskCreateSummary = args => {
 };
 
 /**
+ * Header summary for an update call: target id + the changed field names, so
+ * the timeline shows what the model asked to touch without opening the card.
+ */
+const UPDATE_FIELD_KEYS = ['name', 'prompt', 'rrule', 'model_id', 'paused'];
+export const scheduledTaskUpdateSummary = args => {
+  if (!args || typeof args !== 'object') return '';
+  const target = typeof args.task_id === 'string' ? args.task_id.trim() : '';
+  const fields = UPDATE_FIELD_KEYS.filter(key => {
+    const value = args[key];
+    return value !== undefined && value !== null && String(value).trim() !== '';
+  });
+  return [target, fields.length ? fields.join('/') : ''].filter(Boolean).join(' · ');
+};
+
+/**
+ * Header summary for a delete call: the target id is the whole story.
+ */
+export const scheduledTaskDeleteSummary = args => {
+  if (!args || typeof args !== 'object') return '';
+  return typeof args.task_id === 'string' ? args.task_id.trim() : '';
+};
+
+/**
  * Header summary for a list call: the requested limit is the only argument.
  */
 export const scheduledTaskListSummary = args => {
@@ -35,15 +61,16 @@ export const scheduledTaskListSummary = args => {
 };
 
 /**
- * Parses a create tool's text output into a render shape:
- * - { kind:'created', taskId, taskName } — the watcher confirmed creation;
+ * Parses a create/update/delete tool's text output into a render shape:
+ * - { kind:'created'|'updated'|'deleted', taskId, taskName } — the watcher
+ *   confirmed the operation;
  * - { kind:'pending', taskName }  — queued, no confirmation within the
  *   server's short wait (still NOT an error);
- * - { kind:'failed', error }      — the creation was rejected/failed;
+ * - { kind:'failed', error }      — the request was rejected/failed;
  * - null                          — anything unparseable (drift defense: the
  *   caller falls back to the default raw output view).
  */
-export const parseScheduledTaskCreateOutput = output => {
+export const parseScheduledTaskToolOutput = output => {
   if (typeof output !== 'string' || !output.trim()) return null;
   let payload;
   try {
@@ -52,16 +79,18 @@ export const parseScheduledTaskCreateOutput = output => {
     return null;
   }
   if (!payload || typeof payload !== 'object') return null;
-  if (payload.ok === true && payload.taskId) {
-    return {
-      kind: 'created',
-      taskId: String(payload.taskId),
-      taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
-    };
-  }
   if (payload.ok === true && payload.delivery === 'pending') {
     return {
       kind: 'pending',
+      taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
+    };
+  }
+  if (payload.ok === true && payload.taskId) {
+    const opByKind = { create: 'created', update: 'updated', delete: 'deleted' };
+    const kind = opByKind[payload.kind] || 'created';
+    return {
+      kind,
+      taskId: String(payload.taskId),
       taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
     };
   }

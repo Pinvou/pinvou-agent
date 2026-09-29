@@ -1,13 +1,16 @@
 {
   "id": "app-automations",
   "name": "定时任务",
-  "description": "在任意会话中创建 Pinvou 定时任务（需逐次确认）并查看已有任务列表；任务与定时任务面板完全一致",
-  "version": "1.0.0",
+  "description": "在任意会话中管理 Pinvou 定时任务：创建、查看、修改、删除（写操作需逐次确认）；任务与定时任务面板完全一致",
+  "version": "1.1.0",
   "icon": "calendar-clock",
   "category": "效率工具",
   "mcp_tools": [
     "mcp_app-automations_create_scheduled_task",
-    "mcp_app-automations_list_scheduled_tasks"
+    "mcp_app-automations_read_scheduled_task",
+    "mcp_app-automations_list_scheduled_tasks",
+    "mcp_app-automations_update_scheduled_task",
+    "mcp_app-automations_delete_scheduled_task"
   ],
   "command": "python",
   "args": [
@@ -25,7 +28,16 @@
     "mcp_app-automations_create_scheduled_task": [
       "scheduled-task-automation"
     ],
+    "mcp_app-automations_read_scheduled_task": [
+      "scheduled-task-automation"
+    ],
     "mcp_app-automations_list_scheduled_tasks": [
+      "scheduled-task-automation"
+    ],
+    "mcp_app-automations_update_scheduled_task": [
+      "scheduled-task-automation"
+    ],
+    "mcp_app-automations_delete_scheduled_task": [
       "scheduled-task-automation"
     ]
   }

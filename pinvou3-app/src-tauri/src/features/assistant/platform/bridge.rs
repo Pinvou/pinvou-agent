@@ -207,6 +207,15 @@ pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_sessio
 /// is written by features::scheduled::creation_requests at creation time.
 pub const SCHEDULED_TASK_CREATE_TOOL: &str = "mcp_app-automations_create_scheduled_task";
 
+/// Full model-visible name of the scheduled-task update tool (server key
+/// app-automations). Same L1 treatment as [`SCHEDULED_TASK_CREATE_TOOL`].
+pub const SCHEDULED_TASK_UPDATE_TOOL: &str = "mcp_app-automations_update_scheduled_task";
+
+/// Full model-visible name of the scheduled-task delete tool (server key
+/// app-automations). Destructive (archive + remove), so it carries the same
+/// per-call Ask gate — the user confirmation IS the authorization.
+pub const SCHEDULED_TASK_DELETE_TOOL: &str = "mcp_app-automations_delete_scheduled_task";
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -2365,14 +2374,20 @@ impl Pinvou3Bridge {
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
         rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
-        // Scheduled-task creation (docs/builtin-toolset-contract.md §5 L1,
-        // same pattern): every creation call asks. In unattended scheduled-run
-        // sessions the force-prompt gate auto-denies Ask tools
-        // (engine_support::scheduled_tool_should_auto_approve), so a task
-        // cannot create tasks recursively.
-        rules.push(codewhale_execpolicy::ToolAskRule::new(
+        // Scheduled-task family (docs/builtin-toolset-contract.md §5 L1,
+        // same pattern): every state-changing call — create / update /
+        // delete — asks. In unattended scheduled-run sessions the
+        // force-prompt gate auto-denies Ask tools
+        // (engine_support::scheduled_tool_should_auto_approve), so an
+        // unattended task cannot mutate tasks recursively. The read tools
+        // (list/read) stay ungated: reads must not nag.
+        for tool in [
             SCHEDULED_TASK_CREATE_TOOL,
-        ));
+            SCHEDULED_TASK_UPDATE_TOOL,
+            SCHEDULED_TASK_DELETE_TOOL,
+        ] {
+            rules.push(codewhale_execpolicy::ToolAskRule::new(tool));
+        }
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -4230,8 +4245,13 @@ mod tests {
                 .iter()
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
-            [MESSAGING_SEND_TOOL, SCHEDULED_TASK_CREATE_TOOL],
-            "plain 默认只有跨会话发送与定时任务创建的 Ask 规则"
+            [
+                MESSAGING_SEND_TOOL,
+                SCHEDULED_TASK_CREATE_TOOL,
+                SCHEDULED_TASK_UPDATE_TOOL,
+                SCHEDULED_TASK_DELETE_TOOL,
+            ],
+            "plain 默认只有跨会话发送与定时任务增改删的 Ask 规则"
         );
 
         // plain disables feishu → only the lark-cli deny (bare name + one .exe
@@ -4254,7 +4274,9 @@ mod tests {
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
                     || r.tool == MESSAGING_SEND_TOOL
-                    || r.tool == SCHEDULED_TASK_CREATE_TOOL),
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
             "every non-L1 rule stays a deny"
         );
 
@@ -4290,7 +4312,9 @@ mod tests {
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
                     || r.tool == MESSAGING_SEND_TOOL
-                    || r.tool == SCHEDULED_TASK_CREATE_TOOL),
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
             "every non-L1 rule stays a deny"
         );
 
@@ -4532,15 +4556,17 @@ mod tests {
                 .any(|tool| tool == SCHEDULED_TASK_CREATE_TOOL),
             "the Ask rule's tool name must match the manifest registration"
         );
-        // The L0 list tool carries no Ask rule: it is read-only and must not
-        // nag the user (only the create tool is gated).
-        assert!(
-            !ruleset
-                .ask_rules
-                .iter()
-                .any(|r| r.tool == "mcp_app-automations_list_scheduled_tasks"),
-            "the L0 list tool must stay ungated"
-        );
+        // The L0 read tools carry no Ask rule: they are read-only and must
+        // not nag the user (only the state-changing tools are gated).
+        for read_tool in [
+            "mcp_app-automations_list_scheduled_tasks",
+            "mcp_app-automations_read_scheduled_task",
+        ] {
+            assert!(
+                !ruleset.ask_rules.iter().any(|r| r.tool == read_tool),
+                "the L0 {read_tool} must stay ungated"
+            );
+        }
     }
 
     /// Channel 3 data source: script directories of scope-disabled skills generate

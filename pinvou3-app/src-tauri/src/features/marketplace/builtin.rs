@@ -403,7 +403,10 @@ mod tests {
                 scheduled.tools,
                 [
                     "mcp_app-automations_create_scheduled_task".to_string(),
+                    "mcp_app-automations_delete_scheduled_task".to_string(),
                     "mcp_app-automations_list_scheduled_tasks".to_string(),
+                    "mcp_app-automations_read_scheduled_task".to_string(),
+                    "mcp_app-automations_update_scheduled_task".to_string(),
                 ]
             );
         });
@@ -694,7 +697,10 @@ mod tests {
                 removed,
                 [
                     "mcp_app-automations_create_scheduled_task".to_string(),
+                    "mcp_app-automations_delete_scheduled_task".to_string(),
                     "mcp_app-automations_list_scheduled_tasks".to_string(),
+                    "mcp_app-automations_read_scheduled_task".to_string(),
+                    "mcp_app-automations_update_scheduled_task".to_string(),
                 ],
                 "exactly the app-automations tools are removed"
             );

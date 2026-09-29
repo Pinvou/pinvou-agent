@@ -1,31 +1,37 @@
-//! Scheduled-task creation request watcher (docs/app-automations-定时任务创建工具-设计与验收.md;
+//! Scheduled-task request watcher — the app-side consumer of the
+//! app-automations MCP family's create/update/delete spool
+//! (docs/app-automations-定时任务创建工具-设计与验收.md + its CRUD addendum;
 //! docs/builtin-toolset-contract.md §5 L1 / §6).
 //!
-//! The app-automations MCP server validates a `create_scheduled_task` call and
-//! spools it to `<pinvou3 home>/task-requests/spool/<name>.json` (see that
-//! server.py's `create_scheduled_task` — the spool record schema is the
-//! contract between the two sides; the file name is the idempotency identity:
-//! the sender-scoped sha256 of "<from_session>|<idempotency_key>" when a key
-//! is given, a random uuid otherwise). This module is the app-side consumer:
+//! The app-automations MCP server validates a `create_scheduled_task` /
+//! `update_scheduled_task` / `delete_scheduled_task` call and spools it to
+//! `<pinvou3 home>/task-requests/spool/<name>.json` (see that server.py's
+//! `schedule_task_request` — the spool record schema is the contract between
+//! the two sides; the file name is the idempotency identity: the sha256 of
+//! "<from_session>|<kind>|<task_id>|<idempotency_key>" when a key is given, a
+//! random uuid otherwise, so a retried operation replaces its own pending
+//! record and can never clobber another session's nor another kind's). This
+//! module is the app-side consumer:
 //!
 //! - a poll watcher picks spool files up, re-validates them (server-side
 //!   checks are not trusted — the spool directory is user-writable), and
-//!   creates the task through the panel's own domain function
-//!   ([`ScheduledTaskState::create_task`]: forced YOLO, per-task workspace,
-//!   model sidecar, failure rollback — the exact pipeline the panel uses);
-//! - a created request leaves a result marker `spool/.done/<file-stem>.json`
-//!   (`{"ok":true,"task_id","task_name"}`) so the MCP server's short
-//!   synchronous wait can return the task ids, and a retried tool call cannot
-//!   create twice across watcher restarts;
+//!   dispatches by the record's `kind` to the panel's own domain function
+//!   ([`ScheduledTaskState::create_task`] / `update_task` / `delete_task`:
+//!   forced YOLO, per-task workspace, model sidecar, archive-then-delete —
+//!   the exact pipelines the panel uses);
+//! - a processed request leaves a result marker
+//!   `spool/.done/<file-stem>.json` (`{"ok":true,"task_id","task_name"}`) so
+//!   the MCP server's short synchronous wait can return the task ids, and a
+//!   retried tool call cannot apply twice across watcher restarts;
 //! - poison files (schema drift, hostile content, oversize) are quarantined
-//!   under `spool/failed/` immediately; *transient* creation failures retry
+//!   under `spool/failed/` immediately; *transient* failures retry
 //!   up to [`MAX_CREATE_ATTEMPTS`] times and then quarantine too, writing a
 //!   `{"ok":false,"error"}` marker so a waiting caller receives the failure
 //!   instead of hanging;
-//! - every successful creation appends an audit record into the requesting
+//! - every success appends a kind-specific audit record into the requesting
 //!   session's execution root (contract §5 L1; model-supplied `from_session`
-//!   is the same unauthenticated provenance as messaging's — the Ask rule and
-//!   the audit trail are the trust boundary) and emits the panel refresh
+//!   is the same unauthenticated provenance as messaging's — the Ask rules
+//!   and the audit trail are the trust boundary) and emits the panel refresh
 //!   event `scheduled_task:run_updated` (same channel the file watcher uses;
 //!   both frontends only refresh from the event name).
 //!
@@ -36,7 +42,7 @@
 //! context (a6d135840 lesson).
 //!
 //! Dependency direction: this module is a child of `tasks`, so it reuses the
-//! private domain entry point without widening it.
+//! private domain entry points without widening them.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,8 +52,12 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
-use super::{CreateScheduledTaskInput, ScheduledTaskDto, ScheduledTaskState};
-use crate::features::assistant::platform::bridge::SCHEDULED_TASK_CREATE_TOOL;
+use super::{
+    CreateScheduledTaskInput, ScheduledTaskDto, ScheduledTaskState, UpdateScheduledTaskInput,
+};
+use crate::features::assistant::platform::bridge::{
+    SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_UPDATE_TOOL,
+};
 use crate::features::sessions::validators::is_sched_session_id;
 
 /// Same bounds as the MCP server's caps — re-checked here because the spool
@@ -57,6 +67,7 @@ const MAX_PROMPT_CHARS: usize = 32 * 1024;
 const MAX_MODEL_ID_CHARS: usize = 200;
 const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
 const MAX_SESSION_ID_LEN: usize = 128;
+const MAX_TASK_ID_LEN: usize = 128;
 const MAX_TITLE_CHARS: usize = 200;
 /// Spool file size cap: a legitimate record is bounded by the 32k-char prompt
 /// (~96 KB as UTF-8 CJK) plus small metadata; anything bigger is hostile and
@@ -91,24 +102,54 @@ impl Drop for CreationWatchGuard {
     }
 }
 
-/// One spooled creation request. Field names mirror server.py's
-/// `_spool_payload` exactly (snake_case JSON on disk); unknown fields are
-/// skipped on read (contract §4.4 drift defense). The `id` field is
-/// informational only — the watcher keys its state on the directory-listed
+/// Which domain operation a spool record asks for (`kind` on disk). Old
+/// create-only records predate the field and default to [`SpoolRequestKind::Create`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SpoolRequestKind {
+    #[default]
+    Create,
+    Update,
+    Delete,
+}
+
+impl SpoolRequestKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            SpoolRequestKind::Create => "create",
+            SpoolRequestKind::Update => "update",
+            SpoolRequestKind::Delete => "delete",
+        }
+    }
+}
+
+/// One spooled task request (create / update / delete). Field names mirror
+/// server.py's `_spool_payload` exactly (snake_case JSON on disk); unknown
+/// fields are skipped on read (contract §4.4 drift defense). The `id` field
+/// is informational only — the watcher keys its state on the directory-listed
 /// file name, never on this field (a user-writable spool must not control
-/// watcher paths).
+/// watcher paths). Payload fields are optional because update supplies only
+/// the changed subset and delete supplies none; `validate` enforces the
+/// per-kind requirements.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub(crate) struct SpooledCreationRequest {
     pub schema_version: u32,
     #[serde(default)]
+    pub kind: SpoolRequestKind,
+    #[serde(default)]
     pub id: String,
-    pub name: String,
-    pub prompt: String,
-    pub rrule: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub rrule: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
-    pub paused: bool,
+    pub paused: Option<bool>,
     #[serde(default)]
     pub from_session: Option<String>,
     #[serde(default)]
@@ -136,41 +177,95 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     // design and the Ask rule already denies the tool there — a spool record
     // claiming one is hostile (defense in depth, mirrors messaging).
     if is_sched_session_id(id) {
-        bail!("from_session {id} is a scheduled-run session and cannot request task creation");
+        bail!("from_session {id} is a scheduled-run session and cannot request task operations");
+    }
+    Ok(())
+}
+
+/// Charset + length validation for a target task id (update/delete): the id
+/// flows back into storage paths on the domain side, so the same
+/// anti-traversal discipline as session ids applies.
+fn check_task_id(task_id: &str) -> Result<()> {
+    if task_id.is_empty()
+        || task_id.len() > MAX_TASK_ID_LEN
+        || !task_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!("invalid target task_id");
+    }
+    Ok(())
+}
+
+fn check_optional_field(value: &Option<String>, label: &str, max_chars: usize) -> Result<()> {
+    if let Some(value) = value {
+        let value = value.trim();
+        if value.is_empty() {
+            bail!("{label} is blank");
+        }
+        if value.chars().count() > max_chars {
+            bail!("{label} exceeds the {max_chars} character limit");
+        }
     }
     Ok(())
 }
 
 impl SpooledCreationRequest {
-    /// Server-side re-validation of a spool record (contract §4.4: errors are
-    /// explicit; §5: the L1 write re-checks everything it was told).
+    /// Server-side re-validation of a spool record, per kind (contract §4.4:
+    /// errors are explicit; §5: the L1 write re-checks everything it was
+    /// told). Mirrors the MCP server's per-kind validation exactly.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported spool schema_version {}", self.schema_version);
         }
-        let name = self.name.trim();
-        if name.is_empty() {
-            bail!("task name is empty");
-        }
-        if name.chars().count() > MAX_NAME_CHARS {
-            bail!("task name exceeds the {MAX_NAME_CHARS} character limit");
-        }
-        let prompt = self.prompt.trim();
-        if prompt.is_empty() {
-            bail!("task prompt is empty");
-        }
-        if prompt.chars().count() > MAX_PROMPT_CHARS {
-            bail!("task prompt exceeds the {MAX_PROMPT_CHARS} character limit");
-        }
-        if let Some(model_id) = &self.model_id {
-            let model_id = model_id.trim();
-            if model_id.is_empty() {
-                bail!("model_id is blank");
+        match self.kind {
+            SpoolRequestKind::Create => {
+                let name = self.name.as_deref().map(str::trim).unwrap_or("");
+                if name.is_empty() {
+                    bail!("task name is empty");
+                }
+                let prompt = self.prompt.as_deref().map(str::trim).unwrap_or("");
+                if prompt.is_empty() {
+                    bail!("task prompt is empty");
+                }
+                if self.task_id.is_some() {
+                    bail!("create requests must not target an existing task");
+                }
             }
-            if model_id.chars().count() > MAX_MODEL_ID_CHARS {
-                bail!("model_id exceeds the {MAX_MODEL_ID_CHARS} character limit");
+            SpoolRequestKind::Update => {
+                let task_id = self.task_id.as_deref().map(str::trim).unwrap_or("");
+                check_task_id(task_id)?;
+                if self.name.is_none()
+                    && self.prompt.is_none()
+                    && self.rrule.is_none()
+                    && self.model_id.is_none()
+                    && self.paused.is_none()
+                {
+                    bail!("update must provide at least one field to change");
+                }
+            }
+            SpoolRequestKind::Delete => {
+                let task_id = self.task_id.as_deref().map(str::trim).unwrap_or("");
+                check_task_id(task_id)?;
+                for (label, field) in [
+                    ("name", &self.name),
+                    ("prompt", &self.prompt),
+                    ("rrule", &self.rrule),
+                    ("model_id", &self.model_id),
+                ] {
+                    if field
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|v| !v.is_empty())
+                    {
+                        bail!("delete takes no extra fields ({label})");
+                    }
+                }
             }
         }
+        check_optional_field(&self.name, "task name", MAX_NAME_CHARS)?;
+        check_optional_field(&self.prompt, "task prompt", MAX_PROMPT_CHARS)?;
+        check_optional_field(&self.model_id, "model_id", MAX_MODEL_ID_CHARS)?;
         if let Some(key) = &self.idempotency_key {
             if key.trim().is_empty() {
                 bail!("idempotency_key is blank");
@@ -185,7 +280,11 @@ impl SpooledCreationRequest {
                 bail!("from_title exceeds the {MAX_TITLE_CHARS} character limit");
             }
         }
-        validate_product_rrule(&self.rrule)?;
+        if let Some(rrule) = &self.rrule {
+            validate_product_rrule(rrule)?;
+        } else if self.kind == SpoolRequestKind::Create {
+            bail!("rrule is empty");
+        }
         Ok(())
     }
 }
@@ -356,14 +455,21 @@ fn done_dir() -> PathBuf {
     spool_root().join(".done")
 }
 
-/// Creation port: the real impl drives the state's domain function; tests
-/// inject a stub (native async fn in trait, used only through generic static
-/// dispatch — same pattern as messaging's SpoolDelivery).
+/// Domain port: the real impl drives the state's own create/update/delete
+/// pipelines; tests inject a stub (native async fn in trait, used only
+/// through generic static dispatch — same pattern as messaging's
+/// SpoolDelivery).
 trait TaskCreator {
     async fn create(
         &self,
         input: CreateScheduledTaskInput,
     ) -> std::result::Result<ScheduledTaskDto, String>;
+    async fn update(
+        &self,
+        task_id: &str,
+        input: UpdateScheduledTaskInput,
+    ) -> std::result::Result<ScheduledTaskDto, String>;
+    async fn delete(&self, task_id: &str) -> std::result::Result<ScheduledTaskDto, String>;
 }
 
 struct StateCreator<'a>(&'a ScheduledTaskState);
@@ -374,6 +480,18 @@ impl TaskCreator for StateCreator<'_> {
         input: CreateScheduledTaskInput,
     ) -> std::result::Result<ScheduledTaskDto, String> {
         self.0.create_task(input).await
+    }
+
+    async fn update(
+        &self,
+        task_id: &str,
+        input: UpdateScheduledTaskInput,
+    ) -> std::result::Result<ScheduledTaskDto, String> {
+        self.0.update_task(task_id.to_string(), input).await
+    }
+
+    async fn delete(&self, task_id: &str) -> std::result::Result<ScheduledTaskDto, String> {
+        self.0.delete_task(task_id.to_string()).await
     }
 }
 
@@ -415,30 +533,65 @@ enum Processed {
 
 fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskInput {
     CreateScheduledTaskInput {
-        name: request.name.trim().to_string(),
-        prompt: request.prompt.trim().to_string(),
-        rrule: request.rrule.trim().to_string(),
+        name: request
+            .name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        prompt: request
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        rrule: request
+            .rrule
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
         cwds: Vec::new(),
         model: None,
-        model_id: request
-            .model_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
+        model_id: trimmed_non_empty(&request.model_id),
         kind: None,
         mode: None,
         allow_shell: None,
         trust_mode: None,
         auto_approve: None,
-        paused: Some(request.paused),
+        paused: Some(request.paused.unwrap_or(false)),
     }
 }
 
-/// Append the L1 audit record into the requesting session's execution root
-/// (failures inside `audit::append` only log, never panic). Without a usable
-/// `from_session` the task record itself is the audit trail (design D3).
-fn audit_creation(
+fn build_update_input(request: &SpooledCreationRequest) -> UpdateScheduledTaskInput {
+    UpdateScheduledTaskInput {
+        name: trimmed_non_empty(&request.name),
+        prompt: trimmed_non_empty(&request.prompt),
+        rrule: trimmed_non_empty(&request.rrule),
+        cwds: None,
+        model: None,
+        model_id: trimmed_non_empty(&request.model_id),
+        mode: None,
+        allow_shell: None,
+        trust_mode: None,
+        auto_approve: None,
+        paused: request.paused,
+    }
+}
+
+fn trimmed_non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|trimmed| !trimmed.is_empty())
+        .map(str::to_string)
+}
+
+/// Append the kind-specific L1 audit record into the requesting session's
+/// execution root (failures inside `audit::append` only log, never panic).
+/// Without a usable `from_session` the task record itself is the audit trail
+/// (design D3).
+fn audit_request(
     sessions: &crate::features::sessions::SessionStore,
     request: &SpooledCreationRequest,
     task_id: &str,
@@ -447,19 +600,19 @@ fn audit_creation(
     let Some(from) = request.from_session.as_deref() else {
         return;
     };
+    let (tool, kind) = match request.kind {
+        SpoolRequestKind::Create => (SCHEDULED_TASK_CREATE_TOOL, "scheduled_task_create"),
+        SpoolRequestKind::Update => (SCHEDULED_TASK_UPDATE_TOOL, "scheduled_task_update"),
+        SpoolRequestKind::Delete => (SCHEDULED_TASK_DELETE_TOOL, "scheduled_task_delete"),
+    };
     let detail = serde_json::json!({
-        "tool": SCHEDULED_TASK_CREATE_TOOL,
+        "tool": tool,
         "task_id": task_id,
         "task_name": task_name,
-        "outcome": "created",
+        "outcome": request.kind.as_str(),
     });
     if let Ok(roots) = sessions.session_roots(from) {
-        crate::features::assistant::audit::append(
-            &roots.execution,
-            "scheduled_task_create",
-            "app",
-            detail,
-        );
+        crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
     }
 }
 
@@ -506,10 +659,22 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // the leftover file is dropped WITHOUT a second create (C3).
         return Processed::Done;
     }
-    match creator.create(build_create_input(&request)).await {
+    let applied = match request.kind {
+        SpoolRequestKind::Create => creator.create(build_create_input(&request)).await,
+        SpoolRequestKind::Update => {
+            let task_id = request.task_id.as_deref().unwrap_or_default().to_string();
+            creator.update(&task_id, build_update_input(&request)).await
+        }
+        SpoolRequestKind::Delete => {
+            let task_id = request.task_id.as_deref().unwrap_or_default().to_string();
+            creator.delete(&task_id).await
+        }
+    };
+    match applied {
         Ok(dto) => {
             let payload = serde_json::json!({
                 "ok": true,
+                "kind": request.kind.as_str(),
                 "task_id": dto.id,
                 "task_name": dto.name,
             });
@@ -517,11 +682,11 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 write_done_marker(&done_marker, &payload).context("write result marker")
             {
                 // A missing marker means the MCP server's short wait times out
-                // into "pending" and a retried call could re-create: surface
+                // into "pending" and a retried call could re-apply: surface
                 // this as a retryable failure instead of reporting success.
                 return Processed::Retry(error);
             }
-            audit_creation(sessions, &request, &dto.id, &dto.name);
+            audit_request(sessions, &request, &dto.id, &dto.name);
             notifier.notify();
             Processed::Done
         }
@@ -729,7 +894,9 @@ mod tests {
     fn spool_record_json(overrides: &[(&str, serde_json::Value)]) -> String {
         let mut value = serde_json::json!({
             "schema_version": 1,
+            "kind": "create",
             "id": "abc123",
+            "task_id": null,
             "name": "早报任务",
             "prompt": "汇总今天的新闻",
             "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
@@ -801,6 +968,18 @@ mod tests {
             &self,
             _input: CreateScheduledTaskInput,
         ) -> std::result::Result<ScheduledTaskDto, String> {
+            Err("simulated persistent failure".to_string())
+        }
+
+        async fn update(
+            &self,
+            _task_id: &str,
+            _input: UpdateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            Err("simulated persistent failure".to_string())
+        }
+
+        async fn delete(&self, _task_id: &str) -> std::result::Result<ScheduledTaskDto, String> {
             Err("simulated persistent failure".to_string())
         }
     }
@@ -894,6 +1073,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(marker["ok"], true);
+        assert_eq!(marker["kind"], "create");
         assert_eq!(marker["task_id"], records[0].id);
         assert_eq!(marker["task_name"], "早报任务");
         // Spool file consumed, panel notified.
@@ -909,7 +1089,7 @@ mod tests {
         assert_eq!(line["kind"], "scheduled_task_create");
         assert_eq!(line["detail"]["tool"], SCHEDULED_TASK_CREATE_TOOL);
         assert_eq!(line["detail"]["task_id"], records[0].id);
-        assert_eq!(line["detail"]["outcome"], "created");
+        assert_eq!(line["detail"]["outcome"], "create");
     }
 
     #[tokio::test]
@@ -1134,5 +1314,182 @@ mod tests {
             request.validate().is_ok(),
             "absent from_session stays valid (no audit trail)"
         );
+    }
+
+    #[test]
+    fn update_request_validation_requires_target_and_a_field() {
+        let mut request = valid_record();
+        request.kind = SpoolRequestKind::Update;
+        request.task_id = None;
+        assert!(request.validate().is_err(), "update requires a target id");
+        request.task_id = Some("../escape".to_string());
+        assert!(
+            request.validate().is_err(),
+            "traversal target ids are rejected"
+        );
+        request.task_id = Some("task-1".to_string());
+        request.name = None;
+        request.prompt = None;
+        request.rrule = None;
+        assert!(
+            request.validate().is_ok(),
+            "paused-only update is a valid no-op field set"
+        );
+        request.paused = None;
+        assert!(
+            request.validate().is_err(),
+            "update with no field to change is rejected"
+        );
+        request.rrule = Some("FREQ=CRON;EXPR=*/5 * * * *".to_string());
+        assert!(
+            request.validate().is_err(),
+            "update rrule obeys the product subset"
+        );
+    }
+
+    #[test]
+    fn delete_request_validation_rejects_extra_fields() {
+        let mut request = valid_record();
+        request.kind = SpoolRequestKind::Delete;
+        request.task_id = Some("task-1".to_string());
+        request.name = None;
+        request.prompt = None;
+        request.rrule = None;
+        assert!(request.validate().is_ok(), "a bare delete is valid");
+        request.name = Some("x".to_string());
+        assert!(
+            request.validate().is_err(),
+            "delete with extra fields is rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_request_changes_the_existing_task() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let created = state
+            .create_task(CreateScheduledTaskInput {
+                name: "早报任务".to_string(),
+                prompt: "汇总今天的新闻".to_string(),
+                rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=30".to_string(),
+                cwds: Vec::new(),
+                model: None,
+                model_id: None,
+                kind: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(false),
+            })
+            .await
+            .expect("seed task");
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("upd.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!(created.id)),
+                ("name", serde_json::json!("晚报任务")),
+                ("paused", serde_json::json!(true)),
+                (
+                    "rrule",
+                    serde_json::json!("freq=weekly;byday=fr;byhour=20;byminute=0"),
+                ),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let updated = state
+            .automations
+            .lock()
+            .await
+            .get_automation(&created.id)
+            .expect("task still exists");
+        assert_eq!(updated.name, "晚报任务");
+        assert_eq!(
+            updated.rrule, "FREQ=WEEKLY;BYDAY=FR;BYHOUR=20;BYMINUTE=0",
+            "update normalization lands uppercase"
+        );
+        assert!(
+            matches!(
+                updated.status,
+                deepseek_tui::automation_manager::AutomationStatus::Paused
+            ),
+            "paused:true update pauses the task"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("upd.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "update");
+        assert_eq!(marker["task_id"], created.id);
+    }
+
+    #[tokio::test]
+    async fn delete_request_archives_and_removes_the_task() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let created = state
+            .create_task(CreateScheduledTaskInput {
+                name: "早报任务".to_string(),
+                prompt: "汇总今天的新闻".to_string(),
+                rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=30".to_string(),
+                cwds: Vec::new(),
+                model: None,
+                model_id: None,
+                kind: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(true),
+            })
+            .await
+            .expect("seed task");
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("del.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("delete")),
+                ("task_id", serde_json::json!(created.id)),
+                ("name", serde_json::Value::Null),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .get_automation(&created.id)
+                .is_err(),
+            "the task is gone from the active store"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("del.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "delete");
+        assert_eq!(marker["task_id"], created.id);
     }
 }

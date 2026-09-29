@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
 import { builtinToolShortName } from './builtin-plugin-logic.js';
-import { SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_LIST_TOOL, scheduledTaskCreateSummary, scheduledTaskListSummary } from './scheduled-task-tool-logic.js';
+import { SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_LIST_TOOL, SCHEDULED_TASK_UPDATE_TOOL, scheduledTaskCreateSummary, scheduledTaskDeleteSummary, scheduledTaskListSummary, scheduledTaskUpdateSummary } from './scheduled-task-tool-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
@@ -194,9 +194,14 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           return args.status === 'completed' ? t.tsDone
             : args.status === 'in_progress' ? t.tsInProgress
             : args.status === 'pending' ? t.tsPending : '';
-        // app-automations（定时任务）：创建卡摘要 = 任务名 + rrule；list 卡只标 limit。
+        // app-automations（定时任务）：创建卡摘要 = 任务名 + rrule；更新卡 =
+        // 目标 id + 变更字段；删除卡 = 目标 id；list 卡只标 limit。
         case SCHEDULED_TASK_CREATE_TOOL:
           return scheduledTaskCreateSummary(args);
+        case SCHEDULED_TASK_UPDATE_TOOL:
+          return scheduledTaskUpdateSummary(args);
+        case SCHEDULED_TASK_DELETE_TOOL:
+          return scheduledTaskDeleteSummary(args);
         case SCHEDULED_TASK_LIST_TOOL:
           return scheduledTaskListSummary(args);
         default:

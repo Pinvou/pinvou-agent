@@ -233,7 +233,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
 | `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; approval via a typed execpolicy Ask rule + audit log; sched-/eval_/aux- rejected as targets) |
 | `create_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; own family server per §2 — scheduling is an independent capability family; design `docs/app-automations-定时任务创建工具-设计与验收.md`. Spool + app-side watcher reusing the messaging skeleton; rrule restricted to the product subset HOURLY/WEEKLY/ONCE (CRON and minute-granular rejected at the tool layer — deliberately stricter than the domain parser); approval via a typed execpolicy Ask rule + audit log + timeline card; unattended scheduled-run sessions auto-deny (recursion shield)) |
+| `read_scheduled_task` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; full detail of one task by id, including the prompt — the pre-update inspection companion; ungated) |
 | `list_scheduled_tasks` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; id/name/rrule/status/nextRunAt/model only — the prompt is never projected; de-dup companion of the create tool) |
+| `update_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; partial update by id — name/prompt/rrule/model_id/paused; same product-subset rrule gate and spool/watcher pipeline; typed Ask rule + audit) |
+| `delete_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; destructive archive-then-delete through the panel's own delete pipeline; the per-call Ask confirmation is the explicit authorization mechanism — the user sees exactly what is deleted before it happens; audit kind `scheduled_task_delete`) |
+
+Granularity note (§4.2 deviation, deliberate): the family ships five `verb_noun` tools instead of one mode-enum tool. The mode-enum preference optimizes against tool bloat, but here read and write carry different approval semantics — a mode-enum tool would either put every read behind the L1 Ask gate (nagging) or leave writes ungated. session-reader's landed three-tool shape is the same trade-off; approval semantics, not resource identity, is what decides tool boundaries in this contract.
 
 ---
 

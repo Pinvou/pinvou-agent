@@ -194,7 +194,10 @@ def main():
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
         "session-reader": {"read_session", "list_sessions", "send_message_to_session"},
-        "app-automations": {"create_scheduled_task", "list_scheduled_tasks"},
+        "app-automations": {
+            "create_scheduled_task", "read_scheduled_task", "list_scheduled_tasks",
+            "update_scheduled_task", "delete_scheduled_task",
+        },
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -340,7 +343,30 @@ def main():
             # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
             listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
             assert listed.get("ok") is True and listed.get("total") == 0, listed
-    print("✅ app-automations: rrule 子集硬拒/幂等/短等待同步返回/list 无 prompt 全旅程")
+            # 读详情：未知 id 显式 not found（I3）；update/delete 校验路径（I4/I5）。
+            missing = content_json(rpc.call("tools/call", {
+                "name": "read_scheduled_task", "arguments": {"task_id": "nosuch"},
+            }))
+            assert "not found" in missing.get("error", ""), missing
+            no_fields = content_json(rpc.call("tools/call", {
+                "name": "update_scheduled_task", "arguments": {"task_id": "nosuch"},
+            }))
+            assert "at least one field" in no_fields.get("error", ""), no_fields
+            bad_target = content_json(rpc.call("tools/call", {
+                "name": "update_scheduled_task",
+                "arguments": {"task_id": "nosuch", "name": "x"},
+            }))
+            assert "not found" in bad_target.get("error", ""), bad_target
+            no_target = content_json(rpc.call("tools/call", {
+                "name": "delete_scheduled_task", "arguments": {},
+            }))
+            assert "invalid task_id" in no_target.get("error", ""), no_target
+            extra = content_json(rpc.call("tools/call", {
+                "name": "delete_scheduled_task",
+                "arguments": {"task_id": "nosuch", "name": "x"},
+            }))
+            assert "no extra fields" in extra.get("error", ""), extra
+    print("✅ app-automations: rrule 子集硬拒/幂等/短等待同步返回/CRUD 校验全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-artifacts-") as artifacts:
         env = {"PINVOU3_SESSION_ARTIFACTS": artifacts}

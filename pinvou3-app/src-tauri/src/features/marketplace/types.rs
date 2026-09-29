@@ -283,11 +283,12 @@ mod tests {
         );
     }
 
-    /// The app-automations builtin manifest parses its contract fields; both
-    /// tools serve exactly one switchable feature (scheduled-task-automation)
-    /// and the tool_features keys match the mcp_tools full names byte for
-    /// byte (a shared-contract hard constraint — a rename on either side
-    /// would silently disarm the feature gate and the Ask rule).
+    /// The app-automations builtin manifest parses its contract fields; the
+    /// CRUD family's five tools all serve exactly one switchable feature
+    /// (scheduled-task-automation) and the tool_features keys match the
+    /// mcp_tools full names byte for byte (a shared-contract hard constraint
+    /// — a rename on either side would silently disarm the feature gate and
+    /// the Ask rules).
     #[test]
     fn app_automations_manifest_carries_builtin_contract_fields() {
         let manifest =
@@ -308,10 +309,13 @@ mod tests {
             manifest.mcp_tools,
             [
                 "mcp_app-automations_create_scheduled_task".to_string(),
+                "mcp_app-automations_read_scheduled_task".to_string(),
                 "mcp_app-automations_list_scheduled_tasks".to_string(),
+                "mcp_app-automations_update_scheduled_task".to_string(),
+                "mcp_app-automations_delete_scheduled_task".to_string(),
             ]
         );
-        assert_eq!(manifest.tool_features.len(), 2);
+        assert_eq!(manifest.tool_features.len(), 5);
         for tool in manifest.mcp_tools {
             assert_eq!(
                 manifest
