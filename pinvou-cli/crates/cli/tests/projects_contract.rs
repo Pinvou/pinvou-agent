@@ -126,6 +126,7 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "update", "prj-1"],
         vec!["pinvou", "projects", "update", "prj-1", "--name", "N2"],
         vec!["pinvou", "projects", "update", "prj-1", "--root", "/tmp/a"],
+        vec!["pinvou", "projects", "update", "prj-1", "--clear-roots"],
         vec!["pinvou", "projects", "delete", "prj-1"],
         vec!["pinvou", "projects", "delete", "prj-1", "--yes"],
         vec!["pinvou", "projects", "move", "s-1", "prj-1"],
@@ -180,6 +181,17 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "update"],
         vec!["pinvou", "projects", "update", "prj-1", "--bogus"],
         vec!["pinvou", "projects", "update", "prj-1", "--name"],
+        // --clear-roots and --root values are exclusive by construction:
+        // bare --root absence means "keep the current roots".
+        vec![
+            "pinvou",
+            "projects",
+            "update",
+            "prj-1",
+            "--root",
+            "/tmp/a",
+            "--clear-roots",
+        ],
         // delete requires an id; --yes is a boolean flag.
         vec!["pinvou", "projects", "delete"],
         vec!["pinvou", "projects", "delete", "prj-1", "--yes", "--yes"],
@@ -1211,4 +1223,52 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     std::fs::remove_dir_all(&from_dir).ok();
     std::fs::remove_dir_all(&to_dir).ok();
     std::fs::remove_dir_all(&elsewhere_dir).ok();
+}
+
+/// The GUI's `Some([])` (drop every root) has a CLI spelling: `--clear-roots`.
+/// Bare `--root` absence keeps the current roots, and the two forms are
+/// exclusive.
+#[test]
+fn update_clear_roots_expresses_the_gui_empty_roots_form() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("clear-roots");
+    let root_dir = make_root_dir("clear-roots");
+    let created = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Doc",
+        "--root",
+        root_dir.to_str().unwrap(),
+    ]);
+    let id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        created["roots"].as_array().map(Vec::len),
+        Some(1),
+        "precondition: the project carries one root: {created}"
+    );
+
+    let updated = run_json(&["pinvou", "projects", "update", &id, "--clear-roots"]);
+    assert_eq!(
+        updated["roots"],
+        serde_json::json!([]),
+        "--clear-roots must produce the GUI's empty roots list: {updated}"
+    );
+    let listed = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(listed["projects"][0]["roots"], serde_json::json!([]));
+
+    // The exclusive form is a usage error (raised at parse time), not a
+    // silent overwrite.
+    let error = parse_args(vec![
+        "pinvou",
+        "projects",
+        "update",
+        &id,
+        "--root",
+        root_dir.to_str().unwrap(),
+        "--clear-roots",
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
 }

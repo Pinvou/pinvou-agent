@@ -6860,6 +6860,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde_json",
  "toml 1.1.4+spec-1.1.0",
+ "url",
  "uuid",
  "wait-timeout",
 ]

@@ -2486,9 +2486,17 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
 ///   run.
 fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     bundle_store_on_connected(spec.id);
-    // Best-effort, exactly like the GUI entry point the follow-up runs
-    // (`skill_gate.rs::apply_skills_command`): a failed consent write is
-    // logged by the scope layer there, not failed here.
+    // GUI parity (round-18 finding 2): the desktop connect flow ends in the
+    // `<id>_apply_skills` follow-up, whose `apply_skills_command`
+    // (features/connectors/skill_gate.rs) runs
+    // `sync_deny_all_scopes_after_install` — 「连接器转为可用等同『新装』：
+    // 已初始化 code 开关时加入 code 禁用集」— so a freshly connected
+    // connector lands in the initialized DenyAll scopes' disabled sets
+    // (code sessions default external capabilities off). Without this, a
+    // fresh CLI connection would run code sessions with the connector ON
+    // where the GUI (which also runs the follow-up after its connect) would
+    // have it OFF. Best-effort, exactly like that GUI entry point: a failed
+    // consent write is logged by the scope layer, not failed here.
     pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
     Ok(())
 }
@@ -2735,18 +2743,10 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
         _ => return Err(CliError::usage("unknown connector")),
     }
     notes.push(format!("{} connected", spec.id));
-    // GUI parity (round-18 finding 2): the desktop connect flow ends in the
-    // `<id>_apply_skills` follow-up, whose `apply_skills_command`
-    // (features/connectors/skill_gate.rs) runs
-    // `sync_deny_all_scopes_after_install` — 「连接器转为可用等同『新装』：
-    // 已初始化 code 开关时加入 code 禁用集」— so a freshly connected
-    // connector lands in the initialized DenyAll scopes' disabled sets
-    // (code sessions default external capabilities off). Without this, a
-    // fresh CLI connection would run code sessions with the connector ON
-    // where the GUI (which also runs the follow-up after its connect) would
-    // have it OFF. Best-effort app-side exactly like the GUI entry point: a
-    // failed write is logged by the scope layer, not failed here.
-    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
+    // The DenyAll scope sync ran inside `finish_connect_side_effects` on
+    // each vendor arm — running it twice per connect only doubled the
+    // last-writer-wins window against a concurrently persisting desktop
+    // app, so it lives in exactly one place.
     let value = json!({
         "ok": true,
         "id": spec.id,
@@ -2847,9 +2847,13 @@ fn spawn_and_capture_url(
     let url_wait = if remaining.is_zero() {
         Duration::ZERO
     } else {
+        // The 1 s floor applies only while the remaining budget can afford
+        // it: a sub-second remainder must not be rounded UP past the
+        // connect deadline.
         Duration::from_secs(spec.login_url_wait_secs)
             .min(remaining)
             .max(Duration::from_secs(1))
+            .min(remaining)
     };
     let mut url: Option<String> = None;
     let mut user_code: Option<String> = None;
@@ -2884,9 +2888,12 @@ fn spawn_and_capture_url(
                 // this is the only moment the link is actionable — surface
                 // it immediately (stderr keeps `--output json` stdout
                 // single-line) and record it for the final summary and any
-                // later error.
-                note!("{} login link: {found}", spec.cli_bin);
-                notes.push(format!("login link: {found}"));
+                // later error. The printed/recorded form is control-char
+                // collapsed like every other human cell; the event keeps
+                // the raw capture for the `user_code=` logic below.
+                let printable = crate::support::collapse_control_characters(&found);
+                note!("{} login link: {printable}", spec.cli_bin);
+                notes.push(format!("login link: {printable}"));
                 let carries_code = found.contains("user_code=");
                 url = Some(found);
                 if needs_code_line && !carries_code && user_code.is_none() {
@@ -3164,8 +3171,13 @@ fn safe_auth_log_line(line: &str, redact_bare_token: bool) -> Option<String> {
         return Some("[redacted credential line]".to_string());
     }
     // Truncate by chars, not bytes: a byte slice could split a multi-byte
-    // character and the vendor CLIs emit Chinese diagnostics.
-    Some(trimmed.chars().take(320).collect())
+    // character and the vendor CLIs emit Chinese diagnostics. The tail is
+    // human-facing diagnostic text, so control characters (ESC/CSI from a
+    // chatty vendor's coloring, CR redraws) are collapsed like every other
+    // human cell in this CLI.
+    Some(crate::support::collapse_control_characters(
+        &trimmed.chars().take(320).collect::<String>(),
+    ))
 }
 
 /// Per-connector `redact_bare_token` setting for [`safe_auth_log_line`].
@@ -3198,6 +3210,28 @@ fn compose_user_code(url: &Option<String>, user_code: Option<&str>) -> Option<St
     Some(format!("{url}{sep}user_code={code}"))
 }
 
+/// Whether the URL's HOST matches one of the connector's auth domains —
+/// exact or dot-boundary subdomain. Deliberately stricter than the GUI's
+/// `extract_url` substring filter it mirrors: a substring match lets
+/// `https://login.dingtalk.com.evil.com/` or
+/// `https://attacker.example/?r=dingtalk.com` through as an actionable
+/// login link, which is this flow's phishing main channel. A URL that does
+/// not parse is not a link worth surfacing.
+fn url_host_matches_auth_domain(url: &str, domains: &[&str]) -> bool {
+    url::Url::parse(url).ok().is_some_and(|parsed| {
+        parsed.host_str().is_some_and(|host| {
+            let host = host.to_ascii_lowercase();
+            domains.iter().any(|domain| {
+                let domain = domain.to_ascii_lowercase();
+                host == domain
+                    || host
+                        .strip_suffix(domain.as_str())
+                        .is_some_and(|rest| rest.ends_with('.'))
+            })
+        })
+    })
+}
+
 /// Background pipe drainer capturing the first URL whose host matches the
 /// connector's auth domains — mirror of `connector_cli::drain_for_url` and
 /// `CliCtx::extract_url` (truncate at whitespace, keep query strings) — plus
@@ -3217,6 +3251,14 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
     let redact_bare_token = redact_bare_token_for(spec);
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
+        // The caller stops consuming Log events once the URL is in hand and
+        // keeps only a bounded tail (`VENDOR_LOG_TAIL_LINES`), so events
+        // past this cap would otherwise pile up unbounded in the channel
+        // while the login wait blocks (a hostile vendor emitting millions
+        // of 1-byte lines would balloon memory before the drain cap ends
+        // the stream).
+        const LOGIN_LOG_EVENT_CAP: usize = 512;
+        let mut log_events = 0usize;
         for line in (&mut reader).take(LOGIN_DRAIN_CAP_BYTES).lines() {
             let line = match line {
                 Ok(line) => line,
@@ -3226,10 +3268,21 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
             // caller can keep a bounded tail for failure diagnostics; the
             // vendor's reason for failing is otherwise dropped on the floor
             // here. Receiver-gone ends the drain as with the other events.
-            if let Some(safe) = safe_auth_log_line(&line, redact_bare_token)
-                && tx.send(LoginStreamEvent::Log(safe)).is_err()
-            {
-                return;
+            if let Some(safe) = safe_auth_log_line(&line, redact_bare_token) {
+                log_events += 1;
+                let event = if log_events <= LOGIN_LOG_EVENT_CAP {
+                    LoginStreamEvent::Log(safe)
+                } else if log_events == LOGIN_LOG_EVENT_CAP + 1 {
+                    LoginStreamEvent::Log(
+                        "[truncated: vendor diagnostic output exceeded the event budget]"
+                            .to_owned(),
+                    )
+                } else {
+                    continue;
+                };
+                if tx.send(event).is_err() {
+                    return;
+                }
             }
             if let Some(code) = extract_user_code(&line) {
                 if tx.send(LoginStreamEvent::Code(code)).is_err() {
@@ -3243,7 +3296,7 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                 .chars()
                 .take_while(|c| !c.is_whitespace())
                 .collect();
-            if domains.iter().any(|domain| url.contains(domain))
+            if url_host_matches_auth_domain(&url, domains)
                 && tx.send(LoginStreamEvent::Url(url)).is_err()
             {
                 return;

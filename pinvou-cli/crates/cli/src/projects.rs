@@ -32,8 +32,8 @@
 //!   only in the frontend and is reproduced in [`resolved_project_id`], with
 //!   its one deviation documented on [`path_is_under_root`].
 //! - The GUI can set a project's roots back to the empty list through
-//!   `update_project`; the CLI treats `--root` absence as "keep the current
-//!   roots" and offers no clear-roots flag.
+//!   `update_project`; the CLI mirrors that with `projects update
+//!   --clear-roots` (bare `--root` absence keeps the current roots).
 //! - `move` keeps the GUI's product decision that assignments only accept
 //!   chat sessions (scheduled-run sessions are managed from Scheduled), and
 //!   proves session existence through a real `SessionStore::load` because
@@ -138,6 +138,7 @@ pub enum ProjectsCommand {
 /// before the single-use flags go through the shared parser.
 const CREATE_OPTIONS: &[&str] = &["--name"];
 const UPDATE_OPTIONS: &[&str] = &["--name"];
+const UPDATE_FLAGS: &[&str] = &["--clear-roots"];
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
@@ -166,11 +167,25 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
         "update" => {
             let id = require_id(rest.first(), "update")?;
             let (rest, roots) = extract_roots(&rest[1..])?;
-            let (options, _) = parse_flags(&rest, UPDATE_OPTIONS, &[])?;
+            let (options, flags) = parse_flags(&rest, UPDATE_OPTIONS, UPDATE_FLAGS)?;
             if option(&options, "--name").is_some_and(|name| name.trim().is_empty()) {
                 return Err(CliError::usage("projects update --name must not be empty"));
             }
-            let roots = if roots.is_empty() { None } else { Some(roots) };
+            // `--clear-roots` expresses the GUI's Some([]) (drop every root):
+            // bare `--root` absence still means "keep the current roots", so
+            // the two forms are exclusive by construction.
+            let roots = if flags.contains(&"--clear-roots") {
+                if !roots.is_empty() {
+                    return Err(CliError::usage(
+                        "projects update: pass either --root values or --clear-roots, not both",
+                    ));
+                }
+                Some(Vec::new())
+            } else if roots.is_empty() {
+                None
+            } else {
+                Some(roots)
+            };
             Ok(ProjectsCommand::Update {
                 id,
                 name: option(&options, "--name").map(str::to_owned),

@@ -460,6 +460,15 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                     "use only one of --api-key-env or --api-key-stdin",
                 ));
             }
+            // The usage text marks the key source required for `add` (unlike
+            // `update`, where omitting it keeps the stored credential): a
+            // keyless add would silently create an unusable provider whose
+            // breakage only surfaces at the next `switch`.
+            if !flags.contains(&"--api-key-stdin") && !options.contains_key("--api-key-env") {
+                return Err(CliError::usage(
+                    "code providers add requires --api-key-env or --api-key-stdin",
+                ));
+            }
             Ok(CodeCommand::ProvidersAdd {
                 agent,
                 name,
@@ -1497,10 +1506,13 @@ fn command_output_with_timeout(
                 return Ok(Some((status.success(), text.trim().to_string())));
             }
             Ok(None) => {}
-            Err(_) => {
+            Err(error) => {
+                // A failed wait is a probe failure, not a timeout: folding it
+                // into `Ok(None)` misreported the enum (the JSON verdict is
+                // the same either way, the classification was not).
                 crate::support::kill_process_tree(&mut child);
                 crate::support::supervise::forget_child_group(child.id());
-                return Ok(None);
+                return Err(error);
             }
         }
         if Instant::now() >= deadline {
@@ -4114,8 +4126,9 @@ fn workspace_preview(
 ///
 /// `commit.gpgsign=false` is a disclosed deviation from the user's git
 /// config and from the GUI's commit lane (which honors signing): this lane
-/// runs git with stdin at `/dev/null`, so a `gpg.ssh`/GPG pinentry prompt
-/// would hang the command until the timeout kills it mid-commit. The price
+/// runs git with stdin at `/dev/null`, and the git lanes deliberately run
+/// without a deadline, so a `gpg.ssh`/GPG pinentry prompt would hang the
+/// command until interrupted. The price
 /// is honest and documented in `docs/pinvou-cli.md`: commits made through
 /// this lane are unsigned even for a `commit.gpgsign=true` user, so a
 /// signature-based audit must not treat them as verified.
@@ -4153,7 +4166,10 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
     let mut command = std::process::Command::new("git");
     command
         .current_dir(root)
-        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"]);
+        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"])
+        // The house contract for git children in this module: stdin is
+        // /dev/null so nothing here can turn interactive.
+        .stdin(std::process::Stdio::null());
     strip_git_redirection_env(&mut command);
     // Supervised and bounded like every other capture in this module: a
     // hostile config cannot buffer unbounded, and an interrupt that targets
@@ -4285,10 +4301,28 @@ fn git_commit_output(root: &Path, arguments: &[&str]) -> Result<String, CliError
 fn run_git_output(command: std::process::Command, arguments: &[&str]) -> Result<String, CliError> {
     let capture = run_git_captured(command, arguments)?;
     if !capture.success {
+        // The capture is byte-capped at 16 MiB; an error message must not
+        // echo all of it. Keep the tail (where git puts its own diagnostic)
+        // with a stated truncation marker.
+        const GIT_ERROR_TAIL_CHARS: usize = 4096;
+        let trimmed = capture.stderr.trim();
+        let stderr: std::borrow::Cow<'_, str> = if trimmed.chars().count() <= GIT_ERROR_TAIL_CHARS {
+            std::borrow::Cow::Borrowed(trimmed)
+        } else {
+            let skipped = trimmed.chars().count() - GIT_ERROR_TAIL_CHARS;
+            let tail = trimmed
+                .char_indices()
+                .rev()
+                .take(GIT_ERROR_TAIL_CHARS)
+                .last()
+                .map(|(index, _)| &trimmed[index..])
+                .unwrap_or_default();
+            std::borrow::Cow::Owned(format!("…[{skipped} chars truncated] {tail}"))
+        };
         return Err(CliError::failed(format!(
             "code workspace: git {} failed: {}",
             arguments.join(" "),
-            pinvou3_lib::platform::credential_store::redact_secret(capture.stderr.trim()),
+            pinvou3_lib::platform::credential_store::redact_secret(&stderr),
         )));
     }
     Ok(capture.stdout)
