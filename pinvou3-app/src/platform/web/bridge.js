@@ -3864,8 +3864,10 @@ function pinvouSharedwebN247496() {
       const draftOwner = { sessionId: null, draftEpoch: Number(state.draftEpoch || 0),
         operationId: meta && meta.voiceOperationId, restored: false };
       const materialized = await ensureSession(draftOwner);
-      // 物化中止（await 期间切走）→ 按原始归属恢复，不写入当前其它会话。
-      // （与 tauri 版对齐，二审 F3；错误提示由 ensureSession 内如实给出）。
+      // Materialization aborted (the session was switched away during the
+      // await) → restore against the original draft ownership; never write
+      // into whatever session is currently selected. (Mirrors the tauri lane,
+      // round-2 finding F3; ensureSession itself reports the real reason.)
       // append=true: failure-recovery semantics — the user may have started
       // the next message during the await.
       if (!materialized || state.activeSessionId !== materialized) {

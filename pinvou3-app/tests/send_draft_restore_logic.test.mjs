@@ -310,9 +310,11 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 }
 
 {
-  // 语音任务发送：meta 必须携带 voiceOperationId——桥接层的受理门槛和
-  // 派发出口按它结算。这是 ChatView 漏斗的执行级回归锚点：voiceMeta 一旦
-  // 不再并入 meta（只数源码调用点的正则无法发现），本用例立即变红。
+  // Voice-task sends: meta must carry voiceOperationId — the bridge's
+  // admission gate and the dispatch exit both settle against it. This is an
+  // execution-level regression anchor for the ChatView funnel: the moment
+  // voiceMeta stops being merged into meta (something a regex counting
+  // source call sites cannot detect), this case goes red.
   const begins = [];
   const completes = [];
   const { feature, state } = createTauriChat({

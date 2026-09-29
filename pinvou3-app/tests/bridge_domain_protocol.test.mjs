@@ -248,10 +248,10 @@ const expectedProtocolHashes = {
   // owns an operation lifecycle (operationId submission gates) and claims the
   // Rust recording ownership (set_voice_shortcut_recording with a token)
   // before opening the microphone (command set unchanged; listener bodies and
-  // comment wording are part of the digest). Recomputed once more after
-  // dropping the behavior-event emitter: the terminal bookkeeping state
-  // machine stays, the track_behavior_event call sites do not (command set
-  // still unchanged).
+  // comment wording are part of the digest). The behavior-event emitter drop
+  // is not part of this PR: #616's telemetry-client retirement on main already
+  // removed the track_behavior_event call sites, while the terminal
+  // bookkeeping state machine stays (command set still unchanged).
   voice: 'fe52e3a89d3f95932444d23eff68e8685d20e754fb402959388930093a34a10b',
   // Recomputed for the rebind carryover feed-back (review #463 F-Major):
   // rebind_workspace_root gains the optional previousPostBusySessionIds

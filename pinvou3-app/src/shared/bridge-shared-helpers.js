@@ -3113,7 +3113,7 @@
     finishVoiceInput(true, false);
   }
 
-  // web+tauriVoice 共享 (both lanes keep a local clearVoiceInput override:
+  // web+tauriVoice shared (both lanes keep a local clearVoiceInput override:
   // ending the unsent voice operation is lane-owned state machine work)
   function appendVoiceText(base, text) {
     const left = String(base || "").trimEnd();
