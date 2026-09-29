@@ -2081,30 +2081,22 @@ mod tests {
             records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
         }
 
-        // Round-21 SF-7 moved the persist onto atomic_write (randomized temp
-        // names defeat the old tmp-path occupation), so the deterministic
-        // fault is a read-only sessions parent (unix, same shape as the
-        // plain lane's pins).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let parent = store.path.parent().unwrap();
-            let original = fs::metadata(parent)
-                .expect("stat the store parent")
-                .permissions();
-            fs::set_permissions(parent, std::fs::Permissions::from_mode(0o555)).unwrap();
-            store
-                .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
-                .expect_err("a persist failure must be reported");
-            assert_eq!(
-                store.get("s1").workspace_path.as_deref(),
-                Some(to.as_path()),
-                "memory must roll back to the pre-repair binding, not claim a repair disk does not have"
-            );
-            fs::set_permissions(parent, original).unwrap();
-        }
-        #[cfg(not(unix))]
-        let _ = &to2;
+        // Same cross-platform fault as the rebind-prefix test above (round-21
+        // SF-7 moved the persist onto atomic_write; no #[cfg] here — this
+        // file carries zero target-cfg baseline debt).
+        fs::remove_file(&store.path).unwrap();
+        fs::create_dir(&store.path).unwrap();
+        store
+            .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
+            .expect_err("a persist failure must be reported");
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "memory must roll back to the pre-repair binding, not claim a repair disk does not have"
+        );
+
+        // Clearing the obstruction converges on a same-process retry.
+        fs::remove_dir(&store.path).unwrap();
         let repaired = store
             .repair_stranded_index_records(&[("s1".to_string(), to2.clone())])
             .unwrap();
@@ -2420,38 +2412,26 @@ mod tests {
         touch_owner_record(&store.path, "s1");
 
         // Round-21 SF-7 moved the index persist onto atomic_write, whose
-        // randomized temp names defeat the old tmp-path occupation — the
-        // deterministic fault is now a read-only sessions parent (unix), the
-        // same injection shape as the plain lane's pins. The persist must
-        // fail after the in-memory mutation and roll it back.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let parent = store.path.parent().unwrap();
-            let original = fs::metadata(parent)
-                .expect("stat the store parent")
-                .permissions();
-            fs::set_permissions(parent, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let error = store
-                .rebind_workspace_prefix(&from, &to)
-                .expect_err("persist failure surfaces as an error");
-            assert!(!error.to_string().is_empty());
-            assert_eq!(
-                store.get("s1").workspace_path.as_deref(),
-                Some(from.as_path()),
-                "memory rolled back to the on-disk binding"
-            );
-            fs::set_permissions(parent, original).unwrap();
-            // The retry-converges arm is the fn tail below (unchanged): with
-            // the obstacle cleared, the rerun moves `from` and asserts the
-            // outcome.
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = store
-                .rebind_workspace_prefix(&from, &to)
-                .expect("non-unix runs lack the fault injection; the rebind itself must work");
-        }
+        // randomized temp names defeat the old tmp-path occupation. The
+        // cross-platform fault: occupy the index file's own path with a
+        // DIRECTORY — the tmp write lands beside it, and the rename onto a
+        // directory fails on every platform (no #[cfg] needed: this file
+        // carries zero target-cfg baseline debt).
+        fs::remove_file(&store.path).unwrap();
+        fs::create_dir(&store.path).unwrap();
+        let error = store
+            .rebind_workspace_prefix(&from, &to)
+            .expect_err("persist failure surfaces as an error");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(from.as_path()),
+            "memory rolled back to the on-disk binding"
+        );
+
+        // After clearing the obstacle a retry converges: the original `from`
+        // binding is still there to be moved.
+        fs::remove_dir(&store.path).unwrap();
         let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
         assert!(outcome.affected.iter().any(|(sid, _)| sid == "s1"));
         assert_eq!(
