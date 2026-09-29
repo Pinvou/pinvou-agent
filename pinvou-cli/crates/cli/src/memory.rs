@@ -1108,6 +1108,16 @@ fn disclose_truncation(
     ));
 }
 
+/// The one formatter for the normalization disclosure, shared by the stderr
+/// note ([`note_normalization`]) and the output-channel note
+/// ([`disclose_normalization`]) so the wording cannot drift.
+fn normalization_clause(submitted_chars: usize, stored_chars: usize) -> String {
+    format!(
+        "the content was normalized before storing (a 请记住-style prefix and \
+         outer punctuation are stripped); {stored_chars} of {submitted_chars} characters stored"
+    )
+}
+
 /// The stderr half of the normalization disclosure (`update` lane only): the
 /// writer rewrote the text (请记住-style prefix and outer punctuation
 /// stripped) without any cap being involved. Worded against the same
@@ -1115,7 +1125,8 @@ fn disclose_truncation(
 /// submitted text to the stored item must not conclude content was lost.
 fn note_normalization(lane: &str, submitted_chars: usize, stored_chars: usize) {
     crate::note!(
-        "memory {lane}: content was normalized before storing (a 请记住-style prefix and          outer punctuation are stripped); {stored_chars} of {submitted_chars} characters stored"
+        "memory {lane}: {}",
+        normalization_clause(submitted_chars, stored_chars)
     );
 }
 
@@ -1141,8 +1152,8 @@ fn disclose_normalization(
         );
     }
     human.push_str(&format!(
-        "\nNote: the content was normalized before storing (a 请记住-style prefix and \
-         outer punctuation are stripped); {stored_chars} of {submitted_chars} characters stored"
+        "\nNote: {}",
+        normalization_clause(submitted_chars, stored_chars)
     ));
 }
 
@@ -2209,34 +2220,53 @@ fn one_line(value: &str) -> String {
         .join(" ")
 }
 
+/// The row contract must not depend on which cell happened to be
+/// machine-made: id/topic/status/kind collapse through the same helper as
+/// the text cell (the topic is engine/user-derived, and a forged column or
+/// row must stay impossible). JSON keeps the originals.
 fn render_preference(item: &PreferenceFile) -> String {
-    format!("{}\t{}\t{}", item.id, item.topic, one_line(&item.text))
+    format!(
+        "{}\t{}\t{}",
+        one_line(&item.id),
+        one_line(&item.topic),
+        one_line(&item.text)
+    )
 }
 
 fn render_work_context(item: &WorkContextFile) -> String {
-    format!("{}\t{}\t{}", item.id, item.topic, one_line(&item.text))
+    format!(
+        "{}\t{}\t{}",
+        one_line(&item.id),
+        one_line(&item.topic),
+        one_line(&item.text)
+    )
 }
 
 fn render_timed(item: &TimedMemoryItem) -> String {
     format!(
         "{}\t{}\t{}\t{}",
-        item.id,
-        item.topic,
+        one_line(&item.id),
+        one_line(&item.topic),
         one_line(&item.text),
-        item.status
+        one_line(item.status.as_str())
     )
 }
 
 fn render_recent_work(item: &RecentWorkItem) -> String {
-    format!("{}\t{}\t{}", item.id, item.status, one_line(&item.title))
+    format!(
+        "{}\t{}\t{}",
+        one_line(&item.id),
+        one_line(item.status.as_str()),
+        one_line(&item.title)
+    )
 }
 
 fn render_pending(item: &feature::PendingMemoryItem) -> String {
     format!(
         "{}\t{}\t{}\t{}",
-        item.id,
-        item.status,
-        item.kind,
+        one_line(&item.id),
+        one_line(item.status.as_str()),
+        one_line(item.kind.as_str()),
         one_line(&item.content)
     )
 }

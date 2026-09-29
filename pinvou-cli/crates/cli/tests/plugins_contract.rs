@@ -479,6 +479,57 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     assert_eq!(fixture["user_uploaded"], serde_json::json!(true));
 }
 
+/// Human rows must not be forgeable: the import lane sanitizes only the
+/// DISPLAY name and stores the manifest description verbatim (the display-
+/// meta write path validates, but the stored manifest description does not),
+/// so the skills/tools rows must collapse control characters at the
+/// rendering boundary like every sibling family.
+#[test]
+fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("skills-collapse");
+    let dir = home.path().join("fixtures").join("collapse-hostile");
+    std::fs::create_dir_all(&dir).unwrap();
+    // The frontmatter value is taken verbatim (no YAML unescaping, no
+    // display validation on the stored manifest description), so a raw tab
+    // byte lands in the store as-is.
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: collapse-hostile\ndescription: ok\tinjected\trow\n---\n# body\n",
+    )
+    .unwrap();
+    run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+
+    let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
+    let rows = human
+        .lines()
+        .filter(|line| line.contains("collapse-hostile"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the hostile description must not forge extra rows: {human:?}"
+    );
+    assert!(
+        rows[0].contains("ok injected row"),
+        "the collapsed description must render on one row: {:?}",
+        rows[0]
+    );
+
+    // JSON keeps the verbatim description — only the human row sanitizes.
+    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    let skills = value["skills"].as_array().expect("skills array");
+    let fixture = skills
+        .iter()
+        .find(|skill| skill["id"] == "collapse-hostile")
+        .expect("imported skill listed");
+    assert_eq!(
+        fixture["description"].as_str(),
+        Some("ok\tinjected\trow"),
+        "the stored description keeps the original bytes"
+    );
+}
+
 #[test]
 fn import_md_file_with_and_without_frontmatter() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

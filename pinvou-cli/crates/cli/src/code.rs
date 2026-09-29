@@ -1551,6 +1551,7 @@ fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
 /// none. The GUI distinguishes probe failure/timeout from a genuinely
 /// too-old version (and retries timeouts); the CLI at least must not label
 /// a cold or hanging binary "version-too-old".
+#[derive(Clone, Debug)]
 enum VersionProbe {
     Version(String),
     /// The binary exited non-zero, could not be spawned, or produced no
@@ -1621,8 +1622,28 @@ fn nonempty_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// One-shot memo of the codex override's passing `--version` verdict,
+/// written by [`override_passes_version_gate`] and read by
+/// [`memoized_override_probe`]: `probe_agent` needs the same `--version`
+/// for the override resolution the gate just handed back, and without the
+/// memo the codex lanes spawn the override twice (two 15 s-bounded spawns;
+/// the app avoids the same double spawn in `runtime::probe_codex_runtime`
+/// by threading the verdict). Only a PASSING verdict is cached, keyed by
+/// the resolved path, so the gate can never read a stale success.
+static LAST_OVERRIDE_PROBE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::path::PathBuf, VersionProbe)>>,
+> = std::sync::OnceLock::new();
+
 fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
-    let version = match probe_cli_version(path) {
+    let probe = probe_cli_version(path);
+    if let VersionProbe::Version(_) = &probe {
+        let mut last = LAST_OVERRIDE_PROBE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = Some((path.to_owned(), probe.clone()));
+    }
+    let version = match probe {
         VersionProbe::Version(version) => version,
         VersionProbe::Failed | VersionProbe::TimedOut => return false,
     };
@@ -1633,6 +1654,20 @@ fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
     match minimum {
         Some(minimum) => version_supported_for(agent, &version, minimum),
         None => true,
+    }
+}
+
+/// The memoized verdict of the codex override gate, when the path being
+/// probed is exactly the override that gate just passed (see
+/// [`LAST_OVERRIDE_PROBE`]).
+fn memoized_override_probe(path: &Path) -> Option<VersionProbe> {
+    let last = LAST_OVERRIDE_PROBE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match last.as_ref() {
+        Some((cached_path, probe)) if cached_path == path => Some(probe.clone()),
+        _ => None,
     }
 }
 
@@ -1854,7 +1889,11 @@ fn kimi_data_root() -> PathBuf {
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
     let cli_path = resolve_agent_cli(agent, cli_name);
-    let probe = cli_path.as_deref().map(probe_cli_version);
+    // Reuse the verdict the codex override gate just produced for this exact
+    // path instead of spawning the same `--version` twice.
+    let probe = cli_path
+        .as_deref()
+        .map(|path| memoized_override_probe(path).unwrap_or_else(|| probe_cli_version(path)));
     let version = match &probe {
         Some(VersionProbe::Version(text)) => Some(text.clone()),
         _ => None,
@@ -4051,7 +4090,11 @@ fn workspace_preview(
     let value = serde_json::to_value(&preview)
         .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
     let human = match (&preview.text, &preview.data_url) {
-        (Some(text), _) => text.clone(),
+        // The workspace is agent-writable: the text arm gets the same block
+        // sanitizer `sessions`/`artifacts` apply at the terminal boundary
+        // (JSON keeps the verbatim bytes). The data-url arm is base64 by
+        // construction and needs no sanitizing.
+        (Some(text), _) => crate::support::collapse_block_control_characters(text),
         (None, Some(url)) => url.clone(),
         _ => format!(
             "{} ({}, {} bytes)",
@@ -4747,7 +4790,13 @@ fn workspace_diff(
                 "text": diff.1,
                 "truncated": diff.2,
             });
-            Ok(success(render(output, diff.1, &value)))
+            // Diff text is agent-authored workspace content rendered on a
+            // terminal: same block sanitizer as the preview lane above.
+            Ok(success(render(
+                output,
+                crate::support::collapse_block_control_characters(&diff.1),
+                &value,
+            )))
         }
         None => {
             // Whole-workspace diff: concatenate per-file diffs of every change
@@ -4824,7 +4873,11 @@ fn workspace_diff(
                 // from "an older build that never reported them".
                 "failures": failures,
             });
-            Ok(success(render(output, combined, &value)))
+            Ok(success(render(
+                output,
+                crate::support::collapse_block_control_characters(&combined),
+                &value,
+            )))
         }
     }
 }

@@ -919,6 +919,14 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
         "the human output must carry the trailing Note disclosure: {}",
         outcome.stdout
     );
+    // The human line set is branch-independent: the model path always prints
+    // `Truncated:`, so the empty short-circuit prints it as `false` instead
+    // of silently dropping the line.
+    assert!(
+        outcome.stdout.contains("Truncated: false"),
+        "the empty short-circuit must keep the human schema stable: {}",
+        outcome.stdout
+    );
 }
 
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)

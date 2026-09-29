@@ -860,7 +860,12 @@ fn read(session_id: &str, relative_path: &str, output: OutputMode) -> Result<Cli
         "path": path.display().to_string(),
         "content": content,
     });
-    Ok(success(render(output, content, &value)))
+    // Stdout is a terminal and the content is agent-writable: the human arm
+    // gets the same block sanitizer `sessions show`/`export` apply at this
+    // boundary (newlines/indent survive, ESC/CR and the rest of the control
+    // range do not). JSON and the stored file keep the verbatim bytes.
+    let human = crate::support::collapse_block_control_characters(&content);
+    Ok(success(render(output, human, &value)))
 }
 
 fn write(
