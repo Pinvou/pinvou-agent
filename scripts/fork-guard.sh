@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 49 commits, eight maintained themes (r3 closed at pinvou-v0.9.12-r3).
+# CodeWhale v0.9.12 clean re-fork guard: 55 commits, nine maintained themes (candidate period: T9 rides PR #625 × CodeWhale #79; r3 closed at pinvou-v0.9.12-r3).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,8 +8,8 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # 候选期（父仓 PR #625 × CodeWhale PR #79）：gitlink 钉在 T9 候选 head 上。
 # #79 squash 合入 pinvou3-clean 后本 PR 落地波必须重钉公开维护分支头并回收候选值。
-EXPECTED_HEAD="98d4709b905ca5a5abce42da4a2b322c4a88d7b5"
-EXPECTED_COMMITS=51
+EXPECTED_HEAD="cd281909e82adcf2a291ae1e5be8cb59f74ea1bd"
+EXPECTED_COMMITS=55
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（r3 收口后 gitlink=分支头=tag）。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
@@ -27,10 +27,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（v0.9.12 之上 51 个登记提交；候选期：#79 候选 head，合入后重钉 pinvou3-clean）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（v0.9.12 之上 55 个登记提交；候选期：#79 候选 head，合入后重钉 pinvou3-clean）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（r3 收口：gitlink=维护分支头=pinvou-v0.9.12-r3 三方相等）"
+  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（候选期：#79 候选 head，非 pinvou3-clean 分支头；合入后重钉为三方相等）"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
   fail=1
@@ -281,12 +281,20 @@ fingerprints=(
   "APP|title sentinel, Rust-side literal          |pinvou3-app/src-tauri/src/features/sessions/store.rs|const NEW_CHAT_TITLE: &str = \"新对话\""
   "APP|title sentinel, frontend dict literal      |pinvou3-app/src/shared/i18n.js|DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット'])"
 
-  "T9|Custom 路线认配置 wire 通道            |CodeWhale/crates/config/src/route/resolver.rs|pub wire_override: Option<WireFormat>"
+  "T9|Custom 路线认配置 wire 通道            |CodeWhale/crates/config/src/route/resolver.rs|pub wire_override: Option<RequestProtocol>"
+  "T9|Custom wire 方言解析单一来源           |CodeWhale/crates/config/src/provider.rs|pub fn wire_dialect_override"
   "T9|Custom wire 方言读取单一来源            |CodeWhale/crates/tui/src/route_runtime.rs|pub(crate) fn custom_wire_override_for"
+  "T9|Custom wire 运行时候选按身份读方言     |CodeWhale/crates/tui/src/route_runtime.rs|custom_wire_override_for(&route_config)"
   "T9|Custom wire 运行时候选真 wire           |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_named_table_wire_responses_reaches_the_runtime_candidate"
+  "T9|Custom wire 未认方言降级 Chat         |CodeWhale/crates/tui/src/route_runtime.rs|fn forkguard_named_table_unrecognized_wire_keeps_the_chat_default"
   "T9|Custom Responses 逐轮客户端钉 /responses |CodeWhale/crates/tui/src/client.rs|fn forkguard_custom_responses_route_turn_client_posts_to_the_responses_endpoint"
+  "T9|Custom 回放标签按提供方身份收窄        |CodeWhale/crates/tui/src/client.rs|fn reasoning_provider_tag"
+  "T9|ingress 对非 Chat custom wire 关门    |CodeWhale/crates/app-server/src/chat_completions.rs|wire_dialect_override(provider_cfg.wire.as_deref())"
+  "T9|preflight 按表自身方言校验           |CodeWhale/crates/tui/src/provider_readiness.rs|wire_dialect_override(entry.wire.as_deref())"
   "T9|Custom Responses 加密推理捕获           |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_stream_captures_encrypted_reasoning_as_opaque_state"
   "T9|Custom Responses 精确模型回放           |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_replays_only_exact_model_opaque_reasoning_state"
+  "T9|Chat wire 不捕获加密推理             |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_chat_stream_does_not_capture_encrypted_reasoning"
+  "T9|空加密内容不捕获且流不断              |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_capture_tolerates_missing_or_empty_encrypted_content"
 )
 
 for fp in "${fingerprints[@]}"; do

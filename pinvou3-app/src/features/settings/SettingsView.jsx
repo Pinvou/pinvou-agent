@@ -457,7 +457,7 @@ function hasStoredCredential(record) {
         const nextModel = item.custom ? '' : (item.model || defs.model);
         const nextBaseUrl = normalizedProviderBaseUrl(group) || defs.baseUrl;
         setProviderKey(group.key || '');
-        setProviderKind(group.providerKind || (p === 'openai_compatible' ? PROVIDER_KIND_CUSTOM : PROVIDER_KIND_OFFICIAL_API));
+        setProviderKind(group.providerKind || ((p === 'openai_compatible' || p === 'openai_responses') ? PROVIDER_KIND_CUSTOM : PROVIDER_KIND_OFFICIAL_API));
         setVendor(group.vendor || '');
         setEndpointMode(group.endpointMode || '');
         setBaseUrl(nextBaseUrl);
