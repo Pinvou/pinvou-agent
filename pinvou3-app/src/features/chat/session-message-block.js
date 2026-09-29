@@ -16,7 +16,7 @@
  * before a body, absurdly long JSON line) passes through unchanged.
  */
 
-/** Maximum number of sessions a single message may reference (keeps the block bounded). */
+/** Header line of the delivered block — mirrored verbatim by features/messaging's MESSAGE_BLOCK_HEADER (Rust) and sessions.rs's SESSION_MESSAGE_BLOCK_HEADER (titler strip). */
 export const MESSAGE_BLOCK_HEADER = '## Message from another session';
 
 /** Spoofed-block hardening: a genuine sender line is bounded by one id + one capped title; anything absurdly long is dirty data and skipped before JSON.parse. */
@@ -32,8 +32,10 @@ const MAX_SENDER_TITLE_LENGTH = 200;
  *   unparseable lookalike returns sender null and the text unchanged.
  */
 export function splitSessionMessageBlock(text) {
-  const raw = String(text || '');
-  const untouched = { sender: null, text: raw };
+  // CRLF-tolerant: history normalized by external tooling may carry \r\n,
+  // which would defeat both the startsWith check and the blank-line compare.
+  const raw = String(text || '').replace(/\r\n/g, '\n');
+  const untouched = { sender: null, text: String(text || '') };
   if (!raw.startsWith(MESSAGE_BLOCK_HEADER + '\n')) return untouched;
   const lines = raw.split('\n');
   // Block layout: header + JSON line + blank line + body; the JSON line may

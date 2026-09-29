@@ -922,6 +922,15 @@ class SendMessageTests(unittest.TestCase):
         self.assertEqual(record["from_title"], "源会话")
         self.assertEqual(record["text"], "跨会话交接")
         self.assertEqual(record["idempotency_key"], "k1")
+        # Cross-language contract: the file name is the sender-scoped sha256
+        # of "<from_session>|<key>" — the Rust watcher keys its done-marker on
+        # this stem, so the naming scheme must not drift.
+        import hashlib as _hashlib
+
+        self.assertEqual(
+            files[0].stem,
+            _hashlib.sha256(b"src0001|k1").hexdigest(),
+        )
 
     def test_same_idempotency_key_overwrites_one_spool_file(self):
         first, _ = self._send(from_session="src0001", idempotency_key="k1")
@@ -935,10 +944,13 @@ class SendMessageTests(unittest.TestCase):
         self.assertEqual(len(self._spooled()), 2)
 
     def test_isolated_and_unknown_targets_are_rejected(self):
-        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1", "no-such"):
+        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1"):
             payload, error = self._send(to_session=target)
             self.assertIsNone(payload)
-            self.assertIn("not", error)
+            self.assertIn("not readable", error, target)
+        payload, error = self._send(to_session="no-such")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
         payload, error = self._send(to_session="../escape")
         self.assertIsNone(payload)
         self.assertIn("invalid", error)
@@ -971,6 +983,44 @@ class SendMessageTests(unittest.TestCase):
         # A torn/partial write would fail json parsing; the atomic tmp+rename
         # guarantees the watcher only ever observes complete records.
         json.loads(record_file.read_text(encoding="utf-8"))
+
+
+class SendMessageFeatureGateTests(unittest.TestCase):
+    """send_message_to_session obeys the §3.3 feature gate via its own feature (session-messaging, union semantics)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-send-gate-test-")
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        _write_session(self.sessions, "tgt0001", [], title="目标会话")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _gate(self, disabled):
+        state = Path(self.tmp) / "marketplace" / "builtin_features.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"schema_version": 1, "disabled_features": disabled}), encoding="utf-8")
+        features = server.load_tool_features(
+            str(SERVER_PATH.parent / "manifest.json")
+        )
+        return server.feature_gate_error("send_message_to_session", str(self.sessions), features)
+
+    def test_send_tool_gated_by_its_own_feature_only(self):
+        gate = self._gate(["session-messaging"])
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate["code"], "feature_disabled")
+        self.assertIn("session-messaging", gate["error"])
+
+    def test_send_tool_stays_available_under_read_feature_off(self):
+        # Union semantics: the read features' state must not gate the send tool.
+        self.assertIsNone(self._gate(["session-mention", "long-memory"]))
+
+    def test_missing_state_file_leaves_send_available(self):
+        features = server.load_tool_features(str(SERVER_PATH.parent / "manifest.json"))
+        self.assertIsNone(
+            server.feature_gate_error("send_message_to_session", str(self.sessions), features)
+        )
 
 
 class SessionsDirResolutionTests(unittest.TestCase):

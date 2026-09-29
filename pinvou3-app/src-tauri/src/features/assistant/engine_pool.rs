@@ -2978,6 +2978,19 @@ impl EnginePool {
         content: String,
     ) -> Result<()> {
         let reservation = self.reserve_turn(session_id)?;
+        // First-turn persona guard: the chat command prepends the full
+        // persona card body once via take_pending_turn_injections (the
+        // per-turn light anchor in send_reserved_user_message is not enough
+        // on its own); a session whose first-ever turn is a delivered
+        // cross-session message must get the same treatment.
+        let mut content = content;
+        if let Some(body) = self
+            .store
+            .take_pending_turn_injections(session_id)
+            .persona_body()
+        {
+            content = format!("{body}\n\n---\n\n{content}");
+        }
         let display_message = user_display_message(content.clone());
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))

@@ -4443,11 +4443,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Channel 3 data source: script directories of scope-disabled skills generate
-    /// deny rules (code uninitialized denies all by default; on this fork
-    /// uninitialized plain = AllowAll, producing no deny rules — DenyAll tightening
-    /// is tracked separately); rules disappear once the skill is enabled; shares one
-    /// ruleset with the CLI binary deny.
     /// Cross-session messaging (docs/builtin-toolset-contract.md §5 L1):
     /// the composed ruleset always carries the typed Ask rule for
     /// send_message_to_session — the user-confirmation gate that holds in
@@ -4466,7 +4461,30 @@ mod tests {
             rule.command.is_none(),
             "the ask rule matches any invocation"
         );
+        // Drift pin: the rule's tool name must stay byte-identical to the
+        // manifest's registered full name (a rename on either side would
+        // silently disarm the L1 approval gate). Asserted here (assistant)
+        // rather than in marketplace: an assistant -> marketplace edge is the
+        // existing direction, and a marketplace -> assistant import would
+        // close a dependency cycle.
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .unwrap()
+                .expect("session-reader is in the embedded catalog");
+        assert!(
+            manifest
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == MESSAGING_SEND_TOOL),
+            "the Ask rule's tool name must match the manifest registration"
+        );
     }
+
+    /// Channel 3 data source: script directories of scope-disabled skills generate
+    /// deny rules (code uninitialized denies all by default; on this fork
+    /// uninitialized plain = AllowAll, producing no deny rules — DenyAll tightening
+    /// is tracked separately); rules disappear once the skill is enabled; shares one
+    /// ruleset with the CLI binary deny.
 
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {

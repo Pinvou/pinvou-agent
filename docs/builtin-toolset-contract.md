@@ -163,7 +163,21 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
   idempotency key or be naturally idempotent. `send_message_to_session` takes an
-  optional `idempotency_key`; the server dedupes recent keys per sender.
+  optional `idempotency_key`; the spool file is named by the sender-scoped
+  sha256 of `"<from_session>|<key>"`, so a retried call replaces its own
+  pending message and can never clobber another session's (transient delivery
+  failures retry with backoff; poison files are quarantined under
+  `messaging/spool/failed/`).
+- **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
+  model-supplied and unauthenticated — the execpolicy approval prompt and the
+  audit log are the trust boundary, not the `from_session` field; delivery is
+  at-least-once (a crash between delivery and the done-marker write replays on
+  next boot); a steer accepted against a mid-turn target can still be dropped
+  by the foundation when that turn is cancelled (the `chat:steer_dropped`
+  window is not yet correlated); receive-side historical sender cards have no
+  "feature off" degradation yet and the `session-messaging` switch is
+  settings.json-only (no UI) — both follow the session-mention precedent and
+  land with the feature's own settings page.
 
 ## 7. Presentation to the model
 

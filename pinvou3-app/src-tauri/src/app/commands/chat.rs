@@ -103,9 +103,10 @@ pub(crate) async fn chat_with_reservation(
         // context, not user body text: strip it before auto-titling so a
         // refs-only first send does not name the session after the contract.
         // A received cross-session message block (features::messaging) is
-        // machine context too: strip it after the mention block so neither
-        // contract feeds the title.
-        super::sessions::strip_session_message_block(super::sessions::strip_session_mention_block(
+        // machine context too: strip it OUTERMOST first (the sender block
+        // wraps the body; the body itself may start with a mention block),
+        // matching the frontend parse order in UserBubble.
+        super::sessions::strip_session_mention_block(super::sessions::strip_session_message_block(
             message.trim(),
         ))
         .trim()

@@ -26,8 +26,9 @@ Write semantics (send_message_to_session, contract §5 L1 / §6):
 - This server NEVER writes a target session file (the app's persistence actor
   saves whole-file snapshots and would clobber any external edit). It
   validates the request and spools it:
-  ~/.pinvou3/messaging/spool/<name>.json — the name is the sha256 of the
-  idempotency key when one is given (retries overwrite the same file, so a
+  ~/.pinvou3/messaging/spool/<name>.json — the name is the sha256 of
+  "<from_session>|<idempotency_key>" when a key is given (sender-scoped, so two
+  sessions reusing one key cannot clobber each other) (retries overwrite the same file, so a
   retried tool call cannot duplicate a delivery) or a random uuid otherwise;
 - An app-side Rust watcher picks the spool file up and performs the actual
   steer (target mid-turn) or new-turn dispatch (target idle), after the
@@ -878,7 +879,12 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
         # Deliberately no raw OSError text: it embeds absolute host paths.
         return None, "message queue is not writable"
     if idempotency_key is not None:
-        spool_id = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        # Sender-scoped namespace: two sessions reusing the same (guessable)
+        # key must not overwrite each other's pending message or hit each
+        # other's done-marker.
+        spool_id = hashlib.sha256(
+            ("%s|%s" % (from_session or "", idempotency_key)).encode("utf-8")
+        ).hexdigest()
     else:
         spool_id = uuid.uuid4().hex
     target = os.path.join(spool_dir, "%s.json" % spool_id)

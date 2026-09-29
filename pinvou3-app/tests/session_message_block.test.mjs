@@ -58,6 +58,13 @@ test('spoofed-block hardening: absurdly long JSON lines are skipped before JSON.
   assert.equal(longTitle.sender.title.length, 200);
 });
 
+test('CRLF-normalized history still parses (header, blank line)', () => {
+  const crlf = `${MESSAGE_BLOCK_HEADER}\r\n{"sessionId":"a","title":"t"}\r\n\r\n正文\r\n`;
+  const split = splitSessionMessageBlock(crlf);
+  assert.deepEqual(split.sender, { sessionId: 'a', title: 't' });
+  assert.equal(split.text, '正文\n');
+});
+
 test('auto-title contract: both bridges strip the received-message block via the same window-global parser', () => {
   for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
