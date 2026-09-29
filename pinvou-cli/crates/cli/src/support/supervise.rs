@@ -68,6 +68,15 @@ pub fn install_signal_cleanup() {
 /// signals blocked, a pending interrupt stays pending until the unblock
 /// below and is delivered once, with the child already registered.
 ///
+/// Std semantics this relies on (assumption stated per the round-25
+/// review): a child created while the spawning thread's signal mask blocks
+/// the interrupt family inherits that mask only until `exec`, which std
+/// resets to an empty mask for the child (guaranteed by std's posix spawn
+/// path since Rust 1.61; this crate pins rust-version ≥ 1.89). If that
+/// ever regressed, a forwarded SIGTERM would pend in the vendor child
+/// until this module's 5 s SIGKILL escalation — the fast path would
+/// degrade, the safety net would hold.
+///
 /// Every supervised spawn site goes through this instead of a bare `spawn`.
 pub fn spawn_supervised(
     command: &mut std::process::Command,

@@ -1293,6 +1293,21 @@ impl SessionStore {
         Ok(!session.messages.is_empty())
     }
 
+    /// Whether the session still wears the factory title ([`NEW_CHAT_TITLE`]).
+    /// A rename away from the placeholder is ownership — the adoption marker
+    /// the agentic teardown decisions consult before deleting a run's own
+    /// session. An unreadable record reports `Err` and is NOT proven
+    /// factory-titled: callers must treat unknown state as "keep".
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_factory_titled(&self, id: &str) -> Result<bool> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load chat session {id} for adoption classification"))?;
+        Ok(session.metadata.title == NEW_CHAT_TITLE)
+    }
+
     /// Create an empty session with a caller-provided ID, for internal runtimes that need the isolation ID determined before startup.
     ///
     /// Ordinary GUI sessions still use [`Self::create_new`]'s random ID; this does not set the active session.
