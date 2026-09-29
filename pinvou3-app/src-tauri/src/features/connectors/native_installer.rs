@@ -800,14 +800,12 @@ mod tests {
     }
 
     /// 旧布局迁移（§9.3）：SHA-256 匹配 → 移动到版本目录并清理腾空的 bin 目录；
-    /// Mismatch → left in place (degraded semantics); when the version dir
-    /// already holds a verified pinned binary, the legacy same-name file is
-    /// removed regardless of content (identical bytes = duplicate leftover,
-    /// different bytes = stale old version — kept, it would only shadow the
-    /// upgraded runtime); old version dirs are conservatively kept (GC in a
-    /// later PR). Idempotent throughout.
+    /// 钉住版本已在版本目录校验通过时，同名旧文件一律删除——内容相同属重复
+    /// 残留，内容不同属滞留旧版本（滞留只会在按名解析/PATH 中遮蔽升级后的
+    /// 运行时，即 wecom-cli 0.1.9 案例）；旧版本目录保守保留（GC 留后续 PR）。
+    /// 全程幂等。
     #[test]
-    fn migrate_legacy_binary_moves_matching_keeps_mismatching() {
+    fn migrate_legacy_binary_moves_match_and_reaps_stale_leftover() {
         with_temp_home("pinvou3-native-installer-test", || {
             let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
                 return; // 当前平台无旧布局目录（不支持的架构），无从断言
