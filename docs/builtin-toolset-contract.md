@@ -28,6 +28,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
    plugin for an individual feature.
 2. **Current member registry**: `session-reader` (`server.py`, originally commit
    `d93457d9a`) is the carrier server of the "session memory & reference" family.
+   `app-automations` (`server.py`, landed 2026-09, design
+   `docs/app-automations-定时任务创建工具-设计与验收.md`) is the carrier server of the
+   "scheduled task automation" family — a genuinely separate capability family
+   (future run-now / memory-tidy automation tools belong there), which is why it is
+   a second server rather than growth of session-reader.
    New members are registered in §9 of this document.
 3. **Bundle built-in = bootstrap form**; the toolset's structure (manifest, tool list,
    enabled state) is organized to plugin-center listing standards; marketplace listing
@@ -168,6 +173,18 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   pending message and can never clobber another session's (transient delivery
   failures retry with backoff; poison files are quarantined under
   `messaging/spool/failed/`).
+- **Result-marker short synchronous wait** (app-automations
+  `create_scheduled_task`, landed 2026-09): an L1 spool-then-consume tool whose
+  result is quick to produce may close the loop for the model instead of always
+  answering "pending". The server polls a `.done/<spool-id>.json` result marker
+  written by the app-side watcher for a bounded window (5s, 0.2s interval);
+  marker hit → the created ids are returned so the model can confirm to the
+  user and the UI can link; timeout → an explicit `delivery:"pending"` payload
+  (never an error — the watcher may merely be busy). Constraints: the wait must
+  be short enough not to stall the model's turn; the marker namespace is keyed
+  by the spool file stem (the JSON `id` field is never trusted); a failed
+  creation writes `{ok:false,error}` so a waiting call receives the failure
+  instead of hanging.
 - **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
   model-supplied and unauthenticated — the execpolicy approval prompt and the
   audit log are the trust boundary, not the `from_session` field; delivery is
@@ -215,7 +232,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
 | `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; approval via a typed execpolicy Ask rule + audit log; sched-/eval_/aux- rejected as targets) |
-| Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
+| `create_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; own family server per §2 — scheduling is an independent capability family; design `docs/app-automations-定时任务创建工具-设计与验收.md`. Spool + app-side watcher reusing the messaging skeleton; rrule restricted to the product subset HOURLY/WEEKLY/ONCE (CRON and minute-granular rejected at the tool layer — deliberately stricter than the domain parser); approval via a typed execpolicy Ask rule + audit log + timeline card; unattended scheduled-run sessions auto-deny (recursion shield)) |
+| `list_scheduled_tasks` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; id/name/rrule/status/nextRunAt/model only — the prompt is never projected; de-dup companion of the create tool) |
 
 ---
 

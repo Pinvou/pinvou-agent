@@ -198,6 +198,15 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// audit records.
 pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
 
+/// Full model-visible name of the scheduled-task creation tool (server key
+/// app-automations, tool create_scheduled_task; docs/app-automations-定时任务创建工具-设计与验收.md).
+/// Same L1 treatment as [`MESSAGING_SEND_TOOL`]: a typed Ask rule holds the
+/// call behind the user approval prompt in every permission mode, which also
+/// blocks unattended scheduled-run sessions from creating tasks recursively
+/// (their force-prompt gate auto-denies force-prompt tools); the audit trail
+/// is written by features::scheduled::creation_requests at creation time.
+pub const SCHEDULED_TASK_CREATE_TOOL: &str = "mcp_app-automations_create_scheduled_task";
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -2356,6 +2365,14 @@ impl Pinvou3Bridge {
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
         rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
+        // Scheduled-task creation (docs/builtin-toolset-contract.md §5 L1,
+        // same pattern): every creation call asks. In unattended scheduled-run
+        // sessions the force-prompt gate auto-denies Ask tools
+        // (engine_support::scheduled_tool_should_auto_approve), so a task
+        // cannot create tasks recursively.
+        rules.push(codewhale_execpolicy::ToolAskRule::new(
+            SCHEDULED_TASK_CREATE_TOOL,
+        ));
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -4204,16 +4221,17 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain has no disables → no CLI deny rules. The only rule present is
-        // the always-on cross-session messaging Ask rule (contract §5 L1).
+        // plain has no disables → no CLI deny rules. The only rules present
+        // are the always-on L1 Ask rules (messaging send + scheduled-task
+        // create, contract §5 L1).
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         assert_eq!(
             rs.ask_rules
                 .iter()
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
-            [MESSAGING_SEND_TOOL],
-            "plain 默认只有跨会话发送的 Ask 规则"
+            [MESSAGING_SEND_TOOL, SCHEDULED_TASK_CREATE_TOOL],
+            "plain 默认只有跨会话发送与定时任务创建的 Ask 规则"
         );
 
         // plain disables feishu → only the lark-cli deny (bare name + one .exe
@@ -4235,8 +4253,9 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code uninitialized → all 4 built-in CLI binaries denied by default (the
@@ -4270,8 +4289,9 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code explicitly disables only dingtalk → only dws remains hard-denied
@@ -4477,6 +4497,49 @@ mod tests {
                 .iter()
                 .any(|tool| tool == MESSAGING_SEND_TOOL),
             "the Ask rule's tool name must match the manifest registration"
+        );
+    }
+
+    /// Scheduled-task creation (docs/builtin-toolset-contract.md §5 L1, the
+    /// app-automations family): the composed ruleset always carries the typed
+    /// Ask rule — the user-confirmation gate in every permission mode, and
+    /// the gate that makes unattended scheduled-run sessions auto-deny the
+    /// tool (recursion shield). Mirrors the messaging-send test above.
+    #[test]
+    fn scope_deny_ruleset_asks_for_scheduled_task_create() {
+        let bridge = fixture_bridge();
+        let ruleset = bridge.scope_deny_ruleset("sess-plain");
+        let rule = ruleset
+            .ask_rules
+            .iter()
+            .find(|r| r.tool == SCHEDULED_TASK_CREATE_TOOL)
+            .expect("the scheduled task create tool must carry a typed Ask rule");
+        assert_eq!(rule.action, codewhale_execpolicy::PermissionAction::Ask);
+        assert!(
+            rule.command.is_none(),
+            "the ask rule matches any invocation"
+        );
+        // Drift pin: byte-identical to the manifest registration (see the
+        // messaging test for why this lives in assistant).
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("app-automations")
+                .unwrap()
+                .expect("app-automations is in the embedded catalog");
+        assert!(
+            manifest
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == SCHEDULED_TASK_CREATE_TOOL),
+            "the Ask rule's tool name must match the manifest registration"
+        );
+        // The L0 list tool carries no Ask rule: it is read-only and must not
+        // nag the user (only the create tool is gated).
+        assert!(
+            !ruleset
+                .ask_rules
+                .iter()
+                .any(|r| r.tool == "mcp_app-automations_list_scheduled_tasks"),
+            "the L0 list tool must stay ungated"
         );
     }
 

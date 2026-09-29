@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -176,8 +177,9 @@ def main():
         "wecom-bot",
         "tencent-docs",
         "session-reader",
+        "app-automations",
     }
-    print("✅ manifest: 12 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 13 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -192,6 +194,7 @@ def main():
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
         "session-reader": {"read_session", "list_sessions", "send_message_to_session"},
+        "app-automations": {"create_scheduled_task", "list_scheduled_tasks"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -257,6 +260,87 @@ def main():
             }))
             assert "not readable" in isolated.get("error", ""), isolated
     print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
+
+    with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
+        with RpcServer(MCP_ROOT / "app-automations", {"PINVOU3_HOME": home}) as rpc:
+            # CRON/分钟级是产品子集外的硬拒（B2/B3）。
+            cron = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {"name": "x", "prompt": "y", "rrule": "FREQ=CRON;EXPR=*/5 * * * *"},
+            }))
+            assert "CRON" in cron.get("error", ""), cron
+            # 无 watcher：短等待超时回 pending（A3），spool 留存（C3 重启恢复前置）。
+            pending = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "早报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "idempotency_key": "k1",
+                },
+            }))
+            assert pending.get("ok") is True and pending.get("taskId") is None, pending
+            assert pending.get("delivery") == "pending", pending
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["rrule"].startswith("FREQ=WEEKLY;") and record["schema_version"] == 1, record
+            # 同幂等键重试：同一 spool 文件、duplicate 标记（C1）。
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "早报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "idempotency_key": "k1",
+                },
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            # 模拟应用侧 watcher（features/scheduled/creation_requests）：持续排水，
+            # 逐条写结果标记并删 spool——积压的 k1 请求与在途请求都拿到同步回执
+            # （A2 短等待同步返回 + C3 积压恢复）。
+            import threading as _threading
+
+            stop = _threading.Event()
+
+            def watcher():
+                while not stop.is_set():
+                    for path in sorted(Path(home, "task-requests", "spool").glob("*.json")):
+                        try:
+                            request = json.loads(path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            continue
+                        spool_id = path.stem
+                        done_dir = Path(home, "task-requests", "spool", ".done")
+                        done_dir.mkdir(parents=True, exist_ok=True)
+                        (done_dir / f"{spool_id}.json").write_text(json.dumps({
+                            "ok": True,
+                            "task_id": "sim-%s" % spool_id[:8],
+                            "task_name": request.get("name"),
+                        }, ensure_ascii=False), encoding="utf-8")
+                        path.unlink()
+                    time.sleep(0.05)
+
+            _threading.Thread(target=watcher, daemon=True).start()
+            confirmed = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "晚报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6;BYHOUR=20;BYMINUTE=30",
+                },
+            }))
+            assert confirmed.get("ok") is True, confirmed
+            assert confirmed.get("taskId", "").startswith("sim-"), confirmed
+            assert confirmed.get("taskName") == "晚报", confirmed
+            assert confirmed.get("duplicate") is False, confirmed
+            stop.set()
+            # 积压与在途都被排水，spool 清空、.done 留有两条标记。
+            assert not list(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
+            listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
+            assert listed.get("ok") is True and listed.get("total") == 0, listed
+    print("✅ app-automations: rrule 子集硬拒/幂等/短等待同步返回/list 无 prompt 全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-artifacts-") as artifacts:
         env = {"PINVOU3_SESSION_ARTIFACTS": artifacts}
