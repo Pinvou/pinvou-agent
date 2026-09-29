@@ -776,6 +776,7 @@ async function modalWidth(page, headingText) {
       hasIntlNodes: text.includes('Kimi 国际版 / Kimi Global') && text.includes('智谱国际版 / GLM API (z.ai)')
         && text.includes('MiniMax 国际版 / MiniMax Global') && text.includes('通义千问国际版 / Qwen International'),
       hasTokenPlan: text.includes('通义千问 Token Plan'),
+      hasAggregators: text.includes('聚合平台') && text.includes('OpenRouter') && text.includes('硅基流动 SiliconFlow'),
       providerFirst: !text.includes('deepseek-v4-pro') && !text.includes('kimi-k3'),
       noStale: stale.every(name => !text.includes(name)),
     };
