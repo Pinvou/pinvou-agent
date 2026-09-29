@@ -681,10 +681,41 @@ fn aux_refusal_guards_stay_in_their_commands() {
         "move_session_to_project must keep its aux refusal",
     );
     // The sched- send gates go through the alias-defeating predicate, not
-    // exact prefix matching (round-34 minor 4).
+    // exact prefix matching (round-34 minor 4; the contains() form was
+    // corrected to the exact call shape — a re-spelled prefix would
+    // false-pass a substring hunt, round-35 minor 8).
     let pool = include_str!("../../features/assistant/engine_pool.rs");
     assert!(
-        !pool.contains("session_id.starts_with(\"sched-\")"),
-        "the sched- send gates must use the case-insensitive predicate",
+        pool.matches("crate::features::sessions::is_sched_session_id(session_id)")
+            .count()
+            >= 2,
+        "both sched- send gates must use the case-insensitive predicate",
+    );
+    assert!(
+        !pool.contains("starts_with(\"sched-\")"),
+        "no sched- send gate may keep the exact prefix check",
+    );
+}
+
+// Round-35 MAJOR-2: the aux-cascade wiring inside
+// `EnginePool::delete_chat_session` is load-bearing production routing (its
+// doc forbids substituting a bare delete) and had NO executing caller — a
+// mutation swapping the wrapper for a direct gate call kept every Rust test
+// green. Source-shape pin (the same class as the refusal pins above): the
+// method body must route through `delete_chat_session_with_aux_cascade`
+// and must not call the gate directly.
+#[test]
+fn delete_chat_session_keeps_its_aux_cascade_wrapper() {
+    let pool = include_str!("../../features/assistant/engine_pool.rs");
+    let method_start = pool
+        .find("pub(crate) async fn delete_chat_session(")
+        .expect("delete_chat_session must exist");
+    let method_end = pool[method_start..]
+        .find("/// Atomically reset a task's auxiliary conversation")
+        .expect("the next method doc must exist");
+    let body = &pool[method_start..method_start + method_end];
+    assert!(
+        body.contains("delete_chat_session_with_aux_cascade("),
+        "delete_chat_session must route through the aux-cascade wrapper (the gate call inside it is the wrapper's own closure argument — the reviewed mutation removes the wrapper call entirely, which fails this pin)",
     );
 }

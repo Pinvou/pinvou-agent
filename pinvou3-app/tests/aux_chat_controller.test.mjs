@@ -243,6 +243,40 @@ test('M6 truth table: a send ack landing inside or after a completed reset can n
   assert.equal(panel.view.sendFailed, false, 'the restart-window rejection stays silent');
 });
 
+test('a settle-bound reset keeps the failure banner across rebinds until the backend settles (round-35 MAJOR-1)', async () => {
+  const h = createHarness();
+  const panel = await mountBoundPanel(h, 'settle-bound');
+  confirmRestart(panel);
+  assert.equal(h.auxChat.calls.reset.length, 1);
+  // The backend reset is still alive when the 180 s UI bound fires (a long
+  // aux answer alone can outrun it via the turn gate): the bound rejects,
+  // the honest failure banner shows, and the task is MARKED.
+  h.timers.advance(SETTLE_WATCHDOG_MS);
+  await h.flush();
+  assert.equal(panel.view.discardFailed, true, 'the bound surfaces the failure state');
+  // The banner's own advice (switch tasks / reopen) must not walk the user
+  // silently back into the pending delete: the rebind keeps the banner.
+  panel.bind('settle-bound-other');
+  await h.flush();
+  panel.bind('settle-bound');
+  await h.flush();
+  assert.equal(
+    panel.view.discardFailed,
+    true,
+    'a rebind must NOT auto-clear the banner while the backend reset is still pending',
+  );
+  assert.equal(panel.view.auxId, 'aux-settle-bound', 'the ensure still rebinds the surviving record');
+  // The backend finally settles (either outcome): the hazard marker retires
+  // and the next bind shows the truthful state.
+  h.auxChat.calls.reset[0].resolve('aux-settle-bound');
+  await h.flush();
+  panel.bind('settle-bound-other');
+  await h.flush();
+  panel.bind('settle-bound');
+  await h.flush();
+  assert.equal(panel.view.discardFailed, false, 'the banner retires once the backend settles');
+});
+
 test('M6: a failed reset preserves the draft, surfaces the honest ambiguous banner, and the next bind re-ensures', async () => {
   const h = createHarness();
   const panel = await mountBoundPanel(h, 'm6-fail');

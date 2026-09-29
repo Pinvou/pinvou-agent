@@ -58,6 +58,23 @@ test('M5: per-task registries and staged quotes purge on session deletion', () =
   assert.match(auxChatPanel, /auxChatController\.purgeTask\(id\)/);
 });
 
+test('the armed New Topic visible label is the short confirm, not the full sentence (round-35 MAJOR-3)', () => {
+  // The full destructive sentence overflowed the 420 px dock minimum; the
+  // short key is the VISIBLE span while the complete copy stays in the
+  // title/aria. Pin the consumption, not just the dictionaries: deleting
+  // newTopicConfirmShort must fail here AND in ui_language_coverage.
+  assert.match(
+    auxChatPanel,
+    /\{view\.restartArmed \? copy\.newTopicConfirmShort : copy\.newTopic\}/,
+    'the armed visible label must consume newTopicConfirmShort',
+  );
+  assert.match(
+    auxChatPanel,
+    /title=\{view\.restartArmed \? copy\.newTopicConfirm : copy\.newTopic\}/,
+    'the full destructive copy stays in the title attribute',
+  );
+});
+
 test('one controller panel per mounted instance, mirrored into state and disposed on unmount', () => {
   assert.match(auxChatPanel, /const \[panel\] = useState\(\(\) => auxChatController\.createPanel\(\)\);/);
   assert.match(auxChatPanel, /useEffect\(\(\) => panel\.subscribe\(setView\), \[panel\]\);/);

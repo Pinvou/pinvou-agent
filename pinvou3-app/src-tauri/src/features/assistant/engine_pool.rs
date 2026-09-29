@@ -4403,7 +4403,6 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-
     /// ADR-0006: an engine reclaim must cancel all sub-agents **first** and
     /// send Shutdown **after**. The two ops are FIFO on the same channel;
     /// reversing the order equals no cancel (Shutdown breaks out of the event

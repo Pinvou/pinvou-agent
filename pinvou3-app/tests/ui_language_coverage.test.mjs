@@ -68,15 +68,19 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
-  // All 22 uiAuxChat keys are pinned (round-14 minor-3: the list previously
+  // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's
   // absence renders `undefined` at runtime; round-30 D5 added quoteDuplicate
   // for the exact-duplicate notice; M6 removed discardStuck with the stuck
-  // family it described — the atomic reset cannot get stuck that way).
+  // family it described — the atomic reset cannot get stuck that way;
+  // round-35 MAJOR-3: newTopicConfirmShort (the visible armed label, whose
+  // absence would render `undefined` on the destructive confirm) joined the
+  // list the round after it shipped — count and list now agree again).
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
     'send', 'busyHint', 'bindingHint', 'sendingHint', 'newTopic', 'newTopicConfirm',
+    'newTopicConfirmShort',
     'sendFailed', 'ensureFailed', 'discardFailed', 'close',
     'quoteAction', 'quoteChipCount', 'quoteRemove',
     'quoteLimitSingle', 'quoteLimitCount', 'quoteLimitTotal', 'quoteDuplicate',

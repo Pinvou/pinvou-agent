@@ -79,8 +79,13 @@ const RESTART_CONFIRM_MS = 4000;
 // restarting/bindingPending on the current task forever — a rebind or
 // unmount recovers, but New Topic (the only in-panel recovery) is disabled
 // while restarting. A timed-out reset surfaces as the reset-failure state
-// (whose copy points at New Topic, re-enabled by the outer finally); the
-// late resolution stays inert behind the generation checks.
+// (whose copy points at New Topic, re-enabled by the outer finally). The
+// generation checks make the late RESOLUTION inert for panel state — but
+// the backend reset's EFFECT is not inert: it can still land and delete
+// the record after the user followed the banner's advice and moved on
+// (round-35 MAJOR-1). Until the backend grows an epoch/idempotency token
+// (registered), the timed-out task is marked and its rebind keeps the
+// honest failure banner instead of walking the user back into the window.
 const SETTLE_WATCHDOG_MS = 180_000;
 
 // Same bound for the send registry's failsafe (round-23 should-fix 1): a
@@ -208,6 +213,16 @@ export function createAuxChatController(options = {}) {
       if (listeners.size === 0) listenersByTask.delete(taskId);
     };
   };
+
+  // Tasks whose reset hit the settle bound (round-35 MAJOR-1): the
+  // backend reset is still alive past the 180 s UI bound and CAN still
+  // land — deleting the record the user was told to keep using (its id is
+  // derived, so the recreate is invisible). The marker keeps the rebind's
+  // discardFailed banner honest until the backend call actually settles
+  // (either outcome — by then the disk state is whatever the reset made
+  // it, and the next bind re-ensures the truth). Controller-scoped like
+  // the registries: a rebind/remount must not forget a live hazard.
+  const settleTimedOutResets = new Set();
 
   // taskId -> unsent composer draft, module-scoped for the same reason as
   // the send registry above: a draft belongs to the task, not to this
@@ -383,6 +398,13 @@ export function createAuxChatController(options = {}) {
       // latch the new task's panel disabled forever (the old restart's
       // finally can no longer be relied on once its generation went stale).
       view.restarting = false;
+      // EXCEPT for a settle-bound timed-out reset (round-35 MAJOR-1): the
+      // backend reset is still pending and can still delete this record —
+      // keep the discardFailed banner instead of auto-clearing the one
+      // honest signal the user has. It retires when the backend settles.
+      if (settleTimedOutResets.has(sessionId)) {
+        view.discardFailed = true;
+      }
       // Same latch class for sends: a never-settling auxChat.send invoke must
       // not permanently block sends across later task rebinds either. Only the
       // panel-level latch resets here — the duplicate-send guard itself lives
@@ -774,8 +796,16 @@ export function createAuxChatController(options = {}) {
       // still live, and the bind flow must await this promise before
       // re-ensuring the same task — otherwise it would bind the doomed aux
       // session that this reset deletes behind its back.
-      const resetPromise = withSettleBound(auxChat.reset(sessionId));
+      const rawReset = auxChat.reset(sessionId);
+      const resetPromise = withSettleBound(rawReset);
       resetInFlightByTask.set(sessionId, resetPromise);
+      // When the BACKEND settles — long after the UI bound rejected, any
+      // outcome — the hazard marker retires: the disk now holds whatever
+      // the reset made of it, and the next bind shows the truthful state.
+      rawReset.then(
+        () => settleTimedOutResets.delete(sessionId),
+        () => settleTimedOutResets.delete(sessionId),
+      );
       try {
         try {
           const nextAuxId = await resetPromise;
@@ -792,6 +822,14 @@ export function createAuxChatController(options = {}) {
         } catch (error) {
           console.warn('[pinvou3][aux-chat] restart reset failed', error);
           if (generation !== restartGeneration) return;
+          // A settle-bound rejection means the backend reset is still
+          // alive (a long aux answer alone can outrun 180 s via the turn
+          // gate). Mark the task: the banner's "switch tasks or reopen"
+          // advice must not walk the user silently back into the reset's
+          // delete window (round-35 MAJOR-1).
+          if (String(error) === 'Error: reset settle bound exceeded') {
+            settleTimedOutResets.add(sessionId);
+          }
           // Honest failure surface (M6): the folded backend error cannot say
           // whether the delete half ran, so the safest assumption is "the old
           // transcript was possibly discarded". The binding stays cleared and
