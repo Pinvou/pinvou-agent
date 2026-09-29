@@ -254,37 +254,47 @@ async fn fetch_latest_version(client: &Client, backend: AgentBackend) -> Result<
         let body = fetch_limited_body(client, backend, url).await?;
         parse_latest_response(backend, &body)
     };
-    // 官方源全部失败（国内网络下 releases.openai.com / github.com /
-    // downloads.claude.ai 常不可达）时，用 npmmirror 的 dist-tag latest 兜底：
-    // 包版本号与官方发布一致，结果仅用于升级提醒（advisory）。kimi 的官方
-    // 源本身就在国内（code.kimi.com），不需要镜像兜底。
+    // When the official sources all fail (releases.openai.com / github.com /
+    // downloads.claude.ai are often unreachable on Chinese networks), fall
+    // back to npmmirror's dist-tag latest: the package version matches the
+    // official release, and the result is only used for the upgrade advisory.
+    // kimi's official source is itself in China (code.kimi.com), so no mirror
+    // fallback is needed.
     match official {
         Ok(version) => Ok(version),
         Err(primary) if matches!(backend, AgentBackend::CodexAcp | AgentBackend::ClaudeAcp) => {
             fetch_npm_mirror_latest_version(client, backend)
                 .await
-                .with_context(|| format!("npmmirror 镜像与官方源均不可达；官方源错误：{primary:#}"))
+                .with_context(|| {
+                    format!(
+                        "both the npmmirror mirror and the official source are \
+                         unreachable; official-source error: {primary:#}"
+                    )
+                })
         }
         Err(primary) => Err(primary),
     }
 }
 
-/// npmmirror dist-tag 兜底：`GET {NPM_MIRROR_REGISTRY}/<pkg>/latest` 取 JSON
-/// `version` 字段。npm 包与官方 CLI 渠道同号发布（codex、claude-code），查询
-/// 结果只进缓存并触发升级提醒，不参与任何安装决策。
+/// npmmirror dist-tag fallback: `GET {NPM_MIRROR_REGISTRY}/<pkg>/latest` and
+/// read the JSON `version` field. The npm package is released under the same
+/// version number as the official CLI channel (codex, claude-code); the query
+/// result only feeds the cache and triggers the upgrade advisory, and never
+/// participates in any install decision.
 async fn fetch_npm_mirror_latest_version(client: &Client, backend: AgentBackend) -> Result<String> {
-    let package = npm_package(backend).context("该 Agent 没有 npm 包")?;
+    let package = npm_package(backend).context("this Agent has no npm package")?;
     let url = format!("{NPM_MIRROR_REGISTRY}/{package}/latest");
     let body = fetch_limited_body(client, backend, &url).await?;
     parse_npm_mirror_latest(&body)
 }
 
 fn parse_npm_mirror_latest(body: &[u8]) -> Result<String> {
-    let value: Value = serde_json::from_slice(body).context("解析 npmmirror latest JSON 失败")?;
+    let value: Value =
+        serde_json::from_slice(body).context("failed to parse npmmirror latest JSON")?;
     let raw = value["version"]
         .as_str()
-        .context("npmmirror latest JSON 缺少 version 字段")?;
-    normalize_semver(raw).context("npmmirror latest 版本不是三段数字版本")
+        .context("npmmirror latest JSON is missing the version field")?;
+    normalize_semver(raw).context("npmmirror latest version is not a three-part numeric version")
 }
 
 /// OpenAI 官方安装器优先读取 releases.openai.com，并在不可达时回退官方 GitHub
@@ -329,23 +339,40 @@ async fn fetch_limited_body(client: &Client, backend: AgentBackend, url: &str) -
         .get(url)
         .send()
         .await
-        .with_context(|| format!("查询 {} 最新版本失败", backend.display_name()))?
+        .with_context(|| {
+            format!(
+                "failed to query the latest version of {}",
+                backend.display_name()
+            )
+        })?
         .error_for_status()
-        .with_context(|| format!("{} 最新版本接口返回错误", backend.display_name()))?;
+        .with_context(|| {
+            format!(
+                "{} latest-version endpoint returned an error",
+                backend.display_name()
+            )
+        })?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
     {
-        bail!("{} 最新版本响应过大", backend.display_name());
+        bail!(
+            "{} latest-version response is too large",
+            backend.display_name()
+        );
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .with_context(|| format!("读取 {} 最新版本响应失败", backend.display_name()))?
-    {
+    while let Some(chunk) = response.chunk().await.with_context(|| {
+        format!(
+            "failed to read the {} latest-version response",
+            backend.display_name()
+        )
+    })? {
         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            bail!("{} 最新版本响应超过大小限制", backend.display_name());
+            bail!(
+                "{} latest-version response exceeds the size limit",
+                backend.display_name()
+            );
         }
         body.extend_from_slice(&chunk);
     }
@@ -463,14 +490,16 @@ mod tests {
             parse_npm_mirror_latest(br#"{"name":"@openai/codex","version":"0.157.1"}"#).unwrap(),
             "0.157.1"
         );
-        // 附加 JSON 字段不影响解析。npm 的 version 字段本身是严格 semver
-        //（不含前导 v），但若镜像给出 v 前缀（非 semver），normalize_semver
-        // 与官方源同款地如实报错，不会静默产出错位的版本号去参与比较。
+        // Extra JSON fields do not break parsing. npm's version field is
+        // strict semver (no leading v), but if the mirror returns a v prefix
+        // (non-semver), normalize_semver reports the error just like the
+        // official source does instead of silently producing a misaligned
+        // version that then participates in comparisons.
         assert_eq!(
             parse_npm_mirror_latest(br#"{"version":"v2.1.283"}"#)
                 .unwrap_err()
                 .to_string(),
-            "npmmirror latest 版本不是三段数字版本"
+            "npmmirror latest version is not a three-part numeric version"
         );
         assert!(parse_npm_mirror_latest(br#"{"error":"NOT_FOUND"}"#).is_err());
         assert!(parse_npm_mirror_latest(b"not json").is_err());

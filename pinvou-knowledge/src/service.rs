@@ -2234,7 +2234,7 @@ mod tests {
             .unwrap_err();
 
         assert!(resolved.load(Ordering::Acquire));
-        assert_eq!(error, "镜像基地址列表为空");
+        assert_eq!(error, "mirror base URL list is empty");
         assert!(std::fs::read_dir(model_parent).unwrap().all(|entry| {
             !entry
                 .unwrap()

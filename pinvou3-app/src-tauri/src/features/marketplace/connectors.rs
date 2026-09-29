@@ -38,17 +38,19 @@ pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
     NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// 清华 TUNA pip 镜像：仅在默认源整轮失败后的兜底轮以 per-invocation `-i`
-/// 参数使用，不改用户 pip 配置。
+/// Tsinghua TUNA pip mirror: used only in the fallback round after the default
+/// index round has fully failed, via a per-invocation `-i` flag; never touches
+/// the user's pip config.
 const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
 
-/// pip 安装的索引轮次：默认源整轮在前（尊重用户自己的 pip.conf/企业源），
-/// 清华 TUNA 兜底轮在后——顺序是刻意的，见
-/// `pip_mirror_round_runs_after_default_round`。
+/// Index rounds for a pip install: the default-index round runs first
+/// (respecting the user's own pip.conf/corporate index), then the Tsinghua
+/// TUNA fallback round — the order is deliberate, see
+/// `pip_mirror_round_runs_after_default_round`.
 fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
     [
-        ("默认源", &[]),
-        ("清华 TUNA 镜像", &["-i", PIP_CN_MIRROR_INDEX]),
+        ("default index", &[]),
+        ("Tsinghua TUNA mirror", &["-i", PIP_CN_MIRROR_INDEX]),
     ]
 }
 
@@ -175,9 +177,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // ② pip 安装,按序兜底,任一成功即 Ok:
         //    --user(常规)→ --user --break-system-packages(PEP 668:现代 Debian/Ubuntu 拦 --user,
         //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
-        //    默认源整轮失败后，再用清华 TUNA 镜像重跑同一梯度（仅追加 -i 参数，
-        //    不改用户 pip 配置）：国内网络对 pypi.org 官方源常不可达。默认源在前
-        //    是刻意的——尊重用户自己的 pip.conf/企业源，镜像只是最后兜底。
+        //    After the whole default-index round fails, rerun the same ladder
+        //    via the Tsinghua TUNA mirror (only appending the -i flag, never
+        //    touching the user's pip config): CN networks often cannot reach
+        //    the official source at pypi.org. The default index going first is
+        //    deliberate — it respects the user's own pip.conf/corporate index;
+        //    the mirror is only the last fallback.
         let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
             let mut cmd = std::process::Command::new(python_cmd);
             cmd.args([
@@ -196,12 +201,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             &["--user", "--break-system-packages"],
             &["--break-system-packages"],
         ];
-        // 默认索引整轮先行（不带 -i，用户 pip.conf / 企业源保持优先），
-        // 整轮全败才用清华 TUNA 重跑一轮（轮次定义见 pip_index_rounds）。
-        // pip 子进程无总超时：最坏情形耗时随轮数翻倍，与 native_installer
-        // 多候选回退的最坏情形同口径。每轮各自的最后一条错误都进最终报错：
-        // 只保留最后一轮会把触发镜像重试的默认源根因藏掉（与 tmeet/npm 的
-        // 首次错误因果链同口径）。
+        // The default-index round runs first (no -i, so the user's pip.conf /
+        // corporate index keeps priority); only after the whole round fails do
+        // we rerun once via Tsinghua TUNA (rounds defined in pip_index_rounds).
+        // The pip subprocess has no overall timeout: worst-case time doubles
+        // with the round count, same accounting as native_installer's
+        // multi-candidate fallback. Each round's own last error goes into the
+        // final error: keeping only the last round would hide the default-index
+        // root cause that triggered the mirror retry (same convention as the
+        // first-error causal chain in tmeet/npm).
         let mut round_errors: Vec<String> = Vec::new();
         for (round_label, index_args) in pip_index_rounds() {
             let mut last_err = String::new();
@@ -221,17 +229,18 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     }
                     Err(e) => {
                         return Err(format!(
-                            "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
+                            "cannot run {python_cmd} (make sure Python is installed and on PATH): {e}"
                         ));
                     }
                 }
             }
-            round_errors.push(format!("{round_label}：{last_err}"));
+            round_errors.push(format!("{round_label}: {last_err}"));
         }
         Err(format!(
-            "依赖安装失败（pip）：{}（已尝试 --user 与 --break-system-packages，\
-             并用清华镜像源重试;请确认网络可达且 python3 自带 pip）",
-            round_errors.join("；")
+            "pip dependency install failed: {} (tried --user and \
+             --break-system-packages, then retried via the Tsinghua TUNA mirror; \
+             check network reachability and that python3 ships pip)",
+            round_errors.join("; ")
         ))
     }
 
@@ -1077,22 +1086,23 @@ fn align_remote_entry_fields(
 mod pip_rounds_tests {
     use super::*;
 
-    /// 默认源必须整轮在前（尊重用户 pip.conf/企业源，TUNA 只是最后兜底）：
-    /// 轮次顺序被换时此测试即失败。
+    /// The default-index round must run first as a whole round (respecting the
+    /// user's pip.conf/corporate index; TUNA is only the last fallback): this
+    /// test fails if the round order is swapped.
     #[test]
     fn pip_mirror_round_runs_after_default_round() {
         let rounds = pip_index_rounds();
         assert_eq!(rounds.len(), 2);
-        assert_eq!(rounds[0].0, "默认源");
+        assert_eq!(rounds[0].0, "default index");
         assert!(
             rounds[0].1.is_empty(),
-            "默认源轮不得携带 -i: {:?}",
+            "default-index round must not carry -i: {:?}",
             rounds[0].1
         );
-        assert_eq!(rounds[1].0, "清华 TUNA 镜像");
+        assert_eq!(rounds[1].0, "Tsinghua TUNA mirror");
         assert!(
             rounds[1].1.contains(&PIP_CN_MIRROR_INDEX),
-            "兜底轮必须带 TUNA 索引: {:?}",
+            "fallback round must carry the TUNA index: {:?}",
             rounds[1].1
         );
     }

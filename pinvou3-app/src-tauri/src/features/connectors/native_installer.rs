@@ -16,8 +16,10 @@ use sha2::{Digest, Sha256};
 
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
-/// GitHub 资产加速前缀（如自建 gh-proxy）。设置后对官方源在 github.com 的制品，
-/// 下载顺序变为「前缀加速地址 → lock 表审核镜像 → 官方源」；不适用于其他站点。
+/// GitHub asset acceleration prefix (e.g. a self-hosted gh-proxy). When set,
+/// the download order for artifacts whose official source is github.com
+/// becomes "acceleration prefix URL → lock-table reviewed mirror → official
+/// source"; it does not apply to other sites.
 const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const DWS_LICENSE: &str =
@@ -97,20 +99,26 @@ struct Artifact {
     name: String,
     version: String,
     url: String,
-    /// 已验证可达且字节与官方源一致的国内镜像（可选）。当前仅 wecom-cli 配置
-    /// npmmirror 镜像；dws/lark-cli 仅发布在 GitHub Release，暂无官方国内镜像，
-    /// 可用 [`GITHUB_ASSET_MIRROR_PREFIX_ENV`] 按环境加速。
+    /// Optional domestic (China) mirror verified reachable and byte-identical
+    /// to the official source. Currently only wecom-cli configures an
+    /// npmmirror mirror; dws/lark-cli are only published on GitHub Release
+    /// with no official domestic mirror yet, so acceleration is available
+    /// per environment via [`GITHUB_ASSET_MIRROR_PREFIX_ENV`].
     mirror_url: Option<String>,
     archive_sha256: String,
     binary_sha256: String,
 }
 
-/// GitHub 加速前缀的纯函数核心：仅对官方源在 github.com 的地址生效，其余
-/// 地址原样返回 `None`（避免把任意站点误包进第三方代理）。前缀结尾斜杠可有
-/// 可无，统一归一化成 gh-proxy 规范形 `<proxy>/https://github.com/...`——
-/// 无斜杠前缀若按原样黏连（`format!("{prefix}{url}")`）会拼出形如
-/// `proxy.examplehttps` 的非法域名，在 DNS 阶段静默退化成官方源直连。
-/// 拼错的加速地址会在校验失败后自然落到下一候选。
+/// Pure-function core of the GitHub acceleration prefix: applies only to
+/// addresses whose official source is github.com; every other address
+/// returns `None` as-is (avoiding wrapping arbitrary sites into the
+/// third-party proxy). The prefix's trailing slash is optional; it is always
+/// normalized to the gh-proxy canonical form
+/// `<proxy>/https://github.com/...` — a slash-less prefix concatenated
+/// blindly (`format!("{prefix}{url}")`) would produce an invalid domain like
+/// `proxy.examplehttps`, silently degrading to a direct connection to the
+/// official source at the DNS stage. A mistyped acceleration URL naturally
+/// falls through to the next candidate once verification fails.
 fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -123,15 +131,19 @@ fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
     Some(format!("{}/{}", prefix.trim_end_matches('/'), url))
 }
 
-/// 按序尝试的下载地址：环境变量显式指定的 GitHub 加速前缀 → lock 表审核过的
-/// 镜像 → 官方源兜底。官方源恒在列表末尾；每个候选下载后都要过
-/// `archive_sha256` 校验，镜像字节被篡改时会被校验拦截并落到下一候选。
+/// Download URLs tried in order: the GitHub acceleration prefix explicitly
+/// set via environment variable → the lock-table reviewed mirror → the
+/// official source as fallback. The official source is always last; every
+/// candidate download must pass `archive_sha256` verification, so a mirror
+/// with tampered bytes is caught by the check and the next candidate is
+/// tried.
 fn artifact_download_urls(artifact: &Artifact) -> Vec<String> {
     let prefix = std::env::var(GITHUB_ASSET_MIRROR_PREFIX_ENV).ok();
     artifact_download_urls_with_prefix(prefix.as_deref(), artifact)
 }
 
-/// [`artifact_download_urls`] 的纯函数核心（便于单测，不触环境变量）。
+/// Pure-function core of [`artifact_download_urls`] (unit-testable, does not
+/// touch environment variables).
 fn artifact_download_urls_with_prefix(prefix: Option<&str>, artifact: &Artifact) -> Vec<String> {
     let mut urls = Vec::new();
     if let Some(prefix) = prefix
@@ -187,8 +199,10 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
     fs::create_dir_all(&version_dir).map_err(|e| format!("创建连接器目录失败: {e}"))?;
     let staging_dir = crate::platform::paths::assets_staging_dir().join(&lock.platform);
     fs::create_dir_all(&staging_dir).map_err(|e| format!("创建连接器暂存目录失败: {e}"))?;
-    // 归档格式按首个候选地址判定：镜像与官方源对同一制品的归档格式一致
-    // （wecom 同一 tgz、dws/lark 同一 tar.gz/zip），缓存文件名因此稳定。
+    // The archive format is decided by the first candidate URL: the mirror
+    // and the official source use the same archive format for the same
+    // artifact (the same tgz for wecom, the same tar.gz/zip for dws/lark),
+    // so the cache file name stays stable.
     let candidate_urls = artifact_download_urls(&artifact);
     let archive_ext = if candidate_urls[0].ends_with(".zip") {
         "zip"
@@ -324,27 +338,35 @@ fn load_lock() -> Result<ConnectorLock, String> {
     Ok(lock)
 }
 
-/// 按候选地址顺序下载归档并校验归档 SHA-256，返回实际命中的下载地址
-/// （调用方据此判定归档格式）。任何候选的网络失败或校验不符都会清掉 `.part`
-/// 并尝试下一候选；全部候选失败时返回带候选总数的汇总错误。
+/// Downloads the archive in candidate-URL order and verifies the archive's
+/// SHA-256, returning the download URL that actually hit (the caller uses it
+/// to decide the archive format). Any candidate's network failure or hash
+/// mismatch removes the `.part` and tries the next candidate; when all
+/// candidates fail, a summary error carrying the candidate count is
+/// returned.
 fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // 每个候选源 15 分钟（reqwest 的 client timeout 按单次请求计）：归档
-        // 上限 128 MiB,180s 只够 ~730 KB/s 的链路,慢网用户每次都恰好死在半途
-        // 且无断点续传;15 分钟覆盖到 ~150 KB/s,同时仍保证卡死连接最终会失败
-        // 而不是挂住安装流程。多候选回退时最坏情形按候选数翻倍。
+        // 15 minutes per candidate source (reqwest's client timeout counts
+        // per single request): with the archive capped at 128 MiB, 180s only
+        // sustains a ~730 KB/s link, so slow-network users would die
+        // mid-download every time with no resumable download; 15 minutes
+        // covers down to ~150 KB/s while still guaranteeing a stuck
+        // connection eventually fails instead of hanging the install flow.
+        // With multi-candidate fallback the worst case scales by the
+        // candidate count.
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let refused =
                 attempt.previous().len() >= 10 || attempt.url().scheme() != "https";
             if refused {
-                // 点名被拒绝的重定向，而不是让 3xx 的空响应体走完下载后在
-                // SHA-256 比对处报出误导性的「校验失败」（与 marketplace
-                // wheel 循环同口径；跨主机 HTTPS 重定向在此合法，不设主机
-                // 白名单）。
+                // Name the refused redirect instead of letting the 3xx's
+                // empty body finish the download and then report a
+                // misleading "verification failed" at the SHA-256 comparison
+                // (same policy as the marketplace wheel loop; cross-host
+                // HTTPS redirects are legitimate here, no host allowlist).
                 let redirect_url = attempt.url().clone();
-                attempt.error(format!("连接器下载重定向离开了 HTTPS: {redirect_url}"))
+                attempt.error(format!("connector download redirect left HTTPS: {redirect_url}"))
             } else {
                 attempt.follow()
             }
@@ -357,17 +379,23 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
     let total_candidates = candidates.len();
     let mut failures: Vec<String> = Vec::new();
     for url_text in candidates {
-        // 非法候选（环境变量前缀拼错、非 HTTPS 等）只跳过并告警，不整体失败：
-        // 后面的审核镜像/官方源兜底不受用户配置错误牵连。
+        // Invalid candidates (a mistyped env-var prefix, non-HTTPS, etc.) are
+        // only skipped with a warning, not a whole-run failure: the reviewed
+        // mirror / official source fallbacks that follow are not dragged down
+        // by user misconfiguration.
         let url = match reqwest::Url::parse(&url_text) {
             Ok(url) if url.scheme() == "https" => url,
             _ => {
-                // 候选地址整体进日志与报错，先抹掉 userinfo 再落文。
+                // The candidate URL goes into logs and errors as a whole;
+                // strip the userinfo before writing it out.
                 let error = format!(
-                    "下载地址无效或非 HTTPS: {}",
+                    "download URL is invalid or not HTTPS: {}",
                     crate::platform::download::redact_url_credentials(&url_text)
                 );
-                log::warn!("[connectors] {} 跳过候选地址: {error}", artifact.name);
+                log::warn!(
+                    "[connectors] {} skipping candidate URL: {error}",
+                    artifact.name
+                );
                 failures.push(error);
                 continue;
             }
@@ -375,7 +403,9 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
         match download_from_url(&client, &url, artifact, destination) {
             Ok(()) => return Ok(url_text),
             Err(error) => {
-                // 非默认端口写进前缀，避免同机多端口候选在报错里无法区分。
+                // Write non-default ports into the prefix so multi-port
+                // candidates on the same host stay distinguishable in
+                // errors.
                 let host = match url.port() {
                     Some(port) => {
                         format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
@@ -383,30 +413,34 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<String, 
                     None => url.host_str().unwrap_or("<unknown-host>").to_string(),
                 };
                 log::warn!(
-                    "[connectors] {} 下载源失败，尝试下一候选地址: {error}",
+                    "[connectors] {} download source failed, trying next candidate: {error}",
                     artifact.name
                 );
                 failures.push(format!("[{host}] {error}"));
             }
         }
     }
-    // 全部候选失败时把「试过多少个源、每个源各自的失败原因」都带进报错
-    // （release 构建没有 logger，逐候选的 log::warn! 不可见，报错本身要能
-    // 说明镜像被试过、失败出在哪一层；只保留最后一个错误会把触发镜像重试
-    // 的首个根因藏掉）。
+    // When all candidates fail, carry "how many sources were tried and each
+    // source's own failure reason" into the error (release builds have no
+    // logger, so the per-candidate log::warn! is invisible; the error itself
+    // must show that the mirror was tried and at which layer the failure
+    // happened; keeping only the last error would hide the first root cause
+    // that triggered the mirror retry).
     Err(match failures.as_slice() {
-        [] => "无可用下载地址".to_string(),
+        [] => "no download URLs available".to_string(),
         list => format!(
-            "{} 归档下载失败（{} 个候选下载源全部未成功）: {}",
+            "{} archive download failed (all {} candidate download sources exhausted): {}",
             artifact.name,
             total_candidates,
-            list.join("；")
+            list.join("; ")
         ),
     })
 }
 
-/// 从单一地址下载归档到 `destination`（`.part` 暂存 → SHA-256 校验 → 原子
-/// rename）。校验不符按失败处理，由调用方决定是否换下一候选地址。
+/// Downloads the archive from a single URL into `destination` (`.part`
+/// staging → SHA-256 verification → atomic rename). A hash mismatch is
+/// treated as failure; the caller decides whether to switch to the next
+/// candidate URL.
 fn download_from_url(
     client: &reqwest::blocking::Client,
     url: &reqwest::Url,
@@ -428,13 +462,17 @@ fn download_from_url(
     let partial = destination.with_extension("part");
     let _ = fs::remove_file(&partial);
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    // 写入阶段任一步失败（磁盘满/连接中断）同样清掉 .part：失败残留既占
-    // 磁盘（上限 128 MiB），也与「任何候选失败都清理暂存」的语义一致。
+    // Any failure in the write phase (disk full / connection dropped) also
+    // removes the .part: a leftover from a failure would occupy disk (up to
+    // 128 MiB) and would break the "any candidate failure cleans up the
+    // staging file" semantics.
     let write_result = (|| -> Result<u64, String> {
-        let mut file = File::create(&partial).map_err(|e| format!("创建下载暂存文件失败: {e}"))?;
-        let copied = io::copy(&mut reader, &mut file).map_err(|e| format!("保存下载失败: {e}"))?;
+        let mut file = File::create(&partial)
+            .map_err(|e| format!("failed to create partial download file: {e}"))?;
+        let copied = io::copy(&mut reader, &mut file)
+            .map_err(|e| format!("failed to save download: {e}"))?;
         file.sync_all()
-            .map_err(|e| format!("同步下载文件失败: {e}"))?;
+            .map_err(|e| format!("failed to flush downloaded file: {e}"))?;
         Ok(copied)
     })();
     let copied = match write_result {
@@ -560,21 +598,26 @@ mod tests {
         }
     }
 
-    /// wecom-cli 的 lock 镜像必须与官方 URL 同路径、仅域名换成 npmmirror
-    /// （npmmirror 是 registry 同步镜像——不承诺字节级一致，两端归档以
-    /// SHA-256 pin 为准，review 中实测一致）；dws/lark-cli 只发布在
-    /// GitHub Release，暂无审核过的国内镜像。
+    /// The wecom-cli lock mirror must share the official URL's path with only
+    /// the domain swapped to npmmirror (npmmirror is a registry sync mirror —
+    /// it does not promise byte-level identity; both ends' archives are
+    /// pinned by SHA-256 and measured identical during review); dws/lark-cli
+    /// are only published on GitHub Release and have no reviewed domestic
+    /// mirror yet.
     fn assert_wecom_mirror_invariants(lock: &ConnectorLock) {
         for artifact in &lock.artifacts {
             if artifact.name != "wecom-cli" {
                 assert!(
                     artifact.mirror_url.is_none(),
-                    "{} 不应有审核镜像",
+                    "{} must not have a reviewed mirror",
                     artifact.name
                 );
                 continue;
             }
-            let mirror = artifact.mirror_url.as_deref().expect("wecom 应配置镜像");
+            let mirror = artifact
+                .mirror_url
+                .as_deref()
+                .expect("wecom must have a mirror configured");
             assert!(
                 mirror.starts_with("https://registry.npmmirror.com/")
                     && artifact.url.starts_with("https://registry.npmjs.org/"),
@@ -584,7 +627,7 @@ mod tests {
             assert_eq!(
                 mirror.strip_prefix("https://registry.npmmirror.com/"),
                 artifact.url.strip_prefix("https://registry.npmjs.org/"),
-                "镜像与官方源必须同路径"
+                "mirror and official source must share the same path"
             );
         }
     }
@@ -595,10 +638,11 @@ mod tests {
         assert_wecom_mirror_invariants(&lock);
     }
 
-    /// 全部五个平台的 lock 都要过同一镜像不变量：全量 cargo test 只在
-    /// linux-x86_64 上执行（macos/windows 仅跑过滤子集），linux-aarch64 与
-    /// macos-x86_64 的 lock 不出现在任何测试执行环境里，其 mirrorUrl 的路径
-    /// 拼写错误只能在这里被静态拦下。
+    /// All five platforms' locks must pass the same mirror invariants: the
+    /// full cargo test run only executes on linux-x86_64 (macos/windows only
+    /// run a filtered subset), so the linux-aarch64 and macos-x86_64 locks
+    /// never appear in any test execution environment; a typo in their
+    /// mirrorUrl paths can only be caught statically here.
     #[test]
     fn all_platform_locks_pass_mirror_invariants() {
         const ALL_PLATFORM_LOCKS: [&str; 5] = [
@@ -620,15 +664,17 @@ mod tests {
         ];
         for lock_json in ALL_PLATFORM_LOCKS {
             let lock: ConnectorLock =
-                serde_json::from_str(lock_json).expect("平台 lock 必须能反序列化");
+                serde_json::from_str(lock_json).expect("platform lock must deserialize");
             assert_eq!(lock.schema_version, 1);
             assert_wecom_mirror_invariants(&lock);
         }
     }
 
-    /// 候选顺序：GitHub 加速前缀（仅对 github.com 生效）→ 审核镜像 → 官方源；
-    /// 官方源恒在末尾，非 GitHub 制品不受前缀影响。走纯函数核心，不触环境
-    /// 变量（导出了该环境变量的开发机上照样成立）。
+    /// Candidate order: GitHub acceleration prefix (only effective for
+    /// github.com) → reviewed mirror → official source; the official source
+    /// is always last, and non-GitHub artifacts are unaffected by the prefix.
+    /// Goes through the pure-function core, so it holds even on dev machines
+    /// that export that environment variable.
     #[test]
     fn artifact_download_urls_order_prefix_mirror_then_official() {
         let artifact = Artifact {
@@ -642,7 +688,7 @@ mod tests {
             archive_sha256: "0".repeat(64),
             binary_sha256: "0".repeat(64),
         };
-        // 无前缀：审核镜像 → 官方源。
+        // No prefix: reviewed mirror → official source.
         assert_eq!(
             artifact_download_urls_with_prefix(None, &artifact),
             vec![
@@ -650,11 +696,12 @@ mod tests {
                 "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.0.0.tgz",
             ]
         );
-        // npmjs 制品即使配了前缀也不套加速地址。
+        // npmjs artifacts never get the acceleration URL even when a prefix
+        // is set.
         assert_eq!(
             artifact_download_urls_with_prefix(Some("https://gh-proxy.example"), &artifact),
             artifact_download_urls_with_prefix(None, &artifact),
-            "非 github.com 官方源不得套加速前缀"
+            "non-github.com official sources must not get the acceleration prefix"
         );
 
         let github_artifact = Artifact {
@@ -665,12 +712,14 @@ mod tests {
             archive_sha256: "0".repeat(64),
             binary_sha256: "0".repeat(64),
         };
-        // 无前缀：仅官方源（dws/lark-cli 暂无审核镜像）。
+        // No prefix: official source only (dws/lark-cli have no reviewed
+        // mirror yet).
         assert_eq!(
             artifact_download_urls_with_prefix(None, &github_artifact),
             vec![github_artifact.url.clone()]
         );
-        // 有前缀：前缀加速地址在前，官方源兜底。
+        // With prefix: prefix acceleration URL first, official source as the
+        // fallback.
         assert_eq!(
             artifact_download_urls_with_prefix(Some("https://mirror.example/gh/"), &github_artifact),
             vec![
@@ -679,8 +728,11 @@ mod tests {
             ]
         );
 
-        // 前缀拼进候选后仍会在下载前过 HTTPS 复查；空白前缀无效。结尾斜杠
-        // 带不带、带几个都必须归一化成同一规范形（文档承诺两种写法均可）。
+        // Once a prefix is folded into a candidate it still passes the HTTPS
+        // re-check before download; an empty prefix is invalid. With or
+        // without a trailing slash — no matter how many — everything must
+        // normalize to the same canonical form (the docs promise both
+        // spellings work).
         let expected =
             "https://mirror.example/gh/https://github.com/org/repo/releases/download/v1/a.tar.gz";
         assert_eq!(
@@ -696,7 +748,7 @@ mod tests {
                 "https://github.com/org/repo/releases/download/v1/a.tar.gz"
             ),
             Some(expected.to_string()),
-            "无结尾斜杠的前缀不得黏连出非法域名静默退化成直连"
+            "a slash-less prefix must not concatenate into an invalid domain and silently degrade to a direct connection"
         );
         assert_eq!(
             github_prefixed_url(

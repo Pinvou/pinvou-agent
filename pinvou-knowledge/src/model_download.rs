@@ -12,17 +12,20 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 pub const KNOWLEDGE_MODEL_HF_BASE_URL: &str = "https://huggingface.co";
-/// 国内可达的 Hugging Face 兼容镜像（路径结构与官方源完全一致，默认首选）。
+/// Hugging Face-compatible mirror reachable from mainland China (path layout
+/// identical to the official source; preferred by default).
 pub const KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL: &str = "https://hf-mirror.com";
 pub const KNOWLEDGE_MODEL_HF_REPOSITORY: &str = "onnx-community/bge-m3-ONNX";
 pub const KNOWLEDGE_MODEL_HF_REVISION: &str = "25b9af8e87a38eb120cfe87125383677b9cd309e";
 pub const KNOWLEDGE_MODEL_HF_BASE_URL_ENV: &str = "PINVOU_KNOWLEDGE_HF_BASE_URL";
 pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
 
-/// 取消状态的统一报文（面向用户的报错文案，各取消检查点共用）。回退循环
-/// 以 `is_cancelled` 标志位（而非错误字符串比对）区分「用户取消」（终止整体
-/// 流程）与「单个镜像源故障」（换下一个基地址重试），标志位不依赖本常量。
-const CANCELLED: &str = "已取消";
+/// Shared message for the cancelled state (user-facing error copy, used by every
+/// cancellation checkpoint). The fallback loop tells "user cancel" (abort the whole
+/// flow) apart from "single mirror source failure" (retry the next base URL) via the
+/// `is_cancelled` flag rather than error-string matching; the flag does not depend
+/// on this constant.
+const CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeModelFile {
@@ -85,11 +88,13 @@ pub struct KnowledgeModelDownloadProgress {
     pub source_path: &'static str,
 }
 
-/// 返回按序尝试的 Hugging Face 兼容镜像基地址列表。
+/// Returns the ordered list of Hugging Face-compatible mirror base URLs to try.
 ///
-/// 显式设置 [`KNOWLEDGE_MODEL_HF_BASE_URL_ENV`] 时只返回该地址——用户明确指定的
-/// 源不做回退；否则先试国内镜像（[`KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL`]），失败
-/// 再回退官方源。每个文件都逐基地址重试，内容始终经逐文件 SHA-256 校验。
+/// When [`KNOWLEDGE_MODEL_HF_BASE_URL_ENV`] is set explicitly, only that URL is
+/// returned — an explicitly chosen source never falls back; otherwise the mainland
+/// China mirror ([`KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL`]) is tried first, falling
+/// back to the official source on failure. Every file is retried per base URL, and
+/// content is always verified with per-file SHA-256.
 pub fn knowledge_model_hf_base_url_candidates() -> Vec<String> {
     ordered_hf_base_url_candidates(
         std::env::var(KNOWLEDGE_MODEL_HF_BASE_URL_ENV)
@@ -98,7 +103,8 @@ pub fn knowledge_model_hf_base_url_candidates() -> Vec<String> {
     )
 }
 
-/// [`knowledge_model_hf_base_url_candidates`] 的纯函数核心（便于单测，不触环境变量）。
+/// Pure core of [`knowledge_model_hf_base_url_candidates`] (for unit testing; does
+/// not touch environment variables).
 fn ordered_hf_base_url_candidates(explicit: Option<String>) -> Vec<String> {
     match explicit {
         Some(value) => vec![value],
@@ -114,9 +120,10 @@ fn ordered_hf_base_url_candidates(explicit: Option<String>) -> Vec<String> {
 /// `candidate` 必须不存在。任何失败或取消都会清理本次创建的候选目录；调用方在
 /// 返回成功后负责真实加载候选模型，并将其原子替换到正式目录。
 ///
-/// `hf_base_urls` 是按序尝试的镜像基地址列表（见
-/// [`knowledge_model_hf_base_url_candidates`]）：单个文件在某个基地址上下载或
-/// 校验失败时，自动换下一个基地址重试，全部失败才整体报错。
+/// `hf_base_urls` is the ordered list of mirror base URLs to try (see
+/// [`knowledge_model_hf_base_url_candidates`]): when a single file fails to download
+/// or verify on one base URL, the next base URL is retried automatically, and the
+/// whole operation errors out only after all of them fail.
 pub async fn download_knowledge_model_candidate<P, C>(
     candidate: &Path,
     hf_base_urls: &[String],
@@ -132,10 +139,12 @@ where
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(90))
         .timeout(Duration::from_secs(3 * 60 * 60))
-        // 重定向只跟随 HTTPS 目标（与 connectors / marketplace 下载路径的
-        // 策略同口径）：镜像被劫持时不得把 586MB 模型流重定向到明文 HTTP。
-        // 跨源 HTTPS 重定向仍允许——hf-mirror 现阶段会把 /resolve/ 308 到
-        // 官方源，落盘字节始终经 SHA-256 门禁。
+        // Redirects follow HTTPS targets only (same policy as the connectors /
+        // marketplace download paths): if the mirror is hijacked, the 586MB model
+        // stream must not be redirected to plaintext HTTP. Cross-origin HTTPS
+        // redirects are still allowed — hf-mirror currently 308s /resolve/ to the
+        // official source, and the bytes written to disk always pass the SHA-256
+        // gate.
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if hf_redirect_follow_allowed(attempt.previous().len(), attempt.url().scheme()) {
                 attempt.follow()
@@ -299,10 +308,11 @@ where
     P: FnMut(KnowledgeModelDownloadProgress) + Send,
     C: Fn() -> bool + Send + Sync,
 {
-    // 全部基地址先整体校验：任何一个镜像配置非法都在触网前失败，
-    // 不允许「前两个基地址下了一半，第三个才发现配置写错」。
+    // Validate all base URLs up front: any invalid mirror configuration must fail
+    // before any network access, so "half a download from the first two base URLs
+    // before the third one reveals the misconfiguration" cannot happen.
     if hf_base_urls.is_empty() {
-        return Err("镜像基地址列表为空".to_string());
+        return Err("mirror base URL list is empty".to_string());
     }
     let mut base_urls = Vec::with_capacity(hf_base_urls.len());
     for value in hf_base_urls {
@@ -342,21 +352,28 @@ where
                     .unwrap_or("download")
             ));
 
-            // 按序尝试各镜像基地址：当前基地址上下载或校验失败（含镜像内容被
-            // 篡改导致的 SHA-256 不符）都换下一个重试；全部失败才整体报错，
-            // 错误里带上源域名与已耗尽的源数，否则镜像被篡改这类失败会被误读
-            // 成官方源故障。取消是全局意图，任何一处出现都立即终止，不当作
-            // 镜像故障。
+            // Try the mirror base URLs in order: a download or verification failure
+            // on the current base URL (including an SHA-256 mismatch caused by
+            // tampered mirror content) retries the next one; only after all fail does
+            // the whole operation error out, with the source host and the number of
+            // exhausted sources in the error — otherwise a failure such as a tampered
+            // mirror would be misread as an official-source outage. Cancellation is a
+            // global intent: wherever it appears, it terminates immediately and is
+            // never treated as a mirror failure.
             let mut failures: Vec<String> = Vec::new();
             let mut succeeded = false;
-            // 换基地址重试时该文件从头下载，进度若原样透传，前端看到的累计
-            // 字节会倒退（进度条回跳）；用跨基地址的峰值钳制保持单调不减。
+            // Retrying on a different base URL restarts this file from scratch; if
+            // progress events passed through unchanged, the cumulative bytes seen by
+            // the frontend would go backwards (the progress bar would jump back).
+            // Peak clamping across base URLs keeps the value monotonically
+            // non-decreasing.
             let mut peak_downloaded = completed_bytes;
             for base_url in &base_urls {
                 if is_cancelled() {
                     return Err(CANCELLED.to_string());
                 }
-                // 上一个基地址的半截 `.part` 必须清掉再重试，避免续写混杂来源的字节。
+                // The previous base URL's partial `.part` must be removed before
+                // retrying, so the append never mixes bytes from different sources.
                 let _ = std::fs::remove_file(&partial);
                 let url = knowledge_model_file_url(base_url, file.source_path)?;
                 let mut on_progress = |event: KnowledgeModelDownloadProgress| {
@@ -385,13 +402,17 @@ where
                         succeeded = true;
                         break;
                     }
-                    // 取消是全局意图：标志位一旦置位就整体终止（即便本次错误
-                    // 本身不是取消报文），不当作镜像故障换下一基地址。
+                    // Cancellation is a global intent: once the flag is set, abort the
+                    // whole operation (even if this particular error is not the cancel
+                    // message); never treat it as a mirror failure and move on to the
+                    // next base URL.
                     Err(_) if is_cancelled() => return Err(CANCELLED.to_string()),
                     Err(error) => {
                         let host = match base_url.port() {
-                            // 非默认端口写进前缀，避免同机多端口候选在报错里
-                            // 无法区分；默认端口省略（与 URL 显示习惯一致）。
+                            // Non-default ports are included in the prefix so
+                            // same-host candidates on different ports stay
+                            // distinguishable in errors; default ports are omitted
+                            // (consistent with URL display conventions).
                             Some(port) => {
                                 format!(
                                     "{}:{port}",
@@ -408,13 +429,13 @@ where
                 }
             }
             if !succeeded {
-                // base_urls 非空且每次失败都会写入 failures；兜底文案不得伪称
-                // 「已取消」。
-                let detail = failures.join("；");
+                // base_urls is non-empty and every failure appends to failures; the
+                // fallback message must not falsely claim "cancelled".
+                let detail = failures.join("; ");
                 return Err(if base_urls.len() > 1 {
-                    format!("{} 个下载源均失败：{detail}", base_urls.len())
+                    format!("{} download sources all failed: {detail}", base_urls.len())
                 } else if detail.is_empty() {
-                    "模型下载失败".to_string()
+                    "Model download failed".to_string()
                 } else {
                     detail
                 });
@@ -435,9 +456,10 @@ where
     result
 }
 
-/// 单文件在单一基地址上的完整尝试：下载到 `.part` → verify 进度事件 →
-/// SHA-256 校验 → 原子 `rename` 到 `destination`。任一步失败都返回 `Err`，
-/// 由调用方决定是否换下一个基地址重试。
+/// Complete attempt for a single file on a single base URL: download to `.part` →
+/// verify progress event → SHA-256 verification → atomic `rename` to `destination`.
+/// Any failing step returns `Err`, and the caller decides whether to retry the next
+/// base URL.
 #[allow(clippy::too_many_arguments)]
 async fn download_and_verify_manifest_file<P, C>(
     client: &reqwest::Client,
@@ -484,10 +506,10 @@ where
     let verify_path = partial.to_path_buf();
     let actual = tokio::task::spawn_blocking(move || sha256_file(&verify_path))
         .await
-        .map_err(|error| format!("模型校验任务失败: {error}"))??;
+        .map_err(|error| format!("Model verification task failed: {error}"))??;
     if !actual.eq_ignore_ascii_case(file.sha256) {
         return Err(format!(
-            "模型文件校验失败({}): 期望 {}，实际 {}",
+            "Model file verification failed ({}): expected {}, actual {}",
             file.source_path, file.sha256, actual
         ));
     }
@@ -496,7 +518,7 @@ where
     }
     std::fs::rename(partial, destination).map_err(|error| {
         format!(
-            "无法完成模型文件写入({} -> {}): {error}",
+            "Failed to finish writing model file ({} -> {}): {error}",
             partial.display(),
             destination.display()
         )
@@ -590,25 +612,27 @@ where
     Ok(())
 }
 
-/// 重定向跟随判定（纯函数核心，便于单测）：只跟随 HTTPS 目标，且跳数有界。
-/// 初始请求本身不受此限制（本地/测试服务器可用 HTTP），仅约束重定向链。
+/// Redirect-follow decision (pure core for unit testing): follow HTTPS targets only,
+/// with a bounded hop count. The initial request itself is not restricted (local and
+/// test servers may use HTTP); only the redirect chain is constrained.
 fn hf_redirect_follow_allowed(previous_hops: usize, scheme: &str) -> bool {
     previous_hops < 10 && scheme == "https"
 }
 
-/// 显式配置的镜像基地址可能来自共享服务端或桌面端的两个环境变量之一（校验
-/// 发生在共享 crate 内，无法区分来源），错误文案同时点名两者，避免对桌面端
-/// 用户误报成另一个变量。
+/// An explicitly configured mirror base URL can come from either of two environment
+/// variables (shared server or desktop; validation happens inside the shared crate,
+/// which cannot tell the origin apart), so the error message names both and avoids
+/// reporting the wrong variable to desktop users.
 const HF_BASE_URL_ENV_HINT: &str =
-    "镜像基地址环境变量（PINVOU_KNOWLEDGE_HF_BASE_URL / PINVOU3_KB_HF_BASE_URL）";
+    "mirror base URL environment variable (PINVOU_KNOWLEDGE_HF_BASE_URL / PINVOU3_KB_HF_BASE_URL)";
 
 fn validate_hf_base_url(value: &str) -> Result<Url, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{HF_BASE_URL_ENV_HINT} 不能为空"));
+        return Err(format!("{HF_BASE_URL_ENV_HINT} must not be empty"));
     }
     let mut url = Url::parse(value)
-        .map_err(|error| format!("{HF_BASE_URL_ENV_HINT} 不是有效 URL: {error}"))?;
+        .map_err(|error| format!("{HF_BASE_URL_ENV_HINT} is not a valid URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -617,7 +641,7 @@ fn validate_hf_base_url(value: &str) -> Result<Url, String> {
         || url.fragment().is_some()
     {
         return Err(format!(
-            "{HF_BASE_URL_ENV_HINT} 必须是不含账号、查询参数和片段的 HTTP(S) 基地址"
+            "{HF_BASE_URL_ENV_HINT} must be an HTTP(S) base URL without credentials, query parameters, or fragments"
         ));
     }
     if !url.path().ends_with('/') {
@@ -787,12 +811,12 @@ mod tests {
 
     #[test]
     fn ordered_candidates_explicit_source_wins_over_mirror_chain() {
-        // 显式环境变量 = 用户明确指定的源，不做任何回退。
+        // Explicit environment variable = a source the user chose explicitly; no fallback.
         assert_eq!(
             ordered_hf_base_url_candidates(Some("https://internal.example/hf".to_string())),
             vec!["https://internal.example/hf".to_string()]
         );
-        // 未指定：国内镜像优先，官方源兜底。
+        // Unset: mainland China mirror first, official source as the fallback.
         assert_eq!(
             ordered_hf_base_url_candidates(None),
             vec![
@@ -822,7 +846,7 @@ mod tests {
             || cancelled.load(Ordering::Relaxed),
         )
         .await;
-        assert_eq!(result.unwrap_err(), "已取消");
+        assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(!candidate.exists());
     }
 
@@ -912,18 +936,24 @@ mod tests {
         .await;
         server.join().unwrap();
 
-        assert!(result.unwrap_err().contains("模型文件校验失败"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Model file verification failed")
+        );
         assert!(!candidate.exists());
     }
 
-    /// 主镜像不可达（连接拒绝）时，单个文件必须自动换下一个基地址重试成功，
-    /// 且只向存活的镜像发请求。
+    /// When the primary mirror is unreachable (connection refused), a single file
+    /// must automatically retry the next base URL and succeed, and only the alive
+    /// mirror may receive requests.
     #[tokio::test]
     async fn unreachable_mirror_falls_back_to_next_base() {
         let (base_url, requests, server) = serve_model_files(vec![b"abc"]);
         let root = tempfile::tempdir().unwrap();
         let candidate = root.path().join("candidate");
-        // 127.0.0.1:1 无监听，连接立即被拒，等价于镜像宕机。
+        // 127.0.0.1:1 has no listener, so the connection is refused immediately —
+        // equivalent to the mirror being down.
         let bases = vec!["http://127.0.0.1:1".to_string(), base_url.clone()];
         download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
@@ -947,8 +977,9 @@ mod tests {
         assert!(request.contains("GET /hf/onnx-community/bge-m3-ONNX/resolve/"));
     }
 
-    /// 镜像返回被篡改/损坏的字节（SHA-256 不符）时同样回退到下一个基地址，
-    /// 最终落盘内容必须来自通过校验的源。
+    /// When a mirror serves tampered/corrupted bytes (SHA-256 mismatch), fall back to
+    /// the next base URL the same way; the content finally written to disk must come
+    /// from a source that passed verification.
     #[tokio::test]
     async fn mirror_serving_corrupt_bytes_falls_back_to_next_base() {
         let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
@@ -980,9 +1011,10 @@ mod tests {
         );
     }
 
-    /// 全部下载源都失败时，聚合报错必须点名每一个失败的源（`[host]` 前缀）
-    /// 并给出源总数，而不是只保留最后一个源的报错——否则用户无法分辨是
-    /// 镜像坏了还是官方源也坏了。
+    /// When every download source fails, the aggregated error must name each failed
+    /// source (the `[host]` prefix) and give the total source count, instead of
+    /// keeping only the last source's error — otherwise users cannot tell whether
+    /// the mirror or the official source is broken.
     #[tokio::test]
     async fn exhausted_sources_error_names_every_failed_base() {
         let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
@@ -1008,8 +1040,9 @@ mod tests {
         worse_server.join().unwrap();
 
         let error = result.unwrap_err();
-        assert!(error.contains("2 个下载源均失败"), "{error}");
-        // 前缀 host 含非默认端口（本地服务器），与聚合文案的 [host:port] 一致。
+        assert!(error.contains("2 download sources all failed"), "{error}");
+        // The prefix host includes a non-default port (local server), matching
+        // [host:port] in the aggregated message.
         let bad_authority = bad_base
             .split("//")
             .nth(1)
@@ -1025,9 +1058,9 @@ mod tests {
         assert!(!candidate.exists());
     }
 
-    /// 模型下载的重定向策略：只跟随 HTTPS 目标、跳数有界（与
-    /// connectors/marketplace 下载路径同口径；初始请求不受限，本地测试
-    /// 服务器可用 HTTP）。
+    /// Redirect policy for model downloads: follow HTTPS targets only, with a bounded
+    /// hop count (same as the connectors/marketplace download paths; the initial
+    /// request is unrestricted, and local test servers may use HTTP).
     #[test]
     fn redirects_follow_only_https_targets_within_hop_budget() {
         assert!(hf_redirect_follow_allowed(0, "https"));
@@ -1037,10 +1070,13 @@ mod tests {
         assert!(!hf_redirect_follow_allowed(0, "ftp"));
     }
 
-    /// 换基地址重试时该文件从头下载：进度事件的累计字节必须保持单调不减
-    /// （峰值钳制），否则前端进度条会在回退瞬间从已累计的高位倒跳回低位。
-    /// 首源发出 2MiB/4MiB/5MiB 三次事件后在 SHA 校验失败，重启源的事件若
-    /// 原样透传会从 2MiB 重新开始——钳制失效时本测试的窗口断言即失败。
+    /// Retrying on a different base URL restarts the file from scratch: the
+    /// cumulative bytes in progress events must stay monotonically non-decreasing
+    /// (peak clamping), otherwise the frontend progress bar jumps from the already
+    /// accumulated high value back down at the fallback moment. The first source
+    /// emits three events (2MiB/4MiB/5MiB) and then fails SHA verification; if the
+    /// restarted source's events passed through unchanged, they would restart from
+    /// 2MiB — with clamping broken, this test's window assertion fails.
     #[tokio::test]
     async fn progress_events_stay_monotonic_across_base_fallback() {
         const FILE_BYTES: usize = 5 * 1024 * 1024;
@@ -1088,28 +1124,32 @@ mod tests {
             good_body
         );
         let events: Vec<u64> = events_rx.into_iter().collect();
-        // 不钉事件个数：传输分块大小是实现细节，单个超过 2MiB 的大块会把
-        // 阈值事件合并。钳制失效的特征是回退后事件从低位重新开始，下面的
-        // 单调断言即可抓住；这里只要求事件流真实推进到完成值。
+        // Do not pin the event count: transport chunk sizes are an implementation
+        // detail, and a single chunk larger than 2MiB merges threshold events. Broken
+        // clamping shows up as events restarting from a low value after the fallback,
+        // which the monotonic assertion below catches; here we only require that the
+        // event stream genuinely advances to the completion value.
         assert!(
             events.last() == Some(&(FILE_BYTES as u64)),
-            "进度事件必须推进到完成值（{FILE_BYTES} 字节）: {events:?}"
+            "progress events must advance to the completion value ({FILE_BYTES} bytes): {events:?}"
         );
         for pair in events.windows(2) {
             assert!(
                 pair[0] <= pair[1],
-                "跨源回退时进度事件必须单调不减: {events:?}"
+                "progress events must be monotonically non-decreasing across source fallback: {events:?}"
             );
         }
     }
 
-    /// 非法基地址必须在触网前整体失败：哪怕它排在存活镜像之后，也不允许
-    /// 「下到一半才报配置错误」——存活源必须一个请求都收不到。候选目录必须
-    /// 保持未创建。
+    /// An invalid base URL must fail the whole operation before any network access:
+    /// even when ordered after an alive mirror, "half a download before reporting the
+    /// configuration error" is not allowed — the alive source must not receive a
+    /// single request. The candidate directory must remain uncreated.
     #[tokio::test]
     async fn invalid_base_url_fails_before_any_download() {
-        // 排在首位的是存活的服务端：若基地址校验被错误地推迟到逐源下载阶段，
-        // 第一个源就会先被真实请求，本测试借请求通道抓住这一回归。
+        // The alive server comes first: if base URL validation were wrongly deferred
+        // to the per-source download stage, the first source would receive a real
+        // request first; this test uses the request channel to catch that regression.
         let (live_base, live_requests, live_server) = serve_model_files(vec![b"abc"]);
         let root = tempfile::tempdir().unwrap();
         let candidate = root.path().join("candidate");
@@ -1130,21 +1170,26 @@ mod tests {
         .await;
 
         assert!(
-            result.unwrap_err().contains("必须是不含账号"),
-            "非法基地址必须在触网前失败"
+            result.unwrap_err().contains("must be an HTTP(S) base URL"),
+            "an invalid base URL must fail before any network access"
         );
         assert!(
             live_requests.try_recv().is_err(),
-            "存活源排在非法基地址之前也不得收到任何请求"
+            "an alive source ordered before an invalid base URL must not receive any requests"
         );
-        // 服务线程此刻仍阻塞在 accept()（校验失败 = 永远不会有请求到来），
-        // 不得 join，泄漏到测试进程结束即可。
+        // The server thread is still blocked in accept() at this point (validation
+        // failure = no request will ever arrive); do not join it — leaking until the
+        // test process exits is fine.
         drop(live_server);
-        assert!(!candidate.exists(), "候选目录不应在基地址校验前创建");
+        assert!(
+            !candidate.exists(),
+            "candidate directory must not be created before base URL validation"
+        );
     }
 
-    /// 镜像尝试进行中用户取消：必须整体终止（不换下一基地址重试），
-    /// 候选目录照常清理。这是回退循环里最关键的语义分支。
+    /// User cancels during a mirror attempt: the whole operation must abort (no retry
+    /// on the next base URL), and the candidate directory is still cleaned up. This
+    /// is the most critical semantic branch in the fallback loop.
     #[tokio::test]
     async fn cancel_during_mirror_attempt_aborts_without_falling_through() {
         let (first_base, _first_requests, first_server) = serve_model_files(vec![b"abc"]);
@@ -1165,20 +1210,24 @@ mod tests {
                 sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             }],
             move |_| {
-                // 首个进度事件即视为用户点了取消（模拟下载中途取消）。
+                // The first progress event counts as the user clicking cancel
+                // (simulates cancelling mid-download).
                 cancel_flag.store(true, std::sync::atomic::Ordering::Release);
             },
             || cancelled.load(std::sync::atomic::Ordering::Acquire),
         )
         .await;
 
-        assert_eq!(result.unwrap_err(), "已取消");
-        // 第二个基地址必须完全没有被请求。
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        // The second base URL must not have been requested at all.
         assert!(
             second_requests.try_recv().is_err(),
-            "取消后不得再尝试下一基地址"
+            "the next base URL must not be attempted after cancellation"
         );
-        assert!(!candidate.exists(), "取消后候选目录必须被清理");
+        assert!(
+            !candidate.exists(),
+            "candidate directory must be cleaned up after cancellation"
+        );
         first_server.join().unwrap();
     }
 

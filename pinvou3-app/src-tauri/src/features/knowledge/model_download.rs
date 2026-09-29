@@ -261,8 +261,10 @@ pub async fn kb_model_download(
         std::fs::remove_dir_all(&tmp)
             .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
     }
-    // 桌面端可单独指定镜像（显式指定 = 唯一源，不回退）；未配置时回退到
-    // 两端统一的候选链：国内镜像 hf-mirror.com 优先，官方 huggingface.co 兜底。
+    // The desktop app can specify its own mirror (explicit = the only source, no
+    // fallback); when unset, fall back to the candidate chain shared by both ends:
+    // the mainland China mirror hf-mirror.com first, official huggingface.co as the
+    // final fallback.
     let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
         Ok(value) if !value.trim().is_empty() => vec![value],
         _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),

@@ -423,15 +423,18 @@ fn python_version_digits(python: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// lock 清单地址的信任源：仅 PyPI 官方 CDN。清单校验（validate_wheel）按此
-/// 把关；清华 TUNA 镜像只作为下载时派生的候选（见 [`is_allowed_wheel_host`]），
-/// 不允许直接写进 lock。
+/// Trust source for lock manifest URLs: the PyPI official CDN only. Manifest
+/// validation (validate_wheel) gates on this; the Tsinghua TUNA mirror is only
+/// a candidate derived at download time (see [`is_allowed_wheel_host`]) and
+/// must not be written into a lock directly.
 fn is_official_wheel_host(url: &reqwest::Url) -> bool {
     matches!(url.host_str(), Some("files.pythonhosted.org"))
 }
 
-/// 下载路径信任的 wheel 源：PyPI 官方 CDN 与其国内镜像（清华 TUNA，路径结构
-/// 一致）。用于下载候选与重定向把关；字节始终过清单内的 sha256 pin。
+/// Wheel sources trusted by the download path: the PyPI official CDN and its
+/// CN mirror (Tsinghua TUNA, identical path structure). Used to gate download
+/// candidates and redirects; bytes always pass the sha256 pin from the
+/// manifest.
 fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
     matches!(
         url.host_str(),
@@ -439,25 +442,30 @@ fn is_allowed_wheel_host(url: &reqwest::Url) -> bool {
     )
 }
 
-/// files.pythonhosted.org 与清华 TUNA 镜像共享 `/packages/...` 路径结构，
-/// 仅需替换域名；其余地址不派生镜像（返回 `None`）。
+/// files.pythonhosted.org and the Tsinghua TUNA mirror share the
+/// `/packages/...` path structure, so only the host needs replacing; other
+/// URLs derive no mirror (returns `None`).
 fn pythonhosted_mirror_url(url: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
     if parsed.host_str() != Some("files.pythonhosted.org") {
         return None;
     }
-    // 只取 path：官方 CDN 的 wheel 地址不带 query/fragment；即便出现也不进
-    // 镜像候选（两源字节过同一 sha256 pin，缺 query 只影响命中，不影响
-    // 完整性），官方候选仍带原 query 兜底。
+    // Path only: official CDN wheel URLs carry no query/fragment; even if one
+    // appears it does not become a mirror candidate (bytes from both sources
+    // pass the same sha256 pin, a missing query only affects the cache hit,
+    // not integrity), and the official candidate still carries the original
+    // query as fallback.
     Some(format!(
         "https://pypi.tuna.tsinghua.edu.cn{}",
         parsed.path()
     ))
 }
 
-/// 按序尝试的 wheel 下载地址：国内镜像优先（国内网络对 PyPI 官方 CDN 常不可
-/// 达或极慢），官方源兜底。两处来源的字节都过同一 sha256 pin，镜像被篡改时
-/// 校验会拦截并落到下一候选。
+/// Wheel download URLs tried in order: the CN mirror first (CN networks often
+/// cannot reach the PyPI official CDN or are extremely slow), with the
+/// official source as fallback. Bytes from both sources pass the same sha256
+/// pin; if the mirror is tampered with, verification intercepts it and the
+/// next candidate is tried.
 fn wheel_download_urls(wheel: &PythonWheel) -> Vec<String> {
     let mut urls = Vec::new();
     if let Some(mirror) = pythonhosted_mirror_url(&wheel.url) {
@@ -643,10 +651,12 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
 
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // 每个候选源 15 分钟（reqwest 的 client timeout 按单次请求计；整条
-        // 安装是串行 wheel 链）：wheels 上限 64 MiB,180s 在常见慢链路上恰好
-        // 不够;超时会让整条串行 wheel 链反复从头重来。与 native_installer
-        // 共用同一常量；多候选回退时最坏情形按候选数翻倍。
+        // 15 minutes per candidate source (reqwest's client timeout counts per
+        // request; the whole install is a serial wheel chain): wheels are
+        // capped at 64 MiB and 180s falls just short on common slow links; a
+        // timeout would restart the whole serial wheel chain from scratch.
+        // Shares the same constant as native_installer; with multi-candidate
+        // fallback the worst case multiplies by the candidate count.
         .timeout(crate::platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let refused = attempt.previous().len() >= 10
@@ -671,9 +681,11 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
     let total_candidates = candidates.len();
     let mut failures: Vec<String> = Vec::new();
     for url_text in candidates {
-        // 非法候选（解析失败/非 HTTPS）只跳过并记入聚合，不整体失败（与
-        // connectors 安装器同口径，含 userinfo 抹除）：官方源兜底不受个别
-        // 候选构造问题牵连。
+        // Invalid candidates (parse failure/non-HTTPS) are only skipped and
+        // recorded in the aggregate, not a total failure (same convention as
+        // the connectors installer, including userinfo redaction): the
+        // official-source fallback must not be dragged down by one badly built
+        // candidate.
         let url = match reqwest::Url::parse(&url_text) {
             Ok(url) if url.scheme() == "https" => url,
             _ => {
@@ -692,7 +704,8 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
         match download_wheel_from(&client, &url, destination, wheel) {
             Ok(()) => return Ok(()),
             Err(error) => {
-                // 非默认端口写进前缀，避免同机多端口候选在报错里无法区分。
+                // Non-default ports go into the prefix so same-host candidates
+                // on different ports stay distinguishable in errors.
                 let host = match url.port() {
                     Some(port) => {
                         format!("{}:{port}", url.host_str().unwrap_or("<unknown-host>"))
@@ -707,9 +720,10 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
             }
         }
     }
-    // 全部候选失败时把「试过多少个源、每个源各自的失败原因」带进报错
-    // （release 构建没有 logger，逐候选的 log::warn! 不可见，报错本身要能
-    // 说明镜像被试过、失败出在哪一层）。
+    // When every candidate fails, carry "how many sources were tried and each
+    // source's own failure reason" into the error (release builds have no
+    // logger, so per-candidate log::warn! is invisible; the error itself must
+    // show that the mirror was tried and at which layer it failed).
     Err(match failures.as_slice() {
         [] => format!("Python dependency {} has no download URL", wheel.name),
         list => format!(
@@ -721,8 +735,10 @@ fn ensure_cached(wheel: &PythonWheel, destination: &Path) -> Result<(), String> 
     })
 }
 
-/// 从单一地址下载 wheel 到 `destination`（`.part` 暂存 → sha256 校验 → 原子
-/// rename）。校验不符按失败处理，由调用方决定是否换下一候选地址。
+/// Download a wheel from a single URL to `destination` (`.part` staging ->
+/// sha256 verification -> atomic rename). A verification mismatch is treated
+/// as a failure; the caller decides whether to switch to the next candidate
+/// URL.
 fn download_wheel_from(
     client: &reqwest::blocking::Client,
     url: &reqwest::Url,
@@ -1144,8 +1160,9 @@ mod tests {
                 .contains("trusted HTTPS host")
         );
 
-        // 清单地址必须仍是官方 CDN：TUNA 只是下载时派生的候选，
-        // 不允许直接写进 lock（见 is_official_wheel_host）。
+        // Manifest URLs must still be the official CDN: TUNA is only a
+        // candidate derived at download time and must not be written into a
+        // lock (see is_official_wheel_host).
         let mut lock = sample_lock();
         lock.targets[0].wheels[0].url =
             "https://pypi.tuna.tsinghua.edu.cn/packages/example-1.0.0-py3-none-any.whl".to_string();
@@ -1160,8 +1177,10 @@ mod tests {
         assert!(validate_lock(&lock).unwrap_err().contains("SHA-256"));
     }
 
-    /// 两条信任边界的分工：清单校验只认官方 CDN；下载/重定向路径额外放行
-    /// TUNA 镜像（候选由 pythonhosted 地址派生），其余主机两边都拒绝。
+    /// Division of the two trust boundaries: manifest validation accepts only
+    /// the official CDN; the download/redirect path additionally allows the
+    /// TUNA mirror (candidates derived from pythonhosted URLs); every other
+    /// host is rejected on both sides.
     #[test]
     fn manifest_validation_stays_official_only_while_download_accepts_tuna() {
         let official =
@@ -1176,8 +1195,9 @@ mod tests {
         assert!(!is_allowed_wheel_host(&other));
     }
 
-    /// wheel 下载候选：pythonhosted 地址派生 TUNA 镜像且镜像优先；完整路径
-    /// （含 hash 目录段）原样保留；非 pythonhosted 地址不派生镜像。
+    /// Wheel download candidates: pythonhosted URLs derive a TUNA mirror and
+    /// the mirror goes first; the full path (including hash directory
+    /// segments) is kept as-is; non-pythonhosted URLs derive no mirror.
     #[test]
     fn wheel_download_urls_prefer_tuna_mirror_derived_from_pythonhosted() {
         let lock = sample_lock();
@@ -1196,7 +1216,7 @@ mod tests {
         assert_eq!(
             wheel_download_urls(&external),
             vec![external.url.clone()],
-            "非 pythonhosted 地址不得派生镜像"
+            "non-pythonhosted URLs must not derive a mirror"
         );
 
         let nested =
@@ -1461,9 +1481,11 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_rejects_tampered_bytes_and_cleans_staging() {
-        // 镜像/网络返回被篡改字节时必须在落盘前被 sha256 pin 拦截并清理
-        // 暂存：这是「镜像候选与官方源同样过 pin」这一核心安全断言的
-        // 直接测试（删除实际比对时本测试必须转红）。
+        // If the mirror/network returns tampered bytes, the sha256 pin must
+        // intercept them before anything is written to disk and clean up the
+        // staging file: this directly tests the core security assertion that
+        // "mirror candidates pass the same pin as the official source" (this
+        // test must turn red if the actual comparison is removed).
         let root = std::env::temp_dir().join(format!(
             "pinvou-python-checksum-test-{}-{}",
             std::process::id(),

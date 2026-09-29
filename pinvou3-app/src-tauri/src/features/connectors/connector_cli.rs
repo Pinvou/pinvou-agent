@@ -232,10 +232,13 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 /// 1. **stdin 显式接 null**。app 是无窗口 GUI 进程,继承来的 stdin 是坏句柄,
 ///    CLI 安装器(`@wecom/cli` / `@larksuite/cli` 等)读它会**死等 → 每次卡到超时**
 ///    (终端手动跑却几十秒就成)。给个立即 EOF 的 null stdin,安装器走非交互分支跑通。
-/// 2. **stdout/stderr 追加写入日志文件**(不再 `null` 丢弃),失败可诊断:
-///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。追加写
-///    而非每次截断,多阶段安装(默认源失败后的镜像重试)每段输出都得以保留,
-///    阶段边界用 [`append_cli_install_log`] 的标记行区分。
+/// 2. **stdout/stderr are appended to a log file** (no longer discarded to
+///    `null`), so failures are diagnosable: `~/.pinvou3/cli-install.log`.
+///    Writing to a file is not a pipe, so there is no risk of a deadlocked
+///    write on a full buffer. Appending instead of truncating on every run
+///    preserves each stage's output of a multi-stage install (mirror retry
+///    after the default registry fails); stage boundaries are distinguished
+///    by the marker lines of [`append_cli_install_log`].
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
@@ -295,9 +298,11 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     }
 }
 
-/// 往 `cli-install.log` 追加一行阶段标记。日志是追加写(见
-/// [`run_with_timeout`]),多阶段安装(默认源失败后换镜像重试)的每段输出
-/// 靠标记行区分归属。落盘失败同样静默丢弃,不阻塞安装流程。
+/// Appends one stage marker line to `cli-install.log`. The log is
+/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// multi-stage install (mirror retry after the default registry fails) is
+/// attributed via its marker line. Write failures are likewise silently
+/// dropped and never block the install flow.
 pub fn append_cli_install_log(line: &str) {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
@@ -312,10 +317,12 @@ pub fn append_cli_install_log(line: &str) {
     }
 }
 
-/// `cli-install.log` 是追加写、没有自然上界（多阶段安装/多次重试的输出
-/// 全部累加，应用整个生命周期只增不减）。超过上限时轮转为
-/// `cli-install.log.old`（覆盖上一份）：日志磁盘占用有界，当前安装的最新
-/// 输出仍完整保留。
+/// `cli-install.log` is append-only with no natural upper bound (output of
+/// multi-stage installs / repeated retries accumulates, growing for the
+/// application's entire lifetime). Once the size limit is exceeded it is
+/// rotated to `cli-install.log.old` (overwriting the previous copy): disk
+/// usage stays bounded while the latest output of the current install is
+/// still fully preserved.
 const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn rotate_cli_install_log_if_oversized(log_path: &Path) {
@@ -331,11 +338,14 @@ fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
     }
     let mut rotated = log_path.as_os_str().to_owned();
     rotated.push(".old");
-    // 两个安装同时触发轮转时后到者 rename 失败：日志轮转不值得加锁，忽略。
-    // 依赖 std::fs::rename 的「替换已存在目标」语义：Windows 上同样是替换
-    // （FileRenameInfoEx POSIX 语义，回退 MoveFileExW+REPLACE_EXISTING），
-    // 故旧 `.old` 直接被覆盖，无需先删；仅当目标被其他进程占用等场景失败时
-    // 忽略之，下次轮转重试（下方测试钉住该覆盖语义）。
+    // When two installs trigger rotation concurrently, the later rename
+    // fails: log rotation is not worth a lock, so ignore it.
+    // Relies on std::fs::rename's replace-existing-destination semantics: on
+    // Windows it also replaces (FileRenameInfoEx POSIX semantics, falling
+    // back to MoveFileExW + REPLACE_EXISTING), so the old `.old` is directly
+    // overwritten with no prior delete; failures are ignored only for cases
+    // such as the destination being held by another process, and the next
+    // rotation retries (the test below pins this overwrite semantics).
     let _ = std::fs::rename(log_path, PathBuf::from(rotated));
 }
 
@@ -638,8 +648,9 @@ mod tests {
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
 
-    /// 追加写的 cli-install.log 没有自然上界：超限必须轮转为 `.old`
-    /// （覆盖上一份轮转），未超限时保持不动。
+    /// The append-only cli-install.log has no natural upper bound: over the
+    /// limit it must rotate to `.old` (overwriting the previous rotation);
+    /// under the limit it is left untouched.
     #[test]
     fn oversized_cli_install_log_rotates_to_old() {
         let root = std::env::temp_dir().join(format!("pinvou-cli-log-test-{}", std::process::id()));
@@ -660,9 +671,11 @@ mod tests {
             2048
         );
 
-        // 第二次轮转必须覆盖既有的 `.old`（含 Windows：std::fs::rename 在
-        // Windows 上同为替换语义，由 CI 的 Windows 腿覆盖本测试）；若替换
-        // 失败被吞掉，主日志会从这一步起无界增长。
+        // The second rotation must overwrite the existing `.old` (including
+        // on Windows: std::fs::rename has the same replace semantics there,
+        // covered by the CI Windows leg of this test); if a failed replace
+        // were swallowed, the main log would grow unboundedly from this
+        // point on.
         std::fs::write(&log_path, [b'b'; 2048]).unwrap();
         std::fs::write(root.join("cli-install.log.old"), b"stale-old-log").unwrap();
         rotate_cli_install_log_if_oversized_with(&log_path, 1024);

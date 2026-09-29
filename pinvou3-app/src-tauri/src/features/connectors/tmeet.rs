@@ -113,10 +113,13 @@ fn safe_auth_log_line(line: &str) -> Option<String> {
 }
 
 fn install_tmeet_cli() -> Result<(), String> {
-    // registry.npmjs.org 在国内网络常不可达：默认源整体失败后，用 npmmirror
-    // 对本次调用重试一次（仅追加 --registry，不读写用户 npm 配置），与
-    // codex/claude 的 npm 升级镜像重试同一策略；两次尝试的输出都以标记行
-    // 分隔、按序追加在 cli-install.log，首次失败的原因不会丢。
+    // registry.npmjs.org is often unreachable on China networks: after the
+    // default registry fails outright, retry this invocation once via
+    // npmmirror (only appending --registry, never reading or writing the
+    // user's npm config), the same policy as the codex/claude npm upgrade
+    // mirror retry; both attempts' output is separated by marker lines and
+    // appended in order to cli-install.log, so the first failure's cause is
+    // not lost.
     let attempt = |registry: Option<&str>| -> Result<bool, String> {
         let mut c = TMEET_CTX.base_cmd("npm");
         cc::apply_user_npm_prefix(&mut c);
@@ -124,35 +127,37 @@ fn install_tmeet_cli() -> Result<(), String> {
         if let Some(registry) = registry {
             c.arg(format!("--registry={registry}"));
         }
-        // run_with_timeout 只回成败布尔;输出统一追加到 cli-install.log 可诊断。
+        // run_with_timeout only returns a success boolean; output is
+        // uniformly appended to cli-install.log for diagnosis.
         cc::run_with_timeout(c, 180)
     };
-    cc::append_cli_install_log("── npm install @tencentcloud/tmeet（默认 npm 源）──");
+    cc::append_cli_install_log("── npm install @tencentcloud/tmeet (default npm registry) ──");
     let first = attempt(None);
     if first.as_ref().is_ok_and(|ok| *ok) {
         return Ok(());
     }
-    cc::append_cli_install_log("── 默认源失败，改用 npmmirror 重试 ──");
+    cc::append_cli_install_log("── default registry failed, retrying via npmmirror ──");
     let second = attempt(Some(crate::platform::download::NPM_MIRROR_REGISTRY));
     if second.as_ref().is_ok_and(|ok| *ok) {
         return Ok(());
     }
-    // 两次都未成功时保留首次错误的因果链：只报重试错误会把与网络无关的
-    // 首次失败（EACCES/磁盘满等）藏进日志。
+    // When both attempts fail, preserve the causal chain starting from the
+    // first error: reporting only the retry error would bury a first failure
+    // unrelated to the network (EACCES / disk full etc.) in the log.
     let mut causes: Vec<String> = Vec::new();
     if let Err(primary) = &first {
-        causes.push(format!("默认源错误：{primary}"));
+        causes.push(format!("default registry error: {primary}"));
     }
     if let Err(retry) = &second {
-        causes.push(format!("npmmirror 重试错误：{retry}"));
+        causes.push(format!("npmmirror retry error: {retry}"));
     }
     let detail = if causes.is_empty() {
-        "默认源与 npmmirror 镜像均未成功".to_string()
+        "both the default registry and the npmmirror mirror failed".to_string()
     } else {
-        causes.join("；")
+        causes.join("; ")
     };
     Err(format!(
-        "腾讯会议 CLI 安装失败：{detail}；详情见 ~/.pinvou3/cli-install.log"
+        "Tencent Meeting CLI install failed: {detail}; see ~/.pinvou3/cli-install.log for details"
     ))
 }
 

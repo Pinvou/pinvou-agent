@@ -499,10 +499,12 @@ fn hf_repo(
     }
     let cache_dir = scratch_root.join(".hf-cache").join("hub");
     fs::create_dir_all(&cache_dir).map_err(|_| ())?;
-    // from_env 让 HF_ENDPOINT 生效（国内网络可设 https://hf-mirror.com 镜像；
-    // from_cache 会硬编码官方端点），缓存目录仍显式钉在评测 scratch 目录下，
-    // token 以显式参数为准（与原行为一致）。注意：HF_ENDPOINT 会把该 token
-    // 一并带给所选端点，只可指向可信端点（见 docs/gaia-benchmark.md）。
+    // from_env lets HF_ENDPOINT take effect (networks in mainland China can set the
+    // https://hf-mirror.com mirror; from_cache hard-codes the official endpoint),
+    // the cache directory stays explicitly pinned under the benchmark scratch
+    // directory, and the token comes from the explicit argument (same as the original
+    // behavior). Note: HF_ENDPOINT forwards the token to the selected endpoint too,
+    // so it must only point to a trusted endpoint (see docs/gaia-benchmark.md).
     let api = ApiBuilder::from_env()
         .with_cache_dir(cache_dir)
         .with_progress(false)

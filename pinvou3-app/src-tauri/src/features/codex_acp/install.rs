@@ -830,9 +830,11 @@ pub(super) async fn run_official_install_script(
     )
     .await
 }
-/// npm 全局升级单次尝试的 [`ManagedInstallStage`] 描述：官方源与 npmmirror
-/// 镜像重试共用一份，仅镜像标志改变诊断前缀、命令行与超时文案，避免两份
-/// 手写结构体在字段增减时漂移。
+/// [`ManagedInstallStage`] description for a single npm global upgrade
+/// attempt: the official-source run and the npmmirror mirror retry share one
+/// copy, with only the mirror flag changing the diagnostics prefix, command
+/// line, and timeout text — this avoids two hand-written structs drifting
+/// apart as fields are added or removed.
 fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage {
     let (diag_stage, upgrade_kind): (&'static str, &'static str) = if mirror {
         ("npm-mirror", "npm mirror upgrade")
@@ -841,8 +843,9 @@ fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage
     };
     ManagedInstallStage {
         diag_stage,
-        // 展示口径与真实参数（npm_upgrade_args 的 `pkg@latest`）一致，进度
-        // 面板上的命令要能照抄复现。
+        // Keep the display consistent with the real arguments (npm_upgrade_args'
+        // `pkg@latest`) so the command shown in the progress panel can be
+        // reproduced verbatim.
         command_line: if mirror {
             format!(
                 "npm install -g {}@latest --registry={NPM_MIRROR_REGISTRY}",
@@ -917,7 +920,8 @@ pub(super) async fn run_npm_global_upgrade(
         Ok(()) => return Ok(()),
         Err(primary) => primary,
     };
-    // 用户主动取消不是源故障：不得换镜像重试（否则取消后还会继续跑安装）。
+    // A user-initiated cancel is not a source failure: do not retry via the
+    // mirror (otherwise the install would keep running after the cancel).
     if format!("{primary:#}").contains(INSTALL_CANCELLED_MARKER) {
         return Err(primary);
     }
@@ -939,15 +943,18 @@ pub(super) async fn run_npm_global_upgrade(
         npm_upgrade_stage(backend, true),
     )
     .await
-    // 镜像重试也失败时保留首次错误的因果链：只报镜像错误会把
-    // EACCES/磁盘满这类与网络无关的首次失败藏进诊断日志。
-    // 镜像尝试期间用户主动取消同样不是「镜像源故障」：原样上抛取消语义，
-    // 不与首次源错误拼接（否则取消会被误报成双重网络失败）。
+    // Keep the causal chain of the first error when the mirror retry also
+    // fails: reporting only the mirror error would hide first failures
+    // unrelated to the network (EACCES, disk full) in the diagnostics log.
+    // A user-initiated cancel during the mirror attempt is likewise not a
+    // "mirror source failure": propagate the cancel semantics as-is instead
+    // of concatenating it with the first source error (otherwise the cancel
+    // would be misreported as a double network failure).
     .map_err(|mirror_error| {
         if format!("{mirror_error:#}").contains(INSTALL_CANCELLED_MARKER) {
             mirror_error
         } else {
-            mirror_error.context(format!("首次 npm 源错误：{primary:#}"))
+            mirror_error.context(format!("first npm registry error: {primary:#}"))
         }
     })
 }
@@ -1548,9 +1555,11 @@ pub(super) fn official_script_urls(backend: AgentBackend) -> (&'static str, &'st
     }
 }
 
-/// HEAD 探测脚本源可达性。传输层成功即视为可达——任何 HTTP 状态（含
-/// 403/405）都说明源存活、正式 GET 下载大概率可用；按状态码收紧反而会在
-/// CDN 拒绝 HEAD 请求时把可用的源误判为不可达、触发不必要的安装降级。
+/// HEAD probe for script-source reachability. Transport-level success counts
+/// as reachable — any HTTP status (including 403/405) proves the source is
+/// alive and the real GET download will most likely work; tightening by
+/// status code would instead misjudge a usable source as unreachable when a
+/// CDN rejects HEAD requests, triggering unnecessary install degradation.
 pub(super) async fn script_url_reachable(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))

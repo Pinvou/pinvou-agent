@@ -128,11 +128,14 @@ const KIMI_ACP_PACKAGE: &str = "kimi acp";
 const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
 const MIN_CLAUDE_VERSION: &str = "2.0.0";
-/// npm 国内镜像 registry（阿里云 npmmirror，官方 registry 的同步镜像）。
-/// 定义在 [`crate::platform::download`]（连接器侧 tmeet 同样使用；platform
-/// 是两个 feature 共同的下依赖，避免 feature 反向依赖）。
-/// 仅在官方 registry.npmjs.org 不可达时作为该次安装/升级调用的 `--registry`
-/// 重试源与 latest 版本探测兜底，不写入也不改变用户的 npm 配置。
+/// npm China mirror registry (Alibaba npmmirror, a syncing mirror of the
+/// official registry). Defined in [`crate::platform::download`] (the
+/// connector-side tmeet uses it too; platform is the shared downward
+/// dependency of both features, avoiding a reverse feature dependency).
+/// Used only as the `--registry` retry source for that install/upgrade call
+/// and as the latest-version probe fallback when the official
+/// registry.npmjs.org is unreachable; it is never written into and does not
+/// change the user's npm configuration.
 pub(crate) use crate::platform::download::NPM_MIRROR_REGISTRY;
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
 const MIN_KIMI_VERSION: &str = "0.9.0";
@@ -1304,16 +1307,22 @@ fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// `official_script` 动作的降级决策（纯函数核心，便于单测）：
-/// - 脚本源可达 → 原样 `official_script`；
-/// - 不可达且本机有 npm 兜底（有对应 npm 包且 npm 可执行）→ `npm_upgrade`
-///   （`run_npm_global_upgrade` 自带 npmmirror 镜像重试）；
-/// - 不可达且无 npm 兜底 → `None`，调用方报原始网络错误与手动安装提示。
+/// Degradation decision for the `official_script` action (pure-function core,
+/// for unit testing):
+/// - script source reachable → `official_script` as-is;
+/// - unreachable and a local npm fallback exists (matching npm package and a
+///   runnable npm) → `npm_upgrade`
+///   (`run_npm_global_upgrade` has built-in npmmirror mirror retry);
+/// - unreachable and no npm fallback → `None`; the caller reports the
+///   original network error and the manual-install hint.
 ///
-/// kimi 的 official_script 动作同样适用：仅在其官方源（code.kimi.com，国内
-/// 可达）真的不可达时才降级，正常路径不受影响；与 latest 探测对 kimi 排除
-/// npmmirror 兜底并不矛盾——那里排除的是正常路径上的版本探测兜底，这里是
-/// 可达性故障时的安装兜底（npm 本就是 kimi 的合法安装渠道）。
+/// The same applies to kimi's official_script action: degrade only when its
+/// official source (code.kimi.com, reachable from China) is truly
+/// unreachable; the normal path is unaffected. This does not contradict the
+/// latest probe excluding the npmmirror fallback for kimi — what is excluded
+/// there is the version-probe fallback on the normal path, while this is the
+/// install fallback when reachability fails (npm is a legitimate install
+/// channel for kimi in the first place).
 fn official_script_degrade(
     script_reachable: bool,
     npm_fallback_available: bool,
@@ -1327,27 +1336,37 @@ fn official_script_degrade(
     }
 }
 
-/// 脚本源不可达时是否具备 npm 兜底（纯函数核心，便于单测）：有对应 npm 包
-/// **且**找得到 npm 可执行，二者缺一不可——有包没 npm 时降级只会在安装中段
-/// 以「未检测到 npm」失败，不如预检直接报原始网络错误附手动安装提示。
+/// Whether an npm fallback exists when the script source is unreachable
+/// (pure-function core, for unit testing): a matching npm package **and**
+/// a findable npm executable — both are required. With a package but no npm,
+/// degrading would only fail mid-install with "npm not detected"; the
+/// preflight is better off reporting the original network error plus the
+/// manual-install hint up front.
 fn npm_fallback_available(npm_package: Option<&str>, npm_executable: bool) -> bool {
     npm_package.is_some() && npm_executable
 }
 
-/// npm 升级前是否需要把官方脚本二进制移开（纯函数核心，便于单测）：仅当
-/// 脚本路径就是当前解析生效的 CLI 时，脚本文件才会遮住 npm 装进全局目录的
-/// 新版本，移开才有意义。解析优先级更高的来源（`PINVOU3_*_CLI_PATH` 覆盖、
-/// Claude 桥接自带的 agent SDK 二进制、PATH 命中）不受脚本文件遮蔽——此时
-/// 移开不会让升级更生效，反而会在「finalize 只验已安装、有效性校验在备份
-/// 清理之后」的时序下，把用户的脚本安装永久删掉（备份在 finalize 通过后
-/// 清理，而版本有效性校验在 install 收口处才跑）。
+/// Whether the official script binary must be moved aside before the npm
+/// upgrade (pure-function core, for unit testing): only when the script path
+/// is the currently resolved, effective CLI does the script file shadow the
+/// new version npm installs into the global directory, making the move
+/// meaningful. Sources with higher resolution priority (`PINVOU3_*_CLI_PATH`
+/// overrides, the agent SDK binary bundled with the Claude bridge, PATH hits)
+/// are not shadowed by the script file — moving aside would not make the
+/// upgrade more effective there, and under the ordering where finalize only
+/// verifies what is installed and effectiveness validation runs after backup
+/// cleanup, it would permanently delete the user's script install (backups
+/// are cleaned up once finalize passes, while version effectiveness
+/// validation only runs at the install finalize step).
 fn npm_move_aside_needed(resolved: Option<&Path>, script_paths: &[PathBuf]) -> bool {
     match resolved {
         Some(path) => script_paths
             .iter()
             .any(|candidate| candidate.as_path() == path),
-        // 解析不出任何可用 CLI 时仍移开：脚本残留属于解析不认的坏文件，
-        // 清到旁边才能让升级后的探测命中 npm 安装的新版本。
+        // Still move aside when no usable CLI can be resolved: a leftover
+        // script is a bad file the resolver does not recognize, and clearing
+        // it aside is what lets the post-upgrade probe hit the new version
+        // npm installed.
         None => true,
     }
 }
@@ -2193,16 +2212,20 @@ impl AcpPool {
     /// 安装前自检：把「脚本源不可达」和「目标路径存在不可用的坏残留」挡在
     /// 安装开始前，避免安装跑到一半才失败，或覆盖坏安装后依旧不可用。
     ///
-    /// 返回实际生效的安装动作：official_script 的脚本源不可达且本机 npm 可用时，
-    /// 自动降级为 `npm_upgrade`（`run_npm_global_upgrade` 自带 npmmirror 镜像
-    /// 重试），而不是在 chatgpt.com/claude.ai 这类国内不可达的脚本源上直接失败。
+    /// Returns the actually effective install action: when the official_script
+    /// script source is unreachable and local npm is available, it
+    /// automatically degrades to `npm_upgrade` (`run_npm_global_upgrade` has
+    /// built-in npmmirror mirror retry) instead of failing outright on script
+    /// sources like chatgpt.com/claude.ai that are unreachable from China.
     ///
     /// - official_script：HEAD 探测脚本 URL（连接 3s / 总 5s 超时，传输层失败
     ///   即视为不可达）；并检查官方脚本目标路径的残留是否可用——存在但探测
     ///   没解析到它（或该文件本身跑不起 `--version`）就是半成品/被替换的坏
-    ///   文件，覆盖安装未必能修复，先拦截并提示删除。坏残留检查在降级为
-    ///   npm 安装时同样执行：早期脚本安装的坏文件在 PATH 上会遮住 npm 装的
-    ///   版本，放行会让升级有效性校验误报。
+    ///   file; a covering install may not fix it, so intercept up front and
+    ///   prompt for deletion. The bad-leftover check also runs when degraded
+    ///   to the npm install: bad files from early script installs shadow the
+    ///   npm-installed version on PATH, and letting them through would make
+    ///   the upgrade effectiveness validation misreport.
     /// - npm_upgrade：npm 可执行存在性由 run_npm_global_upgrade 保证；npm
     ///   全局安装幂等，半装残留会由 npm 自身收敛，不做额外检测。
     /// - brew_upgrade：brew 自身处理幂等与升级，无需预检。
@@ -2223,8 +2246,9 @@ impl AcpPool {
             .ok_or_else(|| {
                 let npm_pkg = npm_package(backend).unwrap_or("");
                 anyhow::anyhow!(
-                    "无法连接 {} 官方安装脚本（{url}），请检查网络或稍后重试；\
-                     也可手动安装：npm install -g {npm_pkg}",
+                    "cannot reach the {} official install script ({url}); \
+                     check your network or retry later, or install manually: \
+                     npm install -g {npm_pkg}",
                     backend.display_name()
                 )
             })?;
@@ -2239,7 +2263,8 @@ impl AcpPool {
         Ok(effective.to_string())
     }
 
-    /// 官方脚本目标路径的坏残留检查（脚本安装与降级 npm 安装共用）。
+    /// Bad-leftover check on the official script target path (shared by the
+    /// script install and the degraded npm install).
     async fn ensure_no_stale_official_install(&self, backend: AgentBackend) -> Result<()> {
         let pool = self.clone();
         let stale_install =
@@ -2318,8 +2343,10 @@ impl AcpPool {
         };
         // 安装前自检：把网络不可达与坏残留挡在开始前（见 preflight_install）。
         // 必须放在停会话之前——自检失败时不要白白关掉用户运行中的会话。
-        // 官方脚本源不可达且 npm 可用时，自检会把动作降级为 npm_upgrade
-        // （自带 npmmirror 镜像重试），不再在不可达的脚本源上直接失败。
+        // When the official script source is unreachable and npm is available,
+        // the preflight degrades the action to npm_upgrade (with built-in
+        // npmmirror mirror retry) instead of failing outright on the
+        // unreachable script source.
         let action = self.preflight_install(backend, requested_action).await?;
         // 安装/升级前停掉该 Agent 的运行中会话：Windows 下被会话占用的
         // CLI 二进制无法替换（npm EBUSY / 脚本覆盖失败），先 shutdown 再安装，
@@ -2439,9 +2466,10 @@ impl AcpPool {
         }
     }
 
-    /// 按后端解析当前生效的 CLI 路径（与各 Agent 探测/登录入口同一套解析
-    /// 优先级）。仅用于 npm 升级前的移开判定；`None` 表示本机没有解析得到
-    /// 任何可用 CLI。
+    /// Resolves the currently effective CLI path for a backend (the same
+    /// resolution priority as each Agent's probe/login entry points). Used
+    /// only for the move-aside decision before the npm upgrade; `None` means
+    /// no usable CLI could be resolved on this machine.
     fn resolved_agent_cli_path(&self, backend: AgentBackend) -> Option<PathBuf> {
         match backend {
             AgentBackend::CodexAcp => resolve_codex_cli(),
@@ -2469,14 +2497,22 @@ impl AcpPool {
         };
         // 清掉上一次安装可能残留的取消标记：本次失败语义只来自本次取消。
         self.install_cancelled.lock().remove(&backend);
-        // 官方脚本安装的旧二进制先改名移开：仅当脚本路径就是当前解析生效的
-        // CLI 时，npm 装进全局目录的新版本才会被旧文件遮住（升级永远不生效，
-        // 有效性校验只会误报「被占用/被安全软件拦截」）。官方脚本源不可达
-        // 降级为 npm_upgrade 时必然踩中该场景。解析优先级更高的来源（环境
-        // 变量覆盖、Claude 桥接自带 SDK）不受脚本文件遮蔽，跳过移开：此时
-        // 移开不会让升级更生效，反而会在备份被清理后把用户的脚本安装永久
-        // 删掉。机制与脚本路径一致：备份失败即中止、命令失败恢复旧文件、
-        // 验证通过才清理备份；全新安装（无旧文件）不移动任何文件。
+        // Rename the old binary installed by the official script and move it
+        // aside first: only when the script path is the currently resolved,
+        // effective CLI is the new version npm installs into the global
+        // directory shadowed by the old file (the upgrade would never take
+        // effect, and effectiveness validation would only misreport as
+        // "in use / blocked by security software"). Degrading to npm_upgrade
+        // when the official script source is unreachable always hits this
+        // scenario. Sources with higher resolution priority (environment
+        // variable overrides, the SDK bundled with the Claude bridge) are not
+        // shadowed by the script file, so skip the move-aside: moving aside
+        // would not make the upgrade more effective there, and would
+        // permanently delete the user's script install once the backup is
+        // cleaned up. The mechanism matches the script path: abort on backup
+        // failure, restore the old file on command failure, clean up the
+        // backup only after validation passes; a fresh install (no old file)
+        // moves no files.
         let script_paths = providers::lifecycle::official_script_paths(backend);
         let resolved_cli = self.resolved_agent_cli_path(backend);
         let moved_backups = if npm_move_aside_needed(resolved_cli.as_deref(), &script_paths) {
@@ -2537,7 +2573,8 @@ impl AcpPool {
         )
         .await;
         if result.is_err() && !moved_backups.is_empty() {
-            // npm 安装失败（含用户取消）：恢复旧文件，避免旧版本丢失。
+            // npm install failed (including user cancel): restore the old
+            // files so the previous version is not lost.
             for (original, backup) in &moved_backups {
                 if backup.is_file() && !original.exists() {
                     let _ = std::fs::rename(backup, original);
@@ -2559,8 +2596,10 @@ impl AcpPool {
         match result {
             Ok(()) => {
                 diagnostics::write(&operation_id, "npm:complete", "result=success");
-                // 备份不在这里删：finalize 做版本/就绪校验，**验证通过后才
-                // 清理** .pre-upgrade 备份（与脚本路径同一先验后删原则）。
+                // Backups are not deleted here: finalize does the
+                // version/readiness validation and **cleans up** the
+                // .pre-upgrade backups only after validation passes (the same
+                // verify-then-delete principle as the script path).
                 let finalized = self
                     .finalize_agent_install(backend, previous_codex_version)
                     .await;
@@ -4958,20 +4997,24 @@ mod tests {
 
     #[test]
     fn official_script_degrade_covers_reachable_unreachable_and_no_npm() {
-        // 脚本源可达：原样执行，无论 npm 是否可用。
+        // Script source reachable: run as-is, regardless of npm availability.
         assert_eq!(
             official_script_degrade(true, false),
             Some("official_script")
         );
         assert_eq!(official_script_degrade(true, true), Some("official_script"));
-        // 不可达但有 npm 兜底：降级 npm 安装（自带 npmmirror 镜像重试）。
+        // Unreachable but with an npm fallback: degrade to the npm install
+        // (built-in npmmirror mirror retry).
         assert_eq!(official_script_degrade(false, true), Some("npm_upgrade"));
-        // 不可达且无 npm 兜底：无法降级，调用方报原始网络错误与手动安装提示。
+        // Unreachable and no npm fallback: cannot degrade; the caller reports
+        // the original network error and the manual-install hint.
         assert_eq!(official_script_degrade(false, false), None);
     }
 
-    /// npm 兜底判定是「有包**且**有可执行」的合取：误改成析取会让无 npm 的
-    /// 机器跳过「原始网络错误 + 手动安装提示」直接进降级、在中段失败。
+    /// The npm fallback check is the conjunction "has package **and** has a
+    /// runnable executable": mistakenly changing it to a disjunction would let
+    /// machines without npm skip the "original network error + manual-install
+    /// hint" and go straight into the degraded path, failing mid-install.
     #[test]
     fn npm_fallback_requires_both_package_and_executable() {
         assert!(npm_fallback_available(Some("@openai/codex"), true));
@@ -4980,27 +5023,34 @@ mod tests {
         assert!(!npm_fallback_available(None, false));
     }
 
-    /// 移开判定只认「脚本路径就是当前解析结果」：Claude 桥接自带的 agent
-    /// SDK、`PINVOU3_*_CLI_PATH` 覆盖、PATH 命中等解析结果都不在脚本路径上，
-    /// 此时移开不会让 npm 升级更生效，反而会在备份被清理后把用户的脚本安装
-    /// 永久删掉（回归：移开必须以脚本遮蔽为前提）。解析不出任何 CLI 时保留
-    /// 移开语义——脚本残留属于解析不认的坏文件，清到旁边才能让升级后的
-    /// 探测命中 npm 新版本。
+    /// The move-aside check only recognizes "the script path is the resolved
+    /// result": resolutions such as the agent SDK bundled with the Claude
+    /// bridge, `PINVOU3_*_CLI_PATH` overrides, or PATH hits never land on the
+    /// script path, where moving aside would not make the npm upgrade more
+    /// effective and would permanently delete the user's script install after
+    /// the backup is cleaned up (regression guard: the move-aside must be
+    /// predicated on script shadowing). When no CLI can be resolved, the
+    /// move-aside semantics are kept — a leftover script is a bad file the
+    /// resolver does not recognize, and clearing it aside lets the
+    /// post-upgrade probe hit the new npm version.
     #[test]
     fn npm_move_aside_only_when_script_path_is_resolved() {
         let script = PathBuf::from("/home/u/.local/bin/claude");
         let script_paths = vec![script.clone()];
-        // 解析结果就是脚本路径：需要移开（否则遮住 npm 版本）。
+        // Resolved result is the script path: move aside is needed (otherwise
+        // it shadows the npm version).
         assert!(npm_move_aside_needed(Some(script.as_path()), &script_paths));
-        // 解析结果在别处（桥接 SDK / PATH / 环境变量覆盖）：绝不移开。
+        // Resolved result is elsewhere (bridge SDK / PATH / env override):
+        // never move aside.
         let sdk = PathBuf::from(
             "/app/resources/codex-bridge/node_modules/\
              @anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
         );
         assert!(!npm_move_aside_needed(Some(sdk.as_path()), &script_paths));
-        // 解析不出任何可用 CLI：保留移开清理语义。
+        // No usable CLI can be resolved: keep the move-aside cleanup semantics.
         assert!(npm_move_aside_needed(None, &script_paths));
-        // 脚本路径表为空（防御）：解析到任何路径都不移开。
+        // Script path table is empty (defensive): never move aside regardless
+        // of the resolved path.
         assert!(!npm_move_aside_needed(Some(script.as_path()), &[]));
     }
 

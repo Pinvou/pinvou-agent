@@ -125,22 +125,28 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
 pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
 
-/// npm 国内镜像 registry（阿里云 npmmirror，官方 registry 的同步镜像）。
-/// codex/claude 与 tmeet 的 npm 安装在官方 registry.npmjs.org 整体失败后，
-/// 以本次调用追加 `--registry` 的方式重试一次；不写入用户 npm 配置。
-/// 放在 platform 供 codex_acp 与 connectors 两个 feature 共用（feature 之间
-/// 不得互相依赖）。注意：npm 安装路径没有应用侧制品 pin（npm 的完整性
-/// 元数据同样来自该 registry），此路径的完整性依赖 TLS 与镜像的同步保真，
-/// 与归档/wheel 下载的 SHA-256 pin 校验不是同一强度。
+/// npm CN mirror registry (Alibaba Cloud npmmirror, a sync mirror of the
+/// official registry). The npm installs for codex/claude and tmeet retry once
+/// via `--registry` appended for that call after the official
+/// registry.npmjs.org attempt fails as a whole; never written into the user's
+/// npm config. Lives in platform so the codex_acp and connectors features can
+/// share it (features must not depend on each other). Note: the npm install
+/// path has no app-side artifact pin (npm's integrity metadata comes from
+/// that same registry), so integrity on this path rests on TLS and the
+/// mirror's sync fidelity — not the same strength as the SHA-256 pin
+/// verification used for archive/wheel downloads.
 pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 
-/// 日志/报错里展示候选地址前抹掉 userinfo（`user:pass@host`）：用户可能在
-/// 加速前缀里带入凭据，诊断输出不应落凭据。解析失败时同样不能回显原串——
-/// 无效串里可能正带着误粘的 userinfo（如 `https://user:secret@` 拼出空
-/// host），故 fail-closed 输出固定占位符；该地址本来也会在 HTTPS 门禁处被
-/// 跳过，不会再被请求。放在 platform 供 connectors 与 marketplace 两个
-/// feature 的候选下载循环共用（feature 之间不得互相依赖），两处跳过候选时
-/// 的口径必须一致。
+/// Redact userinfo (`user:pass@host`) before showing a candidate URL in
+/// logs/errors: users may paste credentials into an acceleration prefix, and
+/// diagnostic output must not leak them. Parse failures must not echo the
+/// original string either — an invalid string may carry mistyped userinfo
+/// (e.g. a `https://user:secret@` concatenation producing an empty host), so
+/// fail closed with a fixed placeholder; such a URL would be skipped at the
+/// HTTPS gate anyway and never requested. Lives in platform so the candidate
+/// download loops of the connectors and marketplace features can share it
+/// (features must not depend on each other), and both must skip candidates
+/// the same way.
 pub(crate) fn redact_url_credentials(url_text: &str) -> String {
     let mut parsed = match reqwest::Url::parse(url_text) {
         Ok(parsed) => parsed,
@@ -845,8 +851,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 候选地址进日志/报错前必须抹掉 userinfo：用户可能在加速前缀里带入
-    /// 凭据，诊断输出不应落凭据。
+    /// Userinfo must be redacted before a candidate URL goes into logs or
+    /// errors: users may paste credentials into an acceleration prefix, and
+    /// diagnostic output must not leak them.
     #[test]
     fn redact_url_credentials_strips_userinfo() {
         let redacted = redact_url_credentials(
@@ -854,18 +861,21 @@ mod tests {
         );
         assert!(!redacted.contains("user:pass"), "{redacted}");
         assert!(redacted.contains("proxy.example"), "{redacted}");
-        // 无 userinfo 的地址原样保留。
+        // URLs without userinfo are kept as-is.
         assert_eq!(
             redact_url_credentials("https://proxy.example/x"),
             "https://proxy.example/x"
         );
-        // 解析失败一律 fail-closed 输出占位符，不回显原串：无效串可能带着
-        // 误粘的 userinfo（空 host / 非法端口等都会解析失败），回显即落凭据。
+        // Parse failures always fail closed with a placeholder instead of
+        // echoing the original string: invalid strings may carry mistyped
+        // userinfo (empty host / invalid port, etc., all fail parsing), and
+        // echoing them would leak credentials.
         assert_eq!(redact_url_credentials("not a url"), "<invalid URL>");
         for invalid_with_userinfo in [
-            // 空 host:加速前缀 `https://user:secret@` 直接拼接的典型产物。
+            // Empty host: typical product of concatenating an acceleration
+            // prefix like `https://user:secret@`.
             "https://user:secret@/https://github.com/openai/dws/archive/v1.tar.gz",
-            // 非法端口:粘贴时多敲一位也会走到这里。
+            // Invalid port: one extra digit typed while pasting also ends up here.
             "https://user:secret@proxy.example:99999/x",
         ] {
             let redacted = redact_url_credentials(invalid_with_userinfo);
