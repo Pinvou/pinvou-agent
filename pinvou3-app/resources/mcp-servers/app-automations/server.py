@@ -11,7 +11,12 @@ model can create a Pinvou scheduled task directly, landing in the exact same
 store the Scheduled Tasks panel uses (ScheduledTaskState::create_task →
 ~/.pinvou3/automations, forced YOLO, per-task workspace, model sidecar).
 
-Create semantics (create_scheduled_task, contract §5 L1):
+Create semantics (create_scheduled_task, contract §5 L1) — two run bodies:
+ordinary tasks start a new conversation per fire; with `target_session` the
+task becomes a scheduled message that delivers its prompt into that session
+on schedule (steer into its current turn, or a new turn when idle — the
+messaging channel's delivery semantics). Isolated/unattended sessions are
+rejected as targets in every layer.
 - This server NEVER writes the automation store (the panel and the scheduler
   own it; concurrent whole-file writers would clobber each other). It
   validates the request and spools it:
@@ -150,7 +155,10 @@ TOOL_DEFS = [
             "Create a Pinvou scheduled task (write operation, requires user approval). "
             "Use this when the user asks for a recurring or one-shot automated job, e.g. "
             "'run an AI news digest every day at 8:30' or 'remind me once on June 1st at 9:30'. "
-            "Each run starts its own conversation in a task-dedicated workspace. Call "
+            "By default each run starts its own conversation in a task-dedicated workspace; "
+            "with target_session the task instead delivers its prompt into that session on "
+            "schedule (a recurring or one-shot inquiry/reminder into an ongoing conversation). "
+            "Call "
             "list_scheduled_tasks first to avoid duplicating an existing task. rrule must use "
             "the product subset only: FREQ=HOURLY;INTERVAL=N;BYHOUR=h;BYMINUTE=m (every N hours), "
             "FREQ=WEEKLY;BYDAY=MO,...;BYHOUR=h;BYMINUTE=m (weekly on given days; all seven days "
@@ -186,6 +194,17 @@ TOOL_DEFS = [
                 "paused": {
                     "type": "boolean",
                     "description": "(optional) Create the task paused (scheduled but not active); default false.",
+                },
+                "target_session": {
+                    "type": "string",
+                    "description": (
+                        "(optional) Scheduled-message mode: deliver the prompt into this "
+                        "session at each fire (steer into its current turn, or start a new "
+                        "turn when idle) instead of starting new conversations. Use the "
+                        "session's id — the current session's id is allowed (a self "
+                        "reminder); isolated sessions are rejected. Omit for ordinary "
+                        "tasks that start a fresh conversation per run."
+                    ),
                 },
                 "from_session": {
                     "type": "string",
@@ -276,6 +295,10 @@ TOOL_DEFS = [
                     "type": "boolean",
                     "description": "(optional) true pauses the task, false resumes it.",
                 },
+                "target_session": {
+                    "type": "string",
+                    "description": "(optional) New delivery target — only applies to tasks already created in scheduled-message mode.",
+                },
                 "from_session": {
                     "type": "string",
                     "description": "(optional) Your own session's sessionId, for the audit trail.",
@@ -343,6 +366,20 @@ def resolve_requests_dir(argv=None):
     if home:
         return os.path.join(home, "task-requests")
     return os.path.join(os.path.expanduser("~"), ".pinvou3", "task-requests")
+
+
+def resolve_sessions_dir(argv=None):
+    """--sessions-dir > PINVOU3_HOME/sessions > ~/.pinvou3/sessions (target
+    existence probes for scheduled messages; tests use the explicit override)."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sessions-dir", default=None)
+    args, _ = parser.parse_known_args(argv)
+    if args.sessions_dir:
+        return args.sessions_dir
+    home = os.environ.get("PINVOU3_HOME")
+    if home:
+        return os.path.join(home, "sessions")
+    return os.path.join(os.path.expanduser("~"), ".pinvou3", "sessions")
 
 
 def resolve_automations_dir(argv=None):
@@ -649,6 +686,31 @@ def validate_task_id(task_id):
     return None
 
 
+def validate_message_target(sessions_dir, target):
+    """Validation for a scheduled-message target session: charset discipline
+    (the id flows into storage paths), the isolated-prefix rejection (waking
+    an unattended session on a schedule is the recursion direction), and an
+    existence probe so a typo fails at creation instead of failing every
+    future run. The app-side watcher and the domain layer re-check all of
+    this against the live store (the spool is not trusted)."""
+    target = str(target or "").strip()
+    if not target or len(target) > MAX_TASK_ID_LEN or not TASK_ID_RE.match(target):
+        return None, "invalid target_session: %r" % (
+            target[:64] + "..." if len(target) > 64 else target,)
+    if target.lower().startswith(ISOLATED_SENDER_PREFIXES):
+        return None, (
+            "invalid target_session: %s is an isolated or unattended session and "
+            "cannot receive scheduled messages" % target
+        )
+    probe = os.path.join(sessions_dir, "%s.json" % target)
+    try:
+        if not os.path.isfile(probe):
+            return None, "target_session not found: %s" % target
+    except OSError:
+        return None, "sessions directory is not readable"
+    return target, None
+
+
 def read_scheduled_task(automations_dir, task_id):
     """Reads one task's full detail from the AutomationManager store
     (read-only). Unlike list_scheduled_tasks this projects the prompt: the
@@ -716,7 +778,7 @@ def validate_sender_session_id(session_id):
 
 def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
                    from_session, from_title, idempotency_key, kind="create",
-                   task_id=None):
+                   task_id=None, target_session=None):
     """Spool record shape — the app-side Rust watcher
     (features/scheduled/creation_requests.rs) re-validates this schema before
     touching anything; additive fields only (contract §4.4). `kind` selects
@@ -728,6 +790,7 @@ def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
         "kind": kind,
         "id": spool_id,
         "task_id": task_id,
+        "target_session": target_session,
         "name": name,
         "prompt": prompt,
         "rrule": rrule,
@@ -757,10 +820,15 @@ def _read_result_marker(path):
 
 def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
                           paused=False, from_session=None, from_title=None,
-                          idempotency_key=None, automations_dir=None):
+                          idempotency_key=None, automations_dir=None,
+                          target_session=None, sessions_dir=None):
     """Validates a creation request and spools it for the app-side watcher,
     then waits briefly for the creation result marker. Returns
     (payload, error); nothing else is written.
+
+    With `target_session` the task becomes a scheduled message: each fire
+    delivers `prompt` into that session (steer / new turn) instead of
+    starting new conversations.
 
     Idempotency (contract §6): with an idempotency_key the spool file name is
     the sha256 of "<from_session>|<kind>|<task_id>|<key>", so a retried call
@@ -779,13 +847,16 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
         from_session=from_session,
         from_title=from_title,
         idempotency_key=idempotency_key,
+        target_session=target_session,
+        sessions_dir=sessions_dir,
     )
 
 
 def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                           prompt=None, rrule=None, model_id=None, paused=None,
                           task_id=None, from_session=None, from_title=None,
-                          idempotency_key=None):
+                          idempotency_key=None, target_session=None,
+                          sessions_dir=None):
     """Kind-aware request path behind the create/update/delete tools: validate
     → spool → wait for the watcher's result marker. Returns (payload, error);
     nothing else is written. `paused` is tri-state here (None = not provided,
@@ -804,6 +875,14 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         paused = _parse_bool_arg(paused, default=None)
         if paused is None:
             return None, "invalid paused: must be a boolean"
+    if target_session is not None and str(target_session).strip():
+        if kind == "delete":
+            return None, "invalid target_session: delete takes no extra fields"
+        target_session, error = validate_message_target(sessions_dir, target_session)
+        if error:
+            return None, error
+    else:
+        target_session = None
 
     if kind == "create":
         if task_id is not None:
@@ -820,10 +899,13 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         if id_error:
             return None, id_error
         if kind == "update":
-            if all(field is None for field in (name, prompt, rrule, model_id, paused)):
+            if all(
+                field is None
+                for field in (name, prompt, rrule, model_id, paused, target_session)
+            ):
                 return None, (
                     "invalid update: provide at least one field to change "
-                    "(name, prompt, rrule, model_id, paused)"
+                    "(name, prompt, rrule, model_id, paused, target_session)"
                 )
         else:
             for field_name, field in (("name", name), ("prompt", prompt),
@@ -885,7 +967,8 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     duplicate = os.path.exists(target)
     payload = _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
                              from_session, from_title, idempotency_key,
-                             kind=kind, task_id=task_id if kind != "create" else None)
+                             kind=kind, task_id=task_id if kind != "create" else None,
+                             target_session=target_session)
     try:
         # Atomic write (tmp + rename): the watcher must never observe a torn file.
         fd, tmp = tempfile.mkstemp(dir=spool_dir, suffix=".tmp")
@@ -1046,7 +1129,7 @@ def _text_content(payload, is_error=False):
     }
 
 
-def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
+def _handle_call(req_id, params, requests_dir, automations_dir, sessions_dir, tool_features):
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
     # Contract §3.3 fallback: a tool call from stale context gets a structured
@@ -1067,6 +1150,8 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
             from_title=args.get("from_title"),
             idempotency_key=args.get("idempotency_key"),
             automations_dir=automations_dir,
+            target_session=args.get("target_session"),
+            sessions_dir=sessions_dir,
         )
     elif name == "read_scheduled_task":
         payload, error = read_scheduled_task(
@@ -1087,6 +1172,8 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
             from_session=args.get("from_session"),
             from_title=args.get("from_title"),
             idempotency_key=args.get("idempotency_key"),
+            target_session=args.get("target_session"),
+            sessions_dir=sessions_dir,
         )
     elif name == "list_scheduled_tasks":
         payload, error = list_scheduled_tasks(
@@ -1105,7 +1192,7 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
         _result(req_id, _text_content(payload))
 
 
-def _handle(msg, requests_dir, automations_dir, tool_features):
+def _handle(msg, requests_dir, automations_dir, sessions_dir, tool_features):
     method = msg.get("method")
     req_id = msg.get("id")
 
@@ -1125,7 +1212,8 @@ def _handle(msg, requests_dir, automations_dir, tool_features):
     elif method == "tools/list":
         _result(req_id, {"tools": TOOL_DEFS})
     elif method == "tools/call":
-        _handle_call(req_id, msg.get("params"), requests_dir, automations_dir, tool_features)
+        _handle_call(req_id, msg.get("params"), requests_dir, automations_dir,
+                     sessions_dir, tool_features)
     else:
         _error(req_id, -32601, "method not found: %s" % method)
 
@@ -1133,6 +1221,7 @@ def _handle(msg, requests_dir, automations_dir, tool_features):
 def main():
     requests_dir = resolve_requests_dir()
     automations_dir = resolve_automations_dir()
+    sessions_dir = resolve_sessions_dir()
     tool_features = load_tool_features()
     # Read raw bytes and decode tolerantly: a single non-UTF-8 byte on stdin
     # becomes U+FFFD (the line then fails JSON parsing and is skipped) instead
@@ -1146,7 +1235,7 @@ def main():
         except Exception:
             continue  # skip the bad line, never crash
         try:
-            _handle(msg, requests_dir, automations_dir, tool_features)
+            _handle(msg, requests_dir, automations_dir, sessions_dir, tool_features)
         except Exception as e:
             rid = msg.get("id") if isinstance(msg, dict) else None
             if rid is not None:

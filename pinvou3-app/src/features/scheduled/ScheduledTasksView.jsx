@@ -1529,6 +1529,12 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                   <span className={mutedValue}>{scheduledCopy.nextExecution}</span>
                   <span className={`truncate text-right font-medium ${bodyText}`}>{fmtDateTime(selected.nextRunAt)}</span>
                 </div>
+                {selected.targetSession ? (
+                  <div data-testid="scheduled-detail-target" className="flex items-center justify-between gap-3">
+                    <span className={mutedValue}>{scheduledCopy.targetSession}</span>
+                    <span className="truncate text-right font-mono text-[12px] font-medium {bodyText}">{selected.targetSession}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between gap-3">
                   <span className={mutedValue}>{scheduledCopy.enableTask}</span>
                   <MacSwitch task={selected} onToggle={toggleTaskPaused} busyAction={busyAction} scheduledCopy={scheduledCopy} />

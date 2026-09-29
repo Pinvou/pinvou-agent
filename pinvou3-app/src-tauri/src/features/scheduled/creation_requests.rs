@@ -58,7 +58,7 @@ use super::{
 use crate::features::assistant::platform::bridge::{
     SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_UPDATE_TOOL,
 };
-use crate::features::sessions::validators::is_sched_session_id;
+use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 
 /// Same bounds as the MCP server's caps — re-checked here because the spool
 /// directory is user-writable.
@@ -148,6 +148,11 @@ pub(crate) struct SpooledCreationRequest {
     pub rrule: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// `session_message` mode marker: when present, the task delivers its
+    /// prompt into this session at each fire instead of starting new
+    /// conversations.
+    #[serde(default)]
+    pub target_session: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -252,6 +257,7 @@ impl SpooledCreationRequest {
                     ("prompt", &self.prompt),
                     ("rrule", &self.rrule),
                     ("model_id", &self.model_id),
+                    ("target_session", &self.target_session),
                 ] {
                     if field
                         .as_deref()
@@ -272,6 +278,20 @@ impl SpooledCreationRequest {
             }
             if key.chars().count() > MAX_IDEMPOTENCY_KEY_CHARS {
                 bail!("idempotency_key exceeds the {MAX_IDEMPOTENCY_KEY_CHARS} character limit");
+            }
+        }
+        check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
+        if let Some(target) = self
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if is_sched_session_id(target)
+                || is_aux_session_id(target)
+                || target.to_ascii_lowercase().starts_with("eval_")
+            {
+                bail!("target_session {target} is an isolated or unattended session");
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
@@ -554,6 +574,7 @@ fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskIn
         cwds: Vec::new(),
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         kind: None,
         mode: None,
         allow_shell: None,
@@ -571,6 +592,7 @@ fn build_update_input(request: &SpooledCreationRequest) -> UpdateScheduledTaskIn
         cwds: None,
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         mode: None,
         allow_shell: None,
         trust_mode: None,
@@ -1302,6 +1324,93 @@ mod tests {
         assert_eq!(records.len(), 1, "the request itself is still honored");
     }
 
+    #[tokio::test]
+    async fn scheduled_message_request_lands_kind_and_target() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        // A real ordinary session file so the domain's existence probe passes.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("target001.json"),
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1, "the scheduled-message task is created");
+        assert_eq!(
+            state.task_kinds.kind_for(&records[0].id).as_deref(),
+            Some("session_message")
+        );
+        assert_eq!(
+            state
+                .task_kinds
+                .target_session_for(&records[0].id)
+                .as_deref(),
+            Some("target001"),
+            "the delivery target lands in the sidecar"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("msg.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "create");
+        assert_eq!(marker["task_id"], records[0].id);
+    }
+
+    #[tokio::test]
+    async fn tampered_message_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // An unattended target smuggled past the server is the recursion
+        // direction — quarantined without creating anything.
+        std::fs::write(
+            spool.join("selfwake.json"),
+            spool_record_json(&[("target_session", serde_json::json!("sched-run1"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("selfwake.json").exists());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no task may be created from a hostile target"
+        );
+    }
+
     #[test]
     fn sender_validation_rejects_isolated_and_malformed_ids() {
         let mut request = valid_record();
@@ -1375,6 +1484,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -1446,6 +1556,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,

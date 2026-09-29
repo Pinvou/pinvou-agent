@@ -500,6 +500,93 @@ class UpdateDeleteRequestTests(unittest.TestCase):
         return sorted(Path(self.requests, "spool").glob("*.json"))
 
 
+class MessageTargetTests(unittest.TestCase):
+    """Scheduled-message mode: target validation and the spool field."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-target-test-")
+        self.requests = Path(self.tmp) / "task-requests"
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        (self.sessions / "target001.json").write_text(
+            json.dumps({"metadata": {"id": "target001", "title": "目标"}, "messages": []}),
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _create(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "sessions_dir": str(self.sessions),
+            "name": "定时询问",
+            "prompt": "问一下进展",
+            "rrule": "FREQ=HOURLY;INTERVAL=6",
+            "target_session": "target001",
+        }
+        args.update(overrides)
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            return server.create_scheduled_task(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_valid_target_spools_with_target_field(self):
+        payload, error = self._create()
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["target_session"], "target001")
+        self.assertEqual(record["kind"], "create")
+
+    def test_isolated_and_unknown_and_junk_targets_rejected(self):
+        for bad in (
+            "sched-run1",
+            "SCHED-run1",
+            "aux-side1",
+            "eval_b1",
+            "no-such-target",
+            "../escape",
+            "with space",
+            "a" * 300,
+        ):
+            payload, error = self._create(target_session=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIsNotNone(error, bad)
+
+    def test_update_accepts_target_delete_rejects_it(self):
+        self._create()
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            payload, error = server.schedule_task_request(
+                requests_dir=str(self.requests),
+                kind="update",
+                sessions_dir=str(self.sessions),
+                task_id="task-1",
+                target_session="target001",
+            )
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["target_session"], "target001")
+
+        payload, error = server.schedule_task_request(
+            requests_dir=str(self.requests),
+            kind="delete",
+            sessions_dir=str(self.sessions),
+            task_id="task-1",
+            target_session="target001",
+        )
+        self.assertIsNone(payload)
+        self.assertIn("no extra fields", error)
+
+    def _spooled(self):
+        return sorted(Path(self.requests, "spool").glob("*.json"))
+
+
 class ListScheduledTasksTests(unittest.TestCase):
     """C5/C6 + prompt non-disclosure: tolerant projection of the store."""
 
