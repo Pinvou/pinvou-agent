@@ -323,9 +323,11 @@ function hasStoredCredential(record) {
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
-      // 思考深度档位：初始取已保存值（先归一——存量可能是底座归一前的旧值，
-      // 如 deepseek 的 medium），无则按模型默认（vllm→off，其余→high；
-      // 底座不支持的模型无默认，保持 null = 未显式设置，避免保存时污染 SavedModel）。
+      // Thinking effort: initialize from the stored value (normalize first —
+      // legacy records may carry pre-normalization values such as deepseek's
+      // medium), otherwise fall back to the model default (vllm→low (lowest
+      // thinking tier), others→high; models without tiers have no default and
+      // stay null = not explicitly set, so saving does not pollute SavedModel).
       const [reasoningEffort, setReasoningEffort] = useState(
         normalizeStoredReasoningEffort(initial, initial.reasoning_effort)
       );
@@ -467,8 +469,10 @@ function hasStoredCredential(record) {
         // The output cap is no longer prefilled with 24K: left empty like
         // cloud/custom, declared uniformly by the runtime window tiers.
         setMaxOutput('');
-        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
-        // 无档位模型置 null = 未显式设置）。带上 nextBaseUrl 以按新 route 判定档位。
+        // Reset the thinking effort to the new entry's default tier when the
+        // catalog item changes (vllm→low (lowest thinking tier), others→high;
+        // models without tiers get null = not explicitly set). Pass nextBaseUrl
+        // so the tier is decided by the new route.
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -732,10 +736,13 @@ function hasStoredCredential(record) {
         setPickerOpen(false);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
-        // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
-        // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
-        // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
-        // 「vllm→off」的默认约束。与 applyCatalogItem / chooseModel 的切换语义一致。
+        // Local model → manual add is an explicit route switch: drop the
+        // draft's leftover thinking effort and fall back to the vLLM default
+        // lowest thinking tier low. Otherwise the high a fresh DeepSeek draft
+        // starts with would be kept as a legitimate vLLM tier and saved as an
+        // explicit reasoning_effort=high, bypassing the bridge's "vllm→low"
+        // default constraint. Same switch semantics as applyCatalogItem /
+        // chooseModel.
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: '', vendor, base_url: defs.baseUrl }));
       }
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;

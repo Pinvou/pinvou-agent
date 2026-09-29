@@ -830,9 +830,70 @@ pub(super) async fn run_official_install_script(
     )
     .await
 }
+/// [`ManagedInstallStage`] description for a single npm global upgrade
+/// attempt: the official-source run and the npmmirror mirror retry share one
+/// copy, with only the mirror flag changing the diagnostics prefix, command
+/// line, and timeout text — this avoids two hand-written structs drifting
+/// apart as fields are added or removed.
+fn npm_upgrade_stage(backend: AgentBackend, mirror: bool) -> ManagedInstallStage {
+    let (diag_stage, upgrade_kind): (&'static str, &'static str) = if mirror {
+        ("npm-mirror", "npm mirror upgrade")
+    } else {
+        ("npm", "npm global upgrade")
+    };
+    ManagedInstallStage {
+        diag_stage,
+        // Keep the display consistent with the real arguments (npm_upgrade_args'
+        // `pkg@latest`) so the command shown in the progress panel can be
+        // reproduced verbatim.
+        command_line: if mirror {
+            format!(
+                "npm install -g {}@latest --registry={NPM_MIRROR_REGISTRY}",
+                npm_package(backend).unwrap_or("")
+            )
+        } else {
+            format!(
+                "npm install -g {}@latest",
+                npm_package(backend).unwrap_or("")
+            )
+        },
+        process_group: true,
+        spawn_context: format!("failed to spawn {upgrade_kind}"),
+        stdout_context: if mirror {
+            "failed to read npm mirror stdout"
+        } else {
+            "failed to read npm stdout"
+        },
+        stderr_context: if mirror {
+            "failed to read npm mirror stderr"
+        } else {
+            "failed to read npm stderr"
+        },
+        wait_context: if mirror {
+            "failed to wait for npm mirror upgrade process"
+        } else {
+            "failed to wait for npm global upgrade process"
+        },
+        timeout_message: format!(
+            "{} {upgrade_kind} did not finish within 10 minutes; check the network and retry",
+            backend.display_name()
+        ),
+        failure_subject: format!("{upgrade_kind} of {} exited", backend.display_name()),
+        failure_hint: false,
+        idempotent_ok: None,
+        failure_detail: managed_install_failure,
+    }
+}
+
 /// Runs `npm install -g <pkg>@latest` as a global upgrade (npm.cmd via cmd on
 /// Windows), 10-minute timeout, with the output tail written to the
-/// diagnostics log.
+/// diagnostics log. On failure (and not user-cancelled), retries once against
+/// the npmmirror China mirror: registry.npmjs.org is frequently unreachable on
+/// Chinese networks. The flag is per-invocation only — the user's npm
+/// configuration is never written or modified (npm still reads its own config
+/// for prefix/cache/auth as usual). npm installs have no app-side artifact
+/// pin; integrity on this path rests on TLS plus the mirror's registry-sync
+/// fidelity.
 pub(super) async fn run_npm_global_upgrade(
     app: &AppHandle,
     backend: AgentBackend,
@@ -845,32 +906,57 @@ pub(super) async fn run_npm_global_upgrade(
     let npm = npm_executable().context("未检测到 npm，无法通过 npm 全局升级")?;
     let mut command = crate::platform::process::external_tokio_command(&npm);
     command.args(&args);
-    run_managed_install(
+    let first = run_managed_install(
         app,
         backend,
         operation_id,
         install_children,
         install_cancelled,
         command,
-        ManagedInstallStage {
-            diag_stage: "npm",
-            command_line: format!("npm install -g {}", npm_package(backend).unwrap_or("")),
-            process_group: true,
-            spawn_context: "failed to spawn npm global upgrade".to_string(),
-            stdout_context: "failed to read npm stdout",
-            stderr_context: "failed to read npm stderr",
-            wait_context: "failed to wait for npm global upgrade process",
-            timeout_message: format!(
-                "{} npm global upgrade did not finish within 10 minutes; check the network and retry",
-                backend.display_name()
-            ),
-            failure_subject: format!("npm global upgrade of {} exited", backend.display_name()),
-            failure_hint: false,
-            idempotent_ok: None,
-            failure_detail: managed_install_failure,
-        },
+        npm_upgrade_stage(backend, false),
+    )
+    .await;
+    let primary = match first {
+        Ok(()) => return Ok(()),
+        Err(primary) => primary,
+    };
+    // A user-initiated cancel is not a source failure: do not retry via the
+    // mirror (otherwise the install would keep running after the cancel).
+    if format!("{primary:#}").contains(INSTALL_CANCELLED_MARKER) {
+        return Err(primary);
+    }
+    diagnostics::write(
+        operation_id,
+        "npm:mirror_retry",
+        format!("primary failed, retrying via {NPM_MIRROR_REGISTRY}: {primary:#}"),
+    );
+    let mut mirror_command = crate::platform::process::external_tokio_command(&npm);
+    mirror_command.args(&args);
+    mirror_command.arg(format!("--registry={NPM_MIRROR_REGISTRY}"));
+    run_managed_install(
+        app,
+        backend,
+        operation_id,
+        install_children,
+        install_cancelled,
+        mirror_command,
+        npm_upgrade_stage(backend, true),
     )
     .await
+    // Keep the causal chain of the first error when the mirror retry also
+    // fails: reporting only the mirror error would hide first failures
+    // unrelated to the network (EACCES, disk full) in the diagnostics log.
+    // A user-initiated cancel during the mirror attempt is likewise not a
+    // "mirror source failure": propagate the cancel semantics as-is instead
+    // of concatenating it with the first source error (otherwise the cancel
+    // would be misreported as a double network failure).
+    .map_err(|mirror_error| {
+        if format!("{mirror_error:#}").contains(INSTALL_CANCELLED_MARKER) {
+            mirror_error
+        } else {
+            mirror_error.context(format!("first npm registry error: {primary:#}"))
+        }
+    })
 }
 
 /// brew's idempotent notices do not count as failure: install reports already installed, upgrade reports already
@@ -1469,6 +1555,11 @@ pub(super) fn official_script_urls(backend: AgentBackend) -> (&'static str, &'st
     }
 }
 
+/// HEAD probe for script-source reachability. Transport-level success counts
+/// as reachable — any HTTP status (including 403/405) proves the source is
+/// alive and the real GET download will most likely work; tightening by
+/// status code would instead misjudge a usable source as unreachable when a
+/// CDN rejects HEAD requests, triggering unnecessary install degradation.
 pub(super) async fn script_url_reachable(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(3))

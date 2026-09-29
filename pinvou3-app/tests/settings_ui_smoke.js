@@ -1067,9 +1067,13 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.5 手动添加本地模型表单保持 iOS 分组且默认无需 Key，不强制显示名', Object.values(manualLocalForm).every(Boolean), JSON.stringify(manualLocalForm));
-  // 思考深度残留：新建草稿默认 DeepSeek 初始化为 high，切到「手动添加本地模型」
-  // 必须把思考深度重置为 vLLM 默认 off（关闭），否则保存会显式写入 high，绕过桥接层
-  // vllm→off 的 SSE timeout 约束。此处断言真实 UI 选中「关闭」。
+  // Thinking-effort leftover: a fresh draft initializes to DeepSeek's high;
+  // switching to "manual local model add" must reset the thinking effort to
+  // the vLLM default lowest thinking tier low — real-machine testing shows
+  // local models like the Qwen3.8 family cannot reliably turn thinking off,
+  // so off is no longer the default; otherwise saving would write an explicit
+  // high, bypassing the bridge's vllm→low default constraint. Asserts the
+  // real UI selects 低 (low).
   const manualLocalEffort = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="model-form-dialog"]');
     if (!dialog) return { found: false, labels: [], selected: [] };
@@ -1079,11 +1083,12 @@ async function modalWidth(page, headingText) {
     const selected = buttons.filter(node => (node.className || '').includes('bg-[#007AFF]')).map(node => (node.textContent || '').trim());
     return { found: !!row, labels: buttons.map(node => (node.textContent || '').trim()), selected };
   });
-  rec('⑥.5b 手动添加本地模型思考深度重置为 vLLM 默认「关闭」（不残留 high）',
+  rec('⑥.5b 手动添加本地模型思考深度重置为 vLLM 默认「低」（不残留 high）',
     manualLocalEffort.found
+      && manualLocalEffort.labels.includes('低')
       && manualLocalEffort.labels.includes('关闭')
       && manualLocalEffort.selected.length === 1
-      && manualLocalEffort.selected[0] === '关闭',
+      && manualLocalEffort.selected[0] === '低',
     JSON.stringify(manualLocalEffort));
   // A local model's window comes from the probed max_model_len (authoritative), so no manual input is offered.
   const localNoContextWindowField = await page.evaluate(() =>

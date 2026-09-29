@@ -38,6 +38,22 @@ pub(super) fn take_pending_pip_install_result_for_test() -> u8 {
     NEXT_PIP_INSTALL_RESULT.swap(0, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Tsinghua TUNA pip mirror: used only in the fallback round after the default
+/// index round has fully failed, via a per-invocation `-i` flag; never touches
+/// the user's pip config.
+const PIP_CN_MIRROR_INDEX: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
+
+/// Index rounds for a pip install: the default-index round runs first
+/// (respecting the user's own pip.conf/corporate index), then the Tsinghua
+/// TUNA fallback round — the order is deliberate, see
+/// `pip_mirror_round_runs_after_default_round`.
+fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
+    [
+        ("default index", &[]),
+        ("Tsinghua TUNA mirror", &["-i", PIP_CN_MIRROR_INDEX]),
+    ]
+}
+
 pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
     MCP_JSON_LOCK
         .lock()
@@ -161,6 +177,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // ② pip 安装,按序兜底,任一成功即 Ok:
         //    --user(常规)→ --user --break-system-packages(PEP 668:现代 Debian/Ubuntu 拦 --user,
         //    装进 ~/.local 用户目录、不动系统/发行版包)→ --break-system-packages(某些环境 --user 不可用)。
+        //    After the whole default-index round fails, rerun the same ladder
+        //    via the Tsinghua TUNA mirror (only appending the -i flag, never
+        //    touching the user's pip config): CN networks often cannot reach
+        //    the official source at pypi.org. The default index going first is
+        //    deliberate — it respects the user's own pip.conf/corporate index;
+        //    the mirror is only the last fallback.
         let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
             let mut cmd = std::process::Command::new(python_cmd);
             cmd.args([
@@ -179,27 +201,46 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             &["--user", "--break-system-packages"],
             &["--break-system-packages"],
         ];
-        let mut last_err = String::new();
-        for extra in attempts {
-            match run(extra) {
-                Ok(o) if o.status.success() => return Ok(()),
-                Ok(o) => {
-                    last_err = String::from_utf8_lossy(&o.stderr)
-                        .trim()
-                        .lines()
-                        .last()
-                        .unwrap_or("")
-                        .to_string();
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "无法运行 {python_cmd}（请确认已安装 Python 且在 PATH 中）：{e}"
-                    ));
+        // The default-index round runs first (no -i, so the user's pip.conf /
+        // corporate index keeps priority); only after the whole round fails do
+        // we rerun once via Tsinghua TUNA (rounds defined in pip_index_rounds).
+        // The pip subprocess has no overall timeout: worst-case time doubles
+        // with the round count, same accounting as native_installer's
+        // multi-candidate fallback. Each round's own last error goes into the
+        // final error: keeping only the last round would hide the default-index
+        // root cause that triggered the mirror retry (same convention as the
+        // first-error causal chain in tmeet/npm).
+        let mut round_errors: Vec<String> = Vec::new();
+        for (round_label, index_args) in pip_index_rounds() {
+            let mut last_err = String::new();
+            for extra in attempts {
+                let mut args: Vec<&str> = Vec::with_capacity(extra.len() + index_args.len());
+                args.extend(extra.iter().copied());
+                args.extend(index_args.iter().copied());
+                match run(&args) {
+                    Ok(o) if o.status.success() => return Ok(()),
+                    Ok(o) => {
+                        last_err = String::from_utf8_lossy(&o.stderr)
+                            .trim()
+                            .lines()
+                            .last()
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "cannot run {python_cmd} (make sure Python is installed and on PATH): {e}"
+                        ));
+                    }
                 }
             }
+            round_errors.push(format!("{round_label}: {last_err}"));
         }
         Err(format!(
-            "依赖安装失败（pip）：{last_err}（已尝试 --user 与 --break-system-packages;请确认网络可达且 python3 自带 pip）"
+            "pip dependency install failed: {} (tried --user and \
+             --break-system-packages, then retried via the Tsinghua TUNA mirror; \
+             check network reachability and that python3 ships pip)",
+            round_errors.join("; ")
         ))
     }
 
@@ -1038,5 +1079,31 @@ fn align_remote_entry_fields(
         None => {
             object.remove("oauth_resource");
         }
+    }
+}
+
+#[cfg(test)]
+mod pip_rounds_tests {
+    use super::*;
+
+    /// The default-index round must run first as a whole round (respecting the
+    /// user's pip.conf/corporate index; TUNA is only the last fallback): this
+    /// test fails if the round order is swapped.
+    #[test]
+    fn pip_mirror_round_runs_after_default_round() {
+        let rounds = pip_index_rounds();
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].0, "default index");
+        assert!(
+            rounds[0].1.is_empty(),
+            "default-index round must not carry -i: {:?}",
+            rounds[0].1
+        );
+        assert_eq!(rounds[1].0, "Tsinghua TUNA mirror");
+        assert!(
+            rounds[1].1.contains(&PIP_CN_MIRROR_INDEX),
+            "fallback round must carry the TUNA index: {:?}",
+            rounds[1].1
+        );
     }
 }

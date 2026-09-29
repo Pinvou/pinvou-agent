@@ -9,8 +9,8 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::{
-    AcpPool, AgentBackend, CodexAcpStatus, diagnostics, install_action_for,
-    official_script_supported,
+    AcpPool, AgentBackend, CodexAcpStatus, NPM_MIRROR_REGISTRY, diagnostics, install_action_for,
+    npm_package, official_script_supported,
 };
 
 const CODEX_LATEST_URL: &str = "https://releases.openai.com/codex/channels/latest";
@@ -247,12 +247,54 @@ fn latest_url(backend: AgentBackend) -> Result<&'static str> {
 }
 
 async fn fetch_latest_version(client: &Client, backend: AgentBackend) -> Result<String> {
-    if backend == AgentBackend::CodexAcp {
-        return fetch_codex_latest_version(client).await;
+    let official = if backend == AgentBackend::CodexAcp {
+        fetch_codex_latest_version(client).await
+    } else {
+        let url = latest_url(backend)?;
+        let body = fetch_limited_body(client, backend, url).await?;
+        parse_latest_response(backend, &body)
+    };
+    // When the official sources all fail (releases.openai.com / github.com /
+    // downloads.claude.ai are often unreachable on Chinese networks), fall
+    // back to npmmirror's dist-tag latest: the package version matches the
+    // official release, and the result is only used for the upgrade advisory.
+    // kimi's official source is itself in China (code.kimi.com), so no mirror
+    // fallback is needed.
+    match official {
+        Ok(version) => Ok(version),
+        Err(primary) if matches!(backend, AgentBackend::CodexAcp | AgentBackend::ClaudeAcp) => {
+            fetch_npm_mirror_latest_version(client, backend)
+                .await
+                .with_context(|| {
+                    format!(
+                        "both the npmmirror mirror and the official source are \
+                         unreachable; official-source error: {primary:#}"
+                    )
+                })
+        }
+        Err(primary) => Err(primary),
     }
-    let url = latest_url(backend)?;
-    let body = fetch_limited_body(client, backend, url).await?;
-    parse_latest_response(backend, &body)
+}
+
+/// npmmirror dist-tag fallback: `GET {NPM_MIRROR_REGISTRY}/<pkg>/latest` and
+/// read the JSON `version` field. The npm package is released under the same
+/// version number as the official CLI channel (codex, claude-code); the query
+/// result only feeds the cache and triggers the upgrade advisory, and never
+/// participates in any install decision.
+async fn fetch_npm_mirror_latest_version(client: &Client, backend: AgentBackend) -> Result<String> {
+    let package = npm_package(backend).context("this Agent has no npm package")?;
+    let url = format!("{NPM_MIRROR_REGISTRY}/{package}/latest");
+    let body = fetch_limited_body(client, backend, &url).await?;
+    parse_npm_mirror_latest(&body)
+}
+
+fn parse_npm_mirror_latest(body: &[u8]) -> Result<String> {
+    let value: Value =
+        serde_json::from_slice(body).context("failed to parse npmmirror latest JSON")?;
+    let raw = value["version"]
+        .as_str()
+        .context("npmmirror latest JSON is missing the version field")?;
+    normalize_semver(raw).context("npmmirror latest version is not a three-part numeric version")
 }
 
 /// OpenAI 官方安装器优先读取 releases.openai.com，并在不可达时回退官方 GitHub
@@ -297,23 +339,40 @@ async fn fetch_limited_body(client: &Client, backend: AgentBackend, url: &str) -
         .get(url)
         .send()
         .await
-        .with_context(|| format!("查询 {} 官方最新版本失败", backend.display_name()))?
+        .with_context(|| {
+            format!(
+                "failed to query the latest version of {}",
+                backend.display_name()
+            )
+        })?
         .error_for_status()
-        .with_context(|| format!("{} 官方最新版本接口返回错误", backend.display_name()))?;
+        .with_context(|| {
+            format!(
+                "{} latest-version endpoint returned an error",
+                backend.display_name()
+            )
+        })?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
     {
-        bail!("{} 官方最新版本响应过大", backend.display_name());
+        bail!(
+            "{} latest-version response is too large",
+            backend.display_name()
+        );
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .with_context(|| format!("读取 {} 官方最新版本响应失败", backend.display_name()))?
-    {
+    while let Some(chunk) = response.chunk().await.with_context(|| {
+        format!(
+            "failed to read the {} latest-version response",
+            backend.display_name()
+        )
+    })? {
         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            bail!("{} 官方最新版本响应超过大小限制", backend.display_name());
+            bail!(
+                "{} latest-version response exceeds the size limit",
+                backend.display_name()
+            );
         }
         body.extend_from_slice(&chunk);
     }
@@ -423,6 +482,27 @@ mod tests {
             install_latest_line: None,
             setup_hint: None,
         }
+    }
+
+    #[test]
+    fn parses_npmmirror_dist_tag_latest() {
+        assert_eq!(
+            parse_npm_mirror_latest(br#"{"name":"@openai/codex","version":"0.157.1"}"#).unwrap(),
+            "0.157.1"
+        );
+        // Extra JSON fields do not break parsing. npm's version field is
+        // strict semver (no leading v), but if the mirror returns a v prefix
+        // (non-semver), normalize_semver reports the error just like the
+        // official source does instead of silently producing a misaligned
+        // version that then participates in comparisons.
+        assert_eq!(
+            parse_npm_mirror_latest(br#"{"version":"v2.1.283"}"#)
+                .unwrap_err()
+                .to_string(),
+            "npmmirror latest version is not a three-part numeric version"
+        );
+        assert!(parse_npm_mirror_latest(br#"{"error":"NOT_FOUND"}"#).is_err());
+        assert!(parse_npm_mirror_latest(b"not json").is_err());
     }
 
     #[test]

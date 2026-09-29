@@ -904,8 +904,16 @@ async fn save_to_tmp_no_validate_fail() {
 }
 
 /// MVP 5: 简单单 turn 必须 < 15s (LLM 没工具调用,不应该 thinking)。
-/// 防 reasoning_effort=off 失效或 prefill 变长拖慢响应回归。
-/// thinking 没关时 Qwen3.6 单 turn 可达 30s+,差 2 倍以上易判别。
+/// Note: the local default tier is now the lowest thinking tier (low) instead
+/// of off — real-machine testing shows models like the Qwen3.8 family cannot
+/// reliably turn thinking off (see bridge::request_reasoning_effort). This
+/// scenario starts with default prefs and injects no explicit tier, so it now
+/// exercises the low path: thinking is expected to be on and the 15s budget
+/// times out deterministically (a single Qwen3.6 turn can reach 30s+ with
+/// thinking on), so do not mistake the timeout for a regression. To verify the
+/// off path is not slowed by longer prefill, first save reasoning_effort=off
+/// for this model in Settings and rerun (the harness cannot inject it; off
+/// remains an explicit option and a stored value is sent verbatim).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "L1 真 vLLM 端到端,默认不跑"]
 async fn reasoning_off_speed() {
