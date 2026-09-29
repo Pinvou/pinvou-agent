@@ -555,7 +555,6 @@ fn pause_and_resume_reject_unknown_task_ids_like_the_rest_of_the_family() {
     let _ = home;
 }
 
-#[test]
 /// Human rows must not be forgeable: the name is the one fully
 /// user-controlled cell (the row/column contract must not depend on it),
 /// the same rule models/sessions/memory pin for their families.
@@ -600,6 +599,7 @@ fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
     );
 }
 
+#[test]
 fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("round-trip");

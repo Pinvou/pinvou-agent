@@ -2204,31 +2204,25 @@ fn postprocess(
             }
             // The model-call clock starts HERE, not before `run_windowless_host`:
             // the GUI's `started_at` (`app/commands/voice.rs`) only precedes an
-            // in-memory bridge lookup and the vllm probe, so its 3–12 s budget
-            // measures the model round-trip. Timing the tokio/Tauri/SessionStore
-            // boot against the same number would spend the whole budget before
-            // the first request and leave the retry structurally dead.
+            // in-memory bridge lookup, so its 3–12 s budget measures the model
+            // round-trip. Timing the tokio/Tauri/SessionStore boot against the
+            // same number would spend the whole budget before the first
+            // request and leave the retry structurally dead.
             let started = Instant::now();
             // Same shared-bridge fallback as the GUI `voice_postprocess_bridge`
             // with no session: global prefs + the active model.
             let mut bridge = pool.bridge.clone();
             bridge.prefs = pinvou3_lib::platform::prefs::UserPrefs::load();
             bridge.session_model = bridge.prefs.active_model().cloned();
-            // vLLM served-name probe, same as the GUI lane (inference-same-origin key).
-            let model_name = if bridge.provider() == "vllm" {
-                pinvou3_lib::features::monitor::probe_vllm_model_info(
-                    &bridge.base_url(),
-                    Some(bridge.api_key().as_str()),
-                )
-                .await
-                .0
-                .unwrap_or_else(|| bridge.model())
-            } else {
-                bridge.model()
-            };
-            // GUI parity: the bridge resolution and the vllm probe share the
-            // budget, so a zero remainder before the first request is the same
-            // error the app raises instead of a guaranteed instant timeout.
+            // GUI parity: the engine pool resolves the served name while it
+            // prepares the bridge, so both attempts use `bridge.model()`
+            // verbatim. The GUI lane stopped re-probing `/v1/models` because
+            // on multi-model local servers (LM Studio / Ollama) taking the
+            // first listed entry replaced the user's selected model.
+            let model_name = bridge.model();
+            // GUI parity: the bridge resolution shares the budget, so a zero
+            // remainder before the first request is the same error the app
+            // raises instead of a guaranteed instant timeout.
             if started.elapsed() >= budget {
                 return Err(CliError::failed(
                     "timeout budget exhausted before first request",
