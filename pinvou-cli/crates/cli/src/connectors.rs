@@ -110,9 +110,10 @@ const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_VENDOR_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Per-stream byte cap for the login-output drainer (`drain_for_url`),
-/// matching `run_cli_bounded`'s `MAX_VENDOR_OUTPUT_BYTES`: the login deadline
-/// bounds the process lifetime, not the bytes a chatty or hostile vendor CLI
-/// can write into the piped output while the drainer blocks on EOF.
+/// matching `run_cli_bounded`'s `MAX_VENDOR_OUTPUT_BYTES`: line processing
+/// and the `Log` events (the caller's bounded failure tail and its event
+/// queue) keep within the cap, while bytes past it are still read — and
+/// discarded — so the vendor can never block on a full pipe.
 const LOGIN_DRAIN_CAP_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Default overall connect timeout, mirroring feishu's 5-minute authorize
@@ -2123,21 +2124,33 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         // this site used to do opened a window where a concurrent spawner resolved
         // a MISSING binary (the Known limitations copy already promised "installed
         // by atomic rename"). Windows' rename does not replace, so the explicit
-        // remove stays there.
+        // remove stays there. Both arms are typed `Result<(), CliError>`: the
+        // closure's tail expression must not let the raw `io::Error` leak into
+        // the closure's inferred type (the `?` above then demands a
+        // `From<CliError> for io::Error` that does not exist — the Windows
+        // target did not compile before this was explicit).
         #[cfg(unix)]
-        let replace = std::fs::rename(&staging, &destination);
+        let replace = std::fs::rename(&staging, &destination)
+            .map_err(|error| CliError::failed(format!("cannot finish connector install: {error}")));
         #[cfg(windows)]
-        let replace = (|| {
+        let replace = (|| -> Result<(), CliError> {
             if destination.exists() {
                 std::fs::remove_file(&destination).map_err(|error| {
                     CliError::failed(format!("cannot replace old connector binary: {error}"))
                 })?;
             }
-            std::fs::rename(&staging, &destination)
+            std::fs::rename(&staging, &destination).map_err(|error| {
+                CliError::failed(format!("cannot finish connector install: {error}"))
+            })
         })();
         replace
-            .map_err(|error| CliError::failed(format!("cannot finish connector install: {error}")))
     })();
+    // The staging file is only removed on the failure exits here: after a
+    // successful rename it no longer exists, and on an error exit a later
+    // run would otherwise only clean its own pid's leftovers.
+    if staging_result.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
     let _ = std::fs::remove_dir_all(&extract_dir);
     staging_result?;
     Ok(true)
@@ -2250,6 +2263,11 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
 /// drift the vendor-spawn consolidation exists to prevent.)
 const TAR_TIMEOUT: Duration = Duration::from_secs(120);
 const TAR_LIST_CAP: u64 = 8 * 1024 * 1024;
+/// How long the tar lanes wait for their drain threads to finish after the
+/// child is reaped — the same grace `run_cli_bounded` gives its drains. The
+/// kill closes tar's pipe ends, but a descendant that escaped the group
+/// could still hold stdout open, so collecting the drain must stay bounded.
+const TAR_DRAIN_GRACE: Duration = Duration::from_secs(5);
 /// Hard bound on the UNCOMPRESSED member, mirroring
 /// `native_installer::MAX_BINARY_BYTES` (the GUI reads the member through
 /// `read_limited(&mut entry, MAX_BINARY_BYTES)`). `MAX_ARCHIVE_BYTES` bounds
@@ -2318,12 +2336,14 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     let listing_thread = {
         use std::io::Read as _;
         let mut stdout = child.stdout.take().expect("tar stdout is piped");
+        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             let _ = (&mut stdout).take(TAR_LIST_CAP).read_to_end(&mut bytes);
             let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
+            let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+        });
+        rx
     };
     let listed = wait_or_kill(&mut child, "listing the connector archive");
     // Paired on every exit including the `?` arms of `listed` below: the
@@ -2331,7 +2351,13 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // only invite the recycled-pid kill.
     crate::support::supervise::forget_child_group(child.id());
     listed?;
-    let listing = listing_thread.join().unwrap_or_default();
+    // Bounded collection instead of an unbounded `join`: a pipe-inheriting
+    // descendant that escaped the group can hold stdout open past the reap,
+    // and the sibling drains (`run_cli_bounded`) answer exactly that with a
+    // grace + default rather than hanging the CLI.
+    let listing = listing_thread
+        .recv_timeout(TAR_DRAIN_GRACE)
+        .unwrap_or_default();
     let entry = listing
         .lines()
         .map(str::trim)
@@ -2375,20 +2401,25 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     let bytes_thread = {
         use std::io::Read as _;
         let mut stdout = child.stdout.take().expect("tar stdout is piped");
+        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             let _ = (&mut stdout)
                 .take(MAX_MEMBER_BYTES + 1)
                 .read_to_end(&mut bytes);
             let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-            bytes
-        })
+            let _ = tx.send(bytes);
+        });
+        rx
     };
     let extracted = wait_or_kill(&mut child, "extracting the connector archive");
     // Paired on every exit, as in the listing lane.
     crate::support::supervise::forget_child_group(child.id());
     extracted?;
-    let bytes = bytes_thread.join().unwrap_or_default();
+    // Same bounded collection as the listing lane above.
+    let bytes = bytes_thread
+        .recv_timeout(TAR_DRAIN_GRACE)
+        .unwrap_or_default();
     if bytes.len() as u64 > MAX_MEMBER_BYTES {
         // tar already exited (the wait above reaped it after it wrote
         // itself out past the kept cap), so only the verdict is left to
@@ -3171,9 +3202,12 @@ fn compose_user_code(url: &Option<String>, user_code: Option<&str>) -> Option<St
 /// connector's auth domains — mirror of `connector_cli::drain_for_url` and
 /// `CliCtx::extract_url` (truncate at whitespace, keep query strings) — plus
 /// the first `user_code`-style line (mirror of dingtalk `extract_user_code`).
-/// Byte-capped like `run_cli_bounded`'s drains: the login deadline bounds the
-/// process lifetime, not the bytes a chatty or hostile vendor CLI (or a
-/// descendant that inherited the pipes) can push into the pipe.
+/// Line processing keeps within [`LOGIN_DRAIN_CAP_BYTES`] like
+/// `run_cli_bounded`'s drains (that cap is what bounds the event queue the
+/// caller absorbs); past the cap the drainer keeps READING — and
+/// discarding — until true EOF, so a chatty or hostile vendor CLI (or a
+/// descendant that inherited the pipes) can still finish instead of
+/// blocking on a full pipe and being misreported as a login timeout.
 fn drain_for_url<R: std::io::Read + Send + 'static>(
     spec: &VendorSpec,
     reader: R,
@@ -3182,7 +3216,8 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
     let domains = spec.auth_domains;
     let redact_bare_token = redact_bare_token_for(spec);
     std::thread::spawn(move || {
-        for line in BufReader::new(reader.take(LOGIN_DRAIN_CAP_BYTES)).lines() {
+        let mut reader = BufReader::new(reader);
+        for line in (&mut reader).take(LOGIN_DRAIN_CAP_BYTES).lines() {
             let line = match line {
                 Ok(line) => line,
                 Err(_) => break,
@@ -3194,11 +3229,11 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
             if let Some(safe) = safe_auth_log_line(&line, redact_bare_token)
                 && tx.send(LoginStreamEvent::Log(safe)).is_err()
             {
-                break;
+                return;
             }
             if let Some(code) = extract_user_code(&line) {
                 if tx.send(LoginStreamEvent::Code(code)).is_err() {
-                    break;
+                    return;
                 }
             }
             let Some(index) = line.find("https://") else {
@@ -3211,7 +3246,17 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
             if domains.iter().any(|domain| url.contains(domain))
                 && tx.send(LoginStreamEvent::Url(url)).is_err()
             {
-                break;
+                return;
+            }
+        }
+        // Past the cap: same loop as `drain_vendor_output` — drain to EOF in
+        // fixed chunks so the writer can never block on a full pipe. Events
+        // stop here: the cap is what bounds the caller's event queue.
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
             }
         }
     })
@@ -3589,22 +3634,40 @@ mod tests {
     }
 
     #[test]
-    fn drain_for_url_stops_reading_at_the_stream_cap() {
-        // `repeat` never yields a newline and never EOFs on its own: without
-        // the byte cap the drainer thread would block on the pipe forever.
-        // `rx` must stay alive — a send failure would end the drainer before
-        // the cap — but the endless 'x' stream produces no code/URL events.
-        let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
-        let drain = drain_for_url(ConnectorKind::Dingtalk.spec(), std::io::repeat(b'x'), tx);
-        let (done_tx, done_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            drain.join().expect("drainer thread must not panic");
-            done_tx.send(()).expect("test is waiting");
-        });
-        let _keep_rx = rx;
-        done_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("drainer must hit the 8 MiB cap instead of blocking forever");
+    fn drain_for_url_drains_past_the_cap_and_reaches_eof() {
+        // A drainer that only kept the capped prefix would leave a writer
+        // blocked on a full pipe — the exact "healthy vendor misreported as
+        // timed out" failure `run_cli_bounded`'s drain-past-cap discipline
+        // exists to prevent. The input is newline-free (the hostile single
+        // giant line) and longer than the cap: the drainer must consume the
+        // WHOLE stream and finish, not stop at the cap.
+        struct Counting {
+            inner: std::io::Cursor<Vec<u8>>,
+            read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl std::io::Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.read.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+                Ok(n)
+            }
+        }
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let total = LOGIN_DRAIN_CAP_BYTES as usize + 4096;
+        let counter = Counting {
+            inner: std::io::Cursor::new(vec![b'x'; total]),
+            read: std::sync::Arc::clone(&read),
+        };
+        let (tx, _rx) = mpsc::channel::<LoginStreamEvent>();
+        let drain = drain_for_url(ConnectorKind::Dingtalk.spec(), counter, tx);
+        drain
+            .join()
+            .expect("drainer must reach EOF past the cap instead of blocking forever");
+        assert_eq!(
+            read.load(std::sync::atomic::Ordering::SeqCst),
+            total,
+            "the drainer must consume the whole stream, not stop at the cap"
+        );
     }
 
     #[test]
