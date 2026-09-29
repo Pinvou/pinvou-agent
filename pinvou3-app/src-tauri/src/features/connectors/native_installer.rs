@@ -241,6 +241,11 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
         fs::remove_file(&destination).map_err(|e| format!("替换旧连接器失败: {e}"))?;
     }
     fs::rename(&staging, &destination).map_err(|e| format!("完成连接器安装失败: {e}"))?;
+    // Once the install lands, a legacy same-name leftover turns from "the only
+    // local runtime" into "a stale copy shadowing the pinned version"; reuse
+    // the migration entry to remove it (the migration call at the top of this
+    // function ran before the version dir was populated and could only keep it).
+    migrate_legacy_binary(&artifact.name, &artifact.version, &artifact.binary_sha256);
     // GC 策略：同 name 的旧版本目录**保守保留暂不删**——资产按「包只引用不拥有」
     // 共享（§4），删除需要引用计数支撑；CLI 二进制体积小，滞留成本低。
     // 引用计数/GC 随存储布局迁移 PR 一并落地。
@@ -262,9 +267,21 @@ pub fn migrate_legacy_cli_binaries() {
     }
 }
 
-/// 单个 CLI 的旧布局迁移（调用前须已持 INSTALL_LOCK；参数显式传入便于测试）。
-/// 对照 lock 钉住的 SHA-256：匹配 → **移动**（非复制）到版本目录；不匹配 → 不动
-/// （store 侧已是 degraded 语义，重连会重下）。旧 bin 目录腾空后清理。
+/// Single-CLI legacy-layout migration (caller must hold INSTALL_LOCK; args
+/// passed explicitly for testability). Dispatch on the lock-pinned SHA-256:
+/// - Versioned copy present and verified: the legacy same-name file is removed
+///   unconditionally — byte-identical means a duplicate leftover, different
+///   bytes mean a stale old version. Keeping it would let it shadow the pinned
+///   runtime in by-name resolution / PATH (observed: a leftover wecom-cli 0.1.9
+///   kept running after the upgrade to 1.2.1). The connector bin dir is
+///   app-managed state (only the installer writes there), not user data; the
+///   removal is strictly conditioned on the pinned copy being verified in
+///   place — while the pinned version is absent, the legacy binary is the
+///   connector's only local runtime and must not be touched.
+/// - Versioned copy absent: a legacy file matching the pin is MOVED (not
+///   copied) into the version dir (skips the download); mismatched → left in
+///   place (the store side already models this as degraded; reconnect
+///   re-downloads). The legacy bin dir is tidied once emptied.
 fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
     let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
         return;
@@ -277,11 +294,10 @@ fn migrate_legacy_binary(name: &str, version: &str, expected_sha256: &str) {
     let version_dir = crate::platform::paths::assets_cli_dir(name, version);
     let destination = version_dir.join(&exe);
     if file_sha256_matches(&destination, expected_sha256) {
-        // 版本目录已有校验通过的二进制：旧文件是经校验相同的重复残留才删，
-        // 内容不符则不动（不替用户删来历不明的文件）。
-        if file_sha256_matches(&legacy, expected_sha256) {
-            let _ = fs::remove_file(&legacy);
-        }
+        let _ = fs::remove_file(&legacy);
+        log::info!(
+            "[connectors] legacy CLI leftover removed (pinned version in place): {name}@{version}"
+        );
     } else if file_sha256_matches(&legacy, expected_sha256)
         && fs::create_dir_all(&version_dir).is_ok()
         && fs::rename(&legacy, &destination).is_ok()
@@ -777,8 +793,12 @@ mod tests {
     }
 
     /// 旧布局迁移（§9.3）：SHA-256 匹配 → 移动到版本目录并清理腾空的 bin 目录；
-    /// 不匹配 → 原样保留（degraded 语义）；版本目录已有同哈希二进制时旧文件
-    /// 属重复残留 → 删除；旧版本目录保守保留（GC 留后续 PR）。全程幂等。
+    /// Mismatch → left in place (degraded semantics); when the version dir
+    /// already holds a verified pinned binary, the legacy same-name file is
+    /// removed regardless of content (identical bytes = duplicate leftover,
+    /// different bytes = stale old version — kept, it would only shadow the
+    /// upgraded runtime); old version dirs are conservatively kept (GC in a
+    /// later PR). Idempotent throughout.
     #[test]
     fn migrate_legacy_binary_moves_matching_keeps_mismatching() {
         with_temp_home("pinvou3-native-installer-test", || {
@@ -817,12 +837,56 @@ mod tests {
             assert!(!legacy.exists(), "经校验相同的重复残留应删除");
             assert!(dest.is_file());
 
-            // 不匹配 → 原样保留（不替用户删来历不明的文件），bin 目录不动
+            // Version dir populated + content mismatch (a stale old version —
+            // the wecom-cli 0.1.9 shadow case) → remove: the pinned copy is the
+            // verified authoritative runtime, and a legacy leftover would only
+            // shadow it. The emptied bin dir is tidied.
             fs::create_dir_all(&bin_dir).unwrap();
-            fs::write(&legacy, b"tampered-content").unwrap();
+            fs::write(&legacy, b"stale-old-version").unwrap();
             migrate_legacy_binary("test-cli", "9.9.9", &sha);
-            assert!(legacy.is_file(), "不匹配应原样保留");
-            assert!(bin_dir.is_dir(), "未腾空的 bin 目录保留");
+            assert!(
+                !legacy.exists(),
+                "stale old-version leftover must be removed once the pinned version is in place (it would shadow the upgraded CLI)"
+            );
+            assert!(dest.is_file(), "versioned pinned copy must be untouched");
+            assert!(!bin_dir.exists(), "emptied bin dir must be tidied");
+        });
+    }
+
+    /// While the pinned version is absent (no version dir), a legacy-layout
+    /// binary must be kept even on hash mismatch: it is the connector's only
+    /// locally runnable copy (e.g. a lark-cli not yet reconnected after an
+    /// upgrade).
+    #[test]
+    fn mismatched_legacy_binary_kept_without_verified_pinned_copy() {
+        with_temp_home("pinvou3-native-installer-test-keep", || {
+            let Some(bin_dir) = crate::platform::paths::managed_connector_bin_dir() else {
+                return;
+            };
+            let exe = crate::platform::connector_lock::executable_name("test-cli");
+            let legacy = bin_dir.join(&exe);
+            let dest = crate::platform::paths::assets_cli_dir("test-cli", "9.9.9").join(&exe);
+
+            fs::create_dir_all(&bin_dir).unwrap();
+            fs::write(&legacy, b"only-local-runtime").unwrap();
+            let legacy_sha = crate::platform::connector_lock::file_sha256_hex(&legacy).unwrap();
+
+            // Hash mismatch + pinned version absent → keep the legacy file
+            migrate_legacy_binary("test-cli", "9.9.9", "deadbeef");
+            assert!(
+                legacy.is_file(),
+                "with the pinned version absent, the legacy binary is the only local runtime and must not be removed"
+            );
+            assert!(!dest.exists());
+
+            // Same file, matching hash (for another pinned version) → the move
+            // semantics are unaffected by this change
+            migrate_legacy_binary("test-cli", "9.9.9", &legacy_sha);
+            assert!(
+                dest.is_file(),
+                "a match must still move into the version dir"
+            );
+            assert!(!legacy.exists());
         });
     }
 }
