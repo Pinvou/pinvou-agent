@@ -2069,7 +2069,7 @@
           const bodyIndex = payload.indexOf(split.text, blockText.length);
           if (
             bodyIndex >= blockText.length &&
-            payload.indexOf(split.text, bodyIndex + 1) === -1
+            !payload.includes(split.text, bodyIndex + 1)
           ) {
             return {
               blockPrefix: blockText,
