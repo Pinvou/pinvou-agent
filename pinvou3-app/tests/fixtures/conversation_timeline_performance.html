@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Conversation timeline performance fixture</title>
+    <style>
+      /* Minimal layout utilities mirroring the Tailwind classes the virtual
+         rows depend on. Without these, a dropped positioning class is
+         invisible to every assertion below: rows stack in normal flow far
+         below the viewport while the transform strings still match. */
+      .relative { position: relative; }
+      .absolute { position: absolute; }
+      .left-0 { left: 0; }
+      .top-0 { top: 0; }
+      .w-full { width: 100%; }
+      .flex { display: flex; }
+      .flex-col { flex-direction: column; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

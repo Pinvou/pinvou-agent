@@ -192,6 +192,21 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       bottomRows.length,
       host.querySelectorAll('[data-conversation-virtual-row]').length,
     );
+    // Pin real row positioning, not just transform strings: with the layout
+    // utilities missing, rows stack in flow far below the viewport while
+    // every attribute assertion still passes. Probing several heights keeps
+    // the check deterministic across row-gap alignments.
+    const viewportRect = scrollElementRef.current.getBoundingClientRect();
+    const centerX = viewportRect.left + viewportRect.width / 2;
+    const centerY = viewportRect.top + viewportRect.height / 2;
+    const probeHitsRowInView = offset => {
+      const element = document.elementFromPoint(centerX, centerY + offset);
+      const row = element?.closest('[data-conversation-virtual-row]');
+      if (!row) return false;
+      const rowRect = row.getBoundingClientRect();
+      return rowRect.bottom > viewportRect.top && rowRect.top < viewportRect.bottom;
+    };
+    const middleRowUnderViewport = [-120, 0, 120].some(probeHitsRowInView);
     followOutputRef.current = true;
     return {
       count,
@@ -207,6 +222,7 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       topScrollTop,
       middleIndexes,
       middleScrollTop,
+      middleRowUnderViewport,
       bottomIndexes,
       bottomDistanceAfterMount,
       measuredGap,
@@ -294,6 +310,29 @@ window.__PINVOU_TIMELINE_PERFORMANCE__ = {
       releasedTurnInRows: Boolean(
         host.querySelector('[data-conversation-turn="turn-99"]')?.closest('[data-conversation-virtual-row]'),
       ),
+    };
+  },
+  async runThresholdCrossing() {
+    // A reader parked mid-history (bottom following off) must keep their
+    // scroll position when the turn count crosses the virtualization
+    // threshold: core writes initialOffset back to the scroll element at
+    // every attach, and the timeline passes the live scrollTop.
+    followOutputRef.current = false;
+    commit(turns(CONVERSATION_VIRTUALIZATION_THRESHOLD));
+    scrollElementRef.current.scrollTop = 5000;
+    await nextPaint();
+    const beforeScrollTop = scrollElementRef.current.scrollTop;
+    const beforeVirtual = Boolean(host.querySelector('[data-conversation-virtual-timeline]'));
+    commit(turns(CONVERSATION_VIRTUALIZATION_THRESHOLD + 1));
+    const immediateScrollTop = scrollElementRef.current.scrollTop;
+    await nextPaint();
+    followOutputRef.current = true;
+    return {
+      beforeVirtual,
+      afterVirtual: Boolean(host.querySelector('[data-conversation-virtual-timeline]')),
+      beforeScrollTop,
+      immediateScrollTop,
+      settledScrollTop: scrollElementRef.current.scrollTop,
     };
   },
 };
