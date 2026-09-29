@@ -1068,10 +1068,6 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         window.addEventListener('pinvou:tools-changed', refresh);
         return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
       }, []);
-      // Draft scope the in-flight voice send will consume chips from; read
-      // by onTaskAccepted (a separate callback) so its clear obeys the same
-      // session-switch guard as the sendTask clear.
-      const mentionSendScopeRef = useRef(null);
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
       }, []);
@@ -1843,8 +1839,20 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // When the feature is off (§3.3 layer 1) the @ trigger yields no
       // session group / candidates.
       const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
+<<<<<<< HEAD
       const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken;
       const mentionCandidates = filterSessionMentionCandidates((bs && bs.sessions) || [], {
+=======
+      // At the ref cap the panel does not open at all: with candidates forced
+      // empty it would render a false "no matching sessions" instead of cap
+      // feedback.
+      const mentionMenuOpen = !!mentionTrigger && mentionTrigger.token !== mentionDismissedToken &&
+        sessionRefs.length < MAX_SESSION_REFS;
+      // At the ref cap the panel stays empty: a pick there could only be a
+      // silent no-op, so typing @ no longer opens it (the already-maxed chips
+      // strip stays the only feedback surface).
+      const mentionCandidates = sessionRefs.length >= MAX_SESSION_REFS ? [] : filterSessionMentionCandidates((bs && bs.sessions) || [], {
+>>>>>>> 6fa1e7e39 (fix(chat): cap builder titles and gate cap menu)
         query: mentionTrigger ? mentionTrigger.query : '',
         excludeIds: [activeSessionId, ...sessionRefs.map(ref => ref.sessionId)].filter(Boolean),
         limit: 8,
@@ -2184,6 +2192,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const draftKeyAtSend = mentionDraftKeyRef.current;
         void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
           if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
+          else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
       }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
@@ -2612,6 +2621,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // Clear chips once the send is accepted, even when the feature gate
           // suppressed the block (stale chips from before the toggle must not linger).
           if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
+          else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2844,8 +2854,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // Scope guard: a session switch during the await moves the draft key;
           // the new scope's chips must not be wiped by this send's cleanup.
           const draftKeyAtSend = mentionDraftKeyRef.current;
-          mentionSendScopeRef.current = draftKeyAtSend;
           try {
+<<<<<<< HEAD
             const result = await sendChatMessage(outgoingText, { ...context, draftOwner: owner });
             if (result === true) {
               // The composer was cleared before the await, so deliverVoiceTask's
@@ -2862,12 +2872,35 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // Voice task delivery treats "restored" as not accepted (the text
             // is back, not sent); ordinary callers map it through to false.
             return result === 'restored' ? false : result;
+=======
+            const accepted = await sendChatMessage(outgoingText);
+            // The send consumed the chips even if the composer drifted during
+            // the await (the draft-untouched guard then skips onTaskAccepted):
+            // clearing here keeps them from re-arming the next plain send.
+            if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
+            else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
+            return accepted;
+>>>>>>> 6fa1e7e39 (fix(chat): cap builder titles and gate cap menu)
           } catch (error) {
             if (bridge.chat.restoreTaskDraft) bridge.chat.restoreTaskDraft(constrained.text, owner);
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
           }
         },
+<<<<<<< HEAD
+=======
+        onTaskAccepted: (sentText) => {
+          // The user may have typed new content during the await send window; clear only when
+          // the draft was not modified.
+          setInputText(prev => (prev === sentText ? '' : prev));
+          // Chips were already cleared by sendTask's scope-guarded clear on
+          // every accepted voice-task send — nothing to do here (kept absent
+          // deliberately: an unconditional clear here would wipe the chips of
+          // whatever scope the user switched to mid-send).
+          personalWorkbenchTemplateIdRef.current = null;
+          setPersonalWorkbenchTemplateId(null);
+        },
+>>>>>>> 6fa1e7e39 (fix(chat): cap builder titles and gate cap menu)
       });
       const handleVoiceTrigger = chatVoice.triggerVoice;
 
