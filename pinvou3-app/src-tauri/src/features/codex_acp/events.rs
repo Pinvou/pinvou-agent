@@ -1198,7 +1198,13 @@ pub fn translate_acp_state_workspace(
     if next == current {
         return Ok(false);
     }
-    state["workspace"]["path"] = json!(next.to_string_lossy().to_string());
+    // Round-22 minor 5: wrong-shape JSON (a non-object root or workspace)
+    // must degrade to a `failed` entry via the error path, not panic through
+    // IndexMut — same guard as the sibling patch_acp_state.
+    let Some(workspace) = state.get_mut("workspace").and_then(|w| w.as_object_mut()) else {
+        return Err(anyhow::anyhow!("acp-state workspace is not an object"));
+    };
+    workspace["path"] = json!(next.to_string_lossy().to_string());
     persist_acp_state(session_id, state)?;
     Ok(true)
 }

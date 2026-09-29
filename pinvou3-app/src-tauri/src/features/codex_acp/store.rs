@@ -356,15 +356,40 @@ pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
     }
 }
 
+#[cfg(test)]
+static INJECT_SIDECAR_PERSIST_FAIL_IDS: std::sync::Mutex<Option<Vec<String>>> =
+    std::sync::Mutex::new(None);
+
 fn persist_code_session_sidecar(path: &Path, sidecar: &CodeSessionSidecar) -> Result<()> {
+    // Cross-platform fault injection for the rebind tests (round-22: the
+    // atomic_write migration defeated path-occupation injections —
+    // randomized temp names cannot be pre-occupied). Test-only, and
+    // SESSION-ID-SCOPED so parallel tests never see each other's faults;
+    // the id is the sidecar's parent directory name.
+    #[cfg(test)]
+    if let Some(ids) = INJECT_SIDECAR_PERSIST_FAIL_IDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+    {
+        let sid = path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str());
+        if let Some(sid) = sid {
+            if ids.iter().any(|injected| injected == sid) {
+                anyhow::bail!("injected sidecar persist failure");
+            }
+        }
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("创建会话目录失败: {}", parent.display()))?;
     }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(sidecar)?)
-        .with_context(|| format!("写入 {} 失败", temporary.display()))?;
-    fs::rename(&temporary, path).with_context(|| format!("保存 {} 失败", path.display()))
+    // Same durability as the index persist (review #463 round-22 minor 4):
+    // atomic_write carries the fsync the plain fs::write+rename pair lacked.
+    crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(sidecar)?)
+        .with_context(|| format!("保存 {} 失败", path.display()))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -2234,13 +2259,16 @@ mod tests {
         // code-session.json.tmp fails immediately and rename is never
         // reached — a cross-platform-stable simulation of a persist failure.
         // The orphan has only the rewrite pass; the indexed session hits the
-        // same wall in both passes, which is "finally stale".
-        for sid in ["orphan-deny", "indexed-deny"] {
-            fs::create_dir_all(
-                code_session_sidecar_path(&store.path, sid).with_extension("json.tmp"),
-            )
-            .unwrap();
-        }
+        // same wall in both passes, which is "finally stale". Round-22
+        // minor 4 moved the sidecar persist onto atomic_write (randomized
+        // temp names defeat path-occupation injections), so the fault is the
+        // crate's established cfg(test) injection seam — deterministic on
+        // every platform, SESSION-ID-SCOPED so parallel tests never see each
+        // other's faults, and both deny ids ride the same persist call.
+        *INJECT_SIDECAR_PERSIST_FAIL_IDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) =
+            Some(vec!["orphan-deny".to_string(), "indexed-deny".to_string()]);
 
         let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
         let mut stale = outcome.sidecar_final_stale.clone();
@@ -2269,6 +2297,9 @@ mod tests {
             assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
         }
 
+        *INJECT_SIDECAR_PERSIST_FAIL_IDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         fs::remove_dir_all(&root).unwrap();
     }
 

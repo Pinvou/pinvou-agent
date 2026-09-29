@@ -568,7 +568,19 @@ pub async fn rebind_workspace_root(
             &mut retry_evict_candidates,
         );
     }
-    for (session_id, path) in sessions.workspace_bindings_under(&to_display) {
+    // Round-22 minor 7: the checked form — this scan runs milliseconds
+    // after the snapshot's, which already proved the root readable, but a
+    // transient failure here would silently miss a metadata-behind admittee
+    // that no badge or prefix scan can ever reach after the roots commit.
+    let to_lane_admittees = sessions
+        .try_workspace_bindings_under(&to_display)
+        .map_err(|error| {
+            format!(
+                "rebind_workspace_root: the sessions directory became unreadable ({}); nothing was moved — retry",
+                error.kind()
+            )
+        })?;
+    for (session_id, path) in to_lane_admittees {
         admit_rebind_retry_candidate(
             session_id,
             path,

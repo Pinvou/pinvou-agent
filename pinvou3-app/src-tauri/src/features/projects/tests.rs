@@ -943,3 +943,68 @@ fn alias_no_op_guards_are_wired_at_both_store_entries() {
         "plan_rebind_roots and rebind_roots must both guard on alias equality"
     );
 }
+
+#[test]
+fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
+    // review #463 round-22 E1: the round-18 touched-touched exemption had no
+    // pin — stubbing `legacy_overlap_pairs` to empty left `features::projects`
+    // fully green. This fixture makes the exemption LOAD-BEARING: two touched
+    // projects whose PRE-translation roots are nested under `from` translate
+    // to a still-nested pair at `to`; without the exemption the cross-pair
+    // check rejects the rebind with a conflict no re-pick can fix. The safe
+    // direction is structural (round-22 E2): a NEW cross nest between two
+    // touched members always implies a within-project nest that fires first.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("legacy");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&from).expect("create from");
+    let sub = from.join("sub");
+    std::fs::create_dir_all(&sub).expect("create sub");
+
+    let outer = create(&store, "外层", std::slice::from_ref(&from));
+    let inner = create(
+        &store,
+        "内层",
+        std::slice::from_ref(&abs("legacy-inner-original")),
+    );
+    // create_project validates, so the legacy nested overlap is introduced
+    // AFTER the fact by editing the persisted file directly — the legacy-data
+    // shape load_state accepts without revalidation.
+    let store_path = temp.path().join("projects.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
+            .expect("parse store");
+    file["projects"]
+        .as_array_mut()
+        .expect("projects array")
+        .iter_mut()
+        .find(|project| project["id"].as_str() == Some(inner.id.as_str()))
+        .expect("find inner")["roots"][0] = serde_json::Value::String(sub.display().to_string());
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec(&file).expect("serialize store"),
+    )
+    .expect("write store");
+    drop(store);
+    let store = store_in(&temp);
+
+    let affected = store
+        .rebind_roots(&from, &to)
+        .expect("the legacy nested touched pair must translate, not conflict");
+    let mut ids = affected;
+    ids.sort();
+    let mut expected = vec![outer.id.clone(), inner.id.clone()];
+    expected.sort();
+    assert_eq!(ids, expected, "both legacy-overlapped projects translate");
+
+    // The translated pair keeps the legacy nesting verbatim.
+    assert!(
+        store
+            .get(&inner.id)
+            .unwrap()
+            .roots
+            .contains(&display(&to.join("sub"))),
+        "the inner project's translated root must keep its nesting shape",
+    );
+}
