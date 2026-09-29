@@ -194,7 +194,7 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// Full model-visible name of the cross-session send tool
 /// (`mcp_<server>_<tool>` registry convention; server key session-reader,
 /// tool send_message_to_session). Consumed by the execpolicy Ask rule in
-/// [`Pinvou3Bridge::scope_deny_ruleset_with`] and by features::messaging's
+/// `Pinvou3Bridge::scope_deny_ruleset_with` and by features::messaging's
 /// audit records.
 pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
 

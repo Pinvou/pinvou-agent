@@ -10,7 +10,7 @@
 //! - a poll watcher picks spool files up, re-validates them (server-side
 //!   defense in depth — the spool directory is user-writable), and delivers
 //!   through the engine pool;
-//! - delivery semantics: target mid-turn → [`EnginePool::steer`] into the
+//! - delivery semantics: target mid-turn → `EnginePool::steer` into the
 //!   current turn; target idle / engine not live → a new turn dispatched
 //!   immediately (the scheduled-task wake precedent);
 //! - every delivery writes an audit record into both sessions' workspaces
@@ -21,7 +21,7 @@
 //! - poison files (schema drift, hostile content, oversize) are quarantined
 //!   under `spool/failed/` immediately; *transient* delivery failures (rewind
 //!   gates, engine spawn errors) retry with backoff and only quarantine after
-//!   [`MAX_DELIVERY_ATTEMPTS`].
+//!   `MAX_DELIVERY_ATTEMPTS`.
 //!
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
@@ -256,7 +256,7 @@ impl SpoolDelivery for PoolDelivery<'_> {
 /// the normal idle signal (no live engine / no active turn accepting), so the
 /// fallback dispatches a fresh turn — the two paths together implement the
 /// contract §6 queue/steer decision (busy → steer, idle → wake). Both paths
-/// are bounded by [`DELIVERY_TIMEOUT`] so a wedged engine cannot stall the
+/// are bounded by `DELIVERY_TIMEOUT` so a wedged engine cannot stall the
 /// watcher; a timeout surfaces as a transient error and is retried.
 pub async fn deliver_spooled_message(
     pool: &EnginePool,

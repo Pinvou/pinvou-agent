@@ -8,7 +8,7 @@
 //! `<pinvou3 home>/task-requests/spool/<name>.json` (see that server.py's
 //! `schedule_task_request` — the spool record schema is the contract between
 //! the two sides; the file name is the idempotency identity: the sha256 of
-//! "<from_session>|<kind>|<task_id>|<idempotency_key>" when a key is given, a
+//! `"<from_session>|<kind>|<task_id>|<idempotency_key>"` when a key is given, a
 //! random uuid otherwise, so a retried operation replaces its own pending
 //! record and can never clobber another session's nor another kind's). This
 //! module is the app-side consumer:
