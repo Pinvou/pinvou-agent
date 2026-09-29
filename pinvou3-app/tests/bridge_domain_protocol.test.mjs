@@ -182,7 +182,10 @@ const expectedProtocolHashes = {
   // surface is one invoke smaller.
   // Recomputed for per-frame stream notification coalescing; event names and
   // invoke shapes remain unchanged.
-  chat: '6aedde69396efcf75942985b4bb3ad00ea726b1267df4b9d3d1953e8239f8aa0',
+  // Recomputed for the coalescing hardening: chat:done cancels its session's
+  // pending notify frame, frame publishes contain subscriber throws, and the
+  // flush helper documents its runSyncOnSession extent contract.
+  chat: '648ace4c24985c2cd1cb8def8e8b2a4078824586295ba7016682cd2bf733baca',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
