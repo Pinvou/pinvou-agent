@@ -3,7 +3,14 @@
 // sessions to justify virtualization. This count-based threshold is deliberately
 // predictable; unusually tool-heavy shorter sessions remain a follow-up target.
 // Above the threshold, unmounted turns are intentionally absent from native
-// find-in-page, screen-reader traversal, and browser print.
+// find-in-page, screen-reader traversal, browser print, cross-row text
+// selection/copy, and keyboard traversal.
+// Crossing the threshold remounts every turn onto estimated row heights: the
+// reader's scroll offset is handed to the virtualizer (no jump back to the
+// top), but content can shift by the estimate error, and per-turn local UI
+// state (expanded tool groups, reasoning blocks, raw output) resets. That
+// state reset also applies whenever a row scrolls out of the window and back,
+// which is inherent to unmounting rows.
 export const CONVERSATION_VIRTUALIZATION_THRESHOLD = 80;
 
 /**
