@@ -207,7 +207,12 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
     let generation = conn.reset(ID);
     let already_logged_in = tokio::task::spawn_blocking(is_logged_in)
         .await
-        .map_err(|e| format!("spawn_blocking: {e}"))?;
+        .map_err(|e| {
+            // The frontend renders only the derived error code, so without this
+            // line the join failure's cause would be lost entirely.
+            log::warn!("[tmeet] logged-in probe task failed: {e}");
+            format!("spawn_blocking: {e}")
+        })?;
     if already_logged_in {
         cc::bundle_store_on_connected(ID);
         cc::emit(
@@ -275,7 +280,8 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("tmeet auth login 启动失败: {e}(需要 tmeet CLI)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
     let (tx, rx) = mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
@@ -293,7 +299,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         if now >= deadline {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             // Cancel tree-kills the child; a cancel landing in this window must
             // finish silently instead of misreporting an authorization timeout.
             if conn.is_cancelled(ID) {
@@ -319,11 +325,11 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                 if conn.is_cancelled(ID) {
                     let _ = child.kill();
                     cc::reap_after_kill(&mut child);
-                    conn.set_pid(ID, None);
+                    conn.clear_pid_if(ID, pid);
                     return Ok(());
                 }
                 if let Ok(Some(status)) = child.try_wait() {
-                    conn.set_pid(ID, None);
+                    conn.clear_pid_if(ID, pid);
                     log::info!("[tmeet] auth login exited before auth url: exit={status}");
                     // A single status wait is enough: the already flag is decided
                     // from the captured output lines, with no second 5s polling
@@ -368,7 +374,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(());
         }
         while let Ok((_, line)) = rx.try_recv() {
@@ -376,7 +382,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
                 if conn.is_cancelled(ID) {
                     log::info!("[tmeet] cancelled; child exit={status}");
@@ -418,7 +424,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }

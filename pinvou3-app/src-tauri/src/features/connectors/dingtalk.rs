@@ -269,7 +269,8 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("dws auth login 启动失败: {e}(需要先完成钉钉 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
     let (tx, rx) = mpsc::channel::<AuthEvent>();
     if let Some(o) = child.stdout.take() {
@@ -289,7 +290,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         if now >= deadline {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             // Aligned with tmeet: a cancel landing at the deadline instant is
             // handled as a cancel, silent.
             if conn.is_cancelled(ID) {
@@ -324,7 +325,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             Err(_) => {
                 let _ = child.kill();
                 cc::reap_after_kill(&mut child);
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 // Cancel tree-kills the child → pipe EOF lands here: the user stopped
                 // on purpose, so finish silently instead of misreporting a link timeout.
                 if conn.is_cancelled(ID) {
@@ -363,7 +364,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(());
         }
         while let Ok(event) = rx.try_recv() {
@@ -379,7 +380,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 if conn.is_cancelled(ID) {
                     // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
                     log::info!("[dingtalk] cancelled; child exit={status}");
@@ -406,7 +407,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }

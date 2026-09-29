@@ -73,7 +73,13 @@ impl ConnectorGate {
             Ok(show)
         })
         .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
+        .map_err(|e| {
+            // The connected-catch on the card replaces this string with the
+            // skills_enable_failed code, so without this line the join
+            // failure's cause would be lost entirely.
+            log::warn!("[{}] apply skills task failed: {e}", self.id);
+            format!("spawn_blocking: {e}")
+        })??;
         if show {
             crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
         }

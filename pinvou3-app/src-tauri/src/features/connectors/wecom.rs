@@ -248,7 +248,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         Err(_) => {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             let _ = std::fs::remove_dir_all(&qr_dir);
             // Cancel tree-kills the child → pipe EOF lands here: the user stopped
             // on purpose, so finish silently instead of misreporting a link timeout.
@@ -287,7 +287,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(()); // 取消:静默
         }
         match child.try_wait() {
@@ -314,7 +314,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("init 等待失败: {e}"));
             }
         }

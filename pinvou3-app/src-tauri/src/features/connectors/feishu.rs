@@ -175,7 +175,8 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
         .spawn()
         .map_err(|e| format!("config init --new 启动失败: {e}(需要先完成飞书 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
     // 排空 stdout+stderr,抓首个飞书 URL(channel 送回)。主线程的 tx 丢掉,
     // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
@@ -193,7 +194,7 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
         Err(_) => {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             // Cancel tree-kills the child → pipe EOF lands here: the user stopped
             // on purpose, so finish silently instead of misreporting a register failure.
             if conn.is_cancelled(ID) {
@@ -219,12 +220,12 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(false);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 if conn.is_cancelled(ID) {
                     // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
                     log::info!("[feishu] register cancelled; child exit={status}");
@@ -237,7 +238,7 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("config init 等待失败: {e}"));
             }
         }
