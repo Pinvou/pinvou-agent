@@ -29,6 +29,11 @@ pub enum ModelPreset {
     Mimo,
     /// OpenAI 官方 API
     Openai,
+    /// 自定义 OpenAI Responses 兼容接口（`/v1/responses` 协议）。走底座
+    /// named-custom route + `wire = "responses"`（见 bridge `engine_route_provider`），
+    /// 与「OpenAI Compatible」(Chat Completions)、「Anthropic」(Messages) 并列的
+    /// 第三种自定义协议面。
+    OpenaiResponses,
     /// Anthropic Claude（Messages 原生协议，底座内建 anthropic provider）
     Anthropic,
     /// Google Gemini（OpenAI 兼容端点）
@@ -159,6 +164,7 @@ impl ModelPreset {
             ModelPreset::Glm => "glm",
             ModelPreset::Mimo => "mimo",
             ModelPreset::Openai => "openai",
+            ModelPreset::OpenaiResponses => "openai_responses",
             ModelPreset::Anthropic => "anthropic",
             ModelPreset::Gemini => "gemini",
             ModelPreset::Xai => "xai",
@@ -180,6 +186,7 @@ impl ModelPreset {
             ModelPreset::Glm => "https://open.bigmodel.cn/api/paas/v4",
             ModelPreset::Mimo => "https://api.xiaomimimo.com/v1",
             ModelPreset::Openai => "https://api.openai.com/v1",
+            ModelPreset::OpenaiResponses => "https://api.openai.com/v1",
             ModelPreset::Anthropic => "https://api.anthropic.com/v1",
             ModelPreset::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             ModelPreset::Xai => "https://api.x.ai/v1",
@@ -218,22 +225,27 @@ impl ModelPreset {
             // v2.5 chat models (v2.5-pro / v2.5) hard-retire 2026-10-21
             // with no auto-replacement (mimo.mi.com deprecation page).
             ModelPreset::Mimo => "mimo-v2.6-pro",
-            // gpt-5.6-terra stays the default (re-verified 2026-09-28): the
-            // gpt-6 family detail pages state verbatim "Chat Completions
-            // supports function calling only with reasoning_effort set to
-            // none" (developers.openai.com gpt-6-sol / gpt-6-luna model
-            // pages), so the gpt-6 rows cannot drive the agent tool loop on
-            // the Chat wire this preset uses (the engine never sends
-            // reasoning_effort for gpt-6, and the API default is medium).
-            // terra's page carries no such restriction, so Chat tool calling
-            // and reasoning coexist there. gpt-6-sol / gpt-6-luna remain
-            // listed with the restriction in their descriptions. Before
-            // changing the default again, confirm the new id supports tool
-            // calling on the Chat wire at the effort the engine actually
-            // sends, and is recognized by the core::model_context resolution
-            // chain (see the monitor
-            // `preset_default_models_resolve_engine_context_window` test).
-            ModelPreset::Openai => "gpt-5.6-terra",
+            // gpt-6-sol is the default (re-verified 2026-09-29): the whole
+            // preset rides the OpenAI Responses wire since this same change
+            // (see bridge `engine_route_provider`) — every catalog id
+            // (gpt-6-sol/luna/astra, gpt-5.6-sol/terra/luna, gpt-5.5,
+            // gpt-5.4-mini) lists `v1/responses` with function calling on its
+            // model page, so the Chat-only restriction that previously kept
+            // terra in the slot ("Chat Completions supports function calling
+            // only with reasoning_effort set to none", developers.openai.com
+            // gpt-6-sol / gpt-6-luna model pages) no longer applies. sol is
+            // the balanced flagship ($2/$10 vs astra's top slot); its effort
+            // ladder includes every tier the engine's Responses effort mapper
+            // can send. Before changing the default again, confirm the new id
+            // supports function calling on the Responses wire and is
+            // recognized by the core::model_context resolution chain (see the
+            // monitor `preset_default_models_resolve_engine_context_window`
+            // test).
+            ModelPreset::Openai => "gpt-6-sol",
+            // 自定义 Responses 端点的迁移兜底（前端模板同样预填）；协议与官方
+            // 端点一致，故预填官方旗舰即开即用，指向聚合平台时用户会连同
+            // base_url 一起改掉模型。
+            ModelPreset::OpenaiResponses => "gpt-6-sol",
             // claude-opus-5-5 (2026-09-22) per the official models overview
             // "start with Claude Opus 5.5 for most workloads".
             ModelPreset::Anthropic => "claude-opus-5-5",
@@ -268,6 +280,10 @@ impl ModelPreset {
                 }
                 _ => Some(1_050_000),
             },
+            // 自定义 Responses 端点：端点身份未知，与 OpenaiCompatible 同取保守
+            // 131072（官方端点的已知模型由底座 catalog / core::model_context
+            // 先行解析，兜底承接不到）。
+            ModelPreset::OpenaiResponses => Some(131_072),
             // Anthropic 官方口径：haiku 200K，opus/sonnet/fable 1M
             // （claude-opus-5 由 model_context 的 PINVOU_OVERRIDES 先行覆盖，此处兜
             // 底只承接底座不认识的命名）。
@@ -324,7 +340,8 @@ mod tests {
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.3"),
             (ModelPreset::Mimo, "mimo-v2.6-pro"),
-            (ModelPreset::Openai, "gpt-5.6-terra"),
+            (ModelPreset::Openai, "gpt-6-sol"),
+            (ModelPreset::OpenaiResponses, "gpt-6-sol"),
             (ModelPreset::Anthropic, "claude-opus-5-5"),
             (ModelPreset::Gemini, "gemini-3.8-flash"),
             (ModelPreset::Xai, "grok-4.7"),
@@ -347,6 +364,9 @@ mod tests {
             (ModelPreset::Openai, Some("gpt-5.3-codex"), 400_000),
             (ModelPreset::Openai, Some("gpt-5.6-sol"), 1_050_000),
             (ModelPreset::Openai, None, 1_050_000),
+            // 自定义 Responses 端点兜底与 OpenaiCompatible 同取 131072
+            (ModelPreset::OpenaiResponses, Some("gpt-6-sol"), 131_072),
+            (ModelPreset::OpenaiResponses, None, 131_072),
             // Anthropic：haiku 200K；底座不认识的非 claude 命名模型兜底 1M
             (
                 ModelPreset::Anthropic,

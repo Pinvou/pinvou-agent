@@ -285,6 +285,7 @@ export const dictZh = {
         modelPresetDeepseek: 'DeepSeek',
         modelPresetKimi: 'Kimi',
         modelPresetOpenaiCompatible: 'OpenAI 兼容',
+        modelPresetOpenaiResponses: 'OpenAI Responses 兼容',
         modelPresetQwen: '通义千问',
         modelPresetDoubao: '豆包',
         modelPresetMinimax: 'MiniMax',

@@ -643,6 +643,9 @@ fn review_reasoning_dialect(
         | ModelPreset::LocalVllm
         | ModelPreset::Deepseek
         | ModelPreset::Openai
+        // 自定义 Responses 端点只切换主会话引擎 route；评审辅助调用仍是单发
+        // Chat Completions（无工具调用），按 URL/模型名回退判定。
+        | ModelPreset::OpenaiResponses
         | ModelPreset::Anthropic
         | ModelPreset::Gemini
         | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model),
