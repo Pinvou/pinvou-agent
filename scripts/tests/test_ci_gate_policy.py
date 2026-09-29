@@ -588,6 +588,13 @@ class CiGatePolicyTests(unittest.TestCase):
             windows_rust_steps,
         )
         self.assertIn("--workspace --all-targets --locked", windows_rust_steps)
+        # The adapter-gaia test-support target compiles on the Windows leg:
+        # required-features hide it from the workspace-wide steps above, and
+        # deleting this step must fail the policy suite.
+        self.assertIn(
+            "-p adapter-gaia --features test-support --all-targets --locked",
+            windows_rust_steps,
+        )
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
         # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
@@ -625,6 +632,13 @@ class CiGatePolicyTests(unittest.TestCase):
             macos_cli_steps,
         )
         self.assertIn("--workspace --all-targets --locked", macos_cli_steps)
+        # Mirror of the Windows pin: the adapter-gaia test-support target is
+        # invisible to required-features-filtered workspace steps, so the
+        # dedicated compile step must stay pinned.
+        self.assertIn(
+            "-p adapter-gaia --features test-support --all-targets --locked",
+            macos_cli_steps,
+        )
         self.assertIn(
             "rustup show active-toolchain",
             macos_cli_steps,
@@ -1264,6 +1278,7 @@ class CiGatePolicyTests(unittest.TestCase):
         expected = {
             "Windows Rust 全目标检查": "all-targets-check",
             "pinvou-cli Windows compile check": "all-targets-check",
+            "pinvou-cli Windows compile check (adapter-gaia test-support)": "all-targets-check",
             "Windows Rust 单元测试链接检查": "regression",
             "Windows 测试 exe 嵌入 Common-Controls v6 清单": "regression",
             "Windows 测试二进制导入诊断": "regression",
