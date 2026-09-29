@@ -118,7 +118,14 @@ pub(crate) fn skill_owner_package(skill_name: &str) -> String {
         return cli.to_string();
     }
     for tool in MarketplaceManager::new().available_tools() {
-        if tool.companion_skills.iter().any(|s| s == skill_name) {
+        // Case-folded like the builtin guards: on case-insensitive filesystems
+        // an on-disk `Session-Reader` directory resolves to the companion
+        // skill regardless of declared casing (review round-5 minor 4).
+        if tool
+            .companion_skills
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(skill_name))
+        {
             // V5「随包」认领：包本体已装才把技能归属到包（与 list_bundles 的认领
             // 条件一致）；未装时技能保留独立纯技能包形态（owner = 技能名自身）。
             // 保证 save 归一与物化排除跟 UI 展示的包形态对齐（二轮评审：scope

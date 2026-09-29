@@ -452,6 +452,19 @@ pub(crate) fn recycle_upload_package(
 /// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
 /// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
+    // Builtin guard (review round-5 M2): restore is the one user-reachable
+    // write path with no builtin check at all. A pre-PR recycled entry whose
+    // id normalizes to a builtin would either collide with the boot-seeded
+    // directory or restore into a record the folded uninstall/disable guards
+    // then refuse to remove — a permanent wedge of exactly the poisoned-state
+    // class this module's siblings guard against. Case-variants included via
+    // the folded probe.
+    if crate::features::marketplace::builtin::is_builtin_tool(&super::scope::to_package_id(pkg_id))
+    {
+        return Err(format!(
+            "'{pkg_id}' 与内建插件冲突（恢复目标被内建占用），无法恢复；请联系版本说明确认处理方式"
+        ));
+    }
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let bin = RecycleBin::new();

@@ -568,6 +568,10 @@ fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
 /// 写失败原样上抛（用户治理状态不得静默丢写）。
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
+    // Builtin plugins cannot be hidden (§3.1): the guard lives on the manager
+    // function (not just the command layer) so every caller inherits it —
+    // same layering as the disable path (review round-5 minor 3).
+    crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

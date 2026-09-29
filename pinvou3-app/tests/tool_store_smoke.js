@@ -729,11 +729,18 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       // configure actions).
       noAction:!!sr&&sr.querySelector('button')===null,
       skill:cards.some(c=>text(c).includes('视觉设计')),
+      // The mode-controlled builtin skill must show the mode-controlled badge
+      // on this audit page (agreeing with its store card), never "always on"
+      // (review round-5 M3).
+      skillCardText:(()=>{const c=cards.find(c=>text(c).includes('视觉设计'));return c?(c.textContent||''):null;})(),
     };
   });
   rec('builtin subpage card fields (badge/tool list/security level/version/data access/read-only without buttons)',
     builtinPage.list&&builtinPage.sr&&builtinPage.badge&&builtinPage.tools&&builtinPage.level&&builtinPage.version&&builtinPage.access&&builtinPage.noAction&&builtinPage.skill,
     builtinPage.list?'':JSON.stringify(builtinPage));
+  rec('builtin subpage mode-controlled skill badge agrees with the store card',
+    !!builtinPage.skillCardText&&builtinPage.skillCardText.includes('内置 · 随会话模式')&&!builtinPage.skillCardText.includes('内置 · 始终启用'),
+    builtinPage.skillCardText===null?'card missing':builtinPage.skillCardText);
   await page.click('[data-testid="builtin-plugins-back"]');
   await sleep(200);
   rec('builtin subpage returns to the main list',await page.evaluate((selector)=>(

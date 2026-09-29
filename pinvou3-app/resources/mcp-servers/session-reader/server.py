@@ -106,9 +106,17 @@ METADATA_HEAD_BYTES = 64 * 1024
 # each field so the envelope cannot bypass the aggregate response budget
 # (review round-4 MAJOR-2). A few KB is generous for a session title.
 MAX_METADATA_FIELD_CHARS = 4 * 1024
+# NOTE: the aggregate budget measures shaped JSON; the wire payload embeds it
+# as a JSON string, which can roughly double quote-dense worst cases.
 
 DEFAULT_TURN_LIMIT = 3
 MAX_TURN_LIMIT = 20
+DEFAULT_LIST_LIMIT = 20
+# The listing scans the sessions directory on a single-threaded stdio loop;
+# an unbounded scan stalls every other call on the server as stores grow
+# (review round-5 M5). Cap the scan and report the partial result honestly.
+MAX_LIST_SCAN_ENTRIES = 2000
+
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 DEFAULT_MAX_OUTPUT_CHARS = 2000
@@ -704,11 +712,19 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
     needle = (query or "").strip().lower()
     entries = []
     try:
-        names = os.listdir(sessions_dir)
+        names = sorted(os.listdir(sessions_dir))
     except OSError:
         # Deliberately no raw exception text: OSError messages embed absolute
         # local paths, which must not leak into tool responses.
         return None, "sessions directory is not readable"
+    # The base directory resolves once for the whole listing (one syscall, not
+    # two per entry); entries still verify containment against it.
+    try:
+        sessions_base = Path(sessions_dir).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None, "sessions directory is not readable"
+    scanned = 0
+    scan_truncated = False
     for name in names:
         if not name.endswith(".json"):
             continue
@@ -719,12 +735,17 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
         # fail the listing — RuntimeError from symlink-loop resolution is
         # beyond the OSError family, and anything else abnormal degrades the
         # same way.
+        scanned += 1
+        if scanned > MAX_LIST_SCAN_ENTRIES:
+            scan_truncated = True
+            break
         try:
             # Containment: a planted symlink must not resolve outside the
             # sessions directory; escaped entries are skipped, not listed.
-            path = _resolve_session_path(sessions_dir, session_id)
-            if path is None:
-                continue
+            # The base is pre-resolved above (hoisted out of this loop).
+            candidate = (sessions_base / ("%s.json" % session_id)).resolve()
+            candidate.relative_to(sessions_base)
+            path = candidate
             # Regular files only: a planted FIFO would block open() forever in
             # this single-threaded stdio loop (review round-3 M3).
             if not stat.S_ISREG(os.stat(path).st_mode):
@@ -747,7 +768,13 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
             "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
         })
     entries.sort(key=lambda item: item["updatedAt"], reverse=True)
-    return {"sessions": entries[:limit], "total": len(entries)}, None
+    return {
+        "sessions": entries[:limit],
+        "total": len(entries),
+        # Honest partiality: the scan cap stops before the end of the
+        # directory, so `total` counts only what was scanned.
+        "truncated": scan_truncated,
+    }, None
 
 
 # ---------------------------------------------------------------------------

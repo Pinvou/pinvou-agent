@@ -118,7 +118,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
-  return `nextCursor` / `hasMore`.
+  return `nextCursor` / `hasMore`. Cursor paging is mandatory for content
+  readers; a small listing may ship `limit`-only (the `list_sessions`
+  precedent) provided its description says so.
 - **Clipping parameters**: long-content tools provide a `maxOutputCharsPerItem`-style
   parameter (default + ceiling).
 - ID validation follows the Rust `validators.rs` rules (`[A-Za-z0-9_-]+`, anti-empty,

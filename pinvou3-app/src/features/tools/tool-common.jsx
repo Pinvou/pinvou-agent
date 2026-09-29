@@ -722,7 +722,11 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
+      // The audit badge keys mode control off backendId: this legacy entry's
+      // real backend skill id (visual-design) must reach the builtin page so
+      // its badge agrees with the store card (review round-5 M3).
+      backendId: 'visual-design' },
     ];
 
     // 后端合成技能卡的补充展示数据(按 backendId 取):
