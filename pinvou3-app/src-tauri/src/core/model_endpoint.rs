@@ -108,7 +108,13 @@ fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
 pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     let client = shared_probe_client()?;
     let url = models_probe_url(base_url);
-    let resp = client.get(url).send().await.ok()?;
+    // Same consistency hardening as fetch_v1_models: gateway probes carry the
+    // session-affinity header (feature-label key); no-op off-gateway. All
+    // current callers are loopback-only, so this is latent-gap hardening.
+    let resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }

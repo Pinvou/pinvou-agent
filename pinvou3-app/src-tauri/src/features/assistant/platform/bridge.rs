@@ -7490,6 +7490,14 @@ mod tests {
         assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
             "https://evil.example.com/zen/v1"
         ));
+        // Lookalike hosts: a suffix/prefix matcher regression would leak the
+        // session UUID to these, so both directions are pinned.
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://notopencode.ai/zen/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai.evil.com/zen/v1"
+        ));
         assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
             "not a url"
         ));
