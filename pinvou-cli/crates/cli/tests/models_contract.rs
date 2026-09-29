@@ -1502,10 +1502,11 @@ fn settings_search_set_clear_requires_yes() {
     );
 }
 
-/// Human rows must not be forgeable. `models.rs` was the last family still
-/// interpolating untrusted cells raw, and `parse_add`'s `.trim()` only strips
-/// the EDGES — so `--name $'ok\n*m_fake\tEvil'` injected a line
-/// indistinguishable from a real active-model row.
+/// Human rows must not be forgeable. `models.rs` used to be the last family
+/// still interpolating untrusted cells raw, and `parse_add`'s `.trim()` only
+/// strips the EDGES — so `--name $'ok\n*m_fake\tEvil'` injected a line
+/// indistinguishable from a real active-model row. (`scheduled` and
+/// `plugins` had the same gap and are collapsed now too.)
 #[test]
 fn models_list_and_show_collapse_control_characters_in_human_rows() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -347,17 +347,21 @@ fn plugins_usage_errors_exit_two() {
     assert!(usage_error(&["pinvoy", "plugins", "disable"]).contains("id"));
     // unsupported / malformed options
     assert!(usage_error(&["pinvoy", "plugins", "tools", "list", "--bogus"]).contains("--bogus"));
+    let no_equals = usage_error(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "install",
+        "w",
+        "--secret",
+        "NO_EQUALS",
+    ]);
+    assert!(no_equals.contains("KEY=ENV_VAR_NAME"));
+    // The argument may be the plaintext secret pasted at the wrong spot, so
+    // the refusal must never echo it back.
     assert!(
-        usage_error(&[
-            "pinvoy",
-            "plugins",
-            "tools",
-            "install",
-            "w",
-            "--secret",
-            "NO_EQUALS"
-        ])
-        .contains("KEY=ENV_VAR_NAME")
+        !no_equals.contains("NO_EQUALS"),
+        "the --secret refusal must not echo the argument: {no_equals}"
     );
     assert!(
         usage_error(&["pinvoy", "plugins", "tools", "install", "w", "--secret"])
@@ -473,6 +477,57 @@ fn import_directory_and_zip_show_up_in_skills_list() {
         .expect("zip fixture listed");
     assert_eq!(fixture["installed"], serde_json::json!(true));
     assert_eq!(fixture["user_uploaded"], serde_json::json!(true));
+}
+
+/// Human rows must not be forgeable: the import lane sanitizes only the
+/// DISPLAY name and stores the manifest description verbatim (the display-
+/// meta write path validates, but the stored manifest description does not),
+/// so the skills/tools rows must collapse control characters at the
+/// rendering boundary like every sibling family.
+#[test]
+fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("skills-collapse");
+    let dir = home.path().join("fixtures").join("collapse-hostile");
+    std::fs::create_dir_all(&dir).unwrap();
+    // The frontmatter value is taken verbatim (no YAML unescaping, no
+    // display validation on the stored manifest description), so a raw tab
+    // byte lands in the store as-is.
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: collapse-hostile\ndescription: ok\tinjected\trow\n---\n# body\n",
+    )
+    .unwrap();
+    run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+
+    let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
+    let rows = human
+        .lines()
+        .filter(|line| line.contains("collapse-hostile"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the hostile description must not forge extra rows: {human:?}"
+    );
+    assert!(
+        rows[0].contains("ok injected row"),
+        "the collapsed description must render on one row: {:?}",
+        rows[0]
+    );
+
+    // JSON keeps the verbatim description — only the human row sanitizes.
+    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    let skills = value["skills"].as_array().expect("skills array");
+    let fixture = skills
+        .iter()
+        .find(|skill| skill["id"] == "collapse-hostile")
+        .expect("imported skill listed");
+    assert_eq!(
+        fixture["description"].as_str(),
+        Some("ok\tinjected\trow"),
+        "the stored description keeps the original bytes"
+    );
 }
 
 #[test]
@@ -1153,6 +1208,40 @@ fn oauth_login_guards_and_cancel_behaviour() {
     assert!(
         stdout.contains("no active oauth login"),
         "oauth-cancel output should report no active login"
+    );
+}
+
+/// A user who pastes the plaintext secret where the env-var NAME belongs gets
+/// a failed variable lookup, and that failure must not echo the pasted value
+/// back into the diagnostics — it names only the config key plus the
+/// KEY=ENV_VAR_NAME hint. Hermetic: `resolve_secrets` runs before any
+/// marketplace/network access, so the missing variable fails the command
+/// with exit 1 immediately.
+#[test]
+fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("tools-secret-no-echo");
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "install",
+        "weather",
+        "--secret",
+        "AMAP_KEY=pasted-plaintext-secret-not-a-variable",
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        !message.contains("pasted-plaintext-secret-not-a-variable"),
+        "the diagnostics must not echo the pasted value: {message}"
+    );
+    assert!(
+        message.contains("AMAP_KEY"),
+        "the diagnostics must name the config key: {message}"
+    );
+    assert!(
+        message.contains("KEY=ENV_VAR_NAME"),
+        "the diagnostics must carry the KEY=ENV_VAR_NAME hint: {message}"
     );
 }
 

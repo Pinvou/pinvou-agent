@@ -65,9 +65,9 @@ libc = "0.2"
 fd-lock = "4"
 # The round-18 login guard test probes its fake vendor processes with real
 # kill(2) calls (signal-0 existence checks, the interrupt, red leftovers
-# cleanup) — pure standard-library std has no way to express any of those.
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+# cleanup) — pure standard-library std has no way to express any of those;
+# the regular `cfg(unix)` dependency above is already visible to tests, so
+# no dev-dependency duplicate is needed.
 
 [[bin]]
 name = "pinvou"

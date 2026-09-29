@@ -110,7 +110,12 @@ pub const GIT_OVERRIDE_KEYS: [&str; 25] = [
     "GIT_CONFIG_VALUE_0",
 ];
 
-const GIT_IDENTITY_KEYS: [&str; 6] = [
+/// Published through the `features::codex_acp` facade for the same-repo
+/// `pinvou-cli`'s commit lane: the CLI must strip the exact identity list the
+/// GUI's commit lane strips, or an ambient `GIT_AUTHOR_*` could outrank the
+/// `-c user.name=` the CLI passes (same drift-prevention as
+/// `GIT_OVERRIDE_KEYS` above); behavior is unchanged.
+pub const GIT_IDENTITY_KEYS: [&str; 6] = [
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
     "GIT_AUTHOR_DATE",

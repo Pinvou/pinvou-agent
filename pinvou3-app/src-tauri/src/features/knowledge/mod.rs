@@ -413,11 +413,15 @@ impl KnowledgeService {
     /// job is reported as an error (never a silent no-op); the transition
     /// itself is delegated to `ImportJobStore::interrupt`: it only applies to
     /// preparing/running (enforced in the SQL WHERE), and finished/interrupted
-    /// jobs are an idempotent no-op.
+    /// jobs are an idempotent no-op. The collection is only parked at
+    /// "pending" when the transition APPLIED: a job whose last item finished
+    /// between the state read and the interrupt must keep its collection at
+    /// "ready" instead of a permanently stale "pending" with no self-healing
+    /// path (`index resume` refuses a non-interrupted job).
     pub fn interrupt_index(&self, job_id: &str) -> Result<(), String> {
         let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
         if state.running {
-            self.imports.interrupt(job_id);
+            let applied = self.imports.interrupt(job_id);
             // The stall-timeout premise is that the import thread is gone or
             // wedged, so `launch_import`'s close-out (which resets the
             // "indexing" status this job set) will never run. Park the
@@ -425,8 +429,10 @@ impl KnowledgeService {
             // recovery relabels an interrupted job — instead of leaving the
             // GUI a permanently "indexing" collection until the next
             // resume/cancel.
-            self.l1
-                .set_collection_status(state.collection_id, "pending");
+            if applied {
+                self.l1
+                    .set_collection_status(state.collection_id, "pending");
+            }
         }
         Ok(())
     }
@@ -536,9 +542,14 @@ impl KnowledgeService {
                     infrastructure_error = true;
                 }
                 loop {
+                    // `is_stopped` covers an external interrupt AND a cancel
+                    // (both leave the runnable states): a slow-but-alive
+                    // thread must not keep claiming the items the interrupt
+                    // moved back to pending and end the job fully-ingested
+                    // yet `interrupted`.
                     if infrastructure_error
                         || cancel.load(Ordering::Relaxed)
-                        || imports.is_cancelled(&job_id)
+                        || imports.is_stopped(&job_id)
                     {
                         break;
                     }
@@ -1347,6 +1358,91 @@ mod tests {
         // A nonexistent job is reported as an error, never silently
         // retargeted.
         assert!(svc.cancel_index_job("kb-import-does-not-exist").is_err());
+    }
+
+    /// `interrupt_index` parks the collection at `pending` only when the
+    /// interrupt actually APPLIED: a job whose last item finished between
+    /// the caller's state read and the interrupt must keep its collection
+    /// where it is — a fully-indexed collection must not read as needing
+    /// work with no self-healing path (`index resume` refuses a
+    /// non-interrupted job).
+    #[test]
+    fn interrupt_index_parks_the_collection_only_when_the_transition_applies() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("interrupt-by-id", None, None)
+            .expect("collection");
+        let collection_status = |svc: &KnowledgeService| {
+            svc.l1
+                .list_collections()
+                .expect("collections readable")
+                .into_iter()
+                .find(|c| c.id == collection)
+                .expect("collection row")
+                .status
+        };
+
+        // A job with one running item: the interrupt applies.
+        let job = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/a.txt")])
+            .expect("job");
+        svc.imports
+            .prepare_items(&job, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare one item");
+        let _item = svc
+            .imports
+            .claim_next(&job)
+            .expect("claim the item")
+            .expect("one running item");
+        svc.l1.set_collection_status(collection, "indexing");
+        svc.interrupt_index(&job).expect("interrupt applies");
+        let state = svc.index_job_state(&job).expect("state readable");
+        assert!(
+            state.resumable && !state.running,
+            "the job must land at interrupted"
+        );
+        assert_eq!(
+            collection_status(&svc),
+            "pending",
+            "an applied interrupt parks the collection at pending"
+        );
+
+        // A second interrupt on the interrupted job is a no-op for the
+        // collection too (it must not flap a ready collection back).
+        svc.l1.set_collection_status(collection, "ready");
+        svc.interrupt_index(&job)
+            .expect("a second interrupt is an idempotent no-op");
+        assert_eq!(
+            collection_status(&svc),
+            "ready",
+            "a no-op interrupt must not park the collection"
+        );
+
+        // The store-level lost race: a job that finished before the
+        // interrupt reports applied=false (the caller's state read said
+        // running, the transition no-oped) — the guard that keeps the
+        // collection honest.
+        let finished = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("second job");
+        svc.imports
+            .prepare_items(&finished, &[PathBuf::from("/tmp/b.txt")])
+            .expect("prepare second item");
+        let item = svc
+            .imports
+            .claim_next(&finished)
+            .expect("claim second item")
+            .expect("one running item");
+        svc.imports
+            .mark_failed(&finished, item.id, "fixture failure");
+        svc.imports.finish(&finished).expect("finish second job");
+        assert!(
+            !svc.imports.interrupt(&finished),
+            "an interrupt that lost the race must report applied=false"
+        );
     }
 
     /// The deletion boundary for "disappeared" entries can only be roots
