@@ -694,6 +694,9 @@ pub struct SearchQueryDto {
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
     pub mtime_before: Option<i64>,
+    /// Tie half of the `(mtime, id)` keyset cursor (`idBefore` on the wire).
+    /// Only valid together with `mtimeBefore`; a half cursor is rejected.
+    pub id_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -707,6 +710,7 @@ impl From<SearchQueryDto> for SearchQuery {
             exts: d.exts,
             mtime_after: d.mtime_after,
             mtime_before: d.mtime_before,
+            id_before: d.id_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,

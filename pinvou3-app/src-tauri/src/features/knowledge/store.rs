@@ -218,6 +218,10 @@ pub struct FileRecord {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileHit {
+    /// Rowid, exposed so paging callers can round-trip the `(mtime, id)`
+    /// keyset cursor. `mtime` alone is second-resolution and cannot express
+    /// a page boundary that falls inside a tie.
+    pub id: i64,
     pub path: String,
     pub name: String,
     pub ext: Option<String>,
@@ -239,6 +243,13 @@ pub struct SearchQuery {
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
     pub mtime_before: Option<i64>,
+    /// Tie half of the `(mtime, id)` keyset cursor; requires
+    /// `mtime_before`. Together the pair means "strictly after position
+    /// `(mtime_before, id_before)` in the `(mtime DESC, id DESC)` order",
+    /// which keeps paging exact when same-second mtimes straddle the page
+    /// boundary. `mtime_before` alone stays an inclusive time-upper-bound
+    /// filter (what the NL rules and the GUI time filters use).
+    pub id_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub limit: usize,
@@ -503,7 +514,7 @@ impl Store {
         // value directly, avoiding a repeated unwrap.
         if let Some(t) = text.filter(|t| t.chars().count() >= 3) {
             sql.push_str(
-                "SELECT f.path, f.name, f.ext, f.size, f.mtime \
+                "SELECT f.id, f.path, f.name, f.ext, f.size, f.mtime \
                  FROM files_fts JOIN files f ON f.id = files_fts.rowid \
                  WHERE f.status='indexed' AND f.is_dir=0 AND files_fts MATCH ?",
             );
@@ -511,7 +522,7 @@ impl Store {
             let t = t.replace('"', "\"\"");
             vals.push(Value::Text(format!("\"{t}\"")));
         } else {
-            sql.push_str("SELECT f.path, f.name, f.ext, f.size, f.mtime FROM files f WHERE f.status='indexed' AND f.is_dir=0");
+            sql.push_str("SELECT f.id, f.path, f.name, f.ext, f.size, f.mtime FROM files f WHERE f.status='indexed' AND f.is_dir=0");
             if let Some(t) = text {
                 sql.push_str(" AND (f.name LIKE ? OR f.path LIKE ?)");
                 let like = format!("%{}%", escape_like(t));
@@ -532,8 +543,26 @@ impl Store {
             vals.push(Value::Integer(v));
         }
         if let Some(v) = q.mtime_before {
-            sql.push_str(" AND f.mtime <= ?");
-            vals.push(Value::Integer(v));
+            if let Some(id) = q.id_before {
+                // Keyset step: strictly after `(v, id)` in the
+                // `(mtime DESC, id DESC)` order — the lexicographic
+                // decomposition of `(mtime, id) < (v, id)`. Both arms lead
+                // with `f.mtime`, so the planner can still drive the scan
+                // from `idx_files_mtime`.
+                sql.push_str(" AND (f.mtime < ? OR (f.mtime = ? AND f.id < ?))");
+                vals.push(Value::Integer(v));
+                vals.push(Value::Integer(v));
+                vals.push(Value::Integer(id));
+            } else {
+                sql.push_str(" AND f.mtime <= ?");
+                vals.push(Value::Integer(v));
+            }
+        } else if q.id_before.is_some() {
+            // A half cursor would silently degrade to the tie-losing
+            // mtime-only filter; failing loudly keeps callers honest.
+            return Err(rusqlite::Error::InvalidParameterName(
+                "id_before requires mtime_before: the keyset cursor is the (mtime, id) pair".into(),
+            ));
         }
         // Saturating, not `as`: SQLite integers are signed, so a `u64` past
         // `i64::MAX` wraps negative and inverts the filter — `size >= -1`
@@ -548,14 +577,16 @@ impl Store {
             sql.push_str(" AND f.size <= ?");
             vals.push(Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
         }
-        // `id` breaks mtime ties: mtime is second-resolution, so bulk copies
-        // land in ties, and `mtime_before` is exactly the keyset-cursor
-        // callers page with — without a total order the cursor re-returns or
-        // skips every row tied at the page boundary. `f.id` is the rowid, so
+        // The order is total: `f.id` breaks the second-resolution mtime ties
+        // that bulk copies make routine. `f.id` is the rowid, so
         // `idx_files_mtime` still serves the scan. (SQLite's index order
         // happens to sort ties by rowid today; naming it in the ORDER BY
         // makes the total order contractual for whatever plan the optimizer
-        // picks, instead of an artifact of the current index layout.)
+        // picks, instead of an artifact of the current index layout.) The
+        // cursor over this order is the `(mtime, id)` pair carried by
+        // `mtime_before` + `id_before`; `mtime_before` alone is just an
+        // inclusive time filter and re-returns or skips ties at a page
+        // boundary, so paging callers must round-trip the last hit's `id`.
         sql.push_str(" ORDER BY f.mtime DESC, f.id DESC LIMIT ?");
         vals.push(Value::Integer(limit));
 
@@ -563,11 +594,12 @@ impl Store {
         let mut stmt = guard.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(vals.iter()), |row| {
             Ok(FileHit {
-                path: row.get(0)?,
-                name: row.get(1)?,
-                ext: row.get(2)?,
-                size: row.get::<_, i64>(3)? as u64,
-                mtime: row.get(4)?,
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                ext: row.get(3)?,
+                size: row.get::<_, i64>(4)? as u64,
+                mtime: row.get(5)?,
             })
         })?;
         rows.collect()
@@ -956,14 +988,14 @@ mod tests {
     #[test]
     fn search_orders_mtime_ties_by_rowid() {
         // `mtime` is second-resolution, so ties are routine (bulk copies
-        // preserve mtimes), and `mtime_before` is the keyset cursor callers
-        // page with. A mtime-only ORDER BY leaves tie rows to the query plan:
-        // identical queries could reorder same-second hits, shuffling the
-        // cursor boundary between pages. The `f.id` tiebreak makes the order
-        // total — insert a/b/c in that order, expect the tie read back
-        // id-DESC — so a repeated query must replay it exactly. SQLite's
-        // current index layout satisfies this by accident; the clause and
-        // this test pin it as a contract against plan drift.
+        // preserve mtimes), and the `(mtime, id)` pair is the keyset cursor
+        // callers page with. A mtime-only ORDER BY leaves tie rows to the
+        // query plan: identical queries could reorder same-second hits,
+        // shuffling the cursor boundary between pages. The `f.id` tiebreak
+        // makes the order total — insert a/b/c in that order, expect the tie
+        // read back id-DESC — so a repeated query must replay it exactly.
+        // SQLite's current index layout satisfies this by accident; the
+        // clause and this test pin it as a contract against plan drift.
         let s = Store::open_in_memory().unwrap();
         s.upsert_many(&[
             rec("/t/a.pdf", "a.pdf", Some("pdf"), 10, 500),
@@ -982,6 +1014,75 @@ mod tests {
         assert_eq!(names, vec!["c.pdf", "b.pdf", "a.pdf", "older.md"]);
         let again = s.search(&q).unwrap();
         assert_eq!(hits, again, "a repeated query must not reorder tie rows");
+    }
+
+    #[test]
+    fn keyset_cursor_pages_ties_without_duplicates_or_gaps() {
+        // The page-boundary shape: three rows tied at one mtime with a page
+        // size smaller than the tie. An mtime-only cursor cannot express the
+        // boundary — inclusive `<=` re-returns the tie, decrementing skips
+        // it — so the cursor must carry the composite `(mtime, id)` and the
+        // next page must resume strictly after the last row. Drives the full
+        // partition: every row exactly once, then exhaustion.
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[
+            rec("/t/a.pdf", "a.pdf", Some("pdf"), 10, 500),
+            rec("/t/b.pdf", "b.pdf", Some("pdf"), 11, 500),
+            rec("/t/c.pdf", "c.pdf", Some("pdf"), 12, 500),
+            rec("/t/older.md", "older.md", Some("md"), 13, 400),
+        ])
+        .unwrap();
+
+        let mut pages: Vec<Vec<FileHit>> = Vec::new();
+        let mut cursor: Option<(i64, i64)> = None;
+        loop {
+            let page = s
+                .search(&SearchQuery {
+                    mtime_before: cursor.map(|(m, _)| m),
+                    id_before: cursor.map(|(_, i)| i),
+                    limit: 2,
+                    ..Default::default()
+                })
+                .unwrap();
+            let exhausted = page.is_empty();
+            cursor = page.last().map(|h| (h.mtime, h.id));
+            pages.push(page);
+            if exhausted {
+                break;
+            }
+        }
+        assert_eq!(
+            pages.len(),
+            3,
+            "page size 2 over 4 rows: two full pages + empty tail"
+        );
+        let names: Vec<Vec<_>> = pages
+            .iter()
+            .map(|p| p.iter().map(|h| h.name.as_str()).collect())
+            .collect();
+        assert_eq!(
+            names,
+            vec![vec!["c.pdf", "b.pdf"], vec!["a.pdf", "older.md"], vec![]],
+            "page 2 must resume strictly after (500, b.id), not re-return the tie"
+        );
+
+        // No duplicates, no omissions across the whole drive.
+        let mut seen: Vec<&str> = pages
+            .iter()
+            .flat_map(|p| p.iter().map(|h| h.name.as_str()))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, vec!["a.pdf", "b.pdf", "c.pdf", "older.md"]);
+
+        // A half cursor fails loudly instead of silently degrading to the
+        // tie-losing mtime-only filter.
+        let half = s.search(&SearchQuery {
+            id_before: Some(1),
+            limit: 2,
+            ..Default::default()
+        });
+        assert!(half.is_err(), "id_before without mtime_before must error");
     }
 
     #[test]
@@ -1260,6 +1361,7 @@ mod tests {
                 exts: Vec::new(),
                 mtime_after: None,
                 mtime_before: None,
+                id_before: None,
                 min_size: None,
                 max_size: None,
                 limit: 5,
@@ -1276,6 +1378,7 @@ mod tests {
                     exts: Vec::new(),
                     mtime_after: None,
                     mtime_before: None,
+                    id_before: None,
                     min_size: None,
                     max_size: None,
                     limit,
