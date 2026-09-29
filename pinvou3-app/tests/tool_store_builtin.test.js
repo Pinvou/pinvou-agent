@@ -78,7 +78,7 @@ assert.ok(uninstallFallback > builtinBranch, 'the builtin branch must come befor
 
 // Composer input menu: builtin plugin filtering (§3.2 configuration
 // visibility) via the shared judgement imported from builtin-plugin-logic.js
-assert.match(composerLogic, /import \{ isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS, MODE_CONTROLLED_BUILTIN_SKILL_IDS \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement and the mode-controlled list');
+assert.match(composerLogic, /import \{ isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement');
 assert.match(composerLogic, /!isBuiltinPlugin\(tool\)/, 'the composer menu must filter builtin tools');
 
 // Timeline ToolCard execution visibility is unaffected: tool-renderers.jsx

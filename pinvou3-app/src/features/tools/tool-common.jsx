@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { MODE_CONTROLLED_BUILTIN_SKILL_IDS } from './builtin-plugin-logic.js';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
-import { builtinToolShortName } from './builtin-plugin-logic.js';
+import { builtinToolShortName, MODE_CONTROLLED_BUILTIN_SKILL_IDS } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';

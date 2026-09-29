@@ -1,4 +1,4 @@
-import { isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS, MODE_CONTROLLED_BUILTIN_SKILL_IDS } from '../tools/builtin-plugin-logic.js';
+import { isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS } from '../tools/builtin-plugin-logic.js';
 
 function asArray(value) {
   if (Array.isArray(value)) return value;
@@ -131,5 +131,4 @@ const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
 /** Builtin skills whose availability is session-mode-controlled (backend
  * MODE_TABLE delta): the builtin page's audit badge must agree with the
  * store card for these instead of claiming "always on". */
-export { MODE_CONTROLLED_BUILTIN_SKILL_IDS };
 export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };
