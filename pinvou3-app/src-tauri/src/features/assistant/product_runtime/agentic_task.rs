@@ -980,6 +980,11 @@ async fn run_turn(
     // permanently repinned. Restored on the same arm as the mode, and
     // likewise never on the timeout arm (the submit may already have landed).
     let mut model_restore: Option<Option<String>> = None;
+    // The staged attachment copies, filled by the setup future once staging
+    // lands. Read by the failure arms after the future is dropped: an
+    // existing session's copies must be swept when the turn provably never
+    // started, or they orphan under the caller's workspace.
+    let mut staged_attachment_copies: Vec<std::path::PathBuf> = Vec::new();
     // Set immediately before `runtime.submit`; read by the timeout arm to tell
     // "the deadline hit while staging attachments" (nothing ran, restore the
     // pins) from "the deadline hit around the submit" (a turn may have been
@@ -993,7 +998,13 @@ async fn run_turn(
             // engine evict); the engine itself lazily spawns on submit,
             // exactly like a GUI send.
             if let Some(model_id) = request.model_id.as_deref() {
-                let previous = store.session_model_id(session_id);
+                // The DURABLE sidecar, not the boot-time cache: the cache is
+                // this process's startup view, so a GUI model switch that
+                // landed after boot would be silently reverted by the
+                // restore below — the exact stale-restore divergence
+                // `durable_mode_entry` prevents for the mode restore beside
+                // this one.
+                let previous = store.durable_session_model_id(session_id);
                 runtime
                     .pool
                     .switch_session_model(session_id, Some(model_id.to_owned()))
@@ -1075,8 +1086,9 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let (content, consumed_sources) =
+        let (content, consumed_sources, staged_copies) =
             prompt_with_attachments(store, session_id, request, existing_session).await?;
+        staged_attachment_copies = staged_copies;
         // Marks the point past which a deadline hit is genuinely ambiguous:
         // the submit may already have admitted the turn, so the timeout arm
         // must not roll the mode/model pins back. Everything before this —
@@ -1129,6 +1141,12 @@ async fn run_turn(
                         );
                     }
                 }
+                sweep_unreferenced_staged_copies(
+                    store,
+                    session_id,
+                    existing_session,
+                    &staged_attachment_copies,
+                );
                 return (false, Err(error));
             }
         },
@@ -1156,10 +1174,16 @@ async fn run_turn(
                     {
                         eprintln!(
                             "[pinvou agent run] warning: failed to restore the pre-run \
-                             session model after the setup timeout: {restore_error:#}"
+                                 session model after the setup timeout: {restore_error:#}"
                         );
                     }
                 }
+                sweep_unreferenced_staged_copies(
+                    store,
+                    session_id,
+                    existing_session,
+                    &staged_attachment_copies,
+                );
             }
             return (
                 false,
@@ -1343,9 +1367,9 @@ async fn prompt_with_attachments(
     session_id: &str,
     request: &AgenticTaskRequest,
     existing_session: bool,
-) -> Result<(String, Vec<std::path::PathBuf>)> {
+) -> Result<(String, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
     if request.attachments.is_empty() {
-        return Ok((request.prompt.clone(), Vec::new()));
+        return Ok((request.prompt.clone(), Vec::new(), Vec::new()));
     }
     let roots = store
         .session_roots(session_id)
@@ -1367,7 +1391,7 @@ async fn prompt_with_attachments(
         tokio::task::spawn_blocking(move || stage_and_ingest_batch(&attachments, &staging_root))
             .await
             .context("attachment staging task")??;
-    let (ingested, consumed_sources) = staged;
+    let (ingested, consumed_sources, staged_copies) = staged;
     Ok((
         build_message_with_attachments_in_dir(
             prompt,
@@ -1377,7 +1401,35 @@ async fn prompt_with_attachments(
             reference_absolute,
         ),
         consumed_sources,
+        staged_copies,
     ))
+}
+
+/// Sweep this run's staged attachment copies after a setup failure that
+/// provably never admitted the turn (the submit resolved to an error, or the
+/// deadline fired before it was entered). A caller-provided session is never
+/// auto-deleted, so the fresh-run stub cleanup cannot reclaim its staged
+/// directory; without this sweep every failed run leaves another
+/// unreferenced batch under the caller's workspace. The sweep is gated on
+/// the record still holding no messages — the same re-check the guarded stub
+/// delete applies — because an admitted turn's transcript references these
+/// copies; a read error keeps them (the safe direction). Fresh sessions are
+/// skipped: their stub cleanup removes the whole record directory.
+fn sweep_unreferenced_staged_copies(
+    store: &SessionStore,
+    session_id: &str,
+    existing_session: bool,
+    staged: &[std::path::PathBuf],
+) {
+    if !existing_session || staged.is_empty() {
+        return;
+    }
+    if !matches!(store.chat_session_has_messages(session_id), Ok(false)) {
+        return;
+    }
+    for path in staged {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Stage-and-ingest one attachment batch into the session workspace.
@@ -1400,7 +1452,11 @@ async fn prompt_with_attachments(
 fn stage_and_ingest_batch(
     attachments: &[AgenticTaskAttachment],
     staging_root: &std::path::Path,
-) -> Result<(Vec<IngestResult>, Vec<std::path::PathBuf>)> {
+) -> Result<(
+    Vec<IngestResult>,
+    Vec<std::path::PathBuf>,
+    Vec<std::path::PathBuf>,
+)> {
     let mut results = Vec::with_capacity(attachments.len());
     let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
     // Every staged copy of this batch, for the failure sweep below.
@@ -1508,7 +1564,13 @@ fn stage_and_ingest_batch(
             return Err(error);
         }
     };
-    Ok((results, consumed_sources))
+    // The staged copies ride back to the caller: a failure AFTER this
+    // function — the submit resolving to an error, or a deadline firing
+    // before it was entered — leaves them unreferenced, and a
+    // caller-provided session is never auto-deleted, so the fresh-run stub
+    // cleanup cannot reclaim them there. The caller sweeps them through
+    // `sweep_unreferenced_staged_copies`.
+    Ok((results, consumed_sources, staged_paths))
 }
 
 /// Whether a staging refusal's source re-stat shows it now past the per-file
@@ -1590,10 +1652,11 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
-        ensure_model_exists, ensure_stage_size, fresh_session_id, keep_session_from_env,
-        refuse_ingest_without_a_surviving_copy, retention_eviction_warning, stage_and_ingest_batch,
-        stage_refusal_means_cap_growth, validate_attachments,
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, arm_retention_eviction_observer,
+        ensure_existing_chat_session, ensure_model_exists, ensure_stage_size, fresh_session_id,
+        keep_session_from_env, refuse_ingest_without_a_surviving_copy, retention_eviction_warning,
+        stage_and_ingest_batch, stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies,
+        validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -1603,6 +1666,7 @@ mod tests {
         SessionStore,
     };
     use crate::platform::test_support::locked_env;
+    use deepseek_tui::models::{ContentBlock, Message};
     use std::path::PathBuf;
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
@@ -2243,6 +2307,152 @@ mod tests {
         // `_env` restores the captured PINVOU3_HOME on return or panic; the
         // scratch home itself is removed here so repeated runs don't litter
         // the shared temp dir.
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Re-arming over an observer a previous run left behind (an unwind
+    /// between its arm and disarm) must REPLACE it, not adopt it: the fresh
+    /// receiver collects this run's evictions, and the stale receiver keeps
+    /// its unreported record to itself — a dead receiver's contents silently
+    /// bleeding into this run's warning would misreport evictions this run
+    /// never caused.
+    #[test]
+    fn stale_retention_observer_is_replaced_and_its_record_stays_private() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-stale-observer-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        // A previous run's receiver, still installed and holding content it
+        // never reported.
+        let stale = std::sync::Arc::new(parking_lot::Mutex::new(vec![
+            "agentic_stale_ghost".to_string(),
+        ]));
+        let previous = store.set_retention_eviction_observer(Some(stale.clone()));
+        assert!(
+            previous.is_none(),
+            "precondition: no observer armed before the stale one"
+        );
+
+        // Re-arm exactly like the next run does. The slot now holds a fresh
+        // receiver; the stale one is dropped by the arming and stays private.
+        let fresh = arm_retention_eviction_observer(&store);
+
+        // The next eviction lands in the fresh receiver only.
+        let mut ids = Vec::new();
+        for index in 0..MAX_HEADLESS_SESSIONS {
+            let id = format!("agentic_stale_seed_{index}");
+            store
+                .create_empty_with_id(id.clone(), "test-model".to_string(), None, tmp.clone())
+                .unwrap();
+            ids.push(id);
+        }
+        let oldest = ids[0].clone();
+        store
+            .create_empty_with_id(
+                "agentic_stale_probe".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        assert!(
+            store.load(&oldest).is_err(),
+            "oldest session must be evicted by the save at the cap"
+        );
+        assert_eq!(
+            fresh.lock().as_slice(),
+            &[oldest],
+            "the fresh receiver records this run's eviction"
+        );
+        assert_eq!(
+            stale.lock().as_slice(),
+            ["agentic_stale_ghost".to_string()].as_slice(),
+            "the replaced receiver must not adopt this run's evictions"
+        );
+        store.take_retention_eviction_observer();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The staged-copy sweep must reclaim copies only while the record
+    /// provably holds no messages: an admitted turn's transcript references
+    /// them, and a read error keeps them (the safe direction). Fresh sessions
+    /// are the stub cleanup's job and are skipped entirely.
+    #[test]
+    fn staged_copy_sweep_gates_on_an_untouched_transcript() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-staged-sweep-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        // An existing session with no messages: the staged copies are swept.
+        store
+            .create_empty_with_id(
+                "agentic_sweep_empty".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        let swept = tmp.join("staged-swept.bin");
+        std::fs::write(&swept, b"x").unwrap();
+        sweep_unreferenced_staged_copies(&store, "agentic_sweep_empty", true, &[swept.clone()]);
+        assert!(
+            !swept.exists(),
+            "an untouched transcript's staged copies must be reclaimed"
+        );
+
+        // An existing session whose transcript holds messages: the copies
+        // stay — the admitted turn's transcript references them.
+        store
+            .create_empty_with_id(
+                "agentic_sweep_talking".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        store
+            .update_messages(
+                "agentic_sweep_talking",
+                vec![Message {
+                    role: "user".into(),
+                    content: vec![ContentBlock::Text {
+                        text: "hi".into(),
+                        cache_control: None,
+                    }],
+                }],
+            )
+            .unwrap();
+        let kept = tmp.join("staged-kept.bin");
+        std::fs::write(&kept, b"x").unwrap();
+        sweep_unreferenced_staged_copies(&store, "agentic_sweep_talking", true, &[kept.clone()]);
+        assert!(
+            kept.exists(),
+            "a transcript with messages may reference the staged copies"
+        );
+
+        // A fresh session: skipped — its stub cleanup removes the copies with
+        // the whole record directory.
+        let fresh = tmp.join("staged-fresh.bin");
+        std::fs::write(&fresh, b"x").unwrap();
+        sweep_unreferenced_staged_copies(&store, "agentic_never_created", false, &[fresh.clone()]);
+        assert!(fresh.exists(), "fresh sessions are the stub cleanup's job");
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
