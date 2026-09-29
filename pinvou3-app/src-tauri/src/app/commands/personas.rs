@@ -174,15 +174,7 @@ pub async fn save_session_persona_events(
 #[tauri::command]
 pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_persona_events(&session_id);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(serde_json::json!([]));
-        }
-        Err(error) => return Err(format!("failed to read session persona sidecar: {error}")),
-    };
-    serde_json::from_str(&text)
-        .map_err(|error| format!("failed to parse session persona sidecar: {error}"))
+    super::sessions::read_session_sidecar(&path, "persona")
 }
 
 /// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
@@ -265,15 +257,7 @@ pub async fn save_session_pinvou_reviews(
 #[tauri::command]
 pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_pinvou_reviews(&session_id);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(serde_json::json!([]));
-        }
-        Err(error) => return Err(format!("failed to read session review sidecar: {error}")),
-    };
-    serde_json::from_str(&text)
-        .map_err(|error| format!("failed to parse session review sidecar: {error}"))
+    super::sessions::read_session_sidecar(&path, "review")
 }
 
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
