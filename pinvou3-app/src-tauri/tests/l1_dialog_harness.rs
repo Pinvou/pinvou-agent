@@ -904,13 +904,16 @@ async fn save_to_tmp_no_validate_fail() {
 }
 
 /// MVP 5: 简单单 turn 必须 < 15s (LLM 没工具调用,不应该 thinking)。
-/// 注意:本地默认档位已改为最低思考档(low)而非 off——真机实测 Qwen3.8 一类
-/// 模型无法可靠关闭思考(见 bridge::request_reasoning_effort)。本场景按默认
-/// prefs 启动、不注入显式档位,所以现在实际跑的是 low 路径:thinking 预期
-/// 开启,15s 预算会确定性超时(thinking 没关时 Qwen3.6 单 turn 可达 30s+),
-/// 勿据超时误判回归。要验证 off 路径未被 prefill 变长拖慢,须先在设置里给
-/// 该模型显式保存 reasoning_effort=off 再跑(harness 无法自动注入;off 仍是
-/// 显式选项,存储值原样下发)。
+/// Note: the local default tier is now the lowest thinking tier (low) instead
+/// of off — real-machine testing shows models like the Qwen3.8 family cannot
+/// reliably turn thinking off (see bridge::request_reasoning_effort). This
+/// scenario starts with default prefs and injects no explicit tier, so it now
+/// exercises the low path: thinking is expected to be on and the 15s budget
+/// times out deterministically (a single Qwen3.6 turn can reach 30s+ with
+/// thinking on), so do not mistake the timeout for a regression. To verify the
+/// off path is not slowed by longer prefill, first save reasoning_effort=off
+/// for this model in Settings and rerun (the harness cannot inject it; off
+/// remains an explicit option and a stored value is sent verbatim).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "L1 真 vLLM 端到端,默认不跑"]
 async fn reasoning_off_speed() {

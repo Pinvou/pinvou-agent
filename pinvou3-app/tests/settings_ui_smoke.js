@@ -1067,10 +1067,13 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.5 手动添加本地模型表单保持 iOS 分组且默认无需 Key，不强制显示名', Object.values(manualLocalForm).every(Boolean), JSON.stringify(manualLocalForm));
-  // 思考深度残留：新建草稿默认 DeepSeek 初始化为 high，切到「手动添加本地模型」
-  // 必须把思考深度重置为 vLLM 默认最低思考档 low（低）——真机实测 Qwen3.8 一类
-  // 本地模型无法可靠关闭思考，off 不再是默认；否则保存会显式写入 high，绕过桥接层
-  // vllm→low 的默认约束。此处断言真实 UI 选中「低」。
+  // Thinking-effort leftover: a fresh draft initializes to DeepSeek's high;
+  // switching to "manual local model add" must reset the thinking effort to
+  // the vLLM default lowest thinking tier low — real-machine testing shows
+  // local models like the Qwen3.8 family cannot reliably turn thinking off,
+  // so off is no longer the default; otherwise saving would write an explicit
+  // high, bypassing the bridge's vllm→low default constraint. Asserts the
+  // real UI selects 低 (low).
   const manualLocalEffort = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="model-form-dialog"]');
     if (!dialog) return { found: false, labels: [], selected: [] };

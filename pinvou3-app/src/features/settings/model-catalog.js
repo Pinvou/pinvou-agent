@@ -1125,14 +1125,16 @@ function baseUrlUsesLoopback(baseUrl) {
   }
 }
 
-// 对齐 Rust bridge.rs `base_url_uses_local_or_private`：loopback / RFC1918 私网
-// （10/8、172.16/12、192.168/16）/ Docker 宿主别名（host.docker.internal 等）。
-// 这些端点通常跑在用户自己的机器/内网，探测成本低，值得下发真实思考档位
-// （默认取最低思考档）；公网 OpenAI 兼容端点不在此列（保持默认 high）。
-// 与 `baseUrlUsesLoopback` 的区别：
-// 后者仅用于「允许无鉴权」判定，本判定覆盖探测与思考控制范围。
-// 回环部分复用 `baseUrlUsesLoopback`，本函数只补 Docker 别名与 RFC1918，
-// 避免两份回环规则漂移。
+// Mirrors Rust bridge.rs `base_url_uses_local_or_private`: loopback, RFC1918
+// private ranges (10/8, 172.16/12, 192.168/16), and Docker host aliases
+// (host.docker.internal etc.). These endpoints usually run on the user's own
+// machine/intranet where probing is cheap, so it is worth sending a real
+// thinking effort (defaulting to the lowest thinking tier); public
+// OpenAI-compatible endpoints are excluded (keep the default high).
+// Difference from `baseUrlUsesLoopback`: the latter only gates the
+// "auth optional" decision, this predicate covers probing and thinking
+// control. The loopback part reuses `baseUrlUsesLoopback`; this function only
+// adds Docker aliases and RFC1918, so the two loopback rule sets cannot drift.
 function baseUrlUsesLocalOrPrivate(baseUrl) {
   if (baseUrlUsesLoopback(baseUrl)) return true;
   if (!baseUrl) return false;
@@ -1351,12 +1353,17 @@ function isAlwaysThinkingK3Route(model) {
   return isExactMoonshotK3Route(model, modelName);
 }
 
-// 该模型的默认思考深度档位：本地模型（vLLM / 本地 loopback 端点）默认最低思考档
-// （静态四档表 → low），其余 high。本地默认不再取 off：真机实测 Qwen3.8 一类本地
-// 模型无法可靠关闭思考，沉默思考既拖慢首包又会把 reasoning 混入正文；off 仍作为
-// 显式选项保留。探测出 Ollama 时运行时默认 high（think 布尔只有关/开两态，开=high，
-// 见 Rust request_reasoning_effort）；本函数的静态默认 low 经
-// reasoningEffortDisplayForTiers 在 ['off','high'] 探测表上映射为 high，与运行时一致。
+// Default thinking effort for a model: local models (vLLM / local loopback
+// endpoints) default to the lowest thinking tier (static four-tier table →
+// low), everything else high. The local default is no longer off: real-machine
+// testing shows local models like the Qwen3.8 family cannot reliably turn
+// thinking off, and silent thinking both stalls the first packet and leaks
+// reasoning into plain text; off remains available as an explicit choice.
+// When Ollama is probed the runtime default is high (the think wire boolean
+// only has off/on, on=high; see Rust request_reasoning_effort); this
+// function's static low maps to a high highlight via
+// reasoningEffortDisplayForTiers on the ['off','high'] probed tier table,
+// consistent with the runtime.
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (provider === 'vllm' || provider === 'local') {
@@ -1369,11 +1376,13 @@ function defaultReasoningEffortForModel(model) {
   return reasoningEffortTiersForModel(model) ? 'high' : null;
 }
 
-// 切换模型时的思考深度重置：丢弃旧档位，按新 model 的 route 回落到默认档位
-// （vllm→low（最低思考档），其余支持档位的模型→high；无档位模型→null = 未显式设置）。
-// K2.6 选 off 后
-// 切 K3，off 不在 K3 档位表（low/high/max）内，必须重置为 high，否则界面无高亮且保存
-// 仍写旧值。单独成函数以便对「模型切换归一」这一状态迁移做行为测试。
+// Thinking-effort reset on model switch: drop the old tier and fall back to
+// the default for the new model's route (vllm→low (lowest thinking tier),
+// other models with tiers→high; models without tiers→null = not explicitly
+// set). After picking off for K2.6 and switching to K3, off is not in K3's
+// tier table (low/high/max) and must reset to high — otherwise the UI has no
+// highlight and saving keeps the stale value. A separate function so the
+// "normalize on model switch" state transition can be behavior-tested.
 function reasoningEffortForModelSwitch(model) {
   return defaultReasoningEffortForModel(model) || null;
 }

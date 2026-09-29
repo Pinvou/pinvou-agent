@@ -654,7 +654,8 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k26)], ['off', 'high']);
   assert.ok(![...reasoningEffortTiersForModel(k3)].includes('off'));
   assert.strictEqual(reasoningEffortForModelSwitch(k3), 'high');
-  // 无档位模型切换置 null（未显式设置）；vllm 切回本地默认的最低思考档 low
+  // models without tiers switch to null (not explicitly set); vllm falls back
+  // to the local default lowest thinking tier low
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'low');
   // z.ai glm-5.2 switch defaults to high; the bigmodel paas host (tiered route
@@ -823,7 +824,7 @@ test('reasoningEffortDisplayForTiers: display fallback of stored tiers against p
   assert.strictEqual(reasoningEffortDisplayForTiers(null, ['off', 'high']), null);
 });
 
-test('defaultReasoningEffortForModel：vllm→low（最低思考档），其余支持档位的模型→high，不支持→null', () => {
+test('defaultReasoningEffortForModel: vllm→low (lowest thinking tier), other models with tiers→high, unsupported→null', () => {
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.strictEqual(defaultReasoningEffortForModel(deepseek), 'high');
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
@@ -835,9 +836,11 @@ test('defaultReasoningEffortForModel：vllm→low（最低思考档），其余�
   const xai46 = { preset: 'xai', vendor: 'xai', model: 'grok-4.6', base_url: 'https://api.x.ai/v1' };
   assert.strictEqual(defaultReasoningEffortForModel(xai46), 'high');
   assert.strictEqual(reasoningEffortForModelSwitch(xai46), 'high');
-  // 本地 loopback OpenAI 兼容端点静态默认同样是最低思考档 low；探测出 ollama
-  // 时运行时默认 high（think 开关只有关/开），静态 low 在 ['off','high'] 探测
-  // 表上经 reasoningEffortDisplayForTiers 映射为 high 高亮，与运行时一致
+  // a local loopback OpenAI-compatible endpoint has the same static default,
+  // the lowest thinking tier low; when ollama is probed the runtime default
+  // is high (the think toggle only has off/on), and the static low maps to a
+  // high highlight via reasoningEffortDisplayForTiers on the ['off','high']
+  // probed tier table, consistent with the runtime
   const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
   assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'low');
 });
@@ -863,7 +866,8 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // 无存量 → 回退默认档位
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, null), 'high');
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek), 'high');
-  // vllm 默认最低思考档 low，存量为空时同样回退 low
+  // vllm defaults to the lowest thinking tier low; an empty stored value
+  // falls back to low as well
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
   assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'low');
   // 无档位模型（xai 底座空操作）→ null
