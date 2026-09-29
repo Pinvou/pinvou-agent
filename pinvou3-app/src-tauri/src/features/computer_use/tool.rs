@@ -1828,7 +1828,7 @@ fn action_summary(action: &ComputerUseAction) -> String {
         } => {
             format!("hold {} for {ms}ms", summarize_chord(keys, chord))
         }
-        // T3 gate excludes hover/scroll/observe, so these arms are currently unreachable.
+        // Scroll is excluded by the T3 gate, so this arm is currently unreachable.
         ComputerUseAction::Scroll {
             direction,
             amount,

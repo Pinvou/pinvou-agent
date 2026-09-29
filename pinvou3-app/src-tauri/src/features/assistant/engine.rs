@@ -3889,7 +3889,7 @@ mod live_tests {
     use crate::features::sessions::SerializableMode;
     use crate::platform::test_support::EnvRestore;
 
-    // RAII 恢复 env 原值的要求（本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_*
+    // RAII 恢复 env 原值的要求（本模块 #[ignore] 真机测试写 DEEPSEEK_*
     // env,须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时
     // 污染）由 `platform::test_support::EnvRestore` 承担（快照为 OsString，
     // 恢复语义与原 String 版一致），与 engine_pool / multiagent 回归测试共用。
@@ -3905,7 +3905,7 @@ mod live_tests {
     #[ignore]
     #[tokio::test]
     async fn self_metrics_populates_from_real_turn() {
-        // 写 DEEPSEEK_*/PINVOU3_* env:虽 #[ignore] 不入默认套件,仍须持 crate 级
+        // 写 DEEPSEEK_* env:虽 #[ignore] 不入默认套件,仍须持 crate 级
         // ENV_LOCK 串行并保证退出恢复,避免被 `cargo test -- --ignored` 一起跑时污染
         // 其它测试(或本测试 panic 后留下脏 env)。
         let _lock = crate::bridge::paths::tests::ENV_LOCK

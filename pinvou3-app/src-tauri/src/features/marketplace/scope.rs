@@ -62,6 +62,11 @@ fn disabled_bundles_path() -> PathBuf {
 /// read or parsed. It is a *guess*, not the user's state: `hidden_scopes`, `extra` and
 /// `project_skills_enabled` are defaults rather than the persisted values, so it carries
 /// `degraded` and must never be written back (see `save_disabled_bundles_file_unless_degraded`).
+///
+/// Lock order: every caller holds `DISABLED_BUNDLES_FILE_LOCK`, and the manager reads
+/// below take the store's `BUNDLES_FILE_LOCK` — scope → store. Never call this (or any
+/// scope read-modify-write) while holding the store lock, or the nested acquisition
+/// self-deadlocks.
 fn fail_closed_defaults() -> DisabledBundlesFile {
     let mut ids = MarketplaceManager::new().installed_ids();
     ids.extend(builtin_cli_bundle_ids().map(str::to_string));
