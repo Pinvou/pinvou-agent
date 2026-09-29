@@ -173,8 +173,8 @@ const MODEL_CATALOG = {
       // GLM-5.1 calls auto-switch to GLM-5.3 and GLM-5-Turbo/GLM-4.7
       // auto-switch to GLM-5.3-Flash, so the old rows stay as "legacy model"
       // entries rather than being deleted. GLM-5.3-FlashX is explicitly NOT
-      // open on the plan (official Flash page: "套餐当前暂未开放
-      // GLM-5.3-FlashX").
+      // open on the plan (the official Flash page states the plan does not
+      // currently offer GLM-5.3-FlashX).
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
@@ -642,7 +642,7 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://coding-intl.dashscope.aliyuncs.com/v1'],
       // Alibaba Model Studio Coding Plan (help.aliyun.com/zh/model-studio/
       // coding-plan, checked 2026-09-28): a fixed-monthly subscription
-      // (Pro ¥200/月; the Lite tier closed to new purchases 2026-03-20)
+      // (Pro ¥200/mo; the Lite tier closed to new purchases 2026-03-20)
       // separate from the Token Plan, usable only inside AI coding tools.
       // Keys are also sk-sp- prefixed. The endpoint serves exact-version
       // ids only; the rows are a deliberate subset of the official page
@@ -677,8 +677,8 @@ const MODEL_CATALOG = {
       // documented), so the old "rolls weekly" wording is gone. The 2-1 family gained -260915
       // pro/lite snapshots (2026-09); the -260628 rows and the 2-1 -260915
       // snapshots stay on sale, but every 2-0 -260215 snapshot on the model
-      // list now carries an 即将下线 badge, so those rows note the coming
-      // retirement. The coding-specialized preview
+      // list now carries a "coming offline soon" badge, so those rows
+      // note the coming retirement. The coding-specialized preview
       // doubao-seed-2-0-code-preview-260215 also lists multimodal
       // understanding, so the image capability is annotated. Vendor docs now
       // document seven reasoning_effort modes (none…max; default high for
@@ -1169,13 +1169,16 @@ const REASONING_EFFORT_TIERS = {
   zai: ['off', 'high'],
   minimax: ['off', 'high'],
   'xiaomi-mimo': ['off', 'high'],
-  // siliconflow（国内站/国际站同一套）：底座 off → thinking.disabled，
-  // low/medium/high 统一折叠为 reasoning_effort=high + thinking.enabled
-  // (client.rs apply_reasoning_effort)，只有 off/high 有实际区别。
+  // siliconflow (same set on the CN and global sites): the base maps off →
+  // thinking.disabled and folds low/medium/high uniformly into
+  // reasoning_effort=high + thinking.enabled (client.rs
+  // apply_reasoning_effort), so only off/high make a real difference.
   siliconflow: ['off', 'high'],
-  // openrouter：底座按 OpenRouter 统一标度透传 low/medium/high（off →
-  // thinking.disabled）；底座另把 max/xhigh 原样透传为 xhigh，但聚合平台的
-  // xhigh 只有部分上游模型接受，UI 保持保守只暴露 off/low/medium/high。
+  // openrouter: the base passes low/medium/high through on OpenRouter's
+  // unified scale (off → thinking.disabled); the base also passes max/xhigh
+  // through as xhigh verbatim, but only some upstream models behind the
+  // aggregator accept xhigh, so the UI stays conservative and exposes only
+  // off/low/medium/high.
   openrouter: ['off', 'low', 'medium', 'high'],
   // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
   anthropic: ['low', 'medium', 'high', 'max'],
@@ -1357,9 +1360,10 @@ function vendorReasoningProvider(vendor, model) {
   if (['kimi', 'moonshot'].includes(vendor)) return 'moonshot';
   if (['glm', 'zai', 'zhipu'].includes(vendor)) return 'zai';
   if (vendor === 'minimax') return 'minimax';
-  // 聚合平台：底座有专属 openrouter / siliconflow(+CN) route（vendor 臂在
-  // bridge.rs provider()），按 vendor 即可判定，无需 URL 门控（与底座按
-  // kind 注入的行为一致）。
+  // Aggregators: the base has dedicated openrouter / siliconflow(+CN)
+  // routes (the vendor arms in bridge.rs provider()), so the vendor alone
+  // decides and no URL gating is needed (consistent with the base's
+  // kind-based injection behavior).
   if (vendor === 'openrouter') return 'openrouter';
   if (vendor === 'siliconflow') return 'siliconflow';
   if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';

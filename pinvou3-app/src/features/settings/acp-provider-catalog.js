@@ -34,11 +34,14 @@ export const ACP_PROVIDER_PRESETS = [
   { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"
   // 表名的 kimi-code/ 前缀是别名，实际请求的 model 字段是无前缀的 "k3"）。
-  // Kimi Code 托管的 1M 变体仅 k3 一个（k3-256k 等其余档位无 1M 声明；
-  // kimi-for-coding 现服务 K2.8 Preview 原生 1M，但无 [1m] 变体声明，不得虚构）。
-  // 海外 Anthropic 兼容 Base URL 为 https://api.kimi.ai/coding（国内
-  // api.kimi.com/coding，kimi.com/code/docs，2026-09-28）；预设只内置国内值，
-  // 海外 Key 用户需在表单中手动替换（Key 分区域，不可跨用）。
+  // Kimi Code hosts only one 1M variant, k3 (the other tiers such as
+  // k3-256k have no 1M declaration; kimi-for-coding now serves K2.8 Preview
+  // with native 1M, but declares no [1m] variant — none may be invented).
+  // The overseas Anthropic-compatible base URL is https://api.kimi.ai/coding
+  // (domestic: api.kimi.com/coding, kimi.com/code/docs, 2026-09-28); the
+  // preset ships the domestic value only, and overseas-key users must
+  // replace it manually in the form (keys are region-bound and not
+  // interchangeable).
   { key: 'kimi-code', nameKey: 'presetKimiCode', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3[1m]'] },
   // models1m only carries officially documented [1m] declarations: the
   // official Claude Code preset page (api-docs.deepseek.com) names just
@@ -88,8 +91,9 @@ export const ACP_MODEL_PRESETS = [
   // Qwen (Alibaba Cloud Model Studio; the qwen3.8 family is the current
   // flagship/fast mainline)
   'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus',
-  // MiniMax（M3 为最新旗舰，M2.7 现役；M2.5/M2.1/M2 已归历史模型；
-  // M3.1-Flash-Preview 暂仅订阅渠道提供，不列入 PAYG 预设建议）
+  // MiniMax (M3 is the latest flagship, M2.7 still current; M2.5/M2.1/M2
+  // are historical models; M3.1-Flash-Preview is subscription-channel only
+  // for now and is not listed as a PAYG preset suggestion)
   'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
   // xAI (grok-4.7 is the official coding/agent recommended flagship since
   // September 2026; -0309- is the official wire id
