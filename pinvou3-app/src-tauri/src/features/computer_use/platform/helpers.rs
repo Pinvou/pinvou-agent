@@ -95,13 +95,22 @@ fn is_line_breaking(c: char) -> bool {
 /// (that one additionally folds whitespace, which display must keep). The
 /// `invisible_lists_stay_in_step` test pins the step by asserting every
 /// enumerated range below appears verbatim in the matching-side list too,
-/// so adding a range to one but not the other reddens.
+/// so adding a range to one but not the other reddens. Both sides also
+/// enumerate the same deliberate non-default-ignorable families the matching
+/// side's doc lists (the Arabic/Kaithi/Egyptian number-and-format marks and
+/// the braille blank): they are invisible or blank in isolation, so letting
+/// them reach the consent dialog's target line shows the user a label that
+/// reads as the plain term while the matcher splits differently.
 fn is_invisible_formatting(c: char) -> bool {
     matches!(c,
         '\u{00AD}'
         | '\u{034F}'
+        | '\u{0600}'..='\u{0605}'
         | '\u{061C}'
+        | '\u{06DD}'
         | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
         | '\u{115F}'..='\u{1160}'
         | '\u{17B4}'..='\u{17B5}'
         | '\u{180B}'..='\u{180F}'
@@ -111,6 +120,7 @@ fn is_invisible_formatting(c: char) -> bool {
         | '\u{2065}'
         | '\u{2066}'..='\u{2069}'
         | '\u{206A}'..='\u{206F}'
+        | '\u{2800}'
         | '\u{3164}'
         | '\u{2FFC}'..='\u{2FFF}'
         | '\u{FE00}'..='\u{FE0F}'
@@ -118,6 +128,9 @@ fn is_invisible_formatting(c: char) -> bool {
         | '\u{FFA0}'
         | '\u{FFF0}'..='\u{FFF8}'
         | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
         | '\u{1BCA0}'..='\u{1BCA3}'
         | '\u{1D173}'..='\u{1D17A}'
         | '\u{E0000}'..='\u{E0FFF}')
@@ -443,6 +456,12 @@ mod tests {
         for invisible in [
             '\u{034F}',
             '\u{070F}',
+            '\u{0600}',
+            '\u{06DD}',
+            '\u{08E2}',
+            '\u{110BD}',
+            '\u{13430}',
+            '\u{2800}',
             '\u{115F}',
             '\u{1160}',
             '\u{180B}',
@@ -532,6 +551,26 @@ mod tests {
         // still be found through the second window.
         let raw = format!("{}Delete", "x".repeat(FOLD_CHUNK_CHARS + 20));
         assert!(screening_hit(&raw), "term in the second window");
+        // The same boundary with the LONGEST shipped term, at its deepest
+        // legal straddle: term_len - 1 of its chars land in the previous
+        // chunk, which is exactly the carry the window constant must cover
+        // (`T3_MATCH_WINDOW_CHARS - 1 >= longest - 1`). A short probe cannot
+        // see the constant shrink (every "Delete" straddle fits a 7-char
+        // carry too), while this one reddens the moment the carry drops
+        // below the longest term.
+        let longest = guard::T3_DENYLIST
+            .iter()
+            .max_by_key(|term| term.chars().count())
+            .expect("the denylist is non-empty");
+        let longest_len = longest.chars().count();
+        let raw = format!(
+            "{}{longest}",
+            "x".repeat(FOLD_CHUNK_CHARS - (longest_len - 1))
+        );
+        assert!(
+            screening_hit(&raw),
+            "longest term split at its deepest straddle"
+        );
     }
 
     #[test]

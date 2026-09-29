@@ -22,7 +22,12 @@
 //! ([`remove_session_audit`]). There is no in-session rotation, so one file
 //! still grows unboundedly over a single long session (policy TBD), and
 //! trails belonging to sessions deleted before that hook existed are not
-//! swept at boot.
+//! swept at boot. One narrow race is accepted: a session deleted while an
+//! action is in flight has its file removed by the purge hook, and that
+//! run's final append can recreate the file, leaving an orphan no future
+//! deletion sweeps — the append path cannot consult the sessions registry
+//! (cross-feature), so the alternatives are a boot-time sweep or a
+//! tombstone set, both deferred until the orphan is observed in practice.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
