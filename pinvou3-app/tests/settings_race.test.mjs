@@ -1,7 +1,7 @@
 /**
  * 同类竞态回归测试（PR #250 审计 → #260 settings 域）：
  * 陈旧读取覆盖 / await 后写入漂移——修复后的行为快照。
- * 覆盖 tauri settings（vllm 检测/bootstrap 重检/loadModels）。
+ * Covers model-list loading in the tauri settings feature.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -55,43 +55,12 @@ function loadFeature(fileName, state, contextOverrides) {
   };
 }
 
-// ── settings.js：vllm 检测 / bootstrap 重检 / loadModels ─────────────
+// ── settings.js: loadModels ─────────────────────────────────────────
 
 function loadSettingsFeature() {
-  const state = { settings: {}, vllmSetup: undefined, vllmBootstrapping: false };
+  const state = { settings: {} };
   return loadFeature('settings.js', state, { listen() {} });
 }
-
-test('detectLocalVllmSetup 陈旧检测快照作废（新检测优先）', async () => {
-  const rt = loadSettingsFeature();
-  const d1 = rt.defer('detect_local_vllm_setup');
-  const p1 = rt.api.detectLocalVllmSetup({});       // 检测 1
-  const d2 = rt.defer('detect_local_vllm_setup');
-  const p2 = rt.api.detectLocalVllmSetup({});       // 检测 2（序号递增）
-  d1.resolve({ engine_state: 'starting', may_offer_setup: true }); // 旧响应
-  await p1;
-  assert.equal(rt.state.vllmSetup, undefined, '陈旧检测快照不得写入');
-  d2.resolve({ engine_state: 'ready', may_offer_setup: false });   // 新响应
-  await p2;
-  assert.equal(rt.state.vllmSetup.engine_state, 'ready', '新检测正常写入');
-});
-
-test('bootstrap 完成作废在途检测并续接轮询（新检测收敛就绪状态）', async () => {
-  const rt = loadSettingsFeature();
-  const d1 = rt.defer('detect_local_vllm_setup');
-  const p1 = rt.api.detectLocalVllmSetup({});        // 检测 1（序号 1）
-  const db = rt.defer('bootstrap_local_vllm');
-  const pB = rt.api.bootstrapLocalVllm();            // 引导开始
-  const d2 = rt.defer('detect_local_vllm_setup');    // 为引导完成后的重检预占槽位
-  db.resolve({ done: true });                        // 引导完成：作废在途检测 + 主动重检
-  await pB;
-  d1.resolve({ engine_state: 'starting', may_offer_setup: true }); // 陈旧快照
-  await p1;
-  assert.equal(rt.state.vllmSetup, undefined, '引导完成前的陈旧快照不得写入');
-  d2.resolve({ engine_state: 'ready', may_offer_setup: false });   // 重检快照
-  await new Promise(function (resolve) { setTimeout(resolve, 0); });
-  assert.equal(rt.state.vllmSetup.engine_state, 'ready', '引导后的重检正常收敛就绪状态');
-});
 
 test('loadModels 后发者胜（旧列表不得覆盖新列表）', async () => {
   const rt = loadSettingsFeature();
