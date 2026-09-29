@@ -84,6 +84,13 @@ pub(super) fn set_model_load_error(error: Option<String>) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
 }
 
+/// 测试专用：MODEL_LOAD_ERROR 是进程级全局，`leased_reload_*` 与 mod.rs 的
+/// 导入补载测试并行读写同一静态，精确断言必须互斥（tokio Mutex 让异步测试
+/// 可跨 await 持锁，同步测试用 blocking_lock）。
+#[cfg(test)]
+pub(super) static MODEL_LOAD_ERROR_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 /// 任何真实加载尝试（成功或失败）前清除「无使用场景故意延迟」标记:导入补载
 /// 等绕过状态命令的加载入口也在其列——否则首帧被门控跳过的用户导入文件时,
 /// 补载失败仍被前端误标为 deferred(「故意延迟」),真实失败被掩盖。
@@ -244,6 +251,16 @@ pub async fn kb_model_download(
         if service.semantic_ready() {
             return Ok(current_status(&service));
         }
+        // 已部署目录直接热加载，不会再有下载/校验事件：不发进度的话，前端会停在
+        // 桥接层种下的「正在下载 0%」。复用既有 prepare 阶段事件如实表达加载中。
+        let _ = app.emit(
+            "kb_model:progress",
+            serde_json::json!({
+                "stage": "prepare",
+                "downloaded": DISPLAY_DOWNLOAD_BYTES,
+                "total": DISPLAY_DOWNLOAD_BYTES,
+            }),
+        );
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
@@ -719,6 +736,8 @@ mod tests {
     /// 复现审计缺陷：并发 kb_search 各自 spawn_blocking 重载 ~570MB 模型。
     #[tokio::test]
     async fn leased_reload_concurrent_calls_load_once() {
+        // 进程级 MODEL_LOAD_ERROR 会被本测试写 None，与 mod.rs 的导入补载测试互斥。
+        let _guard = MODEL_LOAD_ERROR_TEST_LOCK.lock().await;
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let loads = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
@@ -777,6 +796,9 @@ mod tests {
     /// 调用仍会重试（不缓存失败）。
     #[tokio::test]
     async fn leased_reload_failure_propagates_and_retries() {
+        // 本测试向进程级 MODEL_LOAD_ERROR 写入两次失败诊断，与 mod.rs 的导入
+        // 补载测试（精确断言该静态）互斥，避免并行运行时偶发读到对方写入值。
+        let _guard = MODEL_LOAD_ERROR_TEST_LOCK.lock().await;
         let loads = Arc::new(AtomicUsize::new(0));
         for expected_error in ["第一次失败", "第二次失败"] {
             let loads = loads.clone();

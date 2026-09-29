@@ -311,6 +311,9 @@ pub enum InterruptedCandidate {
 /// 一次完整下载——重校验（大小 + SHA-256，~585MB 秒级）通过后直接复用即可续上
 /// 安装，不必每次重试都重新下载全量模型；任何不符（含下载中途的 `.part` 残留、
 /// 磁盘损坏、应用升级后清单换版）都会清掉该目录并按 `Cleaned` 走全新下载。
+/// 清单之外的多余条目不参与校验，`Reuse` 时会随部署一并保留——加载器只读固定
+/// 文件名、清单内文件哈希钉死，多余文件仅占磁盘。清单为编译期常量，非空由
+/// 调用方保证。
 ///
 /// `on_progress(file_index, file_count)` 在每个文件校验通过后回调（`file_index`
 /// 从 1 开始），供调用方把复查进度映射到既有进度事件。调用方负责跨进程安装锁；
@@ -323,7 +326,19 @@ pub fn recover_interrupted_candidate_dir(
     if !candidate.exists() {
         return Ok(InterruptedCandidate::Cleaned);
     }
-    if verify_manifest_dir(candidate, manifest, &mut on_progress).is_err() {
+    if candidate.is_file() {
+        // 残留是同名普通文件（异常产物）：清掉即可走全新下载，不必让整次安装失败。
+        std::fs::remove_file(candidate).map_err(|error| {
+            format!(
+                "清理残留的模型候选文件失败({}): {error}",
+                candidate.display()
+            )
+        })?;
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    if let Err(reason) = verify_manifest_dir(candidate, manifest, &mut on_progress) {
+        // 复查不通过意味着要付出 ~585MB 全新下载的代价，失败原因必须留痕可查。
+        eprintln!("[knowledge] 模型候选目录复查未通过，清理后重新下载: {reason}");
         std::fs::remove_dir_all(candidate).map_err(|error| {
             format!(
                 "清理未通过校验的模型候选目录失败({}): {error}",
@@ -1471,12 +1486,59 @@ mod tests {
         let candidate = root.path().join("bge-m3.tmp");
         let manifest = tiny_manifest();
         write_manifest_fixture(&candidate, &manifest);
-        std::fs::write(candidate.join("model.onnx"), b"tampered").unwrap();
+        // 同长度篡改：绕过大小检查，确保命中 SHA-256 比对分支（清单校验的安全核心）。
+        std::fs::write(candidate.join("model.onnx"), b"payloaX").unwrap();
 
         let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
 
         assert_eq!(outcome, InterruptedCandidate::Cleaned);
         assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_non_file_entry_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::remove_file(candidate.join("config.json")).unwrap();
+        std::fs::create_dir(candidate.join("config.json")).unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_stray_file_is_cleaned_for_fresh_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        std::fs::write(&candidate, b"not a directory").unwrap();
+
+        let outcome =
+            recover_interrupted_candidate_dir(&candidate, &tiny_manifest(), |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists(), "同名普通文件残留也应被清理");
+    }
+
+    #[test]
+    fn interrupted_candidate_extra_entries_are_carried_by_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::write(candidate.join("stale.part"), b"leftover").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(
+            outcome,
+            InterruptedCandidate::Reuse,
+            "清单外多余条目不阻断复用（部署后仅占磁盘，见 recover 文档）"
+        );
+        assert!(candidate.join("stale.part").exists());
     }
 
     #[test]

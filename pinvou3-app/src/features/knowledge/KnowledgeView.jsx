@@ -788,6 +788,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const modelUsable = modelInstalled && (modelReady || modelDeferred);
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
+      // 对端（共享知识库宿主等）正在安装模型：本窗口「立即加载」此刻只会撞锁失败。
+      const kbPeerDownloading = !!(effectiveKbModel && effectiveKbModel.downloading);
       const mb = (n) => Math.round((n || 0) / 1048576);
       // 进度百分比:download 阶段用真实累计字节(占 0~95%),校验/准备/完成递进到 100。
       const dlPct = (() => {
@@ -1363,11 +1365,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   </span>
                 </div>
 
-                {/* 模型已安装但本进程未加载（首帧门控 deferred 或上次加载失败后的静默态）。
-                    崩溃中断安装后常停在这一状态：此前页面只剩上面的徽标，没有任何
-                    继续/修复入口——加载动作只能靠用户自己想到「导入文件触发补载」。
+                {/* 模型已安装但本进程未加载（首帧门控 deferred——崩溃中断安装后常停在
+                    这一状态）。此前页面只剩上面的徽标，没有任何继续/修复入口——加载
+                    动作只能靠用户自己想到「导入文件触发补载」。真实加载失败会清
+                    deferred 并落 error，改走既有失败门（Retry/Repair），不进此分支。
                     canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染。 */}
-                {canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && (
+                {canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && !kbPeerDownloading && (
                   <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04] flex flex-wrap items-center justify-between gap-3`}>
                     <div className="min-w-0 flex-1">
                       <div className={`text-[14px] font-bold ${ink}`}>{t.kbModelNotLoadedTitle}</div>
