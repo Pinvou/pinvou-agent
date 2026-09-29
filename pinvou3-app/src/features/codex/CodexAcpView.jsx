@@ -2698,7 +2698,11 @@ export function CodexAcpView({
     if (!element) return;
     autoScrollRef.current = true;
     setShowScrollBottom(false);
-    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    // Smooth gliding through a virtualized document mounts and unmounts
+    // rows for its whole duration while estimates go stale; jump instead
+    // (same decision as the overflowAnchor gate below).
+    const virtualized = shouldVirtualizeConversationTurns(visibleTurns.length, scroller);
+    element.scrollTo({ top: element.scrollHeight, behavior: virtualized ? 'auto' : 'smooth' });
   }
 
   function beginRuntimeOperation(agentId, operation) {

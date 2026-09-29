@@ -1240,7 +1240,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (!el) return;
         autoScrollRef.current = true;
         setShowScrollBottom(false);
-        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        // Smooth gliding through a virtualized document mounts and unmounts
+        // rows for its whole duration while estimates go stale; jump instead
+        // (same decision as the overflowAnchor gate above).
+        const virtualized = shouldVirtualizeConversationTurns(conversationProjection.turns.length, scrollRef);
+        el.scrollTo({ top: el.scrollHeight, behavior: virtualized ? 'auto' : 'smooth' });
       }
 
       // Auto-scroll：只在原本贴底时滚内部容器到底（绝不动外层窗口，避免浏览历史时被拉回底部）
