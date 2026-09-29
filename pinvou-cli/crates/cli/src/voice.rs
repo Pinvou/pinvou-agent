@@ -2173,11 +2173,13 @@ fn postprocess(
             "omitted_stages": POSTPROCESS_OMITTED_STAGES,
         });
         // The empty short-circuit discloses the omitted GUI stages exactly
-        // like the model path does: same JSON field, same trailing Note line.
+        // like the model path does: same JSON field, same line set (the
+        // `Truncated: false` line keeps the human schema branch-independent,
+        // mirroring the model path below), same trailing Note line.
         return Ok(success(render(
             output,
             format!(
-                "Mode: {}\nSource: empty\nText:\n{}",
+                "Mode: {}\nSource: empty\nTruncated: false\nText:\n{}",
                 mode.as_str(),
                 POSTPROCESS_NOTE
             ),

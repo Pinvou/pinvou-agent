@@ -152,12 +152,16 @@ fn status_payload(
         snapshot
             .map(|snapshot| status_label(snapshot.status))
             .unwrap_or("-"),
+        // The served/configured model names are remote-sourced cells: the
+        // same collapse `snapshot_payload` applies to the Backend row.
         snapshot
             .and_then(|snapshot| snapshot.model.as_deref())
-            .unwrap_or("-"),
+            .map(crate::support::collapse_control_characters)
+            .unwrap_or_else(|| "-".to_owned()),
         snapshot
             .and_then(|snapshot| snapshot.configured_model.as_deref())
-            .unwrap_or("-"),
+            .map(crate::support::collapse_control_characters)
+            .unwrap_or_else(|| "-".to_owned()),
         snapshot
             .map(|snapshot| snapshot.target_kind.as_str())
             .unwrap_or("-"),
@@ -281,8 +285,14 @@ fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::V
         Some(vllm) => format!(
             "Backend: {}\thealth={}\tmodel={}\twindow={}",
             status_label(vllm.status),
+            // `health_status` is machine-made, but the served model name is
+            // remote-sourced (`/v1/models`) — the same class as the GPU/CPU
+            // names above — so it collapses before it reaches the terminal.
             vllm.health_status,
-            vllm.model.as_deref().unwrap_or("-"),
+            vllm.model
+                .as_deref()
+                .map(crate::support::collapse_control_characters)
+                .unwrap_or_else(|| "-".to_owned()),
             vllm.max_model_len
                 .map(|len| len.to_string())
                 .unwrap_or_else(|| "-".to_owned()),

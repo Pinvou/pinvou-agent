@@ -556,6 +556,50 @@ fn pause_and_resume_reject_unknown_task_ids_like_the_rest_of_the_family() {
 }
 
 #[test]
+/// Human rows must not be forgeable: the name is the one fully
+/// user-controlled cell (the row/column contract must not depend on it),
+/// the same rule models/sessions/memory pin for their families.
+#[test]
+fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("collapse-hostile-name");
+
+    let hostile = "ok\n*m_fake\tEvil\u{1b}[2JEsc";
+    let created = create_task(&home, hostile);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // The store keeps the original bytes — only the human rendering
+    // sanitizes (the JSON consumer gets the verbatim name back).
+    assert_eq!(created["name"].as_str(), Some(hostile));
+
+    // One task, one row: a raw newline in the name must not forge an extra
+    // row, a raw tab must not forge a column, and ESC must not reach the
+    // terminal.
+    let listed = run_human(&["scheduled", "list"]);
+    assert_eq!(
+        listed.lines().count(),
+        1,
+        "the hostile name must not forge extra rows: {listed:?}"
+    );
+    assert!(
+        listed.contains("ok *m_fake Evil [2JEsc"),
+        "the collapsed name must render on one row: {listed:?}"
+    );
+    assert!(
+        !listed.contains('\u{1b}'),
+        "ESC must not reach the terminal: {listed:?}"
+    );
+
+    let shown = run_human(&["scheduled", "show", &task_id]);
+    assert!(
+        shown.contains("name: ok *m_fake Evil [2JEsc"),
+        "show must render the collapsed name: {shown:?}"
+    );
+    assert!(
+        !shown.contains('\u{1b}'),
+        "ESC must not reach the terminal: {shown:?}"
+    );
+}
+
 fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("round-trip");

@@ -112,7 +112,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::support::{render, require_yes, sandbox_home, success};
+use crate::support::{collapse_control_characters, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
@@ -677,16 +677,23 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
     let value = serde_json::to_value(&tools)
         .map(|tools| serde_json::json!({ "tools": tools }))
         .unwrap_or_else(|_| serde_json::json!({ "tools": [] }));
+    // Human rows must not be forgeable: tool name/description come from
+    // package manifests (including imported ones) and go through the shared
+    // collapse like every sibling family (JSON keeps the originals).
     let human = tools
         .iter()
         .map(|tool| {
             format!(
                 "{}\t{}\t{}\t{}\t{}",
-                tool.id,
+                collapse_control_characters(&tool.id),
                 if tool.installed { "installed" } else { "-" },
-                tool.source,
-                tool.version,
-                format!("{}: {}", tool.name, tool.description),
+                collapse_control_characters(&tool.source),
+                collapse_control_characters(&tool.version),
+                format!(
+                    "{}: {}",
+                    collapse_control_characters(&tool.name),
+                    collapse_control_characters(&tool.description)
+                ),
             )
         })
         .collect::<Vec<_>>()
@@ -1087,12 +1094,13 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
     let value = serde_json::to_value(&skills)
         .map(|skills| serde_json::json!({ "skills": skills }))
         .unwrap_or_else(|_| serde_json::json!({ "skills": [] }));
+    // Same no-forgeable-rows rule as `tools_list`.
     let human = skills
         .iter()
         .map(|skill| {
             format!(
                 "{}\t{}\t{}\t{}\t{}",
-                skill.id,
+                collapse_control_characters(&skill.id),
                 if skill.installed { "installed" } else { "-" },
                 if skill.user_uploaded {
                     "uploaded"
@@ -1104,7 +1112,11 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
                 } else {
                     "-"
                 },
-                format!("{}: {}", skill.title, skill.description),
+                format!(
+                    "{}: {}",
+                    collapse_control_characters(&skill.title),
+                    collapse_control_characters(&skill.description)
+                ),
             )
         })
         .collect::<Vec<_>>()
@@ -1717,24 +1729,43 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
                 }));
             }
             let bundle_id = bundle.id.clone();
-            let has = |key: &str| -> bool {
-                if !bundle.installed {
-                    return false;
-                }
-                bundle
-                    .credentials
+            // The credential reads are fallible for INSTALLED bundles,
+            // mirroring `ima_readiness_parts`' rule one screen above: a
+            // credential-store READ failure is "unavailable", a different
+            // fact from "missing" — folding it into `missing_credentials`
+            // would tell the user to re-enter credentials when the fixable
+            // problem is the store. Every referenced credential is read once
+            // up front so a store failure surfaces as the lane's error
+            // instead of a fabricated `missing_credentials` row.
+            let mut resolved_credentials = Vec::new();
+            for spec in &bundle.credentials {
+                let present = if !bundle.installed {
+                    false
+                } else {
+                    let reference = CredentialReference::for_mcp_secret(
+                        &bundle_id,
+                        keyring_target(spec.target),
+                        &spec.key,
+                    );
+                    credential_store
+                        .get(&reference)
+                        .map(|value| value.is_some())
+                        .map_err(|error| {
+                            CliError::failed(format!(
+                                "plugins readiness({bundle_id}): credential store unavailable: {}",
+                                error.user_message()
+                            ))
+                        })?
+                };
+                resolved_credentials.push((spec.key.clone(), present));
+            }
+            let lookup = |key: &str| {
+                resolved_credentials
                     .iter()
-                    .find(|spec| spec.key == key)
-                    .is_some_and(|spec| {
-                        let reference = CredentialReference::for_mcp_secret(
-                            &bundle_id,
-                            keyring_target(spec.target),
-                            key,
-                        );
-                        credential_store.get(&reference).ok().flatten().is_some()
-                    })
+                    .find(|(name, _)| name == key)
+                    .is_some_and(|(_, present)| *present)
             };
-            let (registry_ready, registry_reason) = match readiness_for(&bundle, has) {
+            let (registry_ready, registry_reason) = match readiness_for(&bundle, lookup) {
                 Readiness::Ready => (true, None),
                 Readiness::NotReady(reason) => (false, Some(reason.to_owned())),
             };

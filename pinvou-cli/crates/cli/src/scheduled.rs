@@ -60,7 +60,7 @@ use pinvou3_lib::features::memory as memory_feature;
 use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
-use crate::support::{render, require_yes, sandbox_home, success};
+use crate::support::{collapse_control_characters, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 const SCHEDULED_USAGE: &str = "usage: pinvou scheduled \
@@ -1426,13 +1426,15 @@ fn render_runs(
                 .map(|(name, model)| (Some(name.as_str()), model.as_deref()))
                 .unwrap_or((None, None));
             let value = map_run(run, Some(store), &titles, read_state, task_name, task_model);
+            // Same no-forgeable-rows rule as `list`: the `error` cell can
+            // carry vendor/store text, so every textual cell collapses.
             lines.push(format!(
                 "{}\t{}\t{}\t{}\t{}",
-                value["id"].as_str().unwrap_or(""),
-                value["status"].as_str().unwrap_or(""),
-                value["scheduledFor"].as_str().unwrap_or(""),
-                value["sessionId"].as_str().unwrap_or("-"),
-                value["error"].as_str().unwrap_or("-"),
+                collapse_control_characters(value["id"].as_str().unwrap_or("")),
+                collapse_control_characters(value["status"].as_str().unwrap_or("")),
+                collapse_control_characters(value["scheduledFor"].as_str().unwrap_or("")),
+                collapse_control_characters(value["sessionId"].as_str().unwrap_or("-")),
+                collapse_control_characters(value["error"].as_str().unwrap_or("-")),
             ));
             value
         })
@@ -1467,10 +1469,13 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
     // `run` holds it across the entire headless host execution (which can
     // take minutes) by design: concurrent `scheduled run` invocations must
     // serialize CLI×CLI so their store writes and run records stay ordered.
-    // That minutes-long hold is also why `run` cannot keep the blocking
-    // wait the quick mutations use — a caller would sit silent for the
-    // whole span — so it takes the family's one try-acquire and fails busy
-    // immediately, like every other lock in the CLI.
+    // That minutes-long hold is why EVERY mutating command takes the
+    // family's one try-acquire and fails busy immediately, like every other
+    // lock in the CLI: a quick mutation that blocked on `run`'s hold would
+    // sit silent for the whole span before either succeeding or reporting
+    // the failure — the same caller-facing problem the `run` branch exists
+    // to avoid, from the other side. A contended lock is an immediate
+    // `scheduled_store_busy` (exit 1) with a retry hint.
     //
     // The home-root check runs before the lock acquisition because the lock
     // directory resolves `PINVOU3_HOME` verbatim: a set-but-empty or
@@ -1479,7 +1484,6 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
     // `TaskStore::new`. The validation itself is not new for these lanes —
     // every store-reaching command reaches it through `TaskStore::new` —
     // only its position moved ahead of any filesystem effect.
-    let is_run = matches!(command, ScheduledCommand::Run { .. });
     let mutating = matches!(
         command,
         ScheduledCommand::Create { .. }
@@ -1499,29 +1503,20 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
         None
     };
     let _store_write_guard = match store_lock.as_mut() {
-        Some(lock) => {
-            let guard = if is_run {
-                lock.try_write().map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::WouldBlock {
-                        CliError::failed(
-                            "scheduled_store_busy: another scheduled command holds the store \
-                             write lock; retry after it finishes",
-                        )
-                    } else {
-                        CliError::failed(format!(
-                            "scheduled_storage_unavailable: cannot acquire the store write lock: {error}"
-                        ))
-                    }
-                })?
+        // One try-acquire for every mutating command (see the comment above):
+        // no silent multi-minute wait behind `run`'s store-lock hold.
+        Some(lock) => Some(lock.try_write().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                CliError::failed(
+                    "scheduled_store_busy: another scheduled command holds the store \
+                     write lock; retry after it finishes",
+                )
             } else {
-                lock.write().map_err(|error| {
-                    CliError::failed(format!(
-                        "scheduled_storage_unavailable: cannot acquire the store write lock: {error}"
-                    ))
-                })?
-            };
-            Some(guard)
-        }
+                CliError::failed(format!(
+                    "scheduled_storage_unavailable: cannot acquire the store write lock: {error}"
+                ))
+            }
+        })?),
         None => None,
     };
     match command {
@@ -1588,18 +1583,21 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 &kinds,
                 &ui_metadata,
             );
+            // Human rows must not be forgeable: every textual cell goes
+            // through the shared collapse (JSON keeps the originals), the
+            // same rule the sibling families pin.
             lines.push(format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                value["id"].as_str().unwrap_or(""),
-                value["status"].as_str().unwrap_or(""),
-                value["nextRunAt"].as_str().unwrap_or("-"),
-                value["kind"].as_str().unwrap_or("chat"),
+                collapse_control_characters(value["id"].as_str().unwrap_or("")),
+                collapse_control_characters(value["status"].as_str().unwrap_or("")),
+                collapse_control_characters(value["nextRunAt"].as_str().unwrap_or("-")),
+                collapse_control_characters(value["kind"].as_str().unwrap_or("chat")),
                 if value["pinned"].as_bool().unwrap_or(false) {
                     "pinned"
                 } else {
                     "-"
                 },
-                value["name"].as_str().unwrap_or(""),
+                collapse_control_characters(value["name"].as_str().unwrap_or("")),
             ));
             Ok(value)
         })
@@ -1633,16 +1631,21 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     );
     let names = task_name_map(std::slice::from_ref(&def));
     let (run_lines, run_values) = render_runs(&sessions, &runs, &read_state, &names);
+    // Same no-forgeable-output rule as `list`: every textual value collapses
+    // before it reaches the terminal (JSON keeps the originals).
+    let cell = |key: &str, default: &str| {
+        collapse_control_characters(task[key].as_str().unwrap_or(default))
+    };
     let mut lines = vec![
-        format!("id: {}", task["id"].as_str().unwrap_or("")),
-        format!("name: {}", task["name"].as_str().unwrap_or("")),
-        format!("status: {}", task["status"].as_str().unwrap_or("")),
-        format!("schedule: {}", task["scheduleLabel"].as_str().unwrap_or("")),
-        format!("rrule: {}", task["rrule"].as_str().unwrap_or("")),
-        format!("kind: {}", task["kind"].as_str().unwrap_or("chat")),
-        format!("model: {}", task["model"].as_str().unwrap_or("-")),
-        format!("next_run: {}", task["nextRunAt"].as_str().unwrap_or("-")),
-        format!("last_run: {}", task["lastRunAt"].as_str().unwrap_or("-")),
+        format!("id: {}", cell("id", "")),
+        format!("name: {}", cell("name", "")),
+        format!("status: {}", cell("status", "")),
+        format!("schedule: {}", cell("scheduleLabel", "")),
+        format!("rrule: {}", cell("rrule", "")),
+        format!("kind: {}", cell("kind", "chat")),
+        format!("model: {}", cell("model", "-")),
+        format!("next_run: {}", cell("nextRunAt", "-")),
+        format!("last_run: {}", cell("lastRunAt", "-")),
         format!("runs: {}", run_values.len()),
     ];
     lines.extend(run_lines);
