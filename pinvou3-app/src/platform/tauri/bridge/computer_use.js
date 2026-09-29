@@ -229,6 +229,10 @@
           pruneDeletedSessionPending();
           state.computerUse = Object.assign({}, state.computerUse, {
             enabled: !!raw.enabled,
+            // The draft screen has no session: leave no previous session's id
+            // in the slice either (every reader gates on the request fields'
+            // own sessionId, so this is hygiene, not a user-visible fix).
+            sessionId: null,
             // `stopped` is a process-global flag the backend reports for an
             // empty session id too. Dropping it here left the settings page
             // showing the "turn it off and back on" hint on the draft screen
