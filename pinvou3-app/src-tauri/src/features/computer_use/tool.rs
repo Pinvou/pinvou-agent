@@ -2319,7 +2319,10 @@ impl ToolSpec for ComputerUseTool {
          stays valid for a correct retry). If the re-screen comes back clear — nothing \
          consequential under the target — the action executes and the confirm_id is \
          spent, because an unapproved run of the same action would have executed \
-         without any dialog. The CONTENT you type is never screened, and \
+         without any dialog; note a target that cannot be read at all screens the same \
+         as a clear one, and every unreadable location binds identically, so the \
+         replay only detects a readable target appearing. The CONTENT you type is never \
+         screened, and \
          key chords are not screened for destructiveness. On macOS and Windows the \
          accessibility tree walk is additionally capped below the max_depth/max_nodes \
          arguments (24 levels / 2000 nodes). Observation (screenshots, ui_tree) reads on-screen \

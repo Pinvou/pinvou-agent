@@ -575,7 +575,13 @@ async fn element_info_of(
         // The erasure below must extend to the raw binding too: it exists to
         // keep a secure field's raw text from re-entering anything through a
         // side channel, so the binding hashes the erased identity (secure
-        // fields always confirm via the password screen anyway).
+        // fields always confirm via the password screen anyway). The cost,
+        // accepted: every secure field on the desktop binds the identical
+        // `hash("", role)` — a token approved on one password field would
+        // also spend on another. macOS/Windows keep twin detection by hashing
+        // the raw *label* (a password field's accessible name is its label,
+        // not its content); on Linux the AT-SPI name can carry the content
+        // itself, so the erasure wins.
         (String::new(), false, String::new())
     } else {
         let raw = proxy.name().await.unwrap_or_default();
@@ -733,10 +739,12 @@ async fn ui_tree_async(
 ///   mainstream None policy (no element → no forced confirmation); this is a
 ///   policy statement, not a screening proof.
 /// - `Err`: **query failure** — a breakdown in any link of root/app/window
-///   enumeration, extents, or the hit query is propagated; a query fault is
-///   never swallowed into Ok(None)'s "no element" pass justification; how
-///   screening handles faults (let it execute, no confirmation) is decided
-///   uniformly by the tool layer.
+///   enumeration or the hit query is propagated, as is the **active**
+///   window's extents fault. A non-active window's extents fault is
+///   deliberately skipped-and-remembered (see below) and surfaces as `Err`
+///   only when no window answered the point; how screening handles faults
+///   (let it execute, no confirmation) is decided uniformly by the tool
+///   layer.
 async fn element_at_point_async(
     conn: &zbus::Connection,
     x: i32,
@@ -762,6 +770,13 @@ async fn element_at_point_async(
     // backend's verdict now also names the target in the consent dialog and
     // binds the approval token to it. Reporting the fault is honest; a
     // confident wrong answer is not.
+    //
+    // Residual, deliberate: the active state is app-self-reported over
+    // AT-SPI, and the carve-out only protects against an *honest* foreground
+    // app. A hostile app can withhold `Active` and report zero extents for
+    // itself, letting the fall-through bind the approval to an occluded
+    // element — but the same app controls its own AT-SPI answers more
+    // cheaply than that, so the carve-out's trust level matches the bus.
     let mut first_fault = None;
     for (index, window) in windows.iter().enumerate() {
         let extents = match screen_extents_strict(conn, window).await {

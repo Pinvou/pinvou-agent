@@ -115,6 +115,12 @@ pub const T3_DENYLIST: &[&str] = &[
     "下單",
     "充值",
     "儲值",
+    // 提现/汇款 carry a wider false-positive surface than the homoglyph
+    // class: informational labels like 汇款地址 (a remittance *address*, not
+    // an action) now raise a confirmation too. Accepted on the same
+    // fail-safe terms as the Cyrillic collisions — an extra dialog, never a
+    // missed one — and kept because a withdrawal or remittance button is
+    // exactly the confirmation surface this gate exists for.
     "提现",
     "提現",
     "汇款",
@@ -213,20 +219,30 @@ pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
 /// `platform::helpers` need the arm (`invisible_lists_stay_in_step` keeps the
 /// two in step but cannot see a family missing from both).
 ///
-/// One deliberate non-default-ignorable member: `U+070F SYRIAC ABBREVIATION
-/// MARK` is category Cf and renders with zero advance through font fallback
-/// (CoreText falls back to a Syriac font and the mark measures 0), so
-/// `De⟨U+070F⟩lete` displays as plain "Delete" while splitting the term. It
-/// is not `Default_Ignorable_Code_Point`, which is why a coverage diff
-/// against that property misses it.
+/// Deliberate non-default-ignorable members, all sharing the property that
+/// makes `U+070F` matter: category Cf (or, for the braille blank, a blank
+/// glyph), invisible or blank in isolation, and therefore **missed by a
+/// coverage diff against `Default_Ignorable_Code_Point`** — the exact hole
+/// the round-6 review showed a single-member list leaves open. The Arabic
+/// number-sign family (U+0600–U+0605, U+06DD, U+0890–U+0891, U+08E2), the
+/// Kaithi number signs (U+110BD, U+110CD) and the Egyptian hieroglyph format
+/// controls (U+13430–U+1343F) render with zero advance through font fallback,
+/// so `De⟨U+06DD⟩lete` displays as plain "Delete" while splitting the term.
+/// `U+2800 BRAILLE PATTERN BLANK` is not Cf at all but its UTS#39 skeleton is
+/// SPACE (it renders as an ordinary blank gap), which is the same treatment
+/// the whitespace fold already gives `支 付`.
 fn is_invisible_for_matching(c: char) -> bool {
     c.is_control()
         || c.is_whitespace()
         || matches!(c,
             '\u{00AD}'
             | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
             | '\u{061C}'
+            | '\u{06DD}'
             | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
             | '\u{115F}'..='\u{1160}'
             | '\u{17B4}'..='\u{17B5}'
             | '\u{180B}'..='\u{180F}'
@@ -236,12 +252,16 @@ fn is_invisible_for_matching(c: char) -> bool {
             | '\u{2065}'
             | '\u{2066}'..='\u{2069}'
             | '\u{206A}'..='\u{206F}'
+            | '\u{2800}'
             | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{FFA0}'
             | '\u{FFF0}'..='\u{FFF8}'
             | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
             | '\u{1BCA0}'..='\u{1BCA3}'
             | '\u{1D173}'..='\u{1D17A}'
             | '\u{2FFC}'..='\u{2FFF}'
@@ -1192,12 +1212,13 @@ impl ComputerUseShared {
     /// blocked action and is carried into the minted token. Also sweeps
     /// expired pendings.
     ///
-    /// Returns `None` when the master switch is off or the stop is latched:
-    /// `mint_confirmation` refuses in that state, so a pending registered
-    /// there could never be approved — an in-flight run racing a
-    /// disable/stop must not leave an unapprovable dialog on screen for the
-    /// TTL (its caller reports the refusal as part of the same stable error
-    /// prefix, so the audit shape is unchanged).
+    /// Returns `None` when the master switch is off, the stop is latched, or
+    /// the session's grant is already gone: `mint_confirmation` refuses in
+    /// each of those states, so a pending registered there could never be
+    /// approved — an in-flight run racing a disable/stop/revoke must not
+    /// leave an unapprovable dialog on screen for the TTL (its caller
+    /// reports the refusal as part of the same stable error prefix, so the
+    /// audit shape is unchanged).
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
@@ -1210,6 +1231,13 @@ impl ComputerUseShared {
         let now = Instant::now();
         let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
+            return None;
+        }
+        // Re-checked under the same critical section as the insert: a revoke
+        // landing after the tool's pre-raise `begin_input_action` must not
+        // resurrect the dialog it just removed (same rule as the enabled /
+        // stopped checks above).
+        if !self.sessions.lock().contains(session_id) {
             return None;
         }
         let pending = &mut consent.pending;
@@ -1271,7 +1299,20 @@ impl ComputerUseShared {
 
     /// Marks a session as having an unanswered grant request (called right
     /// before the tool emits `grant_required`).
+    ///
+    /// Skipped while the feature is disabled or the stop is latched, for the
+    /// same reason [`Self::new_pending_confirmation`] drops a pending in
+    /// those states: [`Self::grant_session`] refuses while stopped or
+    /// disabled, so a request registered there could never be granted — an
+    /// in-flight request racing a stop/disable (the serialized variant can
+    /// wait out the full bounded input-lock timeout) must not pop an
+    /// unanswerable dialog that blocks input process-wide. Note the session
+    /// is deliberately **not** required to hold a grant here: the mark is
+    /// what raises the grant dialog for a not-yet-granted session.
     pub fn mark_grant_requested(&self, session_id: &str) {
+        if !self.is_enabled() || self.is_stopped() {
+            return;
+        }
         self.grant_requests.lock().insert(session_id.to_string());
     }
 
@@ -1863,8 +1904,12 @@ mod tests {
         for range in [
             "'\\u{00AD}'",
             "'\\u{034F}'",
+            "'\\u{0600}'..='\\u{0605}'",
             "'\\u{061C}'",
+            "'\\u{06DD}'",
             "'\\u{070F}'",
+            "'\\u{0890}'..='\\u{0891}'",
+            "'\\u{08E2}'",
             "'\\u{115F}'..='\\u{1160}'",
             "'\\u{17B4}'..='\\u{17B5}'",
             "'\\u{180B}'..='\\u{180F}'",
@@ -1874,6 +1919,7 @@ mod tests {
             "'\\u{2065}'",
             "'\\u{2066}'..='\\u{2069}'",
             "'\\u{206A}'..='\\u{206F}'",
+            "'\\u{2800}'",
             "'\\u{3164}'",
             "'\\u{2FFC}'..='\\u{2FFF}'",
             "'\\u{FE00}'..='\\u{FE0F}'",
@@ -1881,6 +1927,9 @@ mod tests {
             "'\\u{FFA0}'",
             "'\\u{FFF0}'..='\\u{FFF8}'",
             "'\\u{FFF9}'..='\\u{FFFB}'",
+            "'\\u{110BD}'",
+            "'\\u{110CD}'",
+            "'\\u{13430}'..='\\u{1343F}'",
             "'\\u{1BCA0}'..='\\u{1BCA3}'",
             "'\\u{1D173}'..='\\u{1D17A}'",
             "'\\u{E0000}'..='\\u{E0FFF}'",
@@ -2121,6 +2170,23 @@ mod tests {
             "De\u{1BCA1}lete", // shorthand format controls
             "De\u{E0100}lete", // variation selector supplement
             "支\u{2060}付",
+            // Sixth round: the remaining Cf-not-default-ignorable number and
+            // format marks (Arabic number signs, end-of-ayah, Kaithi and
+            // Egyptian hieroglyph format controls) plus the braille blank —
+            // the same renders-as-nothing class U+070F opened, one member per
+            // range so removing any single arm reddens.
+            "De\u{0600}lete",  // Arabic number sign
+            "De\u{0605}lete",  // Arabic number mark above
+            "De\u{06DD}lete",  // Arabic end of ayah
+            "De\u{0890}lete",  // Arabic pound mark above
+            "De\u{08E2}lete",  // Arabic disputed end of ayah
+            "De\u{110BD}lete", // Kaithi number sign
+            "De\u{110CD}lete", // Kaithi number sign above
+            "De\u{13430}lete", // Egyptian hieroglyph vertical joiner
+            "De\u{1343F}lete", // Egyptian hieroglyph end walled enclosure
+            "De\u{2800}lete",  // braille pattern blank (UTS#39 skeleton SPACE)
+            "支\u{06DD}付",
+            "支\u{2800}付",
             // Fourth review round: the İ dot. Lowercasing İ produces i +
             // U+0307, and NFKC leaves the sequence; without the
             // post-composition pass the undeletable dot split every i-term.
@@ -2337,6 +2403,10 @@ mod tests {
     #[test]
     fn new_pending_confirmation_replaces_the_sessions_previous_pending() {
         let shared = enabled_shared();
+        // Pendings exist only downstream of the input gate, so the fixtures
+        // hold grants (the insert-side gate refuses a grant-less session).
+        shared.grant_session("s1");
+        shared.grant_session("s2");
         let first = new_pending(&shared, "s1", "left click");
         let second = new_pending(&shared, "s1", "left click 2");
         assert_ne!(first, second);
@@ -2545,7 +2615,9 @@ mod tests {
         );
         shared.set_enabled(true);
         // Re-enable restores the ability to ask (a fresh id), while nothing
-        // from the stopped window exists.
+        // from the stopped window exists; s3 needs a fresh grant first, since
+        // the disable swept the old one.
+        shared.grant_session("s3");
         let fresh = shared
             .new_pending_confirmation("s3", "left click", "Buy now", 0, 0)
             .expect("pending registered after re-enable");
@@ -2555,6 +2627,7 @@ mod tests {
     #[test]
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left_click (100,200)");
         // Manually wind created_at back past the TTL (waiting a real 5
         // minutes is too slow).
@@ -2792,6 +2865,7 @@ mod tests {
         );
         // Mint refuses while disabled, too (toggle-off race symmetry).
         let shared2 = enabled_shared();
+        shared2.grant_session("s2");
         let id2 = shared2
             .new_pending_confirmation("s2", "left click", "Buy now", 7, 0)
             .expect("pending registered");
@@ -3027,6 +3101,66 @@ mod tests {
         assert!(shared.begin_input_action("s2").is_ok());
     }
 
+    /// A grant request racing a stop/disable must not survive the sweep: the
+    /// serialized mark can wait out the full bounded input-lock timeout, and
+    /// a request registered while stopped or disabled could never be granted
+    /// (`grant_session` refuses both states) — it would only pop an
+    /// unanswerable dialog blocking input process-wide. The not-yet-granted
+    /// shape is deliberate: the mark is what raises the dialog for a session
+    /// that has no grant yet, so grant presence must not be required here.
+    #[test]
+    fn late_grant_mark_is_dropped_while_stopped_or_disabled() {
+        let shared = enabled_shared();
+        shared.stop_all();
+        shared.mark_grant_requested("s1");
+        assert!(
+            !shared.grant_request_pending("s1"),
+            "a mark landing after the stop must not resurrect the grant dialog"
+        );
+        shared.set_enabled(false);
+        shared.mark_grant_requested("s2");
+        assert!(
+            !shared.grant_request_pending("s2"),
+            "a mark landing after the disable must not resurrect the grant dialog"
+        );
+        // The normal flow is untouched: enabled again, the mark lands.
+        shared.set_enabled(true);
+        shared.mark_grant_requested("s3");
+        assert!(shared.grant_request_pending("s3"));
+    }
+
+    /// The same unanswerable-dialog rule for pendings, one check over: a
+    /// revoke landing after the tool's pre-raise `begin_input_action` must
+    /// not re-insert the dialog that revoke just removed — `mint_confirmation`
+    /// would refuse it, leaving the dialog (and the process-wide input block)
+    /// to live out the TTL for nothing.
+    #[test]
+    fn late_pending_is_dropped_when_the_sessions_grant_was_revoked() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.revoke_session("s1");
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
+                .is_none(),
+            "a pending for a revoked session must not be registered"
+        );
+        // A session that never held a grant is equally refused — pendings
+        // exist only downstream of the input gate, which requires the grant.
+        assert!(
+            shared
+                .new_pending_confirmation("s2", "left click", "Buy now", 0, 0)
+                .is_none()
+        );
+        // Re-granting restores normal minting.
+        shared.grant_session("s1");
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
+                .is_some()
+        );
+    }
+
     /// The grant-request mark serializes with in-flight injections: while
     /// another session's action holds the physical-input lock, the "Allow
     /// control" dialog must not pop — a granted session's already-screened
@@ -3104,6 +3238,7 @@ mod tests {
     #[test]
     fn pending_payload_serves_newest_and_collapses_on_decision() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         assert!(shared.pending_payload_for_session("s1").is_none());
         let id1 = shared
             .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
@@ -3211,6 +3346,13 @@ mod tests {
             windows_source.contains("CacheScope::ElementAndChildren => {"),
             "the per-node descent must use the combined scope"
         );
+        // Arm-level pins alone stay green if only the ui_tree call site
+        // reverts to `CacheScope::Element`, so the call site itself is
+        // anchored too.
+        assert!(
+            windows_source.contains("Self::property_cache(&uia, CacheScope::ElementAndChildren)?"),
+            "ui_tree must fetch through the combined-scope cache request"
+        );
         assert!(
             windows_source.contains(".SetTreeScope(RawTreeScope(TREE_SCOPE_ELEMENT_AND_CHILDREN))"),
             "the combined scope must actually be set on the COM cache request — \
@@ -3233,6 +3375,10 @@ mod tests {
         assert!(
             windows_source.contains("name_screening_hit: screening_hit(&name)"),
             "Windows must screen the raw accessible name"
+        );
+        assert!(
+            windows_source.contains("let raw_binding = raw_element_binding(&name, &role);"),
+            "Windows must bind the raw accessible name into the consent token"
         );
 
         let linux_source = std::fs::read_to_string(concat!(
@@ -3277,6 +3423,65 @@ mod tests {
             ),
             "macOS type injection must chunk by UTF-16 width — the raw \
              enigo chunking truncates non-BMP runs inside a surrogate pair"
+        );
+        assert!(
+            macos_source.contains("let raw_binding = raw_element_binding(&name, &info.role);"),
+            "macOS must bind the raw accessible name into the consent token"
+        );
+
+        // The binding hash itself, shape-pinned: dropping the per-process key
+        // or either length prefix (so `("ab","c")` folds into the same byte
+        // stream as `("a","bc")`) must redden here, where the behavioral test
+        // below catches the prefix but only a source pin can catch the key.
+        let guard_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/guard.rs"
+        ))
+        .expect("guard.rs readable");
+        for shape in [
+            "hasher.update(binding_key());",
+            "hasher.update((name.len() as u64).to_be_bytes());",
+            "hasher.update((role.len() as u64).to_be_bytes());",
+        ] {
+            assert!(
+                guard_source.contains(shape),
+                "raw_element_binding is keyed and length-prefixed; lost: {shape}"
+            );
+        }
+    }
+
+    /// Behavioral pin for [`raw_element_binding`]: the length-prefix field
+    /// boundary is what keeps `("ab","c")` and `("a","bc")` from sharing a
+    /// binding, and the hash must be deterministic within the process while
+    /// distinguishing any field change (name, role, whitespace). The
+    /// display-identical-twin test supplies `raw_binding` on its mock, so
+    /// without this the primitive the whole target-binding story rests on
+    /// never executes anywhere.
+    #[test]
+    fn raw_element_binding_distinguishes_field_boundaries_and_inputs() {
+        // The prefix-collision pair: without the length prefixes these two
+        // fold into the identical byte stream.
+        assert_ne!(
+            raw_element_binding("ab", "c"),
+            raw_element_binding("a", "bc"),
+            "the length prefixes must separate the field boundary"
+        );
+        // Deterministic within the process, sensitive to every field.
+        assert_eq!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete", "AXButton")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete", "AXStaticText")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete ", "AXButton")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delet", "AXButtone")
         );
     }
 }
