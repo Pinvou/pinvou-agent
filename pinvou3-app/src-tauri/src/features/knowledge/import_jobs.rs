@@ -259,21 +259,33 @@ impl ImportJobStore {
         );
     }
 
-    pub fn interrupt(&self, job_id: &str) {
+    /// Park a running job at `interrupted` and return whether the transition
+    /// APPLIED. A `false` return means the job was already terminal (the
+    /// last item finished between the caller's state read and this call),
+    /// so the caller must not park its collection at `pending` — a
+    /// fully-indexed collection must not read as needing work with no
+    /// self-healing path (`index resume` refuses a non-interrupted job).
+    pub fn interrupt(&self, job_id: &str) -> bool {
         let mut c = self.conn.lock();
-        let Ok(tx) = c.transaction() else { return };
+        let Ok(tx) = c.transaction() else {
+            return false;
+        };
         let now = now();
         let _ = tx.execute(
             "UPDATE knowledge_import_items SET state='pending',updated_at=?2 \
              WHERE job_id=?1 AND state='running'",
             params![job_id, now],
         );
-        let _ = tx.execute(
-            "UPDATE knowledge_import_jobs SET state='interrupted',updated_at=?2 \
-             WHERE id=?1 AND state IN ('preparing','running')",
-            params![job_id, now],
-        );
+        let applied = tx
+            .execute(
+                "UPDATE knowledge_import_jobs SET state='interrupted',updated_at=?2 \
+                 WHERE id=?1 AND state IN ('preparing','running')",
+                params![job_id, now],
+            )
+            .map(|rows| rows > 0)
+            .unwrap_or(false);
         let _ = tx.commit();
+        applied
     }
 
     pub fn cancel(&self, job_id: &str) -> rusqlite::Result<()> {
@@ -304,6 +316,26 @@ impl ImportJobStore {
                 "SELECT state='cancelled' FROM knowledge_import_jobs WHERE id=?1",
                 params![job_id],
                 |r| r.get(0),
+            )
+            .unwrap_or(true)
+    }
+
+    /// Whether the job has LEFT its runnable states (`preparing`/`running`)
+    /// — an external `interrupt` or `cancel` landed mid-import. The ingest
+    /// loop stops on this, not just on its in-memory `cancel` flag: a thread
+    /// that is merely slow must not keep claiming the items `interrupt()`
+    /// moved back to pending and end the job fully-ingested yet
+    /// `interrupted`, which would force a no-op `index resume` purely to
+    /// reconcile the state. A read error keeps the loop's fail-safe
+    /// direction (assume stopped — the same direction `is_cancelled` takes).
+    pub fn is_stopped(&self, job_id: &str) -> bool {
+        self.conn
+            .lock()
+            .query_row(
+                "SELECT state NOT IN ('preparing','running') \
+                 FROM knowledge_import_jobs WHERE id=?1",
+                params![job_id],
+                |r| r.get::<_, bool>(0),
             )
             .unwrap_or(true)
     }
