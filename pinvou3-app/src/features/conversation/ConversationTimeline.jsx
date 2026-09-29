@@ -1092,6 +1092,11 @@ export function ConversationTimeline({
     overscan: CONVERSATION_ROW_OVERSCAN,
     scrollMargin,
     gap: turnGapPx,
+    // Core writes this offset back to the scroll element whenever the
+    // threshold flip attaches it to an already-scrolled viewport (and again
+    // on every re-crossing, because a disabled instance forgets its offset).
+    // The default 0 would teleport a mid-history reader to the top.
+    initialOffset: () => getScrollElement()?.scrollTop ?? 0,
   });
 
   // The live tail and its later history row share one React key, so when the
@@ -1166,6 +1171,15 @@ export function ConversationTimeline({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [followOutputRef, getScrollElement, historyTurns.length, sessionId, virtualized]);
+
+  // Switching conversations reuses the virtualizer instance while row keys are
+  // sessionId-prefixed, so measured sizes from the previous conversation would
+  // otherwise linger in the size cache for the view's lifetime. Dropping them
+  // per conversation keeps the cache bounded; correctness is unaffected either
+  // way because keys from different sessions never collide.
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [conversationKey, virtualizer]);
 
   if (!virtualized) {
     return (
