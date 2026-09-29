@@ -385,6 +385,30 @@ class ReadSessionTests(unittest.TestCase):
         self.assertGreaterEqual(len(followup["turns"]), 1)
         self.assertFalse(followup["truncated"])
 
+    def test_oversized_metadata_fields_stay_bounded(self):
+        # Metadata fields are user/paste-derived and reach the model verbatim:
+        # a crafted ~2M-char title must not bypass the aggregate response
+        # budget through the envelope or the listing, and `truncated` stays
+        # honest about the turns (round-4 MAJOR-2).
+        huge = "标" * 2_000_000
+        _write_session(self.dir, "bigtitle", _three_turn_messages(), title=huge)
+        payload, error = server.read_session_history(self.dir, "bigtitle", turn_limit=1)
+        self.assertIsNone(error)
+        self.assertLess(
+            len(json.dumps(payload, ensure_ascii=False)), 512 * 1024,
+            "the read envelope must stay bounded",
+        )
+        self.assertLess(len(payload["title"]), 5000)
+        self.assertTrue(payload["title"].endswith(server.TRUNCATED_MARK))
+        listing, list_error = server.list_sessions(self.dir)
+        self.assertIsNone(list_error)
+        self.assertLess(
+            len(json.dumps(listing, ensure_ascii=False)), 512 * 1024,
+            "the listing must stay bounded",
+        )
+        entry = next(e for e in listing["sessions"] if e["sessionId"] == "bigtitle")
+        self.assertLess(len(entry["title"]), 5000)
+
     def test_is_file_oserror_is_sanitized(self):
         # Path.is_file() can raise (e.g. ENAMETOOLONG); the response must be
         # the same sanitized error as the stat/open failures — the raw OSError

@@ -1645,6 +1645,79 @@ mod tests {
     /// The preservation contract must hold through the REAL boot chain, not
     /// just `run_mcp_startup_maintenance`: `ensure_extracted` first runs the
     /// retired-tool cleanup, whose residue probe treats a corrupt mcp.json as
+    /// Boot wiring smoke (review round-4 minor 7): the boot chain must seed
+    /// the default-installed builtin and replay the feature-switch state
+    /// file — deleting either wiring line at the call site turns this red.
+    #[test]
+    fn ensure_extracted_seeds_default_builtin_and_replays_feature_state() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-boot-seed-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Seed the bundle VERSION so the boot skips re-extraction and returns
+        // right after the maintenance block (the code path every normal boot
+        // with an unchanged bundle takes) — where the default-install seed and
+        // the feature-state replay live.
+        std::fs::create_dir_all(
+            super::paths::bundle_version_file()
+                .parent()
+                .expect("bundle version file parent"),
+        )
+        .unwrap();
+        std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
+
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        let manager = crate::features::marketplace::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        bundle
+            .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+            .unwrap();
+        // Seed: the default-installed builtin has a store record.
+        let store: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                crate::platform::paths::pinvou3_home()
+                    .join("marketplace")
+                    .join("bundles.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let ids: Vec<&str> = store["records"]
+            .as_array()
+            .expect("bundles.json records")
+            .iter()
+            .filter(|r| r["installed"] == true)
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"session-reader"),
+            "the boot seed must register the default-installed builtin: {ids:?}"
+        );
+
+        // Replay: the feature-switch state file exists after boot.
+        assert!(
+            crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("builtin_features.json")
+                .is_file(),
+            "the boot replay must write the feature-switch state file"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// "residue present" and calls `uninstall` — and an uninstall that reset
     /// the file would destroy the original bytes *before* the reconcile ever
     /// got to back them up. With the refusal in `remove_from_mcp_json`, the

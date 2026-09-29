@@ -857,6 +857,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     Vec::new()
                 };
                 let mcp_tools = shown.mcp_tools.clone();
+                let visibility = if is_builtin && !shown.visibility.is_empty() {
+                    Some(shown.visibility.clone())
+                } else {
+                    None
+                };
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
                         let (name, description) = store::apply_display_override(record, None, None);
@@ -898,13 +903,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     security_level,
                     data_access,
                     mcp_tools,
-                    // visibility passthrough mirrors security_level: filled
-                    // only for builtin plugins, omitted otherwise.
-                    visibility: if is_builtin && !m.visibility.is_empty() {
-                        Some(m.visibility.clone())
-                    } else {
-                        None
-                    },
+                    visibility,
                     // bundle_version is filled at the command layer
                     // (commands::marketplace::list_marketplace_tools): a
                     // marketplace -> runtime_bundle dependency would be a
@@ -946,17 +945,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                             "[marketplace] reseeding '{id}': installed=false preset record is unreachable since builtin uninstall is rejected"
                         );
                         if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-                            log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                            log::warn!(
+                                "[marketplace] default install of '{id}' failed (non-blocking): {e}"
+                            );
                         }
                     }
                 }
                 Ok(None) => {
                     if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-                        log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                        log::warn!(
+                            "[marketplace] default install of '{id}' failed (non-blocking): {e}"
+                        );
                     }
                 }
                 Err(e) => {
-                    log::warn!("[marketplace] 读取 BundleStore 失败,跳过默认安装 '{id}': {e}")
+                    log::warn!(
+                        "[marketplace] failed to read the BundleStore, skipping default install of '{id}': {e}"
+                    )
                 }
             }
         }

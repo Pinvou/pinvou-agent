@@ -204,7 +204,7 @@ pub fn set_feature_enabled(id: &str, enabled: bool) -> Result<Vec<BuiltinFeature
     // neither fail the toggle nor skip the caller's hot refresh, so it
     // degrades to a warning; the next boot replay or toggle rewrites it.
     if let Err(error) = write_feature_state_file(&disabled) {
-        eprintln!(
+        log::warn!(
             "[builtin] write builtin feature state failed (prefs remain authoritative): {error}"
         );
     }
@@ -220,7 +220,7 @@ pub fn set_feature_enabled(id: &str, enabled: bool) -> Result<Vec<BuiltinFeature
 /// means "all enabled" for readers, and the next toggle rewrites it).
 pub fn replay_feature_state_from_prefs() {
     if let Err(error) = write_feature_state_file(&disabled_feature_ids()) {
-        eprintln!("[builtin] replay builtin feature state failed: {error}");
+        log::warn!("[builtin] replay builtin feature state failed: {error}");
     }
 }
 

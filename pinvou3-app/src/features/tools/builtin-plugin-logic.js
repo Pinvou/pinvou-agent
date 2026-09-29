@@ -15,3 +15,22 @@ const builtinToolShortName = (fullName, pluginId) => {
 };
 
 export { isBuiltinPlugin, builtinToolShortName };
+
+
+/** Builtin skills whose availability is session-mode-controlled (backend
+ * MODE_TABLE delta): the builtin page's audit badge and the composer menu
+ * must agree with the store card for these instead of claiming "always on".
+ * Lives here (tools feature) so both the settings menu logic and the tool
+ * cards can import it without a cross-feature back-edge. */
+export const DEFAULT_BUILTIN_SKILLS = [
+  {
+    id: 'visual-design',
+    title: '视觉设计',
+    // 设计期差量（后端 MODE_TABLE）：该技能在这些模式不提供，开关只读。
+    unavailableIn: ['code'],
+  },
+];
+
+export const MODE_CONTROLLED_BUILTIN_SKILL_IDS = DEFAULT_BUILTIN_SKILLS
+  .filter((skill) => Array.isArray(skill.unavailableIn) && skill.unavailableIn.length)
+  .map((skill) => skill.id);

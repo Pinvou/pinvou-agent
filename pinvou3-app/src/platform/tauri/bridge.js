@@ -2156,7 +2156,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
-  // 内置功能开关（契约挂接点）：仅桌面 Rust 命令通道，Web 端无此后端。
+  // Builtin feature switches (contract hook point): desktop Rust command
+  // channel only — the web lane has no such backend.
   const listBuiltinFeatures = settingsFeature.listBuiltinFeatures;
   const setBuiltinFeatureEnabled = settingsFeature.setBuiltinFeatureEnabled;
 

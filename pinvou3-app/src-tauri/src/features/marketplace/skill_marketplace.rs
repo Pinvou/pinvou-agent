@@ -3079,6 +3079,17 @@ mod tests {
             .unwrap();
             assert!(builtin_claims_skill("trip-notes"));
             assert!(builtin_claims_skill("skill:trip-notes"));
+            // End-to-end wiring pin (review round-4 minor 1): the guard lives
+            // in `uninstall` itself, so a real call through the default-roots
+            // manager must hit the same rejection — deleting the
+            // `builtin_claims_skill` block there turns this red (new() takes
+            // no ENV_LOCK, so it is safe inside with_temp_home).
+            let mgr = SkillMarketplaceManager::new();
+            let err = mgr.uninstall("trip-notes").unwrap_err();
+            assert!(
+                err.contains("belongs to builtin plugin"),
+                "a claimed companion must be builtin-rejected end-to-end: {err}"
+            );
             // `uninstall`'s guard IS this predicate (`if builtin_claims_skill
             // { return Err("belongs to builtin plugin ...") }`), so the
             // predicate assertions pin the rejection; constructing the

@@ -61,7 +61,11 @@ const cardStart = toolCommon.indexOf('const BuiltinPluginCard');
 assert.ok(cardStart > 0, 'the BuiltinPluginCard component must exist');
 const cardBody = toolCommon.slice(cardStart, toolCommon.indexOf('export {', cardStart));
 assert.doesNotMatch(cardBody, /TsActionBtn|PlatformToolAction|uninstall|onAction|handleAction/, 'the builtin card must not render any action button');
-assert.match(cardBody, /\{C\.readonlyBadge\}/, 'the builtin card must render the read-only badge');
+assert.match(
+  cardBody,
+  /\{MODE_CONTROLLED_BUILTIN_SKILL_IDS\.includes\(tool\.backendId\) \? C\.readonlyModeBadge : C\.readonlyBadge\}/,
+  'the builtin card must render the read-only badge (mode-controlled aware)',
+);
 assert.doesNotMatch(cardBody, /[一-鿿]/, 'the builtin card body must not contain hardcoded Chinese');
 
 // TsActionBtn: the builtin read-only badge branch must come before the
@@ -74,7 +78,7 @@ assert.ok(uninstallFallback > builtinBranch, 'the builtin branch must come befor
 
 // Composer input menu: builtin plugin filtering (§3.2 configuration
 // visibility) via the shared judgement imported from builtin-plugin-logic.js
-assert.match(composerLogic, /import \{ isBuiltinPlugin \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement');
+assert.match(composerLogic, /import \{ isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS, MODE_CONTROLLED_BUILTIN_SKILL_IDS \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement and the mode-controlled list');
 assert.match(composerLogic, /!isBuiltinPlugin\(tool\)/, 'the composer menu must filter builtin tools');
 
 // Timeline ToolCard execution visibility is unaffected: tool-renderers.jsx

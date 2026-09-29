@@ -29,8 +29,14 @@ pub async fn set_builtin_feature_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<Vec<crate::features::marketplace::builtin::BuiltinFeature>, String> {
-    let registry =
-        crate::features::marketplace::builtin::set_feature_enabled(&feature_id, enabled)?;
+    // The critical section holds a std mutex across a prefs transaction and a
+    // state-file write — keep it off the async command thread, matching the
+    // connector switch's spawn_blocking wrap (review round-4 minor 4).
+    let registry = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::builtin::set_feature_enabled(&feature_id, enabled)
+    })
+    .await
+    .map_err(|error| format!("set_builtin_feature_enabled join: {error}"))??;
     super::connectors::refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(registry)
 }

@@ -52,6 +52,13 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - Manifest-driven: the `builtin: true` / `visibility: system` fields determine
   ownership and presentation; hardcoded allowlists are forbidden. Versions track the
   app upgrade (the existing BUNDLE_VERSION flow).
+- Known tradeoff (accepted): the builtin membership probe matches ids
+  case-insensitively so case-variant ids cannot bypass the guards on
+  case-insensitive filesystems. On a case-sensitive filesystem this over-locks
+  a pre-existing package whose id differs only by case from a builtin id
+  (importable on earlier releases) — after upgrade it is treated as the
+  builtin and becomes non-uninstallable/non-exportable. Probability is
+  negligible and the mistaken-identity direction fails safe.
 
 ### 3.2 Two kinds of visibility — never conflate them
 - **Configuration visibility**: built-in tools are hidden from the composer tool list —
@@ -87,6 +94,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   on it as the primary signal.
 - **Switch location**: the feature's own settings entry or enterprise policy
   (settings.json / admin policy), never inside the plugin-center section.
+- **Shipped scope (this cycle)**: the deny/registry layer (layer 3), the
+  per-turn inventory signal, and the server-side `feature_disabled` fallback.
+  Layers 1/2/4 arrive with the first feature's UI; until then the switch is
+  settings.json-only.
 
 ## 4. Tool design rules
 
@@ -151,8 +162,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 
 ## 6. Behavioral semantics
 
-- **Read consistency**: only completed turns are returned; in-flight turns are
-  invisible (the `read_session` precedent).
+- **Read consistency**: completed turns only, in-flight turns invisible
+  (the `read_session` precedent). Best-effort: a snapshot taken mid-tool-loop
+  surfaces the turns completed so far.
 - **Branch semantics**: default "current leaf-reachable chain + Compaction anchors";
   abandoned branches are explicitly marked, consistently across all read tools.
 - **Write-semantics decision template**: when writing a message into a running session,
