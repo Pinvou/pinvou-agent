@@ -261,14 +261,18 @@ pub async fn kb_model_download(
         std::fs::remove_dir_all(&tmp)
             .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
     }
-    let hf_base_url = std::env::var(DESKTOP_HF_BASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(pinvou_knowledge::model_download::knowledge_model_hf_base_url);
+    // The desktop app can specify its own mirror (explicit = the only source, no
+    // fallback); when unset, fall back to the candidate chain shared by both ends:
+    // the mainland China mirror hf-mirror.com first, official huggingface.co as the
+    // final fallback.
+    let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
+        Ok(value) if !value.trim().is_empty() => vec![value],
+        _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),
+    };
     let progress_app = app.clone();
     pinvou_knowledge::model_download::download_knowledge_model_candidate(
         &tmp,
-        &hf_base_url,
+        &hf_base_urls,
         move |progress| {
             let stage = match progress.stage {
                 pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {

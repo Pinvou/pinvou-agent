@@ -27,7 +27,8 @@
       "source": "https://github.com/WecomTeam/wecom-cli",
       "url": "https://registry.npmjs.org/@wecom/cli-darwin-arm64/-/cli-darwin-arm64-1.2.1.tgz",
       "archiveSha256": "7791e128873e9594fbdabcb0ff45695e501b0cfe9b09eff33d488b2171593274",
-      "binarySha256": "1c9df0f8f928718e99562ccf10f00e8177e4096d744589290f92dc778d44b747"
+      "binarySha256": "1c9df0f8f928718e99562ccf10f00e8177e4096d744589290f92dc778d44b747",
+      "mirrorUrl": "https://registry.npmmirror.com/@wecom/cli-darwin-arm64/-/cli-darwin-arm64-1.2.1.tgz"
     }
   ]
 }

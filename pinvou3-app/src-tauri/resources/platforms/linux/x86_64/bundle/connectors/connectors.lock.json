@@ -27,7 +27,8 @@
       "source": "https://github.com/WecomTeam/wecom-cli",
       "url": "https://registry.npmjs.org/@wecom/cli-linux-x64/-/cli-linux-x64-1.2.1.tgz",
       "archiveSha256": "9bf3e2a464bcb901bc0f2a52ccb57bbb125e101258e0b133f72fb2bd487b1c41",
-      "binarySha256": "a93389bd8957c8d719c392df1b42c0c13c3a9cbdd92b56d8434f446c3826b1a6"
+      "binarySha256": "a93389bd8957c8d719c392df1b42c0c13c3a9cbdd92b56d8434f446c3826b1a6",
+      "mirrorUrl": "https://registry.npmmirror.com/@wecom/cli-linux-x64/-/cli-linux-x64-1.2.1.tgz"
     }
   ]
 }
