@@ -1011,16 +1011,8 @@ async fn call_voice_postprocess_model(
         ));
     }
 
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": voice_postprocess_max_tokens(mode, retry),
-        "stream": false
-    });
+    let max_tokens = voice_postprocess_max_tokens(mode, retry);
+    let mut body = voice_postprocess_request_body(model_name, &system, &user, max_tokens);
     apply_voice_reasoning_controls(&mut body, preset, &bridge.provider(), &base_url, model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(format!(
@@ -1034,9 +1026,12 @@ async fn call_voice_postprocess_model(
     .json(&body)
     .send()
     .await
-    .context("post voice postprocess chat/completions")?
-    .error_for_status()
-    .context("voice postprocess chat/completions status")?;
+    .context("post voice postprocess chat/completions")?;
+    let resp = crate::core::model_endpoint::error_for_status_with_body(
+        resp,
+        "voice postprocess chat/completions status",
+    )
+    .await?;
     let value: Value = resp
         .json()
         .await
@@ -1050,6 +1045,25 @@ async fn call_voice_postprocess_model(
         .and_then(Value::as_str)
         == Some("length");
     Ok((sanitize_voice_postprocess_output(&content), truncated))
+}
+
+/// One-shot Chat Completions body for voice postprocess. Field set mirrors the
+/// main-session engine wire (`model`/`messages`/`max_tokens`/`stream`, and —
+/// pinned by foundation tests — **no `temperature`**): a hard-coded 0 400s on
+/// gateways that pin sampling server-side (Kimi Coding Plan, live-probed
+/// 2026-09-30: "invalid temperature: only 1 is allowed for this model"). No
+/// `response_format`: postprocess returns prose, not JSON. Single source so
+/// the wire-drift budget stays testable.
+fn voice_postprocess_request_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+    json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "max_tokens": max_tokens,
+        "stream": false
+    })
 }
 
 /// At most one in-flight postprocess request at a time: this command calls a
@@ -1310,6 +1324,28 @@ sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());
 #[cfg(test)]
 mod voice_postprocess_tests {
     use super::*;
+
+    #[test]
+    fn voice_postprocess_body_mirrors_engine_wire_no_temperature() {
+        let body = voice_postprocess_request_body("k3", "sys prompt", "user content", 512);
+        assert!(
+            body.get("temperature").is_none(),
+            "aux voice body must mirror the engine wire (no temperature): a \
+             hard-coded 0 400s on sampling-pinned gateways — Kimi Coding Plan \
+             live 2026-09-30: only 1 is allowed for this model"
+        );
+        assert_eq!(body["model"], "k3");
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["stream"], false);
+        assert!(
+            body.get("response_format").is_none(),
+            "postprocess returns prose; no json mode"
+        );
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "sys prompt");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "user content");
+    }
 
     #[test]
     fn sanitize_strips_one_wrapping_quote_pair_only() {

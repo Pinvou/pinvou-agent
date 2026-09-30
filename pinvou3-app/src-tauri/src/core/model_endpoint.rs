@@ -1062,6 +1062,33 @@ pub struct AnthropicCompletion {
     pub stop_reason: Option<String>,
 }
 
+/// `error_for_status` that keeps the server's reason. A bare
+/// "HTTP status client error (400 Bad Request)" hides which field the
+/// endpoint rejected — the Kimi Coding Plan temperature 400 named the exact
+/// field and allowed value in its body ("invalid temperature: only 1 is
+/// allowed for this model"), and the one-shot aux callers discarded it, so a
+/// one-line toast gave nothing to act on. Read the error body and surface a
+/// trimmed snippet; success responses pass through untouched.
+pub async fn error_for_status_with_body(
+    resp: reqwest::Response,
+    label: &str,
+) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if !status.is_client_error() && !status.is_server_error() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    let chars: Vec<char> = body.chars().collect();
+    let mut snippet: String = chars.iter().take(400).collect();
+    if chars.len() > 400 {
+        snippet.push('…');
+    }
+    if snippet.trim().is_empty() {
+        anyhow::bail!("{label}: HTTP {status}");
+    }
+    anyhow::bail!("{label}: HTTP {status}: {snippet}");
+}
+
 /// Anthropic Messages 协议直连：x-api-key + anthropic-version 鉴权（官方端点不接受
 /// Bearer），`system` 是独立字段而非 messages 首条。Messages API 没有
 /// `response_format`，JSON 约束靠 prompt 措辞 + 调用方解析兜底（与既有 chat/completions
@@ -1090,12 +1117,8 @@ pub async fn post_anthropic_messages(
         max_tokens,
         conversation_key,
     );
-    let resp = req
-        .send()
-        .await
-        .context("post anthropic messages")?
-        .error_for_status()
-        .context("anthropic messages status")?;
+    let resp = req.send().await.context("post anthropic messages")?;
+    let resp = error_for_status_with_body(resp, "anthropic messages status").await?;
     let value: Value = resp.json().await.context("parse anthropic messages json")?;
     let text =
         anthropic_messages_text(&value).context("no text block in anthropic messages response")?;
@@ -1117,12 +1140,17 @@ fn anthropic_messages_request(
     max_tokens: u32,
     conversation_key: &str,
 ) -> reqwest::RequestBuilder {
+    // No "temperature": the aux bodies match the main-session engine wire,
+    // which sends none (foundation tests pin temperature absence). The
+    // hard-coded 0 400s on gateways that pin sampling server-side — the Kimi
+    // Coding Plan Messages endpoint sits on the same backend as its
+    // chat/completions one, which rejected temperature=0 with "invalid
+    // temperature: only 1 is allowed for this model" (live-probed 2026-09-30).
     let body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{ "role": "user", "content": user }],
-        "temperature": 0,
     });
     let mut req = with_opencode_session_header(
         client.post(anthropic_messages_url(base_url)),
@@ -2618,5 +2646,143 @@ mod tests {
             request.headers().get("x-opencode-session").is_none(),
             "off-gateway /v1/messages request must stay clean"
         );
+    }
+
+    #[test]
+    fn anthropic_messages_body_omits_temperature() {
+        let client = reqwest::Client::new();
+        let request = anthropic_messages_request(
+            &client,
+            "https://api.anthropic.com/v1",
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+            "memory-review",
+        )
+        .build()
+        .expect("request builds");
+        let bytes = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .expect("json body is buffered");
+        let body: Value = serde_json::from_slice(bytes).expect("body is json");
+        assert!(
+            body.get("temperature").is_none(),
+            "aux bodies must mirror the engine wire (no temperature): a hard-coded \
+             0 400s on sampling-pinned gateways (Kimi Coding Plan, 2026-09-30)"
+        );
+        assert_eq!(body["model"], "claude-x");
+        assert_eq!(body["max_tokens"], 64);
+        assert_eq!(body["system"], "sys");
+    }
+
+    #[tokio::test]
+    async fn status_error_surfaces_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = r#"{"error":{"message":"invalid temperature: only 1 is allowed for this model","type":"invalid_request_error"}}"#;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let err = error_for_status_with_body(resp, "chat/completions status")
+            .await
+            .expect_err("400 must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.starts_with("chat/completions status: HTTP 400 Bad Request: "),
+            "unexpected error shape: {msg}"
+        );
+        assert!(
+            msg.contains("invalid temperature: only 1 is allowed"),
+            "error must carry the server's reason: {msg}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_success_passes_response_through() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let resp = error_for_status_with_body(resp, "chat/completions status")
+            .await
+            .expect("2xx passes through");
+        let value: Value = resp.json().await.expect("body still readable");
+        assert_eq!(value["choices"][0]["message"]["content"], "ok");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_error_without_body_reports_status_only() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = "HTTP/1.1 500 Internal Server Error\r\n\
+                        Content-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let err = error_for_status_with_body(resp, "anthropic messages status")
+            .await
+            .expect_err("500 must error");
+        let msg = format!("{err:#}");
+        assert_eq!(
+            msg,
+            "anthropic messages status: HTTP 500 Internal Server Error"
+        );
+        server.await.unwrap();
     }
 }

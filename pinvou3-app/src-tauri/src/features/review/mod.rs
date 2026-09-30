@@ -551,21 +551,7 @@ async fn model_review(
         .text;
         return parse_model_review(&content).context("parse Pinvou review");
     }
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": prompt },
-            { "role": "user", "content": user_content }
-        ],
-        "temperature": 0,
-        "max_tokens": 1600,
-        "stream": false,
-        // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
-        // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
-        // 后端实测 json_object/guided_json/json_schema 四种约束均支持,取最通用的 json_object;
-        // 三个 prompt 均含「输出只能是 JSON」字样,满足 json mode 前置要求。
-        "response_format": { "type": "json_object" }
-    });
+    let mut body = review_request_body(&model_name, &prompt, user_content);
     apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.api_key()),
@@ -575,9 +561,10 @@ async fn model_review(
     .json(&body)
     .send()
     .await
-    .context("post chat/completions")?
-    .error_for_status()
-    .context("chat/completions status")?;
+    .context("post chat/completions")?;
+    let resp =
+        crate::core::model_endpoint::error_for_status_with_body(resp, "chat/completions status")
+            .await?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
     let content = value
         .get("choices")
@@ -588,6 +575,33 @@ async fn model_review(
         .and_then(Value::as_str)
         .unwrap_or_default();
     parse_model_review(content).context("parse Pinvou review")
+}
+
+/// One-shot Chat Completions body for model review. Field set mirrors the
+/// main-session engine wire (`model`/`messages`/`max_tokens`/`stream`, and —
+/// pinned by foundation tests — **no `temperature`**): a hard-coded 0 400s on
+/// gateways that pin sampling server-side (Kimi Coding Plan, live-probed
+/// 2026-09-30: "invalid temperature: only 1 is allowed for this model"; the
+/// image-capability probe hit the same constraint on 2026-08). Single source
+/// so the wire-drift budget stays testable.
+fn review_request_body(model: &str, prompt: &str, user_content: &str) -> Value {
+    json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": prompt },
+            { "role": "user", "content": user_content }
+        ],
+        "max_tokens": 1600,
+        "stream": false,
+        // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
+        // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
+        // 后端实测 json_object/guided_json/json_schema 四种约束均支持,取最通用的 json_object;
+        // 三个 prompt 均含「输出只能是 JSON」字样,满足 json mode 前置要求。
+        // Deliberate additive drift from the engine wire (the engine sends
+        // none): vLLM guided decoding verified by the team when this landed;
+        // Kimi Coding Plan live-verified accepted 2026-09-30.
+        "response_format": { "type": "json_object" }
+    })
 }
 
 fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
@@ -942,6 +956,25 @@ mod tests {
             "vLLM needs chat_template_kwargs to disable thinking"
         );
         assert!(vllm.get("thinking").is_none());
+    }
+
+    #[test]
+    fn review_request_body_mirrors_engine_wire_no_temperature() {
+        let body = review_request_body("k3", "sys prompt", "user content");
+        assert!(
+            body.get("temperature").is_none(),
+            "aux review body must mirror the engine wire (no temperature): a \
+             hard-coded 0 400s on sampling-pinned gateways — Kimi Coding Plan \
+             live 2026-09-30: only 1 is allowed for this model"
+        );
+        assert_eq!(body["model"], "k3");
+        assert_eq!(body["max_tokens"], 1600);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "sys prompt");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "user content");
     }
 
     #[test]
