@@ -190,6 +190,37 @@ test('onSteerFailure: session-switched chip degrades in its own queue without to
   assert.ok(notices().includes('⚠️ steerFailedQueued'), `got: ${JSON.stringify(notices())}`);
 });
 
+test('settleSteerDropped: refs-only engine drop degrades to a plain queued entry instead of losing the message (round-9)', () => {
+  // The engine dropped the steer: for a refs-only message the restore strips
+  // to "" and hands nothing back. The chip used to be spliced BEFORE the
+  // restore verdict — the message vanished entirely (chip gone, nothing
+  // restored, composer chips already consumed at dispatch). The round-6 M1
+  // restore-first pattern applies here too: the chip stays queued as a plain
+  // entry flushQueued re-sends, with the queued-variant notice.
+  const { state, notices, api } = makeHarness();
+  const item = steerItem(REFS_ONLY_BLOCK);
+  state.queued = [item];
+  state.composerDraft = '';
+  api.settleSteerDropped('A', 'st-1');
+  assert.equal(state.queued.length, 1, 'a refs-only drop must keep the chip queued');
+  assert.equal(item.steered, false);
+  assert.equal(item.steerId, null);
+  assert.equal(state.composerDraft, '', 'nothing restorable for a refs-only message');
+  assert.ok(notices().includes('⚠️ steerDroppedQueued'), `got: ${JSON.stringify(notices())}`);
+  assert.ok(!notices().includes('⚠️ steerDropped'), 'the cancelled-variant notice must not fire');
+});
+
+test('settleSteerDropped: body engine drop restores the stripped body and splices the chip', () => {
+  const { state, notices, api } = makeHarness();
+  const item = steerItem(BLOCK_AND_BODY);
+  state.queued = [item];
+  state.composerDraft = '';
+  api.settleSteerDropped('A', 'st-1');
+  assert.equal(state.queued.length, 0, 'a restored drop splices its chip');
+  assert.equal(state.composerDraft, '把配色用到 PPT 里', 'the body comes back without the block');
+  assert.ok(notices().includes('⚠️ steerDropped'), `got: ${JSON.stringify(notices())}`);
+});
+
 test('queuedPayloadEnvelope: guide-prefixed scene payload refuses the block-aware split instead of slicing mid-JSON', () => {
   const { shared } = makeHarness();
   const guide = '下面是创建定时任务的说明，请按格式回复：\n\n';
