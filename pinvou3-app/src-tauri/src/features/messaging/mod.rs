@@ -32,8 +32,10 @@
 //!   foundation when the target turn is cancelled or the engine evicted
 //!   (`chat:steer_dropped`); the messaging path treats steer-Ok as final and
 //!   does not yet correlate that event. Sender identity is model-supplied and
-//!   unauthenticated — the execpolicy approval prompt is the authorization
-//!   boundary (contract §5 L1).
+//!   unauthenticated — the app's mutating-tool approval posture at call time
+//!   is the working gate, and the watcher re-validates isolated senders and
+//!   targets (contract §5 L1; the typed Ask rule awaits the approval-mode
+//!   split).
 //!
 //! The delivered text carries a machine-readable sender header block (the
 //! session-mention block pattern mirrored on receive); `features/chat`

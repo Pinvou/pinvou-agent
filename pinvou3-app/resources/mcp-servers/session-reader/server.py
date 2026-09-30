@@ -33,12 +33,13 @@ Write semantics (send_message_to_session, contract §5 L1 / §6):
   overwrite the same file, so a retried tool call cannot duplicate a delivery)
   or a random uuid otherwise;
 - An app-side Rust watcher picks the spool file up and performs the actual
-  steer (target mid-turn) or new-turn dispatch (target idle), after the
-  execpolicy approval gate the tool is bound to;
+  steer (target mid-turn) or new-turn dispatch (target idle); at call time
+  the tool is gated by the app's mutating-tool approval posture (the typed
+  Ask rule registered for it awaits the approval-mode split);
 - The sender session id (from_session) is model-supplied and optional: when
   present it must exist and feeds the receiver-side sender card; when absent
-  the card degrades to an unattributed notice. The user approval prompt is
-  the real authorization boundary, not this field.
+  the card degrades to an unattributed notice. The app's tool-approval
+  posture at call time is the real gate, not this field.
 
 Storage format source of truth (verified 2026-09; drift defense: unknown
 fields / unknown block types are skipped, never errors):
@@ -924,9 +925,10 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
         "delivery": "pending",
         "duplicate": duplicate,
         "note": (
-            "The message is queued for delivery and subject to user approval; "
-            "delivery is steered into the target's current turn, or starts a new "
-            "turn there when idle."
+            "The message is queued for automatic delivery into the target "
+            "session (rendered there as a sender card, audited by the app); "
+            "delivery is steered into the target's current turn, or starts a "
+            "new turn there when idle."
         ),
     }, None
 
