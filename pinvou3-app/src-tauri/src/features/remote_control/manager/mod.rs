@@ -113,6 +113,18 @@ fn validate_multi_agent_session_web_scope(
     command: &str,
     session_id: &str,
 ) -> Result<(), String> {
+    // Documented exception (round-34 minor 7): the three aux commands are
+    // NOT in the denylist even when the MAIN session runs multi-agent — an
+    // aux conversation on a multi-agent main stays fully usable over the
+    // relay. Intended: the aux engine is the isolated pure-Q&A config
+    // (zero tools, no subagents — the denylist's threat model never
+    // applies to it), the desktop offers the same entry, and blocking it
+    // would break the side chat for exactly the heaviest users. The
+    // denylist's "web is read-only" promise is scoped to the multi-agent
+    // EXECUTION surface, not to its side chat.
+    if crate::features::sessions::is_aux_session_id(session_id) {
+        return Ok(());
+    }
     if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
         return Ok(());
     }
@@ -2770,7 +2782,7 @@ mod tests {
         acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
         queue_pending_revocation_at,
     };
-    use super::rpc::{WebSessionScope, web_session_scope};
+    use super::rpc::{WebSessionScope, web_scope_admits_absent_session, web_session_scope};
     use super::*;
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
@@ -3380,6 +3392,21 @@ mod tests {
                 "{command} must be Web-scoped"
             );
         }
+        // The auxiliary conversation (aux session) commands: the WebUI
+        // auxChat domain (bridge.js auxChatEnsure/auxChatDiscard/auxChatReset)
+        // depends on them directly; once allowed, the central validator's
+        // Required("sessionId") scope constraint pins them to an explicit
+        // session.
+        for command in [
+            "get_or_create_aux_session",
+            "discard_aux_session",
+            "reset_aux_session",
+        ] {
+            assert!(
+                policy.commands.contains(command),
+                "{command} must be allowed on Web (aux chat)"
+            );
+        }
         assert!(!policy.commands.contains("list_sessions"));
         assert!(!policy.commands.contains("list_archived_sessions"));
         // The native clipboard fallback must stay desktop-only: a browser relay
@@ -3689,6 +3716,9 @@ mod tests {
             ("cancel_user_input", "sessionId"),
             ("cancel_generation", "sessionId"),
             ("web_access_chat", "sessionId"),
+            ("get_or_create_aux_session", "sessionId"),
+            ("discard_aux_session", "sessionId"),
+            ("reset_aux_session", "sessionId"),
             ("delete_session", "id"),
             ("rename_session", "id"),
             ("set_session_model", "sessionId"),
@@ -3711,6 +3741,27 @@ mod tests {
             web_session_scope("get_effective_model_config"),
             Some(WebSessionScope::Optional("sessionId"))
         );
+    }
+
+    #[test]
+    fn discard_aux_session_admits_an_absent_main_session() {
+        // Round-24 minor-10: desktop `discard_aux_session` is idempotent on an
+        // unmapped main id (a deleted main leaves no mapping and the command
+        // returns Ok(())), so the central validator must skip its
+        // `store.load` admission for it — the Web lane otherwise fails with
+        // `web_session_unavailable` exactly where desktop succeeds. Only the
+        // discard leg: the create leg needs the parent record, and every
+        // other command acts on the session itself.
+        assert!(web_scope_admits_absent_session("discard_aux_session"));
+        assert!(!web_scope_admits_absent_session(
+            "get_or_create_aux_session"
+        ));
+        // M6: reset CREATES the fresh session itself, so like the create leg
+        // it needs the parent record and must fail admission on an absent
+        // main — only the idempotent discard leg skips the load.
+        assert!(!web_scope_admits_absent_session("reset_aux_session"));
+        assert!(!web_scope_admits_absent_session("web_access_chat"));
+        assert!(!web_scope_admits_absent_session("delete_session"));
     }
 
     #[test]
