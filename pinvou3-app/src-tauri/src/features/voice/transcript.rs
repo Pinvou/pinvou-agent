@@ -5,7 +5,7 @@ fn has_usable_asr_text(text: &str) -> bool {
 /// Parses the recognizer's stdout/stderr into the recognized speech.
 ///
 /// Understands the bundled engine's protocols (JSON `{"text": …}` lines,
-/// `[0.00s → 2.10s] …` timestamped segments, timestamped JSONL) plus custom
+/// `[0.00-0.50] …` timestamped segments, timestamped JSONL) plus custom
 /// engines' plain/protocol-prefixed output, and never returns engine noise
 /// (progress, log, subtitle-timing shapes). This is the single parser shared
 /// by the desktop app and the headless CLI transcript lane.

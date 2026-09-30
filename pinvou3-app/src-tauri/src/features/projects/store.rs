@@ -58,18 +58,24 @@ struct ProjectsFile {
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
+/// Outcome of moving a session's project membership; the frontend uses it to
+/// show "moved to the project (and added folder xx)".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
-    /// 目标项目 id;显式移出(None)时同样为 None。
+    /// The project the session now belongs to; an explicit move-out is
+    /// `None` as well.
     pub project_id: Option<String>,
-    /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
+    /// Folder that joined the target project as a side effect
+    /// (canonicalized); `None` when nothing new joined.
     pub added_root: Option<PathBuf>,
 }
 
-/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+/// Report of what deleting a project did: affected sessions are only
+/// unbound (they fall back to implicit grouping), never deleted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeleteProjectReport {
+    /// Every session that lost its explicit binding, in deterministic
+    /// (sorted) order so cross-process consumers emit stable output.
     pub affected_session_ids: Vec<String>,
 }
 
