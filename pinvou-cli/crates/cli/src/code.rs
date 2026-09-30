@@ -3933,15 +3933,17 @@ fn workspace_list(
         .entries
         .iter()
         .map(|entry| {
-            // RAW by intent (mirror claim): `entry.name` goes to the terminal
-            // exactly as the GUI panel receives it. Neither side sanitizes
-            // control characters, and only a real filename can reach here —
-            // a name with a tab/newline in it breaks this row's column
-            // contract on both surfaces equally, so collapsing it here would
-            // diverge from the GUI for the same filename.
+            // Collapsed like every other agent-writable cell in this family
+            // (the preview and session-title lanes already do): the
+            // workspace is agent-writable by this module's own admission, so
+            // a name carrying a newline or an ESC/CSI sequence is hostile
+            // input rather than mirror data. JSON keeps the verbatim name.
             format!(
                 "{}\t{}\t{}\t{}",
-                entry.kind, entry.name, entry.size, entry.modified
+                entry.kind,
+                crate::support::collapse_control_characters(&entry.name),
+                entry.size,
+                entry.modified
             )
         })
         .collect::<Vec<_>>()
@@ -3967,9 +3969,11 @@ fn workspace_search(root: &Path, query: &str, output: OutputMode) -> Result<CliO
     // envelope computed on top of the app result, mirroring `workspace list`).
     let truncated = results.len() >= workspace::SEARCH_LIMIT;
     let value = serde_json::json!({ "results": results, "truncated": truncated });
+    // Same hostile-cell collapse as `workspace list`: an agent-writable
+    // relative path is terminal input, and JSON keeps the verbatim bytes.
     let human = results
         .iter()
-        .map(|entry| entry.relative_path.clone())
+        .map(|entry| crate::support::collapse_control_characters(&entry.relative_path))
         .collect::<Vec<_>>()
         .join("\n");
     Ok(success(render(output, human, &value)))
@@ -5195,7 +5199,7 @@ fn checkpoints_diff(
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root)?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "diff", session)?;
-    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id)
+    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id, true)
         .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
     let value = serde_json::to_value(&diff)
         .map(|value| serde_json::json!({ "session": session, "diff": value }))

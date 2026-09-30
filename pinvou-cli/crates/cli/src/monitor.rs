@@ -190,17 +190,16 @@ fn snapshot(output: OutputMode) -> Result<CliOutcome, CliError> {
     let snapshot = pinvou3_lib::headless_bridge::run_windowless_host(|_pool, _store| {
         let work = async move {
             let state = monitor::MonitorState::new();
-            monitor::sample_all(
-                &state,
-                &monitor::vllm_base_url(),
-                monitor::vllm_configured_model(),
-            )
-            .await
+            monitor::sample_all(&state).await
         };
         async move { Ok(work.await) }
     })
     .map_err(|error| CliError::failed(format!("monitor snapshot failed: {}", redact(&error))))?;
-    let (human, value) = snapshot_payload(&snapshot)?;
+    let generated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let (human, value) = snapshot_payload(&snapshot, generated_at_ms)?;
     Ok(success(render(output, human, &value)))
 }
 
@@ -248,7 +247,10 @@ const SNAPSHOT_KEYS: &[&str] = &[
 ///   `gpu` / `ram` / `vllm` already behave;
 /// - human mode gained the `Cpu:` line the JSON always had, so the two output
 ///   modes mirror each other field for field.
-fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::Value), CliError> {
+fn snapshot_payload(
+    snapshot: &MonitorSnapshot,
+    generated_at_ms: u64,
+) -> Result<(String, serde_json::Value), CliError> {
     // Vendor-reported hardware names are remote-sourced cells: collapsed like
     // every other family's human tab rows, so a control character in a
     // driver-reported name cannot forge extra rows or columns (JSON mode
@@ -316,10 +318,14 @@ fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::V
     // its own position rather than appended at the end.
     let mut ordered = serde_json::Map::new();
     for key in SNAPSHOT_KEYS {
-        ordered.insert(
-            (*key).to_owned(),
-            sampled.remove(*key).unwrap_or(serde_json::Value::Null),
-        );
+        let sampled_value = sampled
+            .remove(*key)
+            // `generated_at_ms` left the upstream snapshot (removed from
+            // `MonitorSnapshot` as wire-dead for the GUI); the CLI stamps
+            // the capture time itself so the published shape holds.
+            .or_else(|| (*key == "generated_at_ms").then(|| serde_json::json!(generated_at_ms)))
+            .unwrap_or(serde_json::Value::Null);
+        ordered.insert((*key).to_owned(), sampled_value);
     }
     // Anything left over is an upstream field added since this list was
     // written. Dropping it silently would publish a shape that quietly lost a
@@ -361,7 +367,7 @@ fn snapshot_payload(snapshot: &MonitorSnapshot) -> Result<(String, serde_json::V
          SelfPerf: n/a (headless; per-turn token/TTFT counters accumulate inside the running desktop app)\n\
          SessionUptime: n/a (headless; one process per invocation)\n\
          AppVersion: {}",
-        snapshot.generated_at_ms, snapshot.app.pinvou3_version,
+        generated_at_ms, snapshot.app.pinvou3_version,
     );
     Ok((human, value))
 }
@@ -530,7 +536,8 @@ mod tests {
     #[test]
     fn snapshot_marks_process_local_accumulators_as_not_applicable() {
         let sample = MonitorSnapshot::default();
-        let (human, value) = snapshot_payload(&sample).expect("a default sample must render");
+        let (human, value) =
+            snapshot_payload(&sample, 1_700_000_000_000).expect("a default sample must render");
         assert!(value["self_perf"].is_null(), "{value}");
         assert!(value["app"]["session_uptime_secs"].is_null(), "{value}");
         assert_eq!(
@@ -564,8 +571,8 @@ mod tests {
             }),
             ..MonitorSnapshot::default()
         };
-        let (human_without, value_without) = snapshot_payload(&without_cpu).expect("renders");
-        let (human_with, value_with) = snapshot_payload(&with_cpu).expect("renders");
+        let (human_without, value_without) = snapshot_payload(&without_cpu, 1).expect("renders");
+        let (human_with, value_with) = snapshot_payload(&with_cpu, 1).expect("renders");
         assert_eq!(keys(&value_without), keys(&value_with));
         assert_eq!(
             keys(&value_with),

@@ -5,8 +5,8 @@
 //! functions the GUI commands call (`all_summaries`, `get`,
 //! `create_user_persona`, `update_user_persona`, `delete_user_persona`,
 //! `equip_body_injection`) plus the `SessionStore` persona sidecars
-//! (`set_pending_persona_body` / `set_active_persona` / `active_persona_id`)
-//! used by `equip_persona` / `unequip_persona` / `get_active_persona`.
+//! (`set_persona` / `active_persona_id`) used by `equip_persona` /
+//! `unequip_persona` / `get_active_persona`.
 //! Pure storage only: no Tauri host, no engine.
 //!
 //! Error-copy note: the GUI returns Chinese messages ("未知专家面具",
@@ -988,8 +988,15 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     require_equippable_body(&card)?;
     let summary = card.summary();
     let injection = equip_body_injection(&card);
-    store.set_pending_persona_body(session_id, Some(injection.clone()));
-    store.set_active_persona(session_id, Some(persona_id.to_owned()));
+    // Atomic publish: the granular setters went test-only on the base
+    // (a torn id/body pair could resurrect an unequipped persona body via
+    // the failed-send restore path); the CLI publishes through the same
+    // single state change as the GUI.
+    store.set_persona(
+        session_id,
+        Some(persona_id.to_owned()),
+        Some(injection.clone()),
+    );
     persist_equipped_persona(session_id, persona_id, &injection)?;
     let mut value = summary_value(&summary, "equip")?;
     value["session_id"] = serde_json::json!(session_id);
@@ -1025,8 +1032,7 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
             "personas unequip: session {session_id} does not exist ({error})"
         ))
     })?;
-    store.set_active_persona(session_id, None);
-    store.set_pending_persona_body(session_id, None);
+    store.set_persona(session_id, None, None);
     if let Err(error) = std::fs::remove_file(&path) {
         if error.kind() != std::io::ErrorKind::NotFound {
             return Err(CliError::failed(format!(

@@ -28,9 +28,13 @@
 //!   the same field types the GUI's typed `McpConfig` deserialization enforces
 //!   — an untyped presence check reported `mcp_configured: true` for files the
 //!   GUI rejects.
-//! - tools oauth-login / oauth-cancel → same guards as
-//!   `start_marketplace_tool_oauth_login` (tool must declare a remote OAuth
-//!   server present in `mcp.json`). The login flow itself
+//! - tools oauth-login → same guards as `start_marketplace_tool_oauth_login`
+//!   (tool must declare a remote OAuth server present in `mcp.json`).
+//!   oauth-cancel is deliberately GUARDLESS, exactly like the GUI's
+//!   `cancel_marketplace_tool_oauth_login`: cancelling a non-running or
+//!   unknown id answers `{"cancelled": false, "status": "not_running"}` with
+//!   exit 0 rather than a usage error, so a script sees the not-running fact
+//!   instead of an error class. The login flow itself
 //!   (`deepseek_tui::mcp::oauth::perform_oauth_login_for_server_with_cancel`)
 //!   is foundation-internal and not reachable from this crate, so the command
 //!   fails with `oauth_login_unavailable_in_cli` instead of half-reimplementing
@@ -593,40 +597,39 @@ fn is_display_unsafe_char(c: char) -> bool {
 /// (`app/commands/marketplace.rs::sanitize_display_name` takes 128 chars).
 const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
 
-/// Display name for an imported package, kept identical to the GUI's stored
-/// value for the same file. The value lands verbatim in `bundles.json` and
-/// nothing downstream bounds it, so the same file imported from the two
-/// surfaces must not produce two different stored names.
+/// Display name for an imported package, kept byte-identical to the GUI's
+/// stored value for the same file. The value lands verbatim in
+/// `bundles.json` and nothing downstream bounds it, so the same file
+/// imported from the two surfaces must not produce two different stored
+/// names.
 ///
-/// Composition of the two rules:
-/// - the GUI's `sanitize_display_name`: drop path separators (`/`, `\`) and
-///   control characters, then cap at 128 CHARS (not bytes — a char cap cannot
-///   split a multi-byte scalar);
-/// - this crate's stricter invisible-character hygiene
+/// Composition, in the GUI's `sanitize_display_name` order (filter, then
+/// cap):
+/// - drop path separators (`/`, `\`) and control characters — and this
+///   crate's stricter invisible-character hygiene
 ///   ([`is_display_unsafe_char`]): zero-width, bidi-override and BOM code
-///   points are dropped too. That part is an improvement the GUI lacks and is
-///   kept: it only ever removes characters the GUI would have stored, so the
-///   surfaces stay convergent on every name that does not contain them.
+///   points are dropped too. The hygiene is an improvement the GUI lacks
+///   and is kept: it only ever removes characters the GUI would have
+///   stored, so the surfaces stay convergent on every name without them;
+/// - cap at 128 CHARS (not bytes — a char cap cannot split a multi-byte
+///   scalar).
 ///
-/// Trimming and the truncation run in that order so the cap is applied to what
-/// is actually stored; a name that sanitizes away entirely falls back to the
-/// same generic label the caller uses for a missing file name.
+/// NO trimming: the GUI's sanitizer never trims, and trimming here made the
+/// two surfaces store different names for the same file (a name with
+/// leading/trailing spaces is legal on disk). A name that sanitizes away
+/// entirely falls back to the same generic label the caller uses for a
+/// missing file name — the one deliberate divergence, because an empty
+/// display name is worse than a generic one on both surfaces.
 fn sanitize_import_display_name(raw_name: &str) -> String {
     let cleaned: String = raw_name
         .chars()
         .filter(|c| !is_display_unsafe_char(*c) && *c != '/' && *c != '\\')
-        .collect();
-    let trimmed: String = cleaned
-        .trim()
-        .chars()
         .take(MAX_IMPORT_DISPLAY_NAME_CHARS)
         .collect();
-    // The cap can expose trailing whitespace that was interior before the cut.
-    let trimmed = trimmed.trim_end();
-    if trimmed.is_empty() {
+    if cleaned.is_empty() {
         "plugin.zip".to_owned()
     } else {
-        trimmed.to_owned()
+        cleaned
     }
 }
 
@@ -1919,7 +1922,7 @@ fn set_enabled(
             .map_err(|error| {
                 CliError::failed(format!(
                     "plugins {action}: could not update disabled bundles for {id} in \
-                     scope {} : {error}{}",
+                     scope {}: {error}{}",
                     connector_scope.as_str(),
                     applied_scopes_suffix(&applied)
                 ))

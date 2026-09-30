@@ -2987,6 +2987,147 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
     );
 }
 
+/// The update lane's claude gate works on the MERGED slot set: a legacy
+/// record stored without `model_slots` (pre-slots build, hand-edited store),
+/// updated with no `--model-slot`, must be refused by the English gate
+/// before the store's own (Chinese) required-slot validation is reached.
+/// Regression pin for the round-27 fix: only the ADD lane was pinned, so
+/// deleting the merged-set gate went green.
+#[test]
+fn providers_update_claude_rejects_a_legacy_record_without_slots() {
+    struct KeyVar(Option<std::ffi::OsString>);
+    impl Drop for KeyVar {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_SLOTS_KEY", value) },
+                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_SLOTS_KEY") },
+            }
+        }
+    }
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("claude-legacy-slots");
+    // The ADD lane (positive seeding) requires the secret env to be set; the
+    // update refusal below never reaches the credential layer.
+    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_SLOTS_KEY"));
+    unsafe { std::env::set_var("PINVOU_CLI_TEST_SLOTS_KEY", "sk-test-slots-1234567890") };
+    let store_path = _home.root.join("acp-providers.json");
+
+    // Seed a CURRENT-build claude record (all five slots).
+    let added = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "claude",
+        "--name",
+        "Relay",
+        "--base-url",
+        "https://api.example.com",
+        "--model-slot",
+        "opus=claude-opus-4",
+        "--model-slot",
+        "sonnet=claude-sonnet-4",
+        "--model-slot",
+        "haiku=claude-haiku-4",
+        "--model-slot",
+        "fable=claude-fable-4",
+        "--model-slot",
+        "subagent=claude-subagent-4",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_SLOTS_KEY",
+    ]);
+    assert_eq!(added["action"], "added");
+    let provider_id = added["provider"]["id"].as_str().unwrap().to_owned();
+
+    // Degrade it to a legacy record: same shape, `model_slots` gone.
+    let mut store: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).unwrap()).unwrap();
+    let stripped = strip_claude_slots(&mut store, &provider_id);
+    assert!(
+        stripped,
+        "the seeded claude record must be found in the store"
+    );
+    std::fs::write(&store_path, store.to_string()).unwrap();
+
+    // Update with no --model-slot: the merged set is empty → the English
+    // gate refuses before the store is reached.
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        &provider_id,
+        "--agent",
+        "claude",
+        "--name",
+        "Renamed",
+    ])
+    .expect_err("a legacy claude record updated without slots must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("providers update: claude requires --model-slot"),
+        "the update lane must carry the English slot gate: {message}"
+    );
+    assert!(
+        message.contains("missing: opus, sonnet, haiku, fable, subagent"),
+        "the merged-empty set must name every slot as missing: {message}"
+    );
+    assert!(
+        !message.contains("store_error"),
+        "the store's Chinese validation must never surface: {message}"
+    );
+
+    // Positive control: the same update WITH the full merged set succeeds.
+    let updated = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        &provider_id,
+        "--agent",
+        "claude",
+        "--name",
+        "Renamed",
+        "--model-slot",
+        "opus=claude-opus-4",
+        "--model-slot",
+        "sonnet=claude-sonnet-4",
+        "--model-slot",
+        "haiku=claude-haiku-4",
+        "--model-slot",
+        "fable=claude-fable-4",
+        "--model-slot",
+        "subagent=claude-subagent-4",
+    ]);
+    assert_eq!(updated["action"], "updated");
+}
+
+/// Strips `model_slots` from the claude record with `id` in the store value.
+fn strip_claude_slots(store: &mut serde_json::Value, provider_id: &str) -> bool {
+    fn walk(value: &mut serde_json::Value, provider_id: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                let is_target = map
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| id == provider_id);
+                if is_target {
+                    if map.remove("model_slots").is_some() {
+                        return true;
+                    }
+                }
+                map.values_mut().any(|child| walk(child, provider_id))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().any(|child| walk(child, provider_id))
+            }
+            _ => false,
+        }
+    }
+    walk(store, provider_id)
+}
+
 /// The store's other user-reachable validation rules also fail with Chinese
 /// text; the English mirrors in `providers_save` keep every one of them off
 /// the terminal. Each case here used to surface the lib's message through

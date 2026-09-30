@@ -567,24 +567,36 @@ pub fn binary_candidates(name: &str) -> Vec<String> {
     }
 }
 
-/// Builds a `Command` for a resolved vendor CLI path. Windows cannot
-/// `CreateProcess` an npm `.cmd` shim directly, so `.cmd` targets run through
-/// `cmd /D /S /C` — the same wrapper the app's platform process helper uses.
+/// Builds a `Command` for a resolved vendor CLI path. Windows batch-file
+/// targets (`.cmd`/`.bat` shims, e.g. npm-installed CLIs) are passed to
+/// `std::process::Command` as-is: std detects batch files at spawn, runs
+/// them through `cmd.exe` itself, and applies the hardened batch-specific
+/// argument quoting from the BatBadBut fix (rust-version here is >= 1.89).
+/// Wrapping in `cmd /D /S /C` manually would spawn `cmd` as a plain
+/// executable — std's batch escaping would not apply, cmd metacharacters in
+/// any argument become live (`a&calc`, `%PATH%`), and `/S` quote-stripping
+/// mangles a spaced shim path combined with a spaced argument. The
+/// app-side `platform::process` helper still carries the manual wrap shape;
+/// converging both on the std-native path upstream is recorded as
+/// follow-up work.
 pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::process::Command {
-    #[cfg(target_os = "windows")]
-    if executable
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd"))
-    {
-        let mut command = std::process::Command::new("cmd");
-        command.arg("/D").arg("/S").arg("/C");
-        command.arg(executable);
-        command.args(args);
-        return command;
-    }
     let mut command = std::process::Command::new(executable);
     command.args(args);
     command
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_batch_tests {
+    /// The batch shim must reach `std::process::Command` as the program
+    /// itself — never pre-wrapped through `cmd` — so std's hardened batch
+    /// quoting applies (a regression re-introducing the manual
+    /// `cmd /D /S /C` wrapper fails this).
+    #[test]
+    fn build_command_spawns_batch_shims_directly_for_std_hardening() {
+        let shim = std::path::Path::new(r"C:\tools\vendor\cli.cmd");
+        let command = super::build_command(shim, &["--flag", "value"]);
+        assert_eq!(command.get_program(), shim);
+    }
 }
 
 /// Puts a long-running vendor CLI child in its own process group so a
@@ -633,9 +645,10 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Resolved through the app's hardened `external_command` (now `pub`,
-        // shared like the other widened platform items): a planted
-        // `taskkill.exe` in the working directory must not win PATH
+        // Resolved through the app's hardened `external_command`, consumed
+        // via the targeted `pinvoy3_lib::platform::external_command`
+        // re-export (the `process` module itself stays crate-private): a
+        // planted `taskkill.exe` in the working directory must not win PATH
         // resolution on a platform where exe search historically includes
         // it, and the hidden-window wrapping matches the app's own
         // kill_process_tree. The 2s budget is the part that matters here and
@@ -644,13 +657,12 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
         // budget expires. Null stdio keeps the helper's streams off ours
         // (a bare spawn would inherit them), like the app's detached spawn.
         const TASKKILL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-        let spawned =
-            pinvou3_lib::platform::process::external_command(std::path::Path::new("taskkill"))
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+        let spawned = pinvoy3_lib::platform::external_command(std::path::Path::new("taskkill"))
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
         if let Ok(mut taskkill) = spawned {
             let deadline = std::time::Instant::now() + TASKKILL_BUDGET;
             loop {

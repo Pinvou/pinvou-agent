@@ -18,7 +18,11 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// 计算文件 sha256，返回小写十六进制字符串。
-pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
+///
+/// `pub` + the platform-root re-export: the headless CLI verifies connector
+/// CLI binaries and staged voice models with the app's own hashing instead of
+/// a drifting copy (same crate-boundary shape as `external_command`).
+pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 1024];

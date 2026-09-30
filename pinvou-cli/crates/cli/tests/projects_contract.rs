@@ -1108,7 +1108,6 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-#[test]
 /// Round-27 review: a legacy table that exists but never parses (corrupt or
 /// hand-truncated) leaves `legacy_sync_failed` set with an EMPTY resurrection
 /// set — the run must not report a clean success while the stale table

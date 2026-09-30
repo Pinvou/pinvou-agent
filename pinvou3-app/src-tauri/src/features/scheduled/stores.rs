@@ -384,6 +384,19 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     DiskRead::Migrated(registry.migrate())
                 }
                 Ok(registry) => {
+                    // Raise the flag BEFORE the rename inside handle_invalid:
+                    // a concurrent same-handle reload whose read_to_string
+                    // observes NotFound after the rename but samples the
+                    // flag before this store would otherwise answer
+                    // `Loaded(default)` and install it over healthy memory.
+                    // Not cleared on a failed rename — the file either went
+                    // away (a sibling quarantine's rename won the race, flag
+                    // true is then the fact) or is still there (the next
+                    // successful read clears the flag); both directions keep
+                    // memory, which is the safe side.
+                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
+                        quarantined_flag.store(true, AtomicOrdering::Release);
+                    }
                     let quarantined = Self::handle_invalid(
                         path,
                         &format!(
@@ -392,16 +405,14 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                             T::SUPPORTED_VERSION
                         ),
                     );
-                    if quarantined {
-                        quarantined_flag.store(true, AtomicOrdering::Release);
-                    }
                     DiskRead::Failed { quarantined }
                 }
                 Err(error) => {
-                    let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
-                    if quarantined {
+                    // Same pre-rename flag discipline as the schema arm above.
+                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
                         quarantined_flag.store(true, AtomicOrdering::Release);
                     }
+                    let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
                     DiskRead::Failed { quarantined }
                 }
             },

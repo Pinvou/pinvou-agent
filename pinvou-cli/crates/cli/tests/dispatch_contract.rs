@@ -28,6 +28,37 @@ fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
     );
 }
 
+#[test]
+fn the_family_position_error_is_not_prefixed_twice() {
+    // Round-28 review: main.rs already prepends `pinvou: ` to every CliError,
+    // so the round-27 message carrying its own prefix printed
+    // `pinvou: pinvou: unknown family …`.
+    let message = usage_error(["--instal", "sessions"]);
+    // The doubling happened at print time (main.rs prepends `pinvou: ` to
+    // the rendered error), so the invariant to pin is: the CliError TEXT
+    // itself is prefix-free.
+    assert!(
+        !message.starts_with("pinvou:"),
+        "CliError text must be prefix-free; main.rs adds the prefix when printing: {message}"
+    );
+}
+
+#[test]
+fn a_bare_trailing_output_names_the_missing_value() {
+    // Round-28 review: `pinvou benchmark list --output` fell through to the
+    // family parser's "unknown benchmark command", which names nothing the
+    // user can fix; the trailing position is unambiguously an incomplete
+    // global pair, so it answers with the missing-value error.
+    let error = parse_args(vec_string(&["pinvou", "benchmark", "list", "--output"]))
+        .expect_err("a valueless trailing --output must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = error.to_string();
+    assert!(
+        message.contains("--output requires human or json"),
+        "the missing mode value must be named: {message}"
+    );
+}
+
 fn vec_string(arguments: &[&str]) -> Vec<String> {
     arguments.iter().map(|a| (*a).to_owned()).collect()
 }

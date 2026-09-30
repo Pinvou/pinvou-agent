@@ -1389,11 +1389,17 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
     let _ = home;
 }
 
-/// A wrong-shaped but valid read-state payload (hand-edited or partially
-/// written file) must normalize to the default instead of panicking with an
-/// exit code outside the 0/1/2 contract.
+/// A wrong-shaped read-state payload that a mutation would rewrite whole is
+/// a REFUSAL since round-28, not an in-memory normalize: the
+/// normalize-and-persist path was exactly the default-based rewrite that
+/// drops every sibling task's viewed-run state. The malformed payload is
+/// quarantined (`.invalid-<timestamp>` beside the original) and the
+/// mutation fails with `scheduled_store_unreadable`; a shape-valid payload
+/// with a per-task wrong-typed entry still normalizes per-key (the second
+/// case below), because the whole-file rewrite then cannot destroy other
+/// tasks' entries.
 #[test]
-fn mark_viewed_normalizes_wrong_shaped_registry_payloads() {
+fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("mark-viewed-bad-shape");
     let created = create_task(&home, "Bad shape task");
@@ -1439,19 +1445,46 @@ fn mark_viewed_normalizes_wrong_shaped_registry_payloads() {
     )
     .unwrap();
 
-    // `viewed_runs` as an array, and (after normalization) a per-task entry
-    // as a string: both used to hit `expect` and crash the process.
+    // `viewed_runs` as an array: a whole-file rewrite here would drop every
+    // OTHER task's viewed-run state, so the mutation refuses and quarantines
+    // instead of normalizing and persisting (round-28).
+    let read_state = home.root.join("scheduled-runs").join("read-state.json");
     std::fs::create_dir_all(home.root.join("scheduled-runs")).unwrap();
     std::fs::write(
-        home.root.join("scheduled-runs").join("read-state.json"),
+        &read_state,
         serde_json::json!({ "schema_version": 2, "viewed_runs": [] }).to_string(),
     )
     .unwrap();
-    let outcome = run_json(&["scheduled", "mark-viewed", &task_id, "done-1"]);
-    assert_eq!(outcome["runId"].as_str(), Some("done-1"));
+    let owned: Vec<String> = ["pinvou", "scheduled", "mark-viewed", &task_id, "done-1"]
+        .iter()
+        .map(|value| value.to_string())
+        .chain(["--output".to_owned(), "json".to_owned()])
+        .collect();
+    let error = execute(parse_args(owned).expect("valid mark-viewed"))
+        .expect_err("a wrong-shaped registry must refuse the mutation's rewrite");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("scheduled_store_unreadable"),
+        "the refusal must carry the documented error code: {error}"
+    );
+    let quarantined = std::fs::read_dir(read_state.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("read-state.json.invalid-")
+        });
+    assert!(quarantined, "the malformed payload must be preserved");
+    assert!(!read_state.exists(), "no default-based rewrite may land");
 
+    // A shape-valid payload with a per-task wrong-typed entry still
+    // normalizes per-key: the whole-file rewrite cannot destroy other
+    // tasks' entries here, and the command must not panic with an exit
+    // code outside the 0/1/2 contract.
     std::fs::write(
-        home.root.join("scheduled-runs").join("read-state.json"),
+        &read_state,
         serde_json::json!({ "schema_version": 2, "viewed_runs": { &task_id: "bogus" } })
             .to_string(),
     )
@@ -2253,7 +2286,25 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
         // A mutating command reading the registry must quarantine the
         // wrong-shaped file next to the original before degrading to the
         // default, so the only on-disk copy survives the write-back.
-        let _ = run_json(&["scheduled", "update", &task_id, "--model-id", &model_id]);
+        let owned: Vec<String> = [
+            "pinvou",
+            "scheduled",
+            "update",
+            &task_id,
+            "--model-id",
+            &model_id,
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .chain(["--output".to_owned(), "json".to_owned()])
+        .collect();
+        let error = execute(parse_args(owned).expect("valid update"))
+            .expect_err("a quarantined registry must refuse the mutation's default-based write");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("scheduled_store_unreadable"),
+            "the refusal must carry the documented error code: {error}"
+        );
         let quarantine_copies: Vec<_> = std::fs::read_dir(bindings.parent().unwrap())
             .unwrap()
             .flatten()
@@ -2270,16 +2321,201 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
             vec![payload.to_owned()],
             "{label}: exactly one quarantine copy of the original payload"
         );
-        // The write itself still lands: the command degrades to the default
-        // registry and persists the new binding.
-        let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bindings).unwrap()).unwrap();
-        assert_eq!(
-            written["tasks"][&task_id]["model_id"], model_id,
-            "{label}: the binding write lands after the quarantine"
+        // The default-based rewrite must NOT have landed: the canonical path
+        // stays absent (the quarantine renamed the payload aside), so the
+        // desktop app's next persist can heal it instead of being overwritten
+        // by a default-based registry that would reset its in-memory entries.
+        assert!(
+            !bindings.exists(),
+            "{label}: the mutation must not write a default-based registry after a quarantine"
         );
         let _ = home;
     }
+}
+
+#[test]
+fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
+    // The refusal must survive across commands: after the quarantine renamed
+    // the malformed file away, the canonical path is ABSENT, and an
+    // absent-with-quarantine-copies registry is exactly the state where the
+    // desktop app may hold the only healthy copy in memory — a fresh
+    // bootstrap write here would be installed over it on the app's next
+    // persist. A healthy write (the app's heal, or a manual repair) re-enables
+    // mutations.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("registry-quarantine-heal");
+    let created = create_task(&home, "Heal task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    add.args([
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Heal model",
+        "--model",
+        "heal-wire-name",
+        "--base-url",
+        "https://api.deepseek.com",
+    ])
+    .env("PINVOU3_HOME", home.path());
+    let added = add.output().expect("models add runs");
+    assert!(added.status.success());
+    let model_id = String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned();
+    let bindings = home.path().join("automations").join("model-bindings.json");
+    std::fs::write(&bindings, "{not json").unwrap();
+
+    // First command: quarantines and refuses.
+    let first: Vec<String> = [
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .chain(["--output".to_owned(), "json".to_owned()])
+    .collect();
+    let error = execute(parse_args(first).expect("valid update"))
+        .expect_err("the quarantined registry refuses the first mutation");
+    assert!(error.to_string().contains("scheduled_store_unreadable"));
+
+    // Second command, fresh process state: the bindings path is absent now,
+    // but its quarantine copies exist — still refused (no silent bootstrap).
+    // The SAME registry must be touched again, so this is another
+    // `update --model-id`, not a different sidecar's mutation.
+    let second: Vec<String> = [
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .chain(["--output".to_owned(), "json".to_owned()])
+    .collect();
+    let error = execute(parse_args(second).expect("valid update"))
+        .expect_err("absent-after-quarantine must keep refusing mutations");
+    assert!(
+        error.to_string().contains("scheduled_store_unreadable"),
+        "the bootstrap guard must carry the same error code: {error}"
+    );
+    assert!(!bindings.exists(), "still no default-based rewrite");
+
+    // Heal (what the desktop app's next persist does): a healthy registry at
+    // the canonical path re-enables mutations.
+    std::fs::write(
+        &bindings,
+        serde_json::json!({ "schema_version": 1, "tasks": {} }).to_string(),
+    )
+    .unwrap();
+    run_json(&["scheduled", "update", &task_id, "--model-id", &model_id]);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&bindings).unwrap()).unwrap();
+    assert_eq!(
+        written["tasks"][&task_id]["model_id"], model_id,
+        "the healed registry accepts the mutation's write"
+    );
+    let _ = home;
+}
+
+#[test]
+fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
+    // The delete rollback's round-27 rationale applies to `update` too:
+    // restoring the captured pre-update definition puts the pre-update
+    // `next_run_at` back verbatim, and a binding failure landing after that
+    // slot passed would reinstate a past-due slot the sweep fires late. The
+    // rollback must re-resolve through the foundation (resume recomputes a
+    // future slot) instead of trusting the raw value.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("update-rollback-reresolve");
+    let created = create_task(&home, "Rollback task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    add.args([
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "Rollback model",
+        "--model",
+        "rollback-wire-name",
+        "--base-url",
+        "https://api.deepseek.com",
+    ])
+    .env("PINVOU3_HOME", home.path());
+    let added = add.output().expect("models add runs");
+    assert!(added.status.success());
+    let model_id = String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned();
+
+    // Simulate the slot passing while the command runs: hand the active task
+    // a past-due next_run_at (well-formed otherwise), and poison the binding
+    // registry with a newer schema so the post-commit binding write fails and
+    // drives the rollback.
+    let def_path = home.def_path(&task_id);
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&def_path).unwrap()).unwrap();
+    let past_slot = "2020-01-01T00:00:00Z";
+    def["next_run_at"] = serde_json::json!(past_slot);
+    def["status"] = serde_json::json!("active");
+    std::fs::write(&def_path, def.to_string()).unwrap();
+    let bindings = home.path().join("automations").join("model-bindings.json");
+    std::fs::write(
+        &bindings,
+        serde_json::json!({ "schema_version": 99, "tasks": {} }).to_string(),
+    )
+    .unwrap();
+
+    let owned: Vec<String> = [
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .chain(["--output".to_owned(), "json".to_owned()])
+    .collect();
+    let error = execute(parse_args(owned).expect("valid update"))
+        .expect_err("the newer-schema binding registry must refuse the binding write");
+    assert!(
+        error.to_string().contains("newer than supported"),
+        "the binding write must fail on the newer schema: {error}"
+    );
+
+    // The rolled-back definition must NOT carry the raw past-due slot: the
+    // foundation resume re-resolved a future slot for the still-active task.
+    let rolled_back: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&def_path).unwrap()).unwrap();
+    assert_eq!(rolled_back["status"], serde_json::json!("active"));
+    let next_run_at = rolled_back["next_run_at"].as_str().unwrap_or("");
+    assert_ne!(
+        next_run_at, past_slot,
+        "the rollback must not reinstate the past-due slot verbatim"
+    );
+    assert!(
+        !next_run_at.is_empty(),
+        "the rollback must leave a re-resolved future slot for an active task"
+    );
+    let _ = home;
 }
 
 #[test]
@@ -2564,8 +2800,21 @@ fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
     );
     let def_after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    // The rollback restores the pre-update definition; `updated_at` is the
+    // one field that legitimately differs — the round-28 rollback re-resolves
+    // the schedule through the foundation (resume_automation), and the
+    // foundation's own re-persist re-stamps it (the recomputed slot itself
+    // matches here: the pre-update slot is still in the future).
+    let strip_updated_at = |mut value: serde_json::Value| {
+        value
+            .as_object_mut()
+            .expect("definition is an object")
+            .remove("updated_at");
+        value
+    };
     assert_eq!(
-        def_after, def_before,
+        strip_updated_at(def_after),
+        strip_updated_at(def_before),
         "the failed binding write must restore the pre-update definition"
     );
 }
