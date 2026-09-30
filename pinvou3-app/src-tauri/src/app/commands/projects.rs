@@ -12,7 +12,9 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
+use crate::features::codex_acp::{
+    AcpPool, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
+};
 
 /// Wall-clock budget for the whole idle-gated runtime reclaim tail of a rebind
 /// (review #463 round-10 T13). The tail walks every rebound, failed and to-lane
@@ -28,7 +30,7 @@ const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 use crate::features::projects::{
     MoveSessionOutcome, Project, ProjectStore, RebindRootsError, SessionAssignments,
 };
-use crate::features::sessions::SessionStore;
+use crate::features::sessions::{RebindBindingsOutcome, SessionStore};
 
 use super::sessions::ensure_chat_session;
 
@@ -903,38 +905,31 @@ pub async fn rebind_workspace_root(
         // corrupt JSON is NOT an orphan — set_workspace's load parse failure
         // lands in failed and is retryable (review #463 minor: the orphan
         // classification accepts only NotFound, not any load error).
-        // Report honesty (review #463 round-10 minor 4): a session deleted
-        // mid-run (every binding artifact went with it) is neither reported
-        // nor evented — the report and `workspace_rebound` events must not
-        // claim a dead id — and a to-lane orphan this run did nothing for
-        // (only a sidecar remains, put there by an earlier run) does not
-        // claim a rebound either. Only an orphan whose binding artifacts
-        // still exist AND whose binding a lane of THIS run actually moved
-        // stays reportable.
-        if sessions.durable_session_record_is_absent(session_id) {
-            match classify_absent_record_session(
-                final_stale.iter().any(|sid| sid == session_id),
-                // Round-21 SF-6: the codex term is structurally dead here —
-                // `binding_artifacts_exist` now begins with
-                // `binding_owner_exists`, which stats the same
-                // sessions/<id>.json whose NotFound routed us into this arm,
-                // so only the plain term can ever be live. The owner-gate
-                // invariant makes the codex arm unreachable, not the plain
-                // one.
-                sessions.workspace_binding_artifacts_exist(session_id),
-                prefix_outcome
-                    .affected
-                    .iter()
-                    .any(|(sid, _)| sid == session_id)
-                    || plain_rebind
-                        .rebound
-                        .iter()
-                        .any(|(sid, _)| sid == session_id),
-            ) {
-                AbsentRecordOutcome::Skip => continue,
-                AbsentRecordOutcome::Failed => failed_session_ids.push(session_id.clone()),
-                AbsentRecordOutcome::Rebound => rebound_session_ids.push(session_id.clone()),
-            }
+        // Report honesty (review #463 round-10 minor 4; wording narrowed per
+        // round-24 minor 8): a session deleted mid-run must never be claimed
+        // as rebound — the rebound list and the `workspace_rebound` events
+        // must not carry a dead id. A dead id MAY surface transiently in the
+        // failed/post-busy lists (safe direction: a false-FAILED self-heals
+        // on rerun) where a lane's owner re-check races the delete; this
+        // loop routes its own NotFound arms through the same ghost
+        // classification instead of blanket-failing. A to-lane orphan this
+        // run did nothing for (only a sidecar remains, put there by an
+        // earlier run) does not claim a rebound either. Only an orphan whose
+        // binding artifacts still exist AND whose binding a lane of THIS run
+        // actually moved stays reportable.
+        if let Some(outcome) = absent_record_outcome_if_ghost(
+            &sessions,
+            session_id,
+            &final_stale,
+            &prefix_outcome,
+            &plain_rebind,
+        ) {
+            record_absent_record_outcome(
+                outcome,
+                session_id,
+                &mut rebound_session_ids,
+                &mut failed_session_ids,
+            );
             continue;
         }
         // Deliverable-path rebase (review #463 round-10 Major 2):
@@ -974,7 +969,50 @@ pub async fn rebind_workspace_root(
                 "[projects] rebind artifact-path rebase failed: {}",
                 error.root_cause()
             );
+            // Round-24 MAJOR 1 / minor 8: a record this run's own load no
+            // longer finds is a mid-run delete, not a failed translate —
+            // classify it by the loop-head ghost helper (mostly Skip: the
+            // serialized delete purged the binding artifacts with the
+            // record) instead of claiming a dead id as failed.
+            if let Some(outcome) = absent_record_outcome_if_ghost(
+                &sessions,
+                session_id,
+                &final_stale,
+                &prefix_outcome,
+                &plain_rebind,
+            ) {
+                record_absent_record_outcome(
+                    outcome,
+                    session_id,
+                    &mut rebound_session_ids,
+                    &mut failed_session_ids,
+                );
+                continue;
+            }
             failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        // Post-write owner re-check (round-24 MAJOR 1, mirroring the plain
+        // lane's round-18 minor-7 check): the user-side delete now holds
+        // `scheduled_mutation` across the record removal (store delete_locked),
+        // so it can no longer interleave inside this loop's load→save pairs —
+        // but a delete landing between this save's release and the next
+        // write must not sail on into acp-state translation and
+        // set_workspace, either of which would re-create the deleted record
+        // wholesale and turn the ghost into a live-looking rebound.
+        if let Some(outcome) = absent_record_outcome_if_ghost(
+            &sessions,
+            session_id,
+            &final_stale,
+            &prefix_outcome,
+            &plain_rebind,
+        ) {
+            record_absent_record_outcome(
+                outcome,
+                session_id,
+                &mut rebound_session_ids,
+                &mut failed_session_ids,
+            );
             continue;
         }
         // acp-state workspace translation (review #463 round-14 B2): every
@@ -1008,6 +1046,27 @@ pub async fn rebind_workspace_root(
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
                 synced_this_loop = true;
+                // Post-write owner re-check (round-24 MAJOR 1): a delete
+                // landing between this save's lock release and the report
+                // push would otherwise push a freshly dead id into the
+                // rebound list and event it — the exact projects.rs report
+                // contract above. The plain lane's round-18 minor-7 check,
+                // mirrored.
+                if let Some(outcome) = absent_record_outcome_if_ghost(
+                    &sessions,
+                    session_id,
+                    &final_stale,
+                    &prefix_outcome,
+                    &plain_rebind,
+                ) {
+                    record_absent_record_outcome(
+                        outcome,
+                        session_id,
+                        &mut rebound_session_ids,
+                        &mut failed_session_ids,
+                    );
+                    continue;
+                }
                 // Indexed session whose sidecar failed both passes: the
                 // binding moved but the authoritative sidecar still holds the
                 // old path, so honestly count it as failed to trigger a user
@@ -1028,6 +1087,24 @@ pub async fn rebind_workspace_root(
                     "[projects] rebind set_workspace failed: {}",
                     error.root_cause()
                 );
+                // Round-24 MAJOR 1 / minor 8: a record the load no longer
+                // finds is a mid-run delete — ghost-classify it instead of
+                // blanket-failing a dead id (see the rebase error arm).
+                if let Some(outcome) = absent_record_outcome_if_ghost(
+                    &sessions,
+                    session_id,
+                    &final_stale,
+                    &prefix_outcome,
+                    &plain_rebind,
+                ) {
+                    record_absent_record_outcome(
+                        outcome,
+                        session_id,
+                        &mut rebound_session_ids,
+                        &mut failed_session_ids,
+                    );
+                    continue;
+                }
                 failed_session_ids.push(session_id.clone());
             }
         }
@@ -1380,6 +1457,7 @@ fn admit_rebind_retry_candidate(
 /// otherwise produce: an orphan whose sidecar an EARLIER run put under `to`
 /// had nothing translated by this run, so counting it rebound would claim
 /// work that did not happen.
+#[derive(Debug, PartialEq, Eq)]
 enum AbsentRecordOutcome {
     /// Dead id or nothing done this run: no report entry, no event.
     Skip,
@@ -1410,6 +1488,55 @@ fn classify_absent_record_session(
         return AbsentRecordOutcome::Skip;
     }
     AbsentRecordOutcome::Rebound
+}
+
+/// Post-write ghost gate (round-24 MAJOR 1): re-runs the loop-head absence
+/// probe and, when the record is gone, classifies the ghost with the same
+/// helper and the same argument expression the loop head uses — one source
+/// for the report contract, so the post-write and error-arm call sites
+/// cannot drift from it. `None` = the record is still on disk; the caller
+/// proceeds normally.
+///
+/// Round-21 SF-6 applies at every call site unchanged: the codex term is
+/// structurally dead here — `binding_artifacts_exist` now begins with
+/// `binding_owner_exists`, which stats the same sessions/<id>.json whose
+/// NotFound routed us into this arm, so only the plain term can ever be
+/// live. The owner-gate invariant makes the codex arm unreachable, not the
+/// plain one.
+fn absent_record_outcome_if_ghost(
+    sessions: &SessionStore,
+    session_id: &str,
+    final_stale: &[String],
+    prefix_outcome: &RebindWorkspacePrefixOutcome,
+    plain_rebind: &RebindBindingsOutcome,
+) -> Option<AbsentRecordOutcome> {
+    if !sessions.durable_session_record_is_absent(session_id) {
+        return None;
+    }
+    Some(classify_absent_record_session(
+        final_stale.iter().any(|sid| sid == session_id),
+        sessions.workspace_binding_artifacts_exist(session_id),
+        prefix_outcome
+            .affected
+            .iter()
+            .any(|(sid, _)| sid == session_id)
+            || plain_rebind.rebound.iter().any(|(sid, _)| sid == session_id),
+    ))
+}
+
+/// Route a classified ghost into the report lists (Skip reports nothing —
+/// a dead id or nothing done this run is neither reported nor evented).
+fn record_absent_record_outcome(
+    outcome: AbsentRecordOutcome,
+    session_id: &str,
+    rebound_session_ids: &mut Vec<String>,
+    failed_session_ids: &mut Vec<String>,
+) {
+    match outcome {
+        AbsentRecordOutcome::Skip => {}
+        AbsentRecordOutcome::Failed => failed_session_ids.push(session_id.to_string()),
+        AbsentRecordOutcome::Rebound => rebound_session_ids.push(session_id.to_string()),
+    }
 }
 
 /// Stranded-index detection (review #463 round-10 Major 1): among the codex
@@ -1954,6 +2081,202 @@ mod tests {
             .find("#[cfg(test)]")
             .expect("the test module marker must exist");
         &src[..tests]
+    }
+
+    /// Round-24 MAJOR 1: the metadata loop's post-write ghost gate over a
+    /// REAL store. The serialized user delete (store.delete holds
+    /// `scheduled_mutation`) purges the binding artifacts together with the
+    /// record, so a mid-run ghost classifies Skip — never Rebound, never a
+    /// blanket failed — and the orphan-sidecar shapes keep the round-11 B4
+    /// report semantics at every gate call site (parity with the loop head,
+    /// single-sourced through the helper).
+    #[test]
+    fn metadata_loop_ghost_gate_classifies_over_real_store() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-ghost-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        // SAFETY: platform::test_support ENV_LOCK is held for the whole test
+        // by the guard above.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store =
+            SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        let from = tmp.join("ghost-from");
+        std::fs::create_dir_all(&from).expect("create from");
+        let to = tmp.join("ghost-to");
+        std::fs::create_dir_all(&to).expect("create to");
+        let prefix_outcome = RebindWorkspacePrefixOutcome::default();
+
+        // A plain-bound session whose binding a lane of this run moved.
+        let moved = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create moved");
+        let moved_id = moved.metadata.id.clone();
+        store
+            .bind_session_workspace(&moved_id, from.clone())
+            .expect("bind moved under from");
+        let plain_rebind = RebindBindingsOutcome {
+            rebound: vec![(moved_id.clone(), to.clone())],
+            failed_session_ids: Vec::new(),
+        };
+
+        // A live record: the gate is transparent.
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &moved_id,
+                &[],
+                &prefix_outcome,
+                &plain_rebind,
+            ),
+            None,
+            "a live record must never be ghost-classified",
+        );
+
+        // The serialized user delete: the record and the binding artifacts
+        // (cache entry + sidecar) go together — the ghost is Skip even
+        // though this run moved its binding. Claiming it rebound (or
+        // blanket-failing it) would violate the report contract the gate
+        // exists to keep.
+        store.delete(&moved_id).expect("serialized delete");
+        assert!(store.durable_session_record_is_absent(&moved_id));
+        assert!(
+            !store.workspace_binding_artifacts_exist(&moved_id),
+            "the delete must purge the binding artifacts the Skip relies on",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &moved_id,
+                &[moved_id.clone()],
+                &prefix_outcome,
+                &plain_rebind,
+            ),
+            Some(AbsentRecordOutcome::Skip),
+            "a mid-run delete must classify Skip, never rebound and never a dead failed",
+        );
+
+        // Orphan-sidecar shape: the record is dropped WITHOUT the delete
+        // path (no artifact purge), so cache + sidecar survive — the
+        // round-11 B4 semantics must hold at every gate call site too.
+        let orphan = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create orphan");
+        let orphan_id = orphan.metadata.id.clone();
+        store
+            .bind_session_workspace(&orphan_id, from.clone())
+            .expect("bind orphan under from");
+        let record_path = store
+            .manager
+            .sessions_dir()
+            .join(format!("{orphan_id}.json"));
+        std::fs::remove_file(&record_path).expect("drop the record only");
+        assert!(store.durable_session_record_is_absent(&orphan_id));
+        assert!(
+            store.workspace_binding_artifacts_exist(&orphan_id),
+            "cache + sidecar survive the manual record drop",
+        );
+        let moved_orphan = RebindBindingsOutcome {
+            rebound: vec![(orphan_id.clone(), to.clone())],
+            failed_session_ids: Vec::new(),
+        };
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[],
+                &prefix_outcome,
+                &moved_orphan,
+            ),
+            Some(AbsentRecordOutcome::Rebound),
+            "a moved-this-run orphan with live artifacts stays reportable",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[orphan_id.clone()],
+                &prefix_outcome,
+                &moved_orphan,
+            ),
+            Some(AbsentRecordOutcome::Failed),
+            "stale wins over moved (round-11 B4)",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[],
+                &prefix_outcome,
+                &RebindBindingsOutcome::default(),
+            ),
+            Some(AbsentRecordOutcome::Skip),
+            "an orphan this run did nothing for stays silent",
+        );
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-24 MAJOR 1 / minor 8: the metadata loop must WIRE the ghost
+    /// gate at the load-bearing points — between the set_workspace save and
+    /// the rebound push (a delete landing after the save must not be claimed
+    /// as rebound), and in both write error arms before the blanket failed
+    /// push (a NotFound load is a mid-run delete, not a failed translate).
+    /// Source-level like the other command-layer probes: the command needs a
+    /// live AppHandle + four managed states to drive at runtime.
+    #[test]
+    fn metadata_loop_post_write_ghost_gates_are_wired() {
+        let src = production_source();
+        let set_ws = src
+            .find("sessions.set_workspace(session_id, new_path.clone())")
+            .expect("the metadata loop's set_workspace call must exist");
+        let after_set_ws = &src[set_ws..];
+        let ok_gate = after_set_ws
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the post-write ghost gate must follow set_workspace (round-24 MAJOR 1)");
+        let rebound_push = after_set_ws
+            .find("rebound_session_ids.push(session_id.clone())")
+            .expect("the rebound push must exist");
+        assert!(
+            ok_gate < rebound_push,
+            "the ghost gate must classify before the rebound push claims the id",
+        );
+        let rebase_arm = src
+            .find("rebind artifact-path rebase failed")
+            .expect("the rebase error arm must exist");
+        let after_rebase_err = &src[rebase_arm..];
+        let rebase_gate = after_rebase_err
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the rebase error arm must ghost-classify (round-24 minor 8)");
+        let rebase_failed = after_rebase_err
+            .find("failed_session_ids.push(session_id.clone())")
+            .expect("the rebase error arm must keep the failed classification");
+        assert!(
+            rebase_gate < rebase_failed,
+            "the rebase arm must classify the ghost before blanket-failing",
+        );
+        let set_ws_err = after_set_ws
+            .find("rebind set_workspace failed")
+            .expect("the set_workspace error arm must exist");
+        let after_set_ws_err = &after_set_ws[set_ws_err..];
+        let set_ws_gate = after_set_ws_err
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the set_workspace error arm must ghost-classify (round-24 minor 8)");
+        let set_ws_failed = after_set_ws_err
+            .find("failed_session_ids.push(session_id.clone())")
+            .expect("the set_workspace error arm must keep the failed classification");
+        assert!(
+            set_ws_gate < set_ws_failed,
+            "the set_workspace arm must classify the ghost before blanket-failing",
+        );
     }
 
     #[test]

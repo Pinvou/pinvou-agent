@@ -106,7 +106,8 @@ use runtime::{
 };
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 pub use store::{
-    AgentBackend, CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
+    AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
+    validate_codex_project_workspace,
 };
 
 /// Managed-runtime directory schema retained for compatibility with installs
