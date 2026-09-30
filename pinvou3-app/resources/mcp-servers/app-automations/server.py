@@ -268,11 +268,13 @@ TOOL_DEFS = [
             "immediately — there is no per-call confirmation dialog; the Scheduled "
             "Tasks panel and the audit log are the review surface). Provide only the "
             "fields to change: name, prompt, rrule (same product subset as "
-            "create_scheduled_task), model_id, or paused. Read the task first when "
-            "the user asks to change a task they describe by name but you only have "
-            "list data. Returns the updated task's id and name once the app confirms, "
-            "or delivery:'pending' when confirmation has not landed within a few "
-            "seconds."
+            "create_scheduled_task), model_id, paused, or target_session (retarget an "
+            "existing scheduled-message task; a task whose kind is not "
+            "session_message cannot gain a target through update). Read the task "
+            "first when the user asks to change a task they describe by name but you "
+            "only have list data. Returns the updated task's id and name once the "
+            "app confirms, or delivery:'pending' when confirmation has not landed "
+            "within a few seconds."
         ),
         "inputSchema": {
             "type": "object",
@@ -716,11 +718,11 @@ def validate_message_target(sessions_dir, target):
             "cannot receive scheduled messages" % target
         )
     probe = os.path.join(sessions_dir, "%s.json" % target)
-    try:
-        if not os.path.isfile(probe):
-            return None, "target_session not found: %s" % target
-    except OSError:
-        return None, "sessions directory is not readable"
+    # os.path.isfile never raises: an unreadable/missing dir just yields
+    # False, which the app-side re-check against the live store would catch
+    # anyway.
+    if not os.path.isfile(probe):
+        return None, "target_session not found: %s" % target
     return target, None
 
 

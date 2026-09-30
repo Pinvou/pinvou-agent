@@ -770,11 +770,12 @@ pub(crate) enum ScheduledTaskKindLookup {
 }
 
 impl VersionedJsonStore<ScheduledTaskKindRegistry> {
-    /// Reads the task kind for DTO display. Only `memory_organize` is a
-    /// supported kind for now; any other value left in the file surfaces as
-    /// None (an ordinary chat task), mirroring the creation-side allow-list.
-    /// The executor uses [`Self::kind_lookup_for`] instead, which distinguishes
-    /// an unsupported value from no entry at all.
+    /// Reads the task kind for DTO display. `memory_organize` and
+    /// `session_message` are the supported kinds; any other value left in
+    /// the file surfaces as None (an ordinary chat task), mirroring the
+    /// creation-side allow-list. The executor uses [`Self::kind_lookup_for`]
+    /// instead, which distinguishes an unsupported value from no entry at
+    /// all.
     pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
         match self.kind_lookup_for(automation_id) {
             ScheduledTaskKindLookup::MemoryOrganize => {
@@ -856,6 +857,15 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
         if automation_id.trim().is_empty() {
             bail!("scheduled automation id cannot be empty");
         }
+        // Defensive: a target entry only makes sense for the session_message
+        // kind, and a blank target would strand the task in the drift path
+        // (runs fail instead of degrading to chat).
+        if kind != SCHEDULED_TASK_KIND_SESSION_MESSAGE {
+            bail!("only the session_message kind carries a target session");
+        }
+        if target_session.trim().is_empty() {
+            bail!("target session cannot be empty");
+        }
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         registry.tasks.insert(
@@ -906,12 +916,11 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
         &self,
         automation_id: &str,
     ) -> Option<(Option<String>, Option<String>)> {
-        self.registry.read().tasks.get(automation_id).map(|binding| {
-            (
-                Some(binding.model_id.clone()),
-                Some(binding.model.clone()),
-            )
-        })
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|binding| (Some(binding.model_id.clone()), Some(binding.model.clone())))
     }
 
     pub(crate) fn set(

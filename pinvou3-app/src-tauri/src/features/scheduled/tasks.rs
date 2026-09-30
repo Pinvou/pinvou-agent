@@ -521,24 +521,35 @@ impl ScheduledTaskState {
         // The kind is a one-time creation property, so a target change is only
         // meaningful for an existing session_message task; a chat/memory task
         // cannot be converted into one (and vice versa) through an update.
-        if let Some(target) = input.target_session.as_deref() {
-            let current_kind = self.task_kinds.kind_for(&id);
-            if current_kind.as_deref() != Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE) {
-                return Err(
-                    "only scheduled-message tasks can change their target session".to_string(),
-                );
+        // Validate the retarget up front but persist it only after the
+        // automation update succeeded — writing the sidecar first would let a
+        // later validation failure (invalid rrule/mode, IO) leave the old
+        // prompt firing into the new session.
+        let retarget = match input.target_session.as_deref() {
+            Some(target) => {
+                let current_kind = self.task_kinds.kind_for(&id);
+                if current_kind.as_deref() != Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE) {
+                    return Err(
+                        "only scheduled-message tasks can change their target session".to_string(),
+                    );
+                }
+                Some(
+                    canonical_message_target(&self.sessions, Some(target))?
+                        .ok_or_else(|| "target session cannot be empty".to_string())?,
+                )
             }
-            let target = canonical_message_target(&self.sessions, Some(target))?
-                .ok_or_else(|| "target session cannot be empty".to_string())?;
-            self.task_kinds
-                .set_kind_with_target(&id, SCHEDULED_TASK_KIND_SESSION_MESSAGE, &target)
-                .map_err(|error| format!("Failed to save scheduled task target: {error:#}"))?;
-        }
+            None => None,
+        };
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
         let updated = ensure_automation_workspace(&manager, updated)
             .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
+        if let Some(target) = retarget {
+            self.task_kinds
+                .set_kind_with_target(&id, SCHEDULED_TASK_KIND_SESSION_MESSAGE, &target)
+                .map_err(|error| format!("Failed to save scheduled task target: {error:#}"))?;
+        }
         if requested_model_update.is_some() || requested_model_id.is_some() {
             let previous_binding = self.model_bindings.binding_for(&id);
             if let Err(error) =
@@ -1577,10 +1588,26 @@ fn canonical_message_target(
             "invalid target_session: {target} is an isolated or unattended session and cannot receive scheduled messages"
         ));
     }
-    if sessions.manager.load_session_snapshot(target).is_err() {
-        return Err(format!("target_session not found: {target}"));
+    if let Err(error) = sessions.manager.load_session_snapshot(target) {
+        // A missing file and a corrupt/newer-schema file both land here:
+        // name the distinction instead of blaming "not found" for every
+        // load failure.
+        if target_file_missing(target) {
+            return Err(format!("target_session not found: {target}"));
+        }
+        return Err(format!(
+            "target_session {target} could not be loaded: {error:#}"
+        ));
     }
     Ok(Some(target.to_string()))
+}
+
+/// Whether a session snapshot file is simply absent (vs present but
+/// unreadable/corrupt) so the caller-facing error can distinguish the two.
+fn target_file_missing(target: &str) -> bool {
+    !crate::platform::paths::sessions_root()
+        .join(format!("{target}.json"))
+        .is_file()
 }
 
 /// Kind allow-list: missing means an ordinary chat task; only `memory_organize` is
@@ -3954,13 +3981,13 @@ mod tests {
         .unwrap();
 
         // Isolated / junk / unknown targets are rejected before anything persists.
-        for bad_target in [
-            "sched-run1",
-            "aux-side1",
-            "eval_b1",
-            "../escape",
-            "a".repeat(300).as_str(),
-            "no-such-target",
+        for (bad_target, expected) in [
+            ("sched-run1", "isolated or unattended"),
+            ("aux-side1", "isolated or unattended"),
+            ("eval_b1", "isolated or unattended"),
+            ("../escape", "invalid target_session"),
+            ("a".repeat(300).as_str(), "invalid target_session"),
+            ("no-such-target", "not found"),
         ] {
             let error = state
                 .create_for_test(CreateScheduledTaskInput {
@@ -3981,8 +4008,8 @@ mod tests {
                 .await
                 .expect_err("must reject");
             assert!(
-                error.contains("invalid target_session") || error.contains("not found"),
-                "{bad_target}: {error}"
+                error.contains(expected),
+                "{bad_target}: expected a '{expected}' rejection, got: {error}"
             );
         }
         assert!(

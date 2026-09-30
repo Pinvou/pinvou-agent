@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::memory::MemoryOrganizeReport;
-use crate::features::scheduled::tasks::ScheduledTaskKindLookup;
+use crate::features::scheduled::tasks::{SCHEDULED_MESSAGE_MAX_CHARS, ScheduledTaskKindLookup};
 use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
@@ -1514,6 +1514,39 @@ mod tests {
             "cancel must not wait for the in-flight organize call"
         );
         manager.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_target_gate_rejects_isolated_and_hostile_ids() -> Result<()> {
+        let root = TestRoot::new()?;
+        let store = SessionStore::boot_at_test_dir(&root.0)?;
+        // A plain session id passes the gate (no profile registered).
+        assert!(ensure_deliverable_target(&store, "tgt0001").is_ok());
+        // Isolated prefixes — case variants included — are rejected before
+        // any engine is woken (the recursion direction; same discipline as
+        // the messaging channel's check_participant_id).
+        for hostile in [
+            "sched-run1",
+            "SCHED-run1",
+            "aux-side1",
+            "AUX-side1",
+            "eval_b1",
+            "EVAL_b1",
+        ] {
+            assert!(
+                ensure_deliverable_target(&store, hostile).is_err(),
+                "{hostile} must be rejected"
+            );
+        }
+        // Hostile charset/padding poisons at the gate instead of failing
+        // somewhere inside the delivery path.
+        for hostile in ["", "  ", "../escape", "with space"] {
+            assert!(
+                ensure_deliverable_target(&store, hostile).is_err(),
+                "{hostile:?} must be rejected"
+            );
+        }
         Ok(())
     }
 }

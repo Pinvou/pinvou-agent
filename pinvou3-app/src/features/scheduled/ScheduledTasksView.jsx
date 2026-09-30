@@ -1532,7 +1532,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 {selected.targetSession ? (
                   <div data-testid="scheduled-detail-target" className="flex items-center justify-between gap-3">
                     <span className={mutedValue}>{scheduledCopy.targetSession}</span>
-                    <span className="truncate text-right font-mono text-[12px] font-medium {bodyText}">{selected.targetSession}</span>
+                    <span className={`truncate text-right font-mono text-[12px] font-medium ${bodyText}`}>{selected.targetSession}</span>
                   </div>
                 ) : null}
                 <div className="flex items-center justify-between gap-3">

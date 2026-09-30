@@ -265,7 +265,7 @@ def main():
     print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
-        # 一个普通会话文件，供定时消息目标校验使用。
+        # A plain session file for the scheduled-message target check.
         Path(home, "sessions").mkdir(parents=True)
         Path(home, "sessions", "tgt0001.json").write_text(
             json.dumps({"metadata": {"id": "tgt0001", "title": "目标"}, "messages": []}),
@@ -284,6 +284,7 @@ def main():
                 "arguments": {
                     "name": "早报", "prompt": "汇总新闻",
                     "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
                     "idempotency_key": "k1",
                 },
             }))
@@ -299,6 +300,7 @@ def main():
                 "arguments": {
                     "name": "早报", "prompt": "汇总新闻",
                     "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
                     "idempotency_key": "k1",
                 },
             }))
@@ -346,8 +348,9 @@ def main():
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
             assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
-            # 定时消息模式：隔离目标硬拒（自唤醒=递归方向）；合法目标把
-            # target_session 带进 spool 记录。
+            # Scheduled-message mode: isolated targets are hard-rejected
+            # (self-wake = the recursion direction); a valid target carries
+            # target_session into the spool record.
             isolated = content_json(rpc.call("tools/call", {
                 "name": "create_scheduled_task",
                 "arguments": {
