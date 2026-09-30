@@ -380,7 +380,7 @@ function rec(name, pass, detail = '') {
       // injection block is a machine contract, re-prepended onto
       // pinvouPayloadText instead of sandwiching inside scene boilerplate).
       /const scenePrompt = sceneBody \|\| t\.uiChatScenes\.attachmentPrompt;/.test(chatViewSource) &&
-      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
+      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, sessionMentionEnabled, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
   // The real source of both bridges is extracted and executed rather than shape-matching
