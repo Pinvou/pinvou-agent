@@ -983,7 +983,7 @@ visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图�
 'package-author': { title:'插件包标准化', subtitle:'把技能/MCP/函数整理成可上传的标准插件包', desc:'把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。', latency:'本地' },
 'skill-author': { title:'技能创建', subtitle:'用户描述一句话，生成规范的 SKILL.md 技能', desc:'把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。', latency:'本地' },
 'tencent-docs-skill': { title:'腾讯文档', subtitle:'在线文档 / 表格 / 演示文稿 / 智能表格的创建、编辑与管理', desc:'腾讯文档官方 MCP 技能（v1.0.41 适配版）：在插件中心搭配「腾讯文档 MCP」连接器使用。内置官方分类路由（智能文档 / Word / Excel / PPT / 思维导图 / 流程图 / 智能表格）与完整工具 API 参考。Token 由连接器写入本设备的系统凭据。', latency:'云端' },
-s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
+'visual-design': { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报 / 简历', desc:'内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', version:'内置', latency:'本地' },
   },
   categories: { all:'全部', collab:'沟通协作', docs:'文档知识', dev:'研发', finance:'金融数据', life:'生活实用', other:'其他' },
 } });

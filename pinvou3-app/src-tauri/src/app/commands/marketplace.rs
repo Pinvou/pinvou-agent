@@ -1044,8 +1044,9 @@ pub async fn export_installed_plugin(
 pub struct BundleReadinessResult {
     pub installed: bool,
     pub ready: bool,
-    /// 动作下发（§3.1）：后端按当前状态推导的可用动作集。serde default 保持
-    /// 契约纯增量；前端切换为动作渲染器在后续 PR。
+    /// Action dispatch (§3.1): the action set is derived server-side from the
+    /// current state. serde default keeps the contract purely additive; the
+    /// frontend switch to the action renderer lands in a later PR.
     #[serde(default)]
     pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
     /// 包功能事实全量（§3.1：description/version/category/config_fields 等，

@@ -54,6 +54,17 @@ assert.match(storeView, /tsSkillsData\r?\n\s*\.filter\(x => x\.builtin === true\
 assert.match(storeView, /kindLabel: \(storeCopy\.typeGroups \|\| \{\}\)\[/, 'builtin skill cards must carry a localized kind row');
 assert.match(storeView, /localizeSkill\(x\)/, 'builtin skill cards must use the storeData.skills overlay');
 
+// Visibility checkboxes: the builtin skill card (which now carries a
+// backendId since round-5 M3) must stay disabled — its hide write contains
+// no MCP catalog id and would pass the backend guard, silently dropping the
+// builtin skill from that mode's composer/model while the composer's builtin
+// row keeps presenting it as always-on (round-6 M2).
+assert.match(
+  storeView,
+  /const checkDisabled = !tool\.backendId \|\| tool\.builtin \|\| !visibilityLoaded;/,
+  'the visibility checkbox must gate on the builtin flag, not just on backendId presence',
+);
+
 // BuiltinPluginCard body: no TsActionBtn/PlatformToolAction/uninstall/onAction
 // (docs/builtin-toolset-contract.md §3.1: no uninstall, no toggle); renders the
 // read-only badge; no hardcoded Chinese (copy comes from uiBuiltinPlugins)

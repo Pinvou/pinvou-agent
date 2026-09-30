@@ -150,14 +150,43 @@ pub fn spec_for_builtin_probe(id: &str) -> Option<&'static McpPackageSpec> {
 /// Parse the compile-time embedded manifest. Installs and dependency
 /// downloads must trust this read-only snapshot, not a same-named manifest in
 /// the user directory that may come from an old version or have been
-/// modified. The probe is case-insensitive (`spec_for_builtin_probe`).
+/// modified. The lookup is the EXACT `spec_for`: this is a content source
+/// (install, boot reconcile, secret rehydration, audit overlay), and a folded
+/// lookup here would hand a case-variant id the catalog's manifest — the
+/// user's own `Weather` package would then be installed/reconciled with
+/// weather's command/args/secret wiring, silently breaking existing user
+/// data (review round-6 M3a). Membership judgement goes through
+/// `builtin_manifest_probe`; write paths keep the exact `spec_for`.
 pub fn embedded_manifest(id: &str) -> Result<Option<ToolManifest>, String> {
+    spec_for(id)
+        .map(|spec| {
+            serde_json::from_str(spec.manifest_json)
+                .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))
+        })
+        .transpose()
+}
+
+/// Parsed embedded manifest for the case-insensitive membership probe only:
+/// `is_builtin_tool` must keep folding (a case-variant id on a
+/// case-insensitive filesystem denotes the same builtin), while the content
+/// lane above stays exact. Same snapshot, different lookup discipline.
+pub fn builtin_manifest_probe(id: &str) -> Result<Option<ToolManifest>, String> {
     spec_for_builtin_probe(id)
         .map(|spec| {
             serde_json::from_str(spec.manifest_json)
                 .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))
         })
         .transpose()
+}
+
+/// Canonical catalog id for a (possibly case-variant) spelling; `None` when
+/// the id does not denote a catalog package. Install-entry canonicalization
+/// (review round-6 M3b): the folded membership probe accepts
+/// `install("Session-Reader")`, but `release_package` / `package_mcp_dir` /
+/// the uninstall guard all key the exact id — writing mcp.json args at a
+/// nonexistent `bundles/Session-Reader/mcp` would never converge.
+pub fn canonical_catalog_id(id: &str) -> Option<&'static str> {
+    spec_for_builtin_probe(id).map(|spec| spec.id)
 }
 
 /// 包的 mcp/ 目录（`bundles/<id>/mcp/`）。

@@ -1378,8 +1378,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       // window. A skill is a pure prompt capability — no tool list / security
       // level / data access — so it declares facts with a kind row and a version
       // row. Copy goes through the same overlay as the store skill cards
-      // (localizeSkill → uiToolStore.storeData.skills, keyed by id 's5'), so
-      // en/ja render the localized title/subtitle/desc/version.
+      // (localizeSkill → uiToolStore.storeData.skills, keyed by the backendId
+      // 'visual-design'), so en/ja render the localized title/subtitle/desc/
+      // version.
       const builtinSkillCards = tsSkillsData
         .filter(x => x.builtin === true)
         .map(x => {
@@ -2501,10 +2502,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                         // biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container
                                         <div className="flex flex-col items-start gap-1" onClick={(e) => e.stopPropagation()}>
                                           {[{ key: 'plain', label: storeCopy.modePlain }, { key: 'code', label: storeCopy.modeCode }].map((m) => {
-                                            // 无 backendId 的卡（占位卡/内置 s5）不参与可见性配置：禁用勾选；
-                                            // 可见性读取未成功（visibilityLoaded=false）时同样禁用——handler 虽有
-                                            // 早退，但可点而无反馈的勾选框会误导用户以为配置已生效（四轮评审）。
-                                            const checkDisabled = !tool.backendId || !visibilityLoaded;
+                                            // Placeholder cards (no backendId) and builtin skill cards (the
+                                            // builtin flag, e.g. visual-design) take no part in visibility
+                                            // configuration: their checkboxes stay disabled. backendId alone is
+                                            // not enough — round-5 M3 gave the builtin skill a backendId, and
+                                            // its hide write carries no MCP catalog id, passes the backend
+                                            // guard, and would silently drop the builtin skill from that
+                                            // mode's composer/model while the composer's builtin row ignores
+                                            // `hidden` and keeps presenting it as always-on (UI/model
+                                            // divergence, §3.1 gap — round-6 M2). A failed visibility read
+                                            // (visibilityLoaded=false) disables the checkboxes too: the
+                                            // handler exits early, but a clickable checkbox with no feedback
+                                            // misleads the user into thinking the change took effect
+                                            // (review round 4).
+                                            const checkDisabled = !tool.backendId || tool.builtin || !visibilityLoaded;
                                             // 读回比对与写入同口径：后端 hidden 集按包 id 返回，companion 卡先经
                                             // skillToMcp 映射为所属包 id；同时回退比对原始技能 id，兼容历史版本
                                             // 按独立技能 id 落库的条目（未装→装边界）（五轮评审）。

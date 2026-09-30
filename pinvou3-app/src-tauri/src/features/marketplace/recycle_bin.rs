@@ -785,6 +785,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Builtin restore guard (review round-6 M5: the round-5 wave added the
+    /// guard but no test called it — deleting it turned nothing red). A
+    /// recycled entry whose id denotes the builtin must be refused outright,
+    /// and the folded probe must cover case-variant spellings (the same
+    /// package on a case-insensitive filesystem).
+    #[test]
+    fn restore_refuses_builtin_id() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-builtin");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let error = restore_plugin("session-reader").unwrap_err();
+        assert!(
+            error.contains("内建插件冲突"),
+            "restore of a builtin id must be refused by the builtin guard: {error}"
+        );
+
+        if let Some(v) = prev {
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: see above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn restore_refuses_case_variant_builtin_id() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-builtin-variant");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let error = restore_plugin("Session-Reader").unwrap_err();
+        assert!(
+            error.contains("内建插件冲突"),
+            "restore of a case-variant builtin spelling must be refused by the folded guard: {error}"
+        );
+
+        if let Some(v) = prev {
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: see above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// 恢复管线（纯技能包）：目录搬回 + bundles.json 登记重建（source=Upload、
     /// 保留原 installed_at、installed=true），无 MCP 组件 → credentials_required=false。
     /// 走真实 paths（PINVOU3_HOME 指临时目录），借 ENV_LOCK 与其它 env 测试串行。

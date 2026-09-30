@@ -117,7 +117,6 @@ DEFAULT_LIST_LIMIT = 20
 # (review round-5 M5). Cap the scan and report the partial result honestly.
 MAX_LIST_SCAN_ENTRIES = 2000
 
-DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 DEFAULT_MAX_OUTPUT_CHARS = 2000
 MAX_MAX_OUTPUT_CHARS = 20000
@@ -352,7 +351,11 @@ def _truncate(text, limit):
 def _coerce_int(value, default, minimum, maximum):
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json.loads accepts `Infinity`/`1e999` and
+        # int(float('inf')) raises — a model-supplied limit or a corrupt
+        # app-written count must fall back to the default, never kill the
+        # call (review round-6 M6).
         return default
     return max(minimum, min(maximum, number))
 
@@ -755,18 +758,24 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
             continue
         if metadata is None:
             continue
-        title = str(metadata.get("title") or "")
-        if needle and needle not in title.lower():
+        try:
+            title = str(metadata.get("title") or "")
+            if needle and needle not in title.lower():
+                continue
+            entries.append({
+                "sessionId": session_id,
+                "title": _truncate(title, MAX_METADATA_FIELD_CHARS),
+                "updatedAt": _truncate(str(metadata.get("updated_at") or ""), MAX_METADATA_FIELD_CHARS),
+                # A corrupt app-written value (e.g. a string) must not kill the
+                # whole listing — coerce defensively, defaulting to 0. The
+                # shaping sits inside the same per-entry guard: one pathological
+                # metadata value (json Infinity, wrong type) skips that entry
+                # instead of failing the whole listing (review round-6 M6).
+                "messageCount": _coerce_int(metadata.get("message_count"), 0, 0, (1 << 31) - 1),
+                "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
+            })
+        except Exception:
             continue
-        entries.append({
-            "sessionId": session_id,
-            "title": _truncate(title, MAX_METADATA_FIELD_CHARS),
-            "updatedAt": _truncate(str(metadata.get("updated_at") or ""), MAX_METADATA_FIELD_CHARS),
-            # A corrupt app-written value (e.g. a string) must not kill the
-            # whole listing — coerce defensively, defaulting to 0.
-            "messageCount": _coerce_int(metadata.get("message_count"), 0, 0, (1 << 31) - 1),
-            "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
-        })
     entries.sort(key=lambda item: item["updatedAt"], reverse=True)
     return {
         "sessions": entries[:limit],

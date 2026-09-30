@@ -44,14 +44,14 @@ const BUILTIN_FEATURES_STATE_FILE: &str = "builtin_features.json";
 static FEATURE_TOGGLE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Builtin determination trusts only the compile-time embedded catalog
-/// (`mcp_catalog::embedded_manifest`, a read-only snapshot shipped by the
+/// (`mcp_catalog::builtin_manifest_probe`, a read-only snapshot shipped by the
 /// publisher). The released `bundles/<id>/mcp/manifest.json` is user-writable
 /// and must never confer builtin status (trust boundary, see
 /// docs/builtin-toolset-contract.md §3.1); ids missing from the catalog or
 /// failing to parse are treated as non-builtin — better to allow uninstalling
 /// a normal plugin than to lock one by mistake.
 pub fn is_builtin_tool(id: &str) -> bool {
-    mcp_catalog::embedded_manifest(id)
+    mcp_catalog::builtin_manifest_probe(id)
         .ok()
         .flatten()
         .map(|manifest| manifest.builtin)
@@ -304,6 +304,40 @@ mod tests {
         assert!(!is_builtin_tool("weather"));
         // An unknown id (absent from disk too) counts as non-builtin.
         assert!(!is_builtin_tool("no-such-tool"));
+    }
+
+    /// Exact/folded lookup discipline (review round-6 M3): the membership
+    /// probe folds case (a case-variant spelling denotes the same builtin),
+    /// while the content lane (`embedded_manifest`) stays exact — a
+    /// case-variant id must get no catalog manifest as CONTENT, or the user's
+    /// own `Weather` package would be installed/reconciled with weather's
+    /// command/args/secret wiring.
+    #[test]
+    fn folded_membership_and_exact_content_are_pinned_both_ways() {
+        use super::super::mcp_catalog;
+        // Membership: folded both directions.
+        assert!(is_builtin_tool("Session-Reader"));
+        assert!(is_builtin_tool("SESSION-READER"));
+        // Content: exact id resolves; case-variant does not.
+        assert!(mcp_catalog::embedded_manifest("session-reader")
+            .unwrap()
+            .is_some());
+        assert!(mcp_catalog::embedded_manifest("Session-Reader")
+            .unwrap()
+            .is_none());
+        // The membership probe's own manifest stays parseable for the variant.
+        assert!(mcp_catalog::builtin_manifest_probe("Session-Reader")
+            .unwrap()
+            .map(|m| m.builtin)
+            .unwrap_or(false));
+        // Canonicalization maps the variant to the catalog id and leaves
+        // non-catalog ids alone.
+        assert_eq!(
+            mcp_catalog::canonical_catalog_id("Session-Reader"),
+            Some("session-reader")
+        );
+        assert_eq!(mcp_catalog::canonical_catalog_id("weather"), Some("weather"));
+        assert_eq!(mcp_catalog::canonical_catalog_id("my-own-tool"), None);
     }
 
     /// Case-variant ids must not slip past the builtin guards: on a

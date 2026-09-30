@@ -707,7 +707,7 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   // Built-in plugins subpage (contract §3.1 transparency/audit window):
   // toolbar entry -> read-only card field assertions -> back to the main list.
   // session-reader comes from the mocked list_marketplace_tools
-  // (builtin===true + visibility:system); the builtin skill (视觉设计) comes
+  // (builtin===true + visibility:system); the builtin skill (visual design) comes
   // from tsSkillsData static data — both land on the same subpage.
   await page.click('[data-testid="tool-store-builtin-plugins"]');
   await sleep(300);

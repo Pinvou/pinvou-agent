@@ -610,6 +610,39 @@ class ListSessionsTests(unittest.TestCase):
         self.assertEqual(entry["messageCount"], 0)
         self.assertEqual(payload["total"], 3)
 
+    def test_infinite_and_overflow_message_counts_do_not_kill_listing(self):
+        # json.loads accepts Infinity/1e999; int(float('inf')) raises
+        # OverflowError, which the coercion guard must treat like any other
+        # corrupt value — the entry survives (coerced), the listing survives
+        # (review round-6 M6).
+        _write_session(self.dir, "infff1", [], title="infinite count",
+                       updated_at="2026-09-12T00:00:00Z", message_count=float("inf"))
+        _write_session(self.dir, "infff2", [], title="overflow count",
+                       updated_at="2026-09-12T00:00:01Z", message_count=1e999)
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        by_id = {e["sessionId"]: e for e in payload["sessions"]}
+        self.assertEqual(by_id["infff1"]["messageCount"], 0)
+        self.assertEqual(by_id["infff2"]["messageCount"], 0)
+
+    def test_turn_limit_overflow_falls_back_to_default(self):
+        # A model-supplied turn_limit of 1e999 coerces to the default instead
+        # of dying with OverflowError (review round-6 M6).
+        self.assertEqual(
+            server._coerce_int(1e999, server.DEFAULT_TURN_LIMIT, 1, server.MAX_TURN_LIMIT),
+            server.DEFAULT_TURN_LIMIT,
+        )
+        self.assertEqual(
+            server._coerce_int(float("inf"), 20, 1, server.MAX_LIST_LIMIT), 20
+        )
+        self.assertEqual(
+            # Wrong-type cases stay pinned alongside the overflow shapes.
+            server._coerce_int("bogus", 20, 1, server.MAX_LIST_LIMIT), 20
+        )
+        self.assertEqual(
+            server._coerce_int(None, 20, 1, server.MAX_LIST_LIMIT), 20
+        )
+
     def test_list_excludes_aux_sessions_case_insensitive(self):
         # aux- side-chats join the sched-/eval_ isolation set, case-insensitive.
         _write_session(self.dir, "aux-side1", [], title="side chat",

@@ -26,7 +26,8 @@ export const DEFAULT_BUILTIN_SKILLS = [
   {
     id: 'visual-design',
     title: '视觉设计',
-    // 设计期差量（后端 MODE_TABLE）：该技能在这些模式不提供，开关只读。
+    // Design-time delta (mirrors the backend MODE_TABLE): the skill is not
+    // offered in these modes, so the switch renders read-only there.
     unavailableIn: ['code'],
   },
 ];

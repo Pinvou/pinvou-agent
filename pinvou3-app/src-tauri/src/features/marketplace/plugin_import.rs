@@ -827,10 +827,13 @@ pub fn import_plugin_package(
             "包 id '{id}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
         ));
     }
-    // 组件 id 同样不得冒充内建（评审五轮 M1）：包 id 冲突检查约束不到组件——
-    // `my-tool` 包携带 id 为 `session-reader` 的 mcp 组件时，add_to_mcp_json 按
-    // manifest.id 键控服务器条目，会顶替真正内建服务的引擎注册（卸载 my-tool
-    // 只删自己的键，被劫持条目成为孤儿）。探针口径与包 id 一致（大小写折叠）。
+    // Component ids must not impersonate builtins either (review round-5 M1):
+    // the package-id collision check cannot see them — a `my-tool` package
+    // carrying an mcp component with id `session-reader` would have
+    // add_to_mcp_json key the server entry by manifest.id and overwrite the
+    // real builtin's engine registration (uninstalling my-tool removes only
+    // its own key, orphaning the hijacked entry). The probe folds case, the
+    // same discipline as the package-id check.
     for component in &mcp_servers {
         if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(component).is_some() {
             return Err(format!(
@@ -838,8 +841,10 @@ pub fn import_plugin_package(
             ));
         }
     }
-    // mcp/manifest.json 的内层 id 与组件 id 由 detect_components 强制相等，但
-    // 无 plugin.json 的裸 mcp/ 包按内层 manifest 现算组件——同样按内建探测拒绝。
+    // The inner mcp/manifest.json id is force-equal to the component id by
+    // detect_components, but a bare mcp/ package without plugin.json computes
+    // its components from the inner manifest — rejected by the same builtin
+    // probe.
     if let Some(bytes) = &mcp_manifest_bytes {
         if let Ok(inner) =
             serde_json::from_slice::<crate::features::marketplace::types::ToolManifest>(bytes)
@@ -2463,7 +2468,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
     /// Component-id impersonation (review round-5 M1): the package id is
     /// collision-free, but the inner MCP component id is a builtin's id —
     /// add_to_mcp_json keys servers by manifest.id, so importing would
@@ -2534,6 +2538,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Package-id collision against non-builtin presets (review round-6 M4):
+    /// the id maps to a catalog package but not a builtin, so the builtin
+    /// probe alone does not refuse it — the import must still reject an id
+    /// that would overwrite an installed preset (`gongwen` / `weather`).
+    #[test]
     fn import_rejects_embedded_preset_mcp_id_collision() {
         use std::io::Write;
         let _g = crate::platform::paths::tests::ENV_LOCK

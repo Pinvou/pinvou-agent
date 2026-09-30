@@ -463,6 +463,12 @@ fn save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> 
 /// 能力显式开启」；AllowAll（如 plain）返回落盘列表（缺省空 = 全开）。CLI 包未连接时
 /// 纳入无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
 ///
+/// The computed DenyAll default drops ids that normalize to a builtin
+/// catalog entry (round-6 B1): builtins are feature-switch-governed, never
+/// package-governed, and a default containing the boot-seeded builtin would
+/// fail `reject_builtin_ids` on the very write that initializes the scope —
+/// bricking every toggle on an uninitialized DenyAll profile.
+///
 /// When skill enumeration fails (permissions / transient IO, #531) the freshly
 /// computed default degrades toward over-denial: owner packages of all preset
 /// skills and of all store-known upload records are blanket-unioned into the
@@ -524,6 +530,18 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                     ids.push(pkg);
                 }
             }
+            // Builtins are feature-switch-governed, never package-governed
+            // (§3.1, same consent semantics as the DenyAll install-sync
+            // exemption): the boot seed installs session-reader into
+            // installed.json, and a computed default containing it would make
+            // the echoed full-set write that initializes the scope fail
+            // `reject_builtin_ids` — every composer toggle on an uninitialized
+            // DenyAll profile then errors forever with no UI recovery. Drop
+            // ids that normalize to a builtin, the same predicate
+            // `normalize_stored_pkg_ids` and the guard itself apply.
+            ids.retain(|id| {
+                !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+            });
             ids
         }
     }
@@ -1141,6 +1159,54 @@ mod tests {
             let mut expected = builtin;
             expected.push("gongwen".to_string());
             assert_eq!(load_disabled_bundles_for(ConnectorScope::Code), expected);
+        });
+    }
+
+    /// Round-6 B1: the boot seed installs the session-reader builtin into
+    /// installed.json before the first scope read. The DenyAll computed
+    /// default must drop ids that normalize to builtins — a default
+    /// containing the seed would make the echoed full-set write that
+    /// initializes the scope fail `reject_builtin_ids`, so every composer
+    /// toggle on an uninitialized DenyAll profile errored forever with no
+    /// escape (uninstall is guarded, the builtin page is read-only).
+    #[test]
+    fn denyall_computed_default_excludes_builtins_and_roundtrips_a_toggle() {
+        with_temp_home("pinvou3-scope-denyall-builtin", || {
+            crate::platform::paths::ensure_dirs().unwrap();
+            // The exact startup order that produced the deadlock: seed first,
+            // then read an uninitialized scope.
+            crate::features::marketplace::MarketplaceManager::new()
+                .ensure_default_installed_mcp_tools();
+            let default_set = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                !default_set.iter().any(|id| {
+                    crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+                }),
+                "computed default must not contain builtin ids: {default_set:?}"
+            );
+            assert!(
+                !default_set.contains(&"session-reader".to_string()),
+                "the boot-seeded builtin must not appear in the default: {default_set:?}"
+            );
+
+            // Round-trip the composer shape: the UI reads the full effective
+            // set and echoes it back on any toggle — that write passes the
+            // builtin guard and initializes the scope (previously it was the
+            // very write that was rejected).
+            let echoed = load_disabled_bundles_for(ConnectorScope::Code);
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime
+                .block_on(crate::features::marketplace::apply_disabled_connectors_for(
+                    ConnectorScope::Code,
+                    echoed,
+                ))
+                .expect("echoing the computed default back must pass the builtin guard");
+            // Initialized: the persisted list wins from here on, and a later
+            // read is stable (idempotent toggle behavior).
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                load_disabled_bundles_for(ConnectorScope::Code),
+            );
         });
     }
 

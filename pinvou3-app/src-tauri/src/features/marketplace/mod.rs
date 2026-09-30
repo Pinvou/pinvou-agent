@@ -1009,9 +1009,19 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // A healthy or absent file passes through untouched.
         connectors::load_mcp_json_for_reconcile()?;
         self.migrate_mcp_plaintext_secrets()?;
+        // A case-variant catalog spelling (direct-IPC install("Session-Reader"))
+        // canonicalizes to the catalog id before any write: every write path
+        // below (release_package, package_mcp_dir, mcp.json keying, the store
+        // record) keys the exact id, and the folded uninstall guard would
+        // otherwise refuse the variant record forever while boot re-release
+        // never converges (review round-6 M3b). Non-catalog ids pass through.
+        let tool_id: &str =
+            mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id);
         // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
         // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
         // args 与 secret 声明）。无内嵌 spec 的上传/自定义包仍从自身包目录读取。
+        // The lookup keys the exact id: the content lane never case-folds
+        // (review round-6 M3a).
         let manifest = mcp_catalog::embedded_manifest(tool_id)?
             .or_else(|| self.load_manifest(tool_id))
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
@@ -5535,6 +5545,50 @@ mod tests {
                 Some("embedded-token")
             );
             assert!(!mcp.to_string().contains("embedded-token"));
+        });
+    }
+
+    /// Install-entry canonicalization (review round-6 M3b): a case-variant
+    /// catalog spelling installs under the canonical id — mcp.json keys
+    /// `session-reader` with args at the real released dir
+    /// `bundles/session-reader/mcp`, and the store record carries the
+    /// canonical id the uninstall guard accepts. The variant spelling must
+    /// not survive any write.
+    #[test]
+    fn install_case_variant_catalog_id_canonicalizes_before_writes() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.install("Session-Reader", &std::collections::HashMap::new())
+                .unwrap();
+
+            let store = store::BundleStore::new();
+            assert!(
+                store.get("session-reader").unwrap().map(|r| r.installed).unwrap_or(false),
+                "the canonical record must be installed"
+            );
+            assert!(
+                store.get("Session-Reader").unwrap().is_none(),
+                "no record may exist under the case-variant spelling"
+            );
+            let mcp = read_mcp_json();
+            assert!(
+                mcp["servers"].get("session-reader").is_some(),
+                "mcp.json must key the canonical id: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("Session-Reader").is_none(),
+                "mcp.json must not key the case-variant spelling: {mcp}"
+            );
+            let command = mcp["servers"]["session-reader"]["args"]
+                .as_array()
+                .and_then(|a| a.last())
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                command.contains("bundles/session-reader/mcp") && !command.contains("Session-Reader"),
+                "args must point at the real released dir: {command}"
+            );
         });
     }
 
