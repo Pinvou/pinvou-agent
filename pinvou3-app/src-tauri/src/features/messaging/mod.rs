@@ -440,9 +440,10 @@ fn quarantine(path: &Path) {
     }
 }
 
-/// Watch loop body: process every pending spool file (oldest first — file
-/// names are sortable hex), quarantining poison files immediately and
-/// transient failures after [`MAX_DELIVERY_ATTEMPTS`] spread-out attempts.
+/// Watch loop body: process every pending spool file in the deterministic
+/// directory order (hex names sort stably but carry no time order),
+/// quarantining poison files immediately and transient failures after
+/// [`MAX_DELIVERY_ATTEMPTS`] spread-out attempts.
 async fn process_pending_spool<D: SpoolDelivery>(
     delivery: &D,
     store: &crate::features::sessions::SessionStore,

@@ -53,22 +53,24 @@ export const scheduledTaskDeleteSummary = args => {
 };
 
 /**
- * Header summary for a list call: the requested limit is the only argument.
+ * Header summary for a list call: the localized verb plus the requested
+ * limit (the only argument).
  */
-export const scheduledTaskListSummary = args => {
+export const scheduledTaskListSummary = (args, listLabel) => {
   const limit = args && args.limit != null ? ` · limit ${args.limit}` : '';
-  return `list${limit}`;
+  return `${listLabel}${limit}`;
 };
 
 /**
  * Parses a create/update/delete tool's text output into a render shape:
- * - { kind:'created'|'updated'|'deleted', taskId, taskName } — the watcher
- *   confirmed the operation;
+ * - { kind:'created'|'updated'|'deleted', taskId, taskName, duplicate? } —
+ *   the watcher confirmed the operation (`duplicate` marks the recorded
+ *   result of an idempotent replay);
  * - { kind:'pending', taskName }  — queued, no confirmation within the
  *   server's short wait (still NOT an error);
- * - { kind:'failed', error }      — the request was rejected/failed;
- * - null                          — anything unparseable (drift defense: the
- *   caller falls back to the default raw output view).
+ * - null                          — failures and anything unparseable (drift
+ *   defense: error outputs render through the is_error path, and unknown
+ *   shapes fall back to the default raw output view).
  */
 export const parseScheduledTaskToolOutput = output => {
   if (typeof output !== 'string' || !output.trim()) return null;
@@ -87,15 +89,16 @@ export const parseScheduledTaskToolOutput = output => {
   }
   if (payload.ok === true && payload.taskId) {
     const opByKind = { create: 'created', update: 'updated', delete: 'deleted' };
-    const kind = opByKind[payload.kind] || 'created';
+    const kind = opByKind[payload.kind];
+    // An unknown kind is drift: fall back to the raw view instead of
+    // asserting a specific affirmative outcome.
+    if (!kind) return null;
     return {
       kind,
       taskId: String(payload.taskId),
       taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
+      duplicate: payload.duplicate === true,
     };
-  }
-  if (payload.ok === false && typeof payload.error === 'string') {
-    return { kind: 'failed', error: payload.error };
   }
   return null;
 };

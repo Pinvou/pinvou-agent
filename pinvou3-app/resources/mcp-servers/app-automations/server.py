@@ -21,11 +21,14 @@ rejected as targets in every layer.
   own it; concurrent whole-file writers would clobber each other). It
   validates the request and spools it:
   ~/.pinvou3/task-requests/spool/<name>.json — the name is the sender-scoped
-  sha256 of "<from_session>|<idempotency_key>" when a key is given (same
+  sha256 of "<from_session>|<kind>|<task_id>|<idempotency_key>" when a key is
+  given (a key requires from_session, so the namespace is never global; same
   namespace rule as send_message_to_session, contract §6: two sessions reusing
   one key cannot clobber each other's pending request; retries overwrite the
-  same file, so a retried tool call cannot duplicate a task) or a random uuid
-  otherwise;
+  same file) or a random uuid otherwise. Delivery is at-least-once: a success
+  marker suppresses a replay, a failure marker lets a retry re-apply, and a
+  crash in the watcher between apply and marker can re-apply once (documented
+  in the watcher module);
 - An app-side Rust watcher (features/scheduled/creation_requests.rs) drains the
   spool, re-validates it (the spool directory is user-writable, server-side
   checks are not trusted), and creates the task through the panel's own domain
@@ -115,7 +118,6 @@ PROTOCOL_VERSION = "2024-11-05"
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
 
 MAX_SESSION_ID_LEN = 128
-MAX_SENDER_TITLE_CHARS = 200
 
 # Task ids are AutomationManager-allocated UUIDs, but the watcher feeds them
 # back into storage paths, so the same charset/length discipline as session
@@ -133,6 +135,10 @@ REQUEST_KINDS = ("create", "update", "delete")
 MAX_NAME_CHARS = 200
 MAX_PROMPT_CHARS = 32 * 1024
 MAX_MODEL_ID_CHARS = 200
+# Bounded like every other field: an oversize-but-valid-shape rrule must be a
+# validation error here, not a spool file that the watcher's byte cap turns
+# into silent poison.
+MAX_RRULE_CHARS = 256
 MAX_IDEMPOTENCY_KEY_CHARS = 128
 
 DEFAULT_LIST_LIMIT = 20
@@ -152,7 +158,9 @@ TOOL_DEFS = [
     {
         "name": "create_scheduled_task",
         "description": (
-            "Create a Pinvou scheduled task (write operation, requires user approval). "
+            "Create a Pinvou scheduled task (write operation, applied immediately — "
+            "there is no per-call confirmation dialog; the Scheduled Tasks panel "
+            "and the audit log are the review surface). "
             "Use this when the user asks for a recurring or one-shot automated job, e.g. "
             "'run an AI news digest every day at 8:30' or 'remind me once on June 1st at 9:30'. "
             "By default each run starts its own conversation in a task-dedicated workspace; "
@@ -210,13 +218,9 @@ TOOL_DEFS = [
                     "type": "string",
                     "description": "(optional) Your own session's sessionId, for the creation audit trail. Omit if unknown.",
                 },
-                "from_title": {
-                    "type": "string",
-                    "description": "(optional) Your own session's title, for the audit trail. Omit if unknown.",
-                },
                 "idempotency_key": {
                     "type": "string",
-                    "description": "(optional) Opaque key (max 128 chars) making retries safe: resending with the same key replaces the pending request instead of creating a duplicate task.",
+                    "description": "(optional) Opaque key (max 128 chars) making retries safe: resending with the same key replaces the pending request instead of creating a duplicate task. Requires from_session so the key is scoped to one sender; omit both when the sender is unknown.",
                 },
             },
             "required": ["name", "prompt", "rrule"],
@@ -260,13 +264,15 @@ TOOL_DEFS = [
     {
         "name": "update_scheduled_task",
         "description": (
-            "Update an existing Pinvou scheduled task by id (write operation, requires "
-            "user approval). Provide only the fields to change: name, prompt, rrule "
-            "(same product subset as create_scheduled_task), model_id, or paused. Read "
-            "the task first when the user asks to change a task they describe by name "
-            "but you only have list data. Returns the updated task's id and name once "
-            "the app confirms, or delivery:'pending' when confirmation has not landed "
-            "within a few seconds."
+            "Update an existing Pinvou scheduled task by id (write operation, applied "
+            "immediately — there is no per-call confirmation dialog; the Scheduled "
+            "Tasks panel and the audit log are the review surface). Provide only the "
+            "fields to change: name, prompt, rrule (same product subset as "
+            "create_scheduled_task), model_id, or paused. Read the task first when "
+            "the user asks to change a task they describe by name but you only have "
+            "list data. Returns the updated task's id and name once the app confirms, "
+            "or delivery:'pending' when confirmation has not landed within a few "
+            "seconds."
         ),
         "inputSchema": {
             "type": "object",
@@ -303,10 +309,6 @@ TOOL_DEFS = [
                     "type": "string",
                     "description": "(optional) Your own session's sessionId, for the audit trail.",
                 },
-                "from_title": {
-                    "type": "string",
-                    "description": "(optional) Your own session's title, for the audit trail.",
-                },
                 "idempotency_key": {
                     "type": "string",
                     "description": "(optional) Opaque key (max 128 chars) making retries safe.",
@@ -319,7 +321,7 @@ TOOL_DEFS = [
         "name": "delete_scheduled_task",
         "description": (
             "Permanently delete a Pinvou scheduled task by id and archive its run "
-            "history (destructive, requires user approval). The task stops scheduling "
+            "history (destructive, applied immediately). The task stops scheduling "
             "immediately and is removed from the Scheduled Tasks panel. Confirm with "
             "the user before calling; runs already in flight are cancelled. Returns "
             "the deleted task's id and name once the app confirms."
@@ -334,10 +336,6 @@ TOOL_DEFS = [
                 "from_session": {
                     "type": "string",
                     "description": "(optional) Your own session's sessionId, for the audit trail.",
-                },
-                "from_title": {
-                    "type": "string",
-                    "description": "(optional) Your own session's title, for the audit trail.",
                 },
                 "idempotency_key": {
                     "type": "string",
@@ -395,6 +393,12 @@ def resolve_automations_dir(argv=None):
     return os.path.join(os.path.expanduser("~"), ".pinvou3", "automations")
 
 
+# NOTE: the small request/response helpers in this file (full_tool_name,
+# load_tool_features, _coerce_int, _parse_bool_arg, _send, _result, _error,
+# _text_content) are byte-identical to session-reader/server.py's. They are
+# deliberately kept per-package self-contained so each builtin server stays
+# independently reviewable and shippable; extract a shared _builtin_common.py
+# (shipped via McpPackageSpec.files) only if a third server repeats them.
 def full_tool_name(tool_name):
     """Local tool name -> registry full name mcp_<server>_<tool> (matches the Rust-side registration convention)."""
     return "mcp_%s_%s" % (SERVER_KEY, tool_name)
@@ -534,15 +538,24 @@ def _parse_rrule_segments(rrule):
         key, sep, value = item.partition("=")
         if not sep:
             return None, "invalid rrule: segment '%s' must look like KEY=VALUE" % item[:64]
-        parts[key.strip()] = value.strip()
+        key = key.strip()
+        if key in parts:
+            # Duplicate keys are ambiguous (this dict is last-wins while the
+            # Rust watcher's find is first-wins): reject instead of silently
+            # picking one side's schedule.
+            return None, "invalid rrule: duplicate field '%s'" % key
+        parts[key] = value.strip()
     return parts, None
 
 
 def _parse_int_value(key, value, minimum, maximum):
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None, "invalid rrule: %s must be an integer, got '%s'" % (key, value[:32])
+    text = str(value)
+    # ASCII digits only: Python's int() also accepts full-width digits
+    # ('１０') and PEP 515 underscores ('1_0'), which the Rust watcher's u32
+    # parse rejects — such a record would validate here and poison there.
+    if not (text.isascii() and text.isdigit()):
+        return None, "invalid rrule: %s must be an integer, got '%s'" % (key, text[:32])
+    number = int(text)
     if number < minimum or number > maximum:
         return None, "invalid rrule: %s must be between %d and %d, got %d" % (
             key, minimum, maximum, number)
@@ -777,7 +790,7 @@ def validate_sender_session_id(session_id):
 
 
 def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
-                   from_session, from_title, idempotency_key, kind="create",
+                   from_session, idempotency_key, kind="create",
                    task_id=None, target_session=None):
     """Spool record shape — the app-side Rust watcher
     (features/scheduled/creation_requests.rs) re-validates this schema before
@@ -797,7 +810,6 @@ def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
         "model_id": model_id,
         "paused": paused,
         "from_session": from_session,
-        "from_title": from_title,
         "created_at": _utc_now_rfc3339(),
         "idempotency_key": idempotency_key,
     }
@@ -819,7 +831,7 @@ def _read_result_marker(path):
 
 
 def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
-                          paused=False, from_session=None, from_title=None,
+                          paused=False, from_session=None,
                           idempotency_key=None, automations_dir=None,
                           target_session=None, sessions_dir=None):
     """Validates a creation request and spools it for the app-side watcher,
@@ -845,7 +857,6 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
         model_id=model_id,
         paused=paused,
         from_session=from_session,
-        from_title=from_title,
         idempotency_key=idempotency_key,
         target_session=target_session,
         sessions_dir=sessions_dir,
@@ -854,7 +865,7 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
 
 def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                           prompt=None, rrule=None, model_id=None, paused=None,
-                          task_id=None, from_session=None, from_title=None,
+                          task_id=None, from_session=None,
                           idempotency_key=None, target_session=None,
                           sessions_dir=None):
     """Kind-aware request path behind the create/update/delete tools: validate
@@ -869,7 +880,6 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     rrule = str(rrule).strip() if rrule is not None else None
     model_id = str(model_id or "").strip() or None
     from_session = str(from_session or "").strip() or None
-    from_title = str(from_title or "").strip() or None
     idempotency_key = str(idempotency_key or "").strip() or None
     if paused is not None:
         paused = _parse_bool_arg(paused, default=None)
@@ -914,6 +924,8 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                     return None, (
                         "invalid %s: delete takes no extra fields" % field_name
                     )
+            if paused is not None:
+                return None, "invalid paused: delete takes no extra fields"
 
     if name is not None:
         if not name:
@@ -929,13 +941,21 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         return None, "invalid model_id: exceeds %d characters" % MAX_MODEL_ID_CHARS
     if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
         return None, "invalid idempotency_key: exceeds %d characters" % MAX_IDEMPOTENCY_KEY_CHARS
+    if idempotency_key is not None and from_session is None:
+        # Without a sender the key's namespace would degrade to global: two
+        # unattributed senders reusing one key would clobber each other's
+        # pending request.
+        return None, (
+            "invalid idempotency_key: requires from_session so the key is "
+            "scoped to one sender; omit idempotency_key when the sender is unknown"
+        )
     if from_session is not None:
         error = validate_sender_session_id(from_session)
         if error:
             return None, error
-    if from_title is not None and len(from_title) > MAX_SENDER_TITLE_CHARS:
-        return None, "invalid from_title: exceeds %d characters" % MAX_SENDER_TITLE_CHARS
     if rrule is not None:
+        if len(rrule) > MAX_RRULE_CHARS:
+            return None, "invalid rrule: exceeds the %d character limit" % MAX_RRULE_CHARS
         rrule, error = validate_rrule(rrule)
         if error:
             return None, error
@@ -957,16 +977,21 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         # Deliberately no raw OSError text: it embeds absolute host paths.
         return None, "task request queue is not writable"
     if idempotency_key is not None:
+        # from_session is guaranteed non-None here by the validation above.
         spool_id = hashlib.sha256(
-            ("%s|%s|%s|%s" % (from_session or "", kind, task_id or "",
+            ("%s|%s|%s|%s" % (from_session, kind, task_id or "",
                               idempotency_key)).encode("utf-8")
         ).hexdigest()
     else:
         spool_id = uuid.uuid4().hex
     target = os.path.join(spool_dir, "%s.json" % spool_id)
-    duplicate = os.path.exists(target)
+    done_marker = os.path.join(spool_dir, ".done", "%s.json" % spool_id)
+    # A pre-existing spool file (still queued / retrying) or a pre-existing
+    # result marker (already completed) both mean this key was seen before:
+    # say so instead of reporting a fresh apply.
+    duplicate = os.path.exists(target) or os.path.exists(done_marker)
     payload = _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
-                             from_session, from_title, idempotency_key,
+                             from_session, idempotency_key,
                              kind=kind, task_id=task_id if kind != "create" else None,
                              target_session=target_session)
     try:
@@ -985,7 +1010,6 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     except OSError:
         return None, "task request queue is not writable"
 
-    done_marker = os.path.join(spool_dir, ".done", "%s.json" % spool_id)
     deadline = time.monotonic() + RESULT_WAIT_SECONDS
     while time.monotonic() < deadline:
         marker, marker_error = _read_result_marker(done_marker)
@@ -1003,16 +1027,17 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "The scheduled task has been created and is visible in the "
                         "Scheduled Tasks panel."
                         if not duplicate else
-                        "A request with the same idempotency key was already queued; "
-                        "no second task was created."
+                        "A request with the same idempotency key was already "
+                        "processed; returning its recorded result — no second task "
+                        "was created."
                     )
                 elif kind == "update":
                     result["note"] = (
                         "The scheduled task has been updated and the change is "
                         "visible in the Scheduled Tasks panel."
                         if not duplicate else
-                        "A request with the same idempotency key was already queued; "
-                        "the update was not applied twice."
+                        "A request with the same idempotency key was already "
+                        "processed; returning its recorded result."
                     )
                 else:
                     result["deleted"] = True
@@ -1020,8 +1045,8 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "The scheduled task has been deleted; its run history is "
                         "archived and it no longer schedules."
                         if not duplicate else
-                        "A request with the same idempotency key was already queued; "
-                        "the task was not deleted twice."
+                        "A request with the same idempotency key was already "
+                        "processed; returning its recorded result."
                     )
                 return result, None
             return None, str(marker.get("error") or "scheduled task request failed")
@@ -1147,7 +1172,6 @@ def _handle_call(req_id, params, requests_dir, automations_dir, sessions_dir, to
             model_id=args.get("model_id"),
             paused=args.get("paused"),
             from_session=args.get("from_session"),
-            from_title=args.get("from_title"),
             idempotency_key=args.get("idempotency_key"),
             automations_dir=automations_dir,
             target_session=args.get("target_session"),
@@ -1170,7 +1194,6 @@ def _handle_call(req_id, params, requests_dir, automations_dir, sessions_dir, to
             paused=args.get("paused"),
             task_id=args.get("task_id"),
             from_session=args.get("from_session"),
-            from_title=args.get("from_title"),
             idempotency_key=args.get("idempotency_key"),
             target_session=args.get("target_session"),
             sessions_dir=sessions_dir,
@@ -1204,7 +1227,7 @@ def _handle(msg, requests_dir, automations_dir, sessions_dir, tool_features):
         _result(req_id, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-app-automations", "version": "1.0.0"},
+            "serverInfo": {"name": "pinvou3-app-automations", "version": "1.1.0"},
         })
     elif method == "ping":
         # MCP convention: keepalive ping answers with an empty result.

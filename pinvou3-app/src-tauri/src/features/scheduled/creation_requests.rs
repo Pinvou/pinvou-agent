@@ -8,7 +8,8 @@
 //! `<pinvou3 home>/task-requests/spool/<name>.json` (see that server.py's
 //! `schedule_task_request` — the spool record schema is the contract between
 //! the two sides; the file name is the idempotency identity: the sha256 of
-//! `"<from_session>|<kind>|<task_id>|<idempotency_key>"` when a key is given, a
+//! `"<from_session>|<kind>|<task_id>|<idempotency_key>"` when a key is given (a
+//! key requires `from_session`, so the namespace is never global), a
 //! random uuid otherwise, so a retried operation replaces its own pending
 //! record and can never clobber another session's nor another kind's). This
 //! module is the app-side consumer:
@@ -20,14 +21,24 @@
 //!   forced YOLO, per-task workspace, model sidecar, archive-then-delete —
 //!   the exact pipelines the panel uses);
 //! - a processed request leaves a result marker
-//!   `spool/.done/<file-stem>.json` (`{"ok":true,"task_id","task_name"}`) so
-//!   the MCP server's short synchronous wait can return the task ids, and a
-//!   retried tool call cannot apply twice across watcher restarts;
+//!   `spool/.done/<file-stem>.json` (`{"ok":true|false,...}`) so the MCP
+//!   server's short synchronous wait can return the outcome. Delivery is
+//!   **at-least-once**, not exactly-once: a success marker suppresses a
+//!   replayed request (so a retried tool call cannot re-apply after the
+//!   marker landed), and a failure marker lets the retry re-apply once the
+//!   cause is fixed — but a crash between applying an operation and writing
+//!   its marker can still re-apply it on the next boot (create can then
+//!   duplicate; update/delete replay idempotently). This is the same
+//!   accepted window as features/messaging; it is bounded by the marker
+//!   write happening directly after the apply;
 //! - poison files (schema drift, hostile content, oversize) are quarantined
-//!   under `spool/failed/` immediately; *transient* failures retry
-//!   up to [`MAX_CREATE_ATTEMPTS`] times and then quarantine too, writing a
-//!   `{"ok":false,"error"}` marker so a waiting caller receives the failure
-//!   instead of hanging;
+//!   under `spool/failed/` immediately with a `{"ok":false,"error"}`
+//!   marker; *transient* failures retry up to [`MAX_CREATE_ATTEMPTS`] times
+//!   and then quarantine with the same marker, so a waiting caller always
+//!   receives a terminal outcome instead of hanging. Marker and quarantine
+//!   state older than [`STATE_RETENTION`] is pruned (`.done/` and `failed/`
+//!   would otherwise grow forever; stray `*.tmp` crash leftovers are swept
+//!   with the same pass);
 //! - every success appends a kind-specific audit record into the requesting
 //!   session's execution root (contract §5 L1; model-supplied `from_session`
 //!   is the same unauthenticated provenance as messaging's — the Ask rules
@@ -65,20 +76,28 @@ use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_
 const MAX_NAME_CHARS: usize = 200;
 const MAX_PROMPT_CHARS: usize = 32 * 1024;
 const MAX_MODEL_ID_CHARS: usize = 200;
+const MAX_RRULE_CHARS: usize = 256;
 const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
 const MAX_SESSION_ID_LEN: usize = 128;
 const MAX_TASK_ID_LEN: usize = 128;
-const MAX_TITLE_CHARS: usize = 200;
 /// Spool file size cap: a legitimate record is bounded by the 32k-char prompt
 /// (~96 KB as UTF-8 CJK) plus small metadata; anything bigger is hostile and
 /// is quarantined before being read into memory.
 const MAX_SPOOL_FILE_BYTES: u64 = 256 * 1024;
 /// Transient creation failures retry on consecutive polls; quarantine only
-/// after this many attempts (design C4: ≤3 次重试 → 隔离 + 失败标记).
+/// after this many attempts (design C4: quarantine + failure marker).
 const MAX_CREATE_ATTEMPTS: u32 = 3;
 /// Watch poll interval: task creations are rare; the MCP server's synchronous
 /// wait covers up to 5s, so 1s keeps the typical create inside one poll.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Retention for terminal state: result markers are the cross-restart
+/// idempotency window and `failed/` holds quarantine evidence, so keep a
+/// bounded history (same shape as messaging's state pruning) instead of
+/// letting `.done/` + `failed/` grow forever.
+const STATE_RETENTION: Duration = Duration::from_secs(14 * 24 * 3600);
+/// How often the watcher sweeps stale terminal state and stray `*.tmp`
+/// crash leftovers (cheap enough at this rate, rare enough to be free).
+const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// rrule product subset (deliberately stricter than the domain parser, same
 /// rules as the MCP server's `validate_rrule`): HOURLY/WEEKLY/ONCE only —
@@ -88,17 +107,18 @@ const WEEKDAY_TOKENS: [&str; 7] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
 
 /// Guard for the creation-request watcher task: held in a
 /// `Arc<SyncMutex<Option<_>>>` slot on [`ScheduledTaskState`] so the state can
-/// derive `Clone` while the watcher keeps a single owner; Drop cancels the
-/// token and aborts the task (EnginePool idle-reaper pattern).
+/// derive `Clone` while the watcher keeps a single owner. Drop only cancels
+/// the token — the loop observes it between passes and exits on its own
+/// (graceful drain): aborting the task could interrupt an apply between
+/// persisting the operation and writing its result marker, and that
+/// apply→marker gap is exactly the at-least-once replay window.
 pub(crate) struct CreationWatchGuard {
     cancel: CancellationToken,
-    handle: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl Drop for CreationWatchGuard {
     fn drop(&mut self) {
         self.cancel.cancel();
-        self.handle.abort();
     }
 }
 
@@ -158,8 +178,6 @@ pub(crate) struct SpooledCreationRequest {
     #[serde(default)]
     pub from_session: Option<String>,
     #[serde(default)]
-    pub from_title: Option<String>,
-    #[serde(default)]
     pub created_at: String,
     #[serde(default)]
     pub idempotency_key: Option<String>,
@@ -177,12 +195,14 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     {
         bail!("invalid from_session id");
     }
-    // The from_session is audit provenance only, but a sched- session must
-    // never appear as the requester: scheduled-run sessions are unattended by
-    // design and the Ask rule already denies the tool there — a spool record
-    // claiming one is hostile (defense in depth, mirrors messaging).
-    if is_sched_session_id(id) {
-        bail!("from_session {id} is a scheduled-run session and cannot request task operations");
+    // The from_session is audit provenance only, but isolated sessions must
+    // never appear as the requester: sched- sessions are unattended by
+    // design, eval_ is benchmark-private, and aux- marks auxiliary
+    // side-chats (the MCP server rejects all three for every request kind;
+    // re-checked here because the spool directory is user-writable —
+    // defense in depth, mirrors messaging).
+    if is_sched_session_id(id) || is_aux_session_id(id) || id.starts_with("eval_") {
+        bail!("from_session {id} is an isolated session and cannot request task operations");
     }
     Ok(())
 }
@@ -267,6 +287,9 @@ impl SpooledCreationRequest {
                         bail!("delete takes no extra fields ({label})");
                     }
                 }
+                if self.paused.is_some() {
+                    bail!("delete takes no extra fields (paused)");
+                }
             }
         }
         check_optional_field(&self.name, "task name", MAX_NAME_CHARS)?;
@@ -278,6 +301,15 @@ impl SpooledCreationRequest {
             }
             if key.chars().count() > MAX_IDEMPOTENCY_KEY_CHARS {
                 bail!("idempotency_key exceeds the {MAX_IDEMPOTENCY_KEY_CHARS} character limit");
+            }
+            if self.from_session.is_none() {
+                // Without a sender the key's namespace would degrade to
+                // global: two unattributed senders reusing one key would
+                // clobber each other's pending request (mirrors the MCP
+                // server's validation).
+                bail!(
+                    "idempotency_key requires from_session so the key is scoped to one sender"
+                );
             }
         }
         check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
@@ -295,11 +327,6 @@ impl SpooledCreationRequest {
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
-        if let Some(title) = &self.from_title {
-            if title.chars().count() > MAX_TITLE_CHARS {
-                bail!("from_title exceeds the {MAX_TITLE_CHARS} character limit");
-            }
-        }
         if let Some(rrule) = &self.rrule {
             validate_product_rrule(rrule)?;
         } else if self.kind == SpoolRequestKind::Create {
@@ -318,6 +345,9 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
     if normalized.is_empty() {
         bail!("rrule is empty");
     }
+    if normalized.chars().count() > MAX_RRULE_CHARS {
+        bail!("rrule exceeds the {MAX_RRULE_CHARS} character limit");
+    }
     let mut parts: Vec<(String, String)> = Vec::new();
     for raw in normalized.split(';') {
         let item = raw.trim();
@@ -327,7 +357,14 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         let Some((key, value)) = item.split_once('=') else {
             bail!("invalid rrule segment '{item}'");
         };
-        parts.push((key.trim().to_string(), value.trim().to_string()));
+        let key = key.trim().to_string();
+        if parts.iter().any(|(existing, _)| *existing == key) {
+            // Duplicate keys are ambiguous (the server's dict is last-wins,
+            // this lookup is first-wins): reject instead of silently picking
+            // one side's schedule (mirrors the MCP server's validation).
+            bail!("invalid rrule: duplicate field '{key}'");
+        }
+        parts.push((key, value.trim().to_string()));
     }
     let get = |key: &str| {
         parts
@@ -627,15 +664,72 @@ fn audit_request(
         SpoolRequestKind::Update => (SCHEDULED_TASK_UPDATE_TOOL, "scheduled_task_update"),
         SpoolRequestKind::Delete => (SCHEDULED_TASK_DELETE_TOOL, "scheduled_task_delete"),
     };
-    let detail = serde_json::json!({
+    let mut detail = serde_json::json!({
         "tool": tool,
         "task_id": task_id,
         "task_name": task_name,
         "outcome": request.kind.as_str(),
     });
+    if request.kind == SpoolRequestKind::Update {
+        // Record which fields the update touched so the audit line says what
+        // changed, not just that something did.
+        let changed: Vec<&str> = [
+            ("name", request.name.is_some()),
+            ("prompt", request.prompt.is_some()),
+            ("rrule", request.rrule.is_some()),
+            ("model_id", request.model_id.is_some()),
+            ("paused", request.paused.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, present)| *present)
+        .map(|(label, _)| label)
+        .collect();
+        detail["changed"] = serde_json::json!(changed);
+    }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
     }
+}
+
+/// Best-effort failure audit: a poison or retry-exhausted record with a
+/// usable `from_session` leaves a trace in that session's execution root —
+/// the audit trail must not be success-only. Runs before quarantine because
+/// it re-reads the spool file.
+fn audit_failure(
+    sessions: &crate::features::sessions::SessionStore,
+    path: &Path,
+    error: &anyhow::Error,
+) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(request) = serde_json::from_slice::<SpooledCreationRequest>(&bytes) else {
+        return;
+    };
+    let Some(from) = request.from_session.as_deref() else {
+        return;
+    };
+    let Ok(roots) = sessions.session_roots(from) else {
+        return;
+    };
+    let tool = match request.kind {
+        SpoolRequestKind::Create => SCHEDULED_TASK_CREATE_TOOL,
+        SpoolRequestKind::Update => SCHEDULED_TASK_UPDATE_TOOL,
+        SpoolRequestKind::Delete => SCHEDULED_TASK_DELETE_TOOL,
+    };
+    let error_text = sanitize_marker_text(&format!("{error:#}"));
+    let detail = serde_json::json!({
+        "tool": tool,
+        "task_id": request.task_id.as_deref().unwrap_or_default(),
+        "outcome": "failed",
+        "error": error_text.chars().take(500).collect::<String>(),
+    });
+    crate::features::assistant::audit::append(
+        &roots.execution,
+        "scheduled_task_failed",
+        "app",
+        detail,
+    );
 }
 
 /// Process one spool file: read → validate → (marker check) → create →
@@ -676,9 +770,12 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .unwrap_or("")
         .to_string();
     let done_marker = done_dir().join(format!("{stem}.json"));
-    if done_marker.exists() {
-        // Idempotent retry after a completed creation: the marker wins and
-        // the leftover file is dropped WITHOUT a second create (C3).
+    if result_marker_suppresses(&done_marker) {
+        // Idempotent retry after a completed operation: the success marker
+        // wins and the leftover file is dropped WITHOUT a second apply (C3).
+        // A failure marker does NOT suppress: the retry re-applies so one
+        // terminal failure cannot poison the key forever (the fixed cause
+        // can succeed; success overwrites the marker).
         return Processed::Done;
     }
     let applied = match request.kind {
@@ -725,12 +822,46 @@ fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
         .with_context(|| format!("write result marker {}", path.display()))
 }
 
+/// Whether a replayed request with an existing result marker should be
+/// suppressed. Only a readable marker with `ok:false` lets the retry
+/// re-apply; success (or an unreadable/undecipherable marker — mid-write or
+/// hostile) suppresses, matching the historical marker-exists behavior
+/// without re-applying blind.
+fn result_marker_suppresses(path: &Path) -> bool {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return path.exists(),
+    };
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(value) => value.get("ok").and_then(serde_json::Value::as_bool) != Some(false),
+        Err(_) => true,
+    }
+}
+
 fn quarantine(path: &Path) {
     let _ = std::fs::create_dir_all(failed_dir());
-    if let Err(error) = std::fs::rename(
-        path,
-        failed_dir().join(path.file_name().unwrap_or_default()),
-    ) {
+    let mut target = failed_dir().join(path.file_name().unwrap_or_default());
+    if target.exists() {
+        // Never overwrite earlier evidence: suffix a counter until free.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        for counter in 1..u32::MAX {
+            let candidate = failed_dir().join(format!("{stem}.{counter}{ext}"));
+            if !candidate.exists() {
+                target = candidate;
+                break;
+            }
+        }
+    }
+    if let Err(error) = std::fs::rename(path, &target) {
         // Terminal-path failure: the poison file stays in the spool and will
         // be re-processed (and re-logged) every poll — say so loudly instead
         // of failing silently forever.
@@ -741,13 +872,33 @@ fn quarantine(path: &Path) {
     }
 }
 
+/// Failure markers must not leak absolute host paths into model-visible
+/// context (the MCP server scrubs its own errors the same way): fold the
+/// user home and the pinvou3 home prefixes into opaque placeholders.
+fn sanitize_marker_text(text: &str) -> String {
+    let pinvou3_home = crate::platform::paths::pinvou3_home();
+    let home = crate::platform::paths::user_home_dir();
+    // Longest prefix first so the pinvou3-home placeholder wins over "~".
+    let longest_first = [(&pinvou3_home, "<pinvou3-home>"), (&home, "~")];
+    let mut sanitized = text.to_string();
+    for (prefix, placeholder) in longest_first {
+        let prefix_text = prefix.to_string_lossy().to_string();
+        if !prefix_text.is_empty() {
+            sanitized = sanitized.replace(&prefix_text, placeholder);
+        }
+    }
+    sanitized
+}
+
 /// Write a failure marker for an already-consumed spool file (the caller has
 /// quarantined it): a still-waiting MCP call receives the failure instead of
-/// hanging until its 5s timeout (design C4).
+/// hanging until its 5s timeout (design C4). The marker also unblocks the
+/// idempotency key: a later retry re-applies instead of replaying the stale
+/// failure forever.
 fn write_failure_marker(stem: &str, error: &anyhow::Error) {
     let payload = serde_json::json!({
         "ok": false,
-        "error": format!("{error:#}"),
+        "error": sanitize_marker_text(&format!("{error:#}")),
     });
     if let Err(marker_error) = write_done_marker(&done_dir().join(format!("{stem}.json")), &payload)
     {
@@ -755,11 +906,63 @@ fn write_failure_marker(stem: &str, error: &anyhow::Error) {
     }
 }
 
+/// Age-based retention for terminal state (see [`STATE_RETENTION`]): prune
+/// stale markers in `.done/` and evidence in `failed/`, and sweep stray
+/// `*.tmp` files left by a crash between mkstemp and rename on the server
+/// side (nothing else ever removes them).
+fn prune_stale_state() {
+    prune_stale_state_at(std::time::SystemTime::now());
+}
+
+/// The clock is injected so tests can age files without sleeping.
+fn prune_stale_state_at(now: std::time::SystemTime) {
+    let prune_dir = |dir: &Path| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= STATE_RETENTION);
+            if stale {
+                // Best effort: a busy file is retried on the next sweep.
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    };
+    prune_dir(&done_dir());
+    prune_dir(&failed_dir());
+    if let Ok(entries) = std::fs::read_dir(spool_root()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_stray_tmp = path.extension().is_some_and(|ext| ext == "tmp");
+            if !is_stray_tmp {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= STATE_RETENTION);
+            if stale {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 /// Retry bookkeeping per file: attempt count. Entries are removed on every
-/// terminal path.
+/// terminal path. `spool_dir_error_logged` keeps the unreadable-directory
+/// warning to one line per streak instead of 1 Hz spam.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, u32>,
+    spool_dir_error_logged: bool,
 }
 
 /// Watch loop body: process every pending spool file (sorted names — uuid /
@@ -772,8 +975,22 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     retries: &mut RetryState,
 ) {
     let root = spool_root();
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return; // no spool directory yet = nothing was ever requested
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => {
+            retries.spool_dir_error_logged = false;
+            entries
+        }
+        // No spool directory yet = nothing was ever requested.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        // Anything else (permissions, ...) is a real anomaly: warn once per
+        // streak instead of silently spinning at 1 Hz forever.
+        Err(error) => {
+            if !retries.spool_dir_error_logged {
+                log::warn!("[scheduled-creation] cannot read the spool directory: {error}");
+                retries.spool_dir_error_logged = true;
+            }
+            return;
+        }
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -792,12 +1009,26 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         match process_spool_file(path.as_path(), creator, sessions, notifier).await {
             Processed::Done => {
                 retries.attempts.remove(&name);
-                let _ = std::fs::remove_file(&path);
+                if let Err(error) = std::fs::remove_file(&path) {
+                    // The marker exists, so the operation stays deduped, but
+                    // a stuck file would loop Done/remove every poll — say
+                    // so instead of failing silently.
+                    log::warn!(
+                        "[scheduled-creation] processed {name} but could not remove it: {error}"
+                    );
+                }
             }
             Processed::Poison(error) => {
                 retries.attempts.remove(&name);
                 log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
+                audit_failure(sessions, &path, &error);
                 quarantine(&path);
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&name)
+                    .to_string();
+                write_failure_marker(&stem, &error);
             }
             Processed::Retry(error) => {
                 let count = {
@@ -810,6 +1041,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         "[scheduled-creation] quarantining {name} after {count} create attempts: {error:#}"
                     );
                     retries.attempts.remove(&name);
+                    audit_failure(sessions, &path, &error);
                     quarantine(&path);
                     let stem = path
                         .file_stem()
@@ -835,28 +1067,36 @@ impl ScheduledTaskState {
         let cancel = CancellationToken::new();
         let state = self.clone();
         let token = cancel.clone();
-        let handle = tauri::async_runtime::spawn(async move {
+        // Cancellation is observed only between passes: a pass runs to
+        // completion even if the app quits mid-drain, so no apply is
+        // interrupted between its domain write and its result marker (the
+        // JoinHandle is dropped detached — the loop exits on its own).
+        tauri::async_runtime::spawn(async move {
             let mut retries = RetryState::default();
+            let mut last_prune = tokio::time::Instant::now() - PRUNE_INTERVAL;
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(POLL_INTERVAL) => {
-                        process_pending_spool(
-                            &StateCreator(&state),
-                            &state.sessions,
-                            &EventNotifier(&app),
-                            &mut retries,
-                        )
-                        .await;
-                    }
+                    _ = tokio::time::sleep(POLL_INTERVAL) => {}
                 }
+                if last_prune.elapsed() >= PRUNE_INTERVAL {
+                    prune_stale_state();
+                    last_prune = tokio::time::Instant::now();
+                }
+                process_pending_spool(
+                    &StateCreator(&state),
+                    &state.sessions,
+                    &EventNotifier(&app),
+                    &mut retries,
+                )
+                .await;
             }
         });
         let mut slot = self
             .creation_watch
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        *slot = Some(CreationWatchGuard { cancel, handle });
+        *slot = Some(CreationWatchGuard { cancel });
     }
 }
 
@@ -1044,6 +1284,10 @@ mod tests {
             "FREQ=MONTHLY;BYDAY=1MO",
             "nonsense",
             "FREQ=HOURLY;WILDCARD=1",
+            // Duplicate keys are ambiguous across the language boundary.
+            "FREQ=ONCE;FREQ=HOURLY;AT=2099-06-01T09:30",
+            // Oversize rrule is capped like every other field.
+            &format!("FREQ=HOURLY;INTERVAL=2;{}", "X".repeat(MAX_RRULE_CHARS)),
         ] {
             assert!(
                 validate_product_rrule(rrule).is_err(),
@@ -1464,11 +1708,18 @@ mod tests {
         request.name = None;
         request.prompt = None;
         request.rrule = None;
+        request.paused = None;
         assert!(request.validate().is_ok(), "a bare delete is valid");
         request.name = Some("x".to_string());
         assert!(
             request.validate().is_err(),
             "delete with extra fields is rejected"
+        );
+        request.name = None;
+        request.paused = Some(false);
+        assert!(
+            request.validate().is_err(),
+            "delete rejects a stray paused even when false"
         );
     }
 
@@ -1576,6 +1827,7 @@ mod tests {
                 ("name", serde_json::Value::Null),
                 ("prompt", serde_json::Value::Null),
                 ("rrule", serde_json::Value::Null),
+                ("paused", serde_json::Value::Null),
             ]),
         )
         .unwrap();
@@ -1602,5 +1854,181 @@ mod tests {
         .unwrap();
         assert_eq!(marker["kind"], "delete");
         assert_eq!(marker["task_id"], created.id);
+    }
+
+    #[test]
+    fn result_marker_suppression_follows_the_ok_field() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-marker-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("m.json");
+        // Success suppresses the replay (C3).
+        std::fs::write(&marker, serde_json::json!({"ok": true, "task_id": "t"}).to_string())
+            .unwrap();
+        assert!(result_marker_suppresses(&marker));
+        // Failure does NOT suppress: the retry re-applies (one terminal
+        // failure must not poison the key forever).
+        std::fs::write(&marker, serde_json::json!({"ok": false, "error": "e"}).to_string())
+            .unwrap();
+        assert!(!result_marker_suppresses(&marker));
+        // Unreadable/undecipherable markers suppress (historical behavior).
+        std::fs::write(&marker, b"not json{").unwrap();
+        assert!(result_marker_suppresses(&marker));
+        assert!(result_marker_suppresses(&dir.join("missing.json")) == false);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn failure_marker_lets_a_retry_reapply() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // A stale failure marker from a previous attempt must not swallow the
+        // retry: the operation re-applies and overwrites the marker.
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(
+            done_dir().join("retry.json"),
+            serde_json::json!({"ok": false, "error": "store was read-only"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(spool.join("retry.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1, "the retry re-applied despite the failure marker");
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("retry.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], true, "the success overwrote the failure marker");
+    }
+
+    #[tokio::test]
+    async fn poison_writes_failure_marker_and_audits() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(
+            crate::platform::paths::sessions_root()
+                .join("reqsrc01")
+                .join("workspace"),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("bad.json"),
+            spool_record_json(&[(
+                "prompt",
+                serde_json::json!("x".repeat(MAX_PROMPT_CHARS + 1)),
+            )]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        // The waiting MCP call receives a terminal failure instead of
+        // "pending" (the poison arm writes the marker too).
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("bad.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
+        assert!(
+            marker["error"].as_str().unwrap().contains("character limit"),
+            "the validation reason reaches the caller"
+        );
+        // The failure is audited into the requesting session's execution root.
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("audit record");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_failed");
+        assert_eq!(line["detail"]["outcome"], "failed");
+        assert!(
+            !line["detail"]["error"].as_str().unwrap().contains("/home/"),
+            "failure markers never leak absolute host paths"
+        );
+    }
+
+    #[test]
+    fn isolated_senders_keyless_ids_and_stray_delete_fields_are_rejected() {
+        for sender in ["sched-run1", "SCHED-run1", "aux-side1", "eval_b1"] {
+            let record: SpooledCreationRequest =
+                serde_json::from_str(&spool_record_json(&[(
+                    "from_session",
+                    serde_json::json!(sender),
+                )]))
+                .unwrap();
+            assert!(record.validate().is_err(), "{sender} must be rejected");
+        }
+        // A key without a sender would degrade the namespace to global.
+        let record: SpooledCreationRequest =
+            serde_json::from_str(&spool_record_json(&[
+                ("idempotency_key", serde_json::json!("anon-key")),
+                ("from_session", serde_json::Value::Null),
+            ]))
+            .unwrap();
+        assert!(record.validate().is_err(), "key requires from_session");
+        // delete takes no extra fields, paused included.
+        let record: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[
+            ("kind", serde_json::json!("delete")),
+            ("task_id", serde_json::json!("0f0e0d0c-0000-0000-0000-000000000000")),
+            ("paused", serde_json::json!(true)),
+            ("name", serde_json::Value::Null),
+            ("prompt", serde_json::Value::Null),
+            ("rrule", serde_json::Value::Null),
+        ]))
+        .unwrap();
+        assert!(record.validate().is_err(), "delete rejects a stray paused");
+    }
+
+    #[test]
+    fn prune_stale_state_sweeps_old_markers_and_stray_tmp() {
+        let _home = TempHome::new();
+        let done = done_dir();
+        let failed = failed_dir();
+        std::fs::create_dir_all(&done).unwrap();
+        std::fs::create_dir_all(&failed).unwrap();
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let write = |path: &Path| {
+            std::fs::write(path, b"{}").unwrap();
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_times(
+                std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - STATE_RETENTION - std::time::Duration::from_secs(60),
+                ),
+            )
+            .unwrap();
+        };
+        write(&done.join("old.json"));
+        write(&failed.join("old.json"));
+        write(&spool_root().join("stray.tmp"));
+        std::fs::write(done.join("fresh.json"), b"{}").unwrap();
+        std::fs::write(spool_root().join("pending.json"), b"{}").unwrap();
+        prune_stale_state_at(std::time::SystemTime::now());
+        assert!(!done.join("old.json").exists(), "stale marker pruned");
+        assert!(!failed.join("old.json").exists(), "stale evidence pruned");
+        assert!(!spool_root().join("stray.tmp").exists(), "stray tmp swept");
+        assert!(done.join("fresh.json").exists(), "fresh marker kept");
+        assert!(
+            spool_root().join("pending.json").exists(),
+            "a pending record is never pruned"
+        );
     }
 }

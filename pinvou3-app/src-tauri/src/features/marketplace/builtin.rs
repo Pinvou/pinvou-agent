@@ -346,7 +346,7 @@ mod tests {
 
     /// Feature registry: session-reader's tool_features aggregate into
     /// session-mention / long-memory (the two read tools) and
-    /// session-messaging (the send tool); app-automations' two tools
+    /// session-messaging (the send tool); app-automations' five tools
     /// aggregate into scheduled-task-automation — the registry is the union
     /// over all builtin manifests, so the new family must appear alongside
     /// the session-reader features without disturbing them.
@@ -685,9 +685,9 @@ mod tests {
     }
 
     /// Disabling only the scheduled-task-automation feature removes exactly
-    /// the two app-automations tools (both flow into the engine's disallowed
-    /// list, lowercased); session-reader's tools are untouched — the union
-    /// semantics are per-feature, never per-plugin or global.
+    /// the five app-automations tools (they all flow into the engine's
+    /// disallowed list, lowercased); session-reader's tools are untouched —
+    /// the union semantics are per-feature, never per-plugin or global.
     #[test]
     fn scheduled_task_feature_removal_is_scoped_to_its_family() {
         with_temp_home(|| {

@@ -194,8 +194,9 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           return args.status === 'completed' ? t.tsDone
             : args.status === 'in_progress' ? t.tsInProgress
             : args.status === 'pending' ? t.tsPending : '';
-        // app-automations（定时任务）：创建卡摘要 = 任务名 + rrule；更新卡 =
-        // 目标 id + 变更字段；删除卡 = 目标 id；list 卡只标 limit。
+        // app-automations (scheduled tasks): create summary = task name +
+        // rrule; update = target id + changed fields; delete = target id;
+        // list = the localized verb plus the requested limit.
         case SCHEDULED_TASK_CREATE_TOOL:
           return scheduledTaskCreateSummary(args);
         case SCHEDULED_TASK_UPDATE_TOOL:
@@ -203,7 +204,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
         case SCHEDULED_TASK_DELETE_TOOL:
           return scheduledTaskDeleteSummary(args);
         case SCHEDULED_TASK_LIST_TOOL:
-          return scheduledTaskListSummary(args);
+          return scheduledTaskListSummary(args, t.uiScheduledTaskTool.listLabel);
         default:
           return '';
       }

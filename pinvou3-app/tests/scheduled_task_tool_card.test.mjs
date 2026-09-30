@@ -4,7 +4,7 @@
  *   (the timeline header must show name + rrule / target id without opening
  *   the card);
  * - the output parser maps the server's payload shapes (created / updated /
- *   deleted / pending / failed) and degrades to null on anything unparseable
+ *   deleted / pending / duplicate) and degrades to null on anything unparseable
  *   (drift defense — the card must never take over on unknown output);
  * - the prompt excerpt bounds a 32k prompt to a timeline-safe prefix.
  *
@@ -55,31 +55,33 @@ test('delete summary shows the target id', () => {
   assert.equal(scheduledTaskDeleteSummary({}), '');
 });
 
-test('list summary names the tool with optional limit', () => {
-  assert.equal(scheduledTaskListSummary({ limit: 5 }), 'list · limit 5');
-  assert.equal(scheduledTaskListSummary({}), 'list');
+test('list summary names the tool with the localized verb and optional limit', () => {
+  assert.equal(scheduledTaskListSummary({ limit: 5 }, 'list'), 'list · limit 5');
+  assert.equal(scheduledTaskListSummary({}, 'list'), 'list');
 });
 
 test('output parser maps the CRUD payload shapes', () => {
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: 't-1', taskName: '早报' })),
-    { kind: 'created', taskId: 't-1', taskName: '早报' },
+    { kind: 'created', taskId: 't-1', taskName: '早报', duplicate: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'update', taskId: 't-1', taskName: '早报' })),
-    { kind: 'updated', taskId: 't-1', taskName: '早报' },
+    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'delete', taskId: 't-1', taskName: '早报' })),
-    { kind: 'deleted', taskId: 't-1', taskName: '早报' },
+    { kind: 'deleted', taskId: 't-1', taskName: '早报', duplicate: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: null, delivery: 'pending', taskName: '早报' })),
     { kind: 'pending', taskName: '早报' },
   );
+  // Idempotent replay: the recorded result is surfaced as a duplicate so the
+  // card does not claim a fresh apply.
   assert.deepEqual(
-    parseScheduledTaskToolOutput(JSON.stringify({ ok: false, error: 'invalid rrule' })),
-    { kind: 'failed', error: 'invalid rrule' },
+    parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'update', taskId: 't-1', taskName: '早报', duplicate: true })),
+    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: true },
   );
 });
 
@@ -91,6 +93,10 @@ test('output parser degrades to null on drift', () => {
   // ok:true without taskId and without delivery:"pending" is not a shape the
   // server ever produces — the card must not guess.
   assert.equal(parseScheduledTaskToolOutput(JSON.stringify({ ok: true })), null);
+  // An unknown kind is drift: never render it as an affirmative "created".
+  assert.equal(parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'mystery', taskId: 't-1' })), null);
+  // Failures flow through the is_error path (OutputError), never this card.
+  assert.equal(parseScheduledTaskToolOutput(JSON.stringify({ ok: false, error: 'invalid rrule' })), null);
 });
 
 test('prompt excerpt bounds long prompts', () => {
@@ -134,7 +140,10 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   );
   // The L1 write tools must never join the quiet-tool set (execution
   // visibility is mandatory).
-  const quietList = common.slice(common.indexOf('QUIET_TOOLS'), common.indexOf(']);'));
+  const quietList = common.slice(
+    common.indexOf('QUIET_TOOLS'),
+    common.indexOf(']);', common.indexOf('QUIET_TOOLS')),
+  );
   assert.ok(!quietList.includes('app-automations'), 'the write tools must not be quiet tools');
 });
 

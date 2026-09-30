@@ -214,6 +214,7 @@
   }
 
   // web+tauriSessions 共享
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function touchSessionBuffer(id, buf, scheduled) {
     if (!buf) return null;
     if (scheduled) buf.scheduledRunSession = true;
@@ -1985,6 +1986,7 @@
   }
 
   // web+tauriChat 共享
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function isBusyFor(sid) {
     return sid === state.activeSessionId ? state.busy : !!(sessionStates.value[sid] && sessionStates.value[sid].busy);
   }

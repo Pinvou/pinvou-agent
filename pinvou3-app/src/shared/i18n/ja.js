@@ -8,7 +8,7 @@ import { dictEn } from './en.js';
 import { browserJa } from './browser.js';
 
 const conversationJa = {
-  completed:'完了', failed:'失敗', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
+  completed:'完了', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
   waitingPermission:'権限の承認待ち', waitingInput:'入力待ち', waitingInputShort:'入力待ち',
   goLatest:label=>`${label}。最新メッセージへ移動`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -632,7 +632,7 @@ dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準�
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
-  'app-automations':{ title:'定時タスク', subtitle:'任意のチャットから定時タスクを作成・更新・削除（都度確認）。一覧と詳細も照会できます', latency:'ローカル', desc:'AI が任意の会話で Pinvou の定時タスクを直接管理できます。作成・更新・一時停止/再開・削除は、手動管理の定時タスクパネルと同じ保存先に反映されます（実行ごとにタスク専用ワークスペースで独立した会話を開始。N 時間ごと・毎週/毎日の時刻・一回限りのスケジュールのみ対応）。変更のたびに確認を求め、監査ログに記録し、タイムラインに全文表示します。デフォルトでインストール済み。完全ローカル、ネットワーク接続なし。設定でオフにできます（scheduled-task-automation）。', welcomeQueries:['毎日 8:30 に AI ニュースまとめの定時タスクを作成して','6 月 1 日 9:30 に一度リマインドして','朝のダイジェストを 7:00 に変更して','古い日報タスクを削除して'] },
+  'app-automations':{ title:'定時タスク', subtitle:'任意のチャットから定時タスクを作成・更新・削除（書き込みは即時反映）。一覧と詳細も照会できます', latency:'ローカル', desc:'AI が任意の会話で Pinvou の定時タスクを直接管理できます。作成・更新・一時停止/再開・削除は、手動管理の定時タスクパネルと同じ保存先に反映されます（実行ごとにタスク専用ワークスペースで独立した会話を開始。N 時間ごと・毎週/毎日の時刻・一回限りのスケジュールのみ対応）。書き込みは確認ダイアログなしで即時反映されます。監査ログと定時タスクパネルが確認窓口で、タイムラインに全文表示されます。デフォルトでインストール済み。完全ローカル、ネットワーク接続なし。設定でオフにできます（scheduled-task-automation）。', welcomeQueries:['毎日 8:30 に AI ニュースまとめの定時タスクを作成して','6 月 1 日 9:30 に一度リマインドして','朝のダイジェストを 7:00 に変更して','古い日報タスクを削除して'] },
   'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴の読み取りと、他セッションへのメッセージ送信', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを参照すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。アンインストールすると、参照したセッションを読めなくなります。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
@@ -669,7 +669,7 @@ dictJa.uiBuiltinPlugins = {
   versionNote:'アプリと共に更新',
   dataAccessLabel:'データアクセス範囲',
   levels:{ L0:'読み取り専用：状態を変更せず、内容は信頼できないものとして扱う', L1:'書き込み：ユーザーに見える副作用を伴う（メッセージ送信、タスク作成など）', L2:'破壊的：削除・上書きなど不可逆な操作。明示的な認可が必要' },
-  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'他のセッションへのメッセージ送信（書き込み）', 'automations.read':'この端末の定時タスク一覧（読み取り専用）', 'automations.write':'この端末の定時タスク作成（書き込み）' },
+  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'他のセッションへのメッセージ送信（書き込み）', 'automations.read':'この端末の定時タスク一覧（読み取り専用）', 'automations.write':'この端末の定時タスクの作成・更新・削除（書き込み）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
@@ -887,8 +887,8 @@ dictJa.uiArtifacts = {
 dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ' };
 dictJa.uiSessionMessage = { from:name=>`セッションから：${name}`, fromUnknown:'別のセッションから', jump:name=>`セッションを開く：${name}`, unavailable:'セッションが削除されました' };
 
-// app-automations 定時タスクツールカード（tool-renderers.jsx 作成カード）。
-dictJa.uiScheduledTaskTool = { created:'定時タスクを作成しました', updated:'定時タスクを更新しました', deleted:'定時タスクを削除しました', deletedNote:'実行履歴はアーカイブされ、タスクはスケジュールされません。', pending:'リクエストを送信しました。アプリが結果を確認できていません。定時タスクパネルで確認できます', failed:'定時タスクのリクエストに失敗しました', promptLabel:'プロンプト' };
+// app-automations scheduled-task tool card (tool-renderers.jsx create card).
+dictJa.uiScheduledTaskTool = { listLabel:'一覧', duplicateNote:'同じ冪等キーのリクエストは処理済みです。記録済みの結果を表示しています。', created:'定時タスクを作成しました', updated:'定時タスクを更新しました', deleted:'定時タスクを削除しました', deletedNote:'実行履歴はアーカイブされ、タスクはスケジュールされません。', pending:'リクエストを送信しました。アプリが結果を確認できていません。定時タスクパネルで確認できます', failed:'定時タスクのリクエストに失敗しました', promptLabel:'プロンプト' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {
