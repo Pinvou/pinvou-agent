@@ -55,3 +55,29 @@ pub(crate) use self::guard::set_physical_input_lock_timeout_for_tests;
 
 // ---- Platform capability entry points (platform): consumed by Tauri commands ----
 pub(crate) use self::platform::{backend_supported, request_permissions};
+
+/// The model-facing availability announcement, rendered into the session
+/// system prompt by the bridge while the master switch is on (Work **and**
+/// Code sessions — the tool is registered for every native Engine session).
+///
+/// Without it the tool is invisible in practice: the model is never told the
+/// capability exists, so it only finds `computer_use` if the user asks for
+/// computer use by name and the model thinks of `tool_search` (observed
+/// 2026-09-30: the model confidently claimed the environment had no screen
+/// access). The section therefore names the tool directly — which, per the
+/// tool-policy admission criterion, is also why the tool ships
+/// non-deferred: static text that names a tool must not describe an absent
+/// first-turn catalog entry. Consent/grant mechanics live in the tool's own
+/// (activated-with) description; this block carries only what the model
+/// must know BEFORE the first call.
+pub(crate) fn instruction_block() -> &'static str {
+    // Deliberately not translated: the session system prompt is the
+    // Chinese-language static prompt plus English capability sections (the
+    // Browser capabilities section is English too).
+    "## Computer use
+- This session can see and operate the real desktop through the `computer_use` tool: `screenshot` shows the actual screen, and further actions move the mouse, click, scroll, and type on this computer. The tool is in your tool list; take a `screenshot` first and work in its pixel coordinates.
+- Reading the screen (screenshot, cursor position, element tree) needs no approval. The FIRST action that moves the mouse or presses a key fails on purpose while the app shows the user a control-grant dialog: tell the user to approve it, and retry only after they say they did (the grant covers the rest of the session). If control was granted earlier but a new action reports it missing (the session went idle or the app restarted), ask the user to grant again — do not loop retries.
+- A pending per-action confirmation (delete / submit / pay / accept-class targets) blocks every input action until the user answers the dialog; wait instead of retrying, and never try to click the dialog itself.
+- On macOS, `accessibility_denied` / `screen_recording_denied` mean the user must grant the permission in System Settings → Privacy & Security (the Accessibility pane is labeled \"Device Control and Data Access\" on recent macOS; Screen Recording keeps its name) and then FULLY QUIT AND REOPEN the app — a grant reaches an already-running process only at launch. Say both steps, not just the settings path.
+- Stay inside the user's explicit request; do not propose driving the desktop when a normal tool (file, shell, browser) fits the task."
+}
