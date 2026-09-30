@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the round-24 plain owner-probe EACCES pin is cfg(unix)-gated: the fault is a chmod-0000 sessions directory with no portable non-unix equivalent; the test self-skips when the mode is not enforced and no platform behavior leaks into shared code.
 //! Per-session sidecar for the user-selected working directory of plain chat
 //! sessions (lives and dies with the session directory).
 //!
