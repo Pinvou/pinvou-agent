@@ -26,6 +26,25 @@ const REFS = [
   { sessionId: 'def456', title: '销量 PPT' },
 ];
 
+// The real module-level acceptance filter (round-9): extract it so the
+// behavioral sandboxes run the SAME code the component runs, not a copy.
+const refsSurvivingAcceptanceFn = (() => {
+  const marker = 'const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) =>';
+  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, 'refsSurvivingAcceptance helper not found in ChatView');
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  assert.fail('unbalanced braces extracting refsSurvivingAcceptance');
+})();
+
 test('injection block carries metadata + contract only, no contents; round-trip strips it losslessly', () => {
   const body = '把引用会话里定的配色方案用到 PPT 里\n第二行';
   const outgoing = buildSessionMentionBlock(REFS) + body;
@@ -261,7 +280,10 @@ function extractChatViewFunction(header) {
 
 test('handleSend assembles and prepends the injection block on dispatch (behavioral)', async () => {
   const fn = extractChatViewFunction('async function handleSend()');
-  const calls = { sent: [], clearedRefs: false, prefills: [], inputText: '帮我总结上次的讨论' };
+  const calls = { sent: [], prefills: [], inputText: '帮我总结上次的讨论' };
+  // Updater-aware refs state: setSessionRefs applies function updates against
+  // the live list so the acceptance filter actually runs (round-9).
+  const live = { refs: [...REFS] };
   const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
     isMultiAgentReadOnly: false,
@@ -273,15 +295,18 @@ test('handleSend assembles and prepends the injection block on dispatch (behavio
     setInputText: (value) => { calls.inputText = typeof value === 'function' ? value(calls.inputText) : value; },
     sessionMentionEnabled: true,
     buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft,
+    restoreSessionMentionDraft,
     sessionRefs: REFS,
     sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return true; },
-    setSessionRefs: () => { calls.clearedRefs = true; },
+    setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
     bridge: { chat: { prefillComposer: (text) => { calls.prefills.push(text); } } },
     personalWorkbenchTemplateIdRef: { current: null },
     setPersonalWorkbenchTemplateId: () => {},
     console,
   };
-  vm.runInNewContext(`${fn}\nthis.handleSend = handleSend;`, sandbox);
+  vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
   await sandbox.handleSend();
   // The mutation "send the raw body" fails here: the dispatched text must be
   // the injection block + the composer body.
@@ -289,12 +314,88 @@ test('handleSend assembles and prepends the injection block on dispatch (behavio
   assert.equal(calls.sent[0], buildSessionMentionBlock(REFS) + '帮我总结上次的讨论');
   assert.ok(calls.sent[0].startsWith('## Referenced chats\n'));
   // Chips are consumed once the send is accepted.
-  assert.equal(calls.clearedRefs, true);
+  assert.deepEqual([...live.refs], []);
+});
+
+test('handleSend acceptance keeps chips picked during the send await (round-9)', async () => {
+  // The dispatch clears the serialized chips; the user can pick a NEW chip
+  // while the send awaits (capability installs). The acceptance tail must
+  // consume only the serialized set — the mid-await pick was never sent and
+  // stays armed (previously setSessionRefs([]) wiped it).
+  const fn = extractChatViewFunction('async function handleSend()');
+  const live = { refs: [...REFS] };
+  const midAwaitPick = { sessionId: 'new789', title: '会议纪要' };
+  const sandbox = {
+    mentionDraftKeyRef: { current: 'session:sess-1' },
+    isMultiAgentReadOnly: false,
+    canSend: true,
+    chatVoice: null,
+    inputText: '正文',
+    inputTextRef: { current: '正文' },
+    constrainChatInput: (value) => ({ text: value, truncated: false }),
+    setInputText: () => {},
+    sessionMentionEnabled: true,
+    buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft,
+    restoreSessionMentionDraft,
+    sessionRefs: REFS,
+    sendChatMessage: async () => {
+      live.refs.push(midAwaitPick);
+      return true;
+    },
+    setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+    bridge: { chat: { prefillComposer: () => {} } },
+    personalWorkbenchTemplateIdRef: { current: null },
+    setPersonalWorkbenchTemplateId: () => {},
+    console,
+  };
+  vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
+  await sandbox.handleSend();
+  assert.deepEqual([...live.refs], [midAwaitPick], 'only the serialized refs are consumed');
+});
+
+test('handleSend treats "restored" as a non-dispatch and keeps the chips armed (round-9)', async () => {
+  // sendMessage resolves "restored" when nothing was dispatched but the body
+  // is already back in the composer (first-turn materialization abort,
+  // mid-send session switch): it is truthy but NOT acceptance — the plain
+  // lane previously consumed the chips on it (the voice lane already maps it
+  // to false). The refs snapshot must merge back like any other failure.
+  const fn = extractChatViewFunction('async function handleSend()');
+  const live = { refs: [] };
+  const calls = { inputText: '' };
+  const sandbox = {
+    mentionDraftKeyRef: { current: 'session:sess-1' },
+    isMultiAgentReadOnly: false,
+    canSend: true,
+    chatVoice: null,
+    inputText: '',
+    inputTextRef: { current: '' },
+    constrainChatInput: (value) => ({ text: value, truncated: false }),
+    setInputText: (value) => { calls.inputText = value; },
+    sessionMentionEnabled: true,
+    buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft,
+    restoreSessionMentionDraft,
+    sessionRefs: REFS,
+    sendChatMessage: async () => 'restored',
+    setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+    bridge: { chat: { prefillComposer: () => {} } },
+    personalWorkbenchTemplateIdRef: { current: null },
+    setPersonalWorkbenchTemplateId: () => {},
+    console,
+  };
+  vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
+  await sandbox.handleSend();
+  assert.deepEqual([...live.refs], REFS, 'the snapshot must be put back — nothing was sent');
+  assert.equal(calls.inputText, '', 'the bridge already restored the text; the composer is not re-filled');
 });
 
 test('handleSend sends the bare body when the feature gate is off (behavioral)', async () => {
   const fn = extractChatViewFunction('async function handleSend()');
-  const calls = { sent: [], clearedRefs: false };
+  const calls = { sent: [] };
+  const live = { refs: [...REFS] };
   const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
     isMultiAgentReadOnly: false,
@@ -306,19 +407,22 @@ test('handleSend sends the bare body when the feature gate is off (behavioral)',
     setInputText: () => {},
     sessionMentionEnabled: false,
     buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft,
+    restoreSessionMentionDraft,
     sessionRefs: REFS,
     sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return true; },
-    setSessionRefs: () => { calls.clearedRefs = true; },
+    setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
     bridge: { chat: { prefillComposer: () => {} } },
     personalWorkbenchTemplateIdRef: { current: null },
     setPersonalWorkbenchTemplateId: () => {},
     console,
   };
-  vm.runInNewContext(`${fn}\nthis.handleSend = handleSend;`, sandbox);
+  vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
   await sandbox.handleSend();
   assert.deepEqual(calls.sent, ['正文']);
   // Stale chips still clear on an accepted send even when the gate suppressed the block.
-  assert.equal(calls.clearedRefs, true);
+  assert.deepEqual([...live.refs], []);
 });
 
 test('composer session drop invokes the guarded add path (behavioral)', () => {
@@ -484,6 +588,7 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
   const fn = extractChatViewFunction('sendTask: async (outgoing, context) =>');
   const make = ({ enabled, truncated = false, accepted = true } = {}) => {
     const calls = { sent: [], clearedRefs: 0, inputReplaced: [], restoredDraft: [] };
+    const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
       mentionSendScopeRef: { current: null },
@@ -495,38 +600,45 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
       sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
       dedupeSessionRefs,
-      stashSessionMentionDraft: () => {},
+      stashSessionMentionDraft,
+      restoreSessionMentionDraft,
       sessionRefs: REFS,
       personalWorkbenchTemplateIdRef: { current: null },
       setPersonalWorkbenchTemplateId: () => {},
       bridge: { chat: { restoreTaskDraft: (text) => { calls.restoredDraft.push(text); } } },
       sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return accepted; },
-      setSessionRefs: () => { calls.clearedRefs += 1; },
+      setSessionRefs: (value) => {
+        calls.clearedRefs += 1;
+        live.refs = typeof value === 'function' ? value(live.refs) : value;
+      },
       console,
     };
+    sandbox.liveRefs = live;
     // sendTask is an object member of the useComposerVoiceInput config.
-    vm.runInNewContext(`const config = ({ ${fn} });\nthis.sendTask = config.sendTask;`, sandbox);
-    return { sandbox, calls };
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\nconst config = ({ ${fn} });\nthis.sendTask = config.sendTask;`, sandbox);
+    return { sandbox, calls, live };
   };
   // Gate on: the block rides ahead of the dictated task text, the chips clear
   // at dispatch, and an accepted send consumes whatever a mid-send pick could
   // have re-armed (the scope-guarded accepted-branch clear).
   {
-    const { sandbox, calls } = make({ enabled: true });
+    const { sandbox, calls, live } = make({ enabled: true });
     const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
     assert.equal(accepted, true);
     assert.equal(calls.sent.length, 1);
     assert.equal(calls.sent[0], buildSessionMentionBlock(REFS) + '帮我把这份纪要排成 PPT');
     assert.ok(calls.clearedRefs >= 1, 'the chips clear at dispatch');
+    assert.deepEqual([...live.refs], [], 'an accepted voice send consumes the serialized refs');
     assert.deepEqual(calls.restoredDraft, []);
   }
   // Gate off: the bare task text goes out (chips still clear at dispatch).
   {
-    const { sandbox, calls } = make({ enabled: false });
+    const { sandbox, calls, live } = make({ enabled: false });
     const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
     assert.equal(accepted, true);
     assert.deepEqual(calls.sent, ['帮我把这份纪要排成 PPT']);
     assert.ok(calls.clearedRefs >= 1);
+    assert.deepEqual([...live.refs], []);
   }
   // Non-acceptance: the snapshot goes back to the same scope (nothing sent).
   {
@@ -535,6 +647,14 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
     assert.equal(accepted, false);
     assert.deepEqual(calls.sent, [buildSessionMentionBlock(REFS) + '帮我把这份纪要排成 PPT']);
     assert.ok(calls.clearedRefs >= 2, 'dispatch clear + failure restore');
+  }
+  // "restored" maps to false for the voice funnel and re-arms the chips.
+  {
+    const { sandbox, calls, live } = make({ enabled: true, accepted: 'restored' });
+    const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
+    assert.equal(accepted, false);
+    assert.ok(calls.clearedRefs >= 2, 'dispatch clear + non-dispatch restore');
+    assert.deepEqual([...live.refs], REFS, 'the snapshot merges back on a non-dispatch verdict');
   }
   // Length overflow: no send, the constrained text is written back.
   {
@@ -549,8 +669,11 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
 
 test('handleDesignAiSubmit assembles the block under the gate and consumes chips on acceptance (behavioral)', async () => {
   const fn = extractChatViewFunction('const handleDesignAiSubmit = useCallback((text) => {');
-  const make = ({ enabled, selectedElement = null }) => {
-    const calls = { sent: [], clearedRefs: 0 };
+  const make = ({ enabled, selectedElement = null, accepted = true } = {}) => {
+    const calls = { sent: [] };
+    // This lane does not clear at dispatch, so the live list starts as the
+    // full pick set; the updater-aware stub runs the real acceptance filter.
+    const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
       useCallback: (callback) => callback,
@@ -561,19 +684,23 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
       },
       sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft,
+      restoreSessionMentionDraft,
       sessionRefs: REFS,
-      sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return true; },
-      setSessionRefs: () => { calls.clearedRefs += 1; },
+      sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
       console,
     };
+    sandbox.liveRefs = live;
     // The extractor stops at the callback body's closing brace; the trailing
     // `)` completes the useCallback(...) call expression.
-    vm.runInNewContext(`${fn})\nthis.handleDesignAiSubmit = handleDesignAiSubmit;`, sandbox);
-    return { sandbox, calls };
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn})\nthis.handleDesignAiSubmit = handleDesignAiSubmit;`, sandbox);
+    return { sandbox, calls, live };
   };
   // Gate on + a selected design element: block + element-scoped body.
   {
-    const { sandbox, calls } = make({ enabled: true, selectedElement: { tagName: 'DIV', className: 'hero banner' } });
+    const { sandbox, calls, live } = make({ enabled: true, selectedElement: { tagName: 'DIV', className: 'hero banner' } });
     sandbox.handleDesignAiSubmit('改成深色主题');
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     assert.equal(calls.sent.length, 1);
@@ -581,15 +708,15 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
       calls.sent[0],
       buildSessionMentionBlock(REFS) + '【调整DIV.hero】改成深色主题',
     );
-    assert.equal(calls.clearedRefs, 1);
+    assert.deepEqual([...live.refs], [], 'an accepted design send consumes the chips');
   }
   // Gate off: the scoped body alone goes out (chips still clear on acceptance).
   {
-    const { sandbox, calls } = make({ enabled: false });
+    const { sandbox, calls, live } = make({ enabled: false });
     sandbox.handleDesignAiSubmit('改成深色主题');
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     assert.deepEqual(calls.sent, ['改成深色主题']);
-    assert.equal(calls.clearedRefs, 1);
+    assert.deepEqual([...live.refs], [], 'stale chips clear even when the gate suppressed the block');
   }
   // Empty text is a no-op.
   {
@@ -597,8 +724,71 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
     sandbox.handleDesignAiSubmit('   ');
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     assert.deepEqual(calls.sent, []);
-    assert.equal(calls.clearedRefs, 0);
   }
+  // "restored" is NOT acceptance (round-9): the text is back in the composer,
+  // nothing was sent — the chips stay armed for the retry.
+  {
+    const { sandbox, calls, live } = make({ enabled: true, accepted: 'restored' });
+    sandbox.handleDesignAiSubmit('改成深色主题');
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    assert.equal(calls.sent.length, 1);
+    assert.deepEqual([...live.refs], REFS, 'a non-dispatch verdict must keep the chips armed');
+  }
+});
+
+test('secondary send surfaces ride the composer refs (welcome card / plan options, round-9)', async () => {
+  // Behavioral: sendWithSessionRefs assembles the block like handleSend and
+  // consumes only the serialized set on TRUE acceptance; a "restored"
+  // verdict keeps the chips armed.
+  const marker = 'const sendWithSessionRefs = useCallback((text) => {';
+  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, 'sendWithSessionRefs not found');
+  const tailMarker = '}, [sessionMentionEnabled, sessionRefs, sendChatMessage]);';
+  const tail = source.indexOf(tailMarker, start);
+  assert.notEqual(tail, -1, 'sendWithSessionRefs deps tail not found');
+  const fn = source.slice(start, tail + tailMarker.length);
+  const make = ({ accepted = true } = {}) => {
+    const calls = { sent: [] };
+    const live = { refs: [...REFS] };
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      useCallback: (callback) => callback,
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft,
+      restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+      console,
+    };
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.sendWithSessionRefs = sendWithSessionRefs;`, sandbox);
+    return { sandbox, calls, live };
+  };
+  {
+    const { sandbox, calls, live } = make();
+    const verdict = await sandbox.sendWithSessionRefs('总结一下当前进度');
+    assert.equal(verdict, true);
+    assert.equal(calls.sent[0], buildSessionMentionBlock(REFS) + '总结一下当前进度');
+    assert.deepEqual([...live.refs], [], 'an accepted secondary send consumes the serialized refs');
+  }
+  {
+    const { sandbox, live } = make({ accepted: 'restored' });
+    const verdict = await sandbox.sendWithSessionRefs('总结一下当前进度');
+    assert.equal(verdict, 'restored');
+    assert.deepEqual([...live.refs], REFS, 'a non-dispatch verdict keeps the chips armed');
+  }
+  // Wiring pins: the welcome-card handler and both ChatBubble onSend sites
+  // (plan-card options, memory candidates) route through the shared sender —
+  // deleting any of them turns this red.
+  assert.match(source, /void sendWithSessionRefs\(q\);/, 'welcome-card onSend wiring');
+  const onSendSites = source.match(/onSend=\{sendWithSessionRefs\}/g) || [];
+  assert.equal(onSendSites.length, 2, 'plan-option and memory-candidate bubbles both route through it');
+  // No secondary surface dispatches sendChatMessage directly anymore.
+  const bareWelcome = source.match(/sendChatMessage\(q\)/g) || [];
+  assert.deepEqual(bareWelcome, []);
 });
 
 test('composer chip drafts are wired to the restore/stash store (round-6 minor 8)', () => {
@@ -700,7 +890,10 @@ test('cascade wiring contract: ChatView gates all four layers, stops the block w
   // block — but only in the send's own draft scope (a session switch during
   // the await must not wipe the target scope's chips).
   assert.match(chatViewSource, /const draftKeyAtSend = mentionDraftKeyRef\.current;/);
-  assert.match(chatViewSource, /if \(accepted && mentionDraftKeyRef\.current === draftKeyAtSend\) setSessionRefs\(\[\]\);/);
+  // Round-9: acceptance is STRICT (=== true — "restored" is a non-dispatch)
+  // and consumes only the serialized refs via the shared filter.
+  assert.match(chatViewSource, /if \(accepted === true\) \{/);
+  assert.match(chatViewSource, /setSessionRefs\(current => refsSurvivingAcceptance\(refsAtSend, current, sessionMentionEnabled\)\)/);
   // The mention menu keyboard branch bails out during IME composition.
   assert.match(chatViewSource, /if \(isImeComposing\(e\)\) return;/);
   // A refs-only message keeps the send button visible while busy.
