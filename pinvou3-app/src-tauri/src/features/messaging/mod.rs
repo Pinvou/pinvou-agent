@@ -4,7 +4,8 @@
 //! spools it to `<pinvou3 home>/messaging/spool/<name>.json` (see server.py's
 //! `send_message_to_session` — the spool record schema is the contract between
 //! the two sides; the file name is the idempotency identity: sha256 of
-//! "<from_session>|<idempotency_key>" when a key is given, a random uuid
+//! "<from_session>|<to_session>|<idempotency_key>" when a key is given (a key
+//! requires from_session, so the namespace is never global), a random uuid
 //! otherwise). This module is the app-side consumer:
 //!
 //! - a poll watcher picks spool files up, re-validates them (server-side
@@ -16,8 +17,9 @@
 //! - every delivery writes an audit record into both sessions' workspaces
 //!   (`assistant::audit`, contract §5 L1 requirement);
 //! - a delivered idempotency-keyed message leaves a marker under
-//!   `spool/.done/<file-stem>` (the stem is the sender-scoped key hash), so a
-//!   retried tool call cannot deliver twice across watcher restarts;
+//!   `spool/.done/<file-stem>` (the stem is the sender+target-scoped key
+//!   hash), so a retried tool call cannot deliver twice across watcher
+//!   restarts;
 //! - poison files (schema drift, hostile content, oversize) are quarantined
 //!   under `spool/failed/` immediately; *transient* delivery failures (rewind
 //!   gates, engine spawn errors) retry with backoff and only quarantine after
@@ -337,8 +339,8 @@ enum Processed {
 
 /// Process one spool file: read → validate → deliver. The spool identity is
 /// the directory-listed file name (the server names idempotent retries by
-/// their sender-scoped key hash) — the JSON `id` field is never trusted for
-/// watcher paths.
+/// their sender+target-scoped key hash) — the JSON `id` field is never
+/// trusted for watcher paths.
 async fn process_spool_file<D: SpoolDelivery>(
     path: &Path,
     delivery: &D,

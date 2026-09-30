@@ -1096,7 +1096,8 @@ pub fn run() {
                     features::messaging::spawn_delivery_watcher(
                         pool.clone(),
                         store_for_engine.clone(),
-                    );                    match remote_control_manager.resume() {
+                    );
+                    match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
                         Ok(false) => {}
                         Err(error) => {
