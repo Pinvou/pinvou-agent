@@ -3240,6 +3240,7 @@ function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
 function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
 function sessionRecentlyRebound(sid) { return pinvouSharedweb().sessionRecentlyRebound(sid); }
+function pathIsRebindStale(sid, path) { return pinvouSharedweb().pathIsRebindStale(sid, path); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
 function artifactBelongsToSession(path, sid) { return pinvouSharedweb().artifactBelongsToSession(path, sid); }
@@ -3310,11 +3311,13 @@ function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresente
         }
         // Relative→absolute opens reliably; an absolute stale entry may
         // take over the same-basename live workspace file ONLY inside the
-        // sessionRecentlyRebound window (the tauri artifact-tracker's
-        // identical heal arm — review #463 round-20 minor 9: the web lane
-        // previously carried the condition without ever calling it, so a
-        // stale absolute view path never healed).
-        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) { ex.path = p; added = true; }
+        // sessionRecentlyRebound window AND only when the stored entry is
+        // real stale rebind geometry (pathIsRebindStale — round-24 minor 3,
+        // the tauri artifact-tracker's identical heal arm: the mark alone
+        // let an unrelated live absolute entry whose basename collides be
+        // taken over and the wrong path persisted; review #463 round-20
+        // minor 9 records the never-called-condition history).
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid) && pathIsRebindStale(sid, ex.path)))) { ex.path = p; added = true; }
       });
       if (added) {
         notify();

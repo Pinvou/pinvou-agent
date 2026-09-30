@@ -489,9 +489,13 @@ pub async fn rebind_workspace_root(
         // re-pick dialog for an unrelated failure. Anything else falls
         // through as a raw diagnostic (shown verbatim by the dialog).
         let cause = e.root_cause().to_string();
-        if cause.starts_with("project roots must not nest")
-            || cause.starts_with("project root overlaps")
-            || cause.starts_with("duplicate project root")
+        // Round-24 minor 7: the prefixes are single-sourced with the
+        // validator's bail! texts and pinned against real production errors
+        // (features/projects tests) — a wording change now fails the pin
+        // instead of silently degrading this conflict copy.
+        if crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES
+            .iter()
+            .any(|prefix| cause.starts_with(prefix))
         {
             format!("REBIND_ROOTS_CONFLICT: {e:#}")
         } else {
@@ -1520,7 +1524,10 @@ fn absent_record_outcome_if_ghost(
             .affected
             .iter()
             .any(|(sid, _)| sid == session_id)
-            || plain_rebind.rebound.iter().any(|(sid, _)| sid == session_id),
+            || plain_rebind
+                .rebound
+                .iter()
+                .any(|(sid, _)| sid == session_id),
     ))
 }
 
@@ -2104,8 +2111,7 @@ mod tests {
         // SAFETY: platform::test_support ENV_LOCK is held for the whole test
         // by the guard above.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let store =
-            SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
 
         let from = tmp.join("ghost-from");
         std::fs::create_dir_all(&from).expect("create from");
@@ -2128,13 +2134,7 @@ mod tests {
 
         // A live record: the gate is transparent.
         assert_eq!(
-            absent_record_outcome_if_ghost(
-                &store,
-                &moved_id,
-                &[],
-                &prefix_outcome,
-                &plain_rebind,
-            ),
+            absent_record_outcome_if_ghost(&store, &moved_id, &[], &prefix_outcome, &plain_rebind,),
             None,
             "a live record must never be ghost-classified",
         );
@@ -2154,7 +2154,7 @@ mod tests {
             absent_record_outcome_if_ghost(
                 &store,
                 &moved_id,
-                &[moved_id.clone()],
+                std::slice::from_ref(&moved_id),
                 &prefix_outcome,
                 &plain_rebind,
             ),
@@ -2187,13 +2187,7 @@ mod tests {
             failed_session_ids: Vec::new(),
         };
         assert_eq!(
-            absent_record_outcome_if_ghost(
-                &store,
-                &orphan_id,
-                &[],
-                &prefix_outcome,
-                &moved_orphan,
-            ),
+            absent_record_outcome_if_ghost(&store, &orphan_id, &[], &prefix_outcome, &moved_orphan,),
             Some(AbsentRecordOutcome::Rebound),
             "a moved-this-run orphan with live artifacts stays reportable",
         );
@@ -2201,7 +2195,7 @@ mod tests {
             absent_record_outcome_if_ghost(
                 &store,
                 &orphan_id,
-                &[orphan_id.clone()],
+                std::slice::from_ref(&orphan_id),
                 &prefix_outcome,
                 &moved_orphan,
             ),
@@ -2232,6 +2226,37 @@ mod tests {
     /// push (a NotFound load is a mid-run delete, not a failed translate).
     /// Source-level like the other command-layer probes: the command needs a
     /// live AppHandle + four managed states to drive at runtime.
+    /// Round-24 minor 9: producer-side serde pin for RebindWorkspaceReport.
+    /// The dialog reads the snake_case wire fields; a future `rename_all =
+    /// "camelCase"` would turn a partial failure into a false "up to date"
+    /// toast with every suite green. The badge and event lanes have pins;
+    /// this mirrors one for the report struct itself.
+    #[test]
+    fn rebind_workspace_report_serializes_snake_case_wire_fields() {
+        let report = RebindWorkspaceReport {
+            rebound_session_ids: vec!["s1".to_string()],
+            failed_session_ids: vec!["s2".to_string()],
+            affected_project_ids: vec!["prj-1".to_string()],
+            post_busy_session_ids: vec!["s3".to_string()],
+        };
+        let payload = serde_json::to_value(&report).expect("the report must serialize");
+        let object = payload
+            .as_object()
+            .expect("the report must serialize to a JSON object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "affected_project_ids",
+                "failed_session_ids",
+                "post_busy_session_ids",
+                "rebound_session_ids",
+            ],
+            "the report's wire field names drifted — the dialog reads snake_case",
+        );
+    }
+
     #[test]
     fn metadata_loop_post_write_ghost_gates_are_wired() {
         let src = production_source();

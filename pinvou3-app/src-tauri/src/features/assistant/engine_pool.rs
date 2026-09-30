@@ -4401,6 +4401,66 @@ mod scheduled_model_tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn rebind_eviction_runtime_lock_timeout_leaves_session_untouched() {
+        // Round-24 minor 6 (the previously untested sibling arm): the
+        // runtime lock is held across a cold spawn for many seconds — far
+        // beyond any turn-gate wait — so it carries its own bounded
+        // timeout. A runtime lock held past REBIND_EVICT_GATE_TIMEOUT must
+        // give the eviction up exactly like the turn-gate arm: not idle
+        // (post-busy), no take, no reclaim, no shell-state reset.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let turn_shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-rebind-evict-runtime-timeout";
+        let manager = shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+        turn_shell_tasks.for_session(sid, manager);
+
+        // The turn gate is free (the eviction acquires it immediately); a
+        // cold spawn holds the runtime lock for its whole duration.
+        let runtime = runtime_locks.for_session(sid).await;
+        let _cold_spawn = runtime.lock().await;
+
+        let take_ran = Arc::new(AtomicBool::new(false));
+        let probe_take = take_ran.clone();
+        let started = tokio::time::Instant::now();
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            &turn_shell_tasks,
+            sid,
+            move || {
+                probe_take.store(true, Ordering::Release);
+                async { Some(()) }
+            },
+            |_| async {},
+        )
+        .await;
+
+        assert!(
+            !evicted,
+            "a runtime lock held past the timeout counts as not idle (reported post-busy)"
+        );
+        assert!(
+            started.elapsed() >= REBIND_EVICT_GATE_TIMEOUT,
+            "the eviction waited the bounded timeout on the runtime lock"
+        );
+        assert!(
+            !take_ran.load(Ordering::Acquire),
+            "the take closure must not run without the runtime lock"
+        );
+        assert!(
+            shell_managers.get(sid).is_some(),
+            "shell state survives a runtime-lock timeout"
+        );
+        assert!(
+            turn_shell_tasks.has_registry(sid),
+            "turn-scope registry survives a runtime-lock timeout"
+        );
+    }
+
     fn model(id: &str, wire_name: &str) -> SavedModel {
         SavedModel {
             id: id.to_string(),

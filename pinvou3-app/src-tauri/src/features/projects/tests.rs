@@ -1013,3 +1013,54 @@ fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
         "the inner project's translated root must keep its nesting shape",
     );
 }
+
+/// Round-24 minor 7: the preflight REBIND_ROOTS_CONFLICT partition
+/// string-matches the validator's root-cause prefixes, so a wording change
+/// in `validate_roots` would silently degrade the dialog's conflict copy.
+/// The prefixes are now single-sourced with the bail! texts; this pin drives
+/// every overlap class through the real validator and requires its
+/// root cause to carry exactly one of the partition's prefixes. Red-verified
+/// by rewording a bail! without touching the const.
+#[test]
+fn roots_conflict_partition_prefixes_match_production_wording() {
+    use crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let causes: Vec<String> = vec![
+        // duplicate: the same root twice in one set.
+        store
+            .create_project("dup".to_string(), vec![abs("dup-root"), abs("dup-root")])
+            .expect_err("duplicate roots must be rejected")
+            .root_cause()
+            .to_string(),
+        // nest: two roots of one set inside each other.
+        store
+            .create_project(
+                "nest".to_string(),
+                vec![abs("nest-root"), abs("nest-root").join("child")],
+            )
+            .expect_err("nested roots must be rejected")
+            .root_cause()
+            .to_string(),
+        // overlap: the new root collides with an existing project's root.
+        {
+            let _peer = create(&store, "peer", &[abs("overlap-base")]);
+            store
+                .create_project("over".to_string(), vec![abs("overlap-base").join("kid")])
+                .expect_err("cross-project overlap must be rejected")
+                .root_cause()
+                .to_string()
+        },
+    ];
+    assert_eq!(causes.len(), 3);
+    for cause in &causes {
+        assert!(
+            REBIND_ROOTS_CONFLICT_PREFIXES
+                .iter()
+                .any(|prefix| cause.starts_with(prefix)),
+            "validate_roots wording drifted off the partition prefixes: {cause}",
+        );
+    }
+}

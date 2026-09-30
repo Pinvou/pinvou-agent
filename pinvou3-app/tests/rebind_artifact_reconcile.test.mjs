@@ -219,6 +219,32 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
   );
 }
 
+// 3b. Round-24 minor 3: INSIDE the freshness window the take-over still
+//     requires the stored entry to be real stale rebind geometry. An
+//     unrelated live absolute entry (not under any chain from-prefix) whose
+//     basename collides with a workspace deliverable must stay put even
+//     with a fresh mark — the mark alone used to authorize the take-over
+//     and persist the wrong path. Red-verified by deleting the
+//     pathIsRebindStale conjunct.
+{
+  const state = {
+    activeSessionId: 's6',
+    reboundSessionIds: { s6: { ...MARK } },
+    artifacts: [{ path: '/external/live/report.html', basename: 'report.html' }],
+  };
+  const { tracker, invokes } = makeTracker(state, ['/new/root/sub/report.html']);
+  await tracker.reconcileArtifacts('s6');
+  assert.deepEqual(
+    state.artifacts.map(a => a.path),
+    ['/external/live/report.html'],
+    'a live non-rebind entry must never be taken over inside the window either',
+  );
+  assert.ok(
+    !invokes.some(([command]) => command === 'save_session_artifacts'),
+    'no damage must be persisted',
+  );
+}
+
 // 4. Reconcile: an entry whose absolute path the scan reproduces verbatim
 //    stays put, and a scanned file with no tracked entry is added as before.
 {

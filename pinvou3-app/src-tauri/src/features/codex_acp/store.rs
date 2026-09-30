@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the round-24 owner-probe EACCES pin is cfg(unix)-gated: the fault is a chmod-0000 sessions directory with no portable non-unix equivalent; the test self-skips when the mode is not enforced and no platform behavior leaks into shared code.
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -359,6 +360,15 @@ pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
 #[cfg(test)]
 static INJECT_SIDECAR_PERSIST_FAIL_IDS: std::sync::Mutex<Option<Vec<String>>> =
     std::sync::Mutex::new(None);
+
+/// Test-only owner-probe seam (round-24 minor 6): an armed id's owner probe
+/// reports dead while the record file is still healthy on disk — the exact
+/// state a write pass sees when the owner is deleted between the command
+/// layer's scan and the store passes. Unlike a fixture that deletes the
+/// record, this leaves every read healthy, so a deleted write-pass gate
+/// would COMPLETE the rewrite and fail the pin. Production never arms it.
+#[cfg(test)]
+static OWNER_PROBE_DEAD_IDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn persist_code_session_sidecar(path: &Path, sidecar: &CodeSessionSidecar) -> Result<()> {
     // Cross-platform fault injection for the rebind tests (round-22: the
@@ -758,24 +768,33 @@ impl SessionAgentStore {
     /// rebind scan/write passes gate on it the same way so a dead session is
     /// never rewritten and never classified Rebound.
     fn binding_owner_exists(&self, session_id: &str) -> bool {
+        #[cfg(test)]
+        if let Ok(armed) = OWNER_PROBE_DEAD_IDS.lock() {
+            if armed.iter().any(|sid| sid == session_id) {
+                return false;
+            }
+        }
         crate::features::sessions::validate_session_id(session_id).is_ok()
             && match code_session_sidecar_root(&self.path)
                 .join(format!("{session_id}.json"))
                 .metadata()
             {
                 Ok(meta) => meta.is_file(),
-                // Round-20 minor 10 + round-21 SF-3: a non-NotFound stat
-                // error is treated as dead (conservative, lane-consistent
-                // with the plain arm) AND logged — a rerun converges once the
-                // stat error clears; without the log the death would be
-                // silent.
+                // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
+                // a non-NotFound stat error is treated as LIVE and logged.
+                // The conservative direction here is inclusion, not death: a
+                // transient EACCES blip must not silently drop a live
+                // session from the scan, both write passes, the fence and
+                // the post-lane rescan while the run reports success. A
+                // session included on a stale probe whose reads then fail is
+                // reported failed (retryable) by the passes themselves.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => {
                     eprintln!(
-                        "[codex] rebind owner probe failed (io kind: {})",
+                        "[codex] rebind owner probe failed, treating the session as live (io kind: {})",
                         error.kind()
                     );
-                    false
+                    true
                 }
             }
     }
@@ -2411,6 +2430,124 @@ mod tests {
         assert_eq!(
             store.get("live").workspace_path.as_deref(),
             Some(to.as_path()),
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-24 minor 2: a non-NotFound stat error must read as LIVE, not
+    /// dead — an EACCES blip must not silently drop a live session from the
+    /// scan, both write passes, the fence and the post-lane rescan while
+    /// the run reports success. unix-only: the fault is a chmod-0000
+    /// sessions directory; the test self-skips when the mode is not
+    /// enforced (running as root).
+    #[cfg(unix)]
+    #[test]
+    fn owner_probe_treats_stat_error_as_live() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-owner-probe-eacces-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let dir = code_session_sidecar_root(&store.path);
+        fs::create_dir_all(&dir).unwrap();
+        touch_owner_record(&store.path, "probe");
+
+        let original_mode = fs::metadata(&dir).unwrap().permissions().mode();
+        fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // The fault must be INDUCED before the probe is meaningful: on a
+        // host that does not enforce the mode (running as root) the stat
+        // succeeds and nothing can be pinned here — skip via early return,
+        // never by treating the un-induced probe as evidence.
+        // Stat a file INSIDE the dir: the dir's own mode does not block a
+        // stat of the dir itself, but it does block traversal to entries.
+        let fault_induced = fs::metadata(&dir.join("probe.json")).is_err();
+        let probed = store.binding_owner_exists("probe");
+        fs::set_permissions(&dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(
+            probed,
+            "a stat error (EACCES) must read as live so a transient blip cannot silently drop a live session from the rebind passes",
+        );
+
+        // The NotFound arm stays dead: a genuinely removed record is still
+        // excluded.
+        fs::remove_file(code_session_sidecar_root(&store.path).join("probe.json")).unwrap();
+        assert!(!store.binding_owner_exists("probe"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Round-24 minor 6: the write-pass owner gates must be pinned
+    /// BEHAVIORALLY — the fixture above deletes the record before the scan,
+    /// so a gate added to a write pass was invisible to it (deleting the
+    /// gates kept this suite green; the deleted record failed the rewrites
+    /// on reads either way). The owner-probe seam arms a session whose
+    /// record file stays HEALTHY on disk while the probe reports it dead —
+    /// the state a write pass sees when the owner is deleted between the
+    /// command layer's scan and the store passes. Red-verified by deleting
+    /// the index-rewrite gate (the id's index moved to `to`) and the
+    /// sidecar-rewrite gate (its sidecar moved).
+    #[test]
+    fn rebind_write_passes_skip_owner_deleted_after_scan() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-owner-gate-midrun-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .bind_code_native_session("midrun", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+
+        OWNER_PROBE_DEAD_IDS
+            .lock()
+            .unwrap()
+            .push("midrun".to_string());
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        OWNER_PROBE_DEAD_IDS.lock().unwrap().clear();
+
+        // The scan saw the owner alive (first probe), so the session was a
+        // candidate; both write passes then probed it dead and skipped it.
+        assert!(
+            outcome.affected.iter().all(|(sid, _)| sid != "midrun"),
+            "a session whose owner died after the scan is never reported as moved",
+        );
+        assert!(
+            outcome
+                .sidecar_final_stale
+                .iter()
+                .all(|sid| sid != "midrun"),
+            "the skipped session is not a stale sidecar either — the gate declined the write",
+        );
+        assert_eq!(
+            store.get("midrun").workspace_path.as_deref(),
+            Some(from.as_path()),
+            "the index-rewrite owner gate must decline the dead owner (mutation: deleting the gate moves this to `to`)",
+        );
+        let sidecar =
+            read_code_session_sidecar(&store.path, "midrun").expect("the sidecar survives the run");
+        assert_eq!(
+            sidecar.workspace_path.as_deref(),
+            Some(from.as_path()),
+            "the sidecar-rewrite owner gate must decline the dead owner (mutation: deleting the gate moves this to `to`)",
         );
 
         fs::remove_dir_all(&root).unwrap();

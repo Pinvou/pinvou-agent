@@ -301,6 +301,20 @@ pub(crate) fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
 /// - no duplicate/nesting against any other project (outside
 ///   `skip_project_id`) — grouping matches by root prefix, and a cross-
 ///   project overlap makes assignment ambiguous.
+/// Root-cause prefixes of the overlap-family errors `validate_roots`
+/// produces (round-24 minor 7): single-sourced here and consumed by both the
+/// bail! sites below and the command layer's preflight REBIND_ROOTS_CONFLICT
+/// partition, so a wording change cannot silently degrade the conflict copy
+/// — the wording pin drives every class through the real validator.
+pub const ROOTS_NEST_CONFLICT: &str = "project roots must not nest";
+pub const ROOTS_OVERLAP_CONFLICT: &str = "project root overlaps";
+pub const ROOTS_DUPLICATE_CONFLICT: &str = "duplicate project root";
+pub const REBIND_ROOTS_CONFLICT_PREFIXES: &[&str] = &[
+    ROOTS_NEST_CONFLICT,
+    ROOTS_OVERLAP_CONFLICT,
+    ROOTS_DUPLICATE_CONFLICT,
+];
+
 fn validate_roots(
     projects: &[Project],
     skip_project_id: Option<&str>,
@@ -315,7 +329,7 @@ fn validate_roots(
         let display = root_display(root);
         let key = identity_key_of_display(&display);
         if keys.contains(&key) {
-            bail!("duplicate project root: {}", root.display());
+            bail!("{ROOTS_DUPLICATE_CONFLICT}: {}", root.display());
         }
         displays.push(display);
         keys.push(key);
@@ -324,7 +338,7 @@ fn validate_roots(
         for (other, other_display) in keys.iter().zip(displays.iter()).skip(index + 1) {
             if key_is_same_or_nested(key, other) || key_is_same_or_nested(other, key) {
                 bail!(
-                    "project roots must not nest: {} vs {}",
+                    "{ROOTS_NEST_CONFLICT}: {} vs {}",
                     display.display(),
                     other_display.display()
                 );
@@ -342,7 +356,7 @@ fn validate_roots(
                     || key_is_same_or_nested(&existing_key, key)
                 {
                     bail!(
-                        "project root overlaps project '{}' ({} vs {})",
+                        "{ROOTS_OVERLAP_CONFLICT} project '{}' ({} vs {})",
                         project.name,
                         existing.display(),
                         display.display()

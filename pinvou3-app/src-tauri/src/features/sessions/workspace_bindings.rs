@@ -293,11 +293,28 @@ impl SessionStore {
     /// moved such a ghost.
     fn workspace_binding_owner_exists(&self, id: &str) -> bool {
         validate_session_id(id).is_ok()
-            && self
+            && match self
                 .manager
                 .sessions_dir()
                 .join(format!("{id}.json"))
-                .is_file()
+                .metadata()
+            {
+                Ok(meta) => meta.is_file(),
+                // Round-24 minor 2, lane-consistent with the codex probe: a
+                // non-NotFound stat error is treated as LIVE and logged —
+                // inclusion is the conservative direction (an EACCES blip
+                // must not silently drop a live session from the scan and
+                // both write passes); a stale inclusion whose reads then
+                // fail is reported failed by the passes themselves.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] rebind owner probe failed, treating the session as live (io kind: {})",
+                        error.kind()
+                    );
+                    true
+                }
+            }
     }
 
     /// Every plain-chat working-directory binding currently under the `from`

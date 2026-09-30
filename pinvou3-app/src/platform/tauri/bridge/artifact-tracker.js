@@ -69,6 +69,7 @@ function findPresentedArtifact(path) { return pinvouSharedtauriArtifactTracker()
 function updatePresentedArtifact(card) { return pinvouSharedtauriArtifactTracker().updatePresentedArtifact(card); }
 function sessionRecentlyRebound(sid) { return pinvouSharedtauriArtifactTracker().sessionRecentlyRebound(sid); }
 function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedtauriArtifactTracker().rebaseArtifactPathsForRebind(sid, paths); }
+function pathIsRebindStale(sid, path) { return pinvouSharedtauriArtifactTracker().pathIsRebindStale(sid, path); }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
   async function reconcileArtifacts(sid) {
@@ -89,13 +90,17 @@ function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedtauriArti
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid)))) {
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid) && pathIsRebindStale(sid, ex.path)))) {
           // Relative→absolute opens reliably; or stale absolute → live
           // workspace file, matched by basename — ONLY for a session the
           // rebind command just moved (the workspace_rebound mark, review
-          // #463 round-10 Major 2). After a folder rebind the persisted
-          // entry keeps the vanished root, and the relative→absolute escape
-          // hatch never fires for an already-absolute stale entry, so the
+          // #463 round-10 Major 2) AND only when the stored entry is real
+          // stale rebind geometry (its path sits under a chain from-prefix;
+          // round-24 minor 3: the mark alone let an unrelated live absolute
+          // entry whose basename collides be taken over and the wrong path
+          // persisted). After a folder rebind the persisted entry keeps the
+          // vanished root, and the relative→absolute escape hatch never
+          // fires for an already-absolute stale entry, so the
           // freshness-windowed mark is what lets the reconcile heal it.
           ex.path = p; added = true;
         }
