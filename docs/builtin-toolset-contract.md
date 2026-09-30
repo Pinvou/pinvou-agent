@@ -215,7 +215,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; approval via a typed execpolicy Ask rule + audit log; sched-/eval_/aux- rejected as targets) |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by the app's mutating-tool approval posture at call time + audit log; a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

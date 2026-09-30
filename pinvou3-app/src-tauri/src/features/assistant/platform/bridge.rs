@@ -2348,11 +2348,14 @@ impl Pinvou3Bridge {
         rules.extend(self.skill_script_deny_rules(session_id));
         rules.extend(safety_rules);
         // Cross-session messaging (docs/builtin-toolset-contract.md §5 L1):
-        // a typed Ask rule keeps send_message_to_session behind the user
-        // approval prompt in every permission mode (production sessions run
-        // auto-approve/YOLO, and a typed ask overrides trusted candidates) —
-        // the contract's user-confirmation requirement. The audit trail is
-        // written by features::messaging at delivery time; the tool name is
+        // a typed Ask rule is registered for send_message_to_session as the
+        // enforcement point of the pending approval-mode split. It does not
+        // prompt today — the engine consults ask rules for exec_shell and
+        // the file tools only, and production sessions run full-auto — so
+        // the working gates are the app's mutating-tool approval posture at
+        // call time and features::messaging's watcher-side validation
+        // (isolated senders/targets). The audit trail is written by
+        // features::messaging at delivery time; the tool name is
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
         rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
