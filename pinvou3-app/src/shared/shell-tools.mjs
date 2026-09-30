@@ -1,8 +1,10 @@
 // Single source of truth for the shell-execution tool-name set shared by the
 // conversation projection (features/conversation) and the tool card renderers
 // (features/tools). The platform bridge layers (tauri terminal.js, web
-// bridge.js) keep their own copies on purpose — architecture isolation; keep
-// this list in sync with them when adding a new shell tool name.
+// bridge.js) keep their own copies because both ship as verbatim classic
+// <script src> bundles and cannot import an ESM module; keep this list in
+// sync with them when adding a new shell tool name (pinned by
+// tests/shell_task_projection.test.mjs).
 export const SHELL_TOOL_NAMES = new Set([
   'bash',
   'exec_shell',
