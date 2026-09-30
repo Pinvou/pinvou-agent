@@ -37,8 +37,12 @@
       bt: context.bt,
       sessionStates: context.sessionStates,
       ensureSessionBufferLoaded: context.ensureSessionBufferLoaded,
-      purgeSessionBuffer: context.purgeSessionBuffer || function () {},
-      touchSessionBuffer: context.touchSessionBuffer || function () {},
+      // Passed bare like the web lane (round-32 review minor 12): a
+      // fallback no-op would silently skip buffer eviction/LRU touches on a
+      // future injection miss, while a missing function throws loudly at
+      // the first call.
+      purgeSessionBuffer: context.purgeSessionBuffer,
+      touchSessionBuffer: context.touchSessionBuffer,
       isBusyFor: context.isBusyFor,
       auxChatDispatch,
     });

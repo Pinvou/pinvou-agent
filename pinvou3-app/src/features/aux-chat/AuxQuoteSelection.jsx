@@ -29,7 +29,8 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   // tracking that timer, the mouseup that clicked the quote button schedules
   // an evaluation which runs AFTER handleQuote's hide/error state and
   // resurrects the popover over a successful quote (or overwrites the
-  // over-limit error before its window).
+  // over-limit error before its window — mouseup precedes click, so the
+  // error/duplicate branches must cancel the armed evaluation themselves).
   const evaluateTimerRef = useRef(null);
   // Escape dismiss latch: Escape does not collapse the DOM selection, so the
   // always-live keyup evaluation would re-derive the popover from the
@@ -38,17 +39,21 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
   // genuinely changes or collapses (see aux-quote-selection-state.mjs).
   const dismissedRangeRef = useRef(null);
 
+  const cancelPendingEvaluation = useCallback(() => {
+    if (evaluateTimerRef.current) {
+      clearTimeout(evaluateTimerRef.current);
+      evaluateTimerRef.current = null;
+    }
+  }, []);
+
   const hidePopover = useCallback(() => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
     }
-    if (evaluateTimerRef.current) {
-      clearTimeout(evaluateTimerRef.current);
-      evaluateTimerRef.current = null;
-    }
+    cancelPendingEvaluation();
     setPopover((current) => (current ? null : current));
-  }, []);
+  }, [cancelPendingEvaluation]);
 
   useEffect(() => () => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
@@ -119,11 +124,12 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     };
     const onKeyUp = () => {
       // No key whitelist: a whitelist misses selection-changing keys outside
-      // the shift/arrow family — most importantly Ctrl+A ("a"), the standard
-      // keyboard path to select a whole assistant reply. Evaluating on every
-      // keyup mirrors the unconditional mouseup handler and is cheap: a
-      // collapsed selection just hides (or no-ops) the popover, and a range
-      // the user dismissed with Escape is suppressed by the latch.
+      // the shift/arrow family (Shift+arrows, Ctrl+Shift+Home/End). Ctrl+A
+      // itself selects the whole DOCUMENT, which the containment check
+      // rejects — keyboard selection that stays inside the timeline is what
+      // this handler serves. Known gap (round-34 minor 13, disclosed):
+      // touch-generated selections fire selectionchange without
+      // mouseup/keyup, so the mobile web lane never surfaces the chip.
       scheduleEvaluation();
     };
     document.addEventListener('mouseup', onMouseUp);
@@ -174,6 +180,12 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     if (!popover || !sessionId) return;
     const result = stageAuxQuote(sessionId, popover.text);
     if (!result.ok) {
+      // Cancel the evaluation the click's own mouseup armed: the DOM selection
+      // survives (onMouseDown preventDefaults), so the deferred
+      // evaluateSelection would replace this notice with the plain Quote
+      // affordance one macrotask later — on the limit paths the click would
+      // read as completely dead.
+      cancelPendingEvaluation();
       const errorByReason = {
         single: copy.quoteLimitSingle,
         count: copy.quoteLimitCount,
@@ -189,6 +201,7 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       // say so instead of letting the opening panel read as "added a second
       // chip". The panel still opens — the quote IS part of the next
       // message — and the notice explains why the count did not change.
+      cancelPendingEvaluation();
       setPopover({ ...popover, error: copy.quoteDuplicate });
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
       hideTimerRef.current = setTimeout(hidePopover, 1800);
@@ -197,7 +210,7 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
     }
     hidePopover();
     if (onQuote) onQuote();
-  }, [copy, hidePopover, onQuote, popover, sessionId]);
+  }, [cancelPendingEvaluation, copy, hidePopover, onQuote, popover, sessionId]);
 
   if (!popover) return null;
   return (

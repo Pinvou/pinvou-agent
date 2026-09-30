@@ -1847,18 +1847,31 @@ impl AppEngine {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
-        // The headless harness hands the caller's raw bool straight to the op
-        // builder: the harness session is never an aux session, and the token
-        // type's forced policy lives behind the pool's send path.
-        let op = self.build_interactive_send_message_op(
-            content,
-            mode,
-            persona_reminder,
+        // The per-turn restriction crosses this seam as the pool's
+        // `TurnToolRestrict` token, not the caller's `bool` (main #596 added
+        // this wrapper against the pre-token signature; the rebase union
+        // adapted it). Minting here keeps the wrapper's public `bool`
+        // signature for the external harnesses while the last-mile policy —
+        // and the aux zero-tool reminder merge, a no-op for headless ids —
+        // stays in the one place it is enforced.
+        super::engine_pool::forward_forced_turn_restrict(
+            &self.session_id,
+            false,
             restrict_tools,
-            expert_snapshot,
-            expert_candidates,
-        )?;
-        self.send_reserved_turn_op(op, reservation).await
+            persona_reminder,
+            |restrict_tools, persona_reminder| {
+                self.send_reserved_user_message(
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                    expert_snapshot,
+                    expert_candidates,
+                    reservation,
+                )
+            },
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -521,12 +521,64 @@ pub(crate) fn startup_process_env() {
     crate::platform::os::startup_platform_env();
 }
 
-/// `iframe[srcdoc]` 在 WebKitGTK 中会作为宿主 WebView 的 `about:srcdoc` 导航
-/// 进入 Wry 的 navigation handler。这里只放行浏览器内部的两个空文档地址；
-/// 主窗口和 iframe 的任意外部来源仍走初始 origin 限制。
-#[cfg(any(target_os = "linux", test))]
-fn allow_embedded_document_navigation(url: &tauri::Url, main_origin_initialized: bool) -> bool {
-    main_origin_initialized && matches!(url.as_str(), "about:blank" | "about:srcdoc")
+/// Verdict for one navigation candidate on the main webview.
+enum MainNavigationVerdict {
+    /// Allow the navigation. `initial_origin` carries the origin to record as
+    /// the baseline when the baseline has not been established yet.
+    Allow { initial_origin: Option<String> },
+    /// Deny the navigation. `detail` carries the startup diagnostic to log
+    /// (`None` for the silent case: an embedded-document URL arriving before
+    /// any main origin exists must not claim the baseline slot).
+    Block { detail: Option<String> },
+}
+
+/// Pure decision for one navigation on the main webview; side effects (baseline
+/// write, startup marks) stay with the `on_navigation` closure so this remains
+/// unit-testable on every platform.
+///
+/// `iframe[srcdoc]` — the carrier of the HTML artifact preview — surfaces as an
+/// `about:srcdoc` navigation of the host webview on WebKitGTK and macOS
+/// WKWebView (WebView2 raises main-frame navigation events only, so the guard
+/// never sees iframe loads on Windows). PR #116 allowed those two internal
+/// URLs on Linux only, leaving the artifact preview permanently black on
+/// macOS: the placeholder background rendered while the iframe navigation was
+/// denied. This decision keeps the guard's original intent — only the two
+/// browser-internal empty-document URLs are exempt after the main origin is
+/// established; any external origin (main frame or iframe) still goes through
+/// the initial-origin baseline — and applies it platform-wide.
+fn decide_main_navigation(url: &tauri::Url, initial_origin: Option<&str>) -> MainNavigationVerdict {
+    if matches!(url.as_str(), "about:blank" | "about:srcdoc") {
+        return match initial_origin {
+            Some(_) => MainNavigationVerdict::Allow {
+                initial_origin: None,
+            },
+            None => MainNavigationVerdict::Block { detail: None },
+        };
+    }
+    let origin = format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or_default(),
+        url.port_or_known_default()
+            .map_or_else(|| "-".to_string(), |port| port.to_string())
+    );
+    match initial_origin {
+        None => MainNavigationVerdict::Allow {
+            initial_origin: Some(origin),
+        },
+        Some(allowed) if allowed == &origin => MainNavigationVerdict::Allow {
+            initial_origin: None,
+        },
+        Some(_) => MainNavigationVerdict::Block {
+            detail: Some(format!(
+                "scheme={} host={} port={}",
+                url.scheme(),
+                url.host_str().unwrap_or_default(),
+                url.port_or_known_default()
+                    .map_or_else(|| "-".to_string(), |port| port.to_string())
+            )),
+        },
+    }
 }
 
 /// Non-blocking synchronous fallback for `RunEvent::Exit`. Explicit `app.restart()`
@@ -660,49 +712,33 @@ pub fn run() {
                     if webview.label() != "main" {
                         return true;
                     }
-                    #[cfg(target_os = "linux")]
-                    if matches!(url.as_str(), "about:blank" | "about:srcdoc") {
-                        let main_origin_initialized = main_navigation_origin
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .is_some();
-                        return allow_embedded_document_navigation(url, main_origin_initialized);
-                    }
-                    let origin = format!(
-                        "{}://{}:{}",
-                        url.scheme(),
-                        url.host_str().unwrap_or_default(),
-                        url.port_or_known_default()
-                            .map_or_else(|| "-".to_string(), |port| port.to_string())
-                    );
-                    if !initial_navigation_reported.swap(true, Ordering::Relaxed) {
-                        startup::mark_with_detail(
-                            "rust",
-                            "tauri:main_navigation",
-                            &format!("scheme={}", url.scheme()),
-                        );
-                    }
                     let mut initial_origin = main_navigation_origin
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    match initial_origin.as_ref() {
-                        None => {
-                            *initial_origin = Some(origin);
+                    match decide_main_navigation(url, initial_origin.as_deref()) {
+                        MainNavigationVerdict::Allow {
+                            initial_origin: baseline,
+                        } => {
+                            if let Some(baseline) = baseline {
+                                if !initial_navigation_reported.swap(true, Ordering::Relaxed) {
+                                    startup::mark_with_detail(
+                                        "rust",
+                                        "tauri:main_navigation",
+                                        &format!("scheme={}", url.scheme()),
+                                    );
+                                }
+                                *initial_origin = Some(baseline);
+                            }
                             true
                         }
-                        Some(allowed) if allowed == &origin => true,
-                        Some(_) => {
-                            startup::mark_with_detail(
-                                "rust",
-                                "tauri:main_navigation_blocked",
-                                &format!(
-                                    "scheme={} host={} port={}",
-                                    url.scheme(),
-                                    url.host_str().unwrap_or_default(),
-                                    url.port_or_known_default()
-                                        .map_or_else(|| "-".to_string(), |port| port.to_string())
-                                ),
-                            );
+                        MainNavigationVerdict::Block { detail } => {
+                            if let Some(detail) = detail {
+                                startup::mark_with_detail(
+                                    "rust",
+                                    "tauri:main_navigation_blocked",
+                                    &detail,
+                                );
+                            }
                             false
                         }
                     }
@@ -728,6 +764,19 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            // The disabled_bundles migration verdict must be frozen here: the
+            // broad upgrade signal (settings.json/session dirs exist ⇒ upgrade
+            // install) gets polluted by bridge boot's first-startup behavior
+            // (ensure_dirs writes sessions/default/artifacts/ itself and
+            // backfills a default settings.json); if a fresh install's first
+            // read happens after those writes, it is misjudged as an upgrade
+            // and flips back to the old AllowAll-everything posture (review
+            // #455 blocking item). This read triggers the migration and
+            // persists the frozen fresh-vs-upgrade verdict, ahead of every
+            // first-startup write.
+            startup::mark("disabled_bundles_migration:start");
+            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }
@@ -1148,10 +1197,16 @@ pub fn run() {
             startup::mark("engine_pool:done");
 
             // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
-            //   1. 读一次 disabled_bundles.json——触发旧双文件迁移(disabled_connectors
-            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集);
-            //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
-            //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
+            //   1. Read disabled_bundles.json once — the legacy two-file
+            //      migration (disabled_connectors.json / disabled_skills.json →
+            //      a single disabled set keyed by package id × SessionMode) and
+            //      the fresh-vs-upgrade verdict freeze already happened at the
+            //      top of the setup hook (must precede bridge boot's
+            //      first-startup writes; see the disabled_bundles_migration
+            //      marks); this is an idempotent re-read.
+            // (Retiring the process-global DISABLED_SKILLS already landed on
+            // main; an empty composite dir → the whole `## Skills` block is
+            // not rendered, closing the path-leak surface.)
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
@@ -1481,6 +1536,7 @@ pub fn run() {
             commands::remote_control::web_access_read_artifact_image_b64,
             commands::remote_control::web_access_read_artifact_thumbnail,
             commands::remote_control::web_access_render_artifact_visual,
+            commands::connectors::enable_marketplace_packages,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::connectors::set_bundle_visibility,
@@ -1728,6 +1784,80 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod startup_order_contract {
+    /// Order pin (review #455 non-blocking item 3; three rounds in, switched
+    /// to a source-position assertion): the disabled_bundles migration read
+    /// (which freezes the fresh-vs-upgrade verdict) must run, in all three
+    /// hosts' startup hooks, ahead of the first first-startup write
+    /// (SessionStore boot creating the sessions/ dir entries; bridge boot
+    /// backfilling the default settings.json). Statement order cannot be
+    /// observed from inside the module, and assertions over a self-built mark
+    /// trace prove nothing (reordering the real setup hook would not fail
+    /// them), so this reads the three host sources directly via
+    /// `include_str!` and pins the **textual position** of the migration-read
+    /// call site ahead of the boot call site.
+    fn assert_migration_read_precedes(source: &str, earlier: &str, later: &str, file: &str) {
+        let pos_earlier = source
+            .find(earlier)
+            .unwrap_or_else(|| panic!("{file} is missing the migration-read call site: {earlier}"));
+        let pos_later = source.find(later).unwrap_or_else(|| {
+            panic!("{file} is missing the first-boot self-write call site: {later}")
+        });
+        assert!(
+            pos_earlier < pos_later,
+            "{file}: the migration read ({earlier}) must precede the first-boot self-write ({later})"
+        );
+    }
+
+    #[test]
+    fn disabled_bundles_migration_read_precedes_first_boot_writes() {
+        // GUI host: the migration read at the top of the setup hook precedes
+        // the SessionStore boot. The needle pins the hoist call itself
+        // (fragment-concatenated to prevent a self-match — this test lives in
+        // the same lib.rs as the production call site, and include_str! scans
+        // the test module too, so a full needle appearing verbatim in the
+        // test would degenerate into a self-match, review #455 R4-S1). The
+        // old leg pinning the startup marks on both sides only preserved the
+        // mark sandwich: deleting or moving the hoist call between the two
+        // marks still passed (review #455 R5-S1). The later needle pins the
+        // `SessionStore::boot_for_process_startup` call itself rather than
+        // the adjacent startup-mark proxy (review #455 R8 nit). `find` takes
+        // the first occurrence: the guarded regression is "hoist deleted or
+        // reordered" (the needle's first occurrence lands after the boot;
+        // deletion fails the test outright, and it is not a self-match);
+        // deleting the boot call itself is **not** guarded — the same-named
+        // call in the panic fallback branch still hits the needle (round-10
+        // nit wording made accurate).
+        assert_migration_read_precedes(
+            include_str!("lib.rs"),
+            &[
+                "crate::features::marketplace::scope::",
+                "load_disabled_bundles()",
+            ]
+            .concat(),
+            &["SessionStore::", "boot_for_process_startup()"].concat(),
+            "lib.rs",
+        );
+        // Windowless hosts (agentic/headless): same-order freeze ahead of the
+        // SessionStore boot.
+        assert_migration_read_precedes(
+            include_str!("features/assistant/product_runtime/headless_bridge.rs"),
+            "marketplace::scope::load_disabled_bundles()",
+            "SessionStore::boot()",
+            "headless_bridge.rs",
+        );
+        // dump_system_prompt tool: same-order freeze ahead of bridge.boot()
+        // (ensure_dirs / default settings.json first-startup writes).
+        assert_migration_read_precedes(
+            include_str!("bin/dump_system_prompt.rs"),
+            "load_disabled_bundles()",
+            "Pinvou3Bridge::boot()",
+            "dump_system_prompt.rs",
+        );
+    }
+}
+
+#[cfg(test)]
 mod tool_allowlist_contract {
     use std::sync::Arc;
 
@@ -1946,29 +2076,92 @@ mod tool_allowlist_contract {
 
 #[cfg(test)]
 mod navigation_policy_tests {
+    use super::{MainNavigationVerdict, decide_main_navigation};
+
+    fn allow_origin(verdict: MainNavigationVerdict) -> Option<String> {
+        match verdict {
+            MainNavigationVerdict::Allow { initial_origin } => initial_origin,
+            MainNavigationVerdict::Block { .. } => panic!("expected Allow, got Block"),
+        }
+    }
+
+    fn block_detail(verdict: MainNavigationVerdict) -> Option<String> {
+        match verdict {
+            MainNavigationVerdict::Block { detail } => detail,
+            MainNavigationVerdict::Allow { .. } => panic!("expected Block, got Allow"),
+        }
+    }
+
+    const MAIN_ORIGIN: &str = "tauri://localhost:-";
+
     #[test]
-    fn embedded_srcdoc_navigation_is_allowed_without_broadening_schemes() {
+    fn embedded_srcdoc_navigation_is_allowed_after_main_origin() {
+        // Regression: `iframe[srcdoc]` (the HTML artifact preview carrier)
+        // surfaces as an about:srcdoc navigation of the host webview on
+        // engines that forward subframe navigations (WKWebView, WebKitGTK).
+        // PR #116 unblocked it on Linux only; on macOS the guard denied it
+        // and the preview stayed a black placeholder forever.
         for allowed in ["about:blank", "about:srcdoc"] {
             let url = tauri::Url::parse(allowed).unwrap();
-            assert!(super::allow_embedded_document_navigation(&url, true));
+            let verdict = decide_main_navigation(&url, Some(MAIN_ORIGIN));
             assert!(
-                !super::allow_embedded_document_navigation(&url, false),
-                "embedded documents must not become the initial main origin"
+                allow_origin(verdict).is_none(),
+                "embedded documents must not overwrite the main origin: {allowed}"
             );
         }
+    }
+
+    #[test]
+    fn embedded_documents_must_not_become_the_initial_main_origin() {
+        for allowed in ["about:blank", "about:srcdoc"] {
+            let url = tauri::Url::parse(allowed).unwrap();
+            let verdict = decide_main_navigation(&url, None);
+            assert!(
+                block_detail(verdict).is_none(),
+                "pre-baseline embedded documents are denied silently: {allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_main_frame_navigation_records_baseline_origin() {
+        let url = tauri::Url::parse("tauri://localhost/").unwrap();
+        let recorded = allow_origin(decide_main_navigation(&url, None))
+            .expect("first navigation must establish the baseline");
+        assert_eq!(recorded, MAIN_ORIGIN);
+    }
+
+    #[test]
+    fn same_origin_navigation_is_allowed_without_re_recording_baseline() {
+        let url = tauri::Url::parse("tauri://localhost/index.html").unwrap();
+        assert!(allow_origin(decide_main_navigation(&url, Some(MAIN_ORIGIN))).is_none());
+    }
+
+    #[test]
+    fn external_origins_still_blocked_after_baseline() {
         for blocked in [
-            "about:config",
-            "about:blank?next=https://example.com",
-            "data:text/html,hello",
             "https://example.com/",
             "file:///etc/passwd",
+            "data:text/html,hello",
         ] {
             let url = tauri::Url::parse(blocked).unwrap();
+            let detail = block_detail(decide_main_navigation(&url, Some(MAIN_ORIGIN)))
+                .unwrap_or_else(|| panic!("external origin must stay blocked: {blocked}"));
             assert!(
-                !super::allow_embedded_document_navigation(&url, true),
-                "must not classify as embedded document: {blocked}"
+                detail.contains("scheme="),
+                "block detail carries the startup diagnostic: {detail}"
             );
         }
+    }
+
+    #[test]
+    fn about_variants_do_not_match_the_embedded_allowlist() {
+        // Exact-string allowlist: query-bearing or unrelated about: URLs fall
+        // through to the origin baseline and are denied there.
+        let url = tauri::Url::parse("about:blank?next=https://example.com").unwrap();
+        assert!(block_detail(decide_main_navigation(&url, Some(MAIN_ORIGIN))).is_some());
+        let url = tauri::Url::parse("about:config").unwrap();
+        assert!(block_detail(decide_main_navigation(&url, Some(MAIN_ORIGIN))).is_some());
     }
 }
 

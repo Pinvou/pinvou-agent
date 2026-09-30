@@ -1871,9 +1871,10 @@ mod tests {
         // web_access_chat_for_session's three session gates each pass:
         crate::features::sessions::validate_session_id(&aux.id).expect("aux id charset");
         ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
-            "fresh aux sessions default to single-agent mode (set_multi_agent_mode does \
-                     not reject aux- ids; the zero-tools invariant rests on the spawn pin + the \
-                     per-turn gate, not on this flag)",
+            "fresh aux sessions default to single-agent mode, and the flag cannot be \
+                     flipped on them at all: set_multi_agent_mode rejects aux- ids \
+                     (round-32 minor 20), so the zero-tools invariant rests on that refusal \
+                     plus the spawn pin and the per-turn gate",
         );
         store.load(&aux.id).expect("aux session loads by id");
 

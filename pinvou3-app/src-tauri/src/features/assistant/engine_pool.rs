@@ -412,8 +412,9 @@ pub(crate) mod turn_tool_restrict {
         /// The restriction to apply on the engine that owns `engine_session_id`.
         ///
         /// The `aux-` test runs again against the engine's own id, so a token
-        /// minted with an unrelated (or empty — the headless harness uses `""`)
-        /// session id can never hand an aux session a full-tool turn.
+        /// minted with an unrelated (or empty) session id can never hand an
+        /// aux session a full-tool turn — the headless wrapper mints with the
+        /// engine's own id through [`forward_forced_turn_restrict`].
         pub(crate) fn restricts_tools_for(self, engine_session_id: &str) -> bool {
             self.restricts_tools()
                 || crate::features::sessions::is_aux_session_id(engine_session_id)
@@ -582,15 +583,16 @@ async fn delete_chat_session_with_aux_cascade<De, DeFut>(
     store: &SessionStore,
     session_id: &str,
     mut delete: De,
-) -> Result<()>
+) -> Result<bool>
 where
     De: FnMut(&str) -> DeFut,
-    DeFut: Future<Output = Result<()>>,
+    DeFut: Future<Output = Result<bool>>,
 {
     if !crate::features::sessions::is_aux_session_id(session_id) {
         if let Some(aux_id) = store.aux_session_id(session_id) {
             delete(&aux_id)
                 .await
+                .map(|_| ())
                 .context("delete the aux session before its main session")?;
         }
     }
@@ -2083,6 +2085,11 @@ impl EnginePool {
         // is materialized — the send path and the toggle hot refresh skip aux
         // on the same rule (round-31 M8).
         let materialize_skills_started = Instant::now();
+        // Aux sessions are isolated pure-Q&A engines (zero tools, minimal
+        // instructions): they get no skill surface, so no composed directory
+        // is materialized — the send path and the toggle hot refresh skip aux
+        // on the same rule (round-31 M8). The #608 timing bracket stays
+        // outside the guard: for aux it simply reports a near-zero span.
         if !crate::features::sessions::is_aux_session_id(session_id) {
             let sid = session_id.to_string();
             let scope = self.bridge.session_policy(&sid).mode();
@@ -2366,30 +2373,20 @@ impl EnginePool {
     /// reclaim the aux engine instead of orphaning it. Never substitute a bare
     /// `store.delete` for this method on a chat session.
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
-        // Aux cascade: an owned aux session is deleted through the same gate
-        // before the main session (never cascading out of an aux id itself).
-        if !crate::features::sessions::is_aux_session_id(session_id) {
-            if let Some(aux_id) = self.store.aux_session_id(session_id) {
+        let deleted = delete_chat_session_with_aux_cascade(&self.store, session_id, |id| {
+            let id = id.to_string();
+            async move {
                 delete_chat_session_with_gate(
                     &self.turn_locks,
                     &self.store,
-                    &aux_id,
+                    &id,
                     false,
-                    || self.evict_locked(&aux_id),
-                    || self.forget_session(&aux_id),
+                    || self.evict_locked(&id),
+                    || self.forget_session(&id),
                 )
                 .await
-                .context("delete the aux session before its main session")?;
             }
-        }
-        let primary_deleted = delete_chat_session_with_gate(
-            &self.turn_locks,
-            &self.store,
-            session_id,
-            false,
-            || self.evict_locked(session_id),
-            || self.forget_session(session_id),
-        )
+        })
         .await?;
         // The bare `agent` is available to **all** sessions (not only those
         // with the multi-agent toggle on), and the background ledger write
@@ -2402,8 +2399,9 @@ impl EnginePool {
         // 2s/6s delay window reuses the same directory the stale sweep would
         // remove — and the sweep's premise is structurally false for aux
         // anyway (zero tools ⇒ no subagents, no shell, no background ledger
-        // writer that could resurrect the directory).
-        if primary_deleted && !crate::features::sessions::is_aux_session_id(session_id) {
+        // writer that could resurrect the directory). The `deleted` leg
+        // (#504) also keeps a keep-disposition (stub cleanup) from sweeping.
+        if deleted && !crate::features::sessions::is_aux_session_id(session_id) {
             Self::schedule_late_sweep(
                 crate::platform::paths::sessions_root().join(session_id),
                 "late sweep of deleted chat",
@@ -2481,8 +2479,12 @@ impl EnginePool {
         main_id: &str,
     ) -> Result<(
         Option<String>,
-        deepseek_tui::session_manager::SessionMetadata,
+        Result<deepseek_tui::session_manager::SessionMetadata>,
     )> {
+        // The outer Result covers the delete half only: its failure means
+        // nothing committed and there is nothing to report. The inner one
+        // carries the create half, whose failure must still let the caller
+        // emit session:deleted for the committed delete (see below).
         let deleted_aux = reset_aux_session_delete_with_gate(
             &self.turn_locks,
             &self.store,
@@ -2493,8 +2495,15 @@ impl EnginePool {
             |aux_id| self.forget_session(aux_id),
         )
         .await?;
-        let metadata = self.store.get_or_create_aux_session(main_id)?;
-        Ok((deleted_aux, metadata))
+        // The create result rides next to `deleted_aux` instead of behind
+        // one outer Result (round-32 review minor 8): when the delete half
+        // committed and the create half then failed (e.g. a concurrent
+        // parent deletion), the aux record is durably gone and the command
+        // must still emit session:deleted — gating the event on overall
+        // success left clients buffering a stale transcript for a session
+        // that no longer exists.
+        let created = self.store.get_or_create_aux_session(main_id);
+        Ok((deleted_aux, created))
     }
 
     /// Eval-only deletion keeps ordinary delete semantics, but also schedules the existing
@@ -3163,7 +3172,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -3757,7 +3767,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -4228,6 +4239,66 @@ mod scheduled_model_tests {
         (bridge, home, restore)
     }
 
+    /// Round-32 review minor 8: the reset's delete half can commit and the
+    /// create half then fail (a concurrent parent deletion between the
+    /// command layer's existence check and the create leg). The gate must
+    /// still report the deleted aux id, and the store's create leg must
+    /// error — the exact `(Some, Err)` shape the command layer needs to
+    /// emit `session:deleted` for the committed delete before failing.
+    #[tokio::test]
+    async fn reset_reports_the_deleted_aux_when_the_create_half_fails() {
+        let guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-reset-create-fault-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: the test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled"))
+            .expect("boot isolated store");
+        let main = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create main");
+        let aux = store
+            .create_aux_session(&main.metadata.id)
+            .expect("create aux");
+        // The concurrent parent deletion: the main record leaves the disk
+        // after the command layer checked it, before the create leg runs.
+        std::fs::remove_file(
+            crate::platform::paths::sessions_root().join(format!("{}.json", main.metadata.id)),
+        )
+        .expect("remove the parent record out of band");
+
+        let turn_locks = super::SessionTurnLocks::default();
+        let deleted = reset_aux_session_delete_with_gate(
+            &turn_locks,
+            &store,
+            &main.metadata.id,
+            |_aux_id| async move {},
+            |_aux_id| {},
+        )
+        .await
+        .expect("the delete half commits: the gate does not require the parent");
+        assert_eq!(
+            deleted.as_deref(),
+            Some(aux.id.as_str()),
+            "the gate reports the committed delete's aux id"
+        );
+        let created = store.get_or_create_aux_session(&main.metadata.id);
+        assert!(
+            created.is_err(),
+            "the create half must fail: the parent record is gone"
+        );
+        assert!(
+            store.durable_session_record_is_absent(&aux.id),
+            "the old aux record is durably gone once the delete half committed"
+        );
+        drop(guard);
+    }
+
     /// PR #433 review (MAJOR): `restrict_tools` is only an optional call
     /// parameter of `chat` / `web_access_chat`, so an aux session's tool
     /// restriction cannot rely on caller discipline — the `aux-` prefix
@@ -4533,9 +4604,6 @@ mod scheduled_model_tests {
         assert_eq!(message, "edited question");
     }
 
-    /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
-    /// 两个 op 同通道 FIFO；颠倒顺序等于没取消（Shutdown 直接跳出事件循环，
-    /// 会话派生的裸子智能体会以孤儿任务继续跑）。
     /// The spawn funnel installs the session id as the OpenCode gateway
     /// affinity key, so every respawn of one session reuses the same
     /// `x-opencode-session` value instead of silently falling back to the
@@ -5823,7 +5891,7 @@ mod scheduled_model_tests {
             let deleted = deleted.clone();
             async move {
                 deleted.lock().unwrap().push(id.clone());
-                store.delete(&id)
+                store.delete(&id).map(|_| true)
             }
         };
         delete_chat_session_with_aux_cascade(&store, &main.metadata.id, recording_delete)
@@ -5853,7 +5921,7 @@ mod scheduled_model_tests {
             let deleted = deleted_b.clone();
             async move {
                 deleted.lock().unwrap().push(id.clone());
-                store.delete(&id)
+                store.delete(&id).map(|_| true)
             }
         };
         delete_chat_session_with_aux_cascade(&store, &aux_b.id, recording_delete_b)

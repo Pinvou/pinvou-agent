@@ -1746,7 +1746,7 @@ pub(crate) fn spawn_event_forwarder(
 /// itself is still taken at the call site so it does not accumulate in the
 /// process-level store.
 fn memory_review_in_scope(session_id: &str) -> bool {
-    !crate::features::sessions::is_aux_session_id(session_id)
+    crate::features::sessions::aux_side_effect_exclusion(session_id)
 }
 
 /// The full "spawn the memory review for this turn" decision, centralized so

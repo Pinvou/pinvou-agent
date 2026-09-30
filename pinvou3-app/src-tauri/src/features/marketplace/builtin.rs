@@ -66,9 +66,12 @@ pub fn is_builtin_tool(id: &str) -> bool {
 /// prefix, map companion skills to their owner package) so that e.g.
 /// `skill:session-reader` cannot slip past the check.
 pub fn reject_builtin_ids(ids: &[String]) -> Result<(), String> {
+    // Round-37 P3 (review #455): one pre-walked tool snapshot for the whole
+    // loop — the per-entry call rebuilt the full manifest walk per id.
+    let tools = crate::features::marketplace::MarketplaceManager::new().available_tools();
     let builtin: Vec<String> = ids
         .iter()
-        .map(|id| super::scope::to_package_id(id))
+        .map(|id| super::scope::to_package_id_with(&tools, id))
         .filter(|id| is_builtin_tool(id))
         .collect();
     if builtin.is_empty() {

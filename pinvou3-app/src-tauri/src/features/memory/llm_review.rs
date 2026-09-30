@@ -264,6 +264,13 @@ pub(super) fn append_memory_review_diagnostic_to(
         .write_all(line.as_bytes())
 }
 
+/// Classify a review failure for the diagnostics ledger. Parse markers are
+/// checked before request markers on purpose: a parse failure's chain still
+/// contains "chat/completions" from the earlier request contexts, so the
+/// order decides its stage. Side effect of status errors now embedding the
+/// endpoint body (`error_for_status_with_body`): a 400 body that happened to
+/// quote a parse marker would be filed as `parse_failed`. Diagnostics-only,
+/// so the substring exposure is accepted rather than parsed around.
 pub(super) fn memory_review_error_stage(error: &anyhow::Error) -> &'static str {
     let message = format!("{error:#}").to_ascii_lowercase();
     if message.contains("parse memory review") || message.contains("memory review response json") {
@@ -620,17 +627,7 @@ pub(super) async fn send_memory_llm_request(
         }
         return Ok(completion.text);
     }
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": prompt },
-            { "role": "user", "content": user_content }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
+    let mut body = memory_review_request_body(&model_name, prompt, user_content, max_tokens);
     apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.memory_api_key()),
@@ -640,9 +637,12 @@ pub(super) async fn send_memory_llm_request(
     .json(&body)
     .send()
     .await
-    .with_context(|| format!("post memory {label} chat/completions"))?
-    .error_for_status()
-    .with_context(|| format!("memory {label} chat/completions status"))?;
+    .with_context(|| format!("post memory {label} chat/completions"))?;
+    let resp = crate::core::model_endpoint::error_for_status_with_body(
+        resp,
+        &format!("memory {label} chat/completions status"),
+    )
+    .await?;
     let value: Value = resp
         .json()
         .await
@@ -742,6 +742,32 @@ async fn request_llm_memory_review(
     )
     .await?;
     parse_llm_memory_review(&content)
+}
+
+/// One-shot Chat Completions body for memory review/consolidation. Field set
+/// mirrors the main-session engine wire (`model`/`messages`/`max_tokens`/
+/// `stream`, and — pinned by foundation tests — **no `temperature`**): a
+/// hard-coded 0 400s on gateways that pin sampling server-side (Kimi Coding
+/// Plan, live-probed 2026-09-30: "invalid temperature: only 1 is allowed for
+/// this model"). `response_format` is deliberate additive drift (guided JSON,
+/// same rationale as the model-review body). Single source so the wire-drift
+/// budget stays testable.
+pub(super) fn memory_review_request_body(
+    model: &str,
+    prompt: &str,
+    user_content: &str,
+    max_tokens: u32,
+) -> Value {
+    json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": prompt },
+            { "role": "user", "content": user_content }
+        ],
+        "max_tokens": max_tokens,
+        "stream": false,
+        "response_format": { "type": "json_object" }
+    })
 }
 
 /// Apply a parsed review result. `explicit_remember` means this turn hit an explicit

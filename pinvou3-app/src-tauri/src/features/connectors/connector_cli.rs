@@ -686,20 +686,57 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
         })
         .collect();
 
-    let mut visible_marks = Vec::with_capacity(tasks.len());
+    // Round-32 minor 9 (review #455): the loop must attribute EVERY gate —
+    // the old zip-`??` short-circuited on the first failure, dropping the
+    // remaining gates' `visible=` marks and the whole `done` mark, so one
+    // broken gate blinded startup observability for the other three (this
+    // PR's ledger-gated refresh supplies the loop's first realistic error
+    // source). All four tasks always run to completion; the marks record
+    // every outcome, the `done` mark is always emitted, and the first gate
+    // error is returned after the bookkeeping.
+    let mut outcomes = Vec::with_capacity(tasks.len());
     for (gate, task) in skill_gate::GATES.iter().zip(tasks) {
-        let visible = task
+        let result = task
             .await
-            .map_err(|e| format!("{}鉴权探测任务失败: {e}", gate.display_name))??;
-        visible_marks.push(format!("{}_visible={visible}", gate.id));
+            .map_err(|e| format!("{}鉴权探测任务失败: {e}", gate.display_name));
+        outcomes.push((gate.id.to_string(), result));
     }
+    let (visible_marks, first_error) = collect_refresh_outcomes(outcomes);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::platform::startup::mark_with_detail(
         "rust",
         "connector_auth_refresh:done",
         &format!("elapsed_ms={elapsed_ms} {}", visible_marks.join(" ")),
     );
-    Ok(ConnectorAuthGateRefresh { elapsed_ms })
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(ConnectorAuthGateRefresh { elapsed_ms }),
+    }
+}
+
+/// Round-32 minor 9 (review #455): pure attribution builder for
+/// [`refresh_connector_auth_gates`] — one `visible=` mark per gate (in gate
+/// order, `error` for a failed gate) plus the first gate error, so a broken
+/// gate no longer blinds the rest. Testable without real CLI probes.
+fn collect_refresh_outcomes(
+    outcomes: Vec<(String, Result<Result<bool, String>, String>)>,
+) -> (Vec<String>, Option<String>) {
+    let mut marks = Vec::with_capacity(outcomes.len());
+    let mut first_error: Option<String> = None;
+    for (id, result) in outcomes {
+        match result {
+            Ok(Ok(visible)) => marks.push(format!("{id}_visible={visible}")),
+            Ok(Err(e)) => {
+                marks.push(format!("{id}_visible=error"));
+                first_error.get_or_insert(e);
+            }
+            Err(e) => {
+                marks.push(format!("{id}_visible=error"));
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    (marks, first_error)
 }
 
 // ─────────────── BundleStore 镜像（marketplace-unification Phase 2）───────────────
@@ -735,6 +772,41 @@ pub fn bundle_store_on_disconnected(id: &str) {
 mod tests {
     use super::*;
     use std::io::{Error, Read};
+
+    /// Round-32 minor 9 (review #455): the attribution builder records every
+    /// gate even when one fails — a broken gate must not blind the rest, and
+    /// the first error is only returned after the bookkeeping.
+    #[test]
+    fn refresh_outcomes_attribute_every_gate_on_partial_failure() {
+        let outcomes = vec![
+            ("feishu".to_string(), Ok(Ok(true))),
+            (
+                "wecom".to_string(),
+                Ok(Err("刷新企微技能门控失败: boom".to_string())),
+            ),
+            (
+                "dingtalk".to_string(),
+                Err("钉钉鉴权探测任务失败: join".to_string()),
+            ),
+            ("tmeet".to_string(), Ok(Ok(false))),
+        ];
+        let (marks, first_error) = collect_refresh_outcomes(outcomes);
+        assert_eq!(
+            marks,
+            vec![
+                "feishu_visible=true".to_string(),
+                "wecom_visible=error".to_string(),
+                "dingtalk_visible=error".to_string(),
+                "tmeet_visible=false".to_string(),
+            ],
+            "every gate keeps its attribution mark, failed or not"
+        );
+        assert_eq!(
+            first_error.as_deref(),
+            Some("刷新企微技能门控失败: boom"),
+            "the first gate error wins, after the marks are recorded"
+        );
+    }
 
     const TEST_CTX: CliCtx = CliCtx {
         cli_bin: "test-cli",

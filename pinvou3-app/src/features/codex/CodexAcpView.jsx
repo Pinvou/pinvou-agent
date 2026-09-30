@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip, RefreshCw, Send, Sparkles, StopCircle, Upload, User } from '../../components/icons.jsx';
+import {
+  Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip,
+  RefreshCw, Send, Sparkles, StopCircle, Upload, User,
+} from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
@@ -3516,6 +3519,7 @@ export function CodexAcpView({
           // only while absolute virtual rows own the positioning.
           overflowAnchor: shouldVirtualizeConversationTurns(visibleTurns.length, scroller) ? 'none' : undefined,
         }}>
+          {/* relative: the AuxQuoteSelection chip is absolutely positioned inside this column, clamped to its rect. */}
           <div ref={conversationContentRef} className="relative w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             {workspaceUnavailable ? (
               <div

@@ -24,7 +24,7 @@ use super::llm_review::{
     LLM_REVIEW_PROMPT_TEMPLATE, append_memory_review_diagnostic_to, apply_llm_memory_review,
     apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
     has_explicit_remember_signal, has_memory_review_signal, memory_review_error_stage,
-    parse_llm_memory_review, sanitize_llm_memory_item,
+    memory_review_request_body, parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::{render_from_parts, render_memory_block};
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -1128,6 +1128,53 @@ fn llm_review_prompt_matches_supported_actions() {
     );
     assert!(!LLM_REVIEW_PROMPT_TEMPLATE.contains("archive"));
     assert!(!LLM_REVIEW_PROMPT_TEMPLATE.contains("must_create_recent_activity"));
+}
+
+/// The memory one-shot body must mirror the engine wire (no temperature): a
+/// hard-coded 0 400s on sampling-pinned gateways (Kimi Coding Plan, live
+/// 2026-09-30: only 1 is allowed for this model).
+#[test]
+fn memory_review_request_body_mirrors_engine_wire_no_temperature() {
+    let body = memory_review_request_body("k3", "sys prompt", "user content", 900);
+    assert!(
+        body.get("temperature").is_none(),
+        "aux memory body must mirror the engine wire (no temperature)"
+    );
+    assert_eq!(body["model"], "k3");
+    assert_eq!(body["max_tokens"], 900);
+    assert_eq!(body["stream"], false);
+    assert_eq!(body["response_format"]["type"], "json_object");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][0]["content"], "sys prompt");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], "user content");
+}
+
+/// Pin the call site, not just the builder: the pin above goes red when
+/// `memory_review_request_body` itself changes, but a re-inlined body inside
+/// `send_memory_llm_request` would bypass it silently. The request region
+/// must build through the shared builder and must not carry a sampling
+/// parameter (the Kimi Coding Plan gateway rejects client temperature).
+#[test]
+fn send_memory_llm_request_call_site_builds_body_through_builder() {
+    let source = include_str!("llm_review.rs");
+    let start = source
+        .find("async fn send_memory_llm_request")
+        .expect("send_memory_llm_request definition present");
+    let region = &source[start
+        ..source[start..]
+            .find("pub(super) fn memory_review_request_body")
+            .expect("memory_review_request_body definition present")
+            + start];
+    assert!(
+        region.contains("memory_review_request_body("),
+        "send_memory_llm_request must build its body via \
+         memory_review_request_body"
+    );
+    assert!(
+        !region.contains("\"temperature\""),
+        "the memory request region must not re-inline a temperature field"
+    );
 }
 
 /// The memory review prompt body carries no language constraint of its own; the

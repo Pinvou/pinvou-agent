@@ -875,10 +875,13 @@ where
     // orphan.
     if let Some(aux_id) = store.aux_session_id(session_id) {
         delete_session(&aux_id).await.map_err(|error| {
-            // No raw aux id in this chain (round-29 S1, same stance as the
-            // round-28 N7 fix): `delete_session` is on the web allowlist, so
-            // the rejection crosses the relay to browser consoles; the step
-            // name identifies the failing stage.
+            // `delete_session` is on the web allowlist, so the rejection
+            // crosses the relay to browser consoles. The aux id may still
+            // appear mid-chain (the store's cascade messages name it), but
+            // it is derived from the main id this message already carries —
+            // no additional identity leaks beyond it (round-32 review
+            // minor 6; the wider de-identification of these chains is
+            // registered as a follow-up).
             format!("delete_session({session_id}): cascade delete aux session: {error:#}")
         })?;
         forget_session(&aux_id);
@@ -1253,9 +1256,10 @@ pub async fn rename_session(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     if crate::features::sessions::is_aux_session_id(&id) {
-        return Err(format!(
-            "rename_session({id}): auxiliary conversations are managed through their main session"
-        ));
+        return Err(
+            "rename_session: auxiliary conversations are managed through their main session"
+                .to_string(),
+        );
     }
     store
         .set_title(&id, title)
@@ -1277,7 +1281,7 @@ pub async fn set_session_pinned(
     // the UI.
     if crate::features::sessions::is_aux_session_id(&id) {
         return Err(format!(
-            "set_session_pinned({id}): auxiliary conversations are managed through their main session"
+            "set_session_pinned: auxiliary conversations are managed through their main session"
         ));
     }
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
@@ -1306,7 +1310,7 @@ pub async fn set_session_archived(
     // Same ghost-entry argument as set_session_pinned.
     if crate::features::sessions::is_aux_session_id(&id) {
         return Err(format!(
-            "set_session_archived({id}): auxiliary conversations are managed through their main session"
+            "set_session_archived: auxiliary conversations are managed through their main session"
         ));
     }
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
@@ -1401,6 +1405,15 @@ async fn discard_aux_session_inner(
     // the idempotent already-discarded case, and a transient stat fault reads
     // as "present" and flows into the gated delete, which surfaces the real
     // error instead of treating "unknown" as "nothing to discard".
+    // An `aux-` input derives no aux of its own (aux-of-aux is structurally
+    // impossible), so the probe below would silently no-op while the caller
+    // believes a discard happened — the sibling ensure/reset commands reject
+    // aux-as-parent explicitly, and so does this one (round-34 minor 2).
+    if crate::features::sessions::is_aux_session_id(&session_id) {
+        return Err(
+            "discard_aux_session: auxiliary conversations do not own an aux session; pass the main task id".to_string(),
+        );
+    }
     let Some(aux_id) = store.aux_session_id(&session_id) else {
         return Ok(());
     };
@@ -1455,20 +1468,38 @@ async fn reset_aux_session_inner(
     store
         .load(&session_id)
         .map_err(|e| format!("reset_aux_session: main session not found: {e:#}"))?;
-    let (deleted_aux, metadata) = pool
+    let outcome = pool
         .reset_aux_chat_session(&session_id)
         .await
         .map_err(|e| format!("reset_aux_session: {e:#}"))?;
-    // Same post-delete notification as discard_aux_session: the aux id is
-    // derived (`aux-{parent_id}`), so the fresh session reuses it and the
-    // deletion event is what tells every client to drop the old transcript's
-    // buffer before the next snapshot read.
-    if let Some(aux_id) = deleted_aux {
-        let payload = serde_json::json!({ "id": &aux_id });
+    reset_aux_session_finish(outcome, |aux_id| {
+        // Same post-delete notification as discard_aux_session: the aux id
+        // is derived (`aux-{parent_id}`), so the fresh session reuses it and
+        // the deletion event is what tells every client to drop the old
+        // transcript's buffer before the next snapshot read.
+        let payload = serde_json::json!({ "id": aux_id });
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
+    })
+    .map_err(|e| format!("reset_aux_session: {e:#}"))
+    .map(|metadata| AuxSessionBinding { id: metadata.id })
+}
+
+/// The reset's post-call sequencing, extracted so the round-32 minor-8
+/// ordering is EXECUTED, not shape-pinned (round-34 MAJOR-2): the deletion
+/// event for a committed delete half must fire even when the create half
+/// failed — the pre-fix shape gated the event behind the command's `?` and
+/// left clients buffering a stale transcript for a session that no longer
+/// exists. Reverting the pool's `(Option<String>, Result<T>)` shape back to
+/// a single `Result` no longer compiles against this seam.
+pub(crate) fn reset_aux_session_finish<T, E>(
+    outcome: (Option<String>, Result<T, E>),
+    emit_deleted: impl FnOnce(&str),
+) -> Result<T, E> {
+    if let Some(ref aux_id) = outcome.0 {
+        emit_deleted(aux_id);
     }
-    Ok(AuxSessionBinding { id: metadata.id })
+    outcome.1
 }
 
 /// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,

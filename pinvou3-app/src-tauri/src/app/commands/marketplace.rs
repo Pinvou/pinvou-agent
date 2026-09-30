@@ -201,48 +201,7 @@ pub async fn install_marketplace_tool(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
 
-    let should_validate = {
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        mgr.requires_remote_connection_validation(&tool_id)
-    };
-    if should_validate {
-        // Only consumes the validation outcome: on failure, roll back the installed tool and surface a user-readable error.
-        if let Err(err) = {
-            let mgr = crate::features::marketplace::MarketplaceManager::new();
-            mgr.validate_remote_connection(&tool_id).await
-        } {
-            let rollback_tool_id = tool_id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let mgr = crate::features::marketplace::MarketplaceManager::new();
-                mgr.uninstall(&rollback_tool_id)
-            })
-            .await;
-            return Err(err);
-        }
-    }
-
-    tokio::task::spawn_blocking(move || {
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
-        // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
-        for sid in mgr.companion_skills(&tool_id) {
-            if let Err(e) =
-                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-                    .install(&sid)
-            {
-                eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
-                continue;
-            }
-            // 新装的 companion 技能默认加入 DenyAll scope（当前 code）禁用集
-            // （外部能力显式开启，与独立技能安装 install_marketplace_skill_sync 同语义）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid);
-        }
-        // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&tool_id);
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
+    install_marketplace_tool_post_install(tool_id).await?;
     // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
@@ -260,6 +219,138 @@ pub async fn install_marketplace_tool(
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
     hot_refresh(&pool, true).await;
+    Ok(())
+}
+
+/// Post-install legs of `install_marketplace_tool`, extracted verbatim so the
+/// consent-sync / validation ordering and its rollback semantics are
+/// regression-testable without a Tauri harness (review #455 round-23 MAJOR 1c:
+/// the behavior shipped in merge `de04d54a9` had zero test pins). Order is
+/// load-bearing: the consent sync runs BEFORE the network validation; the
+/// rollback uninstall's teardown removes the rows the sync wrote.
+pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Result<(), String> {
+    // Round-21 MAJOR 2: the consent sync must run IMMEDIATELY after the
+    // install commit, BEFORE the network validation — for initialized scopes
+    // the stored list is the consent store, and a crash during the network
+    // round-trip below would otherwise leave the pack ON in every initialized
+    // scope with zero consent, with nothing at boot to reconcile it. The
+    // crash window is now the ms-wide span between two adjacent fs-backed
+    // operations. Ordering is safe against validation failure: the rollback
+    // uninstall's teardown removes the entries this sync wrote (the exact
+    // form, `remove_bundle_from_disabled_scopes_exact`). That teardown
+    // degrades persist
+    // failures to `log::warn`, so a rollback-time persist failure can still
+    // strand a consent row for a pack that is gone — stale-deny, i.e. the
+    // fail-closed direction (review #455 round-22 minor 2).
+    let consent_tool_id = tool_id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&consent_tool_id)
+    })
+    .await
+    .map_err(|e| {
+        // Round-24 minor 6: a join failure leaves the same terminal state as
+        // a persist failure — the pack stays installed with zero consent
+        // rows — so the honest sibling wording applies here too (skill path
+        // :640-645; review #455 round-22 MAJOR 1). No rollback runs on this
+        // arm.
+        format!(
+            "connector '{tool_id}' installed, but its consent state could not be applied (background task failed): new sessions will enable it by default — turn it off in the tools list: {e}"
+        )
+    })?
+    .map_err(|e| {
+        // Honest sibling wording (skill path :640-645): no rollback runs on
+        // this arm — the pack stays installed with zero consent rows, so the
+        // message must say exactly that (review #455 round-22 MAJOR 1).
+        format!(
+            "connector '{tool_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        )
+    })?;
+
+    let should_validate = {
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
+        mgr.requires_remote_connection_validation(&tool_id)
+    };
+    if should_validate {
+        // Only consumes the validation outcome: on failure, roll back the installed tool and surface a user-readable error.
+        if let Err(err) = {
+            let mgr = crate::features::marketplace::MarketplaceManager::new();
+            mgr.validate_remote_connection(&tool_id).await
+        } {
+            let rollback_tool_id = tool_id.clone();
+            let rollback_result = tokio::task::spawn_blocking(move || {
+                let mgr = crate::features::marketplace::MarketplaceManager::new();
+                mgr.uninstall(&rollback_tool_id)
+            })
+            .await;
+            // Best-effort compensation: LOG a rollback failure instead of
+            // discarding it — the validation error remains the one returned
+            // (round-28 nit: the rollback result is not surfaced to the user;
+            // on a failed rollback the pack remains installed — fail-closed
+            // state, the log line is the only trace).
+            match &rollback_result {
+                Err(e) => {
+                    log::warn!(
+                        "[marketplace] rollback uninstall join failed after validation error: {e}"
+                    )
+                }
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "[marketplace] rollback uninstall failed after validation error: {e}"
+                    )
+                }
+                Ok(Ok(())) => {}
+            }
+            return Err(err);
+        }
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
+        // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
+        // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
+        // The tool's own consent sync already ran right after the install
+        // commit (round-21 MAJOR 2, before the network validation); only the
+        // companion loop remains here.
+        for sid in mgr.companion_skills(&tool_id) {
+            if let Err(e) =
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .install(&sid)
+            {
+                eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
+                continue;
+            }
+            // A newly installed companion skill joins the DenyAll scope disabled
+            // sets by default (external capabilities are explicit opt-in, same
+            // semantics as the standalone install_marketplace_skill_sync).
+            // Round-33 MAJOR 1 (review #455): the sync is PROVABLY redundant —
+            // the arm the old comment's "must not fail the whole command"
+            // stance relied on — only when the companion normalizes to the
+            // tool's own package id (the tool-level sync above stored exactly
+            // that id). On the known-pack-shield edge (a standalone pack dir
+            // named like the companion) the normalized id differs and the
+            // sync is a real consent write for a different pack; a lost write
+            // there leaves the pack live with zero consent in initialized
+            // scopes with no boot reconciliation (the ledger-gated startup
+            // refresh covers only the four CLI connector gates). That edge
+            // therefore fails the command, exactly like the tool-level
+            // sync's fail-visible persist above.
+            let normalized = crate::features::marketplace::scope::to_package_id(&sid);
+            if normalized == crate::features::marketplace::scope::to_package_id(&tool_id) {
+                continue;
+            }
+            if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
+            {
+                return Err(format!(
+                    "companion skill '{sid}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+                ));
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
     Ok(())
 }
 
@@ -551,6 +642,20 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
                 crate::features::marketplace::store::BundleSource::Upload(_)
             )
         });
+    // Round-26 MAJOR 1 (review #455): snapshot every companion skill's owner
+    // pack BEFORE any directory disappears — once the skill dir is deleted
+    // (or the whole package is recycled), the normalized cleanup's gating
+    // fallback can be re-owned by a foreign pack's claim/nesting and the
+    // removal would erase THAT pack's consent rows.
+    let companion_owners: std::collections::HashMap<String, String> = companions
+        .iter()
+        .map(|sid| {
+            (
+                sid.clone(),
+                crate::features::marketplace::scope::resolve_pack_owner_id(sid),
+            )
+        })
+        .collect();
     for sid in &companions {
         if recycles_with_package {
             continue; // companion 随整包回收，见上注释
@@ -560,17 +665,28 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
-        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid);
+        // Exact form (round-26 MAJOR 1): the rows were owned by the
+        // pre-teardown snapshot; re-normalizing a deleted id is hijackable.
+        // `sid` always has a snapshot entry (same iteration source), so the
+        // fallback is unreachable; production code avoids expect().
+        let owner = companion_owners.get(sid).map(String::as_str).unwrap_or(sid);
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(owner)?;
     }
     mgr.uninstall(tool_id)?;
     if recycles_with_package {
         // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
         for sid in &companions {
-            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(sid);
+            let owner = companion_owners.get(sid).map(String::as_str).unwrap_or(sid);
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(owner)?;
         }
     }
-    // 已卸载的连接器从两个 scope 的禁用集移除(避免残留 id)。
-    crate::features::marketplace::remove_bundle_from_disabled_scopes(tool_id);
+    // The uninstalled connector is removed from both scopes' disabled sets (no
+    // stale ids). Fail-visible (round-17 minor 1): a stale entry + marker would
+    // be inherited by a same-id reinstall's install sync. Exact form
+    // (round-26 MAJOR 1): the dir is already deleted/recycled, so the
+    // normalized form could re-own `tool_id` onto a foreign claim — `tool_id`
+    // is itself the pack id.
+    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -594,9 +710,14 @@ pub async fn install_marketplace_skill(
     tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&skill_id))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
-    // code scope 已初始化时新装技能默认仍关闭（sync 进 code 禁用集，见下面
-    // install_marketplace_skill_sync），plain 会话立即可见。
+    // The install affects both scopes' enabled sets: an initialized DenyAll
+    // scope (plain included) keeps a newly installed skill off by default
+    // (synced into the scope disabled sets, see install_marketplace_skill_sync);
+    // an uninitialized scope falls back to the on-the-fly DenyAll expansion,
+    // also off by default. The composite-dir rewrite is finalized by
+    // hot_refresh below (round-20 minor 4: a hand-written
+    // refresh_live_sessions_skills call used to duplicate what hot_refresh
+    // already does — idempotent but wasted work).
     // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
@@ -609,7 +730,14 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
         .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id);
+    // Fail-visible persist (review #455 R13-B3): swallowing the error would let the skill go live with zero consent.
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
+        .map_err(|e| {
+            format!(
+                "skill '{skill_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+            )
+        })?;
     Ok(())
 }
 
@@ -779,8 +907,14 @@ pub async fn import_plugin_package_cmd(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
-    // 与 `install_marketplace_tool` 同口径。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // Same contract as install_marketplace_tool. Fail-visible persist (review #455 R13-B3).
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+        format!(
+            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+            report.id
+        )
+    })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -841,7 +975,14 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id);
+    // Fail-visible persist (review #455 R13-B3).
+    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+        format!(
+            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+            report.id
+        )
+    })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -882,11 +1023,22 @@ pub async fn import_skill_md_bytes(
         tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
             .await
             .map_err(|e| format!("任务执行失败: {e}"))??;
-    // 上传安全默认：与插件包导入同口径，加入 DenyAll scope。
-    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id);
+    // Upload safe default: same as plugin import, joins the DenyAll scopes.
+    // Fail-visible persist (review #455 R13-B3).
+    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id).map_err(
+        |e| {
+            format!(
+                "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+                report.id
+            )
+        },
+    )?;
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
+    // The composite-dir rewrite is finalized by hot_refresh (round-20 minor 4:
+    // the duplicate hand-written refresh_live_sessions_skills call is gone).
     hot_refresh(&pool, true).await;
     Ok(report.id)
 }
@@ -909,10 +1061,16 @@ pub async fn uninstall_marketplace_skill(
 }
 
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    // Round-26 MAJOR 1 (review #455): snapshot the owner pack while the skill
+    // dir is still on disk — after the deletion the normalized cleanup's
+    // gating fallback could be hijacked by a foreign pack's claim/nesting and
+    // erase THAT pack's consent rows.
+    let owner = crate::features::marketplace::scope::resolve_pack_owner_id(skill_id);
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
-    // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）。
-    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(skill_id);
+    // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）；
+    // exact 形式按卸载前快照的属主清行（round-26 MAJOR 1）。
+    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(&owner)?;
     Ok(())
 }
 

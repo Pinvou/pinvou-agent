@@ -1,8 +1,12 @@
 /**
  * CDP-driven E2E for the aux-chat conversation-quote (selected-text quote) loop.
  *
- * Drives a RUNNING dev desktop app through its WebView2 remote-debugging port
- * (launch the app with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222):
+ * Drives any CDP-capable runtime through its remote-debugging port — in
+ * practice the WebView2 dev app (the repo ships no WKWebView CDP port, so
+ * macOS coverage needs a port forward); requires a RUNNING dev desktop app
+ * (start it with
+ * WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 and the
+ * dev server / backend it points at):
  * every interaction is a DOM/React event dispatched from Runtime.evaluate —
  * no mouse/keyboard automation, the host screen stays free for the user.
  *
@@ -178,6 +182,14 @@ const HELPERS = `(() => {
     clickQuote() {
       const btn = q('[data-testid="aux-quote-selection-button"]');
       if (!btn) return 'no-quote-button';
+      // Real event order: mousedown on the button (its preventDefault keeps
+      // the DOM selection alive), document mouseup — which arms the
+      // component's deferred evaluation — and only then the click.
+      // Synthesizing the click alone never armed that timer, so the
+      // deferred-evaluation regressions (a resurrected popover overwriting
+      // the click's outcome) were invisible to this driver.
+      btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300, clientY: 300 }));
       btn.click();
       return 'ok';
     },
@@ -324,6 +336,16 @@ scenario('selecting text shows the "quote to aux chat" button and opens the pane
 scenario('re-selecting the same text does not add a chip', async () => {
   await quoteWithRetry('head', 'repeat selection');
   assert(await evaluate('window.__t.clickQuote()') === 'ok');
+  await sleep(100);
+  // Round-33 MAJOR: the click's own mouseup arms the deferred evaluation; if
+  // the duplicate branch fails to cancel it, the notice reverts to the plain
+  // Quote affordance one macrotask later. zh/en/ja notice text all mark the
+  // duplicate ("已在引用列表" / "already quoted" / "すでに引用").
+  const notice = await evaluate('window.__t.quoteButtonInfo()');
+  assert(
+    notice.visible && /已在|already|すでに/.test(notice.text),
+    `duplicate notice must survive the deferred evaluation, got: ${JSON.stringify(notice)}`,
+  );
   await sleep(800);
   const panel = await evaluate('window.__t.auxPanel()');
   assert(panel.chips === 1, `chip count must stay 1 after a duplicate quote, got ${panel.chips}`);
