@@ -2314,7 +2314,7 @@ export function CodexAcpView({
     },
     canStart: () => !busy && !working && !activeRuntimeBusy,
     canSendTask: canSendNativeVoiceTask,
-    sendTask: async outgoing => send(outgoing),
+    sendTask: async (outgoing, context) => send(outgoing, { voiceOperationId: context?.operationId }),
   });
   const handleNativeVoiceTrigger = nativeVoice.triggerVoice;
 
@@ -2322,7 +2322,9 @@ export function CodexAcpView({
     nativeVoice.cancelVoice();
   }
   function handleNativeVoiceClose() {
-    nativeVoice.closeVoice();
+    // Dismiss without ending the unsent operation (an in-flight recording
+    // still cancels); closeVoice would abandon it.
+    nativeVoice.dismissVoice();
   }
 
   // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
@@ -2807,6 +2809,7 @@ export function CodexAcpView({
     sendBody,
     draftFailureCleanup,
     backgroundErrorLabel,
+    voiceOperationId,
   }) {
     let targetId = activeId;
     const materializingDraft = !targetId;
@@ -2815,11 +2818,24 @@ export function CodexAcpView({
     setError('');
     try {
       if (!targetId) {
+        // Park before materialization too: a cancel during createSession
+        // must wait for the admission result instead of recording
+        // voice_cancelled for a message that is then delivered (begin is
+        // idempotent; the begin after creation binds the created session).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId);
+        }
         const created = await createSession({
           shouldActivate: () => canApplyAcpSendOperation(operation),
           prepareSession,
         });
         targetId = created.id;
+        // First-turn materialization: the voice operation's submission gate
+        // binds to the really created session (shared voice bookkeeping; ACP
+        // itself never reports a chat task attempt).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
+        }
         if (created.activated && activeIdRef.current === targetId) {
           acpSendOperationTracker.switchSession(targetId);
           operation = beginAcpSendOperation(targetId);
@@ -2839,6 +2855,12 @@ export function CodexAcpView({
           workspaceReferencesAtSend,
           reference => reference,
         ));
+      } else if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+        // Existing-session send: park the operation before dispatch too, so a
+        // cancel during the in-flight send waits for the admission result
+        // instead of recording voice_cancelled for a message that was
+        // delivered (same contract as the first-turn branch above).
+        bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
       }
       await sendBody({ targetId, operation });
       updateAttachments(targetId, current => current.filter(
@@ -2850,10 +2872,20 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
+      // A dispatched ACP send ends its voice operation; without this the
+      // accepted record would sit pending forever (leaking its audio chunks).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId, true);
+      }
       // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
       return true;
     } catch (err) {
       if (materializingDraft && draftFailureCleanup) draftFailureCleanup();
+      // A failed ACP send un-parks its voice operation and keeps the
+      // retryable association (same contract as the chat lane's rejections).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId || null, false);
+      }
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
@@ -2869,7 +2901,7 @@ export function CodexAcpView({
     }
   }
 
-  async function send(messageOverride) {
+  async function send(messageOverride, sendOptions) {
     const hasMessageOverride = typeof messageOverride === 'string';
     if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
       return nativeVoice.applyVoiceEditPreview({ send: true });
@@ -2882,6 +2914,7 @@ export function CodexAcpView({
     const workspaceReferencesAtSend = workspaceReferences;
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
+    const voiceOperationId = sendOptions && sendOptions.voiceOperationId;
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
       || composerSendBlockers.busy || composerSendBlockers.working || composerSendBlockers.configApplying) return false;
     if (composerSendBlockers.authMissing) {
@@ -2895,7 +2928,7 @@ export function CodexAcpView({
     if (composerSendBlockers.workspaceUnavailable) return false;
     if (composerSendBlockers.sessionNotReady) return false;
     if (isNativeAgent) {
-      return sendNative(message, readyAttachments);
+      return sendNative(message, readyAttachments, voiceOperationId);
     }
     return runAcpSendPipeline({
       message,
@@ -2903,6 +2936,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'ACP',
+      voiceOperationId,
       materializeDraft: async ({ created, targetId, operation }) => {
         const appliedInfo = await applyDraftConfigSelections(
           targetId,
@@ -2936,7 +2970,7 @@ export function CodexAcpView({
 
   /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
   /// 用户气泡乐观插入 lane，chat 命令同步失败（空消息 / turn 占用等）时回滚。
-  async function sendNative(message, readyAttachments) {
+  async function sendNative(message, readyAttachments, voiceOperationId) {
     const attachmentsAtSend = attachments;
     const workspaceReferencesAtSend = workspaceReferences;
     const nativeDraftControlsAtSend = nativeDraftControls;
@@ -2946,6 +2980,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'native',
+      voiceOperationId,
       prepareSession: async sessionId => {
         const prepared = await persistNativeDraftControls(
           sessionId,
