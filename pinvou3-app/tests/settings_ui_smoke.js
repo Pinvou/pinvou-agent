@@ -186,6 +186,7 @@ function injectSource() {
     var superPerm = false;
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
+    var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
@@ -209,6 +210,7 @@ function injectSource() {
     var failMemoryOverview = false;
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
+    var pendingDownloadReject = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
@@ -235,9 +237,6 @@ function injectSource() {
         case 'update_settings':
           settings = Object.assign({}, settings, args.patch || {});
           return Promise.resolve(settings);
-        case 'save_settings_and_restart':
-          settings = Object.assign({}, settings, args.patch || {});
-          return Promise.resolve(null);
         case 'update_search_settings':
           settings = Object.assign({}, settings, { search: args.search });
           return Promise.resolve(settings);
@@ -291,8 +290,11 @@ function injectSource() {
         case 'set_super_permission': return Promise.reject(new Error('pkexec unavailable'));
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({ online: true, ok: true, status: 'online' });
-        case 'check_for_update': return Promise.resolve(Object.assign({}, updateResponse));
-        case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
+        case 'check_for_update':
+          return updateCheckFailure
+            ? Promise.reject(new Error(updateCheckFailure))
+            : Promise.resolve(Object.assign({}, updateResponse));
+        case 'download_update': return new Promise(function (resolve, reject) { pendingDownloadResolve = resolve; pendingDownloadReject = reject; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
@@ -340,6 +342,7 @@ function injectSource() {
       settings: function () { return settings; },
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
+      setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
@@ -355,6 +358,13 @@ function injectSource() {
           var resolve = pendingDownloadResolve;
           pendingDownloadResolve = null;
           resolve({ package_path: 'C:\\\\tmp\\\\pinvou.zip', installer_path: 'C:\\\\tmp\\\\pinvou.msi', latest_version: updateResponse.latest_version });
+        }
+      },
+      rejectDownload: function (rawError) {
+        if (pendingDownloadResolve) {
+          var reject = pendingDownloadReject;
+          pendingDownloadResolve = null;
+          reject(new Error(rawError));
         }
       },
     };
@@ -597,7 +607,20 @@ async function modalWidth(page, headingText) {
       && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
 
   await clickSettingsSection(page, '更新');
+  // A failed manual check (offline, blocked request, ...) shows only the short localized hint, never the raw backend error.
   await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure('update request failed: error sending request for url');
+    await window.TauriBridge.updater.checkForUpdate();
+  });
+  await sleep(250);
+  const updateCheckFailureText = await page.evaluate(() => document.querySelector('#settings-version-update')?.innerText || '');
+  rec('update: a failed manual check shows only the short localized hint',
+    updateCheckFailureText.includes('检查失败')
+    && !updateCheckFailureText.includes('update request failed')
+    && !updateCheckFailureText.includes('error sending request'),
+    updateCheckFailureText);
+  await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure(null);
     window.__SETTINGS_TEST__.setUpdateResponse({
       available: true,
       current_version: '0.6.1',
@@ -640,6 +663,29 @@ async function modalWidth(page, headingText) {
   await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
   await sleep(250);
 
+  // ①u A failed download/install shows only the localized short hint: the raw
+  // backend error string (it may carry request details and its language is
+  // undefined) never enters the card — it stays on bridge state and the
+  // updater's log as diagnostics. Do not await the returned promise: the
+  // download hangs until the reject hook fires, and awaiting would stall CDP.
+  await page.evaluate(() => { window.TauriBridge.updater.downloadAndInstallUpdate(); });
+  await sleep(250);
+  await page.evaluate(() => window.__SETTINGS_TEST__.rejectDownload('RAW update diagnostics: apt stderr http://proxy.internal'));
+  await sleep(250);
+  const updateFailureText = await page.evaluate(() => {
+    const root = document.querySelector('#settings-version-update');
+    return root ? root.innerText : '';
+  });
+  rec('①u 更新失败仅显示本地化提示,原始错误串不进卡片',
+    updateFailureText.includes('更新失败')
+    && !updateFailureText.includes('RAW update diagnostics')
+    && !updateFailureText.includes('proxy.internal'),
+    JSON.stringify(updateFailureText));
+  // Note: bs.updateError stays set on the bridge after this rec (the bridge only
+  // clears it at the start of the next download). Harmless today because no
+  // later test reads the update card, but any future update-section test must
+  // run a fresh downloadAndInstallUpdate (or reset state) before asserting.
+
   await clickSettingsSection(page, '模型');
   const modelList = await page.evaluate(() => {
     const text = document.body.innerText;
@@ -665,18 +711,27 @@ async function modalWidth(page, headingText) {
 
   await clickRowAction(page, 'deepseek-v4-flash', '编辑');
   await sleep(250);
-  const maskedSavedKey = await page.evaluate(() => ({
-    maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
-    noConfiguredText: !document.body.innerText.includes('已配置'),
-  }));
+  const maskedSavedKey = await page.evaluate(() => {
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
+    return {
+      maskedPlaceholder: [...document.querySelectorAll('input')].some(node => node.placeholder === '••••••••'),
+      noConfiguredText: !document.body.innerText.includes('已配置'),
+      // 掩码不变量:输入框是 type=text,遮挡完全来自 -webkit-text-security。
+      // 没有这条断言,删掉那行 style 就会让 Key 明文渲染而所有门禁照样全绿。
+      maskedByTextSecurity: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'disc',
+    };
+  });
   await clickExact(page, '显示');
   await sleep(350);
   const editModelBehavior = await page.evaluate(() => {
     const text = document.body.innerText;
     const input = [...document.querySelectorAll('input')].find(node => node.value === 'sk-saved-deepseek');
+    const keyInput = document.querySelector('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
     return {
       revealCall: window.__SETTINGS_TEST__.calls.some(call => call.cmd === 'reveal_model_api_key' && call.args.id === 'cloud-deepseek'),
       keyRevealed: !!input,
+      // 「显示」必须真正撤掉掩码,而不仅仅是把值取回来。
+      unmaskedAfterReveal: !!keyInput && window.getComputedStyle(keyInput).webkitTextSecurity === 'none',
       sameProviderOnlyClosed: !text.includes('kimi-k3') && !text.includes('glm-5.2'),
       // 带 provider_kind 的官方模型必须仍能找到目录组,配置区与测试连接不被隐藏。
       testConnectionVisible: text.includes('测试连接'),
@@ -1620,8 +1675,10 @@ async function modalWidth(page, headingText) {
     return { text, showsError: text.includes('测试失败') && !text.includes('不支持图像识别') && !text.includes('支持图片') };
   });
   rec('⑦.img.10 error 结果与「不支持」严格区分', imageTestError.showsError, imageTestError.text);
-  // 表单值变化后上一次测试结果应清除(恢复提示文案)。已存 Key 的模型占位符是掩码,按类型选择。
-  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] input[type="password"]');
+  // 表单值变化后上一次测试结果应清除(恢复提示文案)。按 testid 选择:API Key 输入框
+  // 统一为 type=text + WebkitTextSecurity 掩码(消除 WebView2 自带的第二个眼睛图标),
+  // 已存 Key 时占位符也是掩码,按 type 或 placeholder 选择都会落空。
+  const imageTestKeyInput = await page.$('[data-testid="model-form-dialog"] [data-testid="model-api-key-input"]');
   await imageTestKeyInput.type('k');
   await sleep(200);
   const imageTestCleared = await page.evaluate(() => {

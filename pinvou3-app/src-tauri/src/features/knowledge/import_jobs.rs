@@ -11,6 +11,8 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use super::now;
+
 const FAILED_FILES_PREVIEW_LIMIT: usize = 20;
 const FAILED_FILES_PAGE_MAX: usize = 50;
 
@@ -469,10 +471,6 @@ pub(super) fn unique_existing_files(files: impl IntoIterator<Item = PathBuf>) ->
 
 fn path_key(path: &Path) -> String {
     path.to_string_lossy().into_owned()
-}
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
 }
 
 #[cfg(test)]

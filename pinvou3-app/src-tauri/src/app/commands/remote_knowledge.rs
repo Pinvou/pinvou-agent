@@ -516,6 +516,7 @@ pub fn session_mounted_remote_collections(
 
 #[tauri::command]
 pub async fn session_add_mounted_remote_collection(
+    app: AppHandle,
     remote: State<'_, RemoteKnowledgeService>,
     store: State<'_, SessionStore>,
     session_id: String,
@@ -531,11 +532,18 @@ pub async fn session_add_mounted_remote_collection(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     // The connection may have been removed while the network validation was in flight.
     remote.client_for(&server_id)?;
-    Ok(store.add_mounted_remote_collection(&session_id, server_id, collection_id))
+    let remote_collections =
+        store.add_mounted_remote_collection(&session_id, server_id, collection_id);
+    // Keep the cross-window/cross-device chip contract identical to the local
+    // mount commands: publish the refreshed snapshot instead of leaving other
+    // windows on the stale list until they switch sessions.
+    publish_remote_kb_mount_change(&app, &store, &session_id, &remote_collections);
+    Ok(remote_collections)
 }
 
 #[tauri::command]
 pub async fn session_set_mounted_remote_collection_enabled(
+    app: AppHandle,
     remote: State<'_, RemoteKnowledgeService>,
     store: State<'_, SessionStore>,
     session_id: String,
@@ -545,31 +553,33 @@ pub async fn session_set_mounted_remote_collection_enabled(
 ) -> Result<Vec<MountedRemoteCollection>, String> {
     let coordinator = remote_mount_mutation_coordinator(&server_id, collection_id);
     let _mutation = coordinator.lock().await;
-    if enabled {
+    let remote_collections = if enabled {
         ensure_remote_collection_mountable(&remote, &server_id, collection_id).await?;
         let server_coordinator = remote_server_mutation_coordinator(&server_id);
         let _server_mutation = server_coordinator
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         remote.client_for(&server_id)?;
-        return Ok(store.set_mounted_remote_collection_enabled(
-            &session_id,
-            &server_id,
-            collection_id,
-            true,
-        ));
-    }
-    Ok(store.set_mounted_remote_collection_enabled(&session_id, &server_id, collection_id, false))
+        store.set_mounted_remote_collection_enabled(&session_id, &server_id, collection_id, true)
+    } else {
+        store.set_mounted_remote_collection_enabled(&session_id, &server_id, collection_id, false)
+    };
+    publish_remote_kb_mount_change(&app, &store, &session_id, &remote_collections);
+    Ok(remote_collections)
 }
 
 #[tauri::command]
 pub fn session_remove_mounted_remote_collection(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     session_id: String,
     server_id: String,
     collection_id: i64,
 ) -> Vec<MountedRemoteCollection> {
-    store.remove_mounted_remote_collection(&session_id, &server_id, collection_id)
+    let remote_collections =
+        store.remove_mounted_remote_collection(&session_id, &server_id, collection_id);
+    publish_remote_kb_mount_change(&app, &store, &session_id, &remote_collections);
+    remote_collections
 }
 
 async fn ensure_remote_collection_mountable(

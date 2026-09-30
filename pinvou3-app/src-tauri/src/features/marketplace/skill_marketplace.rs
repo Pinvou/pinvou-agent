@@ -1752,7 +1752,7 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
         let p = file.path();
-        if is_python_cache_path(p) {
+        if super::plugin_import::is_python_cache_rel_path(&p.to_string_lossy()) {
             continue;
         }
         let p = p.to_string_lossy();
@@ -1807,15 +1807,6 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
         digest.update(b"\0");
     }
     crate::platform::encoding::hex_lower(&digest.finalize())
-}
-
-/// Whether a path relative to the include_dir root is Python compilation
-/// cache (inside a `__pycache__/` subtree or a `.pyc` at any level, case
-/// insensitive). Pure function for easy unit testing; the predicate is the
-/// single `plugin_import::is_python_cache_rel_path` rule shared with package
-/// import comparison and package export.
-fn is_python_cache_path(rel: &std::path::Path) -> bool {
-    super::plugin_import::is_python_cache_rel_path(&rel.to_string_lossy())
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {
@@ -2600,16 +2591,15 @@ mod tests {
     /// 会被 include_dir! 内嵌,不得在用户安装预置技能时物化到运行时目录。
     #[test]
     fn python_cache_paths_are_excluded_from_extraction() {
-        assert!(is_python_cache_path(std::path::Path::new(
+        use crate::features::marketplace::plugin_import::is_python_cache_rel_path;
+        assert!(is_python_cache_rel_path(
             "visualizer/scripts/__pycache__/validate.cpython-311.pyc"
-        )));
-        assert!(is_python_cache_path(std::path::Path::new(
-            "visualizer/scripts/validate.PYC"
-        )));
-        assert!(!is_python_cache_path(std::path::Path::new(
+        ));
+        assert!(is_python_cache_rel_path("visualizer/scripts/validate.PYC"));
+        assert!(!is_python_cache_rel_path(
             "visualizer/scripts/validate_visualizer_html.py"
-        )));
-        assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
+        ));
+        assert!(!is_python_cache_rel_path("pua/SKILL.md"));
     }
 
     #[test]

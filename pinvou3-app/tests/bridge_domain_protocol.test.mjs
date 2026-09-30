@@ -236,10 +236,14 @@ const expectedProtocolHashes = {
   // applyWorkspaceReboundMark (it was byte-duplicated with the web lane),
   // so the session:list_changed listener body shrinks to the delegation —
   // no new invoke or listen entries (the extractor scans raw source, so
-  // body/comment text is part of the digest). Verified unchanged by the
-  // #576 merge.
-  sessions: 'd0742252276cfc1fe3831cbaaa9ff6c7b89aa2ac0c465c4567c5679b50edbaa8',
-  // Recomputed for the shared-helper dedup (see batch note above).
+  // body/comment text is part of the digest).
+  // Recomputed for the sidecar read-failure surfacing (main #596): the
+  // persona/review reads moved into local loadPersonaEventsForSession /
+  // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
+  // before degrading to []; same two commands, no new invoke or listen
+  // entries (the switch-path occurrences now pass sessionId: sid like the
+  // hydration ones).
+  sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.

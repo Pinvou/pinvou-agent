@@ -175,7 +175,9 @@ function injectSource() {
         // mock 不再 no-op，勾选往返才可测）。
         case 'get_bundle_visibility': return state.failVisibility ? Promise.reject(new Error('mock visibility read failure')) : Promise.resolve(state.hidden[args.scope]||[]);
         case 'set_bundle_visibility': state.hidden[args.scope]=(args.bundleIds||[]).map(toPackageId); return Promise.resolve(null);
-        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills': return Promise.resolve(null);
+        // failApplySkills simulates the skill write failing after authorization already succeeded (M1 regression).
+        case 'feishu_apply_skills': case 'wecom_apply_skills': case 'dingtalk_apply_skills': case 'tmeet_apply_skills':
+          return state.failApplySkills ? Promise.reject(new Error('mock apply skills failure')) : Promise.resolve(null);
         // failOpenExternal simulates an external-url allowlist rejection: the WeCom QR modal's "Open in browser" must surface a visible error.
         case 'open_external_url': return state.failOpenExternal ? Promise.reject('external-url-not-allowlisted') : Promise.resolve(null);
         default: return Promise.resolve(null);
@@ -277,6 +279,11 @@ async function visibilityBox(page, cardText, modeLabel, click) {
 }
 
 (async () => {
+  // The tmeet readiness failure renders the localized auth_failed connector error; read it from the dictionary so the copy can change freely.
+  const { dict } = await import('./helpers/i18n-all.js');
+  const tmeetAuthFailedCopy = dict.zh.uiToolStore.connectorErrors.auth_failed;
+  const tmeetSkillsFailedCopy = dict.zh.uiToolStore.connectorErrors.skills_enable_failed;
+  const wecomAuthFailedCopy = dict.zh.uiToolStore.connectorErrors.auth_failed;
   const { url } = await startUiTestServer();
   const browser = await puppeteer.launch({executablePath:CHROME,headless:'new',args:['--no-sandbox','--disable-gpu','--no-first-run'],userDataDir:PROFILE});
   const page = await browser.newPage();
@@ -534,6 +541,41 @@ async function visibilityBox(page, cardText, modeLabel, click) {
       }));
       await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
       await dismiss(page);
+      // Backend `wecom:error` events are the only ingress that carries real raw
+      // backend text (the Rust json! message field); the card must render the
+      // localized category message and never the raw payload or its details.
+      await page.evaluate(() => window.__emitTauri('wecom:error', {
+        phase: 'authorize',
+        code: 'auth_failed',
+        message: 'RAW后端诊断 payload secret_token=abcdef 授权流程中断',
+      }));
+      await sleep(150);
+      rec('WeCom backend error event renders localized copy without the raw payload', await page.evaluate((authFailedCopy) => {
+        const text = document.body.innerText;
+        return text.includes(authFailedCopy) && !text.includes('secret_token') && !text.includes('RAW后端诊断');
+      }, wecomAuthFailedCopy));
+      await clickExact(page, '关闭'); await sleep(150);
+      // A late backend error after the card was closed must not fabricate a
+      // fresh error card (the flow store is null; the listener drops the event).
+      await page.evaluate(() => window.__emitTauri('wecom:error', {
+        phase: 'authorize',
+        code: 'auth_failed',
+        message: 'RAW后端诊断 payload secret_token=abcdef 授权流程中断',
+      }));
+      await sleep(150);
+      rec('WeCom late backend error after close does not resurrect the card', await page.evaluate((authFailedCopy) => (
+        !document.body.innerText.includes(authFailedCopy)
+      ), wecomAuthFailedCopy));
+      // Re-open the flow card through the real connect path first: a late QR
+      // event must not fabricate a card from a closed flow (the listener drops
+      // it), so the QR restore below only works on a card opened by a connect.
+      await clickExact(page, '连接'); await sleep(260);
+      await page.evaluate(() => window.__emitTauri('wecom:qr', {
+        phase: 'authorize',
+        url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      }));
+      await sleep(150);
       await clickExact(page, '取消'); await sleep(150);
       rec('WeCom flow-card cancel clears the flow card', await page.evaluate(() => {
         const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
@@ -557,13 +599,27 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         .filter(x => x.cmd === 'tmeet_apply_skills').length);
       await page.evaluate(() => window.__emitTauri('tmeet:connected', {}));
       await sleep(180);
-      rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate((beforeApply) => {
+      rec('腾讯会议成功事件必须二次确认真实登录态', await page.evaluate(({ beforeApply, authFailedCopy }) => {
         const afterApply = window.__TOOL_STORE_TEST__.calls
           .filter(x => x.cmd === 'tmeet_apply_skills').length;
         return afterApply === beforeApply
           && !document.body.innerText.includes('已连接腾讯会议')
-          && document.body.innerText.includes('腾讯会议授权未完成');
-      }, beforeApply));
+          && document.body.innerText.includes(authFailedCopy);
+      }, { beforeApply, authFailedCopy: tmeetAuthFailedCopy }));
+      // Regression: when the readiness re-check passes but the skill write itself throws, the card
+      // must report skills_enable_failed — authorization demonstrably succeeded, so auth_failed is false.
+      await page.evaluate(() => {
+        window.__TOOL_STORE_TEST__.connected.tmeet = true; // readiness re-check now passes
+        window.__TOOL_STORE_TEST__.failApplySkills = true;
+        return window.__emitTauri('tmeet:connected', {});
+      });
+      await sleep(180);
+      rec('腾讯会议授权成功但技能写入失败须报技能启用失败', await page.evaluate(({ skillsFailedCopy, authFailedCopy }) => (
+        document.body.innerText.includes(skillsFailedCopy)
+        && !document.body.innerText.includes(authFailedCopy)
+        && !document.body.innerText.includes('已连接腾讯会议')
+      ), { skillsFailedCopy: tmeetSkillsFailedCopy, authFailedCopy: tmeetAuthFailedCopy }));
+      await page.evaluate(() => { window.__TOOL_STORE_TEST__.failApplySkills = false; });
     }
     await page.evaluate((id,event)=>{window.__TOOL_STORE_TEST__.connected[id]=true;return window.__emitTauri(event,{});},id,event);
     await sleep(180); await dismiss(page);

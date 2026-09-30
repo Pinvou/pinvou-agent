@@ -4,6 +4,7 @@
 //!
 //! 全程在小写副本上处理：trigram/LIKE 都大小写不敏感，残余文本用小写无碍。
 
+use super::now;
 use super::store::SearchQuery;
 
 const MIN_KEYWORDS: &[&str] = &["大于", "超过", "至少", ">", "≥"];
@@ -80,10 +81,6 @@ pub fn parse(input: &str) -> SearchQuery {
     let text = work.split_whitespace().collect::<Vec<_>>().join(" ");
     q.text = if text.is_empty() { None } else { Some(text) };
     q
-}
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
 }
 
 fn detect_size(work: &str, keywords: &[&str]) -> Option<(u64, String)> {

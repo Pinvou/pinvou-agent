@@ -537,8 +537,9 @@ test('the web bridge keeps the same stale-completion guard', () => {
     webBridge,
     /if \(!item && !running && suppressUnmatchedTerminal\) return;/,
   );
-  // The web helper scans a different name set (its SHELL_TOOL_NAMES lacks the
-  // wait names), so the union clause is the real cross-bridge parity point.
+  // The web helper's SHELL_TOOL_NAMES is pinned identical to the shared
+  // shell-tools set (see the parity test below); the explicit union clause
+  // keeps the wait names recognized next to the legacy Bash action=wait lane.
   assert.match(
     webBridge,
     /\(isShellExecutionTool\(item\.name\) \|\| SHELL_WAIT_TOOL_NAMES\.includes\(item\.name\)\)/,
@@ -557,4 +558,39 @@ test('the web bridge keeps the same stale-completion guard', () => {
     webBridge,
     /if \(!item && !running && job\.origin_tool_call_id && !job\.owner_agent_id\) return;/,
   );
+});
+
+test('the classic bridge copies match shared/shell-tools.mjs', () => {
+  // Both platform bridges ship as verbatim classic <script src> bundles and
+  // cannot import the ESM module, so each keeps a literal copy of the shell
+  // tool-name set. The copies drifted once already (the wait names went
+  // missing from toolSummary); this pins them to the module.
+  const parseLiteral = (source, label) => {
+    const match = source.match(/const SHELL_TOOL_NAMES = \[([^\]]*)\]/);
+    assert.ok(match, `${label} carries a classic SHELL_TOOL_NAMES literal`);
+    return new Set(
+      match[1]
+        .split(',')
+        .map((name) => name.trim().replace(/^["']|["']$/g, ''))
+        .filter(Boolean),
+    );
+  };
+  const moduleSource = fs.readFileSync(
+    path.join(appRoot, 'src', 'shared', 'shell-tools.mjs'),
+    'utf8',
+  );
+  const moduleMatch = moduleSource.match(/SHELL_TOOL_NAMES = new Set\(\[([^\]]*)\]\)/);
+  assert.ok(moduleMatch, 'shared shell-tools carries the canonical literal');
+  const moduleNames = new Set(
+    moduleMatch[1]
+      .split(',')
+      .map((name) => name.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean),
+  );
+  const webBridge = fs.readFileSync(
+    path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'),
+    'utf8',
+  );
+  assert.deepEqual(parseLiteral(terminalSource, 'tauri terminal.js'), moduleNames);
+  assert.deepEqual(parseLiteral(webBridge, 'web bridge.js'), moduleNames);
 });

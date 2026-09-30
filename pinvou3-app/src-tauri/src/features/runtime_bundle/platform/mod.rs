@@ -2443,8 +2443,8 @@ mod tests {
             // Even when the built-in backend is unavailable, do not expose a user server
             // under the reserved name in Work mode: the Agent would mistake `mcp_browser_*`
             // for the same-page embedded browser. Rename only in the session copy and leave
-            // global configuration unchanged. Default macOS builds take this branch; preview
-            // builds with complete prerequisites use the built-in conflict case below.
+            // global configuration unchanged. Builds with complete prerequisites skip this
+            // branch and use the built-in conflict case below.
             let reserved_path = bundle.work_mode_mcp_config_path_for_session("work/gated");
             assert_ne!(reserved_path, bundle.mcp_json);
             let reserved: serde_json::Value =
@@ -2507,6 +2507,25 @@ mod tests {
             std::fs::set_permissions(&fake_driver, std::fs::Permissions::from_mode(0o755)).unwrap();
             // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
             unsafe { std::env::set_var("PINVOU3_WEBKIT_WEBDRIVER_BIN", fake_driver) };
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // The released macOS build resolves Node from the bundled connector
+            // runtime. Fabricate it under a fake resource dir (same layout and
+            // arch mapping as bundled_connector_runtime_paths_for) so the
+            // complete-prerequisites branch never depends on the machine PATH.
+            let node_rel = match std::env::consts::ARCH {
+                "aarch64" => "darwin-arm64/bin/node",
+                "x86_64" => "darwin-x64/bin/node",
+                other => panic!("unexpected macOS arch for the fake bundled node: {other}"),
+            };
+            let node_bin = std::path::PathBuf::from(&tmp)
+                .join("runtime/codex-bridge/node")
+                .join(node_rel);
+            std::fs::create_dir_all(node_bin.parent().unwrap()).unwrap();
+            std::fs::write(&node_bin, "#!/bin/sh\n").unwrap();
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_RESOURCE_DIR", &tmp) };
         }
         #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
@@ -2654,6 +2673,8 @@ mod tests {
         unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
         // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_WEBKIT_WEBDRIVER_BIN") };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_RESOURCE_DIR") };
         cleanup(&tmp);
     }
 }

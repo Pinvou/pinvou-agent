@@ -39,9 +39,20 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// lark-cli 是否已在 PATH(快速,~秒级)。
+/// Whether lark-cli is already on PATH (fast, ~seconds). Mirrors DingTalk's
+/// `dws_cli_present`: reuse the three-state probe below and fold both failure
+/// classes into "unavailable".
 fn lark_cli_present() -> bool {
-    matches!(cc::run(lark(&["--version"])), Ok((true, _, _)))
+    lark_cli_probe().unwrap_or(false)
+}
+
+/// `--version` three-state probe, mirroring DingTalk's `dws_cli_probe`:
+/// `Ok(true)` installed and usable; `Ok(false)` installed but the version probe exited
+/// non-zero; `Err(ProbeError)` classified as Spawn/Timeout/Other. The disconnect path
+/// must receive the [`cc::logout_probe_verdict`] verdict before it may degrade to
+/// not-installed.
+fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
+    cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
 
 /// `auth status` 里用户身份是否 ready(已授权)。
@@ -118,38 +129,60 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 进度全程走事件:`feishu:qr` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let conn = app.state::<ConnectorConn>();
+    // A reconnect without an intervening cancel leaves the previous round's
+    // long-running child registered in the pid slot; the reset below overwrites
+    // that slot, which would make the orphan invisible to cancel's tree-kill
+    // and to kill_all_pids at exit. Kill it before resetting.
+    if let Some(pid) = conn.cancel(ID) {
+        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    }
+    let generation = conn.reset(ID);
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
 /// 编排:段① 注册 app → 段② 授权用户。任一段出错 / 取消即停,错误经事件上报。
-fn run_connect_flow(app: &AppHandle) {
-    match phase_register(app) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
+    let conn = app.state::<ConnectorConn>();
+    match phase_register(app, generation) {
         Ok(true) => {}
         Ok(false) => return, // 取消,静默
         Err(e) => {
+            // The card renders a localized category message only; the raw cause
+            // is logged here (stdout in dev runs, the app log in packaged builds).
+            log::warn!("[feishu] register phase failed: {e}");
+            // reset() clears the cancelled flag, so the flag alone cannot stop a
+            // late emit in the cancel-then-reconnect window; a cancelled or
+            // superseded round stays silent instead of polluting the new card.
+            if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+                return; // superseded by a newer round: stay silent
+            }
             cc::emit(
                 app,
                 "feishu:error",
-                json!({ "phase": "register", "message": e }),
+                json!({ "phase": "register", "code": "registration_failed", "message": e }),
             );
             return;
         }
     }
-    if let Err(e) = phase_authorize(app) {
+    if let Err(e) = phase_authorize(app, generation) {
+        log::warn!("[feishu] authorize phase failed: {e}");
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+            return; // superseded by a newer round: stay silent
+        }
         cc::emit(
             app,
             "feishu:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
         );
     }
 }
 
 /// 段①:`config init --new` 长驻 → 抓 URL 出二维码 → 等用户扫码完成(进程退出)。
 /// 返回 Ok(true)=注册成功;Ok(false)=被取消;Err=失败。
-fn phase_register(app: &AppHandle) -> Result<bool, String> {
+fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
     let mut cmd = lark(&["config", "init", "--new"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -161,11 +194,13 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
         .spawn()
         .map_err(|e| format!("config init --new 启动失败: {e}(需要先完成飞书 CLI 在线安装)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
-    // 排空 stdout+stderr,抓首个飞书 URL(channel 送回)。主线程的 tx 丢掉,
-    // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // 排空 stdout+stderr,每行送回 (首个飞书 URL, 脱敏安全行)。主线程的 tx 丢掉,
+    // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。安全行进失败原因缓冲:
+    // 卡片只显示本地化类目文案,捕获的原因行走 log 诊断轨迹。
+    let (tx, rx) = std::sync::mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
         cc::drain_for_url(FEISHU_CTX, o, tx.clone());
     }
@@ -174,41 +209,76 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
     }
     drop(tx);
 
-    let url = match rx.recv_timeout(Duration::from_secs(40)) {
-        Ok(u) => u,
-        Err(_) => {
-            let _ = child.kill();
-            cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
-            return Err("注册:40s 内未拿到二维码链接(检查网络 / 代理)".into());
+    let mut auth_lines = std::collections::VecDeque::with_capacity(32);
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let url = loop {
+        // 40s 总预算;无 URL 行只记入原因缓冲并继续等。管道 EOF(子进程没打
+        // URL 就退出)会让 recv_timeout 立即返回 Disconnected,走进下面的失败臂。
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((Some(u), safe)) => {
+                cc::remember_auth_line(&mut auth_lines, safe);
+                break u;
+            }
+            Ok((None, safe)) => cc::remember_auth_line(&mut auth_lines, safe),
+            Err(_) => {
+                let _ = child.kill();
+                cc::reap_after_kill(&mut child);
+                conn.clear_pid_if(ID, pid);
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting a register failure.
+                if conn.is_cancelled(ID) {
+                    return Ok(false);
+                }
+                return Err(cc::auth_failure_reason(
+                    &auth_lines,
+                    "注册:40s 内未拿到二维码链接(检查网络 / 代理)",
+                ));
+            }
         }
     };
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "register", "url": url, "qr_data_url": qr }),
-    );
+    // A cancelled round must not re-open the scan modal the user dismissed,
+    // and after a reconnect a superseded round's QR would paint a code that
+    // can never be exchanged onto the new round's card.
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "feishu:qr",
+            json!({ "phase": "register", "url": url, "qr_data_url": qr }),
+        );
+    }
 
-    // 等进程退出(用户扫码完成);期间轮询取消标志。
+    // 等进程退出(用户扫码完成);期间轮询取消标志。URL 打出后 CLI 才打印的
+    // 失败原因行也持续收进缓冲,退出臂才有得拼。
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(false);
+        }
+        while let Ok((_, safe)) = rx.try_recv() {
+            cc::remember_auth_line(&mut auth_lines, safe);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
+                if conn.is_cancelled(ID) {
+                    // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                    log::info!("[feishu] register cancelled; child exit={status}");
+                    return Ok(false);
+                }
                 if !status.success() {
-                    return Err("注册应用未完成(可能已取消或超时)".into());
+                    return Err(cc::auth_failure_reason(
+                        &auth_lines,
+                        "注册应用未完成(可能已取消或超时)",
+                    ));
                 }
                 return Ok(true);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("config init 等待失败: {e}"));
             }
         }
@@ -217,7 +287,7 @@ fn phase_register(app: &AppHandle) -> Result<bool, String> {
 
 /// 段②:`auth login --no-wait --json --recommend` 拿 URL+device_code → 二维码 →
 /// 轮询 `auth login --device-code`(兼容它阻塞或立即返回)直到 user:ready / 超时。
-fn phase_authorize(app: &AppHandle) -> Result<(), String> {
+fn phase_authorize(app: &AppHandle, generation: u64) -> Result<(), String> {
     let (_ok, so, se) = cc::run(lark(&[
         "auth",
         "login",
@@ -225,6 +295,14 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         "--json",
         "--recommend",
     ]))?;
+    let conn = app.state::<ConnectorConn>();
+    // This probe child is untracked (cancel cannot tree-kill it), so it can
+    // outlive a cancel by its whole run budget. Either outcome after a cancel
+    // or a supersede must stay silent: a late error would resurrect the closed
+    // card, and a late QR would show a device code that is never exchanged.
+    if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+        return Ok(());
+    }
     let p = cc::parse_json(&so)
         .or_else(|| cc::parse_json(&se))
         .unwrap_or(Value::Null);
@@ -244,14 +322,19 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
         .map(String::from)
         .ok_or("auth login 未返回 device_code")?;
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
-    );
+    // The early guard above ran before parsing and QR rendering; re-check at
+    // the emit itself so a cancel or supersede landing in between cannot paint
+    // a dead device code onto a newer round's card (same emit-site wrap as the
+    // register QR emit and the dingtalk/tmeet QR emits).
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "feishu:qr",
+            json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
+        );
+    }
 
     let start = Instant::now();
-    let conn = app.state::<ConnectorConn>();
     loop {
         if conn.is_cancelled(ID) {
             return Ok(()); // 取消:静默(run_connect_flow 不再 emit)
@@ -268,7 +351,18 @@ fn phase_authorize(app: &AppHandle) -> Result<(), String> {
             &device_code,
             "--json",
         ]));
-        if is_user_ready() {
+        // The probe can block for a long time and span a cancel: finish
+        // silently, no connected onto a closed card.
+        if conn.is_cancelled(ID) {
+            return Ok(());
+        }
+        let ready = is_user_ready();
+        // A cancel landing inside the readiness probe must not emit onto the
+        // just-closed card either.
+        if conn.is_cancelled(ID) {
+            return Ok(());
+        }
+        if ready {
             cc::bundle_store_on_connected(ID);
             cc::emit(app, "feishu:connected", json!({ "ok": true }));
             return Ok(());
@@ -285,14 +379,28 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// 断开飞书:`lark-cli auth logout`(清 token)。
+/// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
+/// unified with DingTalk/tmeet via [`cc::logout_probe_verdict`]: a genuinely not-installed
+/// CLI degrades to `installed:false` and clears the bundle store; when the credential
+/// state is unconfirmed the error is propagated as-is — never falsely report
+/// "disconnected".
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
-        if ok {
+        let not_installed = || {
             cc::bundle_store_on_disconnected(ID);
+            Ok::<Value, String>(json!({ "ok": true, "installed": false }))
+        };
+        match cc::logout_probe_verdict("飞书", lark_cli_probe()) {
+            cc::LogoutProbeVerdict::Installed => {}
+            cc::LogoutProbeVerdict::NotInstalled => return not_installed(),
+            cc::LogoutProbeVerdict::Unconfirmed(message) => return Err(message),
         }
-        Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
+        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
+        if !ok {
+            return Err("飞书 CLI 退出登录失败，请重试".to_string());
+        }
+        cc::bundle_store_on_disconnected(ID);
+        Ok::<Value, String>(json!({ "ok": true, "installed": true, "stdout": so, "stderr": se }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?

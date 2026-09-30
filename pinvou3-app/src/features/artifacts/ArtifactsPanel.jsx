@@ -358,7 +358,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!sel || !sel.path || !pv.loading) return;
         let cancelled = false;
         (async () => {
-          const result = await loadArtifactPreview(sel.path, undefined, { includeInfo: true, isCancelled: () => cancelled });
+          const result = await loadArtifactPreview(sel.path, undefined, { includeInfo: true, includeJson: true, isCancelled: () => cancelled });
           if (!cancelled) setPv(result);
         })();
         return () => { cancelled = true; };
@@ -614,7 +614,9 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             />
           );
         }
-        if (pv.kind === 'text') {
+        // includeJson re-kinds a parseable .json result from 'text' to 'json' (see
+        // artifact-preview.js), so both must land here — same as FilePreviewModal.
+        if (pv.kind === 'text' || pv.kind === 'json') {
           return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono text-[#444746] dark:text-[#C4C7C5]`}>{pv.text}</pre>;
         }
         // 可视化结果
@@ -623,7 +625,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           return (
             <div className="flex flex-col gap-2 h-full">
               {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
-              <iframe sandbox="allow-same-origin allow-scripts" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
+              <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 title={(sel && sel.path) || t.apTabPreview}
                 data-testid="artifact-html-preview-frame"
                 srcDoc={(vis.html || '') + OFFICE_HTML_STYLE} />
@@ -931,6 +933,3 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
     };
 
 export { ArtifactsPanel };
-
-// Re-export for the pre-existing KnowledgeView import path; KnowledgeView should
-// import from shared/artifact-utils.js directly when that file changes next.

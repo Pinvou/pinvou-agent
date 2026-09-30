@@ -67,7 +67,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name, screening_name,
+    MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints, normalize_typed_newlines,
+    sanitize_name, screening_name,
 };
 use super::wayland_portal::{self, PortalInput};
 
@@ -254,25 +255,6 @@ fn map_enigo_button(button: MouseButton) -> Button {
 
 fn input_failed(context: &str, error: impl std::fmt::Display) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {error}"))
-}
-
-/// Merges drag-finalization errors: when the move and the release **both
-/// fail**, surfacing only the move error would leave the caller unaware the
-/// left button was still stuck pressed. When both fail, explicitly note the
-/// button may not have been released.
-fn combine_drag_errors(
-    move_result: Result<(), ComputerUseError>,
-    release_result: Result<(), ComputerUseError>,
-) -> Result<(), ComputerUseError> {
-    match (move_result, release_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Ok(())) => Err(error),
-        (Err(move_error), Err(release_error)) => Err(move_error.same_kind(format!(
-            "{move_error}; additionally the drag release failed ({release_error}) — \
-             the left mouse button may still be pressed"
-        ))),
-    }
 }
 
 fn settle() {

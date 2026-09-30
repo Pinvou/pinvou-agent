@@ -11,6 +11,9 @@ const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platf
   // normalizePinvouScene 已随 dead-code dedup 移入共享 payload；正则 pin 需把 payload 一并纳入。
   fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sessionsRustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'app', 'commands', 'sessions.rs'), 'utf8');
+// The tauri persona/review loaders live in the sessions bridge module (the
+// protocol map pins those invokes to the sessions domain).
+const tauriSessionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'sessions.js'), 'utf8');
 
 // 提取两个 bridge 里真实的 normalizePinvouScene 白名单正则源码，供测试复用，
 // 保证 sidecar 记录路径走的是源码里的白名单，而不是各自 mock 的宽松实现。
@@ -23,6 +26,129 @@ const tauriNormalizeSceneRegexSource = extractNormalizeSceneRegex(tauriBridgeSou
 const webNormalizeSceneRegexSource = extractNormalizeSceneRegex(webBridgeSource);
 // eval 出真正的 RegExp 对象（源码里就是字面量正则）
 const tauriNormalizeSceneRegex = eval(tauriNormalizeSceneRegexSource);
+
+// The scene sidecar sync block (the two reporting helpers plus the sync function) is
+// extracted verbatim from the source: it is used both for a byte-for-byte comparison
+// across the two hosts and for actually executing the failure paths in a sandbox.
+const CACHED_SCENE_EVENTS = [{ pos: 0, scene: 'design:poster' }];
+function extractSceneSyncBlock(source) {
+  const match = source.match(
+    /function reportSidecarReadFailure\(kind, sid, error\) \{[\s\S]*?async function syncPinvouSceneEventsForSession\(sid\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
+async function runSceneSync(block, { readFails = false, saveFails = false } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    window: { localStorage: { setItem() {}, getItem() { return null; } } },
+    loadPinvouSceneEventsForSession: () => [...CACHED_SCENE_EVENTS],
+    normalizePinvouSceneEvents: (events) => (Array.isArray(events) ? events : []),
+    pinvouSceneStorageKey: (sid) => `pinvou_scene_events_v1:${sid}`,
+    async invoke(command) {
+      if (command === 'get_session_pinvou_scene_events') {
+        if (readFails) throw new Error('sidecar unreadable');
+        return [];
+      }
+      if (command === 'save_session_pinvou_scene_events') {
+        if (saveFails) throw new Error('No space left on device');
+        return null;
+      }
+      return null;
+    },
+  };
+  vm.runInNewContext(`${block}\nthis.__syncScene = syncPinvouSceneEventsForSession;`, sandbox, {
+    filename: 'scene-sidecar-block.js',
+  });
+  try {
+    return { value: await sandbox.__syncScene('s1'), warnings, threw: false };
+  } catch (error) {
+    return { value: null, warnings, threw: String(error) };
+  }
+}
+
+// The steered-message sidecar exists only in the tauri host (the web bridge has
+// no steer persistence), so there is no byte twin to compare against. Run the
+// real source block through the same failure paths as the scene sidecar: a read
+// failure degrades to the cache, and a migration-write failure must never throw
+// across the bare await in the session-switch path. The reporting helpers live
+// before the scene block, outside the steered span, so they are extracted too and
+// the sandbox executes the real reporter wording rather than mirrored stubs.
+function extractSidecarReporters(source) {
+  const match = source.match(
+    /function reportSidecarReadFailure\(kind, sid, error\) \{[\s\S]*?function reportSidecarWriteFailure\(kind, sid, error\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
+function extractSteeredSyncBlock(source) {
+  const match = source.match(
+    /const STEERED_MESSAGES_STORAGE_PREFIX[\s\S]*?async function syncSteeredMessagesForSession\(sid\) \{[\s\S]*?\n {2}\}\n/,
+  );
+  return match ? match[0] : '';
+}
+async function runSteeredSync(reporters, block, { readFails = false, saveFails = false, cachedEvents = [] } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    window: { localStorage: { setItem() {}, getItem: () => JSON.stringify(cachedEvents) } },
+    async invoke(command) {
+      if (command === 'get_session_steered_messages') {
+        if (readFails) throw new Error('sidecar unreadable');
+        return [];
+      }
+      if (command === 'save_session_steered_messages') {
+        if (saveFails) throw new Error('No space left on device');
+        return null;
+      }
+      return null;
+    },
+  };
+  vm.runInNewContext(`${reporters}\n${block}\nthis.__syncSteered = syncSteeredMessagesForSession;`, sandbox, {
+    filename: 'steered-sidecar-block.js',
+  });
+  try {
+    return { value: await sandbox.__syncSteered('s1'), warnings, threw: false };
+  } catch (error) {
+    return { value: null, warnings, threw: String(error) };
+  }
+}
+
+// Persona events and pinvou reviews have no local migration cache, but the
+// backend now fails a corrupt sidecar explicitly (missing stays []). The
+// loaders must degrade to [] exactly as before, just not silently. Extracted
+// and executed verbatim like the scene/steered blocks, with the real tauri
+// reporters (the loader bodies are token-identical across hosts; the tauri
+// copies live in bridge/sessions.js at that file's indentation, so the
+// comparison normalizes per-line leading whitespace).
+function extractPersonaReviewLoaders(source) {
+  const match = source.match(
+    /\/\/ Persona events and pinvou reviews have no local migration cache[\s\S]*?async function loadPinvouReviewsForSession\(sid\) \{[\s\S]*?return \[\];\n *\}\n *\}\n/,
+  );
+  return match ? match[0] : '';
+}
+const normalizeLoaderBlock = block => block.split('\n').map(line => line.trim()).join('\n');
+async function runPersonaReviewLoaders(reporters, block, { readFails = false } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    async invoke(command) {
+      if (readFails) throw new Error('sidecar unreadable');
+      if (command === 'get_session_persona_events') return [{ pos: 0, kind: 'equip' }];
+      if (command === 'get_session_pinvou_reviews') return null;
+      return null;
+    },
+  };
+  vm.runInNewContext(
+    `${reporters}\n${block}\nthis.__loadPersona = loadPersonaEventsForSession;\nthis.__loadReviews = loadPinvouReviewsForSession;`,
+    sandbox,
+    { filename: 'persona-review-sidecar-block.js' },
+  );
+  return {
+    persona: await sandbox.__loadPersona('s1'),
+    reviews: await sandbox.__loadReviews('s1'),
+    warnings,
+  };
+}
 
 function createFeature(options = {}) {
   const sandbox = {
@@ -253,6 +379,71 @@ function rec(name, pass, detail = '') {
       /const scenePrompt = outgoing \|\| t\.uiChatScenes\.attachmentPrompt;/.test(chatViewSource) &&
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
+
+  // The real source of both bridges is extracted and executed rather than shape-matching
+  // the catch: shape assertions cannot tell "migration write inside the try" from
+  // "outside the try", and the latter would let a write failure escape to the bare-await
+  // switchToSessionInternal, escalating a decorative tag's write failure into the whole
+  // session failing to open.
+  const tauriSceneSync = extractSceneSyncBlock(tauriBridgeSource);
+  const webSceneSync = extractSceneSyncBlock(webBridgeSource);
+  rec('scene sidecar 同步在两个宿主上逐字节同一，避免二次漂移',
+    tauriSceneSync !== '' && tauriSceneSync === webSceneSync,
+    'tauri/web scene sidecar sync must stay byte-identical');
+
+  for (const [host, block] of [['tauri', tauriSceneSync], ['web', webSceneSync]]) {
+    const read = await runSceneSync(block, { readFails: true });
+    rec(`${host}: scene sidecar 读失败时上报后降级到本地缓存`,
+      !read.threw && JSON.stringify(read.value) === JSON.stringify(CACHED_SCENE_EVENTS) &&
+        read.warnings.some(text => text.includes('read failed')),
+      JSON.stringify(read));
+    const write = await runSceneSync(block, { saveFails: true });
+    rec(`${host}: scene sidecar 迁移写失败时上报后降级，绝不抛给会话切换`,
+      !write.threw && JSON.stringify(write.value) === JSON.stringify(CACHED_SCENE_EVENTS) &&
+        write.warnings.some(text => text.includes('migration write failed')),
+      JSON.stringify(write));
+  }
+
+  const tauriSteeredSync = extractSteeredSyncBlock(tauriBridgeSource);
+  const tauriSidecarReporters = extractSidecarReporters(tauriBridgeSource);
+  rec('steered sidecar 同步块与上报助手存在于 tauri 桥源码',
+    tauriSteeredSync !== '' && tauriSidecarReporters !== '',
+    'tauri steered sidecar block + reporters');
+  {
+    const cached = [{ pos: 3, text: '调整一下' }];
+    const read = await runSteeredSync(tauriSidecarReporters, tauriSteeredSync, { readFails: true, cachedEvents: cached });
+    rec('tauri: steered 读失败时上报后降级到本地缓存',
+      !read.threw && JSON.stringify(read.value) === JSON.stringify(cached) &&
+        read.warnings.some(text => text.includes('read failed')),
+      JSON.stringify(read));
+    const write = await runSteeredSync(tauriSidecarReporters, tauriSteeredSync, { saveFails: true, cachedEvents: cached });
+    rec('tauri: steered 迁移写失败时上报后降级，绝不抛给会话切换',
+      !write.threw && JSON.stringify(write.value) === JSON.stringify(cached) &&
+        write.warnings.some(text => text.includes('migration write failed')),
+      JSON.stringify(write));
+  }
+
+  // Persona/review sidecars have no local cache: read failure must report and
+  // degrade to [] (never throw across the bare await in the switch path).
+  const tauriPersonaReviewLoaders = extractPersonaReviewLoaders(tauriSessionsSource);
+  const webPersonaReviewLoaders = extractPersonaReviewLoaders(webBridgeSource);
+  rec('persona/review sidecar 读取助手在两个宿主上逐字节同一',
+    tauriPersonaReviewLoaders !== '' &&
+      normalizeLoaderBlock(tauriPersonaReviewLoaders) === normalizeLoaderBlock(webPersonaReviewLoaders),
+    'tauri/web persona-review loaders must stay token-identical');
+  {
+    const ok = await runPersonaReviewLoaders(tauriSidecarReporters, tauriPersonaReviewLoaders, {});
+    rec('persona/review 读取成功路径保持原值(null 归一为 [])',
+      JSON.stringify(ok.persona) === JSON.stringify([{ pos: 0, kind: 'equip' }]) &&
+        JSON.stringify(ok.reviews) === '[]' && ok.warnings.length === 0,
+      JSON.stringify(ok));
+    const failed = await runPersonaReviewLoaders(tauriSidecarReporters, tauriPersonaReviewLoaders, { readFails: true });
+    rec('persona/review 读失败时逐项上报后降级为 []，绝不抛给会话切换',
+      JSON.stringify(failed.persona) === '[]' && JSON.stringify(failed.reviews) === '[]' &&
+        failed.warnings.some(text => text.includes('persona events read failed')) &&
+        failed.warnings.some(text => text.includes('pinvou reviews read failed')),
+      JSON.stringify(failed));
+  }
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
     /get_session_pinvou_scene_events/.test(tauriBridgeSource) &&
