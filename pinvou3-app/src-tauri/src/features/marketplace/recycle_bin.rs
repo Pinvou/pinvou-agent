@@ -452,6 +452,19 @@ pub(crate) fn recycle_upload_package(
 /// 避免与并发导入的「rename → 备份重基线」交错；`install_upload` 只取全局
 /// 事务锁，不在本锁上重入。与卸载侧的 recycle preflight 对称：先锁再动目录。
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
+    // Builtin guard (review round-5 M2): restore is the one user-reachable
+    // write path with no builtin check at all. A pre-PR recycled entry whose
+    // id normalizes to a builtin would either collide with the boot-seeded
+    // directory or restore into a record the folded uninstall/disable guards
+    // then refuse to remove — a permanent wedge of exactly the poisoned-state
+    // class this module's siblings guard against. Case-variants included via
+    // the folded probe.
+    if crate::features::marketplace::builtin::is_builtin_tool(&super::scope::to_package_id(pkg_id))
+    {
+        return Err(format!(
+            "'{pkg_id}' 与内建插件冲突（恢复目标被内建占用），无法恢复；请联系版本说明确认处理方式"
+        ));
+    }
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let bin = RecycleBin::new();
@@ -769,6 +782,61 @@ mod tests {
             "损坏文件不得被静默覆盖"
         );
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Builtin restore guard (review round-6 M5: the round-5 wave added the
+    /// guard but no test called it — deleting it turned nothing red). A
+    /// recycled entry whose id denotes the builtin must be refused outright,
+    /// and the folded probe must cover case-variant spellings (the same
+    /// package on a case-insensitive filesystem).
+    #[test]
+    fn restore_refuses_builtin_id() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-builtin");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let error = restore_plugin("session-reader").unwrap_err();
+        assert!(
+            error.contains("内建插件冲突"),
+            "restore of a builtin id must be refused by the builtin guard: {error}"
+        );
+
+        if let Some(v) = prev {
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: see above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn restore_refuses_case_variant_builtin_id() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-builtin-variant");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let error = restore_plugin("Session-Reader").unwrap_err();
+        assert!(
+            error.contains("内建插件冲突"),
+            "restore of a case-variant builtin spelling must be refused by the folded guard: {error}"
+        );
+
+        if let Some(v) = prev {
+            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: see above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

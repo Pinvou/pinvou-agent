@@ -172,6 +172,21 @@ impl Pinvou3Bundle {
         // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
         // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
         Self::import_legacy_bundle_store();
+        // Boot seed for default-installed preset MCP tools (session-reader
+        // etc.): installs only when no BundleStore record exists; placed
+        // before write_mcp_servers' embedded-content check of installed
+        // records so release and registration complete within the same boot.
+        // Skipped for this cycle when the plaintext secret migration failed
+        // (same gating as write_mcp_servers' relocation: install reruns the
+        // migration internally and failure paths must not touch the old
+        // layout); the next boot self-heals.
+        if mcp_secret_migration_ok {
+            marketplace.ensure_default_installed_mcp_tools();
+        }
+        // Boot-time replay of the builtin feature-switch state file from
+        // prefs (the authoritative store): heals a crash window between the
+        // prefs commit and the state write. Best-effort, failures only log.
+        crate::features::marketplace::builtin::replay_feature_state_from_prefs();
         // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
         // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
         // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
@@ -1259,7 +1274,9 @@ impl Pinvou3Bundle {
         match crate::features::marketplace::store::BundleStore::new().records() {
             Ok(records) => {
                 for record in records.iter().filter(|r| r.installed) {
-                    if crate::features::marketplace::mcp_catalog::spec_for(&record.id).is_none() {
+                    if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(&record.id)
+                        .is_none()
+                    {
                         continue; // 非内嵌包（自定义/上传），无内嵌资源可校验
                     }
                     // 上传/未知来源的记录即使 id 撞内嵌目录也不得重释放：重释放
@@ -1274,9 +1291,18 @@ impl Pinvou3Bundle {
                         );
                         continue;
                     }
+                    // ensure_package_released keys the EXACT catalog id: a
+                    // legacy case-variant record (pre-canon install on a
+                    // case-insensitive filesystem) would silently no-op here
+                    // while its package dir never converges — canonicalize the
+                    // spelling for the release check only; the record itself
+                    // is left untouched (review round-6 M3b, boot lane).
+                    let release_id =
+                        crate::features::marketplace::mcp_catalog::canonical_catalog_id(&record.id)
+                            .unwrap_or(record.id.as_str());
                     if let Err(e) =
                         crate::features::marketplace::mcp_catalog::ensure_package_released(
-                            &record.id,
+                            release_id,
                         )
                     {
                         log::warn!("[runtime-bundle] MCP 包资源补齐失败（{}）: {e}", record.id);
@@ -1620,6 +1646,79 @@ mod tests {
         assert!(
             mcp["servers"].get("my-custom-tool").is_some(),
             "the upsert must keep the user's entries"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Boot wiring smoke (review round-4 minor 7): the boot chain must seed
+    /// the default-installed builtin and replay the feature-switch state
+    /// file — deleting either wiring line at the call site turns this red.
+    #[test]
+    fn ensure_extracted_seeds_default_builtin_and_replays_feature_state() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-boot-seed-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Seed the bundle VERSION so the boot skips re-extraction and returns
+        // right after the maintenance block (the code path every normal boot
+        // with an unchanged bundle takes) — where the default-install seed and
+        // the feature-state replay live.
+        std::fs::create_dir_all(
+            super::paths::bundle_version_file()
+                .parent()
+                .expect("bundle version file parent"),
+        )
+        .unwrap();
+        std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
+
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        let manager = crate::features::marketplace::MarketplaceManager::with_store(
+            crate::platform::credential_store::MemoryCredentialStore::default(),
+        );
+        bundle
+            .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+            .unwrap();
+        // Seed: the default-installed builtin has a store record.
+        let store: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                crate::platform::paths::pinvou3_home()
+                    .join("marketplace")
+                    .join("bundles.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let ids: Vec<&str> = store["records"]
+            .as_array()
+            .expect("bundles.json records")
+            .iter()
+            .filter(|r| r["installed"] == true)
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"session-reader"),
+            "the boot seed must register the default-installed builtin: {ids:?}"
+        );
+
+        // Replay: the feature-switch state file exists after boot.
+        assert!(
+            crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("builtin_features.json")
+                .is_file(),
+            "the boot replay must write the feature-switch state file"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

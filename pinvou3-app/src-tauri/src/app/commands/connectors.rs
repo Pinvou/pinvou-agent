@@ -1,7 +1,9 @@
 /// 连接器 / 包可见性 / 项目级 skills 开关共用的热刷收尾：重写在线会话组合目录
 /// + 热刷工具白名单 + 热刷 execpolicy 规则集，并向远控端广播
 /// `remote_control:tools_changed`（其它窗口/实例借此刷新开关状态）。
-async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePool) {
+/// `pub(super)`: the builtin-plugin feature switch (commands::builtin) reuses
+/// the same wrap-up.
+pub(super) async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePool) {
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
     pool.refresh_permission_rulesets().await;
@@ -54,6 +56,10 @@ pub async fn set_bundle_visibility(
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
+    // Builtin plugins cannot be hidden (docs/builtin-toolset-contract.md
+    // §3.1 defense in depth): the write fails loudly instead of silently
+    // filtering the id out.
+    crate::features::marketplace::builtin::reject_builtin_ids(&bundle_ids)?;
     let ids = bundle_ids.clone();
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
