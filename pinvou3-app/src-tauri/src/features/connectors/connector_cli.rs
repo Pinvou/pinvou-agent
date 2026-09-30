@@ -4,7 +4,8 @@
 //! 取消"逻辑收口在此;各连接器(`feishu.rs` / `wecom.rs`)只持有自己的 [`CliCtx`]
 //! 薄声明 + 一段连接编排函数,调本模块的公共件。
 //!
-//! **drain 多态性说明**:[`drain_for_url`] 只发 URL(`String`),供飞书/企微共享。
+//! **drain 多态性说明**:[`drain_for_url`] 每行发 `(URL, 脱敏安全行)` 二元组,
+//! 供飞书/企微共享(URL 出二维码,安全行进失败原因缓冲)。
 //! tmeet/dingtalk 有各自的私有 drain(`drain_for_auth_url`/`drain_for_auth_event`),
 //! 因为它们在同一管道里额外抓取安全日志行 / user_code,channel 元素类型分别为
 //! `(Option<String>, Option<String>)` 和 `AuthEvent` enum。这是真实业务差异,
@@ -443,11 +444,15 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
     Some(format!("data:image/png;base64,{}", b64(bytes)))
 }
 
-/// 后台线程:逐行排空一个管道(防写满阻塞),抓到首个本连接器 URL 经 channel 送回。
+/// 后台线程:逐行排空一个管道(防写满阻塞),每行经 channel 送回
+/// `(首个本连接器 URL, 脱敏安全行)` 二元组。URL 供二维码;安全行(已按
+/// [`safe_auth_log_line`] 脱敏 + 截断)供连接器收进失败原因环形缓冲。
+/// bare-"token" 兜底关闭:飞书/企微 CLI 的正常输出行可能含含 token 字样的
+/// 字段名,开启会把非敏感行整体吞成占位符,失败原因就没了(与 dingtalk 同款取舍)。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
     r: R,
-    tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<(Option<String>, Option<String>)>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(r).lines() {
@@ -459,11 +464,55 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
                     break;
                 }
             };
-            if let Some(u) = ctx.extract_url(&line) {
-                let _ = tx.send(u);
-            }
+            let safe = safe_auth_log_line(&line, false);
+            let url = ctx.extract_url(&line);
+            let _ = tx.send((url, safe));
         }
     })
+}
+
+/// 失败原因环形缓冲的推送(容量 32,超出丢最旧)。`line` 必须是
+/// [`safe_auth_log_line`] 过滤后的行或 `None`;这里只负责容量与入队。
+pub fn remember_auth_line(
+    auth_lines: &mut std::collections::VecDeque<String>,
+    line: Option<String>,
+) {
+    if let Some(line) = line {
+        if auth_lines.len() >= 32 {
+            auth_lines.pop_front();
+        }
+        auth_lines.push_back(line);
+    }
+}
+
+/// 从排空得到的安全行里挑失败原因拼进 fallback(倒序找 failed/error/timeout/
+/// lock/失败 行,兜底取最后一行;没有任何安全行时原样返回 fallback)。
+/// 卡片只显示本地化类目文案,这里拼出的串走 `*:error` 的 message 字段与
+/// stderr/log 诊断轨迹——没有它,最常见的「CLI 打了原因再退出」在日志里
+/// 只剩应用侧的兜底话术,用户报告后无从诊断(tmeet/dingtalk 各自同款)。
+pub fn auth_failure_reason(
+    auth_lines: &std::collections::VecDeque<String>,
+    fallback: &str,
+) -> String {
+    let last_line = auth_lines
+        .iter()
+        .rev()
+        .find(|line| {
+            let l = line.to_ascii_lowercase();
+            l.contains("failed")
+                || l.contains("error")
+                || l.contains("timeout")
+                || l.contains("lock")
+                || line.contains("失败")
+        })
+        .cloned()
+        .or_else(|| auth_lines.back().cloned())
+        .unwrap_or_default();
+    if last_line.is_empty() {
+        fallback.to_string()
+    } else {
+        format!("{fallback}：{last_line}")
+    }
 }
 
 /// tree-kill 一个 PID,连其子进程(.cmd 拉起的 node)一起。
@@ -539,7 +588,15 @@ impl ConnectorConn {
                 s.generation = s.generation.wrapping_add(1);
                 s.generation
             }
-            Err(_) => 0,
+            Err(_) => {
+                // Poisoned slot mutex: mint generation 0, which flow_stale
+                // always treats as stale (its lock fails there too, so it
+                // defaults to stale), making a poisoned connector fail silent
+                // — no QR/error emits at all — instead of one round's events
+                // landing on another round's card. A live slot never hands
+                // out 0: reset always bumps before returning.
+                0
+            }
         }
     }
 
@@ -805,6 +862,27 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
         assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
+    }
+
+    /// The failure trail must prefer a failure-ish captured line over the
+    /// bare fallback, fall back to the last line when nothing matches, and
+    /// return the fallback untouched when nothing was captured — otherwise
+    /// the most common register/auth failures stay undiagnosable from the
+    /// log (the app-authored fallback is all there is).
+    #[test]
+    fn auth_failure_reason_prefers_failure_line_then_last_line() {
+        let mut lines = std::collections::VecDeque::new();
+        assert_eq!(auth_failure_reason(&lines, "fallback"), "fallback");
+        lines.push_back("config init started".to_string());
+        assert_eq!(
+            auth_failure_reason(&lines, "fallback"),
+            "fallback：config init started"
+        );
+        lines.push_back("Error: login endpoint unreachable".to_string());
+        assert_eq!(
+            auth_failure_reason(&lines, "fallback"),
+            "fallback：Error: login endpoint unreachable"
+        );
     }
 
     /// A 30s probe timeout must NOT read as "CLI not installed": the ensure

@@ -305,7 +305,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             if conn.is_cancelled(ID) {
                 return Ok(());
             }
-            return Err(auth_failure_message(
+            return Err(cc::auth_failure_reason(
                 &auth_lines,
                 "60s 内未拿到腾讯会议授权链接(检查网络 / 代理)",
             ));
@@ -315,10 +315,10 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             deadline.saturating_duration_since(now),
         )) {
             Ok((Some(u), line)) => {
-                remember_auth_line(&mut auth_lines, line);
+                cc::remember_auth_line(&mut auth_lines, line);
                 break u;
             }
-            Ok((None, line)) => remember_auth_line(&mut auth_lines, line),
+            Ok((None, line)) => cc::remember_auth_line(&mut auth_lines, line),
             Err(_) => {
                 // Cancel tree-kills the child → pipe EOF lands here: the user stopped
                 // on purpose, so finish silently instead of misreporting an auth failure.
@@ -351,7 +351,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                         );
                         return Ok(());
                     }
-                    return Err(auth_failure_message(
+                    return Err(cc::auth_failure_reason(
                         &auth_lines,
                         "腾讯会议授权进程提前退出，未拿到授权链接",
                     ));
@@ -378,7 +378,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
             return Ok(());
         }
         while let Ok((_, line)) = rx.try_recv() {
-            remember_auth_line(&mut auth_lines, line);
+            cc::remember_auth_line(&mut auth_lines, line);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -407,7 +407,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                     );
                     return Ok(());
                 }
-                eprintln!("[tmeet] auth login exited without logged-in status: exit={status}");
+                log::info!("[tmeet] auth login exited without logged-in status: exit={status}");
                 let last_line = auth_lines
                     .iter()
                     .rev()
@@ -428,37 +428,6 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }
-    }
-}
-
-fn remember_auth_line(auth_lines: &mut std::collections::VecDeque<String>, line: Option<String>) {
-    if let Some(line) = line {
-        if auth_lines.len() >= 32 {
-            auth_lines.pop_front();
-        }
-        auth_lines.push_back(line);
-    }
-}
-
-fn auth_failure_message(auth_lines: &std::collections::VecDeque<String>, fallback: &str) -> String {
-    let last_line = auth_lines
-        .iter()
-        .rev()
-        .find(|line| {
-            let l = line.to_ascii_lowercase();
-            l.contains("failed")
-                || l.contains("error")
-                || l.contains("timeout")
-                || l.contains("lock")
-                || line.contains("失败")
-        })
-        .cloned()
-        .or_else(|| auth_lines.back().cloned())
-        .unwrap_or_default();
-    if last_line.is_empty() {
-        fallback.to_string()
-    } else {
-        format!("{fallback}：{last_line}")
     }
 }
 
@@ -562,17 +531,6 @@ mod tests {
         ));
         assert!(auth_output_says_already_logged_in("already logged in"));
         assert!(!auth_output_says_already_logged_in("network timeout"));
-    }
-
-    #[test]
-    fn auth_failure_message_keeps_cli_reason() {
-        let mut lines = std::collections::VecDeque::new();
-        lines.push_back("starting auth".to_string());
-        lines.push_back("Error: file lock timeout (5s)".to_string());
-        assert_eq!(
-            auth_failure_message(&lines, "腾讯会议授权进程提前退出，未拿到授权链接"),
-            "腾讯会议授权进程提前退出，未拿到授权链接：Error: file lock timeout (5s)"
-        );
     }
 
     #[test]

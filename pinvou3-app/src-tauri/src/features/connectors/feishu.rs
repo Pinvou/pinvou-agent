@@ -118,7 +118,15 @@ pub async fn feishu_status() -> Result<Value, String> {
 /// 进度全程走事件:`feishu:qr` / `feishu:connected` / `feishu:error`。
 /// 立即返回 `{started:true}`;前端 listen 事件驱动 UI。
 pub async fn feishu_connect_begin(app: AppHandle) -> Result<Value, String> {
-    let generation = app.state::<ConnectorConn>().reset(ID);
+    let conn = app.state::<ConnectorConn>();
+    // A reconnect without an intervening cancel leaves the previous round's
+    // long-running child registered in the pid slot; the reset below overwrites
+    // that slot, which would make the orphan invisible to cancel's tree-kill
+    // and to kill_all_pids at exit. Kill it before resetting.
+    if let Some(pid) = conn.cancel(ID) {
+        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    }
+    let generation = conn.reset(ID);
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
@@ -178,9 +186,10 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
     let pid = child.id();
     conn.set_pid(ID, Some(pid));
 
-    // 排空 stdout+stderr,抓首个飞书 URL(channel 送回)。主线程的 tx 丢掉,
-    // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    // 排空 stdout+stderr,每行送回 (首个飞书 URL, 脱敏安全行)。主线程的 tx 丢掉,
+    // 这样两个管道都 EOF 后 rx 自动断开,不会永久阻塞。安全行进失败原因缓冲:
+    // 卡片只显示本地化类目文案,捕获的原因行走 log 诊断轨迹。
+    let (tx, rx) = std::sync::mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
         cc::drain_for_url(FEISHU_CTX, o, tx.clone());
     }
@@ -189,18 +198,31 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
     }
     drop(tx);
 
-    let url = match rx.recv_timeout(Duration::from_secs(40)) {
-        Ok(u) => u,
-        Err(_) => {
-            let _ = child.kill();
-            cc::reap_after_kill(&mut child);
-            conn.clear_pid_if(ID, pid);
-            // Cancel tree-kills the child → pipe EOF lands here: the user stopped
-            // on purpose, so finish silently instead of misreporting a register failure.
-            if conn.is_cancelled(ID) {
-                return Ok(false);
+    let mut auth_lines = std::collections::VecDeque::with_capacity(32);
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let url = loop {
+        // 40s 总预算;无 URL 行只记入原因缓冲并继续等。管道 EOF(子进程没打
+        // URL 就退出)会让 recv_timeout 立即返回 Disconnected,走进下面的失败臂。
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((Some(u), safe)) => {
+                cc::remember_auth_line(&mut auth_lines, safe);
+                break u;
             }
-            return Err("注册:40s 内未拿到二维码链接(检查网络 / 代理)".into());
+            Ok((None, safe)) => cc::remember_auth_line(&mut auth_lines, safe),
+            Err(_) => {
+                let _ = child.kill();
+                cc::reap_after_kill(&mut child);
+                conn.clear_pid_if(ID, pid);
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting a register failure.
+                if conn.is_cancelled(ID) {
+                    return Ok(false);
+                }
+                return Err(cc::auth_failure_reason(
+                    &auth_lines,
+                    "注册:40s 内未拿到二维码链接(检查网络 / 代理)",
+                ));
+            }
         }
     };
     let qr = cc::make_qr(&url);
@@ -215,13 +237,17 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
         );
     }
 
-    // 等进程退出(用户扫码完成);期间轮询取消标志。
+    // 等进程退出(用户扫码完成);期间轮询取消标志。URL 打出后 CLI 才打印的
+    // 失败原因行也持续收进缓冲,退出臂才有得拼。
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
             conn.clear_pid_if(ID, pid);
             return Ok(false);
+        }
+        while let Ok((_, safe)) = rx.try_recv() {
+            cc::remember_auth_line(&mut auth_lines, safe);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -232,7 +258,10 @@ fn phase_register(app: &AppHandle, generation: u64) -> Result<bool, String> {
                     return Ok(false);
                 }
                 if !status.success() {
-                    return Err("注册应用未完成(可能已取消或超时)".into());
+                    return Err(cc::auth_failure_reason(
+                        &auth_lines,
+                        "注册应用未完成(可能已取消或超时)",
+                    ));
                 }
                 return Ok(true);
             }
@@ -282,11 +311,17 @@ fn phase_authorize(app: &AppHandle, generation: u64) -> Result<(), String> {
         .map(String::from)
         .ok_or("auth login 未返回 device_code")?;
     let qr = cc::make_qr(&url);
-    cc::emit(
-        app,
-        "feishu:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
-    );
+    // The early guard above ran before parsing and QR rendering; re-check at
+    // the emit itself so a cancel or supersede landing in between cannot paint
+    // a dead device code onto a newer round's card (same emit-site wrap as the
+    // register QR emit and the dingtalk/tmeet QR emits).
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "feishu:qr",
+            json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
+        );
+    }
 
     let start = Instant::now();
     loop {
