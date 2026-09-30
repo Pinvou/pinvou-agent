@@ -4589,14 +4589,18 @@ mod tests {
                 variant.builtin,
                 "the folded membership probe must recognize the variant as builtin"
             );
+            // The catalog values track the builtin manifest's current shape:
+            // L1 + read/write since the cross-session messaging tool joined
+            // the family (the fake disk manifest's L2/evil.write must still
+            // never leak through).
             assert_eq!(
                 variant.security_level.as_deref(),
-                Some("L0"),
+                Some("L1"),
                 "audit values must come from the embedded catalog, not the disk manifest"
             );
             assert_eq!(
                 variant.data_access,
-                vec!["sessions.read".to_string()],
+                vec!["sessions.read".to_string(), "sessions.write".to_string()],
                 "data access must come from the embedded catalog"
             );
         });
