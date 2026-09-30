@@ -105,8 +105,6 @@ pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 pub(crate) use self::store::NEW_CHAT_TITLE;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
-/// Test-only re-export: the case-insensitive sched- predicate's direct
-/// callers live inside this module; outside it only the engine_pool helper
 /// Re-export the crate-visible sched-id predicate: the send gates
 /// (alias-defeating, round-34 minor 4) and the tests that pin the
 /// predicate itself.

@@ -988,12 +988,14 @@ impl SessionStore {
         // the same derived path — a healthy record is reused, and a record
         // that loads with any other error fails closed exactly like the
         // entry probe (never overwrite what cannot be read). The hoist also
-        // stops a losing creator from overwriting the winner's
-        // `_session_models.json` binding with the parent's current choice
-        // before returning the winner's metadata (sidecar and metadata must
-        // not disagree). This re-check is not an atomic create: a save
-        // landing after another creator's first transcript write can still
-        // clobber, and closing that residual window needs a
+        // NARROWS the losing-creator window on the winner's
+        // `_session_models.json` binding (round-37 MAJOR-3: a winner
+        // publishing between this re-check and the sidecar write still gets
+        // its binding overwritten with the parent's current choice — the
+        // re-check narrows, it does not stop, so the earlier reviewer
+        // wording said too much). This re-check is not an atomic create:
+        // a save landing after another creator's first transcript write can
+        // still clobber, and closing that residual window needs a
         // foundation-level exclusive-create — disclosed.
         match self.load(&id) {
             Ok(existing) => return Ok(existing.metadata),
@@ -1004,13 +1006,6 @@ impl SessionStore {
         }
         if let Some(model_id) = self.session_model_override(parent_id) {
             self.set_session_model_id(&id, Some(model_id))?;
-        }
-        match self.load(&id) {
-            Ok(existing) => return Ok(existing.metadata),
-            Err(error) if !is_not_found_error(&error) => {
-                return Err(error).with_context(|| "re-check the aux record before create");
-            }
-            Err(_) => {}
         }
         if let Err(error) = self.save(&session) {
             let rollback = self.delete(&id);

@@ -106,6 +106,10 @@ export const clearedIfSent = (current, text) => (current.trim() === text ? '' : 
 // so their per-task registries are purged. The known set is mutated in place
 // (deleted ids dropped, new ids added), which is what makes the initial
 // empty sessions snapshot safe — "never seen" is not "deleted".
+// The streak state for the two-consecutive-miss rule (round-37 MAJOR-1)
+// rides the knownIds set through a WeakMap: it dies with the wiring that
+// owns the set and needs no signature change at the two call sites.
+const pendingMissesByKnown = new WeakMap();
 export const reconcileLiveTaskIds = (knownIds, liveIds, purgeTask) => {
   // A mid-life EMPTY listing is not a deletion report (round-32 review
   // minor 14): refresh failures keep the previous list, so an empty slice
@@ -117,15 +121,38 @@ export const reconcileLiveTaskIds = (knownIds, liveIds, purgeTask) => {
   // purge while this bail stands: the session:deleted event leg fires per
   // id authoritatively.
   if (liveIds.size === 0 && knownIds.size > 0) return;
+  // A successful but PARTIAL listing is the same hazard in miniature
+  // (round-37 MAJOR-1): `SessionManager::list_sessions` silently skips any
+  // record whose metadata read/parse faults (the sync/AV class), so one
+  // transient fault yields a non-empty slice that omits a live task — and
+  // purging on that single miss would eat its draft, staged quotes and
+  // restart epoch while the task is alive. A diff purge therefore requires
+  // the id to be missing from TWO CONSECUTIVE non-empty listings: one
+  // listing fault is transient, two in a row is a deletion report. This
+  // costs the eventless retention-eviction leg one refresh of delay and
+  // leaves the authoritative session:deleted channel untouched.
+  const pendingMisses = pendingMissesByKnown.get(knownIds) || new Map();
+  pendingMissesByKnown.set(knownIds, pendingMisses);
   // Deleting from a Set mid-iteration is specified-safe (the iterator simply
   // skips removed entries), so no snapshot copy is needed here.
   for (const taskId of knownIds) {
-    if (!liveIds.has(taskId)) {
-      knownIds.delete(taskId);
-      purgeTask(taskId);
+    if (liveIds.has(taskId)) {
+      pendingMisses.delete(taskId);
+      continue;
     }
+    const misses = (pendingMisses.get(taskId) || 0) + 1;
+    if (misses < 2) {
+      pendingMisses.set(taskId, misses);
+      continue;
+    }
+    pendingMisses.delete(taskId);
+    knownIds.delete(taskId);
+    purgeTask(taskId);
   }
-  for (const taskId of liveIds) knownIds.add(taskId);
+  for (const taskId of liveIds) {
+    pendingMisses.delete(taskId);
+    knownIds.add(taskId);
+  }
 };
 
 export function createAuxChatController(options = {}) {

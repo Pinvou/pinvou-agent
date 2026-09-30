@@ -937,10 +937,14 @@ test('reconcileLiveTaskIds: a mid-life empty listing is skipped, not treated as 
     ['kept-a', 'kept-b'],
     'known ids survive the empty listing',
   );
-  // The guard is one-way: a non-empty listing still diffs normally, and the
-  // initial-empty case (nothing known) never bailed in the first place.
+  // The guard is one-way: a non-empty listing still diffs, under the
+  // two-consecutive-miss rule (round-37 MAJOR-1) — the first miss arms the
+  // streak, the second consecutive miss purges. The initial-empty case
+  // (nothing known) never bailed in the first place.
   reconcileLiveTaskIds(known, new Set(['kept-a']), (id) => purged.push(id));
-  assert.deepEqual(purged, ['kept-b'], 'a real listing still purges genuinely deleted ids');
+  assert.deepEqual(purged, [], 'the first miss only arms the streak');
+  reconcileLiveTaskIds(known, new Set(['kept-a']), (id) => purged.push(id));
+  assert.deepEqual(purged, ['kept-b'], 'the second consecutive miss purges the deleted id');
 });
 
 test('purgeTask leaves the in-flight send registry to its own settle path (round-34 minor 19)', async () => {
@@ -985,13 +989,41 @@ test('M5: reconcileLiveTaskIds purges only ids that disappeared after being seen
   reconcileLiveTaskIds(known, new Set(['a', 'b']), purge);
   assert.deepEqual(purged, []);
   assert.deepEqual([...known], ['a', 'b']);
-  // 'a' disappears (deleted), 'c' appears: only 'a' is purged.
+  // 'a' disappears (deleted), 'c' appears: the FIRST miss only arms the
+  // streak (round-37 MAJOR-1 — one non-empty listing can transiently omit a
+  // live record), the second consecutive miss purges.
+  reconcileLiveTaskIds(known, new Set(['b', 'c']), purge);
+  assert.deepEqual(purged, []);
+  assert.deepEqual([...known], ['a', 'b', 'c']);
   reconcileLiveTaskIds(known, new Set(['b', 'c']), purge);
   assert.deepEqual(purged, ['a']);
   assert.deepEqual([...known], ['b', 'c']);
   // A steady state purges nothing, and a purged id stays forgotten.
   reconcileLiveTaskIds(known, new Set(['b', 'c']), purge);
   assert.deepEqual(purged, ['a']);
+});
+
+test('round-37 MAJOR-1: a transient listing omission does not eat a live task state', () => {
+  const known = new Set();
+  const purged = [];
+  const purge = (taskId) => purged.push(taskId);
+  reconcileLiveTaskIds(known, new Set(['live-a', 'live-t']), purge);
+  // One refresh where the listing transiently omits live-t (a metadata
+  // read/parse fault upstream): the miss arms the streak but the task keeps
+  // its registries.
+  reconcileLiveTaskIds(known, new Set(['live-a']), purge);
+  assert.deepEqual(purged, [], 'a single miss must not purge a seen task');
+  assert.deepEqual(
+    [...known].sort((a, b) => a.localeCompare(b)),
+    ['live-a', 'live-t'],
+  );
+  // The next listing sees it again: the streak resets, nothing was lost.
+  reconcileLiveTaskIds(known, new Set(['live-a', 'live-t']), purge);
+  assert.deepEqual(purged, []);
+  assert.deepEqual(
+    [...known].sort((a, b) => a.localeCompare(b)),
+    ['live-a', 'live-t'],
+  );
 });
 
 test('clearedIfSent clears only a composer that still equals the sent text', () => {

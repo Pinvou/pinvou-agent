@@ -3200,15 +3200,17 @@
       state.activeSkill = consumed.activeSkill;
     }
 
-  // auxChat cluster（round-31 M7）:aux 桥接域此前在 platform/tauri/bridge/aux-chat.js
-  // 与 platform/web/bridge.js 各存一份（~60 逻辑行仅 ~3 行不同）。函数体取自原 web
-  // 侧镜像；两处真实差异留在 lane 侧——send 派发（lane 以 auxChatDispatch 传入；
-  // desktop 走 chat、Web 走 web_access_chat）与 web 侧的
-  // The web-only session_turn_in_progress translation wrapper was dropped
-  // with the M7 move: on either lane send errors only reach console.warn and
-  // the panel's static localized sendFailed copy, so translated error text
-  // never reached the user (the desktop side was always the bare string) —
-  // one behavior for both lanes.
+  // auxChat cluster (round-31 M7): the aux bridge domain previously existed
+  // twice — platform/tauri/bridge/aux-chat.js and platform/web/bridge.js
+  // (~60 logic lines with only ~3 differing). The function bodies come from
+  // the former web-side mirror; the two real differences stay lane-side:
+  // send dispatch (the lane passes auxChatDispatch in; desktop goes through
+  // chat, web through web_access_chat) and the web-side
+  // session_turn_in_progress translation wrapper — dropped with the M7 move:
+  // on either lane send errors only reach console.warn and the panel's
+  // static localized sendFailed copy, so translated error text never reached
+  // the user (the desktop side was always the bare string) — one behavior
+  // for both lanes.
   // Display-only and case-sensitive ON PURPOSE: it only gates ensure/send
   // inputs on ids the backend itself minted (always lowercase `aux-`);
   // identity and destructive paths decide in Rust, whose
