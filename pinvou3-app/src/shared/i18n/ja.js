@@ -613,6 +613,7 @@ dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準�
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
+  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴への読み取り専用アクセス', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを引用すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。内蔵プラグインはアンインストールできません。セッション読み取りは内蔵機能スイッチでオフにできます。', welcomeQueries:['引用したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
   card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
@@ -632,6 +633,28 @@ Object.assign(dictJa.uiToolDetails.tools, {
   pptx:{ title:'PPT 生成', subtitle:'ローカルで編集可能な PowerPoint を直接生成。テーマテンプレート、本物のグラフ、表紙付き', latency:'ローカル', desc:'「PPT / レポートを作って」と言うと、AI がまずアウトラインを提示して確認を取り、内容に合わせてテーマ（9 種類）を選び、編集可能な .pptx を生成します。本物のグラフ、表紙サムネイル付きで、すべてローカル処理。データは端末の外に出ません。初回インストール時に python-pptx 依存関係を自動ダウンロードします（ネットワーク必須）。', welcomeQueries:['Q2 四半期報告 PPT を作成','製品紹介 PPT を作成','プロジェクト提案プレゼンを作成','会社紹介 PPT を作成'] },
   gongwen:{ title:'公文書作成', subtitle:'党政機関の公文書を GB/T 9704 準拠の .docx で直接出力', latency:'ローカル', desc:'「通知を書いて / 意見を起草して」と言うと、AI が文種の構造と定型表現に沿って内容を作成し、レンダラーが党政機関公文書の国家標準フォーマット（方正小標宋のタイトル、仿宋_GB2312 の本文、標準余白、赤いヘッダーと赤い区切り線）を適用して .docx を出力します。すべてローカル処理でデータは端末の外に出ません。「党政機関公文書作成」スキルと併用すると最も効果的です。初回インストール時に python-docx 依存関係を自動ダウンロードします（ネットワーク必須）。', welcomeQueries:['管理弁法の公布に関する通知を起草','ある業務の強化に関する実施意見を作成','会議通知を作成','状況報告を作成'] },
 });
+
+// Read-only builtin plugins section (docs/builtin-toolset-contract.md §3.1):
+// section title / read-only badge / audit field labels / security level
+// descriptions / data-access scope copy. Unknown dataAccess scope keys fall
+// back to rendering the raw key on the card and are not listed here.
+dictJa.uiBuiltinPlugins = {
+  sectionTitle:'内蔵プラグイン',
+  kindLabel:'タイプ',
+  pageIntro:'アプリに同梱され、アプリと共に更新されるプラグインです。このページは能力とデータアクセス範囲の透明な表示のみを目的としており、アンインストールやオフの操作はできません。',
+  readonlyBadge:'内蔵 · 常時有効', readonlyModeBadge:'内蔵 · モード制御',
+  toolsLabel:'ツール一覧',
+  securityLabel:'セキュリティレベル',
+  versionLabel:'バージョン',
+  versionNote:'アプリと共に更新',
+  dataAccessLabel:'データアクセス範囲',
+  levels:{ L0:'読み取り専用：状態を変更せず、内容は信頼できないものとして扱う', L1:'書き込み：ユーザーに見える副作用を伴う（メッセージ送信、タスク作成など）', L2:'破壊的：削除・上書きなど不可逆な操作。明示的な認可が必要' },
+  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）' },
+};
+
+// Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
+// §3.3 hook): reused by future per-feature settings pages for the "feature
+// disabled" degradation of existing entry points.
 
 Object.assign(dictJa.uiCodexWorkspace, { showRawErrors:false, operationFailed:'ワークスペースの操作に失敗しました。再試行してください' });
 
@@ -922,7 +945,7 @@ visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシ�
 'package-author': { title:'プラグインパッケージ標準化', subtitle:'スキル/MCP/関数をアップロード可能な標準プラグインに整理', desc:'散在するスキル（SKILL.md）、MCP サービス、またはそれらの組み合わせを、Pinvou ストアがインポートできる標準プラグインに整理します：plugin.json、mcp/manifest.json、SKILL.md の frontmatter を補い、アイコンを生成し、命名とレイアウトを検証して、ディレクトリまたは zip を出力します。', latency:'ローカル' },
 'skill-author': { title:'スキル作成', subtitle:'一言の説明から、きちんとした SKILL.md スキルを生成', desc:'ユーザーの一言の説明を、使えるスキル（SKILL.md ディレクトリ）に変えます：name / description / 本文の指示を生成し、命名と構造を検証します。アップロード可能なパッケージとして納品したい場合は、続けて「プラグインパッケージ標準化」のルールで plugin.json とアイコンを補い、標準パッケージを書き出して、最後にユーザーへインストールするか尋ねます。', latency:'ローカル' },
 'tencent-docs-skill': { title:'Tencent ドキュメント', subtitle:'オンラインドキュメント / 表計算 / スライド / スマートシートの作成・編集・管理', desc:'Tencent Docs 公式 MCP スキル（v1.0.41 適合版）：プラグインセンターの「Tencent Docs MCP」コネクターと併用します。公式のカテゴリルーティング（スマートドキュメント / Word / Excel / PPT / マインドマップ / フローチャート / スマートシート）と完全なツール API リファレンスを内蔵。Token はコネクターがこの端末のシステム認証情報に書き込みます。', latency:'クラウド' },
-s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
+'visual-design': { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', other:'その他' },
 } });

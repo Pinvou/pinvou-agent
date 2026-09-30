@@ -716,6 +716,11 @@ pub struct UserPrefs {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub local_thinking_default_migrated: bool,
     pub advanced: AdvancedPrefs,
+    /// Ids of builtin-plugin features the user has turned off
+    /// (docs/builtin-toolset-contract.md §3.3; the feature registry and the
+    /// union removal semantics live in `features::marketplace::builtin`).
+    /// Empty by default = everything enabled.
+    pub disabled_builtin_features: Vec<String>,
 }
 
 struct ParsedSettings {
@@ -2544,6 +2549,7 @@ mod tests {
                 max_subagents: Some(2),
                 ..Default::default()
             },
+            disabled_builtin_features: Vec::new(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
@@ -2561,6 +2567,9 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
+        // Legacy settings.json without the builtin-feature field → defaults
+        // to empty (all enabled), docs/builtin-toolset-contract.md §3.3.
+        assert!(prefs.disabled_builtin_features.is_empty());
         #[cfg(target_os = "linux")]
         {
             assert!(!prefs.notifications.enabled);

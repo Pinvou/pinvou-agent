@@ -98,6 +98,20 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
         manifest_json: include_str!("../../../../resources/mcp-servers/tencent-docs/manifest.json"),
         files: &[],
     },
+    // Session reader (local stdio, read-only paginated access to other local
+    // sessions' history; the model-side query tool behind session mention.
+    // Purely local: no network, no credentials; installed by default, see
+    // marketplace::ensure_default_installed_mcp_tools).
+    McpPackageSpec {
+        id: "session-reader",
+        manifest_json: include_str!(
+            "../../../../resources/mcp-servers/session-reader/manifest.json"
+        ),
+        files: &[(
+            "server.py",
+            include_str!("../../../../resources/mcp-servers/session-reader/server.py"),
+        )],
+    },
     // 企微群机器人（本地 stdio，包装企业微信官方群机器人 webhook 消息推送 API；
     // key 走凭据库 + ${ENV} 占位符，不落明文）。
     McpPackageSpec {
@@ -110,13 +124,39 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
     },
 ];
 
-/// 按 id 取内嵌包（不在目录 = 自定义/手放工具，走旧布局回退）。
+/// Look up an embedded package by id (absent from the catalog = custom /
+/// hand-placed tool, legacy-layout fallback). Exact match; write paths
+/// (`release_package`) must use this so the written directory keeps the
+/// catalog's casing.
 pub fn spec_for(id: &str) -> Option<&'static McpPackageSpec> {
     MCP_PACKAGES.iter().find(|spec| spec.id == id)
 }
 
-/// 解析编译进应用的 manifest。安装与依赖下载必须以这份只读快照为准，不能信任
-/// 用户目录中可能来自旧版本或已被修改的同名 manifest。
+/// Case-insensitive catalog membership probe: "does this id denote a builtin
+/// package". Exact match wins; otherwise ASCII case folding covers
+/// case-insensitive filesystems (Windows/macOS), where a case-variant id
+/// resolves to the same on-disk directory and must not bypass the builtin
+/// guards, the import collision check, or the read-time self-heal (review
+/// round-3 M1). Membership judgement only — write paths always go through
+/// the exact `spec_for`.
+pub fn spec_for_builtin_probe(id: &str) -> Option<&'static McpPackageSpec> {
+    spec_for(id).or_else(|| {
+        MCP_PACKAGES
+            .iter()
+            .find(|spec| spec.id.eq_ignore_ascii_case(id))
+    })
+}
+
+/// Parse the compile-time embedded manifest. Installs and dependency
+/// downloads must trust this read-only snapshot, not a same-named manifest in
+/// the user directory that may come from an old version or have been
+/// modified. The lookup is the EXACT `spec_for`: this is a content source
+/// (install, boot reconcile, secret rehydration, audit overlay), and a folded
+/// lookup here would hand a case-variant id the catalog's manifest — the
+/// user's own `Weather` package would then be installed/reconciled with
+/// weather's command/args/secret wiring, silently breaking existing user
+/// data (review round-6 M3a). Membership judgement goes through
+/// `builtin_manifest_probe`; write paths keep the exact `spec_for`.
 pub fn embedded_manifest(id: &str) -> Result<Option<ToolManifest>, String> {
     spec_for(id)
         .map(|spec| {
@@ -124,6 +164,29 @@ pub fn embedded_manifest(id: &str) -> Result<Option<ToolManifest>, String> {
                 .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))
         })
         .transpose()
+}
+
+/// Parsed embedded manifest for the case-insensitive membership probe only:
+/// `is_builtin_tool` must keep folding (a case-variant id on a
+/// case-insensitive filesystem denotes the same builtin), while the content
+/// lane above stays exact. Same snapshot, different lookup discipline.
+pub fn builtin_manifest_probe(id: &str) -> Result<Option<ToolManifest>, String> {
+    spec_for_builtin_probe(id)
+        .map(|spec| {
+            serde_json::from_str(spec.manifest_json)
+                .map_err(|e| format!("内嵌 MCP manifest 解析失败（{id}）: {e}"))
+        })
+        .transpose()
+}
+
+/// Canonical catalog id for a (possibly case-variant) spelling; `None` when
+/// the id does not denote a catalog package. Install-entry canonicalization
+/// (review round-6 M3b): the folded membership probe accepts
+/// `install("Session-Reader")`, but `release_package` / `package_mcp_dir` /
+/// the uninstall guard all key the exact id — writing mcp.json args at a
+/// nonexistent `bundles/Session-Reader/mcp` would never converge.
+pub fn canonical_catalog_id(id: &str) -> Option<&'static str> {
+    spec_for_builtin_probe(id).map(|spec| spec.id)
 }
 
 /// 包的 mcp/ 目录（`bundles/<id>/mcp/`）。
@@ -257,7 +320,7 @@ mod tests {
                 assert!(!content.is_empty(), "{} 的 {name} 为空", spec.id);
             }
         }
-        // 已知 11 个内置包
-        assert_eq!(MCP_PACKAGES.len(), 11);
+        // 12 known embedded packages
+        assert_eq!(MCP_PACKAGES.len(), 12);
     }
 }
