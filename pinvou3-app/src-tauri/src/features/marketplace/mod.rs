@@ -1015,8 +1015,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // record) keys the exact id, and the folded uninstall guard would
         // otherwise refuse the variant record forever while boot re-release
         // never converges (review round-6 M3b). Non-catalog ids pass through.
-        let tool_id: &str =
-            mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id);
+        let tool_id: &str = mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id);
         // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
         // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
         // args 与 secret 声明）。无内嵌 spec 的上传/自定义包仍从自身包目录读取。
@@ -5563,7 +5562,11 @@ mod tests {
 
             let store = store::BundleStore::new();
             assert!(
-                store.get("session-reader").unwrap().map(|r| r.installed).unwrap_or(false),
+                store
+                    .get("session-reader")
+                    .unwrap()
+                    .map(|r| r.installed)
+                    .unwrap_or(false),
                 "the canonical record must be installed"
             );
             assert!(
@@ -5586,7 +5589,8 @@ mod tests {
                 .unwrap_or_default()
                 .to_string();
             assert!(
-                command.contains("bundles/session-reader/mcp") && !command.contains("Session-Reader"),
+                command.contains("bundles/session-reader/mcp")
+                    && !command.contains("Session-Reader"),
                 "args must point at the real released dir: {command}"
             );
         });

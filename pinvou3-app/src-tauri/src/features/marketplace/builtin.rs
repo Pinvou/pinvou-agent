@@ -319,24 +319,33 @@ mod tests {
         assert!(is_builtin_tool("Session-Reader"));
         assert!(is_builtin_tool("SESSION-READER"));
         // Content: exact id resolves; case-variant does not.
-        assert!(mcp_catalog::embedded_manifest("session-reader")
-            .unwrap()
-            .is_some());
-        assert!(mcp_catalog::embedded_manifest("Session-Reader")
-            .unwrap()
-            .is_none());
+        assert!(
+            mcp_catalog::embedded_manifest("session-reader")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mcp_catalog::embedded_manifest("Session-Reader")
+                .unwrap()
+                .is_none()
+        );
         // The membership probe's own manifest stays parseable for the variant.
-        assert!(mcp_catalog::builtin_manifest_probe("Session-Reader")
-            .unwrap()
-            .map(|m| m.builtin)
-            .unwrap_or(false));
+        assert!(
+            mcp_catalog::builtin_manifest_probe("Session-Reader")
+                .unwrap()
+                .map(|m| m.builtin)
+                .unwrap_or(false)
+        );
         // Canonicalization maps the variant to the catalog id and leaves
         // non-catalog ids alone.
         assert_eq!(
             mcp_catalog::canonical_catalog_id("Session-Reader"),
             Some("session-reader")
         );
-        assert_eq!(mcp_catalog::canonical_catalog_id("weather"), Some("weather"));
+        assert_eq!(
+            mcp_catalog::canonical_catalog_id("weather"),
+            Some("weather")
+        );
         assert_eq!(mcp_catalog::canonical_catalog_id("my-own-tool"), None);
     }
 
