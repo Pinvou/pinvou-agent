@@ -1617,8 +1617,11 @@ impl Pinvou3Bridge {
         // with the monitor display (declaration wins, probe min-clamps,
         // inference fills in), so the two paths cannot drift apart by each
         // keeping their own match. The probed value only exists for locally
-        // introspectable vLLM (cloud is always None, see the probe gate in
-        // engine_pool), so a cloud declaration is never overridden by any probe.
+        // introspectable servers — vLLM's `max_model_len`, an Ollama
+        // endpoint's native `/api/ps`/`/api/show` follow-up, LM Studio's
+        // `loaded_context_length` (see the probe gate in engine_pool) — and
+        // cloud is always None, so a cloud declaration is never overridden
+        // by any probe.
         let (context_tokens, _) = crate::core::model_context::resolve_context_window(
             configured_context,
             self.probed_context_tokens,
@@ -1697,8 +1700,9 @@ impl Pinvou3Bridge {
 
     /// The context window the foundation's emergency line uses. The smaller
     /// of the SavedModel declaration and the probe (vLLM `/v1/models`'s
-    /// `max_model_len`); only when neither exists does it fall back to the
-    /// model-name hint/128K.
+    /// `max_model_len`, an Ollama endpoint's native `/api/ps`/`/api/show`
+    /// fact, LM Studio's `loaded_context_length`); only when neither exists
+    /// does it fall back to the model-name hint/128K.
     ///
     /// ⚠️ **Filling active_route_limits and deriving token_threshold must
     /// share this one window**, otherwise T (nice line) / E (emergency line)

@@ -419,7 +419,12 @@ fn parse_models_response(
 /// roster (configured name absent from the list) must not borrow the first
 /// entry's window — the same "a window is never borrowed from another
 /// model" principle as `parse_models_response` /
-/// `resolve_served_model_from_entries`.
+/// `resolve_served_model_from_entries`. Note the engine route's adoption
+/// gate (`adopts_probed_facts`) matches exactly instead of
+/// case-insensitively: a case-mismatched route is already a Mismatch
+/// display state, and there the display may adopt a window the engine
+/// route keeps its fallback for — accepted, since loosening the engine
+/// gate would change pre-existing vLLM adoption semantics.
 fn ollama_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
     let Some(served) = served else {
         return false;

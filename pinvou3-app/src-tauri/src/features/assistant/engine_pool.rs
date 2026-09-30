@@ -1992,9 +1992,17 @@ impl EnginePool {
             // Native window fact for probed-Ollama endpoints, only when the
             // list probe had none and the facts are adoptable (the queried
             // name is the one actually sent, so the fact belongs to this
-            // route by construction). A LocalVllm-preset route is never
-            // kind-probed as Ollama in production (the kind probe gates on
-            // the openai provider), so the fallback stays on the vLLM path.
+            // route by construction). The kind probe only runs for the
+            // openai provider, so LocalVllm-preset routes are not kind-probed
+            // — unless a persisted non-empty `vendor` maps them to "openai"
+            // (the settings preset switch does not clear it), in which case
+            // the fetch fires and is correct for a genuinely Ollama-shaped
+            // endpoint while a real vLLM server 404s `/api/ps` and ends the
+            // lookup. The `adopts` gate above is an exact-name match, so a
+            // configured name missing from a single-entry `/v1/models` list
+            // (or differing only by case) skips the native fetch too and
+            // keeps the foundation fallback — the same conservative outcome
+            // as before this follow-up existed.
             if max_len.is_none()
                 && bridge.probed_local_kind
                     == Some(crate::core::model_endpoint::LocalServerKind::Ollama)
@@ -8641,7 +8649,11 @@ mod probed_facts_wiring_tests {
             // Ollama's OpenAI shim shape: the listing carries no window fact.
             ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
             // The kind signature that classifies the endpoint as Ollama.
-            ("/api/tags", 200, r#"{"models":[{"name":"my-model"}]}"#.into()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
             // The native effective context the follow-up must adopt.
             (
                 "/api/ps",
