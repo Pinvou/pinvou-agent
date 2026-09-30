@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
-import { builtinToolShortName } from './builtin-plugin-logic.js';
 import { SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_LIST_TOOL, SCHEDULED_TASK_UPDATE_TOOL, scheduledTaskCreateSummary, scheduledTaskDeleteSummary, scheduledTaskListSummary, scheduledTaskUpdateSummary } from './scheduled-task-tool-logic.js';
 import { builtinToolShortName, MODE_CONTROLLED_BUILTIN_SKILL_IDS } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';

@@ -21,18 +21,7 @@ import {
   parseScheduledTaskToolOutput,
   scheduledTaskPromptExcerpt,
 } from './scheduled-task-tool-logic.js';
-import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
 
-const isShellExecutionTool = name => [
-  'bash',
-  'exec_shell',
-  'exec_shell_wait',
-  'exec_wait',
-  'task_shell_start',
-  'task_shell_wait',
-  'shell',
-  'Bash',
-].includes(name);
 import { DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
 
 // P1-C：专家卡是桌面能力。Web 构建没有 multiAgent bridge（capability 关闭），
