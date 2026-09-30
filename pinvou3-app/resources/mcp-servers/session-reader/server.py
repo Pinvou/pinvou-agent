@@ -224,7 +224,9 @@ TOOL_DEFS = [
         "name": "send_message_to_session",
         "description": (
             "Deliver a text message into another local Pinvou session (write operation, "
-            "requires user approval). Use this when the user asks you to send a message to, "
+            "delivered automatically — there is no per-call confirmation dialog; the "
+            "message lands as a sender card in the target session and the delivery is "
+            "audited). Use this when the user asks you to send a message to, "
             "or hand off a task to, another session — one they referenced in this chat "
             "(a reference card's sessionId) or one they named by id. Do NOT use this to "
             "talk to the current user (just reply) or to modify history. Delivery: if the "
