@@ -786,8 +786,7 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // through. The CLI's diff lane carries the same guard, so the shared
         // `DIFF_LIMIT` cannot panic on one surface and cut cleanly on the
         // other.
-        let boundary = crate::platform::strings::truncate_utf8(&text, DIFF_LIMIT).len();
-        text.truncate(boundary);
+        truncate_to_byte_cap(&mut text, DIFF_LIMIT);
         text.push_str("\n\n…差异过大，已截断");
     }
     diff_cache_put(session_id, &root, &relative, text.clone(), truncated);
@@ -796,6 +795,14 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         text,
         truncated,
     })
+}
+
+/// The byte-capped cut `workspace_diff` performs: floor to a char boundary
+/// via the crate-wide helper, then truncate. A function so the truncation
+/// test drives the exact production cut rather than a transcription.
+fn truncate_to_byte_cap(text: &mut String, limit: usize) {
+    let boundary = crate::platform::strings::truncate_utf8(text, limit).len();
+    text.truncate(boundary);
 }
 
 /// 校验相对路径落在工作区内，但不要求文件存在（git diff 可展示已删除文件）。
@@ -1406,20 +1413,11 @@ mod tests {
         assert!(resolve_workspace_file(root.path(), "missing.txt").is_err());
     }
 
-    /// The exact cut `workspace_diff` performs: floor to a char boundary via
-    /// the crate-wide helper, then truncate. 1 MiB is not a multiple of 3,
-    /// so the old plain `String::truncate(DIFF_LIMIT)` cut inside a CJK char
-    /// and panicked.
-    fn diff_truncate(text: &mut String, limit: usize) {
-        let boundary = crate::platform::strings::truncate_utf8(text, limit).len();
-        text.truncate(boundary);
-    }
-
     #[test]
     fn diff_truncation_cuts_on_char_boundaries() {
         // A full cap of CJK.
         let mut text = "界".repeat(DIFF_LIMIT / 3 + 4);
-        diff_truncate(&mut text, DIFF_LIMIT);
+        truncate_to_byte_cap(&mut text, DIFF_LIMIT);
         assert!(text.len() <= DIFF_LIMIT);
         assert!(
             text.chars().all(|c| c == '界'),
@@ -1428,24 +1426,24 @@ mod tests {
 
         // A 4-byte emoji straddling a small cap.
         let mut emoji = "a🏖b".to_string();
-        diff_truncate(&mut emoji, 3);
+        truncate_to_byte_cap(&mut emoji, 3);
         assert_eq!(emoji, "a");
 
         let mut small = "ab界界".to_string();
-        diff_truncate(&mut small, 3);
+        truncate_to_byte_cap(&mut small, 3);
         assert_eq!(small, "ab");
 
         let mut exact = "abc".to_string();
-        diff_truncate(&mut exact, 3);
+        truncate_to_byte_cap(&mut exact, 3);
         assert_eq!(exact, "abc");
 
         // Under the cap: untouched, whatever the content.
         let mut short = "短文🐱".to_string();
-        diff_truncate(&mut short, 1024);
+        truncate_to_byte_cap(&mut short, 1024);
         assert_eq!(short, "短文🐱");
 
         let mut empty = String::new();
-        diff_truncate(&mut empty, 0);
+        truncate_to_byte_cap(&mut empty, 0);
         assert_eq!(empty, "");
     }
 
