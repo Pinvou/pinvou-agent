@@ -17,6 +17,7 @@ use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletio
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::memory::MemoryOrganizeReport;
 use crate::features::scheduled::tasks::ScheduledTaskKindLookup;
+use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -209,15 +210,35 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
 /// scheduled run; the run is marked failed and the next fire retries).
 const SCHEDULED_MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Run-time isolation re-check for a scheduled-message target (defense in
-/// depth: the kind sidecar is app-owned state, not trusted — creation already
-/// rejects these, and waking an unattended session on a schedule is the
-/// recursion direction). Split into a free function so tests can drive it
-/// with a real store without an EnginePool.
+/// Run-time re-check for a scheduled-message target — the delivery-side twin
+/// of the messaging channel's `check_participant_id` gate (charset + length
+/// + isolation, case-insensitive on the prefixes): the kind sidecar is
+/// app-owned state, not trusted, so a hand-tampered target must fail here,
+/// before any engine is woken. Waking an unattended session on a schedule is
+/// the recursion direction the creation path already rejects. Split into a
+/// free function so tests can drive it with a real store without an
+/// EnginePool.
 pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &str) -> Result<()> {
+    const MAX_TARGET_SESSION_LEN: usize = 128;
+    if target_session.is_empty()
+        || target_session.len() > MAX_TARGET_SESSION_LEN
+        || !target_session
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!("invalid target session id");
+    }
     if store.scheduled_profile(target_session).is_some() {
         anyhow::bail!(
             "target {target_session} is a scheduled-run session and cannot receive scheduled messages"
+        );
+    }
+    if is_sched_session_id(target_session)
+        || is_aux_session_id(target_session)
+        || target_session.to_ascii_lowercase().starts_with("eval_")
+    {
+        anyhow::bail!(
+            "target session {target_session} is isolated and cannot receive scheduled messages"
         );
     }
     Ok(())
@@ -288,6 +309,14 @@ impl ScheduledChatExecutor {
         let message = message.trim();
         if message.is_empty() {
             return failed("scheduled message body is empty");
+        }
+        // Belt re-check of the create/update cap: a body that slipped past
+        // domain validation (hand-edited sidecar, older store) must not be
+        // silently delivered oversized — same bound as the messaging channel.
+        if message.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS {
+            return failed(&format!(
+                "scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+            ));
         }
         let delivered = tokio::select! {
             biased;

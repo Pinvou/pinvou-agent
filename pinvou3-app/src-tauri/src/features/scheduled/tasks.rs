@@ -45,7 +45,9 @@ pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
 pub(crate) const SCHEDULED_TASK_KIND_SESSION_MESSAGE: &str = "session_message";
 /// Message body cap for scheduled messages — same bound as the messaging
 /// channel (a delivered message becomes a user turn in the target session).
-const SCHEDULED_MESSAGE_MAX_CHARS: usize = 32 * 1024;
+/// Enforced at create and update; the executor re-checks it as a belt before
+/// every delivery.
+pub(crate) const SCHEDULED_MESSAGE_MAX_CHARS: usize = 32 * 1024;
 const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
 // Pinvou's embedded Engine does not currently project every model delta/tool
 // heartbeat into TaskExecutionEvent. An idle deadline shorter than the hard
