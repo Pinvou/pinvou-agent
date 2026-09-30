@@ -2156,6 +2156,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
+  // Builtin feature switches (contract hook point): desktop Rust command
+  // channel only — the web lane has no such backend.
+  const listBuiltinFeatures = settingsFeature.listBuiltinFeatures;
+  const setBuiltinFeatureEnabled = settingsFeature.setBuiltinFeatureEnabled;
 
   const interactionFeature = installBridgeFeature("interaction", {
     state, invoke, notify, bt,
@@ -2550,6 +2554,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       saveSettings,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
+      listBuiltinFeatures,
+      setBuiltinFeatureEnabled,
     },
     feedback: { submitFeedback },
     vllm: {

@@ -625,10 +625,28 @@ pub fn resolve_pack_owner_id(raw_id: &str) -> String {
     to_package_id(raw_id)
 }
 
+/// Legacy-migration filter: builtin plugins can never be disabled
+/// (docs/builtin-toolset-contract.md §3.3), so entries normalizing to a
+/// builtin package are skipped instead of written — once persisted, such an
+/// id could never be removed through the guarded write paths. Migration stays
+/// best-effort (skip rather than reject): one poisoned legacy entry must not
+/// abort migrating the rest of the file.
+fn migration_keeps_id(id: &str) -> bool {
+    !crate::features::marketplace::builtin::is_builtin_tool(id)
+}
+
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
 /// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的
 /// 「关/隐藏」在认领翻转后静默失效（F4）；读时归一让门控跟随技能本体。
+///
+/// Self-heal (docs/builtin-toolset-contract.md §3.1): builtin plugins can
+/// never be disabled/hidden and every writer rejects builtin ids, so a stored
+/// entry normalizing to a builtin package is always poisoned state (a legacy
+/// bug window, a hand-edited file). Drop it at read time — keeping it would
+/// feed the id back to the frontend's full-list writes, which
+/// `reject_builtin_ids` then fails wholesale, bricking every toggle of the
+/// scope with no UI recovery.
 fn normalize_stored_pkg_ids(ids: &[String]) -> Vec<String> {
     // Round-31 perf (review #455 ledger, "the cheapest win"): the empty input
     // is the common shape for fresh/minimal stores — the full manifest walk
@@ -647,6 +665,9 @@ fn normalize_stored_pkg_ids_with(tools: &[super::ToolManifest], ids: &[String]) 
     let mut out: Vec<String> = Vec::with_capacity(ids.len());
     for id in ids {
         let pkg = to_package_id_with(tools, id);
+        if crate::features::marketplace::builtin::is_builtin_tool(&pkg) {
+            continue;
+        }
         if !out.iter().any(|x| x == &pkg) {
             out.push(pkg);
         }
@@ -726,17 +747,13 @@ fn merge_legacy_scope_file_into(
             return true;
         }
     };
-    let scope_ids = |value: &serde_json::Value| -> Option<Vec<String>> {
-        let arr = value.as_array()?;
-        let mut ids = Vec::with_capacity(arr.len());
-        for entry in arr {
-            ids.push(to_package_id(entry.as_str()?));
-        }
-        Some(ids)
-    };
     // 裸数组 → plain scope
     if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
-        let ids: Vec<String> = list.iter().map(|id| to_package_id(id)).collect();
+        let ids: Vec<String> = list
+            .iter()
+            .map(|id| to_package_id(id))
+            .filter(|id| migration_keeps_id(id))
+            .collect();
         if !ids.is_empty() {
             merge_ids(file, SessionMode::Plain.as_str(), ids);
         }
@@ -749,6 +766,24 @@ fn merge_legacy_scope_file_into(
     let Some(obj) = value.as_object() else {
         eprintln!("[scope] {} is not a JSON object", path.display());
         return true;
+    };
+    // A file that is valid JSON but only partially matches a documented shape is
+    // corruption, not an empty state: consuming the half that happens to parse
+    // would silently read as "nothing was disabled", so any wrong-typed field or
+    // unrecognized shape fails closed exactly like an unreadable file.
+    // Round-33 merge note: the builtin poison filter lives INSIDE the closure so
+    // every shape (bare array, object scopes) filters — builtin ids can never
+    // legally sit in a disabled list (skip the entry, don't fail the file).
+    let scope_ids = |value: &serde_json::Value| -> Option<Vec<String>> {
+        let arr = value.as_array()?;
+        let mut ids = Vec::with_capacity(arr.len());
+        for entry in arr {
+            let id = to_package_id(entry.as_str()?);
+            if migration_keeps_id(&id) {
+                ids.push(id);
+            }
+        }
+        Some(ids)
     };
     match obj.get("scopes") {
         Some(serde_json::Value::Object(scopes)) => {
@@ -1012,6 +1047,12 @@ fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
 /// unconnected CLI packs is harmless (companion skills are not on disk, so
 /// excluding them is a no-op), and "connected later" is also off by default.
 ///
+/// The computed DenyAll default drops ids that normalize to a builtin
+/// catalog entry (round-6 B1): builtins are feature-switch-governed, never
+/// package-governed, and a default containing the boot-seeded builtin would
+/// fail `reject_builtin_ids` on the very write that initializes the scope —
+/// bricking every toggle on an uninitialized DenyAll profile.
+///
 /// When skill enumeration fails (permissions / transient IO, #531) the freshly
 /// computed default degrades toward over-denial: owner packages of all preset
 /// skills and of all store-known upload records are blanket-unioned into the
@@ -1166,6 +1207,20 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                     }
                 }
             }
+            // Builtins are feature-switch-governed, never package-governed
+            // (§3.1, same consent semantics as the DenyAll install-sync
+            // exemption): the boot seed installs session-reader into
+            // installed.json, and a computed default containing it would make
+            // the echoed full-set write that initializes the scope fail
+            // `reject_builtin_ids` — every composer toggle on an uninitialized
+            // DenyAll profile then errors forever with no UI recovery. Drop
+            // ids that normalize to a builtin, the same predicate
+            // `normalize_stored_pkg_ids` and the guard itself apply.
+            // Merge note: the retain runs AFTER the disk-derived arm so the
+            // filter covers disk-derived ids too.
+            ids.retain(|id| {
+                !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+            });
             ids
         }
     }
@@ -1177,6 +1232,14 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// contract is shipped user-visible semantics and this PR does not downgrade
 /// it — the composer caller's retry/rollback UX is #515 rework's to deliver).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
+    // Builtin plugins cannot be disabled (§3.1): the guard lives on the
+    // persistence function itself so every caller inherits it — not only
+    // `apply_disabled_connectors_for` — and a future direct writer cannot
+    // silently seed a builtin into an initialized scope (the read-time
+    // self-heal would drop it again, but the write should refuse upfront).
+    // The DenyAll computed default and the install-sync exemption already
+    // exclude builtin ids, so legitimate internal callers are unaffected.
+    crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1296,6 +1359,10 @@ fn resolve_scope_hidden_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
 /// Write failures propagate as-is (round-19 MAJOR 1, same as save_disabled_bundles_for).
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
+    // Builtin plugins cannot be hidden (§3.1): the guard lives on the manager
+    // function (not just the command layer) so every caller inherits it —
+    // same layering as the disable path (review round-5 minor 3).
+    crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1383,6 +1450,13 @@ pub fn sync_deny_all_scopes_refresh(raw_id: &str) -> Result<(), String> {
 
 fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
+    // Builtin plugins can never be disabled (docs/builtin-toolset-contract.md
+    // §3.3): exempt them here, or a direct-IPC reinstall of an already
+    // installed builtin would seed it into the disabled set of every
+    // initialized DenyAll scope with no UI path to remove it.
+    if crate::features::marketplace::builtin::is_builtin_tool(&package_id) {
+        return Ok(());
+    }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2769,6 +2843,136 @@ mod tests {
         });
     }
 
+    /// Builtin plugins are exempt from the post-install DenyAll sync: a
+    /// direct-IPC reinstall of an already installed builtin must not seed it
+    /// into the disabled set of initialized scopes (it could never be
+    /// removed again through the guarded write paths).
+    #[test]
+    fn deny_all_sync_skips_builtin_packages() {
+        with_temp_home("pinvou3-scope", || {
+            save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+            sync_deny_all_scopes_after_install("session-reader");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["weather".to_string()],
+                "builtin id must not be synced into the initialized DenyAll scope"
+            );
+            // A normal package is still synced in.
+            sync_deny_all_scopes_after_install("pptx");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+        });
+    }
+
+    /// Legacy migration never persists builtin ids: entries normalizing to a
+    /// builtin package (including the `skill:`-prefixed alias) are skipped,
+    /// not written.
+    #[test]
+    fn legacy_migration_skips_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &conn,
+                r#"["weather", "skill:session-reader", "session-reader"]"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// Same builtin-skip migration for the legacy `{scopes, initialized}`
+    /// object shape (the bare-array branch is covered above).
+    #[test]
+    fn legacy_migration_scopes_object_skips_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &conn,
+                r#"{"scopes":{"plain":["session-reader","weather"],"code":["skill:session-reader"]},"initialized":["plain","code"]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the builtin id must be dropped from the migrated plain scope"
+            );
+            // The code scope contained only the poisoned entry: after the
+            // skip nothing is migrated for it, and as an initialized scope it
+            // reads back empty (its persisted list wins over the default).
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                Vec::<String>::new(),
+                "an initialized scope whose only entry was poisoned migrates to empty"
+            );
+        });
+    }
+
+    /// Same builtin-skip migration for the oldest legacy shape
+    /// `{plain, code, code_initialized}`.
+    #[test]
+    fn legacy_migration_dual_scope_object_skips_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &conn,
+                r#"{"plain":["session-reader","weather"],"code_initialized":true}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the builtin id must be dropped from the migrated plain scope"
+            );
+        });
+    }
+
+    /// Live read path self-heal: a builtin id that already landed in
+    /// `disabled_bundles.json` (legacy bug window / hand edit) is dropped at
+    /// read/normalize time, so the frontend's next full-list write no longer
+    /// trips `reject_builtin_ids` — the poisoned entry cannot brick every
+    /// toggle of the scope.
+    #[test]
+    fn live_read_path_drops_poisoned_builtin_ids() {
+        with_temp_home("pinvou3-scope", || {
+            let path = paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["session-reader","weather"]},"hidden_scopes":{"plain":["session-reader","pptx"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the poisoned builtin id must be dropped from the disabled set"
+            );
+            assert_eq!(
+                load_hidden_bundles_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()],
+                "the poisoned builtin id must be dropped from the hidden set"
+            );
+            // Recovery: the cleaned list the frontend now holds passes the
+            // builtin guard on the next full-list write.
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string(), "pptx".to_string()]
+            );
+        });
+    }
+
     /// 项目级 skills 开关往返。
     #[test]
     fn project_skills_roundtrip() {
@@ -2956,11 +3160,98 @@ mod tests {
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::write(dir.join("SKILL.md"), "# leak").unwrap();
             }
-            let builtin: Vec<String> = builtin_cli_bundle_ids().map(str::to_string).collect();
+            // Round-33 merge note (#585): builtins are feature-switch-governed —
+            // the computed default drops ids that normalize to a builtin, so the
+            // pin is twofold: no staging-residue suffix-owner junk joins the
+            // expansion, and no builtin id does either.
+            let default_ids = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                !default_ids
+                    .iter()
+                    .any(|id| id.starts_with("stage-pack.") || id == "leak"),
+                "staging residue must not join the expansion (no suffix-owner junk, no leak owner): {default_ids:?}"
+            );
+            assert!(
+                !default_ids.iter().any(|id| {
+                    crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+                }),
+                "builtins are feature-switch-governed, never package-governed: {default_ids:?}"
+            );
+        });
+    }
+
+    /// Round-9 review: the disable writer itself must reject builtin ids, not
+    /// only the `apply_disabled_connectors_for` layer above it — the function
+    /// is pub-re-exported, and a future direct caller would otherwise
+    /// silently seed a builtin into an initialized scope. Same layering as
+    /// the hide writer (`save_hidden_bundles_for`), which already guards
+    /// inside the persistence function.
+    #[test]
+    fn save_disabled_bundles_for_rejects_builtin_ids_directly() {
+        with_temp_home("pinvou3-scope-disable-guard", || {
+            crate::platform::paths::ensure_dirs().unwrap();
+            for builtin_id in ["session-reader", "Session-Reader"] {
+                let error =
+                    save_disabled_bundles_for(ConnectorScope::Plain, &[builtin_id.to_string()])
+                        .expect_err("a direct disable write must refuse builtin ids");
+                assert!(
+                    error.contains(builtin_id),
+                    "the refusal must name the rejected id: {error}"
+                );
+            }
+            // A clean write still initializes the scope normally.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
+        });
+    }
+
+    /// Round-6 B1: the boot seed installs the session-reader builtin into
+    /// installed.json before the first scope read. The DenyAll computed
+    /// default must drop ids that normalize to builtins — a default
+    /// containing the seed would make the echoed full-set write that
+    /// initializes the scope fail `reject_builtin_ids`, so every composer
+    /// toggle on an uninitialized DenyAll profile errored forever with no
+    /// escape (uninstall is guarded, the builtin page is read-only).
+    #[test]
+    fn denyall_computed_default_excludes_builtins_and_roundtrips_a_toggle() {
+        with_temp_home("pinvou3-scope-denyall-builtin", || {
+            crate::platform::paths::ensure_dirs().unwrap();
+            // The exact startup order that produced the deadlock: seed first,
+            // then read an uninitialized scope.
+            crate::features::marketplace::MarketplaceManager::new()
+                .ensure_default_installed_mcp_tools();
+            let default_set = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                !default_set.iter().any(|id| {
+                    crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+                }),
+                "computed default must not contain builtin ids: {default_set:?}"
+            );
+            assert!(
+                !default_set.contains(&"session-reader".to_string()),
+                "the boot-seeded builtin must not appear in the default: {default_set:?}"
+            );
+
+            // Round-trip the composer shape: the UI reads the full effective
+            // set and echoes it back on any toggle — that write passes the
+            // builtin guard and initializes the scope (previously it was the
+            // very write that was rejected).
+            let echoed = load_disabled_bundles_for(ConnectorScope::Code);
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime
+                .block_on(crate::features::marketplace::apply_disabled_connectors_for(
+                    ConnectorScope::Code,
+                    echoed,
+                ))
+                .expect("echoing the computed default back must pass the builtin guard");
+            // Initialized: the persisted list wins from here on, and a later
+            // read is stable (idempotent toggle behavior).
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                builtin,
-                "staging residue must not join the expansion: no suffix-owner junk, no leak owner"
+                load_disabled_bundles_for(ConnectorScope::Code),
             );
         });
     }

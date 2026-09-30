@@ -38,6 +38,9 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiProjects',
     'uiArtifacts',
     'uiToolDetails',
+    'uiBuiltinPlugins',
+    // uiBuiltinFeatures lands with #586's switch UI (its only key was an
+    // orphan before that).
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
