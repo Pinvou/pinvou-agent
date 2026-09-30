@@ -999,7 +999,10 @@ impl SessionStore {
     }
 }
 
-#[cfg(test)]
+// The module's only test is the unix-only EACCES pin (round-24 review M1):
+// gating the module itself keeps non-unix test builds free of an unused
+// `use super::SessionStore`, which the deny table rejects.
+#[cfg(all(test, unix))]
 mod tests {
     use super::SessionStore;
 
