@@ -252,29 +252,37 @@ async fn snapshot_for_model_config(
         None => None,
     };
 
-    let (served_model, mut max_model_len) = match models_resp {
+    let (served_model, mut max_model_len, listed_entries) = match models_resp {
         Some(r) => match r.json::<serde_json::Value>().await.ok() {
             Some(v) => {
-                parse_models_response(v, configured_model.as_deref()).unwrap_or((None, None))
+                // Roster size for the native follow-up's attribution gate
+                // (a configured=None snapshot may only follow a
+                // single-model listing — see
+                // `local_native_display_window`).
+                let listed = v.get("data").and_then(|d| d.as_array()).map(|a| a.len());
+                let (served, len) =
+                    parse_models_response(v, configured_model.as_deref()).unwrap_or((None, None));
+                (served, len, listed)
             }
-            None => (None, None),
+            None => (None, None, None),
         },
-        None => (None, None),
+        None => (None, None, None),
     };
-    // Ollama's OpenAI-compatible `/v1/models` never carries a window fact.
-    // For a local target whose listed window is missing, follow up on the
-    // native API (`ollama_display_window`: an Ollama-shaped `/api/ps` gates
-    // the `/api/show` follow-up, so non-Ollama locals pay one extra small
-    // GET per poll). This keeps the monitor denominator on the same
-    // deployment truth the engine route limits use
+    // Ollama's and LM Studio's OpenAI-compatible `/v1/models` never carry a
+    // window fact. For a local target whose listed window is missing, follow
+    // up on the native API (`local_native_display_window`: kind- and
+    // locality-gated, `/api/ps` fresh per poll, `/api/show` 60s-cached in
+    // core, LM Studio `/api/v0/models` per poll). This keeps the monitor
+    // denominator on the same deployment truth the engine route limits use
     // (`core::model_context::resolve_context_window` single scale) instead
     // of the preset fallback diverging from the engine's probed value.
     if target_kind == "local" && max_model_len.is_none() {
-        max_model_len = ollama_display_window(
+        max_model_len = local_native_display_window(
             upstream,
             api_key,
             configured_model.as_deref(),
             served_model.as_deref(),
+            listed_entries,
         )
         .await;
     }
@@ -412,20 +420,24 @@ fn parse_models_response(
     Some((Some(entry.id.clone()), window))
 }
 
-/// Window-attribution gate for the Ollama display follow-up: the queried
-/// entry must be the configured model's own (same matching scale as
-/// `parse_models_response`: exact, then ASCII case-insensitive); with no
-/// configured name the served entry is the display subject. A partial
-/// roster (configured name absent from the list) must not borrow the first
-/// entry's window — the same "a window is never borrowed from another
-/// model" principle as `parse_models_response` /
+/// Window-attribution gate for the native display follow-up: the queried
+/// entry must belong to the configured model. With a configured name the
+/// served entry must be that model (trimmed, ASCII case-insensitive — the
+/// same fold as `parse_models_response`; the lookups use `served`, the
+/// server-canonical id, so this adopts the model's own window, never
+/// another entry's); without one (local_vllm snapshots carry no configured
+/// name) the served entry is the display subject — see
+/// `local_native_display_window` for the single-model roster restriction
+/// on that arm. A partial roster (configured name absent from the list)
+/// must not borrow the first entry's window — the same "a window is never
+/// borrowed from another model" principle as `parse_models_response` /
 /// `resolve_served_model_from_entries`. Note the engine route's adoption
 /// gate (`adopts_probed_facts`) matches exactly instead of
 /// case-insensitively: a case-mismatched route is already a Mismatch
 /// display state, and there the display may adopt a window the engine
 /// route keeps its fallback for — accepted, since loosening the engine
 /// gate would change pre-existing vLLM adoption semantics.
-fn ollama_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
+fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
     let Some(served) = served else {
         return false;
     };
@@ -435,71 +447,71 @@ fn ollama_display_window_adoptable(configured: Option<&str>, served: Option<&str
     }
 }
 
-/// `/api/show` lookup cache (60s TTL, keyed by upstream + model): the
-/// monitor snapshot polls at 1 Hz and `/api/show` re-reads GGUF metadata
-/// per call, so only the fresh `/api/ps` effective value is fetched every
-/// poll (one small local GET; it follows load state and server config).
-/// Hits and misses are cached alike for the TTL: a `num_ctx`-less show
-/// response (the default for a downloaded-but-never-loaded model) is as
-/// stable as a declaration, and without negative caching the 1 Hz poll
-/// would re-read GGUF metadata every second until the first load. A
-/// declaration added (or a transport failure recovered) mid-session is
-/// picked up within 60 s.
-static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<
-        std::collections::HashMap<(String, String), (std::time::Instant, Option<u32>)>,
-    >,
-> = std::sync::OnceLock::new();
-
-const OLLAMA_SHOW_CACHE_TTL: Duration = Duration::from_secs(60);
-
-async fn cached_ollama_show_context(
-    upstream: &str,
-    api_key: Option<&str>,
-    name: &str,
-) -> Option<u32> {
-    let cache = OLLAMA_SHOW_CACHE.get_or_init(Default::default);
-    {
-        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, ctx)) = guard.get(&(upstream.to_string(), name.to_string())) {
-            if at.elapsed() < OLLAMA_SHOW_CACHE_TTL {
-                return *ctx;
-            }
-        }
-    }
-    let ctx = crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await;
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
-        (upstream.to_string(), name.to_string()),
-        (std::time::Instant::now(), ctx),
-    );
-    ctx
-}
-
 /// Native window fact for a local target whose `/v1/models` listing carried
-/// none (Ollama is the local engine that never lists one): `/api/ps`
-/// effective context first (fresh; the deployment truth for loaded models),
-/// then `/api/show` (Modelfile `num_ctx` declaration, 60s cached, misses
-/// included — a show response without one yields no fact: the GGUF trained
-/// cap is a capability ceiling, not the served window). A non-Ollama-shaped
-/// `/api/ps` (404/other servers) ends the
-/// lookup, so non-Ollama locals pay one extra small GET per poll. The
-/// queried entry is gated by `ollama_display_window_adoptable` — a window
-/// is never borrowed across model names.
-async fn ollama_display_window(
+/// none. Gates, in order:
+/// 1. attribution (`native_display_window_adoptable`) — a window is never
+///    borrowed across model names;
+/// 2. locality — the same `base_url_uses_local_or_private` classification
+///    the engine route uses, so a public base_url saved under a local
+///    preset gets no native probes on either path;
+/// 3. roster — a configured=None snapshot attributes the listing to its
+///    first entry, so only an unambiguous single-model roster may follow it
+///    (a multi-model Ollama behind a local_vllm preset would otherwise
+///    display the first-downloaded model's window);
+/// 4. kind — an already-cached positive classification decides the native
+///    API: Ollama → `/api/ps` effective context (fresh; the deployment
+///    truth for loaded models) → `/api/show` (`num_ctx` declaration, 60s
+///    cached in core and shared with the engine path; a show response
+///    without one yields no fact — the GGUF trained cap is a capability
+///    ceiling, not the served window), LM Studio → `/api/v0/models` served
+///    window. An uncached kind (never probed — e.g. a monitor-only target
+///    the engine never classified) still tries the Ollama-shaped `/api/ps`
+///    probe, and a non-Ollama shape ends the lookup; a known other kind
+///    (vLLM / llama.cpp / …, whose listing carries the window) skips the
+///    fetch entirely — no per-poll doomed `/api/ps` for servers the engine
+///    already identified.
+async fn local_native_display_window(
     upstream: &str,
     api_key: Option<&str>,
     configured: Option<&str>,
     served: Option<&str>,
+    listed_entries: Option<usize>,
 ) -> Option<u32> {
-    if !ollama_display_window_adoptable(configured, served) {
+    use crate::core::model_endpoint::LocalServerKind;
+    if !native_display_window_adoptable(configured, served) {
+        return None;
+    }
+    if !crate::core::model_endpoint::base_url_uses_local_or_private(upstream) {
+        return None;
+    }
+    if configured
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .is_none()
+        && listed_entries != Some(1)
+    {
         return None;
     }
     let name = served?;
-    let contexts = crate::core::model_endpoint::fetch_ollama_contexts(upstream, api_key).await?;
-    if let Some(ctx) = contexts.get(name) {
-        return Some(*ctx);
+    match crate::core::model_endpoint::cached_local_server_kind(upstream) {
+        Some(LocalServerKind::LmStudio) => {
+            crate::core::model_endpoint::fetch_lmstudio_served_context(upstream, api_key, name)
+                .await
+        }
+        // Ollama, or never classified (monitor-only target): try the
+        // Ollama-shaped ps probe.
+        None | Some(LocalServerKind::Ollama) => {
+            let contexts =
+                crate::core::model_endpoint::fetch_ollama_contexts(upstream, api_key).await?;
+            if let Some(ctx) = contexts.get(name) {
+                return Some(*ctx);
+            }
+            crate::core::model_endpoint::cached_ollama_show_context(upstream, api_key, name).await
+        }
+        // A known other kind (vLLM / llama.cpp / …): its listing carries the
+        // window; a native follow-up would be a doomed per-poll request.
+        Some(_) => None,
     }
-    cached_ollama_show_context(upstream, api_key, name).await
 }
 
 /// Display-side context window (the monitor card + the progress-bar denominator
@@ -889,26 +901,26 @@ mod tests {
     /// served entry is the display subject; a partial roster never borrows
     /// the first entry's window; no served name → nothing to query.
     #[test]
-    fn ollama_display_window_gate_never_borrows_across_names() {
-        assert!(ollama_display_window_adoptable(
+    fn native_display_window_gate_never_borrows_across_names() {
+        assert!(native_display_window_adoptable(
             Some("ollama-model"),
             Some("ollama-model")
         ));
-        assert!(ollama_display_window_adoptable(
+        assert!(native_display_window_adoptable(
             Some("Ollama-Model"),
             Some("ollama-model")
         ));
-        assert!(ollama_display_window_adoptable(
+        assert!(native_display_window_adoptable(
             Some("  ollama-model\t"),
             Some("ollama-model")
         ));
-        assert!(ollama_display_window_adoptable(None, Some("served")));
+        assert!(native_display_window_adoptable(None, Some("served")));
         assert!(
-            !ollama_display_window_adoptable(Some("configured"), Some("first-entry")),
+            !native_display_window_adoptable(Some("configured"), Some("first-entry")),
             "a partial roster must not borrow the first entry's window"
         );
-        assert!(!ollama_display_window_adoptable(Some("m"), None));
-        assert!(!ollama_display_window_adoptable(None, None));
+        assert!(!native_display_window_adoptable(Some("m"), None));
+        assert!(!native_display_window_adoptable(None, None));
     }
 
     /// The display follow-up on a local Ollama endpoint: /api/ps effective
@@ -919,7 +931,7 @@ mod tests {
     /// native follow-up at all. Each segment uses its own model name so the
     /// shared static cache cannot collide even if the OS reuses a mock port.
     #[tokio::test]
-    async fn ollama_display_window_ps_then_show_then_stop() {
+    async fn local_native_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;
         // Loaded: ps wins, show unqueried.
         let mock = models_mock::spawn(&[
@@ -931,7 +943,14 @@ mod tests {
             ("/api/show", 200, r#"{"model_info":{}}"#.into()),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("loaded-a"), Some("loaded-a")).await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("loaded-a"),
+                Some("loaded-a"),
+                None
+            )
+            .await,
             Some(131_072)
         );
         assert_eq!(mock.hits_for("/api/show"), 0);
@@ -946,8 +965,14 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("declared-b"), Some("declared-b"))
-                .await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("declared-b"),
+                Some("declared-b"),
+                None
+            )
+            .await,
             Some(32_768)
         );
         assert_eq!(
@@ -956,8 +981,14 @@ mod tests {
             "first poll pays one /api/show"
         );
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("declared-b"), Some("declared-b"))
-                .await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("declared-b"),
+                Some("declared-b"),
+                None
+            )
+            .await,
             Some(32_768)
         );
         assert_eq!(
@@ -979,8 +1010,14 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("cap-only-c"), Some("cap-only-c"))
-                .await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("cap-only-c"),
+                Some("cap-only-c"),
+                None
+            )
+            .await,
             None,
             "the trained cap must not become the display window"
         );
@@ -990,8 +1027,14 @@ mod tests {
             "first poll pays one /api/show for the miss"
         );
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("cap-only-c"), Some("cap-only-c"))
-                .await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("cap-only-c"),
+                Some("cap-only-c"),
+                None
+            )
+            .await,
             None
         );
         assert_eq!(
@@ -1002,7 +1045,14 @@ mod tests {
         // Non-Ollama local (ps 404): lookup stops, no show request.
         let mock = models_mock::spawn(&[("/api/ps", 404, "{}".into())]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("stopped-d"), Some("stopped-d")).await,
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("stopped-d"),
+                Some("stopped-d"),
+                None
+            )
+            .await,
             None
         );
         assert_eq!(mock.hits_for("/api/show"), 0);
@@ -1013,16 +1063,97 @@ mod tests {
             r#"{"models":[{"name":"roster-e","context_length":8}]}"#.into(),
         )]);
         assert_eq!(
-            ollama_display_window(
+            local_native_display_window(
                 &mock.base_url,
                 None,
                 Some("configured"),
-                Some("first-entry")
+                Some("first-entry"),
+                None
             )
             .await,
             None
         );
         assert_eq!(mock.hits_for("/api/ps"), 0);
+    }
+
+    /// New native-display gates (round-3 review): a public base_url saved
+    /// under a local preset gets no native probes (same locality
+    /// classification as the engine route); a configured=None snapshot may
+    /// only follow a single-model roster (multi-model rosters would
+    /// attribute the first entry's window to an unrelated pick); a known
+    /// non-Ollama/LM Studio kind (positive kind cache) skips the native
+    /// fetch entirely.
+    #[tokio::test]
+    async fn local_native_display_window_gates_locality_roster_and_kind() {
+        use crate::core::model_endpoint::models_mock;
+        // Public base_url under a local preset (target_kind forced "local"
+        // by the caller): the locality gate ends the lookup before any
+        // request — deliberately no mock, nothing may be contacted.
+        let public_host = "http://example.com:11434";
+        assert_eq!(
+            local_native_display_window(public_host, None, Some("a"), Some("a"), Some(1)).await,
+            None
+        );
+        // configured=None with a multi-model roster: first-entry attribution
+        // would borrow an unrelated model's window — declined before any
+        // request.
+        let mock = models_mock::spawn(&[(
+            "/api/ps",
+            200,
+            r#"{"models":[{"name":"first","context_length":8}]}"#.into(),
+        )]);
+        assert_eq!(
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                None,
+                Some("first"),
+                Some(3) // three listed entries → ambiguous subject
+            )
+            .await,
+            None
+        );
+        assert_eq!(mock.hits_for("/api/ps"), 0);
+        // configured=None with a single-model roster: unambiguous — adopt.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"only","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            local_native_display_window(&mock.base_url, None, None, Some("only"), Some(1)).await,
+            Some(131_072)
+        );
+        // A cached non-Ollama/LM Studio kind (vLLM) skips the native fetch:
+        // pre-seed the kind cache by probing the mock as vLLM, then assert
+        // the display pays no /api/ps.
+        let mock = models_mock::spawn(&[
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"m","owned_by":"vllm","max_model_len":4096}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"m","context_length":8}]}"#.into(),
+            ),
+        ]);
+        crate::core::model_endpoint::probe_local_server_kind(&mock.base_url, None).await;
+        assert_eq!(
+            local_native_display_window(&mock.base_url, None, Some("m"), Some("m"), Some(1)).await,
+            None,
+            "a known vLLM kind takes its window from the listing, not a native follow-up"
+        );
+        assert_eq!(mock.hits_for("/api/ps"), 0);
+        // No clear_probe_kind_cache here: monitor tests run without the
+        // ENV_LOCK serializer engine tests use, and wiping the shared kind
+        // cache could race a concurrent finalize test. The one cached entry
+        // for this now-dead mock port is TTL-bounded and keyed by a URL no
+        // other test uses.
     }
 
     /// A user-declared window (cloud; probe value 131072 from a gateway list):
@@ -1243,6 +1374,11 @@ mod tests {
             "user-picked",
             "first-downloaded"
         ));
+        // Case-differing names are NOT an exact match: the gate must stay
+        // case-sensitive even though the display matching folds ASCII case
+        // (loosening this silently changes which routes adopt probed /
+        // native windows — pin the divergence).
+        assert!(!adopts_probed_facts(false, "user-picked", "User-Picked"));
     }
 
     #[test]

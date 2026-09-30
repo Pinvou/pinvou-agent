@@ -126,7 +126,7 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
 
 /// Ollama `/api/ps` 返回的已加载模型名集合。解析失败按空集处理
 /// （宁可全部标未加载，也不错标已加载）。
-fn parse_ollama_ps_names(v: serde_json::Value) -> std::collections::HashSet<String> {
+fn parse_ollama_ps_names(v: &serde_json::Value) -> std::collections::HashSet<String> {
     v.get("models")
         .and_then(|m| m.as_array())
         .map(|models| {
@@ -149,9 +149,7 @@ fn parse_ollama_ps_names(v: serde_json::Value) -> std::collections::HashSet<Stri
 /// 叠加后的最终生效值，即部署真相本身；模型未加载时该接口不包含它。
 /// 同一条目的 `name` 与 `model` 两个键都登记（显式 digest 拉取时二者不同）。
 /// 非正值 / 越界值按未声明处理（与 `parse_positive_u32` 同口径）。
-pub(crate) fn parse_ollama_ps_contexts(
-    v: serde_json::Value,
-) -> std::collections::HashMap<String, u32> {
+fn parse_ollama_ps_contexts(v: &serde_json::Value) -> std::collections::HashMap<String, u32> {
     let mut out = std::collections::HashMap::new();
     if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
         for item in models {
@@ -180,19 +178,20 @@ pub(crate) fn parse_ollama_ps_contexts(
 /// （低报只是早压缩，高报会让上游截断——保守方向必须拒绝），因此无声明时
 /// 返回 None，调用方保留各自的保守兜底；窗口事实在引擎生成时一次性采纳，
 /// 模型首次加载后的纠正依赖下次生成（`/api/ps` 生效值）。
+///
+/// 第一条 `num_ctx` 行即定论（ollama 由 map 生成 `parameters`，一个键一行；
+/// 后续行不可能推翻它）：值合法返回 `Some`，畸形（非正 / 越界 / 非数字）
+/// 按"声明存在但不可证明"返回 None——后续合法行不追认。
 fn parse_ollama_show_context(v: serde_json::Value) -> Option<u32> {
     let params = v.get("parameters").and_then(|v| v.as_str())?;
     for line in params.lines() {
         let mut parts = line.split_whitespace();
         if parts.next() == Some("num_ctx") {
-            if let Some(ctx) = parts
+            return parts
                 .next()
                 .and_then(|n| n.parse::<u64>().ok())
                 .and_then(|n| u32::try_from(n).ok())
-                .filter(|n| *n > 0)
-            {
-                return Some(ctx);
-            }
+                .filter(|n| *n > 0);
         }
     }
     None
@@ -337,10 +336,7 @@ pub async fn probe_ollama_models(
             .and_then(|r| r.error_for_status())
         {
             Ok(resp) => match resp.json::<serde_json::Value>().await {
-                Ok(v) => (
-                    parse_ollama_ps_names(v.clone()),
-                    parse_ollama_ps_contexts(v),
-                ),
+                Ok(v) => (parse_ollama_ps_names(&v), parse_ollama_ps_contexts(&v)),
                 Err(_) => Default::default(),
             },
             Err(_) => Default::default(),
@@ -388,35 +384,113 @@ pub async fn fetch_ollama_contexts(
     }
     let v = resp.json::<serde_json::Value>().await.ok()?;
     let ollama_shaped = v.get("models").and_then(|m| m.as_array()).is_some();
-    ollama_shaped.then(|| parse_ollama_ps_contexts(v))
+    ollama_shaped.then(|| parse_ollama_ps_contexts(&v))
 }
 
-/// Ollama `/api/show` 单模型上下文事实（只读元数据查询，不触发模型加载）：
-/// 仅 Modelfile `num_ctx` 声明（见 [`parse_ollama_show_context`] 的口径与
-/// 局限——无声明返回 None，不采信 GGUF 训练上限）。
-pub async fn fetch_ollama_show_context(
+/// `/api/show` 的探测结果三态：`Declared` —— `parameters` 带可采纳的
+/// `num_ctx`；`NoDeclaration` —— 2xx 且 JSON 合形但无 `num_ctx`（"未声明"
+/// 是与声明一样稳定的事实，可负缓存）；`Unreachable` —— 传输失败 / 非成功
+/// 状态 / 响应不合形（瞬态，不缓存，下轮重询）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaShowProbe {
+    Declared(u32),
+    NoDeclaration,
+    Unreachable,
+}
+
+/// Ollama `/api/show` 单模型窗口探测（只读元数据查询，不触发模型加载）。
+/// 只读事实口径见 [`parse_ollama_show_context`]：仅 Modelfile `num_ctx`
+/// 声明，不采信 GGUF 训练上限。
+pub async fn probe_ollama_show_context(
     base_url: &str,
     bearer: Option<&str>,
     model: &str,
+) -> OllamaShowProbe {
+    let probe = async {
+        let host = strip_v1_suffix(base_url)?;
+        let client = shared_probe_client()?;
+        let resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
+            .json(&serde_json::json!({ "model": model }))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v = resp.json::<serde_json::Value>().await.ok()?;
+        Some(parse_ollama_show_context(v))
+    };
+    match probe.await {
+        Some(Some(ctx)) => OllamaShowProbe::Declared(ctx),
+        Some(None) => OllamaShowProbe::NoDeclaration,
+        None => OllamaShowProbe::Unreachable,
+    }
+}
+
+/// `/api/show` 查询缓存（60s TTL，按 upstream + 模型名）：`/api/show` 每次调用
+/// 都重读 GGUF 元数据，monitor 1 Hz 轮询与引擎 spawn / 单发旁路调用共享本缓存，
+/// 只有 `/api/ps` 生效值每次现查（一个小本地 GET，跟随加载状态与服务端配置）。
+/// 命中与未命中 alike 缓存同一 TTL：无 `num_ctx` 的 show 应答（已下载未加载
+/// 模型的默认形态）与声明一样稳定，不缓存则每秒重读 GGUF 直到首次加载。
+/// 只缓存合形应答（[`OllamaShowProbe::Declared`] / [`OllamaShowProbe::
+/// NoDeclaration`]）；[`OllamaShowProbe::Unreachable`] 是瞬态，不缓存——
+/// "服务端正忙"不得在 TTL 内被钉成"无窗口"。声明中途新增 60s 内可见。
+static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<(String, String), (std::time::Instant, Option<u32>)>,
+    >,
+> = std::sync::OnceLock::new();
+
+const OLLAMA_SHOW_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// 缓存化的 `/api/show` 查询：瞬态失败不缓存（也不计入 TTL 钉死），
+/// 合形的命中 / 未命中共享 60s TTL。
+pub(crate) async fn cached_ollama_show_context(
+    upstream: &str,
+    api_key: Option<&str>,
+    name: &str,
 ) -> Option<u32> {
-    let host = strip_v1_suffix(base_url)?;
-    let client = shared_probe_client()?;
-    let resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
-        .json(&serde_json::json!({ "model": model }))
-        .send()
-        .await
-        .ok()?;
-    let v = resp
-        .error_for_status()
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
-    parse_ollama_show_context(v)
+    let cache = OLLAMA_SHOW_CACHE.get_or_init(Default::default);
+    {
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((at, ctx)) = guard.get(&(upstream.to_string(), name.to_string())) {
+            if at.elapsed() < OLLAMA_SHOW_CACHE_TTL {
+                return *ctx;
+            }
+        }
+    }
+    let ctx = match probe_ollama_show_context(upstream, api_key, name).await {
+        // 合形应答（命中 / 未命中 alike）缓存 60s；瞬态失败不缓存。
+        probe @ (OllamaShowProbe::Declared(_) | OllamaShowProbe::NoDeclaration) => {
+            let ctx = match probe {
+                OllamaShowProbe::Declared(ctx) => Some(ctx),
+                _ => None,
+            };
+            cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
+                (upstream.to_string(), name.to_string()),
+                (std::time::Instant::now(), ctx),
+            );
+            ctx
+        }
+        OllamaShowProbe::Unreachable => None,
+    };
+    ctx
+}
+
+/// 仅测试用：清空 show 缓存，避免 TTL 命中污染 mock 调用计数 / 跨用例状态
+/// （与 [`clear_probe_kind_cache`] 同位）。
+#[cfg(test)]
+pub(crate) fn clear_ollama_show_cache() {
+    if let Some(cache) = OLLAMA_SHOW_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
 }
 
 /// 单模型上下文事实，按可信度排序：`/api/ps` 的生效值（模型已加载时即部署
-/// 真相）→ `/api/show` 的 Modelfile `num_ctx` 显式声明。全部失败返回 None，
+/// 真相）→ `/api/show` 的 Modelfile `num_ctx` 显式声明（60s 缓存，monitor
+/// 与引擎共享；GGUF 重读是缓存的全部理由）。全部失败返回 None，
 /// 调用方保留既有兜底。Ollama 的 OpenAI 兼容 `/v1/models` 从不
 /// 携带窗口事实，这是唯一的事实来源；缺失时 foundation 对 unknown ollama
 /// 模型按 8192 兜底窗口推导预算（压缩阈值打到 4096 地板、压缩后输入预算
@@ -432,7 +506,39 @@ pub async fn fetch_ollama_model_context(
     {
         return Some(ctx);
     }
-    fetch_ollama_show_context(base_url, bearer, model).await
+    cached_ollama_show_context(base_url, bearer, model).await
+}
+
+/// LM Studio 已加载条目的 served window（`/api/v0/models` 的
+/// `loaded_context_length`，lmstudio-bug-tracker #726：与能力上限
+/// `max_context_length` 在缩窗加载时真实分歧——131072 vs 12918）。未加载 /
+/// 列表中无此名（精确匹配）返回 None；能力上限拒绝口径见
+/// [`parse_lmstudio_v0_models`]。
+pub async fn fetch_lmstudio_served_context(
+    base_url: &str,
+    bearer: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = shared_probe_client()?;
+    let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .ok()?;
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    parse_lmstudio_v0_models(&v)?
+        .into_iter()
+        .find(|entry| entry.id == model)?
+        .max_model_len
+}
+
+/// 已缓存的本地服务判别（只读窥视，不发请求）：TTL 内的正向判别结果；
+/// 从未探测过（或上次探测失败——Generic 不入长缓存）返回 None。monitor
+/// 的原生窗口展示用它决定是否值得跟进：引擎已判别过的非 Ollama / 非
+/// LM Studio 端点直接跳过，免掉每轮一次注定 404 的 `/api/ps`。
+pub(crate) fn cached_local_server_kind(base_url: &str) -> Option<LocalServerKind> {
+    probe_kind_cache_get(base_url.trim_end_matches('/'))
 }
 
 /// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
@@ -455,6 +561,57 @@ pub fn is_anthropic_endpoint(base_url: &str) -> bool {
     reqwest::Url::parse(base_url.trim())
         .ok()
         .is_some_and(|url| is_anthropic_api_url(&url))
+}
+
+/// Whether to treat this base_url as a "local inference service": loopback
+/// (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges (10/8, 172.16/12,
+/// 192.168/16), or Docker-specific hostnames (host.docker.internal, etc.).
+/// These endpoints usually run on the user's own machine/intranet; probing
+/// them is cheap so real thinking tiers can be offered (defaulting to the
+/// lowest thinking tier — see `request_reasoning_effort`); public
+/// OpenAI-compatible endpoints are excluded (keep the default high).
+/// Difference from `base_url_uses_loopback`: the latter is only for the
+/// "allow unauthenticated" decision (api_key required), while this decision
+/// covers probing and thinking control (LAN vLLM/Ollama also defaults to
+/// the lowest thinking tier). Lives in core so the engine bridge, the pool,
+/// and the monitor's native-window display gate share one classification
+/// (a public base_url saved under a local preset must not receive native
+/// probes on either path).
+pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            let host = host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.');
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            // Docker Desktop host alias: the common way to reach the host from
+            // inside a container.
+            if host.eq_ignore_ascii_case("host.docker.internal")
+                || host.eq_ignore_ascii_case("host.lima.internal")
+                || host.eq_ignore_ascii_case("host.orbstack.internal")
+                || host.ends_with(".docker.internal")
+            {
+                return true;
+            }
+            let Ok(address) = host.parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            if address.is_loopback() {
+                return true;
+            }
+            // RFC1918 private ranges (10/8, 172.16/12, 192.168/16): std's
+            // `Ipv4Addr::is_private` has exactly equivalent semantics, so
+            // reuse it directly.
+            match address {
+                std::net::IpAddr::V4(v4) => v4.is_private(),
+                std::net::IpAddr::V6(_) => false,
+            }
+        })
 }
 
 /// OpenCode gateway endpoint detection (opencode.ai/zen/...).
@@ -1652,12 +1809,12 @@ mod tests {
             r#"{"models":[{"name":"qwen3:8b","model":"qwen3:8b","size_vram":5000000000},{"model":"deepseek-r1:14b"}]}"#,
         )
         .unwrap();
-        let names = parse_ollama_ps_names(json);
+        let names = parse_ollama_ps_names(&json);
         assert!(names.contains("qwen3:8b"));
         assert!(names.contains("deepseek-r1:14b")); // 缺 name 时回退 model 字段
         assert!(!names.contains("llama3.2:3b"));
         // 坏形状按空集（宁全标未加载，不错标已加载）
-        assert!(parse_ollama_ps_names(serde_json::json!({})).is_empty());
+        assert!(parse_ollama_ps_names(&serde_json::json!({})).is_empty());
     }
 
     #[test]
@@ -1675,7 +1832,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let contexts = parse_ollama_ps_contexts(json);
+        let contexts = parse_ollama_ps_contexts(&json);
         assert_eq!(contexts.get("qwen3:32b"), Some(&131_072));
         // Both name and model keys are registered when they differ.
         assert_eq!(contexts.get("mproj:7b"), Some(&8192));
@@ -1685,7 +1842,7 @@ mod tests {
         assert!(!contexts.contains_key("huge"));
         assert!(!contexts.contains_key("no-field"));
         // Bad shape → empty map (callers fall through to /api/show).
-        assert!(parse_ollama_ps_contexts(serde_json::json!({})).is_empty());
+        assert!(parse_ollama_ps_contexts(&serde_json::json!({})).is_empty());
     }
 
     #[test]
@@ -1718,13 +1875,22 @@ mod tests {
         .unwrap();
         assert_eq!(parse_ollama_show_context(ambiguous), None);
         // A malformed num_ctx declaration is not a provable runtime config —
-        // undeclared, not "fall back to the trained cap".
+        // undeclared, not "fall back to the trained cap". The FIRST num_ctx
+        // line decides (ollama generates `parameters` from a map, one line
+        // per key): a later valid line does not rehabilitate it, and an
+        // out-of-range one is not traded down for a later in-range one.
         let bad_decl: serde_json::Value = serde_json::from_str(
             r#"{"parameters":"num_ctx not-a-number",
                 "model_info":{"qwen3.context_length":40960}}"#,
         )
         .unwrap();
         assert_eq!(parse_ollama_show_context(bad_decl), None);
+        let bad_then_good: serde_json::Value =
+            serde_json::from_str(r#"{"parameters":"num_ctx not-a-number\nnum_ctx 4096"}"#).unwrap();
+        assert_eq!(parse_ollama_show_context(bad_then_good), None);
+        let overflow_then_good: serde_json::Value =
+            serde_json::from_str(r#"{"parameters":"num_ctx 99999999999\nnum_ctx 4096"}"#).unwrap();
+        assert_eq!(parse_ollama_show_context(overflow_then_good), None);
         // Absent / invalid shapes → None.
         assert_eq!(parse_ollama_show_context(serde_json::json!({})), None);
         assert_eq!(
@@ -1821,6 +1987,81 @@ mod tests {
         assert_eq!(window_of("jit-only"), None);
     }
 
+    /// The `/api/show` cache only caches well-formed responses: transport
+    /// failures / non-success statuses are transient and must not pin "no
+    /// window" into the 60s TTL (each call re-tries), while a well-formed
+    /// miss is as stable as a declaration and caches for the TTL. Fresh
+    /// names + fresh ports per segment keep the shared static cache from
+    /// colliding with parallel tests.
+    #[tokio::test]
+    async fn cached_ollama_show_context_caches_only_well_formed() {
+        let _ = clear_ollama_show_cache();
+        // Server error → Unreachable → not cached.
+        let mock = models_mock::spawn(&[("/api/show", 500, "{}".into())]);
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "unreachable-x").await,
+            None
+        );
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "unreachable-x").await,
+            None
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            2,
+            "an unreachable show must not be cached — every call re-tries"
+        );
+        // Well-formed miss → cached for the TTL (one hit across two calls).
+        let mock = models_mock::spawn(&[("/api/show", 200, r#"{"model_info":{}}"#.into())]);
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "well-formed-miss-y").await,
+            None
+        );
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "well-formed-miss-y").await,
+            None
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "well-formed misses cache for the TTL"
+        );
+        let _ = clear_ollama_show_cache();
+    }
+
+    /// LM Studio served window (the `loaded_context_length` of the loaded
+    /// entry, exact-id match): the real #726 divergence shape adopts the
+    /// served 12918, not the 131072 capability cap; a non-loaded entry does
+    /// not lend its `loaded_context_length`, and an absent id is no fact.
+    #[tokio::test]
+    async fn fetch_lmstudio_served_context_adopts_loaded_entry() {
+        let mock = models_mock::spawn(&[(
+            "/api/v0/models",
+            200,
+            r#"{"data":[
+                {"id":"loaded-model","state":"loaded","max_context_length":131072,"loaded_context_length":12918},
+                {"id":"stale","state":"not-loaded","max_context_length":131072,"loaded_context_length":40960},
+                {"id":"plain","state":"loaded"}
+            ]}"#
+                .into(),
+        )]);
+        assert_eq!(
+            fetch_lmstudio_served_context(&mock.base_url, None, "loaded-model").await,
+            Some(12_918),
+            "the served window (12918), not the capability cap (131072)"
+        );
+        assert_eq!(
+            fetch_lmstudio_served_context(&mock.base_url, None, "stale").await,
+            None,
+            "a non-loaded entry must not lend its loaded_context_length"
+        );
+        assert_eq!(
+            fetch_lmstudio_served_context(&mock.base_url, None, "absent").await,
+            None,
+            "an id the server does not list is no fact"
+        );
+    }
+
     #[test]
     fn ollama_tag_names_dedupes_and_keeps_order() {
         let json: serde_json::Value = serde_json::from_str(
@@ -1846,6 +2087,7 @@ mod tests {
                 {"id":"qwen3-8b","state":"loaded","max_context_length":131072,"loaded_context_length":40960},
                 {"id":"gemma3-4b","type":"vlm","state":"loaded","max_context_length":131072,"loaded_context_length":12918},
                 {"id":"deepseek-r1-14b","state":"not-loaded","max_context_length":65536},
+                {"id":"stale-window","state":"not-loaded","max_context_length":131072,"loaded_context_length":40960},
                 {"id":"legacy-model"},
                 {"id":"nomic-embed","type":"embeddings","state":"loaded","max_context_length":2048},
                 {"id":"no-loaded-field","state":"loaded","max_context_length":8192}
@@ -1853,7 +2095,7 @@ mod tests {
         )
         .unwrap();
         let models = parse_lmstudio_v0_models(&json).unwrap();
-        assert_eq!(models.len(), 6);
+        assert_eq!(models.len(), 7);
         assert_eq!(models[0].loaded, Some(true));
         assert_eq!(models[0].max_model_len, Some(40_960));
         // The cap must never win over the served window: a 131072-capable
@@ -1863,14 +2105,19 @@ mod tests {
         // Unloaded: only the capability cap is available — undeclared.
         assert_eq!(models[2].loaded, Some(false));
         assert_eq!(models[2].max_model_len, None);
-        // 缺 state 字段 = 未知；窗口同样未声明。
-        assert_eq!(models[3].loaded, None);
+        // An unloaded entry leaking a stale `loaded_context_length` (schema
+        // drift is exactly what #726 showed) must stay undeclared: the
+        // state=="loaded" gate is load-bearing.
+        assert_eq!(models[3].loaded, Some(false));
         assert_eq!(models[3].max_model_len, None);
-        // Embedding entries carry the capability cap too → still undeclared.
+        // 缺 state 字段 = 未知；窗口同样未声明。
+        assert_eq!(models[4].loaded, None);
         assert_eq!(models[4].max_model_len, None);
+        // Embedding entries carry the capability cap too → still undeclared.
+        assert_eq!(models[5].max_model_len, None);
         // A loaded entry without `loaded_context_length` (older server):
         // the cap is not a fallback — undeclared.
-        assert_eq!(models[5].max_model_len, None);
+        assert_eq!(models[6].max_model_len, None);
         // 空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测。
         assert!(parse_lmstudio_v0_models(&serde_json::json!({"data":[]})).is_none());
         assert!(parse_lmstudio_v0_models(&serde_json::json!({})).is_none());
