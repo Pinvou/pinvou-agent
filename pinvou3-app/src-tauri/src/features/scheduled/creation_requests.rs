@@ -797,6 +797,11 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // can succeed; success overwrites the marker).
         return Processed::Done;
     }
+    // Drop the stale failure marker BEFORE applying: the server's first poll
+    // must not replay the previous attempt's error while this fresh apply is
+    // in flight. A failing apply writes a fresh marker on its terminal path
+    // (inside the documented at-least-once window).
+    let _ = std::fs::remove_file(&done_marker);
     let applied = match request.kind {
         SpoolRequestKind::Create => creator.create(build_create_input(&request)).await,
         SpoolRequestKind::Update => {
