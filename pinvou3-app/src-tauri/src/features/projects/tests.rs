@@ -1055,6 +1055,26 @@ fn roots_conflict_partition_prefixes_match_production_wording() {
         },
     ];
     assert_eq!(causes.len(), 3);
+    // Round-24 minor 23: any-of matching cannot catch a wrong-class const
+    // swap — assert each class against its SPECIFIC prefix.
+    use super::store::{ROOTS_DUPLICATE_CONFLICT, ROOTS_NEST_CONFLICT, ROOTS_OVERLAP_CONFLICT};
+    assert!(
+        causes[0].starts_with(ROOTS_DUPLICATE_CONFLICT),
+        "the duplicate class must carry the duplicate prefix: {}",
+        causes[0]
+    );
+    assert!(
+        causes[1].starts_with(ROOTS_NEST_CONFLICT),
+        "the nest class must carry the nest prefix: {}",
+        causes[1]
+    );
+    assert!(
+        causes[2].starts_with(ROOTS_OVERLAP_CONFLICT),
+        "the overlap class must carry the overlap prefix: {}",
+        causes[2]
+    );
+    // The partition still accepts all three (the union the command layer
+    // matches on).
     for cause in &causes {
         assert!(
             REBIND_ROOTS_CONFLICT_PREFIXES

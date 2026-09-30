@@ -2642,8 +2642,8 @@ const NAV_PREFETCH = {
             // warnExisting is kept as-is out of deliberate conservatism
             // (round-20 minor 14): both busy emission sites actually fire
             // AFTER the old-root check, so the flag is already consumed —
-            // keeping it costs one extra confirm round-trip, never a
-            // skipped one.
+            // keeping it costs ZERO extra confirm round-trips (the comment
+            // previously claimed one; inverted per round-24 minor 18).
             setRebindDraft(prev => prev && {
               ...prev,
               busySessionIds: classified.busySessionIds,

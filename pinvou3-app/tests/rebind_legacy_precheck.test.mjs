@@ -30,10 +30,11 @@ const modRs = read('src-tauri', 'src', 'features', 'sessions', 'mod.rs');
 // legacy-table sync and is where REBIND_LEGACY_TABLE_* aborts originate) is
 // awaited BEFORE the codex lane's rebind_workspace_prefix, and the sidecar
 // pass (apply) runs only after it.
-const commandBody = projectsRs.slice(
-  projectsRs.indexOf('pub async fn rebind_workspace_root'),
-  projectsRs.indexOf('/// workspace_rebound event with the rebind geometry'),
-);
+const rebindFnAt = projectsRs.indexOf('pub async fn rebind_workspace_root');
+const endAnchorAt = projectsRs.indexOf('/// workspace_rebound event with the rebind geometry');
+assert.ok(rebindFnAt > 0, 'the rebind command must exist');
+assert.ok(endAnchorAt > rebindFnAt, 'the end anchor must trail the command (round-24 minor 24: a missing anchor used to slice to -1 silently)');
+const commandBody = projectsRs.slice(rebindFnAt, endAnchorAt);
 const planAt = commandBody.indexOf('plan_rebind_workspace_bindings(&from, &to_display)');
 const codexAt = commandBody.indexOf('rebind_workspace_prefix(&from, &to_display)');
 const applyAt = commandBody.indexOf('apply_rebind_workspace_bindings(plain_plan)');

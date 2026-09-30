@@ -1200,7 +1200,11 @@ pub fn translate_acp_state_workspace(
     }
     // Round-22 minor 5: wrong-shape JSON (a non-object root or workspace)
     // must degrade to a `failed` entry via the error path, not panic through
-    // IndexMut — same guard as the sibling patch_acp_state.
+    // IndexMut — same guard as the sibling patch_acp_state. Scope note
+    // (round-24 minor 7): the no-op-equals-converged arm above means a
+    // non-object ROOT returns Ok(false) (nothing to translate, treated as
+    // converged), not failed — the "must degrade to failed" promise holds
+    // for the workspace key, not for a non-object root.
     let Some(workspace) = state.get_mut("workspace").and_then(|w| w.as_object_mut()) else {
         return Err(anyhow::anyhow!("acp-state workspace is not an object"));
     };

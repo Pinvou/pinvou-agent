@@ -1947,8 +1947,11 @@
           // it on — adding one would span the Rust capability surface, both
           // lanes' platform wiring and this factory's deps, which is not a
           // small change. On a case-sensitive filesystem two roots differing
-          // only in case are indistinguishable here, matching the folded
-          // domain rule the backend lanes already apply on Windows.
+          // only in case are indistinguishable HERE while the POSIX backend
+          // identity key stays case-sensitive — the fold is this transform's
+          // own trade-off (the backend folds unconditionally only on
+          // Windows); reworded per round-24 minor 15, capability-gating
+          // stays the recorded later option.
           fromKey: trimTrailingSlashes(segment.from).toLowerCase(),
           toKey: trimTrailingSlashes(segment.to),
         };
@@ -1981,7 +1984,12 @@
   function pathIsRebindStale(sid, path) {
     if (typeof path !== "string" || !isAbsPath(path)) return false;
     const mapped = rebaseArtifactPathsForRebind(sid, [path]);
-    return Array.isArray(mapped) && mapped[0] !== path;
+    // Round-24 minor 14: the transform returns separator-NORMALIZED paths,
+    // so compare in the normalized domain — a raw entry with mixed or
+    // backslash separators would otherwise differ as a string and classify
+    // stale, letting a live same-basename entry take over inside the
+    // freshness window.
+    return Array.isArray(mapped) && normalizedPath(mapped[0]) !== normalizedPath(path);
   }
 
   // web+tauriArtifactTracker 共享

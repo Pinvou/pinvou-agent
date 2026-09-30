@@ -24,8 +24,18 @@ use crate::features::codex_acp::{
 /// REBIND_EVICT_GATE_TIMEOUT waits). The deadline is checked only BETWEEN
 /// candidates, so one in-flight candidate can overrun the budget: a concurrent
 /// rebind can be refused REBIND_IN_PROGRESS for up to ~16s in the worst case
-/// (review #463 round-13). Ten seconds is far above the normal cost (idle
-/// sessions are reclaimed without waiting) and far below a user-visible hang.
+/// (review #463 round-13) — a figure that covers ONLY this eviction tail
+/// (round-24 review M4; the realistic tail ceiling is ~20s with the ≤5s
+/// shell-finalize join, perf minor 10). The PRE-TAIL phases hold the same
+/// process-wide gate with no deadline: the metadata loop has no per-candidate
+/// bound and the baseline drain's final join loop is only
+/// concurrency-bounded, so a large run (hundreds of sessions, multi-MB
+/// transcripts, big destination baselines) can hold the gate — disabled
+/// dialog, no interim feedback — for minutes while concurrent attempts are
+/// refused. Remedy on record: a wall-clock deadline on the drain (baselines
+/// are best-effort/self-healing) or interim progress events. Ten seconds is
+/// far above the normal tail cost (idle sessions are reclaimed without
+/// waiting) and far below a user-visible hang.
 const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 use crate::features::projects::{
     MoveSessionOutcome, Project, ProjectStore, RebindRootsError, SessionAssignments,
@@ -451,11 +461,18 @@ pub async fn rebind_workspace_root(
     validate_rebind_from(&from)?;
     validate_rebind_to(&to)?;
     let to_display =
-        crate::features::codex_acp::validate_codex_project_workspace(&to).map_err(|_| {
+        crate::features::codex_acp::validate_codex_project_workspace(&to).map_err(|e| {
             // Marker hygiene (review #463 round-19 SF-1): the wrapped validator's
             // bail messages are Chinese; the marker tail crosses logs and the
             // remote bridge, where the project rule requires English. The dialog
             // renders typed copy, so the static prose is all the user ever sees.
+            // Round-24 minor 2: unlike every sibling arm, the cause used to be
+            // discarded entirely — log the root cause (path-free per the
+            // CodeQL rule) before replacing the chain with the marker.
+            eprintln!(
+                "[projects] rebind destination validation failed: {}",
+                e.root_cause()
+            );
             "REBIND_TO_UNUSABLE: the destination folder cannot be used".to_string()
         })?;
     // Normalize `from` once for all three storage lanes (review #463 B1, see
@@ -803,6 +820,11 @@ pub async fn rebind_workspace_root(
         // matches neither prefix scan). Move the repaired ids into the
         // metadata sync set with the sidecar's target verbatim — it predates
         // this run's from→to geometry, so rebind_target_path cannot map it.
+        // Trade-off (round-24 minor 3): the repaired ids join `affected`
+        // AFTER the entry fence has already admitted the run's population —
+        // a fence-hit landing exactly on a repaired id relies on the
+        // serialized writes + the honest failure tail rather than a fence
+        // re-check; recorded rather than re-fenced late-cycle.
         repaired_targets_folded = repaired_ids
             .into_iter()
             .filter_map(|repaired_id| {
@@ -1055,7 +1077,12 @@ pub async fn rebind_workspace_root(
                 // push would otherwise push a freshly dead id into the
                 // rebound list and event it — the exact projects.rs report
                 // contract above. The plain lane's round-18 minor-7 check,
-                // mirrored.
+                // mirrored. Residual tail (round-24 minor 8): a delete can
+                // still land between THIS probe and the push below — the
+                // window is shrunk to a single probe, not closed; the
+                // contract wording above stays absolute because the same
+                // probe re-runs on the rerun that the stale badge would
+                // trigger.
                 if let Some(outcome) = absent_record_outcome_if_ghost(
                     &sessions,
                     session_id,
@@ -1203,7 +1230,9 @@ pub async fn rebind_workspace_root(
     // only) fails HERE — after the session lanes are durable. The user gets the
     // localized conflict marker and a dialog that stays open with a retry, and
     // a rerun converges once the overlap is resolved, but the per-session
-    // detail of this run is not reported alongside the error.
+    // detail of this run is not reported alongside the error — beyond the
+    // ids reachable through `rebound ∪ failed`, per-session fence-hit detail
+    // is dropped here (round-24 minor 1, residual on record).
     // Only a genuine overlap conflict carries the localized conflict marker
     // (round-8 review M3): persist and other infrastructure failures must
     // surface as ordinary errors, or the user is told to resolve a
@@ -2212,6 +2241,24 @@ mod tests {
             ),
             Some(AbsentRecordOutcome::Skip),
             "an orphan this run did nothing for stays silent",
+        );
+
+        // Round-24 minor 21: the codex lane records its moves in
+        // `prefix_outcome.affected` (the plain lane's in `plain_rebind
+        // .rebound`, covered above) — drive that disjunct too, so deleting
+        // it reverts the classification to Skip and fails here.
+        let mut codex_outcome = RebindWorkspacePrefixOutcome::default();
+        codex_outcome.affected.push((orphan_id.clone(), to.clone()));
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[],
+                &codex_outcome,
+                &RebindBindingsOutcome::default(),
+            ),
+            Some(AbsentRecordOutcome::Rebound),
+            "a codex-lane-moved orphan with live artifacts stays reportable through the affected disjunct",
         );
 
         let _ = std::fs::remove_dir_all(&from);

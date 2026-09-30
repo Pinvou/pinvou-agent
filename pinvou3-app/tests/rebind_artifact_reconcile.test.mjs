@@ -91,7 +91,10 @@ for (const [host, source] of [
   ['the web bridge', webSource],
 ]) {
   const span = rebindListenerSpan(source, host);
-  const stamps = span.match(/applyWorkspaceReboundMark\(payload\);/g) || [];
+  // Round-24 minor 19: strip line comments first — a commented-out stamp
+  // call would otherwise keep the count at 1 and mask the deletion.
+  const spanWithoutComments = span.replace(/\/\/[^\n]*/g, '');
+  const stamps = spanWithoutComments.match(/applyWorkspaceReboundMark\(payload\);/g) || [];
   assert.equal(
     stamps.length,
     1,

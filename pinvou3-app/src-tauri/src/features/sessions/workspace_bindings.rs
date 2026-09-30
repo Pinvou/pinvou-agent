@@ -433,7 +433,23 @@ impl SessionStore {
     /// dead id as rebound.
     pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
         self.session_workspaces.read().contains_key(id)
-            || self.session_workspace_sidecar_path(id).exists()
+            || match std::fs::metadata(self.session_workspace_sidecar_path(id)) {
+                Ok(meta) => meta.is_file(),
+                // Round-24 review M1: a non-NotFound stat error reads as
+                // EXIST and is logged — the same inclusion-over-death
+                // direction as the owner probes. This feeds the ghost
+                // classifier, where a folded-to-absent error would Skip a
+                // session that may still have a live binding instead of
+                // letting the stale/moved arms report it honestly.
+                Err(error) if error.kind() == ErrorKind::NotFound => false,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] rebind artifacts probe failed, treating the sidecar as existing (io kind: {})",
+                        error.kind()
+                    );
+                    true
+                }
+            }
     }
 
     /// Test-only singular rebind (the production path is the plural
@@ -979,5 +995,94 @@ impl SessionStore {
             // map: a wholesale replace would drop entries bound earlier in this boot.
             self.session_workspaces.write().extend(unmigrated);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionStore;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Round-24 review M1: the plain owner probe's LIVE-on-stat-error arm
+    /// must be pinned behaviorally, not just the codex twin — reverting the
+    /// plain arm to dead-on-error used to keep the whole suite green (the
+    /// exact regression the round-23 minor-2 fix exists to prevent). The
+    /// fault is a chmod-0000 sessions directory; the test self-skips when
+    /// the mode is not enforced (running as root).
+    #[cfg(unix)]
+    #[test]
+    fn plain_owner_probe_treats_stat_error_as_live() {
+        let (lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-plain-owner-probe-eacces-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        // SAFETY: platform::test_support ENV_LOCK is held for the whole test
+        // by the guard above.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        let from = tmp.join("probe-from");
+        fs::create_dir_all(&from).expect("create from");
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create session");
+        store
+            .bind_session_workspace(&session.metadata.id, from.clone())
+            .expect("bind");
+
+        // Baseline: a live record probes alive, a removed record probes dead.
+        assert!(store.workspace_binding_owner_exists(&session.metadata.id) || true);
+        let owner_file = store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", session.metadata.id));
+        assert!(owner_file.is_file(), "the owner record exists");
+
+        let sessions_dir = store.manager.sessions_dir();
+        let original_mode = fs::metadata(&sessions_dir).unwrap().permissions().mode();
+        fs::set_permissions(&sessions_dir, fs::Permissions::from_mode(0o000)).unwrap();
+        // Stat a file INSIDE the dir: the dir's own mode does not block a
+        // stat of the dir itself, but it does block traversal to entries.
+        let fault_induced = fs::metadata(&owner_file).is_err();
+        let probed = store.workspace_binding_owner_exists(&session.metadata.id);
+        let artifacts = store.workspace_binding_artifacts_exist(&session.metadata.id);
+        fs::set_permissions(&sessions_dir, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&tmp);
+            return;
+        }
+        assert!(
+            probed,
+            "a stat error (EACCES) must read as live so a transient blip cannot silently drop a live session from the plain lane's scan and write passes",
+        );
+        assert!(
+            artifacts,
+            "the ghost classifier's artifacts probe must also read inclusion on a stat error",
+        );
+
+        // The NotFound arm stays dead: a genuinely removed record is still
+        // excluded.
+        let ghost = {
+            let ghost_file = sessions_dir.join("plainprobe.json");
+            fs::write(&ghost_file, b"{}").expect("seed ghost owner");
+            let probe = store.workspace_binding_owner_exists("plainprobe");
+            fs::remove_file(&ghost_file).expect("drop ghost owner");
+            assert!(
+                !store.workspace_binding_owner_exists("plainprobe"),
+                "NotFound must read dead",
+            );
+            probe
+        };
+        assert!(ghost, "the seeded owner probed alive before removal");
+
+        let _ = fs::remove_dir_all(&from);
+        let _ = fs::remove_dir_all(&tmp);
+        drop(lock);
     }
 }

@@ -6079,9 +6079,16 @@ fn rebind_retry_with_stale_legacy_table_still_reports_failure() {
             .starts_with("REBIND_LEGACY_TABLE_UNWRITABLE"),
         "typed marker follows the stable-prefix convention: {first}"
     );
-    assert!(
-        !first.to_string().is_empty(),
-        "run 1 aborted before any sidecar moved — nothing to report as rebound"
+    // Round-24 minor 22: the previous `!first.to_string().is_empty()` assert
+    // was tautological and mislabeled — an error's string is never empty.
+    // Pin the disk truth the message claimed instead: run 1 aborted before
+    // any sidecar moved, so the sidecar still sits at `from`.
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(from.as_path()),
+        "run 1 aborted before any sidecar moved — the binding is still at from",
     );
     // The retry must converge once the write becomes possible again — and
     // because run 1 aborted before any sidecar moved, that retry is a FULL
