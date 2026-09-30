@@ -22,13 +22,12 @@ mod self_metrics;
 
 // re-export 子模块 pub 面，保持 `crate::features::monitor::Foo` 调用路径不变。
 pub use model_probe::{
-    VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, probe_vllm_model_info,
-    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
+    VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, resolve_served_model,
 };
 pub use self_metrics::{SelfMetrics, SelfPerfSnapshot};
 
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -36,7 +35,6 @@ use serde::Serialize;
 /// 单次完整采样结果。所有字段 `Option`——采集失败就为 None。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MonitorSnapshot {
-    pub generated_at_ms: u64, // unix epoch ms
     pub gpu: Option<GpuSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu: Option<CpuSnapshot>,
@@ -109,30 +107,11 @@ impl MonitorState {
     }
 }
 
-pub async fn sample_all(
-    state: &MonitorState,
-    vllm_upstream: &str,
-    configured_model: Option<String>,
-) -> MonitorSnapshot {
-    sample_all_with_cpu(
-        state,
-        vllm_upstream,
-        configured_model,
-        platform::cpu_snapshot(),
-    )
-    .await
+pub async fn sample_all(state: &MonitorState) -> MonitorSnapshot {
+    sample_all_with_cpu(state, platform::cpu_snapshot()).await
 }
 
-async fn sample_all_with_cpu(
-    state: &MonitorState,
-    vllm_upstream: &str,
-    configured_model: Option<String>,
-    cpu: Option<CpuSnapshot>,
-) -> MonitorSnapshot {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+async fn sample_all_with_cpu(state: &MonitorState, cpu: Option<CpuSnapshot>) -> MonitorSnapshot {
     // GPU 采样可能拉起 nvidia-smi 子进程（已带 GPU_PROBE_TIMEOUT 兜底），放到
     // blocking 池，避免 1s 一次的监控轮询占住 async worker；与 ram/vllm 并发
     // 采样，探测挂起时其余指标不再排队等它。预算是**单个候选进程**的：
@@ -141,12 +120,18 @@ async fn sample_all_with_cpu(
     // 拿到的是新采样而非缓存旧值。
     let gpu_task = tokio::task::spawn_blocking(gpu_snapshot);
     let ram = platform::ram_snapshot();
-    let vllm = match active_model_snapshot().await {
-        Some(snapshot) => Some(snapshot),
-        None => vllm_snapshot(vllm_upstream, configured_model).await,
-    };
+    // Active-model snapshot only. The removed `None` fallback re-probed through
+    // `vllm_snapshot`, which hardcodes LocalVllm and therefore forces the "local"
+    // target kind: whenever the active model is a remote/cloud entry whose probe
+    // fails on a transport or non-success HTTP error, `active_model_snapshot`
+    // returned `None` but the fallback returned `Some(Offline)` — a bogus "local
+    // vLLM" card carrying the cloud model name (a missing key or 401/403 yields
+    // an honest card instead; only a reachable keyless endpoint could look green).
+    // Dropping it makes the monitor page agree with `get_backend_status` (the
+    // chat live-dot), which already used `active_model_snapshot` alone, and
+    // saves two `UserPrefs::load()` reads per poll.
+    let vllm = active_model_snapshot().await;
     MonitorSnapshot {
-        generated_at_ms: now_ms,
         gpu: gpu_task.await.unwrap_or(None),
         cpu,
         ram,
@@ -256,8 +241,7 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &temp_home) };
 
         let state = MonitorState::new();
-        let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
-        assert!(snapshot.generated_at_ms > 0);
+        let snapshot = sample_all_with_cpu(&state, None).await;
         assert!(snapshot.cpu.is_none());
         assert_eq!(snapshot.self_perf.gen_tokens_total, 0);
         assert_eq!(snapshot.app.pinvou3_version, env!("CARGO_PKG_VERSION"));

@@ -11,15 +11,16 @@ const mainSource = fs.readFileSync(path.join(root, 'src', 'app', 'main.jsx'), 'u
 const navigationSource = fs.readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
 const monitorViewSource = fs.readFileSync(path.join(root, 'src', 'features', 'monitor', 'MonitorView.jsx'), 'utf8');
 
-function featureRegistry(calls) {
+function featureRegistry(calls, notifyDuringStartup) {
   const registry = {};
   for (const match of bridgeSource.matchAll(/installBridgeFeature\("([^"]+)"/g)) {
     const feature = match[1];
-    registry[feature] = function () {
+    registry[feature] = function (context) {
       return new Proxy({}, {
         get(_target, method) {
           return function (...args) {
             calls.push({ kind: 'feature', feature, method: String(method), args });
+            if (notifyDuringStartup && /^(load|refresh|enterDraft)/.test(String(method))) context.notify();
             if (feature === 'sessions' && method === 'switchToSession') return Promise.resolve(true);
             return Promise.resolve();
           };
@@ -30,7 +31,7 @@ function featureRegistry(calls) {
   return registry;
 }
 
-async function initialize(search) {
+async function initialize(search, options = {}) {
   const calls = [];
   const windowObject = {
     __TAURI__: {
@@ -48,7 +49,7 @@ async function initialize(search) {
       },
       dialog: { open: async function () { return null; } },
     },
-    __PINVOU_TAURI_BRIDGE_FEATURES__: featureRegistry(calls),
+    __PINVOU_TAURI_BRIDGE_FEATURES__: featureRegistry(calls, options.notifyDuringStartup),
     location: { search },
     performance: { now: function () { return 0; } },
   };
@@ -69,15 +70,21 @@ async function initialize(search) {
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), context, { filename: 'shared/bridge-shared-helpers.js' });
   vm.runInContext(bridgeSource, context, { filename: 'tauri-bridge.js' });
+  let notifications = 0;
+  windowObject.TauriBridge.state.subscribe('settings', function () { notifications += 1; });
   await windowObject.TauriBridge.lifecycle.init();
-  return calls;
+  return {
+    bridge: windowObject.TauriBridge,
+    calls,
+    getNotifications: function () { return notifications; },
+  };
 }
 
 function featureCalls(calls, feature, method) {
   return calls.filter(call => call.kind === 'feature' && call.feature === feature && call.method === method);
 }
 
-const sessionCalls = await initialize('?detached=1&kind=session&id=session%2D42');
+const { calls: sessionCalls } = await initialize('?detached=1&kind=session&id=session%2D42');
 const historyIndex = sessionCalls.findIndex(call => call.kind === 'feature'
   && call.feature === 'sessions' && call.method === 'refreshHistoryList');
 const switchIndex = sessionCalls.findIndex(call => call.kind === 'feature'
@@ -94,7 +101,7 @@ assert.equal(featureCalls(sessionCalls, 'updater', 'checkForUpdateSilently').len
 assert.equal(featureCalls(sessionCalls, 'remote-control', 'startDesktopProxy').length, 0,
   'detached windows must not own the desktop remote-control proxy');
 
-const mainCalls = await initialize('');
+const { calls: mainCalls } = await initialize('');
 assert.equal(featureCalls(mainCalls, 'sessions', 'enterDraft').length, 1,
   'main-window startup must retain lazy blank-draft behavior');
 assert.equal(featureCalls(mainCalls, 'sessions', 'switchToSession').length, 0,
@@ -103,6 +110,13 @@ assert.equal(featureCalls(mainCalls, 'scheduled', 'loadScheduledTasks').length, 
   'main window must retain scheduled summary loading');
 assert.equal(featureCalls(mainCalls, 'remote-control', 'startDesktopProxy').length, 1,
   'main window must retain desktop remote-control proxy ownership');
+
+const startupPublishing = await initialize('', { notifyDuringStartup: true });
+assert.equal(startupPublishing.getNotifications(), 1,
+  'startup loaders must publish one coherent bridge snapshot instead of exposing intermediate state');
+await startupPublishing.bridge.scheduled.loadScheduledTasks();
+assert.equal(startupPublishing.getNotifications(), 2,
+  'state updates after startup must continue publishing immediately');
 
 const domainMatch = detachedShellSource.match(/useBridgeState\(\[([^\]]+)\]\)/);
 assert.ok(domainMatch, 'DetachedShell must subscribe through useBridgeState');

@@ -267,13 +267,13 @@ state = buildComposerToolMenuState({
 });
 assert.strictEqual(state.toolRows.length, 0, 'visibility:system 的工具应同样被过滤');
 
-// builtin 字段缺省（旧后端）按普通工具放行
+// Missing builtin field (legacy backend): passes through as a regular tool
 state = buildComposerToolMenuState({
   marketplaceTools: [{ id: 'weather', name: '高德天气', installed: true }],
 });
 assert.strictEqual(state.toolRows.length, 1, '无 builtin 字段的普通工具应放行');
 
-// builtin: false 显式普通插件同样放行
+// Explicit builtin: false is a regular plugin and passes too
 state = buildComposerToolMenuState({
   marketplaceTools: [{ id: 'weather', name: '高德天气', installed: true, builtin: false }],
 });

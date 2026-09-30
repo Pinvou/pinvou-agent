@@ -9,14 +9,6 @@ use super::*;
 
 use crate::features::assistant::engine_pool::stamp_steer_generation;
 
-fn behavior_task_status(status: TurnOutcomeStatus, error: Option<&str>) -> &'static str {
-    match status {
-        TurnOutcomeStatus::Completed if error.is_none() => "success",
-        TurnOutcomeStatus::Interrupted => "interrupted",
-        _ => "failed",
-    }
-}
-
 /// Summary detail line for the persistent startup timeline describing a
 /// terminal MCP session-boot receipt. `enabled_servers` counts only enabled
 /// servers: disabled ones are configuration state, not boot participants, and
@@ -290,6 +282,7 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
         let mut current_turn_id: Option<String> = None;
+        let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
         // real turn, so only failure-set changes are persisted (see
         // `mcp_boot_persistence`). The memory lives per forwarder task, i.e.
@@ -313,6 +306,7 @@ pub(crate) fn spawn_event_forwarder(
                     submission_id,
                     ..
                 } => {
+                    startup_first_output_recorded = false;
                     // Publish admission from the authoritative engine event,
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
@@ -388,18 +382,6 @@ pub(crate) fn spawn_event_forwarder(
                             turn_id
                         );
                     }
-                    crate::features::behavior_telemetry::track(
-                        &app,
-                        crate::features::behavior_telemetry::BehaviorEvent::new("task_started")
-                            .session(&session_id)
-                            .turn(&turn_id),
-                    );
-                    crate::features::behavior_telemetry::track_model_used(
-                        &app,
-                        &session_id,
-                        &turn_id,
-                        &bridge,
-                    );
                     let _ = turn_events.send(turn_tracker.on_started(turn_id));
                     // 本轮起始打点(TTFT 起点)。底座已发此事件,原先落 `_` 被忽略。
                     if let Some(m) = &self_metrics {
@@ -411,6 +393,10 @@ pub(crate) fn spawn_event_forwarder(
                     }
                 }
                 Event::MessageDelta { content, .. } => {
+                    if !content.is_empty() && !startup_first_output_recorded {
+                        crate::features::assistant::timing::record_first_output(&session_id);
+                        startup_first_output_recorded = true;
+                    }
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
                         crate::features::assistant::timing::record_first_message_delta(&session_id);
@@ -1427,20 +1413,6 @@ pub(crate) fn spawn_event_forwarder(
                             }
                         }
                     }
-                    if let Some(turn_id) = current_turn_id.as_deref() {
-                        crate::features::behavior_telemetry::track(
-                            &app,
-                            crate::features::behavior_telemetry::BehaviorEvent::new(
-                                "task_finished",
-                            )
-                            .session(&session_id)
-                            .turn(turn_id)
-                            .status(behavior_task_status(
-                                terminal_status,
-                                terminal_error.as_deref(),
-                            )),
-                        );
-                    }
                     maybe_notify_task_completed(
                         &app,
                         &session_id,
@@ -1661,9 +1633,9 @@ pub(crate) fn spawn_event_forwarder(
                 // Connector readiness is owned by Pinvou's marketplace state. The
                 // Engine event is intentionally observed only for diagnostics until
                 // that UI adopts the generation-based v0.9.12 snapshot protocol.
-                // Release builds register no log sink, so the terminal boot
-                // receipt is also persisted through the startup timeline
-                // (`~/.pinvou3/logs/startup.log`) to keep failures visible.
+                // The terminal boot receipt is additionally persisted through
+                // the startup timeline (`~/.pinvou3/logs/startup.log`) so it
+                // stays visible independent of the rotating app log.
                 // The engine re-reports the receipt on every real turn; only a
                 // changed failure set is persisted.
                 Event::McpSessionBoot { .. } => {
@@ -1743,13 +1715,6 @@ pub(crate) fn spawn_event_forwarder(
             Some(EmittedTerminal {
                 turn_id: Some(turn_id),
             }) => {
-                crate::features::behavior_telemetry::track(
-                    &app,
-                    crate::features::behavior_telemetry::BehaviorEvent::new("task_finished")
-                        .session(&session_id)
-                        .turn(&turn_id)
-                        .status("failed"),
-                );
                 let _ = turn_events.send(EngineTurnSignal::Terminal {
                     turn_id,
                     status: TurnOutcomeStatus::Failed,

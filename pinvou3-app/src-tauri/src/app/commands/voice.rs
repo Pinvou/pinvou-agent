@@ -1,5 +1,5 @@
 use super::prelude::*;
-use anyhow::{Context, Result as AnyResult};
+use anyhow::{Context, Result as AnyResult, anyhow};
 use base64::Engine as _;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -76,24 +76,27 @@ pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Cross-window recording mutual exclusion: the frontend syncs its own window
-/// label when recording starts/ends/fails, and the native shortcut hook uses
-/// it to pick the trigger target window (see
-/// voice_shortcut::set_recording_label). A window may only register its own
-/// label, so a broken or compromised renderer cannot pin an arbitrary window
-/// as the recording window and hijack the global Alt gesture.
+/// Cross-window recording mutual exclusion: the frontend atomically claims
+/// the recording ownership (its own window label bound to an operation token)
+/// before opening the microphone, and releases it when recording ends/fails;
+/// the native shortcut hook uses the current owner to pick the trigger target
+/// window (see voice_shortcut::set_recording_owner). A window may only
+/// register its own label, so a broken or compromised renderer cannot pin an
+/// arbitrary window as the recording window and hijack the global Alt gesture.
+/// The returned bool tells whether the claim/release landed; a failed claim
+/// fails the recording start before any microphone is opened.
 #[tauri::command]
 pub(crate) fn set_voice_shortcut_recording(
     window: tauri::WebviewWindow,
     label: Option<String>,
-) -> Result<(), String> {
+    token: String,
+) -> Result<bool, String> {
     if let Some(label) = &label {
         if label != window.label() {
             return Err("voice shortcut recording label must match the calling window".to_string());
         }
     }
-    crate::features::voice_shortcut::set_recording_label(label);
-    Ok(())
+    crate::features::voice_shortcut::set_recording_owner(window.label(), &token, label.is_some())
 }
 
 impl VoiceCommandError {
@@ -927,21 +930,25 @@ async fn voice_postprocess_bridge(
     store: &SessionStore,
 ) -> AnyResult<crate::features::assistant::platform::bridge::Pinvou3Bridge> {
     if let Some(sid) = session_id.filter(|sid| !sid.trim().is_empty()) {
+        // The error chain reaches the local log and the frontend diagnostics
+        // verbatim (summarize_voice_postprocess_error), so keep the session
+        // id out of it.
+        crate::features::sessions::validate_session_id(sid)
+            .map_err(|_| anyhow!("session id is invalid"))?;
+        store
+            .load(sid)
+            .map_err(|_| anyhow!("session snapshot is unavailable"))?;
         return pool
             .fresh_bridge_for(sid)
             .await
             .context("prepare session model for voice postprocess");
     }
-    if let Some(sid) = store.active_id() {
-        return pool
-            .fresh_bridge_for(&sid)
-            .await
-            .context("prepare active session model for voice postprocess");
-    }
-    let mut bridge = pool.bridge.clone();
-    bridge.prefs = UserPrefs::load();
-    bridge.session_model = bridge.prefs.active_model().cloned();
-    Ok(bridge)
+    // No session yet (an unsent draft): prepare the default model through the
+    // same runtime path as chat instead of borrowing whichever session the
+    // backend last marked active, which may bind a different model.
+    pool.fresh_bridge_for_draft()
+        .await
+        .context("draft default model unavailable")
 }
 
 /// Returns (sanitized text, whether truncated by max_tokens). Truncation
@@ -994,6 +1001,7 @@ async fn call_voice_postprocess_model(
             system,
             &user,
             voice_postprocess_max_tokens(mode, retry),
+            bridge.opencode_conversation_key("voice-postprocess"),
         )
         .await?;
         let truncated = completion.stop_reason.as_deref() == Some("max_tokens");
@@ -1014,18 +1022,21 @@ async fn call_voice_postprocess_model(
         "stream": false
     });
     apply_voice_reasoning_controls(&mut body, preset, &bridge.provider(), &base_url, model_name);
-    let resp = client
-        .post(format!(
+    let resp = crate::core::model_endpoint::with_opencode_session_header(
+        client.post(format!(
             "{}/chat/completions",
             base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(bridge.api_key())
-        .json(&body)
-        .send()
-        .await
-        .context("post voice postprocess chat/completions")?
-        .error_for_status()
-        .context("voice postprocess chat/completions status")?;
+        )),
+        &base_url,
+        bridge.opencode_conversation_key("voice-postprocess"),
+    )
+    .bearer_auth(bridge.api_key())
+    .json(&body)
+    .send()
+    .await
+    .context("post voice postprocess chat/completions")?
+    .error_for_status()
+    .context("voice postprocess chat/completions status")?;
     let value: Value = resp
         .json()
         .await
@@ -1124,29 +1135,20 @@ pub async fn postprocess_voice_text(
             ));
         }
     };
-    // vllm's /v1/models probe carries its own 3s timeout; both attempts share
-    // this one probe result, so the retry does not pay another 3s.
-    let model_name = if bridge.provider() == "vllm" {
-        // The served-name probe uses an inference-same-origin key:
-        // authenticated vLLM 401s on /v1/models.
-        crate::features::monitor::probe_vllm_model_info(
-            &bridge.base_url(),
-            Some(bridge.api_key().as_str()),
-        )
-        .await
-        .0
-        .unwrap_or_else(|| bridge.model())
-    } else {
-        bridge.model()
-    };
+    // EnginePool already resolved the served model while preparing this bridge
+    // (resolve_served_model keeps a configured name the server lists). Keep
+    // that effective choice for both attempts: probing /v1/models again and
+    // taking its first entry would replace the user's model B with an
+    // unrelated model A on multi-model servers (LM Studio / Ollama).
+    let model_name = bridge.model();
     // The frontend times the whole invoke against the same
     // voice_postprocess_timeout budget; both Rust attempts share that budget,
     // each taking only the remaining headroom, so the total latency does not
     // double from each attempt spending the full budget.
     let budget = voice_postprocess_timeout(mode, &raw_text);
     if started_at.elapsed() >= budget {
-        // Symmetric with the retry guard below: bridge preparation and the
-        // vllm model probe can consume the whole budget, and handing a zero
+        // Symmetric with the retry guard below: bridge preparation and
+        // model resolution can consume the whole budget, and handing a zero
         // timeout to the first request would guarantee an instant timeout
         // failure.
         log::warn!(

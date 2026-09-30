@@ -1812,24 +1812,29 @@ impl AppEngine {
         })
     }
 
-    /// 发用户消息给 Engine。Engine 内部自管 session，多轮自然累积。
+    /// Turn submission for headless harnesses (L1 integration harness, live
+    /// tests). Mirrors the production path: reserve the turn slot first, then
+    /// submit through `Self::send_reserved_user_message`, the same shape as
+    /// `EnginePool::send_user_message`. Production session turns call the
+    /// reservation API through `EnginePool` instead; the reservation types are
+    /// `pub(crate)`, so the integration-test process goes through this wrapper.
+    /// No `#[cfg(test)]`: integration tests link this library as an external
+    /// crate and cannot see `cfg(test)` items.
     ///
-    /// 仅测试入口（lib 单元测试与 `tests/` 集成 harness；生产发送走
-    /// `send_reserved_user_message`，其快照/候选来自
-    /// `prepare_delegation_turn` 的同源捕获）。不加 `#[cfg(test)]`：
-    /// 集成测试以外部 crate 视角链接本库，看不到 cfg(test) 条目。
-    ///
-    /// `mode` 由调用方从 SessionStore 取当前 session 的 mode_state，注入
-    /// Op::SendMessage。底座按 mode 自动切工具白名单 + sandbox。
-    /// M1 弱模型加固:bridge 按 mode 在多智能体轮的 user content 前
-    /// prepend `<system-reminder>` 信封。
-    pub async fn send_user_message(
+    /// `mode` is supplied by the caller from the session's mode_state in the
+    /// SessionStore and injected into `Op::SendMessage`; the base switches the
+    /// tool allowlist + sandbox by mode, and the bridge prepends the
+    /// multi-agent `<system-reminder>` envelope to the user content (M1
+    /// weak-model hardening).
+    #[allow(dead_code)] // headless harnesses are the only callers; no production caller
+    pub async fn send_headless_user_message(
         &self,
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
+        let reservation = self.turn_lifecycle.reserve()?;
         let expert_snapshot = self.multi_agent_enabled.then(ExpertRosterSnapshot::capture);
         // 候选行必须与快照同源（同一次 capture 产出），对齐
         // commands::multiagent::prepare_delegation_turn 的计算；
@@ -1842,6 +1847,9 @@ impl AppEngine {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
+        // The headless harness hands the caller's raw bool straight to the op
+        // builder: the harness session is never an aux session, and the token
+        // type's forced policy lives behind the pool's send path.
         let op = self.build_interactive_send_message_op(
             content,
             mode,
@@ -1850,7 +1858,7 @@ impl AppEngine {
             expert_snapshot,
             expert_candidates,
         )?;
-        self.send_turn_op(op).await
+        self.send_reserved_turn_op(op, reservation).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3888,7 +3896,7 @@ mod live_tests {
     use crate::features::sessions::SerializableMode;
     use crate::platform::test_support::EnvRestore;
 
-    // RAII 恢复 env 原值的要求（本模块 #[ignore] 真机测试写 DEEPSEEK_*/PINVOU3_*
+    // RAII 恢复 env 原值的要求（本模块 #[ignore] 真机测试写 DEEPSEEK_*
     // env,须保证退出时恢复——含 panic 路径,避免 `cargo test -- --ignored` 合跑时
     // 污染）由 `platform::test_support::EnvRestore` 承担（快照为 OsString，
     // 恢复语义与原 String 版一致），与 engine_pool / multiagent 回归测试共用。
@@ -3904,23 +3912,18 @@ mod live_tests {
     #[ignore]
     #[tokio::test]
     async fn self_metrics_populates_from_real_turn() {
-        // 写 DEEPSEEK_*/PINVOU3_* env:虽 #[ignore] 不入默认套件,仍须持 crate 级
+        // 写 DEEPSEEK_* env:虽 #[ignore] 不入默认套件,仍须持 crate 级
         // ENV_LOCK 串行并保证退出恢复,避免被 `cargo test -- --ignored` 一起跑时污染
         // 其它测试(或本测试 panic 后留下脏 env)。
         let _lock = crate::bridge::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let _restore = EnvRestore::capture(&[
-            "DEEPSEEK_ALLOW_INSECURE_HTTP",
-            "DEEPSEEK_FORCE_HTTP1",
-            "PINVOU3_SKIP_WARMUP",
-        ]);
+        let _restore =
+            EnvRestore::capture(&["DEEPSEEK_ALLOW_INSECURE_HTTP", "DEEPSEEK_FORCE_HTTP1"]);
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_ALLOW_INSECURE_HTTP", "1") };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", "1") };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_SKIP_WARMUP", "1") };
 
         let bridge = Pinvou3Bridge::boot().expect("boot bridge");
         let engine = AppEngine::spawn_headless(bridge)
@@ -3931,16 +3934,18 @@ mod live_tests {
         let sid = "live-test";
         let prompts = ["用一句话介绍你自己。", "再用一句话讲个冷笑话。"];
 
-        // 跑两轮:首轮 = 冷/warmup(A 跳过 TTFT/TPS),二轮 = 暖(记)。
+        // Run two turns: the first is a cold start, the second is warm. Record TTFT/TPS for
+        // both — the old "skip first turn" branch, along with the warmed_sessions set it
+        // read, was removed long ago; do not assume it still exists here.
         engine
-            .send_user_message(
+            .send_headless_user_message(
                 prompts[0].to_string(),
                 SerializableMode::Yolo.to_app_mode(),
                 None,
                 false,
             )
             .await
-            .expect("send_user_message #1");
+            .expect("send_headless_user_message #1");
 
         let mut rx = engine.handle.rx_event.write().await;
         let mut turns_done = 0usize;
@@ -3979,14 +3984,14 @@ mod live_tests {
                     turns_done += 1;
                     if turns_done == 1 {
                         engine
-                            .send_user_message(
+                            .send_headless_user_message(
                                 prompts[1].to_string(),
                                 SerializableMode::Yolo.to_app_mode(),
                                 None,
                                 false,
                             )
                             .await
-                            .expect("send_user_message #2");
+                            .expect("send_headless_user_message #2");
                     } else {
                         break;
                     }
@@ -4010,7 +4015,7 @@ mod live_tests {
         );
         if s.ttft_count > 0 {
             eprintln!(
-                "[live] → 稳态 TTFT={:.3}s  TPS={:.1} tok/s (已排除首轮冷启)",
+                "[live] → avg TTFT={:.3}s  TPS={:.1} tok/s (incl. first-turn cold start)",
                 s.ttft_sum_s / s.ttft_count as f64,
                 if s.tps_time_s > 0.0 {
                     s.tps_tokens as f64 / s.tps_time_s
@@ -4025,11 +4030,12 @@ mod live_tests {
             s.gen_tokens_total > 0,
             "无 output token 累加(usage 空?) seq={seq:?}"
         );
-        // 二轮纯文本(无工具)才断言:首轮已被 A 跳过,TTFT 应只来自二轮。
+        // Only assert when turn 2 is plain text (no tools): each of the two turns records
+        // one TTFT.
         if !tool_in_turn2 {
             assert_eq!(
-                s.ttft_count, 1,
-                "二轮应恰好记 1 次 TTFT(首轮跳过) seq={seq:?}"
+                s.ttft_count, 2,
+                "both turns should record 1 TTFT each seq={seq:?}"
             );
             assert!(s.tps_time_s > 0.0, "TPS 时长未记 seq={seq:?}");
         }

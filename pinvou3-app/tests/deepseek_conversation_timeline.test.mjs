@@ -10,7 +10,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
 const conversationDir = path.join(temp, 'features', 'conversation');
+const sharedDir = path.join(temp, 'shared');
 mkdirSync(conversationDir, { recursive: true });
+mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(
@@ -18,6 +20,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
     path.join(conversationDir, file),
   );
 }
+copyFileSync(
+  path.join(root, 'src', 'shared', 'shell-tools.mjs'),
+  path.join(sharedDir, 'shell-tools.mjs'),
+);
 vm.runInThisContext(
   readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
   { filename: 'model-service-errors.js' },
@@ -123,7 +129,6 @@ try {
   });
 
   assert.deepEqual(chatItems, before, 'projection must never rewrite the DeepSeek chatItems fact source');
-  assert.equal(projected.thread.id, 'session-1');
   assert.equal(projected.turns.length, 3, 'preamble and each user message must become stable turns');
   assert.equal(projected.turns[1].userText, '检查仓库');
   assert.deepEqual(
@@ -448,7 +453,13 @@ try {
     conversationView.includes('bg-white/85') && conversationView.includes('dark:bg-[rgba(38,38,42,0.78)]'),
     'timeline user-error card must provide a light theme alongside the dark glass style',
   );
-  assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('<ConversationTimeline')
+    && chatView.includes('scrollElementRef={scrollRef}')
+    && chatView.includes('followOutputRef={autoScrollRef}')
+    && chatView.includes('turnGapPx={16}'),
+  'DeepSeek must render through the shared timeline by default');
+  assert.ok(chatView.includes('shouldVirtualizeConversationTurns(conversationProjection.turns.length, scrollRef)'),
+  'native scroll anchoring must stay enabled while the chat timeline is in normal flow');
   assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
     && chatView.includes('{activeSessionId && (')
     && chatView.includes('const artifactsVisible = Boolean(activeSessionId && artifactsOpen)')

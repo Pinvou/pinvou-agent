@@ -3,11 +3,13 @@ import {
   presentConversationItems,
 } from '../conversation/conversation-model.js';
 
-/// Unconditional redaction before ACP-lane error text (the red-text
-/// fallback) is displayed: an agent CLI's raw output may carry gateway
-/// custom bodies or credentials; errors the gate did not take over get no
-/// friendly card but must still never reach the screen with secrets.
-function redactDisplayError(error, language) {
+/// Unconditional redaction before agent/model error text (the red-text
+/// fallback) is displayed: raw agent CLI / gateway / provider output may
+/// carry custom bodies or credentials verbatim; errors the gate did not
+/// take over get no friendly card but must still never reach the screen
+/// with secrets. Returns the input unchanged when the helper (classic
+/// script) is missing, degrading to existing behavior.
+export function redactDisplayError(error, language) {
   if (!error) return error || null;
   const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
   if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
@@ -364,10 +366,6 @@ export function projectAcpTimeline(input, options = {}) {
     }).length;
   }
   return {
-    thread: {
-      id: events[0] && events[0].sessionId || null,
-      turns,
-    },
     turns,
     global,
     events,

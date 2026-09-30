@@ -744,6 +744,8 @@ pub async fn probe_model_connection(
             req = req.bearer_auth(key.trim());
         }
     }
+    let req =
+        crate::core::model_endpoint::with_opencode_session_header(req, base_url, "connection-test");
     match req.send().await {
         Ok(resp) => model_connection_http_result(resp.status()),
         Err(e) => model_connection_error_result(&e),
@@ -1198,6 +1200,11 @@ pub async fn run_image_capability_probe(
     if !key.trim().is_empty() {
         req = req.bearer_auth(key.trim());
     }
+    let req = crate::core::model_endpoint::with_opencode_session_header(
+        req,
+        &base_url_stripped,
+        "image-probe",
+    );
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();
@@ -1219,8 +1226,9 @@ pub async fn test_image_input_capability(
     Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
 }
 
-/// 通用设置字段补丁。搜索、桌宠、模型列表和本地模型初始化状态由专用命令管理，
-/// 不进入这个协议，避免调用方携带旧的完整快照覆盖其他操作刚写入的值。
+/// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
+/// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
+/// another operation just wrote.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralSettingsPatch {
@@ -1274,11 +1282,10 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
         current.sidebar = sidebar;
     }
     if let Some(mut advanced) = patch.advanced {
-        // 这些字段有各自的专用写命令。即使高级设置来自旧快照，也无权覆盖它们。
+        // The model list and active model have dedicated write commands; an advanced-settings patch built from a
+        // stale snapshot must not overwrite them.
         advanced.saved_models = current.advanced.saved_models.clone();
         advanced.active_model_id = current.advanced.active_model_id.clone();
-        advanced.local_vllm_bootstrapped = current.advanced.local_vllm_bootstrapped;
-        advanced.local_vllm_setup_declined = current.advanced.local_vllm_setup_declined;
         current.advanced = advanced;
     }
 }
@@ -1336,15 +1343,6 @@ async fn persist_and_restart<S>(
     // processes first.
     crate::prepare_app_restart(&app).await;
     app.restart();
-}
-
-/// Restart the app immediately after saving settings (model/backend switches need a restart to take effect).
-#[tauri::command]
-pub async fn save_settings_and_restart(
-    patch: GeneralSettingsPatch,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    persist_and_restart(app, "settings", move || persist_general_settings(patch)).await
 }
 
 /// 仅保存搜索配置后重启，避免搜索设置覆盖同时发生变化的模型列表。

@@ -121,11 +121,24 @@ assert.strictEqual(vmMacIdle.action, 'download');
 assert.strictEqual(vmMacIdle.disabled, false);
 assert.strictEqual(vmMacIdle.restartAfterInstall, true);
 
+// The raw backend error (may carry request details, often untranslated) must
+// never reach the view model: the localized hint does, the raw string stays on
+// bridge state for diagnostics.
 const vmError = logic.viewModel(
   { updateError: 'sha256 failed' },
-  { available: true, latest_version: '1.2.0' }
+  { available: true, latest_version: '1.2.0' },
+  '1.1.0',
+  { updateInstallFailed: 'Update failed' }
 );
-assert.strictEqual(vmError.error, 'sha256 failed');
+assert.strictEqual(vmError.error, 'Update failed');
+assert.strictEqual(
+  logic.viewModel(
+    { updateError: 'sha256 failed' },
+    { available: true, latest_version: '1.2.0' }
+  ).error,
+  '更新失败',
+  'labels without the key fall back to the default hint, never the raw error'
+);
 
 // unknown platform falls back to download-and-install (no auto-restart):
 // restartAfterInstall 只对 linux/macos 为 true(见 update-notice-logic.js),未知平台(如未来

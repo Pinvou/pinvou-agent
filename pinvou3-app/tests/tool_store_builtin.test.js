@@ -54,6 +54,17 @@ assert.match(storeView, /tsSkillsData\r?\n\s*\.filter\(x => x\.builtin === true\
 assert.match(storeView, /kindLabel: \(storeCopy\.typeGroups \|\| \{\}\)\[/, 'builtin skill cards must carry a localized kind row');
 assert.match(storeView, /localizeSkill\(x\)/, 'builtin skill cards must use the storeData.skills overlay');
 
+// Visibility checkboxes: the builtin skill card (which now carries a
+// backendId since round-5 M3) must stay disabled — its hide write contains
+// no MCP catalog id and would pass the backend guard, silently dropping the
+// builtin skill from that mode's composer/model while the composer's builtin
+// row keeps presenting it as always-on (round-6 M2).
+assert.match(
+  storeView,
+  /const checkDisabled = !tool\.backendId \|\| tool\.builtin \|\| !visibilityLoaded;/,
+  'the visibility checkbox must gate on the builtin flag, not just on backendId presence',
+);
+
 // BuiltinPluginCard body: no TsActionBtn/PlatformToolAction/uninstall/onAction
 // (docs/builtin-toolset-contract.md §3.1: no uninstall, no toggle); renders the
 // read-only badge; no hardcoded Chinese (copy comes from uiBuiltinPlugins)
@@ -61,7 +72,11 @@ const cardStart = toolCommon.indexOf('const BuiltinPluginCard');
 assert.ok(cardStart > 0, 'the BuiltinPluginCard component must exist');
 const cardBody = toolCommon.slice(cardStart, toolCommon.indexOf('export {', cardStart));
 assert.doesNotMatch(cardBody, /TsActionBtn|PlatformToolAction|uninstall|onAction|handleAction/, 'the builtin card must not render any action button');
-assert.match(cardBody, /\{C\.readonlyBadge\}/, 'the builtin card must render the read-only badge');
+assert.match(
+  cardBody,
+  /\{MODE_CONTROLLED_BUILTIN_SKILL_IDS\.includes\(tool\.backendId\) \? C\.readonlyModeBadge : C\.readonlyBadge\}/,
+  'the builtin card must render the read-only badge (mode-controlled aware)',
+);
 assert.doesNotMatch(cardBody, /[一-鿿]/, 'the builtin card body must not contain hardcoded Chinese');
 
 // TsActionBtn: the builtin read-only badge branch must come before the
@@ -74,7 +89,7 @@ assert.ok(uninstallFallback > builtinBranch, 'the builtin branch must come befor
 
 // Composer input menu: builtin plugin filtering (§3.2 configuration
 // visibility) via the shared judgement imported from builtin-plugin-logic.js
-assert.match(composerLogic, /import \{ isBuiltinPlugin \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement');
+assert.match(composerLogic, /import \{ isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS \} from '\.\.\/tools\/builtin-plugin-logic\.js'/, 'composer logic must import the shared isBuiltinPlugin judgement');
 assert.match(composerLogic, /!isBuiltinPlugin\(tool\)/, 'the composer menu must filter builtin tools');
 
 // Timeline ToolCard execution visibility is unaffected: tool-renderers.jsx

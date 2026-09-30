@@ -13,8 +13,9 @@ mod exclude;
 mod import_jobs;
 mod kb_tool;
 mod l1;
-/// embedding 模型按需下载命令（pub mod：tauri::command 宏生成的 `__cmd__` 助手需经全路径
-/// `knowledge::model_download::kb_model_*` 引用，`pub use` 重导出函数带不出宏）。
+// Embedding-model on-demand download logic. Plain functions consumed by the
+// app command layer (`app::commands::knowledge` owns the Tauri command
+// wrappers via the passthrough macros).
 pub mod model_download;
 mod query;
 mod scanner;
@@ -39,13 +40,16 @@ use tauri::State;
 pub use store::{FileHit, Stats, TypeCount};
 use store::{SearchQuery, Store};
 
-/// 后台扫描进度（回前端轮询）。前端只读 running/phase/scanned/finishedAt。
+/// Background scan progress (polled by the frontend). The frontend reads
+/// running/phase/scanned/finishedAt; `roots` (added with the headless
+/// surface) reports the scanned roots and is ignored by the GUI today.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done / cancelled
+    /// idle / scanning / done
     pub phase: String,
+    pub roots: Vec<String>,
     pub scanned: u64,
     pub finished_at: i64,
 }
@@ -62,26 +66,22 @@ pub struct KnowledgeService {
     /// validate-then-mount race without coupling either domain to the other.
     mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
-    cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
     /// embedder 空闲卸载巡检任务句柄 + 防振荡时钟。模型常驻 ~570MB 内存；
     /// 巡检在空闲超阈值时 `set_embedder(None)` 卸载，kb_model_status 的热加载
     /// 钩子（用户意图）会自动重载。放 Option 使「未装模型 → 不起巡检」零开销。
-    embedder_reaper: Arc<Mutex<Option<EmbedderReaper>>>,
+    embedder_reaper: Arc<Mutex<Option<EmbedderReaperGuard>>>,
     /// 上次自动卸载 embedding 模型的 UNIX 秒（防振荡）：距上次卸载不足
     /// EMBEDDER_UNLOAD_COOLDOWN_SECS 时不再自动卸载。放在服务级字段（而非
     /// 巡检任务内）是因为卸载/热加载会重启巡检任务，冷却必须跨任务存活。
     embedder_last_unload_epoch: Arc<AtomicI64>,
 }
 
-/// embedder 空闲卸载巡检任务句柄（Drop 即停）。
-struct EmbedderReaper {
-    #[allow(dead_code)]
-    guard: EmbedderReaperGuard,
-}
-
+/// Idle-unload reaper handle for the embedding model: dropping the guard
+/// cancels the inspection task (the semantics used to live in a wrapping
+/// `EmbedderReaper` struct, now inlined into the slot type).
 struct EmbedderReaperGuard {
     cancel: tokio_util::sync::CancellationToken,
     handle: tauri::async_runtime::JoinHandle<()>,
@@ -109,12 +109,29 @@ impl KnowledgeService {
     /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
     /// 通过后台 blocking 线程加载，避免读取/构建大型 ONNX 模型阻塞 Tauri setup 和首屏。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, true)
+    }
+
+    /// Like [`Self::new`], but a crashed import is NOT reconciled at boot.
+    /// Read-only consumers (the headless CLI) must be able to open the store
+    /// without degrading an import a live app process is still running:
+    /// recovery flips that job to terminal state, which would wedge the
+    /// owner's bookkeeping. Write paths keep [`Self::new`].
+    pub fn new_without_recovery(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, false)
+    }
+
+    fn open(db_path: &Path, recover: bool) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         let conn = store.conn_arc();
         let l1 = l1::L1Store::new(conn.clone());
         let imports = import_jobs::ImportJobStore::new(conn);
-        let interrupted = imports.recover_interrupted()?;
+        let interrupted = if recover {
+            imports.recover_interrupted()?
+        } else {
+            None
+        };
         if let Some(job) = &interrupted {
             if job.resumable {
                 l1.set_collection_status(job.collection_id, "pending");
@@ -133,7 +150,6 @@ impl KnowledgeService {
                 finished_at: last_scan_finished_at,
                 ..Default::default()
             })),
-            cancel: Arc::new(AtomicBool::new(false)),
             imports,
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
@@ -141,7 +157,6 @@ impl KnowledgeService {
             embedder_last_unload_epoch: Arc::new(AtomicI64::new(0)),
         })
     }
-
     /// L1 知识集句柄（命令层直接用）。
     pub fn l1(&self) -> &l1::L1Store {
         &self.l1
@@ -244,9 +259,7 @@ impl KnowledgeService {
                 }
             }
         });
-        *slot = Some(EmbedderReaper {
-            guard: EmbedderReaperGuard { cancel, handle },
-        });
+        *slot = Some(EmbedderReaperGuard { cancel, handle });
     }
 
     /// 后台索引入口的补载：模型被空闲卸载或被首帧门控跳过（deferred）后，导入
@@ -278,10 +291,14 @@ impl KnowledgeService {
         match load() {
             Ok(embedder) => {
                 self.install_embedder(embedder);
+                model_download::set_model_load_error(None);
                 eprintln!("[knowledge] 导入前重载 embedding 模型完成（向量化解锁）");
             }
             Err(error) => {
-                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。
+                // 与首帧加载同语义：加载失败保持全文降级，不阻断导入。失败诊断必须
+                // 落 MODEL_LOAD_ERROR——否则状态停在 installed+未就绪且 error=None，
+                // 失败门上的 Retry/Repair 按钮虽在，却显示不出任何失败原因。
+                model_download::set_model_load_error(Some(error.clone()));
                 eprintln!("[knowledge] 导入前重载 embedding 模型失败（降级仅全文）: {error}");
             }
         }
@@ -510,17 +527,16 @@ impl KnowledgeService {
             if st.running {
                 return st.clone();
             }
-            self.cancel.store(false, Ordering::Relaxed);
             *st = ScanState {
                 running: true,
                 phase: "scanning".into(),
+                roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 ..Default::default()
             };
         }
 
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
-        let cancel = self.cancel.clone();
 
         thread::spawn(move || {
             let ex = Excluder::default();
@@ -530,53 +546,64 @@ impl KnowledgeService {
             let mut scanned_total = 0u64;
             for root in &roots {
                 let base = scanned_total;
-                let walked =
-                    scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
-                        scan_state.lock().scanned = base + n;
-                    });
+                let walked = scanner::scan(root, &store, &ex, &existing, &mut visited, |n| {
+                    scan_state.lock().scanned = base + n;
+                });
                 scanned_total = base + walked;
                 scan_state.lock().scanned = scanned_total;
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
             }
 
-            // 清理「已消失」的文件（上次在库、本次没遍历到）。取消时不删，避免误删没扫完的部分。
-            if !cancel.load(Ordering::Relaxed) {
-                let stale: Vec<String> = existing
-                    .keys()
-                    .filter(|p| !visited.contains(*p))
-                    .cloned()
-                    .collect();
-                if !stale.is_empty() {
-                    let _ = store.delete_many(&stale);
-                }
+            // Clean up files that "disappeared" (in the library last time, not walked this time).
+            let stale: Vec<String> = existing
+                .keys()
+                .filter(|p| !visited.contains(*p))
+                .cloned()
+                .collect();
+            if !stale.is_empty() {
+                let _ = store.delete_many(&stale);
             }
 
             // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
-            let cancelled = cancel.load(Ordering::Relaxed);
             let finished_at = now();
-            if !cancelled {
-                let _ = store.set_last_scan_finished_at(finished_at);
-            }
+            let _ = store.set_last_scan_finished_at(finished_at);
             let mut st = scan_state.lock();
             st.running = false;
             st.finished_at = finished_at;
-            st.phase = if cancelled { "cancelled" } else { "done" }.into();
+            st.phase = "done".into();
         });
 
         self.scan_state.lock().clone()
     }
 
-    /// 仅测试用：kb_cancel_scan 命令已下线（懒触发扫描无前端取消入口），
-    /// 生产路径不再有调用方；扫描线程内的 cancel 分支保留（语义不变）。
-    #[cfg(test)]
-    pub fn cancel_scan(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
-
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
+    }
+
+    // ───────────────────── headless (CLI) read entry points ─────────────────────
+    //
+    // Same semantics as the Tauri commands below (kb_stats / kb_type_counts /
+    // kb_search), but synchronous: `spawn_db` exists to move blocking queries
+    // off the Tauri **main thread** (synchronous commands run there, and a
+    // full-table COUNT on a large library freezes the UI). A headless caller
+    // (the one-shot pinvou-cli process) runs outside the async runtime / UI
+    // main thread, so querying the store directly needs no runtime dependency
+    // and must not introduce one.
+
+    /// L0 index overview (same semantics as `kb_stats`).
+    pub fn stats(&self) -> Result<Stats, String> {
+        self.store.stats().map_err(|e| e.to_string())
+    }
+
+    /// L0: per-extension counts (same semantics as `kb_type_counts`).
+    pub fn type_counts(&self) -> Result<Vec<TypeCount>, String> {
+        self.store.type_counts().map_err(|e| e.to_string())
+    }
+
+    /// Instant search (same semantics as `kb_search`, including the NL-rule
+    /// merge through `merge_nl_rules`).
+    pub fn search(&self, query: SearchQueryDto) -> Result<Vec<FileHit>, String> {
+        let sq = merge_nl_rules(query.into());
+        self.store.search(&sq).map_err(|e| e.to_string())
     }
 }
 
@@ -638,6 +665,10 @@ pub struct SearchQueryDto {
     #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
+    pub mtime_before: Option<i64>,
+    /// Tie half of the `(mtime, id)` keyset cursor (`idBefore` on the wire).
+    /// Only valid together with `mtimeBefore`; a half cursor is rejected.
+    pub id_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     #[serde(default)]
@@ -650,6 +681,8 @@ impl From<SearchQueryDto> for SearchQuery {
             text: d.text,
             exts: d.exts,
             mtime_after: d.mtime_after,
+            mtime_before: d.mtime_before,
+            id_before: d.id_before,
             min_size: d.min_size,
             max_size: d.max_size,
             limit: d.limit,
@@ -823,16 +856,15 @@ pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     }
 }
 
-/// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
-/// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
-pub async fn kb_search(
-    state: State<'_, KnowledgeService>,
-    query: SearchQueryDto,
-) -> Result<Vec<FileHit>, String> {
-    let mut sq: SearchQuery = query.into();
+/// Core of the NL-rule merge shared by `kb_search` and the headless
+/// [`KnowledgeService::search`] so both surfaces keep identical semantics:
+/// the text runs through NL-rule parsing ("上周的 pdf" → exts + time filter +
+/// residual text); structured filters passed **explicitly** by the caller
+/// win over the parsed result and are never overwritten.
+fn merge_nl_rules(mut sq: SearchQuery) -> SearchQuery {
     if let Some(text) = sq.text.clone() {
         let parsed = query::parse(&text);
-        sq.text = parsed.text; // 残余文本（已剥离时间/类型/大小词）
+        sq.text = parsed.text; // residual text (time/size/type words stripped)
         if sq.exts.is_empty() {
             sq.exts = parsed.exts;
         }
@@ -846,6 +878,18 @@ pub async fn kb_search(
             sq.max_size = parsed.max_size;
         }
     }
+    sq
+}
+
+/// Instant search. The text first runs through NL-rule parsing ("上周的 pdf"
+/// → exts + time filter + residual text); structured filters passed
+/// **explicitly** by the frontend take precedence over the parsed result and
+/// are not overwritten.
+pub async fn kb_search(
+    state: State<'_, KnowledgeService>,
+    query: SearchQueryDto,
+) -> Result<Vec<FileHit>, String> {
+    let sq = merge_nl_rules(query.into());
     let store = state.store.clone();
     spawn_db(move || store.search(&sq).map_err(|e| e.to_string())).await
 }
@@ -879,6 +923,9 @@ mod tests {
     /// 纯全文降级，起巡检只会空转）。
     #[test]
     fn import_reload_skips_when_installed_or_ready_and_survives_load_failure() {
+        // 本测试向进程级 MODEL_LOAD_ERROR 写入失败诊断并精确断言其值，与
+        // model_download 的 leased_reload 测试互斥，避免并行读到对方写入值。
+        let _guard = model_download::MODEL_LOAD_ERROR_TEST_LOCK.blocking_lock();
         let svc = service();
         let mut calls = 0;
         svc.reload_embedder_if_import_needed_with(false, || {
@@ -895,9 +942,275 @@ mod tests {
             svc.embedder_reaper.lock().is_none(),
             "加载失败不应启动空闲巡检"
         );
+        // 失败诊断必须落 MODEL_LOAD_ERROR：否则状态停在 installed+未就绪且
+        // error=None，前端失败门给得出 Retry/Repair 却显示不了失败原因
+        // （回归锚点：崩溃中断安装后 installed+未就绪+error=None 的僵尸状态）。
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("模拟加载失败")
+        );
 
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+        assert_eq!(
+            model_download::model_load_error().as_deref(),
+            Some("再次失败"),
+            "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
+        );
+    }
+
+    /// Headless read contract (stats / type_counts / search): zero-state
+    /// reads, post-seed reads, search with the NL-rule merge ("上周的 pdf" →
+    /// exts + mtime filter + residual text stripping) matching kb_stats /
+    /// kb_type_counts / kb_search semantics; explicit structured filters win
+    /// over the parsed result.
+    #[test]
+    fn headless_stats_type_counts_and_search_match_gui_semantics() {
+        let svc = service();
+        assert_eq!(svc.stats().expect("zero-state stats"), Stats::default());
+        assert!(
+            svc.type_counts()
+                .expect("zero-state type counts")
+                .is_empty()
+        );
+
+        // Seed one L0 record through the same upsert path the scanner uses
+        // (no full scan involved).
+        svc.store
+            .upsert_many(&[store::FileRecord {
+                path: "/tmp/docs/季度报告.pdf".into(),
+                name: "季度报告.pdf".into(),
+                ext: Some("pdf".into()),
+                size: 2048,
+                mtime: now(),
+                is_dir: false,
+            }])
+            .expect("seed one file record");
+
+        let stats = svc.stats().expect("stats after seed");
+        assert_eq!(stats.total_files, 1);
+        assert_eq!(
+            svc.type_counts().expect("type counts after seed"),
+            vec![TypeCount {
+                ext: "pdf".into(),
+                count: 1
+            }]
+        );
+
+        // Explicit structured search: text goes through FTS/LIKE on the same
+        // store path as the GUI command.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("季度报告".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("structured search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ext.as_deref(), Some("pdf"));
+
+        // NL-rule merge: "上周的 pdf" → exts=[pdf] + mtime_after ≈ 7 days ago
+        // + empty residual text. Without the merge (raw FTS on "上周的 pdf")
+        // nothing would match.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("nl-rule merged search");
+        assert_eq!(hits.len(), 1, "NL merge must hit the seeded pdf: {hits:?}");
+        assert_eq!(hits[0].name, "季度报告.pdf");
+
+        // Explicit exts win over the parsed result and are not overwritten
+        // (GUI contract).
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                exts: vec!["txt".into()],
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("explicit ext wins over parsed");
+        assert!(
+            hits.is_empty(),
+            "explicit txt filter must not hit a pdf: {hits:?}"
+        );
+    }
+
+    /// Unique per-test db path (see `service()` for why the path must be
+    /// unique), returning the path so a SECOND service can be opened over
+    /// the same file — that is the whole point of these tests.
+    fn unique_db_path(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_kb_headless_{}_{}_{}",
+            tag,
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        dir.join("index.db")
+    }
+
+    /// `new_without_recovery` is the headless open: it must NOT run
+    /// `recover_interrupted`, or a read-only CLI glance over a live store
+    /// flips a GUI import's running job to interrupted. The contrast arm
+    /// (plain `new`) must still recover.
+    #[test]
+    fn new_without_recovery_leaves_running_imports_alone() {
+        let db = unique_db_path("norecover");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let collection = svc
+            .l1
+            .create_collection("seed 集", None, None)
+            .expect("seed collection");
+        let job = svc
+            .imports
+            .create(collection, &[std::path::PathBuf::from("/tmp")])
+            .expect("seed import job");
+        // create() lands state='preparing' — the exact in-flight shape
+        // recover_interrupted() exists to terminalize.
+        let seeded = svc.imports.state(&job).expect("seeded job state");
+        assert!(seeded.running, "seeded job must be in-flight: {seeded:?}");
+
+        let headless =
+            KnowledgeService::new_without_recovery(&db).expect("headless open over the live store");
+        let untouched = headless.imports.state(&job).expect("headless view of job");
+        assert!(
+            untouched.running && !untouched.resumable,
+            "headless open must not terminalize a live GUI import: {untouched:?}"
+        );
+
+        // Contrast: the recovering open flips it to interrupted/resumable.
+        let recovering = KnowledgeService::new(&db).expect("recovering open");
+        assert!(
+            recovering
+                .imports
+                .state(&job)
+                .expect("recovered view of job")
+                .resumable,
+            "plain open must still recover a dead process's in-flight job"
+        );
+    }
+
+    /// `document_exists` is the headless existence probe: true for an id the
+    /// store knows, false for one it does not (and for one deleted in
+    /// between).
+    #[test]
+    fn document_exists_reports_store_truth() {
+        let db = unique_db_path("docexists");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let collection = svc
+            .l1
+            .create_collection("seed 集", None, None)
+            .expect("seed collection");
+        let doc = svc
+            .l1
+            .upsert_document(collection, "/tmp/a.pdf", "a.pdf", Some("pdf"), 10, now())
+            .expect("seed document");
+
+        assert!(
+            svc.l1.document_exists(doc).expect("probe existing doc"),
+            "seeded document must exist"
+        );
+        assert!(
+            !svc.l1.document_exists(doc + 1).expect("probe unknown doc"),
+            "unknown id must report absent, not error"
+        );
+
+        svc.l1.remove_document(doc).expect("remove document");
+        assert!(
+            !svc.l1.document_exists(doc).expect("probe removed doc"),
+            "removed document must report absent"
+        );
+    }
+
+    /// `mtime_before` upper-bound filter: inclusive at the boundary, excludes
+    /// newer files, composes with `mtime_after` into a half-open window.
+    #[test]
+    fn search_mtime_before_bounds_the_window() {
+        let db = unique_db_path("mtimebefore");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let old_mt = now() - 10_000;
+        let new_mt = now();
+        svc.store
+            .upsert_many(&[
+                store::FileRecord {
+                    path: "/tmp/old.txt".into(),
+                    name: "old.txt".into(),
+                    ext: Some("txt".into()),
+                    size: 1,
+                    mtime: old_mt,
+                    is_dir: false,
+                },
+                store::FileRecord {
+                    path: "/tmp/new.txt".into(),
+                    name: "new.txt".into(),
+                    ext: Some("txt".into()),
+                    size: 1,
+                    mtime: new_mt,
+                    is_dir: false,
+                },
+            ])
+            .expect("seed two records");
+
+        // The bound is inclusive: at mtime_before == old_mt only the old
+        // file passes (newer file excluded) — pin that exclusion direction.
+        let old_only = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(old_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("before-old search");
+        assert_eq!(
+            old_only.len(),
+            1,
+            "newer file must be excluded: {old_only:?}"
+        );
+        assert_eq!(old_only[0].name, "old.txt");
+
+        // An inclusive boundary means mtime_before == new_mt still returns
+        // BOTH files (<= matches at the boundary value itself).
+        let both = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(new_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("inclusive-boundary search");
+        assert_eq!(
+            both.len(),
+            2,
+            "inclusive at the exact boundary value: {both:?}"
+        );
+
+        // Below the oldest mtime, nothing.
+        let none = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(old_mt - 1),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("before-oldest search");
+        assert!(none.is_empty(), "below the oldest mtime: {none:?}");
+
+        // The two-sided window (after old, before new] excludes nothing here;
+        // a tighter after bound proves composition.
+        let window = svc
+            .search(SearchQueryDto {
+                mtime_after: Some(old_mt + 1),
+                mtime_before: Some(new_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("window search");
+        assert_eq!(
+            window.len(),
+            1,
+            "after+before composes into a half-open window: {window:?}"
+        );
+        assert_eq!(window[0].name, "new.txt");
     }
 }

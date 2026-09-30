@@ -4,7 +4,8 @@
 //! 取消"逻辑收口在此;各连接器(`feishu.rs` / `wecom.rs`)只持有自己的 [`CliCtx`]
 //! 薄声明 + 一段连接编排函数,调本模块的公共件。
 //!
-//! **drain 多态性说明**:[`drain_for_url`] 只发 URL(`String`),供飞书/企微共享。
+//! **drain 多态性说明**:[`drain_for_url`] 每行发 `(URL, 脱敏安全行)` 二元组,
+//! 供飞书/企微共享(URL 出二维码,安全行进失败原因缓冲)。
 //! tmeet/dingtalk 有各自的私有 drain(`drain_for_auth_url`/`drain_for_auth_event`),
 //! 因为它们在同一管道里额外抓取安全日志行 / user_code,channel 元素类型分别为
 //! `(Option<String>, Option<String>)` 和 `AuthEvent` enum。这是真实业务差异,
@@ -15,7 +16,8 @@
 //! `lib.rs` 里 `.manage(ConnectorConn::default())` 注册一次,飞书 / 企微共用。
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -231,14 +233,24 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 /// 1. **stdin 显式接 null**。app 是无窗口 GUI 进程,继承来的 stdin 是坏句柄,
 ///    CLI 安装器(`@wecom/cli` / `@larksuite/cli` 等)读它会**死等 → 每次卡到超时**
 ///    (终端手动跑却几十秒就成)。给个立即 EOF 的 null stdin,安装器走非交互分支跑通。
-/// 2. **stdout/stderr 落日志文件**(不再 `null` 丢弃),失败可诊断:
-///    `~/.pinvou3/cli-install.log`。写文件不是管道、无写满死锁之虞。
+/// 2. **stdout/stderr are appended to a log file** (no longer discarded to
+///    `null`), so failures are diagnosable: `~/.pinvou3/cli-install.log`.
+///    Writing to a file is not a pipe, so there is no risk of a deadlocked
+///    write on a full buffer. Appending instead of truncating on every run
+///    preserves each stage's output of a multi-stage install (mirror retry
+///    after the default registry fails); stage boundaries are distinguished
+///    by the marker lines of [`append_cli_install_log`].
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let (out, err) = match std::fs::File::create(&log_path) {
+    rotate_cli_install_log_if_oversized(&log_path);
+    let (out, err) = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
         Ok(f) => match f.try_clone() {
             Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
             Err(_) => (Stdio::null(), Stdio::null()),
@@ -285,6 +297,57 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
             }
         }
     }
+}
+
+/// Appends one stage marker line to `cli-install.log`. The log is
+/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// multi-stage install (mirror retry after the default registry fails) is
+/// attributed via its marker line. Write failures are likewise silently
+/// dropped and never block the install flow.
+pub fn append_cli_install_log(line: &str) {
+    let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+/// `cli-install.log` is append-only with no natural upper bound (output of
+/// multi-stage installs / repeated retries accumulates, growing for the
+/// application's entire lifetime). Once the size limit is exceeded it is
+/// rotated to `cli-install.log.old` (overwriting the previous copy): disk
+/// usage stays bounded while the latest output of the current install is
+/// still fully preserved.
+const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+    rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
+}
+
+fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
+    let Ok(metadata) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if metadata.len() <= max_bytes {
+        return;
+    }
+    let mut rotated = log_path.as_os_str().to_owned();
+    rotated.push(".old");
+    // When two installs trigger rotation concurrently, the later rename
+    // fails: log rotation is not worth a lock, so ignore it.
+    // Relies on std::fs::rename's replace-existing-destination semantics: on
+    // Windows it also replaces (FileRenameInfoEx POSIX semantics, falling
+    // back to MoveFileExW + REPLACE_EXISTING), so the old `.old` is directly
+    // overwritten with no prior delete; failures are ignored only for cases
+    // such as the destination being held by another process, and the next
+    // rotation retries (the test below pins this overwrite semantics).
+    let _ = std::fs::rename(log_path, PathBuf::from(rotated));
 }
 
 /// Bounded reap of a killed connector child with the shared grace budget,
@@ -381,11 +444,15 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
     Some(format!("data:image/png;base64,{}", b64(bytes)))
 }
 
-/// 后台线程:逐行排空一个管道(防写满阻塞),抓到首个本连接器 URL 经 channel 送回。
+/// 后台线程:逐行排空一个管道(防写满阻塞),每行经 channel 送回
+/// `(首个本连接器 URL, 脱敏安全行)` 二元组。URL 供二维码;安全行(已按
+/// [`safe_auth_log_line`] 脱敏 + 截断)供连接器收进失败原因环形缓冲。
+/// bare-"token" 兜底关闭:飞书/企微 CLI 的正常输出行可能含含 token 字样的
+/// 字段名,开启会把非敏感行整体吞成占位符,失败原因就没了(与 dingtalk 同款取舍)。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
     r: R,
-    tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<(Option<String>, Option<String>)>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(r).lines() {
@@ -397,11 +464,55 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
                     break;
                 }
             };
-            if let Some(u) = ctx.extract_url(&line) {
-                let _ = tx.send(u);
-            }
+            let safe = safe_auth_log_line(&line, false);
+            let url = ctx.extract_url(&line);
+            let _ = tx.send((url, safe));
         }
     })
+}
+
+/// 失败原因环形缓冲的推送(容量 32,超出丢最旧)。`line` 必须是
+/// [`safe_auth_log_line`] 过滤后的行或 `None`;这里只负责容量与入队。
+pub fn remember_auth_line(
+    auth_lines: &mut std::collections::VecDeque<String>,
+    line: Option<String>,
+) {
+    if let Some(line) = line {
+        if auth_lines.len() >= 32 {
+            auth_lines.pop_front();
+        }
+        auth_lines.push_back(line);
+    }
+}
+
+/// 从排空得到的安全行里挑失败原因拼进 fallback(倒序找 failed/error/timeout/
+/// lock/失败 行,兜底取最后一行;没有任何安全行时原样返回 fallback)。
+/// 卡片只显示本地化类目文案,这里拼出的串走 `*:error` 的 message 字段与
+/// stderr/log 诊断轨迹——没有它,最常见的「CLI 打了原因再退出」在日志里
+/// 只剩应用侧的兜底话术,用户报告后无从诊断(tmeet/dingtalk 各自同款)。
+pub fn auth_failure_reason(
+    auth_lines: &std::collections::VecDeque<String>,
+    fallback: &str,
+) -> String {
+    let last_line = auth_lines
+        .iter()
+        .rev()
+        .find(|line| {
+            let l = line.to_ascii_lowercase();
+            l.contains("failed")
+                || l.contains("error")
+                || l.contains("timeout")
+                || l.contains("lock")
+                || line.contains("失败")
+        })
+        .cloned()
+        .or_else(|| auth_lines.back().cloned())
+        .unwrap_or_default();
+    if last_line.is_empty() {
+        fallback.to_string()
+    } else {
+        format!("{fallback}：{last_line}")
+    }
 }
 
 /// tree-kill 一个 PID,连其子进程(.cmd 拉起的 node)一起。
@@ -461,14 +572,45 @@ pub struct ConnectorConn {
 struct Slot {
     pid: Option<u32>,
     cancelled: bool,
+    /// Bumped by every connect_begin; lets a flow thread recognize it was
+    /// superseded by a newer round.
+    generation: u64,
 }
 
 impl ConnectorConn {
-    /// 开始一轮连接前清掉该连接器的取消标志。
-    pub fn reset(&self, id: &'static str) {
-        if let Ok(mut m) = self.slots.lock() {
-            m.entry(id).or_default().cancelled = false;
+    /// Clears the connector's cancel flag before a new round and returns the
+    /// new round's generation.
+    pub fn reset(&self, id: &'static str) -> u64 {
+        match self.slots.lock() {
+            Ok(mut m) => {
+                let s = m.entry(id).or_default();
+                s.cancelled = false;
+                s.generation = s.generation.wrapping_add(1);
+                s.generation
+            }
+            Err(_) => {
+                // Poisoned slot mutex: mint generation 0, which flow_stale
+                // always treats as stale (its lock fails there too, so it
+                // defaults to stale), making a poisoned connector fail silent
+                // — no QR/error emits at all — instead of one round's events
+                // landing on another round's card. A live slot never hands
+                // out 0: reset always bumps before returning.
+                0
+            }
         }
+    }
+
+    /// Self-check for a flow thread before emitting: reset() clears the
+    /// cancelled flag, so the flag alone cannot stop a late emit in the
+    /// "cancel then immediately reconnect" window — the old round's failure
+    /// would land on the new round's fresh card. A generation mismatch means
+    /// stale.
+    pub fn flow_stale(&self, id: &str, generation: u64) -> bool {
+        self.slots
+            .lock()
+            .ok()
+            .and_then(|m| m.get(id).map(|s| s.generation != generation))
+            .unwrap_or(true)
     }
 
     /// 置取消标志,返回当前长驻 PID(供 tree-kill)。
@@ -492,6 +634,20 @@ impl ConnectorConn {
     pub fn set_pid(&self, id: &'static str, pid: Option<u32>) {
         if let Ok(mut m) = self.slots.lock() {
             m.entry(id).or_default().pid = pid;
+        }
+    }
+
+    /// Clears the slot's pid only when it still holds `pid`. A superseded flow
+    /// thread finishing its own cleanup must not clear the pid a newer round
+    /// has registered — cancel's tree-kill and kill_all_pids would miss the
+    /// live child.
+    pub fn clear_pid_if(&self, id: &'static str, pid: u32) {
+        if let Ok(mut m) = self.slots.lock() {
+            if let Some(s) = m.get_mut(id) {
+                if s.pid == Some(pid) {
+                    s.pid = None;
+                }
+            }
         }
     }
 
@@ -586,6 +742,84 @@ mod tests {
         auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
     };
 
+    /// The append-only cli-install.log has no natural upper bound: over the
+    /// limit it must rotate to `.old` (overwriting the previous rotation);
+    /// under the limit it is left untouched.
+    #[test]
+    fn oversized_cli_install_log_rotates_to_old() {
+        let root = std::env::temp_dir().join(format!("pinvou-cli-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log_path = root.join("cli-install.log");
+        std::fs::write(&log_path, b"x").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(log_path.exists());
+        assert!(!root.join("cli-install.log.old").exists());
+
+        std::fs::write(&log_path, [b'a'; 2048]).unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        assert_eq!(
+            std::fs::read(root.join("cli-install.log.old"))
+                .unwrap()
+                .len(),
+            2048
+        );
+
+        // The second rotation must overwrite the existing `.old` (including
+        // on Windows: std::fs::rename has the same replace semantics there,
+        // covered by the CI Windows leg of this test); if a failed replace
+        // were swallowed, the main log would grow unboundedly from this
+        // point on.
+        std::fs::write(&log_path, [b'b'; 2048]).unwrap();
+        std::fs::write(root.join("cli-install.log.old"), b"stale-old-log").unwrap();
+        rotate_cli_install_log_if_oversized_with(&log_path, 1024);
+        assert!(!log_path.exists());
+        let rotated = std::fs::read(root.join("cli-install.log.old")).unwrap();
+        assert_eq!(rotated.len(), 2048);
+        assert!(rotated.iter().all(|&b| b == b'b'), "{rotated:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Every reset bumps the generation: once a new round starts, a flow
+    /// thread holding the old generation is treated as stale while the new
+    /// one passes the self-check — the guarantee that keeps an old round's
+    /// failure off the new round's card.
+    #[test]
+    fn generation_marks_superseded_flows_stale() {
+        let conn = ConnectorConn::default();
+        let gen1 = conn.reset("test-connector");
+        assert!(!conn.flow_stale("test-connector", gen1));
+        let gen2 = conn.reset("test-connector");
+        assert!(conn.flow_stale("test-connector", gen1));
+        assert!(!conn.flow_stale("test-connector", gen2));
+        // Cancel does not bump the generation: post-cancel silence stays the
+        // cancelled flag's job.
+        conn.cancel("test-connector");
+        assert!(!conn.flow_stale("test-connector", gen2));
+        // An unregistered connector is treated as stale (conservative:
+        // silence over a wrong card).
+        assert!(conn.flow_stale("other-connector", gen1));
+    }
+
+    /// clear_pid_if must be a compare-and-set: a superseded thread's cleanup
+    /// drops only its own pid, never the pid a newer round has registered.
+    #[test]
+    fn clear_pid_if_only_clears_its_own_pid() {
+        let conn = ConnectorConn::default();
+        let _ = conn.reset("test-connector");
+        conn.set_pid("test-connector", Some(111));
+        // A different pid (e.g. registered by a newer round) is left alone.
+        conn.clear_pid_if("test-connector", 222);
+        conn.cancel("test-connector"); // cancel returns the still-registered pid
+        assert_eq!(conn.cancel("test-connector"), Some(111));
+        // The owning pid clears.
+        conn.clear_pid_if("test-connector", 111);
+        assert_eq!(conn.cancel("test-connector"), None);
+        // Clearing again is a no-op.
+        conn.clear_pid_if("test-connector", 111);
+        assert_eq!(conn.cancel("test-connector"), None);
+    }
+
     /// extract_url three-branch matrix: whitelisted domain hits truncate at
     /// whitespace (QR-scan URLs often carry `&` query strings that must not be
     /// cut), non-whitelisted domains do not count as this connector's URL,
@@ -628,6 +862,27 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
         assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
+    }
+
+    /// The failure trail must prefer a failure-ish captured line over the
+    /// bare fallback, fall back to the last line when nothing matches, and
+    /// return the fallback untouched when nothing was captured — otherwise
+    /// the most common register/auth failures stay undiagnosable from the
+    /// log (the app-authored fallback is all there is).
+    #[test]
+    fn auth_failure_reason_prefers_failure_line_then_last_line() {
+        let mut lines = std::collections::VecDeque::new();
+        assert_eq!(auth_failure_reason(&lines, "fallback"), "fallback");
+        lines.push_back("config init started".to_string());
+        assert_eq!(
+            auth_failure_reason(&lines, "fallback"),
+            "fallback：config init started"
+        );
+        lines.push_back("Error: login endpoint unreachable".to_string());
+        assert_eq!(
+            auth_failure_reason(&lines, "fallback"),
+            "fallback：Error: login endpoint unreachable"
+        );
     }
 
     /// A 30s probe timeout must NOT read as "CLI not installed": the ensure

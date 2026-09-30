@@ -9,12 +9,7 @@ use crate::core::model_endpoint::LocalServerKind;
 pub async fn get_monitor_snapshot(
     monitor: State<'_, MonitorState>,
 ) -> Result<MonitorSnapshot, String> {
-    let snapshot = crate::features::monitor::sample_all(
-        &monitor,
-        &crate::features::monitor::vllm_base_url(),
-        crate::features::monitor::vllm_configured_model(),
-    )
-    .await;
+    let snapshot = crate::features::monitor::sample_all(&monitor).await;
     Ok(snapshot)
 }
 

@@ -3,11 +3,13 @@ import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
 import { builtinToolShortName } from './builtin-plugin-logic.js';
 import { SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_LIST_TOOL, SCHEDULED_TASK_UPDATE_TOOL, scheduledTaskCreateSummary, scheduledTaskDeleteSummary, scheduledTaskListSummary, scheduledTaskUpdateSummary } from './scheduled-task-tool-logic.js';
+import { builtinToolShortName, MODE_CONTROLLED_BUILTIN_SKILL_IDS } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
+import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
 import { dict } from '../../shared/i18n.js';
 
 // 调用方尚未下发 t 时回退中文词典（与现状一致），接入 t 后自动多语。
@@ -183,12 +185,16 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           return args.pattern ? '"' + args.pattern + '"' : '';
         case 'file_search':
           return args.query ? '"' + args.query + '"' : '';
-        case 'bash':
-        case 'exec_shell':
-        case 'task_shell_start':
-        case 'shell':
-        case 'Bash':
-          return typeof args.command === 'string' ? args.command.replaceAll(/\s+/g, ' ').trim() : '';
+        default:
+          break;
+      }
+      // Shell tools (including the wait-style names) share the command-line
+      // summary; keeping the check on the shared set prevents the case list
+      // from drifting again when a new shell tool name is added.
+      if (isShellExecutionTool(name)) {
+        return typeof args.command === 'string' ? args.command.replaceAll(/\s+/g, ' ').trim() : '';
+      }
+      switch (name) {
         case 'checklist_update':
         case 'todo_update':
           return args.status === 'completed' ? t.tsDone
@@ -364,10 +370,11 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       const T = tc(t);
 
       return (
-        // 根节点不用 overflow-hidden class:vendor/tailwind.js 运行时把生成的
-        // .overflow-hidden 注入到 base.css 之后,会盖掉 .tool-card-output 的
-        // overflow-y:auto,导致 diff 被 200px max-height 裁剪且无法滚动(e2e 实测)。
-        // 内联样式优先级最高:显式 y 滚动 + x 裁剪(保圆角),expanded 时放开 max-height。
+        // The root avoids the overflow-hidden class: Tailwind utilities come after
+        // base.css and would override .tool-card-output's overflow-y:auto, clipping
+        // the diff at the 200px max-height with no way to scroll (verified in e2e).
+        // Inline styles win: explicit y scrolling + x clipping (keeps the rounded
+        // corners); max-height is lifted when expanded.
         <div
           data-testid="diff-view"
           className={`${outBox()} p-0`}
@@ -728,7 +735,11 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true },
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
+      // The audit badge keys mode control off backendId: this legacy entry's
+      // real backend skill id (visual-design) must reach the builtin page so
+      // its badge agrees with the store card (review round-5 M3).
+      backendId: 'visual-design' },
     ];
 
     // 后端合成技能卡的补充展示数据(按 backendId 取):
@@ -937,7 +948,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h2>
-              <span className="px-3 py-1 text-[12px] rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap">{C.readonlyBadge}</span>
+              <span className="px-3 py-1 text-[12px] rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap">{MODE_CONTROLLED_BUILTIN_SKILL_IDS.includes(tool.backendId) ? C.readonlyModeBadge : C.readonlyBadge}</span>
             </div>
             {tool.subtitle && <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium">{tool.subtitle}</p>}
             {tool.desc && <p className="text-[12px] text-slate-500 dark:text-slate-400 leading-relaxed">{tool.desc}</p>}

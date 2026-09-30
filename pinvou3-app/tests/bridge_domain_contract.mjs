@@ -2,9 +2,9 @@ export const desktopBridgeApi = {
   lifecycle: ['init'],
   state: ['get', 'getMany', 'subscribe', 'subscribeMany'],
   platform: ['refreshConnectorAuthGates'],
-  chat: ['cancelGeneration', 'cancelShellTask', 'editQueued', 'getComposerDraft', 'interruptAndSendQueued', 'prefillComposer', 'prioritizeQueued', 'removeQueued', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
+  chat: ['cancelGeneration', 'cancelShellTask', 'editQueued', 'getComposerDraft', 'interruptAndSendQueued', 'prefillComposer', 'prioritizeQueued', 'removeQueued', 'restoreTaskDraft', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
   auxChat: ['discard', 'ensure', 'reset', 'send', 'snapshot'],
-  voice: ['appendVoiceText', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
+  voice: ['abandonVoiceResult', 'appendVoiceText', 'beginVoiceSubmission', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'completeVoiceSubmission', 'dismissVoiceInput', 'getVoiceOperationId', 'hasVoiceSubmissionPending', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
   sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
@@ -12,7 +12,7 @@ export const desktopBridgeApi = {
 
   settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
   feedback: ['submitFeedback'],
-  vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
+  vllm: ['discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
   models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeLocalServerKind', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
   interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
@@ -55,17 +55,20 @@ export const desktopOnlyBridgeApi = {
   // In a web relay session that is the remote desktop, not the browser user's
   // machine — pasting must stay on the browser's own clipboardData there.
   attachments: ['addPasteImageFromClipboard'],
-  // Builtin feature toggles: the registry read (list_builtin_features) is
-  // lane-agnostic and web-allowed (the session-mention gate in ChatView must
-  // see the host's switch state from a browser too, PR #586);
-  // set_builtin_feature_enabled stays a desktop-only write channel — the
-  // contract hook for future per-feature settings pages, no consumer yet.
+  // Builtin feature toggles (list_builtin_features / set_builtin_feature_enabled)
+  // are desktop Rust command channels with no web backend. list_builtin_features
+  // is consumed by ChatView (the session-mention feature gate, PR #586);
+  // set_builtin_feature_enabled is the contract hook for future per-feature
+  // settings pages — no consumer yet.
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
-  settings: ['saveSearchSettingsAndRestart', 'setBuiltinFeatureEnabled'],
-  // Vendor-edition one-click vLLM bootstrap is a vendor-edition desktop surface: the web capability bit is always
-  // false and the related commands are not in the access-policy allowlist.
-  vllm: ['bootstrapLocalVllm', 'declineVllmSetup', 'detectLocalVllmSetup', 'dismissVllmSetup', 'discoverLocalVllm'],
+  settings: ['saveSearchSettingsAndRestart', 'listBuiltinFeatures', 'setBuiltinFeatureEnabled'],
+  // Built-in feature toggles (list_builtin_features / set_builtin_feature_enabled)
+  // are desktop Rust command channels; the web host has no backend for them
+  // (contract hook; no consumer this cycle).
+  // Local vLLM discovery probes loopback services on the desktop host; the web capability bit is always false
+  // and the command is not in the access-policy allowlist.
+  vllm: ['discoverLocalVllm'],
   // In-app upgrade: check/download/install/restart all depend on the local package manager; on the web
   // only the version-number read is available (the appUpdate capability bit is always false).
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],

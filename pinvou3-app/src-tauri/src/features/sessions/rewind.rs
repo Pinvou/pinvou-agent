@@ -26,11 +26,14 @@ use super::SessionStore;
 use super::transcript::transcript_revision;
 use super::validators::validate_session_id;
 
-/// `_rewound_turns.json` 的专用互斥锁：truncate/restore/purge 三方对整个
-/// sidecar map 的 read-modify-write 都经它串行化（替代「调用方已持
-/// scheduled_mutation」的错误假设——`SessionStore::delete` 路径并不持该锁，
-/// 删除会话 X 与会话 Y 的回退存在真实的覆盖竞态，评审 M8）。叶锁：持它期间
-/// 不再取其它锁，与 scheduled_mutation 无环。
+/// Dedicated mutex for `_rewound_turns.json`: the read-modify-writes of all
+/// three parties (truncate/restore/purge) over the whole sidecar map are
+/// serialized through it. Historical semantics correction: the delete path
+/// now also holds `scheduled_mutation` (the delete-serialization fix in
+/// store.rs); this lock is acyclic relative to it and points the same
+/// direction, kept as belt-and-braces — it also covers the boot-time
+/// `purge_all_scheduled_side_maps` caller that runs without
+/// `scheduled_mutation`. Leaf lock: no other lock is taken while held.
 static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
@@ -304,9 +307,12 @@ impl SessionStore {
         Ok(restored)
     }
 
-    /// 删除/保留策略清理会话时同步清掉其回退备份（best-effort：失败只留孤儿数据，
-    /// 不影响主流程）。read-modify-write 经 REWIND_BACKUP_LOCK 与 truncate/restore
-    /// 串行（评审 M8：delete 路径不持 scheduled_mutation，专用锁替代此前的错误假设）。
+    /// Purge a session's rewind backups when delete/retention removes the
+    /// session (best-effort: a failure only leaves orphaned data and does not
+    /// affect the main flow). Serialized through `REWIND_BACKUP_LOCK` like
+    /// truncate/restore; the delete caller already holds
+    /// `scheduled_mutation`, so this lock is the supplementary line of defense
+    /// outside that window (the boot sweep).
     pub(crate) fn purge_rewound_turns_backups(ids: &[String]) {
         if ids.is_empty() || !rewound_turns_path().exists() {
             return;

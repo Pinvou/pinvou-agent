@@ -22,3 +22,7 @@ pinvou3-app/src/vendor/*.js text eol=lf
 # The vendor script rewrites this tracked placeholder after replacing its
 # directory; pin LF so its embedded GITKEEP bytes are identical on all hosts.
 pinvou3-app/src-tauri/resources/platforms/windows/chrome-devtools-mcp/.gitkeep text eol=lf
+# Workflow YAML 会被策略/路由测试逐行正则解析(scripts/tests/pr-check-routing.test.mjs、
+# test_ci_gate_policy.py 等):core.autocrlf=true 的 Windows checkout 转成 CRLF 后
+# 正则失配、守卫空转,与上方钩子/Shell 脚本同理钉 LF。
+.github/workflows/*.yml text eol=lf

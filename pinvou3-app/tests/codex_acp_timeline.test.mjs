@@ -121,7 +121,6 @@ try {
     ['thought', 'tool', 'permission', 'elicitation', 'message'],
   );
   assert.equal(turn.blocks[1].tool.status, 'completed', 'tool block must update in its original position');
-  assert.equal(projected.thread.turns, projected.turns, 'thread must own the projected turns');
   assert.deepEqual(
     turn.items.map(item => item.type),
     ['reasoning', 'tool', 'permission', 'elicitation', 'agent_message'],
@@ -988,7 +987,10 @@ try {
   assert.ok(codexView.includes('respondAcpElicitation({ sessionId: targetId, elicitationId, action, content })'),
     'Codex input answers must be returned through the ACP request');
   assert.ok(conversationView.includes('className={`codex-markdown'), 'conversation Markdown must keep the isolated Codex style scope');
-  assert.ok(codexView.includes('<ConversationTurn'), 'Codex must render through the shared Turn renderer by default');
+  assert.ok(codexView.includes('<ConversationTimeline') && codexView.includes('scrollElementRef={scroller}'),
+    'Codex must render through the shared virtualizable timeline by default');
+  assert.ok(codexView.includes('shouldVirtualizeConversationTurns(visibleTurns.length, scroller)'),
+    'native scroll anchoring must stay enabled while the Codex timeline is in normal flow');
   assert.ok(codexView.includes('<LiveConversationActivityIndicator')
     && codexView.includes('turn={activeConversationTurn}')
     && conversationView.includes("if (!turn || turn.status !== 'running') return null"),
@@ -1075,7 +1077,7 @@ try {
     && codexView.includes('composerSendBlockers.workspaceUnavailable || composerSendBlockers.sessionSyncing')
     && codexView.includes('if (composerSendBlockers.noSendTarget) return false;')
     && !/pendingAttachment/.test((codexView.match(/function canSendNativeVoiceTask\(outgoing\) \{[\s\S]*?\n {2}\}/) || [''])[0])
-    && codexView.includes('sendTask: async outgoing => send(outgoing)'),
+    && codexView.includes("sendTask: async (outgoing, context) => send(outgoing, { voiceOperationId: context?.operationId })"),
   'Codex voice task mode must go through the shared hook, code-lane risk gate, and real send result before reporting success; pending attachments must reach send() so the failure is reported instead of faking success');
   // plain（非 native）车道仍走自绘 CodexComposerConfigSelect 配置组，不随 native 车道
   // 迁移到共享组件；共享 config select 保留 ACP testid 契约。

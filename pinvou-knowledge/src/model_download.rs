@@ -12,10 +12,20 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 pub const KNOWLEDGE_MODEL_HF_BASE_URL: &str = "https://huggingface.co";
+/// Hugging Face-compatible mirror reachable from mainland China (path layout
+/// identical to the official source; preferred by default).
+pub const KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL: &str = "https://hf-mirror.com";
 pub const KNOWLEDGE_MODEL_HF_REPOSITORY: &str = "onnx-community/bge-m3-ONNX";
 pub const KNOWLEDGE_MODEL_HF_REVISION: &str = "25b9af8e87a38eb120cfe87125383677b9cd309e";
 pub const KNOWLEDGE_MODEL_HF_BASE_URL_ENV: &str = "PINVOU_KNOWLEDGE_HF_BASE_URL";
 pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
+
+/// Shared message for the cancelled state (user-facing error copy, used by every
+/// cancellation checkpoint). The fallback loop tells "user cancel" (abort the whole
+/// flow) apart from "single mirror source failure" (retry the next base URL) via the
+/// `is_cancelled` flag rather than error-string matching; the flag does not depend
+/// on this constant.
+const CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeModelFile {
@@ -78,21 +88,45 @@ pub struct KnowledgeModelDownloadProgress {
     pub source_path: &'static str,
 }
 
-/// 返回当前进程应使用的 Hugging Face 兼容镜像基地址。
-pub fn knowledge_model_hf_base_url() -> String {
-    std::env::var(KNOWLEDGE_MODEL_HF_BASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| KNOWLEDGE_MODEL_HF_BASE_URL.to_string())
+/// Returns the ordered list of Hugging Face-compatible mirror base URLs to try.
+///
+/// When [`KNOWLEDGE_MODEL_HF_BASE_URL_ENV`] is set explicitly, only that URL is
+/// returned — an explicitly chosen source never falls back; otherwise the mainland
+/// China mirror ([`KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL`]) is tried first, falling
+/// back to the official source on failure. Every file is retried per base URL, and
+/// content is always verified with per-file SHA-256.
+pub fn knowledge_model_hf_base_url_candidates() -> Vec<String> {
+    ordered_hf_base_url_candidates(
+        std::env::var(KNOWLEDGE_MODEL_HF_BASE_URL_ENV)
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+    )
+}
+
+/// Pure core of [`knowledge_model_hf_base_url_candidates`] (for unit testing; does
+/// not touch environment variables).
+fn ordered_hf_base_url_candidates(explicit: Option<String>) -> Vec<String> {
+    match explicit {
+        Some(value) => vec![value],
+        None => vec![
+            KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL.to_string(),
+            KNOWLEDGE_MODEL_HF_BASE_URL.to_string(),
+        ],
+    }
 }
 
 /// 将固定 revision 的五个文件下载并逐一校验到一个新建的候选目录。
 ///
 /// `candidate` 必须不存在。任何失败或取消都会清理本次创建的候选目录；调用方在
 /// 返回成功后负责真实加载候选模型，并将其原子替换到正式目录。
+///
+/// `hf_base_urls` is the ordered list of mirror base URLs to try (see
+/// [`knowledge_model_hf_base_url_candidates`]): when a single file fails to download
+/// or verify on one base URL, the next base URL is retried automatically, and the
+/// whole operation errors out only after all of them fail.
 pub async fn download_knowledge_model_candidate<P, C>(
     candidate: &Path,
-    hf_base_url: &str,
+    hf_base_urls: &[String],
     on_progress: P,
     is_cancelled: C,
 ) -> Result<(), String>
@@ -105,13 +139,26 @@ where
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(90))
         .timeout(Duration::from_secs(3 * 60 * 60))
+        // Redirects follow HTTPS targets only (same policy as the connectors /
+        // marketplace download paths): if the mirror is hijacked, the 586MB model
+        // stream must not be redirected to plaintext HTTP. Cross-origin HTTPS
+        // redirects are still allowed — hf-mirror currently 308s /resolve/ to the
+        // official source, and the bytes written to disk always pass the SHA-256
+        // gate.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if hf_redirect_follow_allowed(attempt.previous().len(), attempt.url().scheme()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .user_agent(concat!("pinvou-knowledge/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("无法创建模型下载客户端: {error}"))?;
     download_knowledge_model_candidate_with(
         &client,
         candidate,
-        hf_base_url,
+        hf_base_urls,
         &KNOWLEDGE_MODEL_FILES,
         on_progress,
         is_cancelled,
@@ -249,10 +296,98 @@ pub fn install_model_candidate(
     })
 }
 
+/// 上次安装中断遗留候选目录的处置结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptedCandidate {
+    /// 目录与清单逐文件一致（存在性 + 大小 + SHA-256），可直接进入真实加载 + 部署。
+    Reuse,
+    /// 目录不存在，或校验不符已被清理；调用方应重新下载。
+    Cleaned,
+}
+
+/// 崩溃恢复：安装流程在「五文件下载加逐文件 SHA-256 校验完成」之后、「真实加载
+/// 与部署」之前被中断（进程崩溃 / 被杀 / 断电）时，候选目录会完整留在磁盘上。
+/// 下载阶段本就逐文件校验通过后才重命名落位，因此与清单一致的候选目录必然来自
+/// 一次完整下载——重校验（大小 + SHA-256，~585MB 秒级）通过后直接复用即可续上
+/// 安装，不必每次重试都重新下载全量模型；任何不符（含下载中途的 `.part` 残留、
+/// 磁盘损坏、应用升级后清单换版）都会清掉该目录并按 `Cleaned` 走全新下载。
+/// 清单之外的多余条目不参与校验，`Reuse` 时会随部署一并保留——加载器只读固定
+/// 文件名、清单内文件哈希钉死，多余文件仅占磁盘。清单为编译期常量，非空由
+/// 调用方保证。
+///
+/// `on_progress(file_index, file_count)` 在每个文件校验通过后回调（`file_index`
+/// 从 1 开始），供调用方把复查进度映射到既有进度事件。调用方负责跨进程安装锁；
+/// 返回 `Reuse` 后候选目录的所有权移交调用方（与下载成功后的语义一致）。
+pub fn recover_interrupted_candidate_dir(
+    candidate: &Path,
+    manifest: &[KnowledgeModelFile],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<InterruptedCandidate, String> {
+    if !candidate.exists() {
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    if candidate.is_file() {
+        // 残留是同名普通文件（异常产物）：清掉即可走全新下载，不必让整次安装失败。
+        std::fs::remove_file(candidate).map_err(|error| {
+            format!(
+                "清理残留的模型候选文件失败({}): {error}",
+                candidate.display()
+            )
+        })?;
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    if let Err(reason) = verify_manifest_dir(candidate, manifest, &mut on_progress) {
+        // 复查不通过意味着要付出 ~585MB 全新下载的代价，失败原因必须留痕可查。
+        eprintln!("[knowledge] 模型候选目录复查未通过，清理后重新下载: {reason}");
+        std::fs::remove_dir_all(candidate).map_err(|error| {
+            format!(
+                "清理未通过校验的模型候选目录失败({}): {error}",
+                candidate.display()
+            )
+        })?;
+        return Ok(InterruptedCandidate::Cleaned);
+    }
+    Ok(InterruptedCandidate::Reuse)
+}
+
+/// 逐文件校验候选目录与清单一致（存在、是文件、大小一致、SHA-256 一致），
+/// 首个不一致即返回 `Err`。
+fn verify_manifest_dir(
+    dir: &Path,
+    manifest: &[KnowledgeModelFile],
+    on_progress: &mut impl FnMut(usize, usize),
+) -> Result<(), String> {
+    for (index, file) in manifest.iter().enumerate() {
+        let path = safe_candidate_path(dir, file.destination_path)?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| format!("模型候选文件缺失({}): {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("模型候选路径不是文件({})", path.display()));
+        }
+        if metadata.len() != file.bytes {
+            return Err(format!(
+                "模型候选文件大小不符({}): 期望 {} 字节，实际 {} 字节",
+                path.display(),
+                file.bytes,
+                metadata.len()
+            ));
+        }
+        let actual = sha256_file(&path)?;
+        if !actual.eq_ignore_ascii_case(file.sha256) {
+            return Err(format!(
+                "模型候选文件校验失败({}): 期望 {}，实际 {}",
+                file.destination_path, file.sha256, actual
+            ));
+        }
+        on_progress(index + 1, manifest.len());
+    }
+    Ok(())
+}
+
 async fn download_knowledge_model_candidate_with<P, C>(
     client: &reqwest::Client,
     candidate: &Path,
-    hf_base_url: &str,
+    hf_base_urls: &[String],
     manifest: &[KnowledgeModelFile],
     mut on_progress: P,
     is_cancelled: C,
@@ -261,7 +396,16 @@ where
     P: FnMut(KnowledgeModelDownloadProgress) + Send,
     C: Fn() -> bool + Send + Sync,
 {
-    let base_url = validate_hf_base_url(hf_base_url)?;
+    // Validate all base URLs up front: any invalid mirror configuration must fail
+    // before any network access, so "half a download from the first two base URLs
+    // before the third one reveals the misconfiguration" cannot happen.
+    if hf_base_urls.is_empty() {
+        return Err("mirror base URL list is empty".to_string());
+    }
+    let mut base_urls = Vec::with_capacity(hf_base_urls.len());
+    for value in hf_base_urls {
+        base_urls.push(validate_hf_base_url(value)?);
+    }
     let total_bytes = manifest.iter().map(|file| file.bytes).sum();
     let parent = candidate
         .parent()
@@ -280,9 +424,8 @@ where
         let mut completed_bytes = 0_u64;
         for (index, file) in manifest.iter().enumerate() {
             if is_cancelled() {
-                return Err("已取消".to_string());
+                return Err(CANCELLED.to_string());
             }
-            let url = knowledge_model_file_url(&base_url, file.source_path)?;
             let destination = safe_candidate_path(candidate, file.destination_path)?;
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| {
@@ -296,51 +439,99 @@ where
                     .and_then(|value| value.to_str())
                     .unwrap_or("download")
             ));
-            download_manifest_file(
-                client,
-                &url,
-                &partial,
-                file,
-                completed_bytes,
-                total_bytes,
-                index,
-                manifest.len(),
-                &mut on_progress,
-                &is_cancelled,
-            )
-            .await?;
+
+            // Try the mirror base URLs in order: a download or verification failure
+            // on the current base URL (including an SHA-256 mismatch caused by
+            // tampered mirror content) retries the next one; only after all fail does
+            // the whole operation error out, with the source host and the number of
+            // exhausted sources in the error — otherwise a failure such as a tampered
+            // mirror would be misread as an official-source outage. Cancellation is a
+            // global intent: wherever it appears, it terminates immediately and is
+            // never treated as a mirror failure.
+            let mut failures: Vec<String> = Vec::new();
+            let mut succeeded = false;
+            // Retrying on a different base URL restarts this file from scratch; if
+            // progress events passed through unchanged, the cumulative bytes seen by
+            // the frontend would go backwards (the progress bar would jump back).
+            // Peak clamping across base URLs keeps the value monotonically
+            // non-decreasing.
+            let mut peak_downloaded = completed_bytes;
+            for base_url in &base_urls {
+                if is_cancelled() {
+                    return Err(CANCELLED.to_string());
+                }
+                // The previous base URL's partial `.part` must be removed before
+                // retrying, so the append never mixes bytes from different sources.
+                let _ = std::fs::remove_file(&partial);
+                let url = knowledge_model_file_url(base_url, file.source_path)?;
+                let mut on_progress = |event: KnowledgeModelDownloadProgress| {
+                    peak_downloaded = peak_downloaded.max(event.downloaded_bytes);
+                    on_progress(KnowledgeModelDownloadProgress {
+                        downloaded_bytes: peak_downloaded,
+                        ..event
+                    });
+                };
+                match download_and_verify_manifest_file(
+                    client,
+                    &url,
+                    &partial,
+                    &destination,
+                    file,
+                    completed_bytes,
+                    total_bytes,
+                    index,
+                    manifest.len(),
+                    &mut on_progress,
+                    &is_cancelled,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        succeeded = true;
+                        break;
+                    }
+                    // Cancellation is a global intent: once the flag is set, abort the
+                    // whole operation (even if this particular error is not the cancel
+                    // message); never treat it as a mirror failure and move on to the
+                    // next base URL.
+                    Err(_) if is_cancelled() => return Err(CANCELLED.to_string()),
+                    Err(error) => {
+                        let host = match base_url.port() {
+                            // Non-default ports are included in the prefix so
+                            // same-host candidates on different ports stay
+                            // distinguishable in errors; default ports are omitted
+                            // (consistent with URL display conventions).
+                            Some(port) => {
+                                format!(
+                                    "{}:{port}",
+                                    base_url.host_str().unwrap_or_else(|| base_url.as_str())
+                                )
+                            }
+                            None => base_url
+                                .host_str()
+                                .unwrap_or_else(|| base_url.as_str())
+                                .to_string(),
+                        };
+                        failures.push(format!("[{host}] {error}"));
+                    }
+                }
+            }
+            if !succeeded {
+                // base_urls is non-empty and every failure appends to failures; the
+                // fallback message must not falsely claim "cancelled".
+                let detail = failures.join("; ");
+                return Err(if base_urls.len() > 1 {
+                    format!("{} download sources all failed: {detail}", base_urls.len())
+                } else if detail.is_empty() {
+                    "Model download failed".to_string()
+                } else {
+                    detail
+                });
+            }
 
             if is_cancelled() {
-                return Err("已取消".to_string());
+                return Err(CANCELLED.to_string());
             }
-            on_progress(KnowledgeModelDownloadProgress {
-                stage: KnowledgeModelDownloadStage::Verify,
-                downloaded_bytes: completed_bytes + file.bytes,
-                total_bytes,
-                file_index: index + 1,
-                file_count: manifest.len(),
-                source_path: file.source_path,
-            });
-            let verify_path = partial.clone();
-            let actual = tokio::task::spawn_blocking(move || sha256_file(&verify_path))
-                .await
-                .map_err(|error| format!("模型校验任务失败: {error}"))??;
-            if !actual.eq_ignore_ascii_case(file.sha256) {
-                return Err(format!(
-                    "模型文件校验失败({}): 期望 {}，实际 {}",
-                    file.source_path, file.sha256, actual
-                ));
-            }
-            if is_cancelled() {
-                return Err("已取消".to_string());
-            }
-            std::fs::rename(&partial, &destination).map_err(|error| {
-                format!(
-                    "无法完成模型文件写入({} -> {}): {error}",
-                    partial.display(),
-                    destination.display()
-                )
-            })?;
             completed_bytes += file.bytes;
         }
         Ok(())
@@ -351,6 +542,76 @@ where
         let _ = std::fs::remove_dir_all(candidate);
     }
     result
+}
+
+/// Complete attempt for a single file on a single base URL: download to `.part` →
+/// verify progress event → SHA-256 verification → atomic `rename` to `destination`.
+/// Any failing step returns `Err`, and the caller decides whether to retry the next
+/// base URL.
+#[allow(clippy::too_many_arguments)]
+async fn download_and_verify_manifest_file<P, C>(
+    client: &reqwest::Client,
+    url: &Url,
+    partial: &Path,
+    destination: &Path,
+    file: &KnowledgeModelFile,
+    completed_bytes: u64,
+    total_bytes: u64,
+    file_index: usize,
+    file_count: usize,
+    on_progress: &mut P,
+    is_cancelled: &C,
+) -> Result<(), String>
+where
+    P: FnMut(KnowledgeModelDownloadProgress) + Send,
+    C: Fn() -> bool + Send + Sync,
+{
+    download_manifest_file(
+        client,
+        url,
+        partial,
+        file,
+        completed_bytes,
+        total_bytes,
+        file_index,
+        file_count,
+        on_progress,
+        is_cancelled,
+    )
+    .await?;
+
+    if is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    on_progress(KnowledgeModelDownloadProgress {
+        stage: KnowledgeModelDownloadStage::Verify,
+        downloaded_bytes: completed_bytes + file.bytes,
+        total_bytes,
+        file_index: file_index + 1,
+        file_count,
+        source_path: file.source_path,
+    });
+    let verify_path = partial.to_path_buf();
+    let actual = tokio::task::spawn_blocking(move || sha256_file(&verify_path))
+        .await
+        .map_err(|error| format!("Model verification task failed: {error}"))??;
+    if !actual.eq_ignore_ascii_case(file.sha256) {
+        return Err(format!(
+            "Model file verification failed ({}): expected {}, actual {}",
+            file.source_path, file.sha256, actual
+        ));
+    }
+    if is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    std::fs::rename(partial, destination).map_err(|error| {
+        format!(
+            "Failed to finish writing model file ({} -> {}): {error}",
+            partial.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,7 +655,7 @@ where
     let mut last_emitted = 0_u64;
     while let Some(chunk) = stream.next().await {
         if is_cancelled() {
-            return Err("已取消".to_string());
+            return Err(CANCELLED.to_string());
         }
         let chunk = chunk
             .map_err(|error| format!("模型下载中断({}): {error}", manifest_file.source_path))?;
@@ -439,13 +700,27 @@ where
     Ok(())
 }
 
+/// Redirect-follow decision (pure core for unit testing): follow HTTPS targets only,
+/// with a bounded hop count. The initial request itself is not restricted (local and
+/// test servers may use HTTP); only the redirect chain is constrained.
+fn hf_redirect_follow_allowed(previous_hops: usize, scheme: &str) -> bool {
+    previous_hops < 10 && scheme == "https"
+}
+
+/// An explicitly configured mirror base URL can come from either of two environment
+/// variables (shared server or desktop; validation happens inside the shared crate,
+/// which cannot tell the origin apart), so the error message names both and avoids
+/// reporting the wrong variable to desktop users.
+const HF_BASE_URL_ENV_HINT: &str =
+    "mirror base URL environment variable (PINVOU_KNOWLEDGE_HF_BASE_URL / PINVOU3_KB_HF_BASE_URL)";
+
 fn validate_hf_base_url(value: &str) -> Result<Url, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 不能为空"));
+        return Err(format!("{HF_BASE_URL_ENV_HINT} must not be empty"));
     }
     let mut url = Url::parse(value)
-        .map_err(|error| format!("{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 不是有效 URL: {error}"))?;
+        .map_err(|error| format!("{HF_BASE_URL_ENV_HINT} is not a valid URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -454,7 +729,7 @@ fn validate_hf_base_url(value: &str) -> Result<Url, String> {
         || url.fragment().is_some()
     {
         return Err(format!(
-            "{KNOWLEDGE_MODEL_HF_BASE_URL_ENV} 必须是不含账号、查询参数和片段的 HTTP(S) 基地址"
+            "{HF_BASE_URL_ENV_HINT} must be an HTTP(S) base URL without credentials, query parameters, or fragments"
         ));
     }
     if !url.path().ends_with('/') {
@@ -622,6 +897,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ordered_candidates_explicit_source_wins_over_mirror_chain() {
+        // Explicit environment variable = a source the user chose explicitly; no fallback.
+        assert_eq!(
+            ordered_hf_base_url_candidates(Some("https://internal.example/hf".to_string())),
+            vec!["https://internal.example/hf".to_string()]
+        );
+        // Unset: mainland China mirror first, official source as the fallback.
+        assert_eq!(
+            ordered_hf_base_url_candidates(None),
+            vec![
+                KNOWLEDGE_MODEL_HF_MIRROR_BASE_URL.to_string(),
+                KNOWLEDGE_MODEL_HF_BASE_URL.to_string(),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn cancelled_download_removes_its_candidate_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -631,7 +923,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &client,
             &candidate,
-            "http://127.0.0.1:9",
+            &["http://127.0.0.1:9".to_string()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",
@@ -642,7 +934,7 @@ mod tests {
             || cancelled.load(Ordering::Relaxed),
         )
         .await;
-        assert_eq!(result.unwrap_err(), "已取消");
+        assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(!candidate.exists());
     }
 
@@ -670,7 +962,7 @@ mod tests {
         download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &manifest,
             |value| progress.push(value),
             || false,
@@ -719,7 +1011,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",
@@ -732,8 +1024,299 @@ mod tests {
         .await;
         server.join().unwrap();
 
-        assert!(result.unwrap_err().contains("模型文件校验失败"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Model file verification failed")
+        );
         assert!(!candidate.exists());
+    }
+
+    /// When the primary mirror is unreachable (connection refused), a single file
+    /// must automatically retry the next base URL and succeed, and only the alive
+    /// mirror may receive requests.
+    #[tokio::test]
+    async fn unreachable_mirror_falls_back_to_next_base() {
+        let (base_url, requests, server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        // 127.0.0.1:1 has no listener, so the connection is refused immediately —
+        // equivalent to the mirror being down.
+        let bases = vec!["http://127.0.0.1:1".to_string(), base_url.clone()];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(std::fs::read(candidate.join("model.onnx")).unwrap(), b"abc");
+        let request = requests.recv().unwrap();
+        assert!(request.contains("GET /hf/onnx-community/bge-m3-ONNX/resolve/"));
+    }
+
+    /// When a mirror serves tampered/corrupted bytes (SHA-256 mismatch), fall back to
+    /// the next base URL the same way; the content finally written to disk must come
+    /// from a source that passed verification.
+    #[tokio::test]
+    async fn mirror_serving_corrupt_bytes_falls_back_to_next_base() {
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
+        let (good_base, _good_requests, good_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![bad_base, good_base];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await
+        .unwrap();
+        bad_server.join().unwrap();
+        good_server.join().unwrap();
+
+        assert_eq!(
+            std::fs::read(candidate.join("config.json")).unwrap(),
+            b"abc"
+        );
+    }
+
+    /// When every download source fails, the aggregated error must name each failed
+    /// source (the `[host]` prefix) and give the total source count, instead of
+    /// keeping only the last source's error — otherwise users cannot tell whether
+    /// the mirror or the official source is broken.
+    #[tokio::test]
+    async fn exhausted_sources_error_names_every_failed_base() {
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![b"zzz"]);
+        let (worse_base, _worse_requests, worse_server) = serve_model_files(vec![b"yyy"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![bad_base.clone(), worse_base.clone()];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await;
+        bad_server.join().unwrap();
+        worse_server.join().unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.contains("2 download sources all failed"), "{error}");
+        // The prefix host includes a non-default port (local server), matching
+        // [host:port] in the aggregated message.
+        let bad_authority = bad_base
+            .split("//")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .unwrap();
+        let worse_authority = worse_base
+            .split("//")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .unwrap();
+        assert!(error.contains(&format!("[{bad_authority}]")), "{error}");
+        assert!(error.contains(&format!("[{worse_authority}]")), "{error}");
+        assert!(!candidate.exists());
+    }
+
+    /// Redirect policy for model downloads: follow HTTPS targets only, with a bounded
+    /// hop count (same as the connectors/marketplace download paths; the initial
+    /// request is unrestricted, and local test servers may use HTTP).
+    #[test]
+    fn redirects_follow_only_https_targets_within_hop_budget() {
+        assert!(hf_redirect_follow_allowed(0, "https"));
+        assert!(hf_redirect_follow_allowed(9, "https"));
+        assert!(!hf_redirect_follow_allowed(10, "https"));
+        assert!(!hf_redirect_follow_allowed(0, "http"));
+        assert!(!hf_redirect_follow_allowed(0, "ftp"));
+    }
+
+    /// Retrying on a different base URL restarts the file from scratch: the
+    /// cumulative bytes in progress events must stay monotonically non-decreasing
+    /// (peak clamping), otherwise the frontend progress bar jumps from the already
+    /// accumulated high value back down at the fallback moment. The first source
+    /// emits three events (2MiB/4MiB/5MiB) and then fails SHA verification; if the
+    /// restarted source's events passed through unchanged, they would restart from
+    /// 2MiB — with clamping broken, this test's window assertion fails.
+    #[tokio::test]
+    async fn progress_events_stay_monotonic_across_base_fallback() {
+        const FILE_BYTES: usize = 5 * 1024 * 1024;
+        let good_body: &'static [u8] = Vec::leak(vec![b'a'; FILE_BYTES]);
+        let bad_body: &'static [u8] = Vec::leak(vec![b'z'; FILE_BYTES]);
+        let (bad_base, _bad_requests, bad_server) = serve_model_files(vec![bad_body]);
+        let (good_base, _good_requests, good_server) = serve_model_files(vec![good_body]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let (events_tx, events_rx) = mpsc::channel();
+        let bases = vec![bad_base, good_base];
+        download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: FILE_BYTES as u64,
+                sha256: {
+                    let mut hasher = Sha256::new();
+                    hasher.update(good_body);
+                    let hex: String = hasher
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    Box::leak(hex.into_boxed_str())
+                },
+            }],
+            move |event| {
+                if event.stage == KnowledgeModelDownloadStage::Download {
+                    let _ = events_tx.send(event.downloaded_bytes);
+                }
+            },
+            || false,
+        )
+        .await
+        .unwrap();
+        bad_server.join().unwrap();
+        good_server.join().unwrap();
+
+        assert_eq!(
+            std::fs::read(candidate.join("model.onnx")).unwrap(),
+            good_body
+        );
+        let events: Vec<u64> = events_rx.into_iter().collect();
+        // Do not pin the event count: transport chunk sizes are an implementation
+        // detail, and a single chunk larger than 2MiB merges threshold events. Broken
+        // clamping shows up as events restarting from a low value after the fallback,
+        // which the monotonic assertion below catches; here we only require that the
+        // event stream genuinely advances to the completion value.
+        assert!(
+            events.last() == Some(&(FILE_BYTES as u64)),
+            "progress events must advance to the completion value ({FILE_BYTES} bytes): {events:?}"
+        );
+        for pair in events.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "progress events must be monotonically non-decreasing across source fallback: {events:?}"
+            );
+        }
+    }
+
+    /// An invalid base URL must fail the whole operation before any network access:
+    /// even when ordered after an alive mirror, "half a download before reporting the
+    /// configuration error" is not allowed — the alive source must not receive a
+    /// single request. The candidate directory must remain uncreated.
+    #[tokio::test]
+    async fn invalid_base_url_fails_before_any_download() {
+        // The alive server comes first: if base URL validation were wrongly deferred
+        // to the per-source download stage, the first source would receive a real
+        // request first; this test uses the request channel to catch that regression.
+        let (live_base, live_requests, live_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let bases = vec![live_base, "https://user:secret@example.com".to_string()];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            |_| {},
+            || false,
+        )
+        .await;
+
+        assert!(
+            result.unwrap_err().contains("must be an HTTP(S) base URL"),
+            "an invalid base URL must fail before any network access"
+        );
+        assert!(
+            live_requests.try_recv().is_err(),
+            "an alive source ordered before an invalid base URL must not receive any requests"
+        );
+        // The server thread is still blocked in accept() at this point (validation
+        // failure = no request will ever arrive); do not join it — leaking until the
+        // test process exits is fine.
+        drop(live_server);
+        assert!(
+            !candidate.exists(),
+            "candidate directory must not be created before base URL validation"
+        );
+    }
+
+    /// User cancels during a mirror attempt: the whole operation must abort (no retry
+    /// on the next base URL), and the candidate directory is still cleaned up. This
+    /// is the most critical semantic branch in the fallback loop.
+    #[tokio::test]
+    async fn cancel_during_mirror_attempt_aborts_without_falling_through() {
+        let (first_base, _first_requests, first_server) = serve_model_files(vec![b"abc"]);
+        let (second_base, second_requests, _second_server) = serve_model_files(vec![b"abc"]);
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("candidate");
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_flag = std::sync::Arc::clone(&cancelled);
+        let bases = vec![first_base, second_base];
+        let result = download_knowledge_model_candidate_with(
+            &reqwest::Client::new(),
+            &candidate,
+            &bases,
+            &[KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            }],
+            move |_| {
+                // The first progress event counts as the user clicking cancel
+                // (simulates cancelling mid-download).
+                cancel_flag.store(true, std::sync::atomic::Ordering::Release);
+            },
+            || cancelled.load(std::sync::atomic::Ordering::Acquire),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        // The second base URL must not have been requested at all.
+        assert!(
+            second_requests.try_recv().is_err(),
+            "the next base URL must not be attempted after cancellation"
+        );
+        assert!(
+            !candidate.exists(),
+            "candidate directory must be cleaned up after cancellation"
+        );
+        first_server.join().unwrap();
     }
 
     #[tokio::test]
@@ -744,7 +1327,7 @@ mod tests {
         let result = download_knowledge_model_candidate_with(
             &reqwest::Client::new(),
             &candidate,
-            &base_url,
+            &[base_url.clone()],
             &[KnowledgeModelFile {
                 source_path: "config.json",
                 destination_path: "config.json",
@@ -826,5 +1409,161 @@ mod tests {
         // A dangling symlink does not resolve and stays incomplete.
         std::fs::remove_dir_all(&target).unwrap();
         assert!(!model_directory_is_complete(&link));
+    }
+
+    fn write_manifest_fixture(dir: &std::path::Path, manifest: &[KnowledgeModelFile]) {
+        for file in manifest {
+            let path = dir.join(file.destination_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"payload").unwrap();
+        }
+    }
+
+    fn tiny_manifest() -> Vec<KnowledgeModelFile> {
+        let payload = b"payload";
+        // 清单结构的 sha256 是 &'static str（生产清单是编译期常量）；测试清单
+        // 用 Box::leak 换得等价生命周期（测试进程一次性的少量泄漏，无碍）。
+        let digest: &'static str = Box::leak(
+            Sha256::digest(payload)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                .into_boxed_str(),
+        );
+        vec![
+            KnowledgeModelFile {
+                source_path: "onnx/model_int8.onnx",
+                destination_path: "model.onnx",
+                bytes: payload.len() as u64,
+                sha256: digest,
+            },
+            KnowledgeModelFile {
+                source_path: "config.json",
+                destination_path: "config.json",
+                bytes: payload.len() as u64,
+                sha256: digest,
+            },
+        ]
+    }
+
+    // 回归锚点：安装中断（下载校验完成、加载/部署前进程死亡）留下的完整候选
+    // 目录必须被识别为可复用——否则每次重试都会清掉 ~585MB 已验证数据重新下载。
+    #[test]
+    fn interrupted_candidate_matching_manifest_is_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+
+        let mut progress = Vec::new();
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |done, total| {
+            progress.push((done, total));
+        })
+        .unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Reuse);
+        assert_eq!(progress, vec![(1, 2), (2, 2)]);
+        assert!(candidate.exists(), "复用语义不得删除候选目录");
+    }
+
+    #[test]
+    fn interrupted_candidate_missing_file_is_cleaned_for_fresh_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::remove_file(candidate.join("config.json")).unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists(), "不完整的残留必须清理后才能重新下载");
+    }
+
+    #[test]
+    fn interrupted_candidate_corrupted_content_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        // 同长度篡改：绕过大小检查，确保命中 SHA-256 比对分支（清单校验的安全核心）。
+        std::fs::write(candidate.join("model.onnx"), b"payloaX").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_non_file_entry_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::remove_file(candidate.join("config.json")).unwrap();
+        std::fs::create_dir(candidate.join("config.json")).unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_stray_file_is_cleaned_for_fresh_download() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        std::fs::write(&candidate, b"not a directory").unwrap();
+
+        let outcome =
+            recover_interrupted_candidate_dir(&candidate, &tiny_manifest(), |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists(), "同名普通文件残留也应被清理");
+    }
+
+    #[test]
+    fn interrupted_candidate_extra_entries_are_carried_by_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::write(candidate.join("stale.part"), b"leftover").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(
+            outcome,
+            InterruptedCandidate::Reuse,
+            "清单外多余条目不阻断复用（部署后仅占磁盘，见 recover 文档）"
+        );
+        assert!(candidate.join("stale.part").exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_wrong_size_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+        let manifest = tiny_manifest();
+        write_manifest_fixture(&candidate, &manifest);
+        std::fs::write(candidate.join("config.json"), b"payload-extra").unwrap();
+
+        let outcome = recover_interrupted_candidate_dir(&candidate, &manifest, |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn interrupted_candidate_absent_dir_reports_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate = root.path().join("bge-m3.tmp");
+
+        let outcome =
+            recover_interrupted_candidate_dir(&candidate, &tiny_manifest(), |_, _| {}).unwrap();
+
+        assert_eq!(outcome, InterruptedCandidate::Cleaned);
+        assert!(!candidate.exists());
     }
 }

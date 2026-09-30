@@ -6,7 +6,7 @@
 - Web 或不支持依赖安装的宿主不会调用桌面安装接口，但仍携带强制场景元数据：要求模型在缺少能力时明确提示，不用 HTML 或在线文档代替本地 PPT。
 - 生成工具在本地运行；内容规划仍由用户已配置的模型处理，不能据此理解为模型调用也完全离线。首次准备沿用现有依赖安装和权限规则，没有新增下载源或在线服务。
 - 场景选择与消息标签分别保存；Tauri、Web 和 Rust 后端使用一致的 `design:ppt` 白名单，旧场景不变。
-- 复用现有的 `scene_triggered` 受控场景选择统计，遵循已有埋点开关，不新增对话内容采集。
+- 场景选择不产生遥测事件或统计上报；社区版不包含行为遥测，不采集对话内容。
 
 验证入口：`test:pinvou-mode-state`、`test:scene-capabilities`、`test:pinvou-scene-sidecar`、`test:ui-language` 与构建后的 `test:scene-cards-smoke`。
 

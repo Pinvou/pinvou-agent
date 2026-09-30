@@ -87,6 +87,15 @@ vm.runInContext(
         error: null,
       },
     },
+    // Ownership/lifecycle helpers consumed by startVoiceInput: the ASR-install
+    // guard test only exercises the "installing" early return, so these stay
+    // inert stubs for the lifecycle symbols living outside the extracted slice.
+    getVoiceOperationId: () => null,
+    abandonVoiceResult: () => {},
+    abandonCompletedVoiceResult: () => {},
+    trackVoiceTerminal: () => {},
+    voiceToken: (prefix) => `${prefix}1`,
+    rememberVoiceOperation: () => {},
   };
   vm.createContext(guardContext);
   vm.runInContext(

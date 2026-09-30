@@ -2950,8 +2950,8 @@ impl BrowserManager {
         start_guard: tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<RestoreWorkspaceOutcome, String> {
         // When the product gate is closed, do not even read the restore manifest or
-        // create hidden WebViews from it. Preserve it unchanged for a future enabled
-        // or preview acceptance build.
+        // create hidden WebViews from it. Preserve it unchanged for a future
+        // enabled build.
         if !crate::platform::capabilities::browser_product_enabled() {
             return Ok(RestoreWorkspaceOutcome::Missing);
         }

@@ -32,14 +32,76 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let prev = std::env::var("PINVOU3_HOME").ok();
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-    f();
-    match prev {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+
+    // Restore through Drop, not straight-line code after `f()`. A failing
+    // assertion inside the closure unwinds, and with the restore written
+    // inline it would be skipped: the temp dir leaks AND PINVOU3_HOME stays
+    // pointed at it for every later test in this process, so one genuine
+    // failure cascades into a string of unrelated ones and the suite's red
+    // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
+    struct TempHomeRestore {
+        previous: Option<OsString>,
+        dir: std::path::PathBuf,
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    impl Drop for TempHomeRestore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    // Declared after `_g` so it drops BEFORE the lock is released: no other
+    // test may observe the temporary value.
+    let _restore = TempHomeRestore {
+        previous: prev.map(OsString::from),
+        dir: dir.clone(),
+    };
+    f();
+}
+
+/// Take the crate-unique env lock and snapshot a set of env vars in one step:
+/// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+/// Not reentrant — never call while already holding ENV_LOCK. The guard
+/// releases the lock and restores the env when scope exits (including panic
+/// unwind). (`bridge.rs`'s test module still keeps a private
+/// `locked_env`/`EnvGuard` pair; its ~hundred call sites have not been
+/// migrated here — new code always uses this implementation so the old pair
+/// stops spreading.)
+#[cfg(test)]
+pub(crate) fn locked_env(
+    vars: &[&'static str],
+) -> (std::sync::MutexGuard<'static, ()>, EnvRestore) {
+    let lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    (lock, EnvRestore::capture(vars))
+}
+
+/// 连接器旧布局 bin 目录的测试入口：返回 `managed_connector_bin_dir()`；为
+/// `None` 时硬断言当前目标平台确实不受 lock 表覆盖。消费方测试（存量迁移、
+/// PATH 次序等）据此软跳过——受支持平台上的 wrapper 回归在这里失败，而不是
+/// 被各消费方测试的 `else { return }` 静默吞掉（否则 PATH 注入、存量迁移/
+/// 残留清理、spawn 回退解析的回归会全部变哑）。
+#[cfg(test)]
+pub(crate) fn managed_connector_bin_dir_or_assert_unsupported() -> Option<std::path::PathBuf> {
+    let dir = crate::platform::paths::managed_connector_bin_dir();
+    if dir.is_none() {
+        assert!(
+            crate::platform::paths::connector_platform_dir(
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+            .is_none(),
+            "managed_connector_bin_dir must be Some on a lock-covered platform (os={}, arch={})",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    }
+    dir
 }
 
 /// RAII 快照/恢复一组环境变量：`capture` 记录现值，`Drop`（含 panic 路径）

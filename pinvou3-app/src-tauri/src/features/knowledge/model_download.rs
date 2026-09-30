@@ -1,9 +1,12 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! 模型不再随安装包打包；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。固定 revision 的五个文件由
-//! `pinvou-knowledge` 统一流式下载并逐文件校验。候选目录通过真实
-//! embedding 加载后才带回滚地替换托管模型并刷新工具门控，**免重启**即可建库/入库/检索。
+//! Models are no longer bundled with the installer; users download them
+//! from the knowledge page into `super::model_dir`
+//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files at the pinned
+//! revision are streamed and per-file verified by `pinvou-knowledge`. Only
+//! after the candidate directory passes a real embedding load is the managed
+//! model replaced with rollback and the tool gating refreshed, so index
+//! building, ingestion, and search all gain the model **without a restart**.
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 
@@ -68,18 +71,28 @@ impl Drop for ModelLoadLease<'_> {
     }
 }
 
-fn model_load_error() -> Option<String> {
+pub(super) fn model_load_error() -> Option<String> {
     MODEL_LOAD_ERROR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
-fn set_model_load_error(error: Option<String>) {
+/// 最近一次真实加载失败的诊断落位入口。导入补载（`reload_embedder_if_import_needed`）
+/// 与首帧加载同语义：失败必须可见（KbModelStatus.error → 前端失败门 + 修复入口），
+/// 不能只在导入线程 eprintln 后留下 installed+未就绪且无错误的「僵尸状态」。
+pub(super) fn set_model_load_error(error: Option<String>) {
     *MODEL_LOAD_ERROR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
 }
+
+/// 测试专用：MODEL_LOAD_ERROR 是进程级全局，`leased_reload_*` 与 mod.rs 的
+/// 导入补载测试并行读写同一静态，精确断言必须互斥（tokio Mutex 让异步测试
+/// 可跨 await 持锁，同步测试用 blocking_lock）。
+#[cfg(test)]
+pub(super) static MODEL_LOAD_ERROR_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 /// 任何真实加载尝试（成功或失败）前清除「无使用场景故意延迟」标记:导入补载
 /// 等绕过状态命令的加载入口也在其列——否则首帧被门控跳过的用户导入文件时,
@@ -241,13 +254,23 @@ pub async fn kb_model_download(
         if service.semantic_ready() {
             return Ok(current_status(&service));
         }
+        // 已部署目录直接热加载，不会再有下载/校验事件：不发进度的话，前端会停在
+        // 桥接层种下的「正在下载 0%」。复用既有 prepare 阶段事件如实表达加载中。
+        let _ = app.emit(
+            "kb_model:progress",
+            serde_json::json!({
+                "stage": "prepare",
+                "downloaded": DISPLAY_DOWNLOAD_BYTES,
+                "total": DISPLAY_DOWNLOAD_BYTES,
+            }),
+        );
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
     }
+    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }
-    // 守卫：任何提前 return（含 ?、取消）退出时都复位 DOWNLOADING。
     let guard = DownloadGuard;
 
     let parent = dir
@@ -257,43 +280,87 @@ pub async fn kb_model_download(
     std::fs::create_dir_all(&parent).map_err(|e| format!("创建目录失败: {e}"))?;
     // ── 1. 固定 revision 五文件清单下载 + 逐文件大小/SHA-256 校验 ──
     let tmp = dir.with_extension("tmp");
-    if tmp.exists() {
-        std::fs::remove_dir_all(&tmp)
-            .map_err(|e| format!("清理上次模型候选目录失败({}): {e}", tmp.display()))?;
-    }
-    let hf_base_url = std::env::var(DESKTOP_HF_BASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(pinvou_knowledge::model_download::knowledge_model_hf_base_url);
-    let progress_app = app.clone();
-    pinvou_knowledge::model_download::download_knowledge_model_candidate(
-        &tmp,
-        &hf_base_url,
-        move |progress| {
-            let stage = match progress.stage {
-                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {
-                    "download"
-                }
-                pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Verify => "verify",
-            };
-            let _ = progress_app.emit(
-                "kb_model:progress",
-                serde_json::json!({
-                    "stage": stage,
-                    "downloaded": progress.downloaded_bytes,
-                    "total": progress.total_bytes,
-                    "fileIndex": progress.file_index,
-                    "fileCount": progress.file_count,
-                    "file": progress.source_path,
-                }),
-            );
-        },
-        || false, // 取消入口已随 kb_model_cancel 命令移除
-    )
-    .await?;
-    if !model_directory_is_complete(&tmp) {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
+    // 崩溃恢复：上次安装若在「下载校验完成之后、真实加载/部署之前」被中断（进程
+    // 崩溃/被杀），tmp 里留着已逐文件 SHA-256 校验过的完整候选。重校验通过就直接
+    // 复用续上安装（免去每次重试都重新下载 ~585MB）；不完整或不符（含下载中途的
+    // `.part` 残留、清单换版）则清理后全新下载。哈希为阻塞操作，放 blocking 线程；
+    // 复查进度映射到既有 verify 阶段事件，避免 UI 停在 0%。
+    let reused_candidate = if tmp.exists() {
+        let verify_app = app.clone();
+        let verify_dir = tmp.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            pinvou_knowledge::model_download::recover_interrupted_candidate_dir(
+                &verify_dir,
+                &pinvou_knowledge::model_download::KNOWLEDGE_MODEL_FILES,
+                |done, total| {
+                    let cumulative = pinvou_knowledge::model_download::KNOWLEDGE_MODEL_FILES
+                        .iter()
+                        .take(done)
+                        .map(|file| file.bytes)
+                        .sum::<u64>();
+                    let _ = verify_app.emit(
+                        "kb_model:progress",
+                        serde_json::json!({
+                            "stage": "verify",
+                            "downloaded": cumulative,
+                            "total": DISPLAY_DOWNLOAD_BYTES,
+                            "fileIndex": done,
+                            "fileCount": total,
+                        }),
+                    );
+                },
+            )
+        })
+        .await
+        .map_err(|e| format!("模型候选目录复查任务失败: {e}"))??;
+        matches!(
+            verified,
+            pinvou_knowledge::model_download::InterruptedCandidate::Reuse
+        )
+    } else {
+        false
+    };
+    if !reused_candidate {
+        // The desktop app can specify its own mirror (explicit = the only source, no
+        // fallback); when unset, fall back to the candidate chain shared by both ends:
+        // the mainland China mirror hf-mirror.com first, official huggingface.co as the
+        // final fallback.
+        let hf_base_urls = match std::env::var(DESKTOP_HF_BASE_URL_ENV) {
+            Ok(value) if !value.trim().is_empty() => vec![value],
+            _ => pinvou_knowledge::model_download::knowledge_model_hf_base_url_candidates(),
+        };
+        let progress_app = app.clone();
+        pinvou_knowledge::model_download::download_knowledge_model_candidate(
+            &tmp,
+            &hf_base_urls,
+            move |progress| {
+                let stage = match progress.stage {
+                    pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Download => {
+                        "download"
+                    }
+                    pinvou_knowledge::model_download::KnowledgeModelDownloadStage::Verify => {
+                        "verify"
+                    }
+                };
+                let _ = progress_app.emit(
+                    "kb_model:progress",
+                    serde_json::json!({
+                        "stage": stage,
+                        "downloaded": progress.downloaded_bytes,
+                        "total": progress.total_bytes,
+                        "fileIndex": progress.file_index,
+                        "fileCount": progress.file_count,
+                        "file": progress.source_path,
+                    }),
+                );
+            },
+            || false, // no in-process cancel entry: cross-process cancel stays a consumer-side design (CLI/GUI command)
+        )
+        .await?;
+        if !model_directory_is_complete(&tmp) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
+        }
     }
 
     // ── 2. 真实加载候选模型，再原子换入并热加载（失败时保留旧模型）──
@@ -403,15 +470,10 @@ pub(crate) async fn load_installed_embedder(
 /// 知识库连接（与 tool_policy 的 kb_usable 同口径：远程连接存在即视为知识库
 /// 可用，宁可保守加载；远程检索本身在服务端嵌入，本地模型只为挂载校验与
 /// 可能的本地混检兜底）。两者皆无 → 首帧不加载。
+/// The check reuses the tool gating's [`KnowledgeService::kb_tools_usable`], so the two
+/// predicates cannot drift apart.
 fn knowledge_usage_present(service: &KnowledgeService) -> bool {
-    usage_present(service.has_indexed_content(), remote_has_connections())
-}
-
-/// usage_present 的纯函数核心（便于单测）：任一使用迹象存在即加载。判定与
-/// 工具门控的 [`KnowledgeService::kb_tools_usable`] 同口径，委托实现避免两份
-/// 谓词各自漂移。
-fn usage_present(indexed_content: bool, remote_connections: bool) -> bool {
-    KnowledgeService::kb_tools_usable(indexed_content, remote_connections)
+    KnowledgeService::kb_tools_usable(service.has_indexed_content(), remote_has_connections())
 }
 
 /// deferred_no_usage 的纯函数核心（便于单测）：只有「已安装、未就绪、最近一次
@@ -579,12 +641,12 @@ mod tests {
     #[test]
     fn first_frame_load_requires_local_content_or_remote_connections() {
         // 两者皆无 → 跳过加载（磁盘目录即使完整也不白占 ~570MB）。
-        assert!(!usage_present(false, false));
+        assert!(!KnowledgeService::kb_tools_usable(false, false));
         // 本地有已入库内容（含曾建库后仍有文档的用户）→ 加载。
-        assert!(usage_present(true, false));
+        assert!(KnowledgeService::kb_tools_usable(true, false));
         // 远程连接存在（远程检索要本地嵌入查询向量）→ 加载。
-        assert!(usage_present(false, true));
-        assert!(usage_present(true, true));
+        assert!(KnowledgeService::kb_tools_usable(false, true));
+        assert!(KnowledgeService::kb_tools_usable(true, true));
     }
 
     #[test]
@@ -672,6 +734,8 @@ mod tests {
     /// 复现审计缺陷：并发 kb_search 各自 spawn_blocking 重载 ~570MB 模型。
     #[tokio::test]
     async fn leased_reload_concurrent_calls_load_once() {
+        // 进程级 MODEL_LOAD_ERROR 会被本测试写 None，与 mod.rs 的导入补载测试互斥。
+        let _guard = MODEL_LOAD_ERROR_TEST_LOCK.lock().await;
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let loads = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
@@ -730,6 +794,9 @@ mod tests {
     /// 调用仍会重试（不缓存失败）。
     #[tokio::test]
     async fn leased_reload_failure_propagates_and_retries() {
+        // 本测试向进程级 MODEL_LOAD_ERROR 写入两次失败诊断，与 mod.rs 的导入
+        // 补载测试（精确断言该静态）互斥，避免并行运行时偶发读到对方写入值。
+        let _guard = MODEL_LOAD_ERROR_TEST_LOCK.lock().await;
         let loads = Arc::new(AtomicUsize::new(0));
         for expected_error in ["第一次失败", "第二次失败"] {
             let loads = loads.clone();

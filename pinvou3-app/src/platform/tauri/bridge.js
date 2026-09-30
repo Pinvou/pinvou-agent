@@ -342,14 +342,6 @@ function pinvouSharedtauriMain() {
     depsInstalling: false,    // 一键安装进行中(brew/apt/winget)
     depsInstallError: null,   // 安装失败原因(stderr 透传/取消/包管理器不可用)
     depsInstallProgress: null, // 安装进度 {package,current,total,detail}(后端 deps:install_progress 事件)
-    // 厂商预装本地大模型一键引导:首屏检测结果 + 引导执行态
-    vllmSetup: null,          // {eligible, may_offer_setup, has_packages, engine_state:'stopped' in community (sole enum variant; vendor builds may extend), ...}
-    vllmBootstrapping: false, // 引导进行中(pkexec + 拉起 + 轮询就绪)
-    vllmSetupPhase: null,     // phase: 'authorizing'|'waiting'|'ready' (set locally to 'authorizing' when the flow starts; defensive vendor-edition UI field — the community backend never emits phase events)
-    vllmSetupAttempt: 0,      // probe count during the waiting phase (defensive: vendor-edition UI field; the community-edition backend never emits phase events)
-    vllmBootstrapDone: null,  // 成功结果 {base_url, model}, 据此显示「立即重启」
-    vllmBootstrapError: null, // 失败原因(pkexec stderr / 超时透传)
-    vllmSetupDismissed: false,// 本次会话内点了「跳过」,不再弹(不写持久标记)
     voiceInput: {
       status: "idle",         // idle | requesting_permission | recording | transcribing | postprocessing | completed | cancelled | failed
       message: "",
@@ -453,7 +445,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
-      cpuUnavailable: "CPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
       approved: "✅ Approved", echoGo: "✅ Do it",
       acceptPlanFailed: "⚠️ accept_plan failed: ",
@@ -461,7 +452,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       replanRequested: "📋 Asking the AI to re-plan…",
       openFailed: "⚠️ Open failed: ", pasteImageFailed: "⚠️ Paste image failed: ",
       filePickUnavailable: "⚠️ File picker unavailable", filePickFailed: "⚠️ File selection failed: ",
-      equipNoSession: "⚠️ Open or create a chat before equipping an expert", equipFailed: "⚠️ Equip failed: ",
+      equipFailed: "⚠️ Equip failed: ",
       shellOutputOmitted: kind => `[Earlier ${kind} output omitted]`, shellUnknownExit: "unknown",
       shellTaskFinished: code => `[Task finished, exit code: ${code}]`,
       skillContentHidden: "(Skill loaded, content hidden)",
@@ -486,12 +477,13 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       voiceTranscribing: "Transcribing…",
       voicePostprocessing: "Polishing voice text…",
       voiceTaskPostprocessing: "Rewriting voice task…",
-      voiceStructuredPostprocessing: "Structuring voice text…",
       voiceEditPostprocessing: "Editing current input…",
       voiceRecordingTooShort: "Recording is too short. Please try again.",
       voiceRecordingTooLong: "Recording is too long. Please shorten it and try again.",
       voiceAudioInvalid: "The recorded audio is invalid. Please record again.",
       voiceMicUnavailable: "The microphone is in use by another app. Close it or pick another microphone, then try again.",
+      voiceMicBusyOtherWindow: "Voice input is already recording in another app window. Stop it there, then try again.",
+      voiceMicOwnershipUnavailable: "Recording ownership could not be verified (start failed closed). Please try again.",
       voiceWrittenBack: "Transcribed text inserted into the input box",
       voiceTaskSent: "Voice task sent",
       voiceEditPreviewReady: "Voice edit ready to review",
@@ -515,12 +507,11 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
-      attachNeedSession: "⚠️ Start a new chat before adding attachments", attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
+      attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
       remoteTurnSyncing: "⚠️ This chat is still syncing a turn finished on another device. Try again shortly.",
       mountCollectionFailed: "Failed to mount collection: ",
-      metricNotApplicable: "N/A", metricUnavailable: "Not provided",
-      targetKindRemote: "Remote model", targetKindLocal: "Local model", targetKindInvalid: "Config error",
+      metricUnavailable: "Not provided",
       betaVersionSuffix: " (Beta)",
       depsInstallManual: "The missing items cannot be installed in one click. Install them as described in the notes above each missing item, then re-check.",
       remoteCmdNotAllowed: cmd => "Remote control does not allow this command: " + cmd,
@@ -554,7 +545,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
-      cpuUnavailable: "CPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
       approved: "✅ 承認済み", echoGo: "✅ これでいく",
       acceptPlanFailed: "⚠️ accept_plan に失敗: ",
@@ -562,7 +552,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       replanRequested: "📋 AI にプランを出し直させています…",
       openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
       filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
-      equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
+      equipFailed: "⚠️ 装備に失敗: ",
       shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
       shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
       skillContentHidden: "（スキルを読み込みました。内容は非表示です）",
@@ -587,12 +577,13 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       voiceTranscribing: "音声を認識中…",
       voicePostprocessing: "音声テキストを整えています…",
       voiceTaskPostprocessing: "音声タスクを整理しています…",
-      voiceStructuredPostprocessing: "リストに整理中…",
       voiceEditPostprocessing: "現在の入力を編集しています…",
       voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
       voiceRecordingTooLong: "録音が長すぎます。短くして再試行してください。",
       voiceAudioInvalid: "録音データが無効です。もう一度録音してください。",
       voiceMicUnavailable: "マイクは他のアプリで使用中です。使用中のアプリを終了するか、別のマイクを選んでから再試行してください。",
+      voiceMicBusyOtherWindow: "別のアプリウィンドウで音声入力が進行中です。そちらを停止してから再試行してください。",
+      voiceMicOwnershipUnavailable: "録音の所有権を確認できなかったため、開始を中止しました。もう一度お試しください。",
       voiceWrittenBack: "音声を入力ボックスに書き込みました",
       voiceTaskSent: "音声タスクを送信しました",
       voiceEditPreviewReady: "音声編集を確認してください",
@@ -616,12 +607,11 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
-      attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
+      attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
       remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
-      metricNotApplicable: "対象外", metricUnavailable: "未提供",
-      targetKindRemote: "リモートモデル", targetKindLocal: "ローカルモデル", targetKindInvalid: "設定エラー",
+      metricUnavailable: "未提供",
       betaVersionSuffix: " (ベータ版)",
       depsInstallManual: "不足している項目はワンクリックでインストールできません。各不足項目の上にある説明に従ってインストールしてから、再検出してください。",
       remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
@@ -655,7 +645,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
-      cpuUnavailable: "CPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
       approved: "✅ 已批准", echoGo: "✅ 就这么干",
       acceptPlanFailed: "⚠️ accept_plan 失败: ",
@@ -663,7 +652,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       replanRequested: "📋 让 AI 重出方案…",
       openFailed: "⚠️ 打开失败: ", pasteImageFailed: "⚠️ 粘贴图片失败: ",
       filePickUnavailable: "⚠️ 文件选择不可用", filePickFailed: "⚠️ 选择文件失败: ",
-      equipNoSession: "⚠️ 请先打开或新建一个对话再加持专家", equipFailed: "⚠️ 加持失败: ",
+      equipFailed: "⚠️ 加持失败: ",
       shellOutputOmitted: kind => `[中间${kind === "stderr" ? "错误" : "标准"}输出已省略]`, shellUnknownExit: "未知",
       shellTaskFinished: code => `[任务已结束，退出码: ${code}]`,
       skillContentHidden: "（技能已加载，内容不展示）",
@@ -688,12 +677,13 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       voiceTranscribing: "正在识别语音…",
       voicePostprocessing: "正在整理语音文本…",
       voiceTaskPostprocessing: "正在整理语音任务…",
-      voiceStructuredPostprocessing: "正在整理成条目…",
       voiceEditPostprocessing: "正在编辑当前输入…",
       voiceRecordingTooShort: "录音时间过短，请重试。",
       voiceRecordingTooLong: "录音过长，请缩短后重试。",
       voiceAudioInvalid: "录音数据无效，请重新录制。",
       voiceMicUnavailable: "麦克风被其他应用占用，请关闭占用它的应用或更换麦克风后重试。",
+      voiceMicBusyOtherWindow: "另一个应用窗口正在进行语音输入，请先在那里停止后再试。",
+      voiceMicOwnershipUnavailable: "无法确认录音所有权，为避免冲突已停止本次启动，请重试。",
       voiceWrittenBack: "语音已写入输入框",
       voiceTaskSent: "语音任务已发送",
       voiceEditPreviewReady: "语音编辑待确认",
@@ -717,12 +707,11 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
-      attachNeedSession: "⚠️ 请先新建会话再添加附件", attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
+      attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
       remoteTurnSyncing: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
       mountCollectionFailed: "挂载知识集失败: ",
-      metricNotApplicable: "不适用", metricUnavailable: "未提供",
-      targetKindRemote: "远端模型", targetKindLocal: "本地模型", targetKindInvalid: "配置异常",
+      metricUnavailable: "未提供",
       betaVersionSuffix: " (内测版)",
       depsInstallManual: "当前缺失项无法一键安装，请按上方各缺失项的说明手动安装后重新检测。",
       remoteCmdNotAllowed: cmd => "远程控制不允许调用该命令：" + cmd,
@@ -769,26 +758,46 @@ function pinvouSceneStorageKey(sid) { return pinvouSharedtauriMain().pinvouScene
 function normalizePinvouSceneEvents(events) { return pinvouSharedtauriMain().normalizePinvouSceneEvents(events); }
 function loadPinvouSceneEventsForSession(sid) { return pinvouSharedtauriMain().loadPinvouSceneEventsForSession(sid); }
 
+  // A missing sidecar is a normal empty result (the backend returns []); only
+  // unreadable/malformed/schema-invalid durable data reaches the catch. Scene tags
+  // are decorative metadata, so a bad sidecar must not make the session unopenable —
+  // but it must not be silent either, or a durable-data defect looks like "no tags".
+  // Report it, then degrade to the local migration cache.
+  // The same holds for the one-time localStorage→backend migration write: the session
+  // switch path awaits this function bare, so letting a write error escape would abort
+  // the switch over decorative metadata.
+  function reportSidecarReadFailure(kind, sid, error) {
+    console.warn(`[sidecar] ${kind} read failed for session ${sid}; falling back to the local cache`, error);
+  }
+  function reportSidecarWriteFailure(kind, sid, error) {
+    console.warn(`[sidecar] ${kind} migration write failed for session ${sid}; keeping the local cache`, error);
+  }
   async function syncPinvouSceneEventsForSession(sid) {
     const cached = loadPinvouSceneEventsForSession(sid);
     if (!sid) return cached;
+    let remote;
     try {
-      const remote = normalizePinvouSceneEvents(
+      remote = normalizePinvouSceneEvents(
         await invoke("get_session_pinvou_scene_events", { sessionId: sid })
       );
-      if (remote.length) {
-        try {
-          window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
-        } catch { /* fall back to the remote data when the localStorage write fails */ }
-        return remote;
-      }
-      if (cached.length) {
-        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
-      }
-      return cached;
-    } catch {
+    } catch (error) {
+      reportSidecarReadFailure("pinvou scene", sid, error);
       return cached;
     }
+    if (remote.length) {
+      try {
+        window.localStorage.setItem(pinvouSceneStorageKey(sid), JSON.stringify(remote));
+      } catch { /* fall back to the remote data when the localStorage write fails */ }
+      return remote;
+    }
+    if (cached.length) {
+      try {
+        await invoke("save_session_pinvou_scene_events", { sessionId: sid, events: cached });
+      } catch (error) {
+        reportSidecarWriteFailure("pinvou scene", sid, error);
+      }
+    }
+    return cached;
   }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauriMain().recordPinvouSceneForMessage(sid, pos, scene); }
 function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSceneForMessagePos(pos); }
@@ -841,23 +850,29 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   async function syncSteeredMessagesForSession(sid) {
     const cached = loadSteeredMessagesForSession(sid);
     if (!sid) return cached;
+    let remote;
     try {
-      const remote = normalizeSteeredMessages(
+      remote = normalizeSteeredMessages(
         await invoke("get_session_steered_messages", { sessionId: sid })
       );
-      if (remote.length) {
-        try {
-          window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));
-        } catch { /* fall back to the remote data when the localStorage write fails */ }
-        return remote;
-      }
-      if (cached.length) {
-        await invoke("save_session_steered_messages", { sessionId: sid, events: cached });
-      }
-      return cached;
-    } catch {
+    } catch (error) {
+      reportSidecarReadFailure("steered messages", sid, error);
       return cached;
     }
+    if (remote.length) {
+      try {
+        window.localStorage.setItem(steeredMessagesStorageKey(sid), JSON.stringify(remote));
+      } catch { /* fall back to the remote data when the localStorage write fails */ }
+      return remote;
+    }
+    if (cached.length) {
+      try {
+        await invoke("save_session_steered_messages", { sessionId: sid, events: cached });
+      } catch (error) {
+        reportSidecarWriteFailure("steered messages", sid, error);
+      }
+    }
+    return cached;
   }
   // 合并写入一批 {pos, text}（同 pos 后写覆盖），并同步当前内存态（活动
   // session 写 state，后台 session 写其 buffer）。返回归一化后的完整列表。
@@ -914,6 +929,10 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     authoritySyncBufferSnapshot, bt,
     isDefaultChatTitle,
     notify,
+    // Lazy accessor: chat is installed before the voice feature below, so the
+    // function resolves the voice feature lazily; it is only ever called at
+    // runtime, well after both features exist.
+    voice: function () { return voiceFeature; },
     runSyncOnSession: function (...args) { return runSyncOnSession(...args); },
     startThinking: function (...args) { return startThinking(...args); },
     stopThinking: function (...args) { return stopThinking(...args); },
@@ -1049,6 +1068,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     bt, userMessageDisplayText,
     loadPinvouSceneEventsForSession,
     syncPinvouSceneEventsForSession,
+    reportSidecarReadFailure,
     loadSteeredMessagesForSession,
     syncSteeredMessagesForSession,
     loadMemoryOverview: function (...args) { return loadMemoryOverview(...args); },
@@ -1166,7 +1186,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
 function markRemoteTurn(sid, buf, preserveCommittedRevision, cause) { return pinvouSharedtauriMain().markRemoteTurn(sid, buf, preserveCommittedRevision, cause); }
-function onSessionEvent(e, fn) { return pinvouSharedtauriMain().onSessionEvent(e, fn); }
+function onSessionEvent(e, fn, options) { return pinvouSharedtauriMain().onSessionEvent(e, fn, options); }
 function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduledRunSession(sid); }
 
   // Transcript persistence is authoritative in Rust. The UI only persists the
@@ -1451,7 +1471,7 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
     monitor: ["monitor", "monitorError"],
     settings: ["settings", "selectedPet"],
     models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
-    vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
+    vllm: [],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
     computerUse: ["computerUse"],
     personas: ["activePersona", "personaEvents", "personaPool"],
@@ -1588,8 +1608,13 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
 
   let notificationQueue = [];
   let notificationDispatching = false;
+  // React subscribes before lifecycle.init() finishes. The independent startup
+  // loaders therefore used to expose a succession of partial snapshots and
+  // re-render the root once per completed IPC. Keep their state ownership and
+  // parallelism, but publish the initialized state as one coherent revision.
+  let startupNotificationBatching = false;
   function notify() {
-    if (suppressNotify) return;
+    if (suppressNotify || startupNotificationBatching) return;
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
@@ -1631,7 +1656,33 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   }
   function subscribeStateSlices(domains, fn) {
     subscriptionStateSlices(domains);
-    return subscribe(function () { return subscriptionStateSlices(domains); }, fn);
+    // Re-read every domain slice on each round: subscriptionStateValue's
+    // structural comparison guarantees slice identity (same content <=> same
+    // reference), so the combined object only needs rebuilding when one of the
+    // subscribed slices changes identity. Publications for unrelated domains
+    // reuse the previous combined object so React's Object.is check skips the
+    // render; the callback still fires on every notification, matching the
+    // single-domain subscription contract. Mirrors the web domain adapter's
+    // stablePick semantics.
+    let lastSlices = [];
+    let lastResult = null;
+    return subscribe(function () {
+      let changed = !lastResult;
+      const slices = [];
+      for (let i = 0; i < domains.length; i++) {
+        slices[i] = subscriptionStateSlice(domains[i]);
+        if (slices[i] !== lastSlices[i]) changed = true;
+      }
+      if (changed) {
+        const result = {};
+        for (let j = 0; j < slices.length; j++) {
+          Object.assign(result, slices[j]);
+        }
+        lastSlices = slices;
+        lastResult = Object.freeze(result);
+      }
+      return lastResult;
+    }, fn);
   }
 
   const scheduledFeature = installBridgeFeature("scheduled", { state, notify, invoke, bt, runSyncOnSession, addSystemItem, rememberScheduledRunOwner, isScheduledRunTerminal, purgeSessionBuffer, createNewSession, prefillComposer, sessionStates });
@@ -2014,13 +2065,21 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
 
   async function cancelShellTask(sessionId, taskId) {
     if (!sessionId || !taskId) throw new Error("Missing shell task identity");
-    return invoke("cancel_shell_task", { sessionId, taskId });
+    try {
+      await invoke("cancel_shell_task", { sessionId, taskId });
+    } finally {
+      scheduleShellPoll(sessionId, true);
+    }
   }
 
   const chatEventsFeature = installBridgeFeature("chat-events", {
     state, listen, invoke, turnUsageDirty,
     sessionStates, renderMarkdown, bt,
     notify, onSessionEvent, runSyncOnSession,
+    // Live suppression probe for scheduleStreamNotify: inside a background
+    // working set the immediate first-delta notify is suppressed, so the
+    // stream scheduler must fall through to its bounded frame instead.
+    isNotifySuppressed: function () { return suppressNotify; },
     recordAuthoritySyncDiagnostic,
     authoritySyncBufferSnapshot,
     // 与历史重载路径共用同一信封判定（userMessageDisplayText 的 isInternalRuntimeEnvelopeText），
@@ -2110,10 +2169,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const saveSearchSettingsAndRestart = settingsFeature.saveSearchSettingsAndRestart;
   const submitFeedback = settingsFeature.submitFeedback;
   const discoverLocalVllm = settingsFeature.discoverLocalVllm;
-  const detectLocalVllmSetup = settingsFeature.detectLocalVllmSetup;
-  const bootstrapLocalVllm = settingsFeature.bootstrapLocalVllm;
-  const dismissVllmSetup = settingsFeature.dismissVllmSetup;
-  const declineVllmSetup = settingsFeature.declineVllmSetup;
   const loadModels = settingsFeature.loadModels; // startup loader (init); not on the facade
   const saveModel = settingsFeature.saveModel;
   const revealModelApiKey = settingsFeature.revealModelApiKey;
@@ -2125,7 +2180,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
-  // 内置功能开关（契约挂接点）：仅桌面 Rust 命令通道，Web 端无此后端。
+  // Builtin feature switches (contract hook point): desktop Rust command
+  // channel only — the web lane has no such backend.
   const listBuiltinFeatures = settingsFeature.listBuiltinFeatures;
   const setBuiltinFeatureEnabled = settingsFeature.setBuiltinFeatureEnabled;
 
@@ -2330,6 +2386,9 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     if (initPromise) return initPromise;
     initPromise = (async function () {
     startupMark("bridge:init_start");
+    startupNotificationBatching = true;
+    let initFailure;
+    try {
     // Populate the global Scheduled unread summary without requiring the user
     // to visit the Scheduled page first. This stays off the startup critical path.
     if (!isDetachedWindow) {
@@ -2385,7 +2444,23 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     }
     startupMark("bridge:background_checks_started");
     if (!isDetachedWindow) refreshRemoteControlStatus(); // 权威主窗口独占桌面 Web 代理状态
-    notify();
+    } catch (initError) {
+      initFailure = initError;
+    } finally {
+      startupNotificationBatching = false;
+    }
+    // Publish the coherent startup snapshot outside the finally: notify()
+    // rethrows subscriber-callback errors, and a throw from inside a finally
+    // would replace the in-flight init error. The failure path still gets its
+    // publish, but only the real init error propagates; on the success path a
+    // publish failure fails init exactly as before. This sync section cannot
+    // interleave with other notifies between the flag reset and the publish.
+    try {
+      notify();
+    } catch (notifyError) {
+      if (!initFailure) throw notifyError;
+    }
+    if (initFailure) throw initFailure;
     startupMark("bridge:init_done");
     if (window.__PINVOU_STARTUP__) window.__PINVOU_STARTUP__.flush();
     })();
@@ -2412,6 +2487,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       setComposerDraft,
       retryFirstTurn,
       prefillComposer,
+      restoreTaskDraft: chatFeature.restoreTaskDraft,
       removeQueued,
       prioritizeQueued,
       editQueued,
@@ -2433,6 +2509,12 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       closeVoiceAsrSetup,
       cancelVoiceInput,
       clearVoiceInput,
+      abandonVoiceResult: voiceFeature.abandonVoiceResult,
+      getVoiceOperationId: voiceFeature.getVoiceOperationId,
+      beginVoiceSubmission: voiceFeature.beginVoiceSubmission,
+      completeVoiceSubmission: voiceFeature.completeVoiceSubmission,
+      dismissVoiceInput: voiceFeature.dismissVoiceInput,
+      hasVoiceSubmissionPending: voiceFeature.hasVoiceSubmissionPending,
       setVoiceShortcutEnabled,
       syncVoiceShortcutRecording,
       appendVoiceText,
@@ -2509,10 +2591,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     feedback: { submitFeedback },
     vllm: {
       discoverLocalVllm,
-      detectLocalVllmSetup,
-      bootstrapLocalVllm,
-      dismissVllmSetup,
-      declineVllmSetup,
     },
     models: {
       saveModel,

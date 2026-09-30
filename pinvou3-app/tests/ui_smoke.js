@@ -273,13 +273,6 @@ function injectSource() {
         case 'artifact_info': return Promise.resolve({exists:true,kind:'md',size:2048,modified:1});
         case 'read_artifact_text': return Promise.resolve('# 会议纪要');
         case 'render_artifact_visual': return Promise.resolve({mode:'unsupported'});
-        case 'detect_local_vllm_setup': {
-          const engineState = window.__VLLM_STATE__ || 'stopped';
-          return Promise.resolve(window.__VLLM_ELIGIBLE__ && engineState !== 'starting'
-            ? {eligible:true,may_offer_setup:true,has_packages:true,vllm_online:false,engine_state:engineState,already_bootstrapped:false}
-            : {eligible:false,may_offer_setup:!!window.__VLLM_ELIGIBLE__,has_packages:engineState==='starting',vllm_online:false,engine_state:engineState,already_bootstrapped:false});
-        }
-        case 'bootstrap_local_vllm': return new Promise(function(){}); // 永不 resolve,停在 bootstrapping 态供测步骤指示
         default: return Promise.resolve(null);
       }
     }
@@ -351,6 +344,26 @@ async function expand(page) {
       && visualShell.overflow === 'hidden'
       && visualShell.backgroundColor !== 'rgba(0, 0, 0, 0)',
     JSON.stringify(visualShell),
+  );
+
+  const searchOverlayFirstOpen = await page.evaluate(async () => {
+    const trigger = [...document.querySelectorAll('[aria-label], [title]')]
+      .find(element => `${element.getAttribute('aria-label') || ''}${element.getAttribute('title') || ''}`.includes('搜索对话'));
+    trigger?.click();
+    const opened = await window.__uiWait__(() => !!document.querySelector('[role="dialog"][aria-modal="true"]'));
+    const dialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+    const fixedBackdrop = dialog?.parentElement
+      ? getComputedStyle(dialog.parentElement).position === 'fixed'
+      : false;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    const closed = await window.__uiWait__(() => !document.querySelector('[role="dialog"][aria-modal="true"]'));
+    return { triggerFound: !!trigger, opened, fixedBackdrop, closed };
+  });
+  rec(
+    'search overlay lazy chunk opens on first use and closes with Escape',
+    searchOverlayFirstOpen.triggerFound && searchOverlayFirstOpen.opened
+      && searchOverlayFirstOpen.fixedBackdrop && searchOverlayFirstOpen.closed,
+    JSON.stringify(searchOverlayFirstOpen),
   );
 
   const artifactPresentation = await page.evaluate(async () => {
@@ -1512,7 +1525,12 @@ async function expand(page) {
       .find(node => (node.textContent || '').trim() === 'Codex回归会话' && node.getBoundingClientRect().left > 300);
     label && label.closest('div[class*="cursor-pointer"]')?.click();
   });
-  await clickText(page, '收纳'); await sleep(700);
+  await clickText(page, '收纳');
+  // The archive toast is a lazy chunk (Suspense fallback=null until it
+  // arrives), so poll for the toast text instead of a fixed sleep — the same
+  // contract the ⑤b archive flow below pins.
+  await page.evaluate(() => window.__uiWait__(() =>
+    document.body.innerText.includes('已收纳到【对话管理-已收纳】')));
   const codexBatchArchive = await page.evaluate(() => ({
     invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'set_session_archived' && call.args.id === 'codex-1' && call.args.archived === true),
     archived: document.body.innerText.includes('已收纳到【对话管理-已收纳】'),
@@ -2456,11 +2474,17 @@ async function expand(page) {
     }));
     return true;
   });
-  await sleep(250);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('span,div,button,a')]
+      .some(node => (node.textContent || '').trim() === '收纳')));
   await clickText(page, '收纳');
-  await sleep(250);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('span,div,button,a')]
+      .some(node => (node.textContent || '').trim() === '确认收纳')));
   await clickText(page, '确认收纳');
-  await sleep(450);
+  await page.evaluate(() => window.__uiWait__(() =>
+    [...document.querySelectorAll('button')]
+      .some(node => (node.textContent || '').trim() === '前往查看')));
   const archiveToastBefore = await page.evaluate(() => {
     const button = [...document.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '前往查看');
     const rect = button && button.getBoundingClientRect();
@@ -2471,7 +2495,9 @@ async function expand(page) {
     };
   });
   await clickText(page, '前往查看');
-  await sleep(600);
+  await page.evaluate(() => window.__uiWait__(() =>
+    document.querySelector('[data-testid="app-root"]')?.dataset.currentView === 'search'
+      && document.body.innerText.includes('第三季度财报分析')));
   const archiveToastGoto = await page.evaluate(() => ({
     currentView: document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view'),
     archivedTabVisible: document.body.innerText.includes('已收纳'),
@@ -2482,63 +2508,6 @@ async function expand(page) {
     archiveMenuOpened && archiveToastBefore.opened && archiveToastBefore.noWrap && archiveToastBefore.text &&
     archiveToastGoto.currentView === 'search' && archiveToastGoto.archivedTabVisible && archiveToastGoto.archivedVisible && archiveToastGoto.noSettingsError,
     JSON.stringify({ archiveMenuOpened, archiveToastBefore, archiveToastGoto }));
-
-  // ⑥ 开机加载中不弹框；确认 stopped 后才渲染启用引导。
-  await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; window.__VLLM_STATE__ = 'starting'; });
-  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
-  await sleep(300);
-  const startingSetup = await page.evaluate(() => document.body.innerText.includes('启用本地大模型'));
-  rec('⑥ 本地大模型引擎 starting 时不弹启用框', !startingSetup, JSON.stringify({ popup: startingSetup }));
-
-  // 将时钟推进到 12 分钟截止之后，等待内部自动轮询一次；卡死的 starting 必须恢复重试入口。
-  await page.evaluate(() => {
-    window.__VLLM_REAL_DATE_NOW__ = Date.now;
-    const base = Date.now();
-    Date.now = () => base + 13 * 60 * 1000;
-  });
-  await sleep(3300);
-  const timedOutSetup = await page.evaluate(() => {
-    const setup = window.TauriBridge.state.getMany(['chat', 'vllm']).vllmSetup || {};
-    return {
-      popup: document.body.innerText.includes('启用本地大模型'),
-      state: setup.engine_state,
-      timedOut: setup.detection_timed_out,
-    };
-  });
-  rec('⑦ 本地大模型引擎 starting 超时后恢复重试入口', timedOutSetup.popup && timedOutSetup.state === 'failed' && timedOutSetup.timedOut === true, JSON.stringify(timedOutSetup));
-
-  await page.evaluate(() => {
-    Date.now = window.__VLLM_REAL_DATE_NOW__;
-    window.__VLLM_STATE__ = 'stopped';
-  });
-  await page.evaluate(() => { window.__VLLM_ELIGIBLE__ = true; });
-  await page.evaluate(() => window.TauriBridge.vllm.detectLocalVllmSetup());
-  await sleep(500);
-  const setup = await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
-    return { title: document.body.innerText.includes('启用本地大模型'), enable: btns.includes('启用'), skip: btns.includes('暂不'), never: btns.includes('不再提醒') };
-  });
-  rec('⑧ 本地大模型引导框 eligible 渲染(标题+启用/暂不/不再提醒)', setup.title && setup.enable && setup.skip && setup.never, JSON.stringify(setup));
-
-  // ⑨ 点「不再提醒」→ 二次确认子态(警示文案 + 确认不启用/再想想);点「再想想」回到初始态
-  await clickText(page, '不再提醒');
-  await sleep(300);
-  const decline = await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
-    return { warn: document.body.innerText.includes('不再自动弹出'), confirm: btns.includes('确认不启用'), reconsider: btns.includes('再想想') };
-  });
-  await clickText(page, '再想想');
-  await sleep(200);
-  rec('⑨ 不再提醒→二次确认渲染(警示+确认/再想想)', decline.warn && decline.confirm && decline.reconsider, JSON.stringify(decline));
-
-  // ⑩ 点「启用」→ 立即进入等待系统授权；mock bootstrap 永不 resolve 停在进行中。
-  await clickText(page, '启用');
-  await sleep(700);
-  const prog = await page.evaluate(() => {
-    const txt = document.body.innerText;
-    return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
-  });
-  rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
 
   // ⑩c Keyboard operability of the sidebar resize handle (WAI-ARIA Window
   // Splitter): focusable, arrow-key stepping, Home/End land on the clamped

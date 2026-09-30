@@ -463,7 +463,7 @@ pub async fn apply_disabled_connectors_for(
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
-    // §3.3 defense in depth): the write fails loudly instead of silently
+    // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
@@ -507,7 +507,7 @@ pub fn install_mcp_secret_resolver() {
 /// Default-installed preset MCP tools: peripheral capabilities ship as
 /// plugins so features like session mention work out of the box. Builtin
 /// plugins cannot be uninstalled or disabled — the attempt is rejected
-/// server-side (docs/builtin-toolset-contract.md §3.3) — so a missing
+/// server-side (docs/builtin-toolset-contract.md §3.1) — so a missing
 /// BundleStore record only ever means "not seeded yet".
 pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader", "app-automations"];
 
@@ -831,6 +831,40 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // installed.json (the None-branch convention of store_state).
                 let (installed_flag, _) = bundle::store_state(store_records.as_deref(), &m.id)
                     .unwrap_or_else(|| (installed.contains(&m.id), None));
+                let is_builtin = builtin::is_builtin_tool(&m.id);
+                // Audit VALUES shown on the read-only builtin page
+                // (security_level / data_access / mcp_tools) come from the
+                // embedded catalog for builtin ids: a tampered on-disk
+                // manifest must not rewrite what the transparency page shows
+                // until the next boot self-heal (review round-3 minor 2).
+                // The probe folds like `is_builtin` itself: a case-variant
+                // builtin id would leave the exact `embedded_manifest` empty
+                // and fall back to the on-disk values — the exact tamper
+                // vector this override exists to close. Non-builtin ids keep
+                // their own (uploaded) manifest values. Borrowed before
+                // the display-override match below moves name/description.
+                let audit_source = if is_builtin {
+                    mcp_catalog::builtin_manifest_probe(&m.id).ok().flatten()
+                } else {
+                    None
+                };
+                let shown = audit_source.as_ref().unwrap_or(&m);
+                let security_level = if is_builtin && !shown.security_level.is_empty() {
+                    Some(shown.security_level.clone())
+                } else {
+                    None
+                };
+                let data_access = if is_builtin {
+                    shown.data_access.clone()
+                } else {
+                    Vec::new()
+                };
+                let mcp_tools = shown.mcp_tools.clone();
+                let visibility = if is_builtin && !shown.visibility.is_empty() {
+                    Some(shown.visibility.clone())
+                } else {
+                    None
+                };
                 let (name, description) = match upload_by_id.get(m.id.as_str()) {
                     Some(record) => {
                         let (name, description) = store::apply_display_override(record, None, None);
@@ -851,7 +885,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // 'system'` entries from the store flow and pins them on the
                 // read-only page, so honoring a poisoned claim would strip a
                 // normal plugin of every management action.
-                let is_builtin = builtin::is_builtin_tool(&m.id);
                 MarketplaceToolInfo {
                     source: source_by_id
                         .get(m.id.as_str())
@@ -859,7 +892,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         .unwrap_or_else(|| "builtin".to_string()),
                     // 预置目录包不可导出（zip 无法重新导入，与 export_installed_plugin
                     // 的 fail-fast 同口径）；迁移登记的手写自定义 MCP / 上传包可导出。
-                    exportable: !mcp_catalog::spec_for(&m.id).is_some(),
+                    exportable: !mcp_catalog::spec_for_builtin_probe(&m.id).is_some(),
                     installed: installed_flag,
                     // Builtin semantics (docs/builtin-toolset-contract.md
                     // §3.1) pass through only on builtin plugins: normal
@@ -867,25 +900,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // the frontend contract clean. mcp_tools passes through
                     // in full (the builtin section lists a plugin's tools);
                     // visibility mirrors security_level; bundle_version marks
-                    // the bundle version a builtin plugin ships with.
-                    security_level: if is_builtin && !m.security_level.is_empty() {
-                        Some(m.security_level.clone())
-                    } else {
-                        None
-                    },
-                    data_access: if is_builtin {
-                        m.data_access.clone()
-                    } else {
-                        Vec::new()
-                    },
-                    mcp_tools: m.mcp_tools.clone(),
-                    // visibility passthrough mirrors security_level: filled
-                    // only for builtin plugins, omitted otherwise.
-                    visibility: if is_builtin && !m.visibility.is_empty() {
-                        Some(m.visibility.clone())
-                    } else {
-                        None
-                    },
+                    // the bundle version a builtin plugin ships with. The
+                    // values themselves are sourced above (embedded catalog
+                    // for builtin ids).
+                    security_level,
+                    data_access,
+                    mcp_tools,
+                    visibility,
                     // bundle_version is filled at the command layer
                     // (commands::marketplace::list_marketplace_tools): a
                     // marketplace -> runtime_bundle dependency would be a
@@ -927,17 +948,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                             "[marketplace] reseeding '{id}': installed=false preset record is unreachable since builtin uninstall is rejected"
                         );
                         if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-                            log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                            log::warn!(
+                                "[marketplace] default install of '{id}' failed (non-blocking): {e}"
+                            );
                         }
                     }
                 }
                 Ok(None) => {
                     if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-                        log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
+                        log::warn!(
+                            "[marketplace] default install of '{id}' failed (non-blocking): {e}"
+                        );
                     }
                 }
                 Err(e) => {
-                    log::warn!("[marketplace] 读取 BundleStore 失败,跳过默认安装 '{id}': {e}")
+                    log::warn!(
+                        "[marketplace] failed to read the BundleStore, skipping default install of '{id}': {e}"
+                    )
                 }
             }
         }
@@ -985,9 +1012,27 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // A healthy or absent file passes through untouched.
         connectors::load_mcp_json_for_reconcile()?;
         self.migrate_mcp_plaintext_secrets()?;
+        // A case-variant spelling of a BUILTIN id (direct-IPC
+        // install("Session-Reader")) canonicalizes to the catalog id before
+        // any write: every write path below (release_package,
+        // package_mcp_dir, mcp.json keying, the store record) keys the exact
+        // id, and the folded uninstall guard would otherwise refuse the
+        // variant record forever while boot re-release never converges
+        // (review round-6 M3b). Only builtin ids canonicalize: a legacy
+        // case-variant upload of a NON-builtin preset id (pre-PR imports
+        // collided exactly, so `Weather` beside the catalog `weather` is a
+        // reachable user package) must keep installing the user's own
+        // package, not hijack the preset under the catalog spelling.
+        let tool_id: &str = if builtin::is_builtin_tool(tool_id) {
+            mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id)
+        } else {
+            tool_id
+        };
         // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
         // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
         // args 与 secret 声明）。无内嵌 spec 的上传/自定义包仍从自身包目录读取。
+        // The lookup keys the exact id: the content lane never case-folds
+        // (review round-6 M3a).
         let manifest = mcp_catalog::embedded_manifest(tool_id)?
             .or_else(|| self.load_manifest(tool_id))
             .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
@@ -4518,6 +4563,49 @@ mod tests {
         });
     }
 
+    /// Round-9 review: `is_builtin` folds case but the audit-source lookup
+    /// used the exact `embedded_manifest`, so a case-variant builtin row fell
+    /// back to its own on-disk manifest values — reopening the tamper vector
+    /// the audit override exists to close (a user-writable disk manifest
+    /// rewriting what the read-only transparency page shows). The folded
+    /// probe must supply the values for every id `is_builtin` accepts.
+    #[test]
+    fn list_tools_case_variant_builtin_audit_values_come_from_catalog() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "Session-Reader",
+                r#"{
+                    "id":"Session-Reader","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
+                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]
+                }"#,
+            );
+            let tools = MarketplaceManager::new().list_tools();
+            let variant = tools
+                .iter()
+                .find(|t| t.id == "Session-Reader")
+                .expect("the variant row must still be listed");
+            assert!(
+                variant.builtin,
+                "the folded membership probe must recognize the variant as builtin"
+            );
+            // The catalog values track the builtin manifest's current shape:
+            // L1 + read/write since the cross-session messaging tool joined
+            // the family (the fake disk manifest's L2/evil.write must still
+            // never leak through).
+            assert_eq!(
+                variant.security_level.as_deref(),
+                Some("L1"),
+                "audit values must come from the embedded catalog, not the disk manifest"
+            );
+            assert_eq!(
+                variant.data_access,
+                vec!["sessions.read".to_string(), "sessions.write".to_string()],
+                "data access must come from the embedded catalog"
+            );
+        });
+    }
+
     /// §3.2 contract pin: `list_tools.installed` shares the readiness card's
     /// store-first source of truth — the BundleStore record wins, a missing
     /// record means not-installed (standalone installed.json writes don't
@@ -5542,6 +5630,105 @@ mod tests {
                 Some("embedded-token")
             );
             assert!(!mcp.to_string().contains("embedded-token"));
+        });
+    }
+
+    /// Install-entry canonicalization (review round-6 M3b): a case-variant
+    /// catalog spelling installs under the canonical id — mcp.json keys
+    /// `session-reader` with args at the real released dir
+    /// `bundles/session-reader/mcp`, and the store record carries the
+    /// canonical id the uninstall guard accepts. The variant spelling must
+    /// not survive any write.
+    #[test]
+    fn install_case_variant_catalog_id_canonicalizes_before_writes() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.install("Session-Reader", &std::collections::HashMap::new())
+                .unwrap();
+
+            let store = store::BundleStore::new();
+            assert!(
+                store
+                    .get("session-reader")
+                    .unwrap()
+                    .map(|r| r.installed)
+                    .unwrap_or(false),
+                "the canonical record must be installed"
+            );
+            assert!(
+                store.get("Session-Reader").unwrap().is_none(),
+                "no record may exist under the case-variant spelling"
+            );
+            let mcp = read_mcp_json();
+            assert!(
+                mcp["servers"].get("session-reader").is_some(),
+                "mcp.json must key the canonical id: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("Session-Reader").is_none(),
+                "mcp.json must not key the case-variant spelling: {mcp}"
+            );
+            let command = mcp["servers"]["session-reader"]["args"]
+                .as_array()
+                .and_then(|a| a.last())
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                command.contains("bundles/session-reader/mcp")
+                    && !command.contains("Session-Reader"),
+                "args must point at the real released dir: {command}"
+            );
+        });
+    }
+
+    /// Round-9 review: install-entry canonicalization must stay scoped to
+    /// BUILTIN ids. A legacy case-variant upload of a NON-builtin preset id
+    /// (pre-PR imports collided exactly, so a user `Weather` package beside
+    /// the catalog `weather` is reachable) is the user's own package: the
+    /// install must key its variant spelling and run the USER's manifest —
+    /// not hijack the catalog preset under the canonical id.
+    #[test]
+    fn install_case_variant_non_builtin_keeps_user_package() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "Weather",
+                r#"{
+                    "id":"Weather","name":"User Weather","description":"d","version":"2","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"node","args":["user-weather.js"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.install("Weather", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            assert!(
+                mcp["servers"].get("Weather").is_some(),
+                "the user's variant spelling must be keyed: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("weather").is_none(),
+                "the catalog preset must not be hijacked into the install: {mcp}"
+            );
+            assert_eq!(
+                mcp["servers"]["Weather"]["command"].as_str(),
+                Some("node"),
+                "the USER manifest's wiring must run, not the preset's"
+            );
+            let store = store::BundleStore::new();
+            assert!(
+                store
+                    .get("Weather")
+                    .unwrap()
+                    .map(|r| r.installed)
+                    .unwrap_or(false),
+                "the variant record must exist and be installed"
+            );
+            assert!(
+                store.get("weather").unwrap().is_none(),
+                "no preset record may be created by the user's install"
+            );
         });
     }
 

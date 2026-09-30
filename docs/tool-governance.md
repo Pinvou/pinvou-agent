@@ -52,7 +52,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 | 视觉与知识 | `image_analyze`、`kb_search`、`kb_open_source` | 知识工具还受索引/语义引擎就绪状态约束 |
 | MCP | `mcp_*`、`list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` | `mcp_*` 是前缀规则；具体连接器停用集走 `disallowed_tools` |
 
-匹配规则（`is_pinvou3_allowed`，`tool_policy.rs:63-70`）与 CodeWhale `allowed_tools` 语义一致：名称大小写不敏感，规则尾部 `*` 表示前缀匹配。由此：
+匹配规则（生产路径走 `tool_policy.rs` 的 `allowed_tool_names()`；`is_pinvou3_allowed` 是测试契约谓词，不参与生产判定）与 CodeWhale `allowed_tools` 语义一致：名称大小写不敏感，规则尾部 `*` 表示前缀匹配。由此：
 
 - `mcp_*` 放行全部标准 `mcp_` 命名空间的动态 MCP 工具；具体工具名由已启用连接器发现，连接器开关仍通过 `disallowed_tools` 施加更窄的拒绝。
 - 持久终端五个工具使用精确名而非 `terminal/*`：避免未来新增的执行原语仅凭共享前缀就自动穿透产品白名单（`tool_policy.rs:13-15` 注释；反向测试断言 `terminal/future-capability` 被拒，lib.rs）。

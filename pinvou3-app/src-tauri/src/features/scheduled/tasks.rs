@@ -1404,9 +1404,6 @@ fn build_create_request(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode)?;
-    // Kind is allow-listed at creation time (create_task owns the normalized result and
-    // persists it to the sidecar).
-    canonical_scheduled_kind(input.kind)?;
     // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
     let status = paused_to_status(input.paused.unwrap_or(false));
     Ok(CreateAutomationRequest {
@@ -4167,16 +4164,16 @@ mod tests {
             &read_state
         ));
 
-        sessions.set_hidden(&session_1, true);
-        sessions.set_hidden(&session_2, true);
+        sessions.set_hidden(&session_1, true).expect("archive");
+        sessions.set_hidden(&session_2, true).expect("archive");
         assert!(!scheduled_run_is_unread(&run_1, &sessions, &read_state));
         assert!(!has_unread_scheduled_runs(
             &[run_1.clone(), run_2.clone()],
             &sessions,
             &read_state
         ));
-        sessions.set_hidden(&session_1, false);
-        sessions.set_hidden(&session_2, false);
+        sessions.set_hidden(&session_1, false).expect("restore");
+        sessions.set_hidden(&session_2, false).expect("restore");
 
         read_state
             .mark_viewed("automation-1", "run-1")

@@ -125,6 +125,40 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
 pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
 
+/// npm CN mirror registry (Alibaba Cloud npmmirror, a sync mirror of the
+/// official registry). The npm installs for codex/claude and tmeet retry once
+/// via `--registry` appended for that call after the official
+/// registry.npmjs.org attempt fails as a whole; never written into the user's
+/// npm config. Lives in platform so the codex_acp and connectors features can
+/// share it (features must not depend on each other). Note: the npm install
+/// path has no app-side artifact pin (npm's integrity metadata comes from
+/// that same registry), so integrity on this path rests on TLS and the
+/// mirror's sync fidelity — not the same strength as the SHA-256 pin
+/// verification used for archive/wheel downloads.
+pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+
+/// Redact userinfo (`user:pass@host`) before showing a candidate URL in
+/// logs/errors: users may paste credentials into an acceleration prefix, and
+/// diagnostic output must not leak them. Parse failures must not echo the
+/// original string either — an invalid string may carry mistyped userinfo
+/// (e.g. a `https://user:secret@` concatenation producing an empty host), so
+/// fail closed with a fixed placeholder; such a URL would be skipped at the
+/// HTTPS gate anyway and never requested. Lives in platform so the candidate
+/// download loops of the connectors and marketplace features can share it
+/// (features must not depend on each other), and both must skip candidates
+/// the same way.
+pub(crate) fn redact_url_credentials(url_text: &str) -> String {
+    let mut parsed = match reqwest::Url::parse(url_text) {
+        Ok(parsed) => parsed,
+        Err(_) => return "<invalid URL>".to_string(),
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+    }
+    parsed.to_string()
+}
+
 pub(crate) async fn download_to_part_with_verify(
     mut req: DownloadRequest<'_>,
 ) -> Result<(), String> {
@@ -815,5 +849,38 @@ mod tests {
         );
         handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Userinfo must be redacted before a candidate URL goes into logs or
+    /// errors: users may paste credentials into an acceleration prefix, and
+    /// diagnostic output must not leak them.
+    #[test]
+    fn redact_url_credentials_strips_userinfo() {
+        let redacted = redact_url_credentials(
+            "https://user:pass@proxy.example/https://github.com/openai/dws/archive/v1.tar.gz",
+        );
+        assert!(!redacted.contains("user:pass"), "{redacted}");
+        assert!(redacted.contains("proxy.example"), "{redacted}");
+        // URLs without userinfo are kept as-is.
+        assert_eq!(
+            redact_url_credentials("https://proxy.example/x"),
+            "https://proxy.example/x"
+        );
+        // Parse failures always fail closed with a placeholder instead of
+        // echoing the original string: invalid strings may carry mistyped
+        // userinfo (empty host / invalid port, etc., all fail parsing), and
+        // echoing them would leak credentials.
+        assert_eq!(redact_url_credentials("not a url"), "<invalid URL>");
+        for invalid_with_userinfo in [
+            // Empty host: typical product of concatenating an acceleration
+            // prefix like `https://user:secret@`.
+            "https://user:secret@/https://github.com/openai/dws/archive/v1.tar.gz",
+            // Invalid port: one extra digit typed while pasting also ends up here.
+            "https://user:secret@proxy.example:99999/x",
+        ] {
+            let redacted = redact_url_credentials(invalid_with_userinfo);
+            assert_eq!(redacted, "<invalid URL>", "{invalid_with_userinfo}");
+            assert!(!redacted.contains("user:secret"), "{redacted}");
+        }
     }
 }
