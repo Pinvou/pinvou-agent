@@ -628,6 +628,13 @@ fn element_info_from_cache(
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     let role = format!("{control_type:?}");
     // Bound while the raw strings are still in scope (see `raw_binding`).
+    // Disclosed collapse: an element whose cached name is empty binds
+    // hash("", role), so every empty-named element of the same role shares
+    // one binding — and the binding is (name, role), not element identity,
+    // so raw-identical labels in different windows bind alike. The macOS and
+    // Linux producers collapse the same way and the tool description
+    // discloses the class; distinguishing true identity needs a
+    // platform-stable element id and is tracked as a follow-up.
     let raw_binding = raw_element_binding(&name, &role);
     Ok(ElementInfo {
         role,

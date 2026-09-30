@@ -28,6 +28,12 @@
 //! deletion sweeps — the append path cannot consult the sessions registry
 //! (cross-feature), so the alternatives are a boot-time sweep or a
 //! tombstone set, both deferred until the orphan is observed in practice.
+//! The purge hook is likewise registered only in the GUI boot
+//! (`lib.rs`), and the store's boot-time retention sweep runs before any
+//! hook exists, so a chat-budget eviction at boot — or one in the headless
+//! product process, which registers no hook at all — leaks the audit file
+//! the same way; the headless registration is the actionable one once that
+//! process needs the app's feature hooks.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

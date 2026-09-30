@@ -995,6 +995,13 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     };
     let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
     // Bound while the raw strings are still in scope (see `raw_binding`).
+    // Disclosed collapse: an element whose raw name is empty (no title and
+    // no description) binds hash("", role), so every empty-named element of
+    // the same role shares one binding — and the binding is (name, role),
+    // not element identity, so raw-identical labels in different windows
+    // bind alike. The Linux secure-field erasure collapses the same way and
+    // the tool description discloses the class; distinguishing true identity
+    // needs a platform-stable element id and is tracked as a follow-up.
     let raw_binding = raw_element_binding(&name, &info.role);
     ElementInfo {
         // AXRole/AXSubrole are free-form strings supplied by the target app,

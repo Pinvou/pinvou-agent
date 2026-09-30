@@ -99,6 +99,9 @@ pub const T3_DENYLIST: &[&str] = &[
     "轉賬",
     "轉帳",
     "結算",
+    // zh-Hant checkout labels, the same family as the shipped 結算.
+    "結帳",
+    "結賬",
     "购入",
     "購入",
     // Stem, not 支払い: `"支払う".contains("支払い")` is false, so the
@@ -109,6 +112,11 @@ pub const T3_DENYLIST: &[&str] = &[
     "決済",
     "振込",
     "振替",
+    // Stems of the り-inflected forms: 振り込み/振り込む and 振り替え/振り替える
+    // all contain these, and the inserted り breaks the plain 振込/振替 stems
+    // (the same stem problem that motivated 支払 above).
+    "振り込",
+    "振り替",
     "送金",
     "注文",
     "下单",
@@ -197,6 +205,15 @@ pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 /// Shared with the platform helpers' chunk-boundary tests so their probes
 /// cannot drift away from the real chunk size.
 pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
+
+/// Raw characters re-fed ahead of each chunk in [`for_each_folded_window`]:
+/// NFC composition is applied per chunk, so a base character and the
+/// combining mark that completes it must not be split across a chunk
+/// boundary. Unicode composition fuses a starter with the marks that follow
+/// it — a span of at most two characters, or three for the algorithmic
+/// Hangul L+V+T jamo — so eight raw characters cover every composition
+/// Unicode can perform, with room to spare.
+pub(crate) const FOLD_COMPOSITION_OVERLAP_CHARS: usize = 8;
 
 /// Whether `c` is invisible to the user and therefore must not separate two
 /// halves of a denylist term.
@@ -322,6 +339,11 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// dilemma, `υ` (armed to `y` with `Υ`, not to the `u` UTS#39 also assigns
 /// it), and the letters of living scripts whose real text would
 /// false-positive (Arabic, Hebrew, Hangul, the Indic digits' `0`→`o` class).
+/// Two further one-glyph-two-letters dilemmas the NFKC-first pipeline decides
+/// unilaterally: U+017F (long s) NFKCs to `s`, which defends `ſubmit` while
+/// UTS#39's skeleton for it is `f` (`ſormat` stays open), and U+FF0D
+/// (fullwidth hyphen) NFKCs to `-`, which defends `Top－up` while UTS#39's
+/// skeleton for it is `ー` (`フォ－マット` stays open).
 /// It raises the cost of the demonstrated single-substitution
 /// evasions; it does not make them impossible.
 fn fold_confusable(c: char) -> char {
@@ -331,6 +353,22 @@ fn fold_confusable(c: char) -> char {
         // Same class against `top-up`: UTS#39 maps each of these to a bare
         // hyphen, and NFKC leaves every one alone.
         '\u{02D7}' | '\u{06D4}' | '\u{2043}' | '\u{2CBB}' => '-',
+        // The prolonged-sound-mark family: characters that render as `ー` in
+        // `フォーマット`, the denylist's only ー term (`フォ一マット` is the
+        // classic IME slip; `フォ—マット` is the word-processor em dash).
+        // Every arm here is safe by construction: a folded label can only
+        // reconstruct the term if the characters around the substitute
+        // already spell フォ…マット, so the arm fires on the substitution
+        // itself or a genuine typo of the same word, and on nothing else.
+        // Arms sit on the post-NFKC forms the pipeline delivers: ⼀/㆒
+        // normalize to 一 and ㅡ/ￚ normalize to ᅳ, so those five arrive
+        // through the last two arms.
+        '\u{2014}' | '\u{2015}' => 'ー', // em dash, horizontal bar
+        // Brahmi line, box-drawing bars, CJK stroke one, epigraphic
+        // sideways I, Batak pa.
+        '\u{1104B}' | '\u{2500}' | '\u{2501}' | '\u{31D0}' | '\u{A7F7}' | '\u{1BC7}' => 'ー',
+        '一' => 'ー',       // CJK one
+        '\u{1173}' => 'ー', // Hangul jungseong eu
         // Cyrillic look-alikes (lowercase; uppercase siblings arrive here
         // already lowercased by the pipeline).
         'а' => 'a',
@@ -361,6 +399,15 @@ fn fold_confusable(c: char) -> char {
         'ш' => 'w',
         'ԝ' => 'w',
         'ү' => 'y',
+        // Round-8: г renders as `r` and was the one unarmed member of the
+        // common-Cyrillic set (`tгansfer`, `tгash`, `eгase`, `foгmat`). The
+        // `Раунд` cost note extends to it: real Russian words containing г
+        // now fold their r, in the same extra-dialog direction.
+        'г' => 'r',
+        // Greek letter small capital gamma: UTS#39 routes it through г
+        // (`foᴦmat`). It joins the small-capital series below and the
+        // already-armed Greek letters above.
+        'ᴦ' => 'r',
         // Greek look-alikes. `β`/`η`/`μ`/`ν`/`ζ` arm the lowercase forms of
         // the capitals this table always caught (`Βuy`, `witΗdraw`,
         // `suΜmit`, `seΝd`); UTS#39 assigns only the capitals a Latin
@@ -562,6 +609,25 @@ fn fold_confusable(c: char) -> char {
         'ꓰ' => 'e',
         'ꓳ' => 'o',
         'ꓴ' => 'u',
+        // Georgian letters UTS#39 maps to a single term letter — the only
+        // three in the script (`witⴙdraw`, `buყ`, `order nჿw`). The Mtavruli
+        // capital Ⴙ (U+10B9) lowercases into ⴙ before the fold. No natural
+        // Georgian word folds onto a denylist term through them: every term
+        // needs letters whose Georgian alphabet supplies no armed skeleton.
+        'ⴙ' => 'h',
+        'ყ' => 'y',
+        'ჿ' => 'o',
+        // Warang Citi letters UTS#39 maps to a single term letter
+        // (`pa𑣄`, `𑣁ubscribe`-class: s i y o o u y). The listed forms are
+        // caseless — they are what the pipeline delivers — and the same
+        // glyph-skeleton argument as Cherokee applies.
+        '𑣁' => 's',
+        '𑣃' => 'i',
+        '𑣄' => 'y',
+        '𑣈' => 'o',
+        '𑣗' => 'o',
+        '𑣘' => 'u',
+        '𑣜' => 'y',
         other => other,
     }
 }
@@ -669,36 +735,70 @@ pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
 }
 
 /// Streams `raw` through [`fold_for_matching`] in bounded chunks and calls
-/// `observe` with each folded window (this chunk's fold plus a carry of the
-/// previous window's tail), stopping at the first window where `observe`
-/// returns `true`, which is also the return value.
+/// `observe` with each folded window, stopping at the first window where
+/// `observe` returns `true`, which is also the return value.
 ///
-/// A needle of at most [`T3_MATCH_WINDOW_CHARS`] folded characters cannot
-/// straddle a window boundary unnoticed — the carry keeps the previous
-/// window's tail — so substring checks against each window see exactly what
-/// a whole-string fold would have shown, without ever materializing it.
-/// Peak memory is proportional to the chunk, not the label, so a hostile
-/// multi-megabyte accessible name or `AXRole` buys no proportional
-/// allocation. Used by the platform denylist matcher
-/// (`platform::helpers::screening_hit`) and [`is_secure_role`], which
-/// would otherwise each need its own copy of the walk.
+/// Each chunk after the first is observed through two windows, because one
+/// window cannot cover both miss vectors:
+/// - the **carry window** — the previous window's last
+///   [`T3_MATCH_WINDOW_CHARS`]−1 folded characters plus this chunk's fold —
+///   is the true continuation of the folded stream, so a term straddling
+///   the boundary is found exactly as a whole-string fold would find it;
+/// - the **seam window** — the previous chunk's last
+///   [`FOLD_COMPOSITION_OVERLAP_CHARS`] raw characters re-folded together
+///   with this chunk's first [`T3_MATCH_WINDOW_CHARS`] raw characters —
+///   exists because composition is applied per fold: `ｺ`+U+FF9E split
+///   across the boundary would fold to コ and a lone voiced mark, and only
+///   re-folding the raw pair composes ゴ. A term starting inside the re-fed
+///   tail spans at most the tail plus [`T3_MATCH_WINDOW_CHARS`] folded
+///   characters — the same bound the carry argument uses — so the short
+///   seam window cannot miss one.
+///
+/// Both windows are faithful folds of contiguous regions of `raw` (the
+/// carry really is the fold of the raw text immediately preceding the
+/// fresh chunk; the seam really re-folds adjacent raw text), so neither can
+/// fabricate a match a whole-string fold would not show — and between them
+/// a whole-string fold can never show a match they miss. Peak memory stays
+/// proportional to the chunk, not the label, so a hostile multi-megabyte
+/// accessible name or `AXRole` buys no proportional allocation. Used by the
+/// platform denylist matcher (`platform::helpers::screening_hit`) and
+/// [`is_secure_role`], which would otherwise each need their own copy of
+/// the walk.
 pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) -> bool) -> bool {
     let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
     let mut folded = String::new();
+    let mut raw_tail = String::new();
     let mut chars = raw.chars();
     loop {
-        let chunk: String = chars.by_ref().take(FOLD_CHUNK_CHARS).collect();
-        if chunk.is_empty() {
+        let fresh: String = chars.by_ref().take(FOLD_CHUNK_CHARS).collect();
+        if fresh.is_empty() {
             return false;
         }
-        folded.push_str(&fold_for_matching(&chunk));
+        folded.push_str(&fold_for_matching(&fresh));
         if observe(&folded) {
             return true;
+        }
+        if !raw_tail.is_empty() {
+            let seam: String = raw_tail
+                .chars()
+                .chain(fresh.chars().take(T3_MATCH_WINDOW_CHARS))
+                .collect();
+            if observe(&fold_for_matching(&seam)) {
+                return true;
+            }
         }
         let count = folded.chars().count();
         if count > carry {
             folded = folded.chars().skip(count - carry).collect();
         }
+        raw_tail = fresh
+            .chars()
+            .rev()
+            .take(FOLD_COMPOSITION_OVERLAP_CHARS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
     }
 }
 
@@ -1339,12 +1439,18 @@ impl ComputerUseShared {
     /// the confirmation gate already has (a pending can only be minted from
     /// inside the lock, so no dialog can appear under an in-flight
     /// injection). Acquisition is the bounded [`Self::lock_physical_input`];
-    /// a legitimate action finishes far inside the bound, so the mark lands
-    /// between actions, where the gate's re-checks see it. A pathological
-    /// one (a maximum-length `type` against a slow injection backend) can
-    /// outrun the bound, in which case the mark lands mid-injection anyway —
-    /// the deliberate fail-safe, since an unanswered request must never be
-    /// withheld because the lock stayed busy.
+    /// an ordinary action finishes far inside the bound, so the mark lands
+    /// between actions, where the gate's re-checks see it. Two legal shapes
+    /// outrun the bound and land the mark mid-injection anyway — a
+    /// `hold_key` at its documented 30s cap (the wait is 20s) and a
+    /// maximum-length `type` against a slow injection backend — and the
+    /// fail-safe is deliberate: an unanswered request must never be
+    /// withheld because the lock stayed busy. While the injection runs, the
+    /// keystrokes were screened before the dialog existed, and the
+    /// dialog's Deny-focused, keyboard-guarded surface is what keeps a
+    /// streamed Tab/Return from accepting it (that safeguard is
+    /// harness-untested — a disclosed follow-up, since the JS harness has
+    /// no DOM).
     pub fn mark_grant_requested_serialized(&self, session_id: &str) {
         match self.lock_physical_input() {
             // The guard lives to the end of the arm: the mark happens under
@@ -1848,6 +1954,14 @@ mod tests {
             "提現",
             "汇款",
             "匯款",
+            // Round-8 stems and variants: the り insertion breaks the plain
+            // 振込/振替 stems, and 結帳/結賬 are the zh-Hant checkout labels
+            // beside the shipped 結算.
+            "振り込みはこちら",
+            "お振り込みフォーム",
+            "振り替え手続き",
+            "結帳ページへ進む",
+            "線上結賬",
             "订阅方案",
             "捐赠",
             "承诺并继续",
@@ -2202,6 +2316,30 @@ mod tests {
             // Splitting and padding.
             "支 付",
             "D\u{0001}elete",
+            // Round-8 families: each renders as the plain term and screened
+            // Clear under the previous table.
+            "tгansfer all funds", // Cyrillic г (UTS#39 skeleton r)
+            "empty tгash",
+            "eгase everything",
+            "foгmat disk",
+            "foᴦmat disk",        // Greek small-cap gamma (UTS#39 routes it through г)
+            "フォ一マット",       // CJK one — the IME slip
+            "フォ\u{2014}マット", // em dash
+            "フォ\u{2015}マット", // horizontal bar
+            "フォ\u{2500}マット", // box-drawing bar
+            "フォㅡマット",       // Hangul eu (NFKC delivers ᅳ)
+            "フォ\u{FFDA}マット", // halfwidth Hangul eu (same)
+            "フォ\u{2F00}マット", // Kangxi radical one (NFKC delivers 一)
+            "witⴙdraw",           // Georgian mkhedruli chin (Ⴙ lowercases into it)
+            "buყ",                // Georgian qar
+            "order nჿw",          // Georgian labial sign
+            "pa\u{118C4}",        // Warang Citi ya (skeleton y)
+            "\u{118C1}ubscribe",  // Warang Citi a (skeleton s)
+            "subm\u{118C3}t",     // Warang Citi yu (skeleton i)
+            "p\u{118D8}rchase",   // Warang Citi pu (skeleton u)
+            "order n\u{118C8}w",  // Warang Citi e (skeleton o)
+            "\u{118D7}rder now",  // Warang Citi bu (skeleton o)
+            "pa\u{118DC}",        // Warang Citi har (skeleton y)
         ] {
             assert!(
                 matches_t3_denylist(label),
@@ -2227,6 +2365,13 @@ mod tests {
             "결제하기",      // Korean "pay" — Hangul never folds
             "設定を開く",    // Japanese "open settings"
             "確認",          // Chinese "confirm" — not 支付/提交 class
+            // Round-8 arms must not widen the false-positive surface: real
+            // text in the newly armed scripts stays Clear.
+            "Дорога домой",     // Russian with г — г folds to r, no term hides here
+            "Город и трава",    // Russian "grass" — Г/р/а fold, still no term
+            "საყურე",           // Georgian "earring" — ყ folds to y, still clear
+            "フォルダーを開く", // Japanese "open folder" — has ー, not the term
+            "一緒に",           // Japanese "together" — 一 folds, no katakana frame
         ] {
             assert!(
                 !matches_t3_denylist(label),
@@ -3411,6 +3556,24 @@ mod tests {
         assert!(
             linux_source.contains("match first_fault {"),
             "a skipped fault must surface when no window answered the point"
+        );
+        // Round-8: a window-state query fault with no window claiming Active
+        // must propagate (the enumeration cannot distinguish "no active
+        // window" from "the active window failed to answer"); the
+        // behavioral leg needs a live AT-SPI bus, so the arm is pinned at
+        // source level like the other unbuildable fault legs.
+        assert!(
+            linux_source
+                .contains("let (has_active, state_fault) = active_first(&mut windows).await;"),
+            "element_at_point must track the window-state fault alongside the active flag"
+        );
+        assert!(
+            linux_source.contains("if !has_active {\n        if let Some(fault) = state_fault {\n            return Err(fault);"),
+            "a state fault with no active window must propagate instead of answering from bus order"
+        );
+        assert!(
+            !linux_source.contains("if let Ok(state) = window.get_state().await {"),
+            "active_first must not swallow state-query errors again"
         );
 
         // The macOS `type` chunking must go through `utf16_chunks` (the
