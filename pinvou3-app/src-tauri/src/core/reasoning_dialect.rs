@@ -116,6 +116,32 @@ pub fn apply_reasoning_dialect_controls(body: &mut Value, dialect: ReasoningDial
 mod tests {
     use super::*;
 
+    /// The aux one-shot body builders pin "no sampling parameters" at
+    /// construction; this pins the post-builder mutator. Dialect controls
+    /// only ever add thinking-related fields — a future vendor control must
+    /// not sneak a sampling parameter back into an aux body after the
+    /// builder runs, where no body-level pin would see it.
+    #[test]
+    fn reasoning_controls_never_write_sampling_parameters() {
+        let source = include_str!("reasoning_dialect.rs");
+        let start = source
+            .find("pub fn apply_reasoning_dialect_controls")
+            .expect("applier definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("#[cfg(test)]")
+                .expect("test module present")
+                + start];
+        assert!(
+            !region.contains("\"temperature\""),
+            "reasoning dialect controls must not write a temperature field"
+        );
+        assert!(
+            !region.contains("\"top_p\""),
+            "reasoning dialect controls must not write a top_p field"
+        );
+    }
+
     #[test]
     fn deepseek_strips_v1_suffix() {
         assert_eq!(
