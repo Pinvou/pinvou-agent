@@ -62,7 +62,7 @@ use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
     AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS, CodexWorkspaceKind,
     GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION,
-    ProviderManager, ProviderWireApi, SessionAgentStore,
+    ProviderManager, ProviderWireApi, SessionAgentStore, version_at_least,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -1053,6 +1053,24 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
 
 /// Converts repeated `--model-slot SLOT=MODEL` pairs collected by
 /// `parse_flags` into the map form `ProviderManager::save` expects.
+/// The claude required-slot ids missing non-empty models from `slots`
+/// (empty = complete): the same set the store's own validation requires,
+/// derived from the imported `CLAUDE_MODEL_SLOTS` so an app-side slot cannot
+/// drift out of the English gates.
+fn claude_missing_slots(slots: Option<&HashMap<String, String>>) -> Vec<&'static str> {
+    CLAUDE_MODEL_SLOTS
+        .iter()
+        .map(|(slot, _)| *slot)
+        .filter(|slot| {
+            !slots.is_some_and(|slots| {
+                slots
+                    .get(*slot)
+                    .is_some_and(|model| !model.trim().is_empty())
+            })
+        })
+        .collect()
+}
+
 fn parse_model_slot_pairs(
     repeated: &[(&str, &str)],
     label: &str,
@@ -1595,20 +1613,6 @@ fn codex_version_token(version: &str) -> &str {
                 .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
         })
         .unwrap_or(version)
-}
-
-/// Mirror of `runtime::parse_version`: only a leading digit-run of
-/// dot/dash/plus-separated parts counts.
-fn parse_version(version: &str) -> Vec<u64> {
-    version
-        .split(['.', '-', '+'])
-        .take_while(|part| part.chars().all(|character| character.is_ascii_digit()))
-        .map(|part| part.parse().unwrap_or(0))
-        .collect()
-}
-
-fn version_at_least(version: &str, minimum: &str) -> bool {
-    parse_version(version).cmp(&parse_version(minimum)) != std::cmp::Ordering::Less
 }
 
 /// Per-agent compatibility gate over probed version output — the single
@@ -3112,6 +3116,30 @@ fn providers_save(
     } else {
         None
     };
+    if provider_id.is_some() && agent == "claude" {
+        // The update lane's completeness depends on the MERGED set above: a
+        // legacy record stored without slots (pre-slots build, or a
+        // hand-edited store) updated with no `--model-slot` would otherwise
+        // reach the store's own validation and surface its Chinese
+        // required-slot message via `store_error` — the same translation
+        // boundary the add-lane gate above closes for the CLI-passed pairs.
+        // Records written by current builds always carry all five slots, so
+        // only a legacy/incomplete record can fail here.
+        let missing = claude_missing_slots(model_slots.as_ref());
+        if !missing.is_empty() {
+            return Err(CliError::failed(format!(
+                "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
+                 model slot (a missing slot falls back to official traffic); missing: {} \
+                 (valid slots: {})",
+                missing.join(", "),
+                CLAUDE_MODEL_SLOTS
+                    .iter()
+                    .map(|(slot, _)| *slot)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        }
+    }
     let context_window =
         context_window.or_else(|| existing.as_ref().and_then(|record| record.context_window));
     let wire_api = parse_wire_api_value(wire_api.or_else(|| {

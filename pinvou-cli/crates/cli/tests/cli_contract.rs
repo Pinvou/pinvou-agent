@@ -528,11 +528,28 @@ fn invalid_usage_maps_to_exit_code_two() {
 fn unrecognized_output_value_falls_through_to_usage_error() {
     // Outside `benchmark submission gaia` (which consumes `--output <file>` as
     // a legacy alias of `--destination`), an unrecognized `--output` value
-    // stays in argv and surfaces as the standard usage error.
+    // stays in argv — so the token lands in the FAMILY position and the
+    // round-27 flag-position hint names it and states the placement rule,
+    // instead of the bare usage line.
     let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = error.to_string();
+    assert!(message.contains("unknown family --output"), "{message}");
+    assert!(
+        message.contains("before the family or after the subcommand"),
+        "{message}"
+    );
+    assert!(
+        message.contains("usage: pinvou benchmark <command>"),
+        "the usage line still follows the hint: {message}"
+    );
+
+    // A NON-flag unknown token keeps the exact bare usage line (the drift
+    // pin lives on the constant; this pins the behavior).
+    let generic = parse_args(["pinvou", "bogus", "list"]).unwrap_err();
+    assert_eq!(generic.exit_code(), ExitCode::Usage);
     assert_eq!(
-        error.to_string(),
+        generic.to_string(),
         "usage: pinvou benchmark <command> | pinvou agent run | pinvou \
          sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
          projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou \

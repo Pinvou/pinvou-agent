@@ -1251,12 +1251,21 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                     Ok(Err(error)) => error.to_string(),
                     Err(_) => "the status probe panicked".to_owned(),
                 };
+                // A panicked probe knows NOTHING about this connector — not
+                // even whether it is installed — so the degrade must not
+                // fabricate `installed/connected: false`: that is exactly
+                // the "hide a wedged shim behind an install recommendation"
+                // outcome the Missing arm and `degrade_probe_failure`
+                // refuse. The fields stay absent for a JSON consumer (an
+                // absent field is unknown, not false) and the note carries
+                // the reason; the human row's bool cells render absent as
+                // "no" (the renderer has no unknown state), which the note
+                // printed alongside disambiguates.
                 json!({
                     "id": kind.spec().id,
                     "ok": false,
-                    "connected": false,
-                    "installed": false,
                     "note": note,
+                    "degraded": "panic",
                 })
             })
             .collect::<Vec<_>>()
@@ -2123,12 +2132,19 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         // On posix `rename` replaces the destination atomically — the pre-`remove_file`
         // this site used to do opened a window where a concurrent spawner resolved
         // a MISSING binary (the Known limitations copy already promised "installed
-        // by atomic rename"). Windows' rename does not replace, so the explicit
-        // remove stays there. Both arms are typed `Result<(), CliError>`: the
-        // closure's tail expression must not let the raw `io::Error` leak into
-        // the closure's inferred type (the `?` above then demands a
-        // `From<CliError> for io::Error` that does not exist — the Windows
-        // target did not compile before this was explicit).
+        // by atomic rename"). The Windows arm keeps the explicit remove for GUI
+        // parity (`native_installer.rs` does the same remove-then-rename
+        // unconditionally) — std's Windows `rename` maps to MoveFileExW with
+        // REPLACE_EXISTING and would replace by itself, so the remove is
+        // redundant rather than required; it trades a brief missing-binary
+        // window (crash between remove and rename recovers by re-running
+        // ensure-cli) for byte-for-byte behaviour parity with the desktop
+        // installer, and installs are file-lock serialized CLI×CLI. Both arms
+        // are typed `Result<(), CliError>`: the closure's tail expression must
+        // not let the raw `io::Error` leak into the closure's inferred type
+        // (the `?` above then demands a `From<CliError> for io::Error` that
+        // does not exist — the Windows target did not compile before this was
+        // explicit).
         #[cfg(unix)]
         let replace = std::fs::rename(&staging, &destination)
             .map_err(|error| CliError::failed(format!("cannot finish connector install: {error}")));
@@ -2961,8 +2977,25 @@ fn spawn_and_capture_url(
     // carries the vendor's last words and not just its first. The drains are
     // byte-capped (`LOGIN_DRAIN_CAP_BYTES`), so the queue is bounded too.
     for event in rx.try_iter() {
-        if let LoginStreamEvent::Log(line) = event {
-            remember(line);
+        match event {
+            // The queue after the loop still carries events the loop never
+            // consumed: a `Code` (or `Url`) queued in the final tick before
+            // the break is the vendor's real pairing material — dropping it
+            // composes a URL without its code, the one-way-code-drop class
+            // the round-24/25 fixes closed on the forward path.
+            LoginStreamEvent::Code(code) => {
+                if user_code.is_none() {
+                    note!("{} user code: {code}", spec.cli_bin);
+                    notes.push(format!("user code: {code}"));
+                    user_code = Some(code);
+                }
+            }
+            LoginStreamEvent::Url(found) => {
+                if url.is_none() {
+                    url = Some(found);
+                }
+            }
+            LoginStreamEvent::Log(line) => remember(line),
         }
     }
     let status = match wait {
@@ -3268,20 +3301,27 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
             // caller can keep a bounded tail for failure diagnostics; the
             // vendor's reason for failing is otherwise dropped on the floor
             // here. Receiver-gone ends the drain as with the other events.
+            // The event budget bounds only the LOG channel: past it the log
+            // send is skipped (with one truncation marker), but the code and
+            // URL scans below still run — a chatty vendor whose authorize
+            // link arrives after 512 diagnostic lines still gets its link
+            // through, which is the whole point of this drain.
             if let Some(safe) = safe_auth_log_line(&line, redact_bare_token) {
                 log_events += 1;
                 let event = if log_events <= LOGIN_LOG_EVENT_CAP {
-                    LoginStreamEvent::Log(safe)
+                    Some(LoginStreamEvent::Log(safe))
                 } else if log_events == LOGIN_LOG_EVENT_CAP + 1 {
-                    LoginStreamEvent::Log(
+                    Some(LoginStreamEvent::Log(
                         "[truncated: vendor diagnostic output exceeded the event budget]"
                             .to_owned(),
-                    )
+                    ))
                 } else {
-                    continue;
+                    None
                 };
-                if tx.send(event).is_err() {
-                    return;
+                if let Some(event) = event {
+                    if tx.send(event).is_err() {
+                        return;
+                    }
                 }
             }
             if let Some(code) = extract_user_code(&line) {

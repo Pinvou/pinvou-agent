@@ -176,43 +176,24 @@ fn atomic_write_staged(
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
-/// Forced mirror of `platform::path_policy::BLOCKED_COMPONENTS`
-/// (`pinvou3-app/src-tauri/src/platform/path_policy.rs`). That module is
-/// `pub(crate) mod` in `pinvou3-app`, so neither the constant nor
-/// `check_sensitive_components` is nameable from this crate and the list has to
-/// be copied. **The two must change together**: adding a credential name
-/// upstream without adding it here silently reopens it on the CLI surface.
-const SENSITIVE_PATH_COMPONENTS: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".docker",
-    ".kube",
-    ".password-store",
-    "id_rsa",
-    "id_ed25519",
-    "id_ecdsa",
-    "id_dsa",
-    "credentials.json",
-    ".env",
-];
+/// The credential-component blocklist, IMPORTED from
+/// `platform::path_policy::BLOCKED_COMPONENTS` (the module was widened from
+/// `pub(crate)` for exactly this consumer): the lists can no longer drift.
+/// The round-27 copy carried a "must change together" warning — an upstream
+/// credential addition without a matching CLI edit silently reopened the name
+/// on this surface while `files ingest` (which consumes the upstream list via
+/// `validate_browsable_path`) stayed closed; that failure class is gone now
+/// that both surfaces read one constant.
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
 
-/// Forced mirror of `platform::path_policy::BLOCKED_PREFIXES` (same file, same
-/// "must change together" rule as [`SENSITIVE_PATH_COMPONENTS`]).
+/// The system-prefix blocklist, imported from
+/// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
 ///
 /// Only consulted for paths the user names freely — today that is
-/// `feedback submit --attach`. The artifact lanes skip it; see the module docs
-/// for why it cannot apply inside session storage.
-const SENSITIVE_PATH_PREFIXES: &[&str] = &[
-    "/etc/shadow",
-    "/etc/gshadow",
-    "/etc/sudoers",
-    "/etc/ssh/",
-    "/root/",
-    "/var/log/auth",
-    "/proc/",
-    "/sys/",
-];
+/// `feedback submit --attach/--body-file` and `agent run --attach`. The
+/// artifact lanes skip it; see the module docs for why it cannot apply
+/// inside session storage.
+use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
 
 /// Mirror of the component half of `path_policy::check_sensitive_components`.
 ///
