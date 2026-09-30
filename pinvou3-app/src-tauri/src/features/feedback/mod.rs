@@ -29,6 +29,13 @@ pub enum FeedbackStatus {
 /// kept because the headless CLI records the request it submitted in its
 /// local receipt. The GUI's `error_summary` and per-attachment `mime` keys
 /// are always null and are ignored by serde.
+///
+/// Attachment entries are metadata only: nothing in this crate ever opens
+/// `path`. A consumer that stages or uploads the bytes must apply the
+/// credential-path policy (`platform::path_policy`) itself —
+/// [`validate_feedback_request`] deliberately does not, because where the
+/// bytes may come from is a property of the destination, not of the
+/// request shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackSubmitRequest {
     #[serde(rename = "type")]
@@ -45,6 +52,8 @@ pub struct FeedbackSubmitRequest {
     pub privacy_notice_version: String,
 }
 
+/// One attachment's metadata. `path` is never opened by this crate; see the
+/// path-policy note on [`FeedbackSubmitRequest`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackAttachmentRequest {
     pub path: String,
@@ -54,10 +63,9 @@ pub struct FeedbackAttachmentRequest {
     pub size_bytes: Option<u64>,
 }
 
-/// 提交回执。`feedback_id`/`submitted_at` 前端从不读取，已删；
-/// `status` 与 `message` 前端消费，保留。`retryable` is part of the receipt
-/// the headless CLI writes to disk; it is always `false` here because
-/// nothing is ever queued for retry.
+/// Submission receipt. `status` and `message` are consumed by the frontend;
+/// `retryable` is part of the receipt the headless CLI writes to disk and is
+/// always `false` here because nothing is ever queued for retry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackReceipt {
     pub status: FeedbackStatus,
@@ -93,6 +101,10 @@ pub async fn submit_feedback(
     })
 }
 
+/// Validate the request shape the GUI and the CLI share. Deliberately says
+/// nothing about `attachments`: their count, size and path policy belong to
+/// the consumer that actually stages the bytes (see
+/// [`FeedbackSubmitRequest`]).
 pub fn validate_feedback_request(request: &FeedbackSubmitRequest) -> Result<(), FeedbackError> {
     let description_len = request.description.trim().chars().count();
     if description_len == 0 {
@@ -179,5 +191,31 @@ mod tests {
         assert_eq!(request.privacy_notice_version, "");
         assert!(request.attachments.is_empty());
         assert!(validate_feedback_request(&request).is_ok());
+    }
+
+    #[test]
+    fn validate_feedback_request_rejects_out_of_bounds_payloads() {
+        // These rules are a cross-crate contract: the CLI translates its
+        // output by `contains`-matching these exact anchors, so pin every
+        // rejection path together with the anchor the CLI depends on.
+        let mut req = request();
+        req.description = "  \n".to_string();
+        let err = validate_feedback_request(&req).expect_err("whitespace-only description");
+        assert!(err.to_string().contains("请填写反馈说明"));
+
+        let mut req = request();
+        req.description = "字".repeat(MAX_DESCRIPTION_CHARS + 1);
+        let err = validate_feedback_request(&req).expect_err("description beyond the cap");
+        assert!(err.to_string().contains("反馈说明最多"));
+
+        let mut req = request();
+        req.title = Some("t".repeat(MAX_TITLE_CHARS + 1));
+        let err = validate_feedback_request(&req).expect_err("title beyond the cap");
+        assert!(err.to_string().contains("反馈标题最多"));
+
+        let mut req = request();
+        req.entry_point = "other".to_string();
+        let err = validate_feedback_request(&req).expect_err("unknown entry_point");
+        assert!(err.to_string().contains("反馈入口来源无效"));
     }
 }
