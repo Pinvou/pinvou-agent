@@ -64,14 +64,16 @@ use crate::platform::paths;
 /// is not ordered: uninstall nests TRANSACTION → import_lock (companion
 /// cleanup), while `restore_plugin` holds import_lock across `install_upload`
 /// → TRANSACTION (round-21 minor 4: `import_plugin_package` in plugin_import.rs
-/// is a second import_lock → TRANSACTION crossing of the same shape). Both
-/// directions pre-date this PR. A theoretical
-/// same-instance inversion exists at their cross (review R14 minor): pack X
-/// sits in the recycle bin while also being a declared companion of a tool
-/// being uninstalled — cleanup's `uninstall(X)` waits on import_lock(X) under
-/// TRANSACTION while `restore_plugin(X)` holds import_lock(X) waiting on
-/// TRANSACTION. Known, pre-existing, unresolved; this doc must not be cited
-/// as proof of a settled global lock order.
+/// is a second import_lock → TRANSACTION crossing of the same shape; round-32
+/// minor 4 adds a third, same-direction crossing in this PR — extraction.rs's
+/// retired-tool cleanup holds import_lock(id) across its residue
+/// `uninstall(id)`, so the family is no longer exclusively pre-existing). A
+/// theoretical same-instance inversion exists at their cross (review R14
+/// minor): pack X sits in the recycle bin while also being a declared
+/// companion of a tool being uninstalled — cleanup's `uninstall(X)` waits on
+/// import_lock(X) under TRANSACTION while `restore_plugin(X)` holds
+/// import_lock(X) waiting on TRANSACTION. Known, unresolved; this doc must
+/// not be cited as proof of a settled global lock order.
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// mcp.json server keys owned by the engine boot path (`runtime_bundle`'s
@@ -5922,6 +5924,159 @@ mod tests {
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
             assert!(file.initialized.contains("plain"));
+        });
+    }
+
+    /// A legacy scope file that EXISTS but cannot be consumed (corrupt JSON)
+    /// must not migrate as "the user disabled nothing": the wide upgrade
+    /// signal still judges the install upgraded, so a lenient migration would
+    /// initialize plain EMPTY — every lost opt-out back ON, frozen at the
+    /// first read (review #455 round-34: the lenient form re-enabled the
+    /// opt-outs the strict legacy parser used to protect). Fail closed
+    /// instead: marker-only recovery, no scope initialized, the DenyAll
+    /// fallback keeps everything off, and the original legacy file is left
+    /// untouched for manual recovery.
+    #[test]
+    fn corrupt_legacy_file_fails_closed_not_implicitly_all_on() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, "{not json").unwrap();
+
+            let denied = load_disabled_bundles();
+            assert!(
+                denied.contains(&"weather".to_string()) && denied.contains(&"feishu".to_string()),
+                "a corrupt legacy file must fail closed over the DenyAll fallback: {denied:?}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated,
+                "the verdict is frozen: {file:?}"
+            );
+            assert!(
+                !file.initialized.contains("plain"),
+                "plain must NOT initialize — the lost opt-outs must not come back ON: {file:?}"
+            );
+            let on_disk: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(
+                    crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                )
+                .expect("the frozen fail-closed verdict must be persisted"),
+            )
+            .expect("the persisted verdict must be valid JSON");
+            assert_eq!(
+                on_disk.get("plain_defaults_migrated"),
+                Some(&serde_json::Value::Bool(true)),
+                "the freeze landed: {on_disk}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&legacy).unwrap(),
+                "{not json",
+                "the read-only legacy file must stay untouched"
+            );
+        });
+    }
+
+    /// A legacy file that parses as JSON but does not match a documented shape
+    /// — or matches one only partially (wrong-typed `scopes`, entries, or
+    /// flags) — is corruption, not an empty state: consuming the half that
+    /// happens to parse would silently read as "nothing was disabled" while
+    /// the wide signal initializes plain fully-ON. It must fail closed
+    /// exactly like a corrupt one (restore of main's strict-parser pins,
+    /// adapted to the frozen-verdict recovery shape).
+    #[test]
+    fn schema_invalid_legacy_file_fails_closed() {
+        for (name, payload) in [
+            (
+                "pinvou3-scope-legacy-scopes-array",
+                r#"{"scopes":[], "initialized":["plain"]}"#,
+            ),
+            (
+                "pinvou3-scope-legacy-entry-string",
+                r#"{"scopes":{"plain":"pptx"}}"#,
+            ),
+            (
+                "pinvou3-scope-legacy-entry-mixed",
+                r#"{"scopes":{"plain":["weather", 3]}}"#,
+            ),
+            ("pinvou3-scope-legacy-no-shape", r#"{}"#),
+            (
+                "pinvou3-scope-legacy-init-type",
+                r#"{"scopes":{"plain":[]},"initialized":"plain"}"#,
+            ),
+            (
+                "pinvou3-scope-legacy-ci-type",
+                r#"{"plain":[],"code_initialized":"yes"}"#,
+            ),
+        ] {
+            with_temp_home(|| {
+                write_installed_ids(&["weather".to_string()]);
+                std::fs::write(
+                    crate::platform::paths::pinvou3_home().join("disabled_connectors.json"),
+                    payload,
+                )
+                .unwrap();
+
+                let denied = load_disabled_bundles();
+                assert!(
+                    denied.contains(&"weather".to_string())
+                        && denied.contains(&"feishu".to_string()),
+                    "a schema-invalid legacy file ({name}: {payload}) must fail closed: {denied:?}"
+                );
+                let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+                assert!(
+                    file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                    "the fail-closed verdict is frozen with plain uninitialized ({name}: {payload}): {file:?}"
+                );
+            });
+        }
+    }
+
+    /// A legacy file that exists but cannot be READ (permissions/lock) must
+    /// fail closed exactly like a corrupt one — present-but-unconsumable is
+    /// not "nothing was ever disabled" (restore of main's unreadable-legacy
+    /// pin, new frozen-verdict recovery shape). The unreadable original stays
+    /// untouched; after the permissions are restored the freeze has already
+    /// converged, so the DenyAll fallback keeps the unknown opt-outs off.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_legacy_file_fails_closed_with_frozen_verdict() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, r#"["weather"]"#).unwrap();
+            std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root probe (mode bits are no-ops for root): if the file is still
+            // readable, the unreadable-read branch never runs — skip loudly.
+            if std::fs::read(&legacy).is_ok() {
+                std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o644)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[unreadable_legacy_file_fails_closed_with_frozen_verdict]: running as root - the unreadable-file fixture stays readable; NOT exercised"
+                );
+                return;
+            }
+
+            let denied = load_disabled_bundles();
+            assert!(
+                denied.contains(&"weather".to_string()) && denied.contains(&"feishu".to_string()),
+                "an unreadable legacy file must fail closed over the DenyAll fallback: {denied:?}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated, "{file:?}");
+            assert!(
+                !file.initialized.contains("plain"),
+                "plain must not initialize from an unconsumable legacy file: {file:?}"
+            );
+            // Restore permissions and confirm the original was never written.
+            std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&legacy).unwrap(),
+                r#"["weather"]"#,
+                "the read-only legacy file must stay untouched"
+            );
         });
     }
 

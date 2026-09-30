@@ -309,7 +309,40 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                     .read_dir()
                     .map(|mut entries| entries.next().is_some())
                     .unwrap_or(false);
-            let mut file = migrate_from_legacy_files();
+            let (mut file, legacy_unconsumable) = migrate_from_legacy_files();
+            if legacy_unconsumable {
+                // A legacy scope file EXISTS but cannot be consumed (read
+                // failure, corrupt JSON, unrecognized/malformed shape).
+                // Migrating it leniently would bake "the user disabled
+                // nothing" into the frozen verdict while the wide signal
+                // above still judges the install upgraded and initializes
+                // plain EMPTY — every lost opt-out back ON, permanently
+                // (the exact flip the corrupt-sidecar arm above exists to
+                // prevent). Same doctrine: recover fail-closed — set only
+                // the migration marker, initialize no scope (the DenyAll
+                // fallback keeps every previously opted-out pack off),
+                // freeze. The legacy file is read-only history and is left
+                // untouched for manual recovery; main's strict legacy
+                // parser (and its pins, removed earlier in this PR) is
+                // restored here over the new fail-closed recovery shape.
+                eprintln!(
+                    "[marketplace] a legacy scope file exists but cannot be consumed; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted"
+                );
+                let recovered = DisabledBundlesFile {
+                    plain_defaults_migrated: true,
+                    ..DisabledBundlesFile::default()
+                };
+                if let Err(freeze_error) = try_save_disabled_bundles_file(&recovered) {
+                    eprintln!(
+                        "[scope] CRITICAL: failed to persist the unconsumable-legacy recovery verdict: {freeze_error}; holding the in-process verdict until restart"
+                    );
+                    *UNPERSISTED_VERDICT
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some((home, recovered.clone()));
+                }
+                return recovered;
+            }
             if upgraded_install {
                 // Upgraded: initialize plain (scopes default empty = fully on
                 // under the old semantics), locking in the pre-upgrade state.
@@ -608,22 +641,29 @@ fn normalize_stored_pkg_ids_with(tools: &[super::ToolManifest], ids: &[String]) 
 }
 
 /// First-boot migration: reads the legacy `disabled_connectors.json` and
-/// `disabled_skills.json` (each tolerant of three legacy shapes), maps the
-/// entries to bundle ids, and merges them into the new file — connector
-/// scopes overwrite while skill scopes union, with `project_skills_enabled`
-/// taken from the skill file. The legacy files are not deleted (kept as
-/// read-only history for this release cycle; retired alongside the legacy
-/// layout in a later cycle).
-fn migrate_from_legacy_files() -> DisabledBundlesFile {
+/// `disabled_skills.json` (each accepting the three documented shapes, parsed
+/// STRICTLY — see [`merge_legacy_scope_file_into`]), maps the entries to
+/// bundle ids, and merges them into the new file — connector scopes overwrite
+/// while skill scopes union, with `project_skills_enabled` taken from the
+/// skill file. The legacy files are not deleted (kept as read-only history
+/// for this release cycle; retired alongside the legacy layout in a later
+/// cycle).
+///
+/// The bool is "a legacy file exists but cannot be consumed": the caller must
+/// not migrate such a state as "the user disabled nothing" — it recovers
+/// fail-closed instead (review #455: the wide upgrade signal would otherwise
+/// initialize plain EMPTY over the lost opt-outs and freeze them ON).
+fn migrate_from_legacy_files() -> (DisabledBundlesFile, bool) {
     let mut file = DisabledBundlesFile::default();
-    merge_connector_scopes_into(&mut file);
-    merge_skill_scopes_into(&mut file);
-    file
+    let mut unconsumable = false;
+    unconsumable |= merge_connector_scopes_into(&mut file);
+    unconsumable |= merge_skill_scopes_into(&mut file);
+    (file, unconsumable)
 }
 
 /// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
-/// （scope 条目按旧文件**覆盖写**）。
-fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
+/// （scope 条目按旧文件**覆盖写**）。返回「文件存在但不可消费」。
+fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_connectors.json"),
@@ -631,18 +671,18 @@ fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) {
             file.scopes.insert(key.to_string(), ids);
         },
         false,
-    );
+    )
 }
 
 /// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。
-fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
+/// 并继承 `project_skills_enabled`。返回「文件存在但不可消费」。
+fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
     merge_legacy_scope_file_into(
         file,
         &paths::pinvou3_home().join("disabled_skills.json"),
         |file, key, ids| merge_ids_into_scope(file, key, ids),
         true,
-    );
+    )
 }
 
 /// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
@@ -652,14 +692,33 @@ fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) {
 ///
 /// `merge_ids` 决定 scope 条目的落库语义（连接器文件 = 覆盖写，技能文件 = 并集
 /// 合并）；`inherit_project_flag` 为真时继承 `project_skills_enabled`（仅技能文件）。
+///
+/// 返回「文件**存在但不可消费**」：读失败、非 JSON、非对象、无任何可识别的
+/// scope 形态、或已识别形态中的字段/条目类型错误（主分支 #455 评审恢复的严格
+/// 解析语义：合法 JSON 但只匹配到一半的文件是损坏而非「什么都没关」——消费能
+/// 解析的那一半会静默读作「从未禁用过」）。文件不存在是迁移常态，返回 false；
+/// 两者必须区分，否则一次读失败会被当成「用户从未禁用过任何东西」。
 fn merge_legacy_scope_file_into(
     file: &mut DisabledBundlesFile,
     path: &std::path::Path,
     merge_ids: impl Fn(&mut DisabledBundlesFile, &str, Vec<String>),
     inherit_project_flag: bool,
-) {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
+) -> bool {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            eprintln!("[scope] read {} failed: {error}", path.display());
+            return true;
+        }
+    };
+    let scope_ids = |value: &serde_json::Value| -> Option<Vec<String>> {
+        let arr = value.as_array()?;
+        let mut ids = Vec::with_capacity(arr.len());
+        for entry in arr {
+            ids.push(to_package_id(entry.as_str()?));
+        }
+        Some(ids)
     };
     // 裸数组 → plain scope
     if let Ok(list) = serde_json::from_str::<Vec<String>>(&content) {
@@ -667,58 +726,100 @@ fn merge_legacy_scope_file_into(
         if !ids.is_empty() {
             merge_ids(file, SessionMode::Plain.as_str(), ids);
         }
-        return;
+        return false;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
+        eprintln!("[scope] parse {} failed", path.display());
+        return true;
     };
     let Some(obj) = value.as_object() else {
-        return;
+        eprintln!("[scope] {} is not a JSON object", path.display());
+        return true;
     };
-    if let Some(scopes) = obj.get("scopes").and_then(|v| v.as_object()) {
-        for (key, arr) in scopes {
-            if let Some(arr) = arr.as_array() {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
+    match obj.get("scopes") {
+        Some(serde_json::Value::Object(scopes)) => {
+            for (key, arr) in scopes {
+                let Some(ids) = scope_ids(arr) else {
+                    eprintln!(
+                        "[scope] {} has a malformed scope entry {key}",
+                        path.display()
+                    );
+                    return true;
+                };
                 if !ids.is_empty() {
                     merge_ids(file, key, ids);
                 }
             }
-        }
-        if let Some(initialized) = obj.get("initialized").and_then(|v| v.as_array()) {
-            for key in initialized.iter().filter_map(|v| v.as_str()) {
-                file.initialized.insert(key.to_string());
-            }
-        }
-    } else {
-        // 旧双 scope 对象 {plain, code, code_initialized}
-        for key in ["plain", "code"] {
-            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                let ids: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(to_package_id))
-                    .collect();
-                if !ids.is_empty() {
-                    merge_ids(file, key, ids);
+            match obj.get("initialized") {
+                None => {}
+                Some(serde_json::Value::Array(keys)) => {
+                    for key in keys.iter().filter_map(|v| v.as_str()) {
+                        file.initialized.insert(key.to_string());
+                    }
+                }
+                Some(_) => {
+                    eprintln!("[scope] {} has a non-array \"initialized\"", path.display());
+                    return true;
                 }
             }
         }
-        if obj
-            .get("code_initialized")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+        Some(_) => {
+            eprintln!("[scope] {} has a non-object \"scopes\"", path.display());
+            return true;
+        }
+        None if obj.contains_key("plain")
+            || obj.contains_key("code")
+            || obj.contains_key("code_initialized") =>
         {
-            file.initialized
-                .insert(SessionMode::Code.as_str().to_string());
+            // 旧双 scope 对象 {plain, code, code_initialized}
+            for key in ["plain", "code"] {
+                let Some(value) = obj.get(key) else { continue };
+                let Some(ids) = scope_ids(value) else {
+                    eprintln!(
+                        "[scope] {} has a malformed scope entry {key}",
+                        path.display()
+                    );
+                    return true;
+                };
+                if !ids.is_empty() {
+                    merge_ids(file, key, ids);
+                }
+            }
+            match obj.get("code_initialized") {
+                None => {}
+                Some(serde_json::Value::Bool(true)) => {
+                    file.initialized
+                        .insert(SessionMode::Code.as_str().to_string());
+                }
+                Some(serde_json::Value::Bool(false)) => {}
+                Some(_) => {
+                    eprintln!(
+                        "[scope] {} has a non-bool \"code_initialized\"",
+                        path.display()
+                    );
+                    return true;
+                }
+            }
+        }
+        None => {
+            eprintln!("[scope] {} has no recognizable scope shape", path.display());
+            return true;
         }
     }
     if inherit_project_flag {
-        if let Some(enabled) = obj.get("project_skills_enabled").and_then(|v| v.as_bool()) {
-            file.project_skills_enabled = enabled;
+        match obj.get("project_skills_enabled") {
+            None => {}
+            Some(serde_json::Value::Bool(enabled)) => file.project_skills_enabled = *enabled,
+            Some(_) => {
+                eprintln!(
+                    "[scope] {} has a non-bool \"project_skills_enabled\"",
+                    path.display()
+                );
+                return true;
+            }
         }
     }
+    false
 }
 
 /// 并集合并到某 scope（去重、保序）。

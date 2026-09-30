@@ -493,7 +493,9 @@ impl Pinvou3Bundle {
                 // deletion-point arm below.
                 if Self::user_upload_record_exists(tool_id) {
                     log::warn!(
-                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id is                          present under the import lock; keeping bundles/<id> and deferring the                          residue sweep to the next startup"
+                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id is \
+                         present under the import lock; keeping bundles/<id> and deferring the \
+                         residue sweep to the next startup"
                     );
                     crate::platform::startup::mark_with_detail(
                         "rust",

@@ -53,6 +53,11 @@ REQUIRED_PINS = [
     "restore_consent_gate_never_reowns_collided_pack_id",
     "restore_secrets_pack_into_uninitialized_scope_persists_consent",
     "restore_mcp_supply_failure_rolls_back_to_recycle_bin",
+    # mod.rs (round-34): a legacy scope file that exists but cannot be
+    # consumed must fail closed over the DenyAll fallback, never migrate as
+    # "nothing was disabled" while the wide signal initializes plain fully-on.
+    "corrupt_legacy_file_fails_closed_not_implicitly_all_on",
+    "schema_invalid_legacy_file_fails_closed",
 ]
 
 
