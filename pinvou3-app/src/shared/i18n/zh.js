@@ -7,7 +7,7 @@
 import { browserZh } from './browser.js';
 
 const conversationZh = {
-  completed:'已完成', interrupted:'已中断', cancelled:'已取消', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
+  completed:'已完成', failed:'失败', interrupted:'已中断', cancelled:'已取消', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
   waitingPermission:'等待授权', waitingInput:'等待你的输入', waitingInputShort:'等待输入',
   goLatest:label=>`${label}，前往最新消息`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -919,7 +919,7 @@ dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的
 dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'来自另一个会话', jump:name=>`打开会话：${name}`, unavailable:'会话已删除' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).
-dictZh.uiScheduledTaskTool = { listLabel:'列表', duplicateNote:'同幂等键的请求已处理过，以上是已记录的结果。', created:'定时任务已创建', updated:'定时任务已更新', deleted:'定时任务已删除', deletedNote:'运行历史已归档，任务不再调度。', pending:'请求已提交，应用尚未确认结果——可在定时任务面板查看', failed:'定时任务请求失败', promptLabel:'提示词' };
+dictZh.uiScheduledTaskTool = { listLabel:'列表', duplicateNote:'同幂等键的请求已处理过，以上是已记录的结果。', created:'定时任务已创建', updated:'定时任务已更新', deleted:'定时任务已删除', deletedNote:'运行历史已归档，任务不再调度。', pending:'请求已提交，应用尚未确认结果——可在定时任务面板查看',promptLabel:'提示词' };
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 

@@ -278,6 +278,7 @@ def main():
                 "arguments": {
                     "name": "早报", "prompt": "汇总新闻",
                     "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
                     "idempotency_key": "k1",
                 },
             }))
@@ -293,6 +294,7 @@ def main():
                 "arguments": {
                     "name": "早报", "prompt": "汇总新闻",
                     "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
                     "idempotency_key": "k1",
                 },
             }))

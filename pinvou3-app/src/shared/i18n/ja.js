@@ -8,7 +8,7 @@ import { dictEn } from './en.js';
 import { browserJa } from './browser.js';
 
 const conversationJa = {
-  completed:'完了', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
+  completed:'完了', failed:'失敗', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
   waitingPermission:'権限の承認待ち', waitingInput:'入力待ち', waitingInputShort:'入力待ち',
   goLatest:label=>`${label}。最新メッセージへ移動`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -888,7 +888,7 @@ dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一
 dictJa.uiSessionMessage = { from:name=>`セッションから：${name}`, fromUnknown:'別のセッションから', jump:name=>`セッションを開く：${name}`, unavailable:'セッションが削除されました' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).
-dictJa.uiScheduledTaskTool = { listLabel:'一覧', duplicateNote:'同じ冪等キーのリクエストは処理済みです。記録済みの結果を表示しています。', created:'定時タスクを作成しました', updated:'定時タスクを更新しました', deleted:'定時タスクを削除しました', deletedNote:'実行履歴はアーカイブされ、タスクはスケジュールされません。', pending:'リクエストを送信しました。アプリが結果を確認できていません。定時タスクパネルで確認できます', failed:'定時タスクのリクエストに失敗しました', promptLabel:'プロンプト' };
+dictJa.uiScheduledTaskTool = { listLabel:'一覧', duplicateNote:'同じ冪等キーのリクエストは処理済みです。記録済みの結果を表示しています。', created:'定時タスクを作成しました', updated:'定時タスクを更新しました', deleted:'定時タスクを削除しました', deletedNote:'実行履歴はアーカイブされ、タスクはスケジュールされません。', pending:'リクエストを送信しました。アプリが結果を確認できていません。定時タスクパネルで確認できます',promptLabel:'プロンプト' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {

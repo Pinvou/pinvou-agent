@@ -8,7 +8,7 @@
 import { browserEn } from './browser.js';
 
 const conversationEn = {
-  completed:'Completed', interrupted:'Interrupted', cancelled:'Cancelled', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
+  completed:'Completed', failed:'Failed', interrupted:'Interrupted', cancelled:'Cancelled', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
   waitingPermission:'Waiting for permission', waitingInput:'Waiting for your input', waitingInputShort:'Waiting for input',
   goLatest:label=>`${label}. Go to latest message`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}s`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}m ${remaining}s`:`${minutes}m`; },
@@ -887,7 +887,7 @@ dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No match
 dictEn.uiSessionMessage = { from:name=>`From session: ${name}`, fromUnknown:'From another session', jump:name=>`Open session: ${name}`, unavailable:'Session deleted' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).
-dictEn.uiScheduledTaskTool = { listLabel:'list', duplicateNote:'A request with this idempotency key was already processed; the recorded result is shown above.', created:'Scheduled task created', updated:'Scheduled task updated', deleted:'Scheduled task deleted', deletedNote:'Run history is archived and the task no longer schedules.', pending:'Request submitted; the app has not confirmed the result yet — check the Scheduled Tasks panel', failed:'Scheduled task request failed', promptLabel:'Prompt' };
+dictEn.uiScheduledTaskTool = { listLabel:'list', duplicateNote:'A request with this idempotency key was already processed; the recorded result is shown above.', created:'Scheduled task created', updated:'Scheduled task updated', deleted:'Scheduled task deleted', deletedNote:'Run history is archived and the task no longer schedules.', pending:'Request submitted; the app has not confirmed the result yet — check the Scheduled Tasks panel',promptLabel:'Prompt' };
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {

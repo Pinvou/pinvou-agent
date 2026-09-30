@@ -714,9 +714,11 @@ def read_scheduled_task(automations_dir, task_id):
 def validate_sender_session_id(session_id):
     """Charset + length validation for the audit-trail sender id, plus the
     isolated-prefix rejection (contract §4.3/§5, case-insensitive): a sched-
-    session is unattended by design and must never be the requester (the
-    recursion shield lives in the execpolicy Ask rule; this is defense in
-    depth, re-checked by the Rust watcher). Existence is deliberately NOT
+    session is unattended by design and must never be the requester — this
+    rejection is the working recursion shield, re-checked by the Rust
+    watcher. The typed Ask rule is registered too, but as the product pins
+    every session to full-auto approval it does not prompt today; it exists
+    for the pending approval-mode split. Existence is deliberately NOT
     probed here: the field is model-supplied, unauthenticated, and used only
     to locate the audit root."""
     if not session_id or len(session_id) > MAX_SESSION_ID_LEN or not SESSION_ID_RE.match(session_id):

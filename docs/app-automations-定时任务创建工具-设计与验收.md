@@ -61,7 +61,7 @@
 | 包注册 | `src-tauri/src/features/marketplace/mcp_catalog.rs`（改） | `MCP_PACKAGES` 加一项；默认安装列表加 id |
 | 创建 watcher | `src-tauri/src/features/scheduled/creation_requests.rs`（新增） | spool 排水、重校验、调 `create_task`、结果标记、审计、事件 |
 | 状态克隆化 | `src-tauri/src/features/scheduled/tasks.rs`（改） | `ScheduledTaskState` 派生 Clone（JoinHandle 包 `Arc<Mutex<Option<…>>>`，EnginePool.idle_reaper 同款） |
-| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；无人值守自动拒绝 |
+| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；为审批模式分化预留（当前产品全模式全自动，规则不弹窗；无人值守递归由 watcher 拒绝 sched-/eval_/aux- 发起方兜底） |
 | 死工具清理 | `src-tauri/src/lib.rs`（改） | disallow 基座 `automation`/`send_later` |
 | 前端 | `src/features/tools/tool-renderers.jsx`、`src/shared/i18n/{en,ja,zh}.js`（改） | 渲染卡（执行可见性）、三语文案 |
 | 契约文档 | `docs/builtin-toolset-contract.md`（改） | §2 注册新族、§9 改 landed、§6 回写短等待同步新模式 |
@@ -79,7 +79,7 @@
 
 **步骤 3 — 创建 watcher**：`ScheduledTaskState` 克隆化（步骤见 §3.3）；`spawn_creation_request_watcher(state, app)` 用 `tauri::async_runtime::spawn`（勿用 tokio::spawn，a6d135840 教训），select! cancel/sleep(1s)，`boot_runtime` 末尾启动、句柄挂 state、Drop 取消；单文件处理逻辑见 §3.2。
 
-**步骤 4 — Ask 规则**：`bridge.rs:199` 旁加 `pub const SCHEDULED_TASK_CREATE_TOOL`；`scope_deny_ruleset_with`(~:2358) push `ToolAskRule::new(...)`；list 工具不加（L0）。效果：无人值守定时运行对 force-prompt 工具自动拒绝（`engine_support.rs:301` 既有语义），递归自建被挡。更新 bridge.rs 规则集测试（4209–4470 一带）。
+**步骤 4 — Ask 规则**：`bridge.rs:199` 旁加 `pub const SCHEDULED_TASK_CREATE_TOOL`；`scope_deny_ruleset_with`(~:2358) push `ToolAskRule::new(...)`；list 工具不加（L0）。注：当前产品所有会话固定全自动审批，规则暂不弹窗（为审批分化 S-1 预留）；无人值守的递归自改由 watcher 拒绝隔离前缀发起方兜底（`check_sender_session_id`）。更新 bridge.rs 规则集测试（4209–4470 一带）。
 
 **步骤 5 — 死工具清理**：lib.rs `tool_policy` 闭包追加 disallow `"automation"`、`"send_later"`。
 
