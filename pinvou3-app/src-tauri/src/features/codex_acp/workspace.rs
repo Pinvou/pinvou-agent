@@ -722,6 +722,23 @@ fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, t
     );
 }
 
+/// `String::truncate` panics when the cut index lands inside a multi-byte
+/// char — the common case for CJK diffs near the byte cap. Cut on the last
+/// char boundary at or below `limit` instead. The CLI's own diff lane
+/// carries the same guard (`truncate_utf8` in pinvou-cli), so the shared
+/// `DIFF_LIMIT` cannot mean a panic on one surface and a clean cut on the
+/// other.
+fn truncate_utf8(text: &mut String, limit: usize) {
+    if text.len() <= limit {
+        return;
+    }
+    let mut cut = limit;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+}
+
 pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
@@ -780,7 +797,7 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
 
     let truncated = text.len() > DIFF_LIMIT;
     if truncated {
-        text.truncate(DIFF_LIMIT);
+        truncate_utf8(&mut text, DIFF_LIMIT);
         text.push_str("\n\n…差异过大，已截断");
     }
     diff_cache_put(session_id, &root, &relative, text.clone(), truncated);
@@ -1397,6 +1414,27 @@ mod tests {
         assert!(normalize_relative_path("../secret.txt").is_err());
         assert!(normalize_relative_path("/absolute/secret.txt").is_err());
         assert!(resolve_workspace_file(root.path(), "missing.txt").is_err());
+    }
+
+    #[test]
+    fn diff_truncation_cuts_on_char_boundaries() {
+        // A full cap of CJK: 1 MiB is not a multiple of 3 bytes, so the old
+        // plain `String::truncate(DIFF_LIMIT)` cut inside a char and panicked.
+        let mut text = "界".repeat(DIFF_LIMIT / 3 + 4);
+        truncate_utf8(&mut text, DIFF_LIMIT);
+        assert!(text.len() <= DIFF_LIMIT);
+        assert!(
+            text.chars().all(|c| c == '界'),
+            "the cut must land on a char boundary"
+        );
+
+        let mut small = "ab界界".to_string();
+        truncate_utf8(&mut small, 3);
+        assert_eq!(small, "ab");
+
+        let mut exact = "abc".to_string();
+        truncate_utf8(&mut exact, 3);
+        assert_eq!(exact, "abc");
     }
 
     #[test]

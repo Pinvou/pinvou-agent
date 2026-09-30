@@ -592,7 +592,11 @@ impl ProjectStore {
         state.projects.remove(index);
         // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
         // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected = explicit_assignments_of(&state.assignments, project_id);
+        let mut affected = explicit_assignments_of(&state.assignments, project_id);
+        // The report serializes across processes (the CLI prints it
+        // verbatim); make the order deterministic instead of exposing the
+        // HashMap's iteration order.
+        affected.sort();
         for session_id in &affected {
             state.assignments.remove(session_id);
         }

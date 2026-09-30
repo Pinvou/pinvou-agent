@@ -311,7 +311,10 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
 /// Archive `id` wherever it appears: the legacy recent-work store and both
 /// timed stores (`current_focus`, `recent_activity`). Returns whether any
 /// item changed, so an id that is absent or already archived everywhere
-/// reports `false`.
+/// reports `false`. Note the archived buckets are cap-compacted on every
+/// write (oldest `last_hit` first), so with a full bucket the row just
+/// archived can itself be evicted: `true` says the flip happened, not that
+/// the row is still stored.
 pub fn archive_recent_work(id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
     let id = clean_id(id);

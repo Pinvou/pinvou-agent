@@ -29,8 +29,10 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// [`AssetRef::kind`] of a vendor CLI binary: a versioned external asset that
 /// a package references but does not own (`docs/marketplace-unification.md`
-/// §4, `assets/cli/<name>/<version>/`). The headless CLI writes these refs
-/// when it connects a CLI-backed connector.
+/// §4, `assets/cli/<name>/<version>/`). Reserved schema constant: no writer
+/// records these refs today (the headless CLI deliberately connects without
+/// asset pins), so consumers must tolerate an always-empty `assets` list and
+/// the first pin writer owns proving its entries against the on-disk files.
 pub const ASSET_KIND_CLI: &str = "cli";
 
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
@@ -152,7 +154,9 @@ pub struct BundleRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
     /// External asset references (CLI binaries and the like); the package
-    /// references them but does not own them.
+    /// references them but does not own them. Tolerance is per entry only:
+    /// a missing key defaults to empty, but a `null`/non-array value fails
+    /// the whole load by the file's fail-loud rule (never silently rebuilt).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<AssetEntry>,
     /// 安装时间，RFC3339/ISO8601 UTC（对齐 SessionMetadata.updated_at 的 chrono 惯例）
@@ -295,9 +299,12 @@ impl BundleStore {
     /// 其余字段以新值为准。安装/连接成功的镜像写统一走这里 —— 重装、重复连接
     /// 不应冲掉首次安装时间，也不应丢老版本二进制不认识的字段。
     /// `assets` takes the new list when it is non-empty and otherwise keeps the
-    /// existing one: a writer that does not track assets (the GUI connector
-    /// mirror always sends none) must not wipe the refs another writer
-    /// recorded, while a writer that does can replace a stale pin.
+    /// existing one, so a writer that does not track assets must not wipe refs
+    /// another writer recorded while a pin writer can still replace a stale
+    /// pin. No code records pins yet; the rule exists so the first pin writer
+    /// cannot silently wipe, and its protection is per-process: each process
+    /// merges against its own load-time snapshot, so cross-process writers
+    /// remain last-writer-wins on the whole file.
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
         let _guard = file_lock();
         let mut file = load_locked(&self.file)?;
@@ -658,14 +665,43 @@ pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> Stri
 /// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
     match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "解析 {} 失败: {e}（bundles.json 是唯一真相源，损坏时 fail loud，不静默重建）",
-                path.display()
-            )
-        }),
+        Ok(content) => {
+            let file: BundlesFile = serde_json::from_str(&content).map_err(|e| {
+                format!(
+                    "解析 {} 失败: {e}（bundles.json 是唯一真相源，损坏时 fail loud，不静默重建）",
+                    path.display()
+                )
+            })?;
+            warn_unrecognized_assets(path, &file);
+            Ok(file)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BundlesFile::default()),
         Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
+    }
+}
+
+/// Unparsable `assets` entries are kept verbatim per the `AssetEntry`
+/// contract, but a silent degrade hides data-quality problems (a `sha_256`
+/// misspelling from a future pin writer, for example). Report them once per
+/// load so the anomaly is diagnosable instead of just invisible.
+fn warn_unrecognized_assets(path: &Path, file: &BundlesFile) {
+    let flagged: Vec<&str> = file
+        .records
+        .iter()
+        .filter(|record| {
+            record
+                .assets
+                .iter()
+                .any(|entry| !matches!(entry, AssetEntry::Ref(_)))
+        })
+        .map(|record| record.id.as_str())
+        .collect();
+    if !flagged.is_empty() {
+        log::warn!(
+            "[marketplace] {}: unreadable assets entries kept verbatim in {}",
+            path.display(),
+            flagged.join(", ")
+        );
     }
 }
 
