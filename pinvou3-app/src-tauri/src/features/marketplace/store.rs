@@ -691,17 +691,7 @@ fn load_locked(path: &Path) -> Result<BundlesFile, String> {
 /// misspelling from a future pin writer, for example). Report them once per
 /// load so the anomaly is diagnosable instead of just invisible.
 fn warn_unrecognized_assets(path: &Path, file: &BundlesFile) {
-    let flagged: Vec<&str> = file
-        .records
-        .iter()
-        .filter(|record| {
-            record
-                .assets
-                .iter()
-                .any(|entry| !matches!(entry, AssetEntry::Ref(_)))
-        })
-        .map(|record| record.id.as_str())
-        .collect();
+    let flagged = unrecognized_asset_record_ids(file);
     if !flagged.is_empty() {
         log::warn!(
             "[marketplace] {}: unreadable assets entries kept verbatim in {}",
@@ -709,6 +699,22 @@ fn warn_unrecognized_assets(path: &Path, file: &BundlesFile) {
             flagged.join(", ")
         );
     }
+}
+
+/// Record ids carrying at least one entry this binary cannot read; split
+/// from `warn_unrecognized_assets` so the targeting rule is testable
+/// without capturing log output.
+fn unrecognized_asset_record_ids(file: &BundlesFile) -> Vec<String> {
+    file.records
+        .iter()
+        .filter(|record| {
+            record
+                .assets
+                .iter()
+                .any(|entry| !matches!(entry, AssetEntry::Ref(_)))
+        })
+        .map(|record| record.id.clone())
+        .collect()
 }
 
 /// 内层写：tmp + rename 原子替换（底座 `write_atomic`，含 Windows 替换重试），
@@ -1481,12 +1487,59 @@ mod tests {
                 "entries this binary cannot read must stay unrecognized, not fail the load"
             );
 
-            // A read-modify-write keeps every entry exactly as it was on disk.
+            // A read-modify-write preserves every entry semantically and
+            // key-order-exactly: unrecognized entries round-trip verbatim,
+            // recognized ones re-serialize canonically with their unknown
+            // fields kept. Not byte-exact — the whole file is re-pretty-
+            // printed on save, before and after this PR.
             store.mark_degraded("feishu", "probe").unwrap();
             let value: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(value["records"][0]["assets"], assets);
         });
+    }
+
+    /// The `assets` container itself stays fail-loud (see the field doc):
+    /// a record whose `assets` is not an array fails the whole load like
+    /// corrupt JSON rather than reading as "no assets" — only the
+    /// per-entry degrade is tolerant.
+    #[test]
+    fn unreadable_assets_container_fails_the_load_loud() {
+        with_temp_home("pinvou3-store-test", || {
+            let store = BundleStore::new();
+            let path = store.file_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for bad in ["null", "\"pins\"", "{\"kind\": \"cli\"}"] {
+                let file = format!(
+                    r#"{{"schema_version": 1, "records": [{{"id": "feishu", "source": "builtin", "installed": true, "assets": {bad}}}]}}"#
+                );
+                std::fs::write(&path, file).unwrap();
+                assert!(
+                    store.load().is_err(),
+                    "`assets: {bad}` must fail the whole load, not read as empty"
+                );
+            }
+        });
+    }
+
+    /// The load's unreadable-entry announcement targets exactly the records
+    /// that carry an unrecognized entry — not clean records, and not
+    /// records that merely have no assets at all.
+    #[test]
+    fn unrecognized_asset_announce_targets_the_right_records() {
+        let mut flagged = record("feishu", BundleSource::Builtin);
+        flagged.assets = vec![AssetEntry::Unrecognized(serde_json::json!("not-an-object"))];
+        let mut clean = record("gongwen", BundleSource::Builtin);
+        clean.assets = vec![cli_asset("1.0.0")];
+        let pinless = record("dingtalk", BundleSource::Builtin);
+        let file = BundlesFile {
+            records: vec![flagged, clean, pinless],
+            ..BundlesFile::default()
+        };
+        assert_eq!(
+            unrecognized_asset_record_ids(&file),
+            vec!["feishu".to_string()]
+        );
     }
 
     /// 回归（四轮评审 BLOCKER 1）：既有记录的来源必须保留 —— 上传包重装时
