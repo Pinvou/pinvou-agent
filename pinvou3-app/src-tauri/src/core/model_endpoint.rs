@@ -67,15 +67,7 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             if id.is_empty() {
                 return None;
             }
-            // LM Studio's /v1 shim reports the window as `max_context_length`
-            // (lmstudio.ai REST v0 docs; the native /api/v0/models uses the
-            // same key) — an endpoint self-reported fact about the model,
-            // same trust class as vLLM's `max_model_len`, which keeps
-            // precedence when both exist.
-            let max_model_len = item
-                .get("max_model_len")
-                .or_else(|| item.get("max_context_length"))
-                .and_then(parse_positive_u32);
+            let max_model_len = item.get("max_model_len").and_then(parse_positive_u32);
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
@@ -238,11 +230,26 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
                 .get("state")
                 .and_then(|v| v.as_str())
                 .map(|state| state == "loaded");
+            // The only served-window fact in the native v0 listing is
+            // `loaded_context_length` on a loaded entry (real payloads carry
+            // it next to the cap, and the two diverge when the model was
+            // loaded with a reduced context override — lmstudio-bug-tracker
+            // #726: 131072 vs 12918). `max_context_length` is the model's
+            // *capability* ("maximum context length supported by the model",
+            // lmstudio.ai REST docs; embeddings entries carry it too), the
+            // same class refused for Ollama's GGUF trained cap: adopting it
+            // would over-report the window whenever the load override is
+            // below the cap and let upstream silently truncate. Unloaded and
+            // legacy entries therefore stay undeclared.
+            let max_model_len = if loaded == Some(true) {
+                item.get("loaded_context_length")
+                    .and_then(parse_positive_u32)
+            } else {
+                None
+            };
             Some(OpenAiModelInfo {
                 id: id.to_string(),
-                // Native v0 fact: `max_context_length` (llm/vlm entries only —
-                // embeddings omit it, staying undeclared).
-                max_model_len: item.get("max_context_length").and_then(parse_positive_u32),
+                max_model_len,
                 max_output_tokens: None,
                 loaded,
             })
@@ -1828,53 +1835,69 @@ mod tests {
 
     #[test]
     fn lmstudio_v0_models_parse_loaded_state() {
-        // Real v0 shape (lmstudio.ai REST docs): llm/vlm entries carry
-        // `max_context_length`; embedding entries omit it.
+        // Real v0 shape (lmstudio.ai REST docs + lmstudio-bug-tracker #726):
+        // every model entry carries `max_context_length` — the model's
+        // *capability* ("maximum context length supported by the model"),
+        // embeddings included — while only a loaded entry carries the
+        // served window `loaded_context_length`, and the two diverge when
+        // the model was loaded with a reduced context override.
         let json: serde_json::Value = serde_json::from_str(
             r#"{"object":"list","data":[
-                {"id":"qwen3-8b","state":"loaded","max_context_length":131072},
+                {"id":"qwen3-8b","state":"loaded","max_context_length":131072,"loaded_context_length":40960},
+                {"id":"gemma3-4b","type":"vlm","state":"loaded","max_context_length":131072,"loaded_context_length":12918},
                 {"id":"deepseek-r1-14b","state":"not-loaded","max_context_length":65536},
                 {"id":"legacy-model"},
-                {"id":"nomic-embed","type":"embeddings","state":"loaded"}
+                {"id":"nomic-embed","type":"embeddings","state":"loaded","max_context_length":2048},
+                {"id":"no-loaded-field","state":"loaded","max_context_length":8192}
             ]}"#,
         )
         .unwrap();
         let models = parse_lmstudio_v0_models(&json).unwrap();
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 6);
         assert_eq!(models[0].loaded, Some(true));
-        assert_eq!(models[0].max_model_len, Some(131_072));
-        assert_eq!(models[1].loaded, Some(false));
-        assert_eq!(models[1].max_model_len, Some(65_536));
-        // 缺 state 字段 = 未知；缺 max_context_length = 窗口未声明。
-        assert_eq!(models[2].loaded, None);
+        assert_eq!(models[0].max_model_len, Some(40_960));
+        // The cap must never win over the served window: a 131072-capable
+        // model loaded at 12918 reports 12918 (bug #726's real shape).
+        assert_eq!(models[1].loaded, Some(true));
+        assert_eq!(models[1].max_model_len, Some(12_918));
+        // Unloaded: only the capability cap is available — undeclared.
+        assert_eq!(models[2].loaded, Some(false));
         assert_eq!(models[2].max_model_len, None);
-        // Embedding entries carry no context length → undeclared, never fabricated.
+        // 缺 state 字段 = 未知；窗口同样未声明。
+        assert_eq!(models[3].loaded, None);
         assert_eq!(models[3].max_model_len, None);
+        // Embedding entries carry the capability cap too → still undeclared.
+        assert_eq!(models[4].max_model_len, None);
+        // A loaded entry without `loaded_context_length` (older server):
+        // the cap is not a fallback — undeclared.
+        assert_eq!(models[5].max_model_len, None);
         // 空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测。
         assert!(parse_lmstudio_v0_models(&serde_json::json!({"data":[]})).is_none());
         assert!(parse_lmstudio_v0_models(&serde_json::json!({})).is_none());
     }
 
-    /// LM Studio's OpenAI-compatible `/v1` shim reports the window as
-    /// `max_context_length` (its native v0 key); the generic list parser
-    /// adopts it so the engine spawn path (`resolve_served_model` →
-    /// `/v1/models`) sees the same fact the v0 listing carries.
-    /// `max_model_len` keeps precedence when a gateway serves both keys.
+    /// `max_context_length` is LM Studio's capability ceiling, not a served
+    /// window (see `parse_lmstudio_v0_models`): the generic `/v1/models`
+    /// parser must not adopt it as `max_model_len` — that field feeds route
+    /// limits and saved declarations as a deployment fact, a trust class the
+    /// cap does not belong to. Only a true served-window key qualifies.
     #[test]
-    fn parse_models_response_list_reads_lmstudio_context_alias() {
+    fn parse_models_response_list_refuses_lmstudio_cap_alias() {
         let json: serde_json::Value = serde_json::from_str(
             r#"{"object":"list","data":[
-                {"id":"shim-alias","max_context_length":131072},
-                {"id":"both-keys","max_model_len":4096,"max_context_length":131072},
-                {"id":"alias-zero","max_context_length":0}
+                {"id":"cap-alias","max_context_length":131072},
+                {"id":"served-key","max_model_len":4096,"max_context_length":131072}
             ]}"#,
         )
         .unwrap();
         let models = parse_models_response_list(json).unwrap();
         let window_of = |id: &str| models.iter().find(|m| m.id == id).unwrap().max_model_len;
-        assert_eq!(window_of("shim-alias"), Some(131_072));
-        assert_eq!(window_of("both-keys"), Some(4_096));
-        assert_eq!(window_of("alias-zero"), None);
+        assert_eq!(
+            window_of("cap-alias"),
+            None,
+            "a capability ceiling must not become a route-limit fact"
+        );
+        assert_eq!(window_of("served-key"), Some(4_096));
     }
 
     /// Anthropic 地址走 x-api-key + anthropic-version，非 Anthropic 地址走 Bearer。

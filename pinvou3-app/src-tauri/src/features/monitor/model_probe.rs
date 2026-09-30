@@ -462,8 +462,7 @@ async fn cached_ollama_show_context(
             }
         }
     }
-    let ctx =
-        crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await;
+    let ctx = crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await;
     cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
         (upstream.to_string(), name.to_string()),
         (std::time::Instant::now(), ctx),
@@ -998,8 +997,7 @@ mod tests {
         // Non-Ollama local (ps 404): lookup stops, no show request.
         let mock = models_mock::spawn(&[("/api/ps", 404, "{}".into())]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("stopped-d"), Some("stopped-d"))
-                .await,
+            ollama_display_window(&mock.base_url, None, Some("stopped-d"), Some("stopped-d")).await,
             None
         );
         assert_eq!(mock.hits_for("/api/show"), 0);
