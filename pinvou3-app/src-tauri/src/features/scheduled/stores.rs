@@ -841,12 +841,11 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
         &self,
         automation_id: &str,
     ) -> Option<(Option<String>, Option<String>)> {
-        self.registry.read().tasks.get(automation_id).map(|binding| {
-            (
-                Some(binding.model_id.clone()),
-                Some(binding.model.clone()),
-            )
-        })
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|binding| (Some(binding.model_id.clone()), Some(binding.model.clone())))
     }
 
     pub(crate) fn set(

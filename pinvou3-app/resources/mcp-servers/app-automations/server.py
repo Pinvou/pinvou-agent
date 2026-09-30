@@ -929,6 +929,19 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     except OSError:
         return None, "task request queue is not writable"
 
+    # A stale failure marker from a previous attempt would make the poll below
+    # return the OLD error while this fresh apply is still in flight: unlink a
+    # not-ok marker right after re-spooling (success markers stay — they are
+    # the recorded result the duplicate path returns). The watcher drops its
+    # own stale copy too, so either side alone closes the window.
+    try:
+        with open(done_marker, "r", encoding="utf-8") as handle:
+            stale = json.load(handle)
+        if isinstance(stale, dict) and stale.get("ok") is False:
+            os.unlink(done_marker)
+    except (OSError, ValueError):
+        pass
+
     deadline = time.monotonic() + RESULT_WAIT_SECONDS
     while time.monotonic() < deadline:
         marker, marker_error = _read_result_marker(done_marker)

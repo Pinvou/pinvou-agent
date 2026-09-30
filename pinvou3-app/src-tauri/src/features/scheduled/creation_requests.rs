@@ -301,9 +301,7 @@ impl SpooledCreationRequest {
                 // global: two unattributed senders reusing one key would
                 // clobber each other's pending request (mirrors the MCP
                 // server's validation).
-                bail!(
-                    "idempotency_key requires from_session so the key is scoped to one sender"
-                );
+                bail!("idempotency_key requires from_session so the key is scoped to one sender");
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
@@ -756,6 +754,11 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // can succeed; success overwrites the marker).
         return Processed::Done;
     }
+    // Drop the stale failure marker BEFORE applying: the server's first poll
+    // must not replay the previous attempt's error while this fresh apply is
+    // in flight. A failing apply writes a fresh marker on its terminal path
+    // (inside the documented at-least-once window).
+    let _ = std::fs::remove_file(&done_marker);
     let applied = match request.kind {
         SpoolRequestKind::Create => creator.create(build_create_input(&request)).await,
         SpoolRequestKind::Update => {
@@ -1751,20 +1754,23 @@ mod tests {
 
     #[test]
     fn result_marker_suppression_follows_the_ok_field() {
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-marker-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("pinvou-marker-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("m.json");
         // Success suppresses the replay (C3).
-        std::fs::write(&marker, serde_json::json!({"ok": true, "task_id": "t"}).to_string())
-            .unwrap();
+        std::fs::write(
+            &marker,
+            serde_json::json!({"ok": true, "task_id": "t"}).to_string(),
+        )
+        .unwrap();
         assert!(result_marker_suppresses(&marker));
         // Failure does NOT suppress: the retry re-applies (one terminal
         // failure must not poison the key forever).
-        std::fs::write(&marker, serde_json::json!({"ok": false, "error": "e"}).to_string())
-            .unwrap();
+        std::fs::write(
+            &marker,
+            serde_json::json!({"ok": false, "error": "e"}).to_string(),
+        )
+        .unwrap();
         assert!(!result_marker_suppresses(&marker));
         // Unreadable/undecipherable markers suppress (historical behavior).
         std::fs::write(&marker, b"not json{").unwrap();
@@ -1797,12 +1803,18 @@ mod tests {
         )
         .await;
         let records = state.automations.lock().await.list_automations().unwrap();
-        assert_eq!(records.len(), 1, "the retry re-applied despite the failure marker");
-        let marker: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(done_dir().join("retry.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(marker["ok"], true, "the success overwrote the failure marker");
+        assert_eq!(
+            records.len(),
+            1,
+            "the retry re-applied despite the failure marker"
+        );
+        let marker: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(done_dir().join("retry.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            marker["ok"], true,
+            "the success overwrote the failure marker"
+        );
     }
 
     #[tokio::test]
@@ -1841,7 +1853,10 @@ mod tests {
         .unwrap();
         assert_eq!(marker["ok"], false);
         assert!(
-            marker["error"].as_str().unwrap().contains("character limit"),
+            marker["error"]
+                .as_str()
+                .unwrap()
+                .contains("character limit"),
             "the validation reason reaches the caller"
         );
         // The failure is audited into the requesting session's execution root.
@@ -1862,26 +1877,27 @@ mod tests {
     #[test]
     fn isolated_senders_keyless_ids_and_stray_delete_fields_are_rejected() {
         for sender in ["sched-run1", "SCHED-run1", "aux-side1", "eval_b1"] {
-            let record: SpooledCreationRequest =
-                serde_json::from_str(&spool_record_json(&[(
-                    "from_session",
-                    serde_json::json!(sender),
-                )]))
-                .unwrap();
+            let record: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[(
+                "from_session",
+                serde_json::json!(sender),
+            )]))
+            .unwrap();
             assert!(record.validate().is_err(), "{sender} must be rejected");
         }
         // A key without a sender would degrade the namespace to global.
-        let record: SpooledCreationRequest =
-            serde_json::from_str(&spool_record_json(&[
-                ("idempotency_key", serde_json::json!("anon-key")),
-                ("from_session", serde_json::Value::Null),
-            ]))
-            .unwrap();
+        let record: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[
+            ("idempotency_key", serde_json::json!("anon-key")),
+            ("from_session", serde_json::Value::Null),
+        ]))
+        .unwrap();
         assert!(record.validate().is_err(), "key requires from_session");
         // delete takes no extra fields, paused included.
         let record: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[
             ("kind", serde_json::json!("delete")),
-            ("task_id", serde_json::json!("0f0e0d0c-0000-0000-0000-000000000000")),
+            (
+                "task_id",
+                serde_json::json!("0f0e0d0c-0000-0000-0000-000000000000"),
+            ),
             ("paused", serde_json::json!(true)),
             ("name", serde_json::Value::Null),
             ("prompt", serde_json::Value::Null),
@@ -1902,11 +1918,9 @@ mod tests {
         let write = |path: &Path| {
             std::fs::write(path, b"{}").unwrap();
             let file = std::fs::File::options().write(true).open(path).unwrap();
-            file.set_times(
-                std::fs::FileTimes::new().set_modified(
-                    std::time::SystemTime::now() - STATE_RETENTION - std::time::Duration::from_secs(60),
-                ),
-            )
+            file.set_times(std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() - STATE_RETENTION - std::time::Duration::from_secs(60),
+            ))
             .unwrap();
         };
         write(&done.join("old.json"));

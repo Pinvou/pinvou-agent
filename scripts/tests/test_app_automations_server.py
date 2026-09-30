@@ -252,6 +252,43 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         self.assertIn("from_session", error)
         self.assertEqual(len(self._spooled()), 0)
 
+    def test_retry_after_failure_gets_fresh_result_not_stale_error(self):
+        # A stale ok:false marker from a previous attempt must not make the
+        # retry replay the old error: the server unlinks it on re-spool, so
+        # the poll waits for the fresh outcome.
+        import hashlib
+        import threading
+
+        spool_id = hashlib.sha256(b"reqsrc01|create||k-fresh").hexdigest()
+        marker = Path(self.requests, "spool", ".done", "%s.json" % spool_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"ok": False, "error": "old failure"}), encoding="utf-8"
+        )
+
+        def fresh_watcher():
+            time.sleep(0.3)
+            marker.write_text(
+                json.dumps({"ok": True, "task_id": "task-fresh", "task_name": "新任务"}),
+                encoding="utf-8",
+            )
+
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 2.0
+        thread = threading.Thread(target=fresh_watcher)
+        try:
+            thread.start()
+            payload, error = server.create_scheduled_task(
+                **self._create_kwargs(from_session="reqsrc01", idempotency_key="k-fresh")
+            )
+        finally:
+            thread.join()
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["taskId"], "task-fresh")
+        self.assertNotIn("old failure", str(payload))
+
     def test_preexisting_marker_reports_duplicate_result(self):
         import hashlib
 
