@@ -194,14 +194,29 @@ fn set_user_stamp(stamp: UserDirStamp) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stamp);
 }
 
+/// Whether the cached user pool reflects a complete card-directory
+/// enumeration. Both stamp publishers (first init and `reload_user`) set
+/// the stamp only together with a complete load, so a stored stamp
+/// certifies the pool; `None` means the very first load hit a directory
+/// fault — e.g. the personas volume was not yet mounted at app start — and
+/// the resulting empty pool proves nothing about any individual card.
+pub(crate) fn user_pool_enumeration_confirmed() -> bool {
+    USER_STAMP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_some()
+}
+
 /// Reload the user pool when the directory no longer matches the stamp it
 /// was loaded from. Must be called without holding the `USER` lock.
 ///
-/// Per-chat-turn readers call this on every turn. While the stamp matches,
-/// the cost is one directory enumeration plus one metadata read per
-/// `*.json` entry and no card-file reads — sub-millisecond at realistic
-/// card counts on local storage. A mismatch falls back to a full reload
-/// (read and parse every card).
+/// Per-chat-turn readers call this on every turn; one turn can reach it
+/// through several readers (the pre-turn persona check and, under
+/// multi-agent, the expert roster), so the enumeration may run a few times
+/// per turn. While the stamp matches, the cost is one directory enumeration
+/// plus one metadata read per `*.json` entry and no card-file reads —
+/// sub-millisecond at realistic card counts on local storage. A mismatch
+/// falls back to a full reload (read and parse every card).
 fn sync_user_from_disk() {
     let current = user_dir_stamp();
     if current.entries.is_none() {

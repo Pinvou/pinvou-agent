@@ -179,6 +179,14 @@ fn clear_persona_deleted_elsewhere(store: &SessionStore, session_id: &str) -> Ve
     if crate::features::personas::get(&persona_id).is_some() {
         return Vec::new();
     }
+    // A faulted very first load (a volume not yet mounted at app start)
+    // publishes an empty pool with no stamp, and the `get` above cannot tell
+    // that absence from a confirmed deletion. Only unequip once the pool
+    // reflects a complete enumeration, so a fault straddling a restart costs
+    // no session's persona; the check reruns on the next turn.
+    if !crate::features::personas::user_pool_enumeration_confirmed() {
+        return Vec::new();
+    }
     store.remove_persona_from_all(&persona_id)
 }
 
