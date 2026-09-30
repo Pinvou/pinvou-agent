@@ -25,6 +25,7 @@ export const VIEW_LOADERS = {
   savedPersonaConfirmDialog: () => import('../features/personas/SavedPersonaConfirmDialog.jsx'),
   apiKeyGateDialog: () => import('../features/settings/ApiKeyGateDialog.jsx'),
   archiveConfirmDialog: () => import('../features/sessions/ArchiveConfirmDialog.jsx'),
+  forkSessionDialog: () => import('../features/sessions/ForkSessionDialog.jsx'),
   // chat is not here: the main window renders ChatView at startup and imports
   // it statically in main.jsx; a dynamic import would not produce a separate
   // chunk (rolldown reports INEFFECTIVE_DYNAMIC_IMPORT). A detached window

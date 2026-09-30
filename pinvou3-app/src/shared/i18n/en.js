@@ -522,7 +522,7 @@ export const dictEn = {
         cpDescLabel: 'Description',
         cpEquipBubbleNote: "Full capability profile injected — the AI will handle following tasks with this expert's methodology.",
         cpTargetMarkTitle: 'Equip target · experts picked in the card deck are injected into this chat',
-        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input', riMore: 'More', riViewWorkspace: 'View workspace',
+        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input', riMore: 'More', riViewWorkspace: 'View workspace', riFork: 'Fork session',
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant (Beta)', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
@@ -1022,6 +1022,25 @@ dictEn.uiSessionWorkspace = {
   title:'View workspace', scope:'Accessible folders', primary:'Primary',
   unknownFolder:'Unknown folder',
   unbound:'No folder bound: using the Pinvou-managed default session directory',
+};
+
+// Fork-session dialog from the sidebar "more" menu
+// (features/sessions/ForkSessionDialog.jsx, docs/fork-session-plan.md §3.1):
+// fork scope + workspace plan (share all / isolate per root), with the
+// one-time ownership notice when isolating (copies are NOT removed when the
+// session is deleted — D6).
+dictEn.uiForkSession = {
+  title:'Fork session',
+  scopeLabel:'Fork scope', scopeFull:'Entire session (copies the full conversation; the original stays untouched)',
+  workspaceLabel:'Workspaces',
+  shareAll:'Copy the session only (share all workspaces)',
+  isolate:'Isolate workspaces',
+  isolateHint:'Selected roots get private copies: git repositories via a work tree (uncommitted changes carried over), everything else by a full directory copy; unselected roots stay shared. Isolation invokes the local git command.',
+  copiesNotice:(count) => `This will create ${count} workspace ${count === 1 ? 'copy' : 'copies'} (exact directory names are decided at creation):`,
+  copiesNoCleanup:'These directories are NOT removed automatically when the session is deleted — manage them yourself.',
+  create:'Create', busy:'Forking…',
+  success:(title) => `Created "${title}"`,
+  failed:'Failed to fork the session',
 };
 
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';

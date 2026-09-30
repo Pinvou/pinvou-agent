@@ -461,6 +461,7 @@ command_protocol!(
         "load_session",
         "delete_session",
         "export_session",
+        "fork_session",
         "rename_session",
         "set_session_pinned",
         "set_session_archived",

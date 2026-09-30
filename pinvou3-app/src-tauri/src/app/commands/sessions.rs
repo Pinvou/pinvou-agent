@@ -1006,6 +1006,103 @@ pub async fn export_session(
     }))
 }
 
+/// Payload returned by `fork_session`: the new session's identity plus the
+/// isolated-root mapping the frontend surfaces in the success toast.
+#[derive(Debug, Clone, Serialize)]
+pub struct ForkSessionResult {
+    pub session_id: String,
+    pub title: String,
+    pub message_count: usize,
+    /// (source root, isolated copy) for every isolated root; empty when the
+    /// fork shared all workspaces.
+    pub root_map: Vec<(String, String)>,
+}
+
+/// 复制会话（线性前缀）为新会话，源会话只读（`docs/fork-session-plan.md`）。
+/// `keep_turns = None` 全量；`Some(n)` 恰保留前 n 个用户 turn（v1 前端只传
+/// None，消息级入口是 v2）。`isolate_roots` 为用户勾选隔离的钥匙串根
+///（须命中源会话钥匙串，未知根拒绝）；`locale` 透传 UI 语言（zh/en/ja），
+/// 驱动隔离提示消息的模板选择。
+///
+/// 守卫（D12）：scheduled 会话与生成中会话拒绝——store 层再拦一次
+/// scheduled，命令层拦活跃 turn（与 rewind 同口径）。
+///
+/// 阻塞 IO（可能是大目录复制 / git 工作树）整体走 `spawn_blocking`；进度经
+/// `fork:progress` 事件节流上报（files/bytes 单调递增计数）。成功后广播
+/// `session:list_changed`，前端刷新列表并跳转新会话（D8）。
+#[tauri::command]
+pub async fn fork_session(
+    session_id: String,
+    keep_turns: Option<u32>,
+    isolate_roots: Option<Vec<String>>,
+    locale: Option<String>,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<ForkSessionResult, String> {
+    ensure_chat_session(&store, &session_id, "fork_session")?;
+    if pool.is_turn_active(&session_id) {
+        return Err("会话正在执行，请先停止当前任务再分叉".to_string());
+    }
+
+    let plan = crate::features::sessions::ForkWorkspacePlan {
+        isolate_roots: isolate_roots
+            .unwrap_or_default()
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+    };
+    let store_fork = store.inner().clone();
+    let app_progress = app.clone();
+    let session_id_progress = session_id.clone();
+    let session_id_label = session_id.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        // 节流：每个文件复制都回调，长复制会淹没事件通道；150ms 一发，
+        // 计数本身单调，漏掉的中间值无语义。
+        let last_emit =
+            std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        let progress = move |progress: crate::platform::workspace_isolation::CopyProgress| {
+            let mut last = last_emit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::Instant::now();
+            if now.duration_since(*last) < std::time::Duration::from_millis(150) {
+                return;
+            }
+            *last = now;
+            let _ = app_progress.emit(
+                "fork:progress",
+                serde_json::json!({
+                    "sessionId": session_id_progress,
+                    "files": progress.files_copied,
+                    "bytes": progress.bytes_copied,
+                }),
+            );
+        };
+        store_fork.fork_session(&session_id, keep_turns, plan, locale, &progress)
+    })
+    .await
+    .map_err(|error| format!("fork_session({session_id_label}) 任务失败: {error}"))?
+    .map_err(|error| format!("fork_session({session_id_label}) 失败: {error:#}"))?;
+
+    emit_session_event(
+        &app,
+        "session:list_changed",
+        &outcome.new_session_id,
+        "created",
+    );
+    Ok(ForkSessionResult {
+        session_id: outcome.new_session_id,
+        title: outcome.new_title,
+        message_count: outcome.message_count,
+        root_map: outcome
+            .root_map
+            .iter()
+            .map(|(from, to)| (from.display().to_string(), to.display().to_string()))
+            .collect(),
+    })
+}
+
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
 #[tauri::command]
 pub async fn rename_session(

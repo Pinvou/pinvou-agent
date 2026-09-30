@@ -437,6 +437,7 @@ export const lazyChunkContracts = {
   savedPersonaConfirmDialog: ['features/personas/SavedPersonaConfirmDialog.jsx', 'SavedPersonaConfirmDialog'],
   apiKeyGateDialog: ['features/settings/ApiKeyGateDialog.jsx', 'ApiKeyGateDialog'],
   archiveConfirmDialog: ['features/sessions/ArchiveConfirmDialog.jsx', 'ArchiveConfirmDialog'],
+  forkSessionDialog: ['features/sessions/ForkSessionDialog.jsx', 'ForkSessionDialog'],
 };
 
 export function assertLazyChunks(bundle, contracts = lazyChunkContracts) {

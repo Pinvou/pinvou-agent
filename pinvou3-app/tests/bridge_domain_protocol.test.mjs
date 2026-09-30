@@ -262,8 +262,11 @@ const expectedProtocolHashes = {
   // hydration ones). Recomputed for the rebase union: main's sidecar-helper
   // wave (#596) and aux-session surface merged with this PR's create_session
   // workspaceRoots/projectId and draft staging; the pin below is the
-  // extractor's output on the merged bridge/sessions.js.
-  sessions: 'f8346efa688c34cbf10b6cc353bcb91d955e7944cfa5d8960554eab02e4bea3c',
+  // extractor's output on the merged bridge/sessions.js. Recomputed again
+  // for the session-fork lane: forkSession adds the fork_session invoke
+  // (no new listener; the command's session:list_changed broadcast rides
+  // the existing listener).
+  sessions: 'cde30d6d3d9143ca24c35be8faa3215993994537ef759b601763c5ed30e824bc',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.

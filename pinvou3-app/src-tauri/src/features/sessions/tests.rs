@@ -9623,3 +9623,575 @@ fn delete_holds_the_scheduled_mutation_guard() {
         "the deleted session must stay deleted"
     );
 }
+
+// ============================================================================
+// fork（docs/fork-session-plan.md §6.1；工作树/复制 adapter 测试见
+// platform/workspace_isolation.rs，覆盖 §6.1 #11/#12/#14/#15）
+// ============================================================================
+
+use super::ForkWorkspacePlan;
+use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
+
+fn fork_quietly(
+    store: &SessionStore,
+    id: &str,
+    keep_turns: Option<u32>,
+    plan: ForkWorkspacePlan,
+) -> anyhow::Result<super::ForkOutcome> {
+    store.fork_session(id, keep_turns, plan, None, &|_| {})
+}
+
+/// 三轮对话：每轮一个用户 prompt，第一轮含 tool_use/tool_result 往返。
+fn three_turn_conversation() -> Vec<Message> {
+    vec![
+        user_text("第一轮问题"),
+        assistant_tool_use("call-1"),
+        tool_result_message("call-1"),
+        assistant_text("第一轮回答"),
+        user_text("第二轮问题"),
+        assistant_text("第二轮回答"),
+        user_text("第三轮问题"),
+        assistant_text("第三轮回答"),
+    ]
+}
+
+/// §6.1 #1：全量 fork 消息逐条相等、message_count 一致、原会话文件字节不变、
+/// 模型绑定继承。
+#[test]
+fn fork_session_copies_full_history() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new(
+            "/model".into(),
+            Some("model-x".into()),
+            std::env::temp_dir(),
+        )
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = three_turn_conversation();
+    store
+        .update_messages(&id, messages.clone())
+        .expect("update source");
+    store.set_title(&id, "修 bug".to_string()).expect("title");
+
+    let source_bytes_before =
+        std::fs::read(store.manager.sessions_dir().join(format!("{id}.json")))
+            .expect("read source json");
+
+    let outcome =
+        fork_quietly(&store, &id, None, ForkWorkspacePlan::default()).expect("fork full history");
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    assert_eq!(
+        forked.messages, messages,
+        "forked messages must match verbatim"
+    );
+    assert_eq!(forked.metadata.message_count, messages.len());
+    assert_eq!(forked.metadata.title, "修 bug（分叉2）");
+    assert_eq!(forked.metadata.model, "/model");
+    // 模型绑定 sidecar 随行。
+    assert_eq!(
+        store.session_model_id(&outcome.new_session_id).as_deref(),
+        Some("model-x")
+    );
+
+    // 原会话文件字节不变（只读承诺）。
+    let source_bytes_after = std::fs::read(store.manager.sessions_dir().join(format!("{id}.json")))
+        .expect("re-read source json");
+    assert_eq!(
+        source_bytes_before, source_bytes_after,
+        "fork must not rewrite the source session record"
+    );
+}
+
+/// §6.1 #2：keep_turns=2 恰保留前 2 轮（含第 2 轮的 assistant），第 3 轮用户
+/// prompt 为界。
+#[test]
+fn fork_session_keep_turns_cuts_at_user_turn_prompt() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = three_turn_conversation();
+    store
+        .update_messages(&id, messages.clone())
+        .expect("update source");
+
+    let outcome =
+        fork_quietly(&store, &id, Some(2), ForkWorkspacePlan::default()).expect("fork prefix");
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    assert_eq!(
+        forked.messages,
+        messages[..6],
+        "keep_turns=2 must cut exactly at the 3rd user prompt"
+    );
+    // 源不受影响。
+    let source = store.load(&id).expect("reload source");
+    assert_eq!(source.messages.len(), messages.len());
+}
+
+/// §6.1 #3：超界 keep_turns 报错，不落任何新文件。
+#[test]
+fn fork_session_keep_turns_beyond_total_fails() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, three_turn_conversation())
+        .expect("update source");
+    let before: Vec<_> = std::fs::read_dir(store.manager.sessions_dir())
+        .expect("list sessions dir")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+
+    let error = fork_quietly(&store, &id, Some(4), ForkWorkspacePlan::default())
+        .expect_err("beyond-total keep_turns must fail");
+    assert!(
+        error.to_string().contains("无法 fork"),
+        "error must state the turn bound: {error:#}"
+    );
+    let after: Vec<_> = std::fs::read_dir(store.manager.sessions_dir())
+        .expect("list sessions dir")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    assert_eq!(before, after, "no new session file may appear on failure");
+}
+
+/// §6.1 #4：前缀内 tool_use/tool_result 逐对完整（tool_use_id 一致）。
+#[test]
+fn fork_session_preserves_tool_use_result_pairing() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, three_turn_conversation())
+        .expect("update source");
+
+    let outcome =
+        fork_quietly(&store, &id, Some(1), ForkWorkspacePlan::default()).expect("fork first turn");
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    let tool_uses: Vec<&deepseek_tui::models::ContentBlock> = forked
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter(|block| matches!(block, deepseek_tui::models::ContentBlock::ToolUse { .. }))
+        .collect();
+    let tool_results: Vec<&deepseek_tui::models::ContentBlock> = forked
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter(|block| matches!(block, deepseek_tui::models::ContentBlock::ToolResult { .. }))
+        .collect();
+    assert_eq!(tool_uses.len(), 1, "turn-1 tool_use must be kept");
+    assert_eq!(tool_results.len(), 1, "its tool_result must be kept too");
+    let use_id = match tool_uses[0] {
+        deepseek_tui::models::ContentBlock::ToolUse { id, .. } => id.clone(),
+        _ => unreachable!(),
+    };
+    let result_id = match tool_results[0] {
+        deepseek_tui::models::ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(use_id, result_id, "pairing ids must match");
+}
+
+/// §6.1 #5：压缩摘要 system_prompt 原样继承；含 journal 的会话 fork 后重开
+/// 投影仍正确。
+#[test]
+fn fork_session_inherits_system_prompt_and_compaction_summary() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, three_turn_conversation())
+        .expect("update source");
+    let summary = "Conversation Summary (Auto-Generated)\n前情提要：已修复解析器。".to_string();
+    let mut loaded = store.load(&id).expect("load source");
+    loaded.system_prompt = Some(summary.clone());
+    store.save(&loaded).expect("persist summary");
+
+    let outcome = fork_quietly(&store, &id, None, ForkWorkspacePlan::default()).expect("fork");
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    assert_eq!(forked.system_prompt.as_deref(), Some(summary.as_str()));
+    assert!(
+        forked.journal.is_some(),
+        "journal must be rebuilt from the prefix"
+    );
+
+    // 重开（重启语义）后活跃投影仍等于 fork 前缀。
+    let reopened = reopen_store(&store).expect("reboot");
+    let reloaded = reopened
+        .load(&outcome.new_session_id)
+        .expect("reload after reboot");
+    assert_eq!(reloaded.messages, forked.messages);
+}
+
+/// §6.1 #6：artifact 元数据 + 私有目录内容随行复制，新会话记录可解析、
+/// 内容可读。
+#[test]
+fn fork_session_copies_artifacts_and_they_open() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let private_artifacts = store.manager.sessions_dir().join(&id).join("artifacts");
+    std::fs::create_dir_all(&private_artifacts).expect("create artifacts dir");
+    let artifact_path = private_artifacts.join("art_call-1.txt");
+    std::fs::write(&artifact_path, "artifact body").expect("write artifact");
+
+    let mut loaded = store.load(&id).expect("load source");
+    loaded.artifacts = vec![ArtifactRecord {
+        id: format!("p3art_{id}_0"),
+        kind: ArtifactKind::ToolOutput,
+        session_id: id.clone(),
+        tool_call_id: "p3_0".to_string(),
+        tool_name: "write_file".to_string(),
+        created_at: Utc::now(),
+        byte_size: 13,
+        preview: String::new(),
+        storage_path: artifact_path.clone(),
+    }];
+    store.save(&loaded).expect("persist artifact record");
+
+    let outcome = fork_quietly(&store, &id, None, ForkWorkspacePlan::default()).expect("fork");
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    assert_eq!(forked.artifacts.len(), 1);
+    let record = &forked.artifacts[0];
+    assert_eq!(record.session_id, outcome.new_session_id);
+    assert_eq!(record.id, format!("p3art_{}_0", outcome.new_session_id));
+    // 记录平移到新私有目录，内容可读。
+    let copied = store
+        .manager
+        .sessions_dir()
+        .join(&outcome.new_session_id)
+        .join("artifacts")
+        .join("art_call-1.txt");
+    assert_eq!(record.storage_path, copied);
+    assert_eq!(
+        std::fs::read_to_string(&copied).expect("read copied artifact"),
+        "artifact body"
+    );
+    // 源 artifact 原样。
+    assert_eq!(
+        std::fs::read_to_string(&artifact_path).expect("read source artifact"),
+        "artifact body"
+    );
+}
+
+/// §6.1 #7：scheduled 会话拒绝 fork。
+#[test]
+fn fork_session_rejects_scheduled_session() {
+    let (store, _g) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-fork-reject"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id.clone();
+    let error = fork_quietly(&store, &id, None, ForkWorkspacePlan::default())
+        .expect_err("scheduled sessions must refuse fork");
+    assert!(
+        error.to_string().contains("scheduled"),
+        "error must name the scheduled refusal: {error:#}"
+    );
+}
+
+/// §6.1 #9：重复 fork 标题编号递增、不套娃（含 fork 之 fork）。
+#[test]
+fn fork_session_new_title_uses_next_free_suffix_number() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store.set_title(&id, "调研方案".to_string()).expect("title");
+
+    let first = fork_quietly(&store, &id, None, ForkWorkspacePlan::default()).expect("fork 1");
+    assert_eq!(first.new_title, "调研方案（分叉2）");
+    let second = fork_quietly(&store, &id, None, ForkWorkspacePlan::default()).expect("fork 2");
+    assert_eq!(second.new_title, "调研方案（分叉3）");
+    // fork 之 fork：基底剥掉旧后缀，不产生套娃标题。
+    let third = fork_quietly(
+        &store,
+        &first.new_session_id,
+        None,
+        ForkWorkspacePlan::default(),
+    )
+    .expect("fork of fork");
+    assert_eq!(third.new_title, "调研方案（分叉4）");
+}
+
+/// §6.1 #10：隔离根创建失败时整体回滚——不留半成品会话、不留半成品副本，
+/// 源会话完好。失败注入：钥匙串里的缺失目录（绑定校验软保留），隔离时
+/// 「source is not a directory」确定性失败。
+#[test]
+fn fork_session_source_untouched_after_isolation_failure() {
+    let (store, _g) = isolated_store();
+    // 根放在专用 holder 下：副本残留断言只扫 holder，不受 /tmp 里其它套件
+    //（CodeWhale 自身的 fork 测试）留下的 -fork- 目录干扰。
+    let holder = unique_temp_dir("fork-rollback-holder");
+    let primary = holder.join("primary");
+    std::fs::create_dir_all(&primary).expect("create primary");
+    let ghost_root = holder.join("ghost");
+    // 刻意不创建 ghost_root：绑定软保留，隔离时失败。
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, three_turn_conversation())
+        .expect("update source");
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            primary.clone(),
+            vec![primary.clone(), ghost_root.clone()],
+        )
+        .expect("bind keychain");
+
+    let source_before = store.load(&id).expect("load source before");
+    let error = fork_quietly(
+        &store,
+        &id,
+        None,
+        ForkWorkspacePlan {
+            isolate_roots: vec![ghost_root.clone()],
+        },
+    )
+    .expect_err("isolating a missing root must fail the whole fork");
+    assert!(
+        error
+            .to_string()
+            .contains(&ghost_root.display().to_string()),
+        "error must name the failing root: {error:#}"
+    );
+
+    // 无半成品会话记录（sessions 目录只有源 json 与源目录）。
+    let entries: Vec<String> = std::fs::read_dir(store.manager.sessions_dir())
+        .expect("list sessions dir")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .all(|name| name.starts_with(&id) || name.starts_with('_')),
+        "no half-created session may survive: {entries:?}"
+    );
+    // 源会话完好：消息、绑定、钥匙串不变。
+    let source_after = store.load(&id).expect("load source after");
+    assert_eq!(source_after.messages, source_before.messages);
+    assert_eq!(
+        store.session_workspace_binding(&id).as_deref(),
+        Some(primary.as_path())
+    );
+    // 没有任何 -fork- 副本残留在 holder 下。
+    let leftovers: Vec<_> = std::fs::read_dir(&holder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("-fork-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no partial copies may survive: {leftovers:?}"
+    );
+}
+
+/// §6.1 #13：钥匙串只翻译隔离根，共享根保留原路径；无钥匙串旧 sidecar 退化为
+/// 单根；隔离 fork 的新会话开头有路径映射提示消息。
+#[test]
+fn fork_translates_keychain_only_for_isolated_roots() {
+    let (store, _g) = isolated_store();
+    let primary = unique_temp_dir("keychain-primary");
+    std::fs::create_dir_all(&primary).expect("create primary");
+    std::fs::write(primary.join("main.txt"), "primary").expect("seed primary");
+    let extra_shared = unique_temp_dir("keychain-extra");
+    std::fs::create_dir_all(&extra_shared).expect("create extra");
+    std::fs::write(extra_shared.join("shared.txt"), "shared").expect("seed extra");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, three_turn_conversation())
+        .expect("update source");
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            primary.clone(),
+            vec![primary.clone(), extra_shared.clone()],
+        )
+        .expect("bind keychain");
+
+    let outcome = fork_quietly(
+        &store,
+        &id,
+        None,
+        ForkWorkspacePlan {
+            isolate_roots: vec![primary.clone()],
+        },
+    )
+    .expect("fork with primary isolated");
+
+    // 新主根 = 隔离副本（同目录 -fork- 前缀），共享附加根保留原路径。
+    assert_eq!(outcome.root_map.len(), 1);
+    let (mapped_from, mapped_to) = &outcome.root_map[0];
+    assert_eq!(mapped_from, &primary);
+    assert!(
+        mapped_to
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("-fork-"),
+        "copy must sit beside the source with the -fork- suffix: {}",
+        mapped_to.display()
+    );
+    assert!(
+        mapped_to.join("main.txt").is_file(),
+        "copy carries the content"
+    );
+
+    let new_roots = store.session_roots(&outcome.new_session_id).expect("roots");
+    assert_eq!(new_roots.execution, *mapped_to);
+    assert!(new_roots.bound, "the fork stays bound to the isolated copy");
+    let keychain = store.session_workspace_roots(&outcome.new_session_id);
+    assert!(
+        keychain.contains(mapped_to),
+        "isolated root translated: {keychain:?}"
+    );
+    assert!(
+        keychain.contains(&extra_shared),
+        "shared root must keep the original path: {keychain:?}"
+    );
+
+    // 新会话开头注入映射提示（普通 user 消息，含源 → 副本路径）。
+    let forked = store.load(&outcome.new_session_id).expect("load forked");
+    let first = &forked.messages[0];
+    assert_eq!(first.role, "user");
+    let text = match &first.content[0] {
+        ContentBlock::Text { text, .. } => text.clone(),
+        _ => String::new(),
+    };
+    assert!(text.contains("fork"), "hint must explain the fork: {text}");
+    assert!(
+        text.contains(&primary.display().to_string()),
+        "hint lists the source path"
+    );
+    assert!(
+        text.contains(&mapped_to.display().to_string()),
+        "hint lists the copy path"
+    );
+    // 历史消息紧随其后、逐条保留。
+    assert_eq!(&forked.messages[1..], three_turn_conversation().as_slice());
+
+    // 单根退化（无钥匙串旧 sidecar）：绑定无 roots → 隔离主根后钥匙串 = 新路径。
+    let single = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create single");
+    let single_id = single.metadata.id.clone();
+    store
+        .bind_session_workspace(&single_id, primary.clone())
+        .expect("bind single root");
+    let single_outcome = fork_quietly(
+        &store,
+        &single_id,
+        None,
+        ForkWorkspacePlan {
+            isolate_roots: vec![primary.clone()],
+        },
+    )
+    .expect("fork single root");
+    assert_eq!(single_outcome.root_map.len(), 1);
+    let single_keychain = store.session_workspace_roots(&single_outcome.new_session_id);
+    assert_eq!(
+        single_keychain.len(),
+        1,
+        "legacy sidecar degrades to single root"
+    );
+    assert_eq!(single_keychain[0], single_outcome.root_map[0].1);
+}
+
+/// 隔离根不在源钥匙串内时拒绝（不信任前端传来的任意路径）。
+#[test]
+fn fork_session_rejects_isolation_root_outside_keychain() {
+    let (store, _g) = isolated_store();
+    let primary = unique_temp_dir("keychain-strict");
+    std::fs::create_dir_all(&primary).expect("create primary");
+    let outsider = unique_temp_dir("keychain-outsider");
+    std::fs::create_dir_all(&outsider).expect("create outsider");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    store
+        .bind_session_workspace(&id, primary.clone())
+        .expect("bind");
+
+    let error = fork_quietly(
+        &store,
+        &id,
+        None,
+        ForkWorkspacePlan {
+            isolate_roots: vec![outsider.clone()],
+        },
+    )
+    .expect_err("roots outside the keychain must be refused");
+    assert!(
+        error.to_string().contains("keychain"),
+        "error must name the keychain refusal: {error:#}"
+    );
+    assert!(
+        !outsider
+            .join(format!(
+                "{}-fork-x",
+                outsider.file_name().unwrap().to_string_lossy()
+            ))
+            .exists()
+    );
+}
+
+/// 未绑定会话请求隔离 → 拒绝（无钥匙串可隔离）。
+#[test]
+fn fork_session_rejects_isolation_when_unbound() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let any_dir = unique_temp_dir("unbound-isolation");
+    std::fs::create_dir_all(&any_dir).expect("create dir");
+    let error = fork_quietly(
+        &store,
+        &id,
+        None,
+        ForkWorkspacePlan {
+            isolate_roots: vec![any_dir],
+        },
+    )
+    .expect_err("unbound sessions must refuse isolation");
+    assert!(
+        error.to_string().contains("unbound"),
+        "error must name the unbound refusal: {error:#}"
+    );
+}

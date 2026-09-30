@@ -127,6 +127,7 @@ const LazySavedPersonaConfirmDialog = lazy(() => VIEW_LOADERS.savedPersonaConfir
 const LazyApiKeyGateDialog = lazy(() => VIEW_LOADERS.apiKeyGateDialog().then(m => ({ default: m.ApiKeyGateDialog })));
 const LazyArchiveConfirmDialog = lazy(() => VIEW_LOADERS.archiveConfirmDialog().then(m => ({ default: m.ArchiveConfirmDialog })));
 const LazyArchiveToast = lazy(() => VIEW_LOADERS.archiveConfirmDialog().then(m => ({ default: m.ArchiveToast })));
+const LazyForkSessionDialog = lazy(() => VIEW_LOADERS.forkSessionDialog().then(m => ({ default: m.ForkSessionDialog })));
 const LazyPersonaEditorModal = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.PersonaEditorModal })));
 const LazyWebAccessModal = lazy(() => VIEW_LOADERS.settings().then(m => ({ default: m.WebAccessModal })));
 const LazyDetachedShell = lazy(() => import('./DetachedShell.jsx').then(m => ({ default: m.DetachedShell })));
@@ -1558,6 +1559,10 @@ const App = () => {
       }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
+      // fork 会话（docs/fork-session-plan.md §3.1）：forkDialogChat 打开对话框；
+      // forkBusy 覆盖执行期（对话框禁闭 + 双保险防重复提交）。
+      const [forkDialogChat, setForkDialogChat] = useState(null);
+      const [forkBusy, setForkBusy] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
@@ -2776,6 +2781,34 @@ const App = () => {
         setArchiveConfirm(chat || { id, title: t.newChat });
       }, [t]);
 
+      // fork 入口：打开 fork 对话框（chat 携带 workspaceRoots 钥匙串快照）。
+      // 稳定 useCallback——RecentItem 记忆化依赖回调身份。仅普通 chat 会话
+      // 且不在生成中时传入（renderSidebarTaskItem 处门控）。
+      const handleOpenForkDialog = useCallback((chat) => {
+        setForkDialogChat(chat);
+      }, []);
+
+      // fork 确认：调桥接（内部自带进行中去重），成功后关对话框、toast、
+      // 立即切换到新会话（D8）。失败 toast 报错，原会话与磁盘状态不受影响。
+      // 只喂给对话框（非 RecentItem memo 链），language 直接进依赖即可。
+      const handleForkConfirm = useCallback(async (isolateRoots) => {
+        const chat = forkDialogChat;
+        if (!chat || !bridge.available || !bridge.sessions.forkSession) return;
+        setForkBusy(true);
+        try {
+          const result = await bridge.sessions.forkSession(chat.id, null, isolateRoots, language);
+          if (!result) return; // 进行中重复提交被桥接层拒绝
+          setForkDialogChat(null);
+          setSettingsToast(t.uiForkSession.success(result.title));
+          await handleSwitchSession(result.sessionId);
+        } catch (error) {
+          console.warn('fork session failed', error);
+          setSettingsToast(t.uiForkSession.failed);
+        } finally {
+          setForkBusy(false);
+        }
+      }, [forkDialogChat, t, language, handleSwitchSession]);
+
       // "Open session folder": shared by RecentItem and the conversation
       // management page; the bridge is a module singleton, so its dependency
       // is constant.
@@ -3393,6 +3426,7 @@ const App = () => {
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
+            onFork={chat.taskKind !== 'codex' && !chat.working && !chat.waitingInput && bridge.sessions.forkSession ? handleOpenForkDialog : undefined}
             onMoveToProject={projectMovesAvailable ? openMovePicker : undefined}
             onViewWorkspace={can('desktopChrome') ? openSessionWorkspaceViewer : undefined}
             dndPayload={projectMovesAvailable && sidebarCodeListActive
@@ -3611,6 +3645,23 @@ const App = () => {
                   t={t}
                   onCancel={() => setArchiveConfirm(null)}
                   onConfirm={confirmArchiveSession}
+                />
+              </Suspense>
+            </ViewErrorBoundary>,
+            document.body
+          )}
+
+          {forkDialogChat && browserOverlayPublicationReady && createPortal(
+            <ViewErrorBoundary t={t}>
+              <Suspense fallback={null}>
+                <LazyForkSessionDialog
+                  open={!!forkDialogChat}
+                  sessionTitle={forkDialogChat.title}
+                  workspaceRoots={forkDialogChat.workspaceRoots}
+                  busy={forkBusy}
+                  t={t}
+                  onClose={() => { if (!forkBusy) setForkDialogChat(null); }}
+                  onConfirm={handleForkConfirm}
                 />
               </Suspense>
             </ViewErrorBoundary>,

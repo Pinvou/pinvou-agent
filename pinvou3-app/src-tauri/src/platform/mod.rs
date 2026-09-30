@@ -23,3 +23,4 @@ pub mod super_permission;
 pub(crate) mod test_support;
 pub(crate) mod ui_cache;
 pub(crate) mod window_startup;
+pub(crate) mod workspace_isolation;

@@ -522,7 +522,7 @@ export const dictZh = {
         cpDescLabel: '简介',
         cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
         cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
-        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多', riViewWorkspace: '查看工作区',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多', riViewWorkspace: '查看工作区', riFork: '分叉会话',
         // —— 聊天链路/全局 chrome ——
         appTitle: 'PINVOU 智能助手（内测版）', winMin: '最小化', winMax: '最大化', winClose: '关闭',
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
@@ -1062,6 +1062,23 @@ dictZh.uiSessionWorkspace = {
   title:'查看工作区', scope:'可访问文件夹', primary:'主文件夹',
   unknownFolder:'未知文件夹',
   unbound:'未绑定文件夹：使用 Pinvou 管理的默认会话目录',
+};
+
+// 会话「更多」菜单的 fork 对话框（features/sessions/ForkSessionDialog.jsx，
+// docs/fork-session-plan.md §3.1）：分叉范围 + 工作区档位（全共享 / 逐根隔离），
+// 隔离时一次性告知副本路径与「不随会话删除而自动清理」（D6）。
+dictZh.uiForkSession = {
+  title:'分叉会话',
+  scopeLabel:'分叉范围', scopeFull:'整个会话（复制全部对话历史，原会话保持不变）',
+  workspaceLabel:'工作区',
+  shareAll:'仅复制会话（共享全部工作区）',
+  isolate:'隔离工作区',
+  isolateHint:'勾选的根将创建独立副本：git 仓库走工作树（同步未提交改动），其余整目录复制；未勾选的根保持共享。隔离会调用本机 git 命令。',
+  copiesNotice:(count) => `将创建 ${count} 个工作区副本（确切目录名在创建时确定）：`,
+  copiesNoCleanup:'该目录不会随会话删除而自动清理，请自行管理。',
+  create:'创建', busy:'正在分叉…',
+  success:(title) => `已创建「${title}」`,
+  failed:'分叉会话失败',
 };
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，

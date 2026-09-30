@@ -7,7 +7,7 @@ export const desktopBridgeApi = {
   voice: ['abandonVoiceResult', 'appendVoiceText', 'beginVoiceSubmission', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'completeVoiceSubmission', 'dismissVoiceInput', 'getVoiceOperationId', 'hasVoiceSubmissionPending', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'boundDraftMode', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
+  sessions: ['archiveSession', 'boundDraftMode', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'forkSession', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
 
   settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
@@ -52,7 +52,10 @@ export const desktopOnlyBridgeApi = {
   // rememberDraftWorkspaceRecent (round-18 M3) records the single-entry
   // picker's pick into the recents list; without the desktop staging channel
   // there is nothing to record, so it rides the same desktop-only lane.
-  sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'setDraftWorkspace', 'boundDraftMode'],
+  // Session fork copies disk state (per-root worktree/copy isolation) through
+  // local git; the web relay has no such backend, so the entry stays hidden
+  // there via the method-existence guard (plan matrix #22).
+  sessions: ['exportSessionArchive', 'forkSession', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'setDraftWorkspace', 'boundDraftMode'],
   // The queued chip's zap-send goes through the foundation EnginePool and needs
   // the Tauri command channel; web has no such backend.
   chat: ['interruptAndSendQueued'],

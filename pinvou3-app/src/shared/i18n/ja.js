@@ -520,7 +520,7 @@ const jaBase = {
         cpDescLabel: '説明',
         cpEquipBubbleNote: '能力プロファイルを注入しました。AI はこのエキスパートの方法論でタスクを担当します。',
         cpTargetMarkTitle: '装備先 · カードプールで選んだエキスパートがこの会話に注入されます',
-        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています', riMore: 'その他', riViewWorkspace: 'ワークスペースを表示',
+        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています', riMore: 'その他', riViewWorkspace: 'ワークスペースを表示', riFork: 'セッションをフォーク',
         // —— チャット/グローバル chrome ——
         appTitle: 'PINVOU アシスタント（ベータ版）', winMin: '最小化', winMax: '最大化', winClose: '閉じる',
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
@@ -1025,6 +1025,24 @@ dictJa.uiSessionWorkspace = {
   title:'ワークスペースを表示', scope:'アクセス可能なフォルダー', primary:'主',
   unknownFolder:'不明なフォルダー',
   unbound:'フォルダー未バインド：Pinvou が管理する既定のセッション用ディレクトリを使用しています',
+};
+
+// サイドバー「その他」メニューのフォークダイアログ
+// （features/sessions/ForkSessionDialog.jsx、docs/fork-session-plan.md §3.1）：
+// フォーク範囲とワークスペース選択（すべて共有 / ルートごとに分離）。
+// 分離時にはコピー先と「セッション削除時に自動削除されない」ことを一度だけ明示（D6）。
+dictJa.uiForkSession = {
+  title:'セッションをフォーク',
+  scopeLabel:'フォーク範囲', scopeFull:'セッション全体（会話履歴をすべて複製し、元のセッションは変更しません）',
+  workspaceLabel:'ワークスペース',
+  shareAll:'セッションのみ複製（ワークスペースをすべて共有）',
+  isolate:'ワークスペースを分離',
+  isolateHint:'選択したルートは独立したコピーを作成します：git リポジトリはワークツリー（未コミット変更も同期）、それ以外はディレクトリ全体をコピー。未選択のルートは共有のままです。分離にはローカルの git コマンドを使用します。',
+  copiesNotice:(count) => `ワークスペースのコピーを ${count} 件作成します（確定ディレクトリ名は作成時に決まります）：`,
+  copiesNoCleanup:'これらのディレクトリはセッションの削除時に自動的に削除されません。ご自身で管理してください。',
+  create:'作成', busy:'フォーク中…',
+  success:(title) => `「${title}」を作成しました`,
+  failed:'セッションのフォークに失敗しました',
 };
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';

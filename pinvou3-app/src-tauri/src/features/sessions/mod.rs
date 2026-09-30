@@ -31,6 +31,8 @@
 //! - `workspace_bindings` —— per-session sidecar of plain chat sessions' user
 //!   working-directory bindings (`workspace-binding.json` in the session
 //!   directory)
+//! - `fork` — session fork: copy a session's linear prefix into a new session
+//!   with optional per-root workspace isolation
 //!
 //! Submodules continue the methods via `impl SessionStore` (Rust allows impl
 //! blocks of the same struct to be scattered across submodules) and read
@@ -39,6 +41,7 @@
 //! external call paths unchanged.
 
 pub(crate) mod diagnostics;
+mod fork;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;
@@ -83,6 +86,8 @@ pub use self::scheduled::{
 // Only the benchmark-gated headless runner (agentic_task) mints headless ids
 // and warns about retention eviction, so both re-exports follow its gate.
 // Retention itself reaches `store` directly and needs neither.
+/// Re-export the fork plan/outcome (consumed by the command layer).
+pub use self::fork::{ForkOutcome, ForkWorkspacePlan};
 /// Re-export the headless session id prefix: the runner mints ids from it and
 /// retention keys the separate headless eviction budget on it, so the two must
 /// not drift into separate literals.

@@ -1221,6 +1221,35 @@ async function toggleSessionPinned(id, pinned) { return pinvouSharedtauriSession
     return invoke("export_session", { id, defaultName, includeArtifacts: true });
   }
 
+  // Session fork (docs/fork-session-plan.md): copies the source session's
+  // linear prefix into a fresh session; `isolateRoots` lists the keychain
+  // roots the user chose to isolate on disk (empty = share all workspaces),
+  // `locale` threads the UI language for the injected mapping hint. The
+  // backend emits `session:list_changed` on success and this bridge refreshes
+  // the history list before resolving; the caller (main.jsx) performs the
+  // switch and the toasts. Rejections propagate for the caller to surface.
+  // In-flight dedupe: a repeat call for the same source while a fork is
+  // running resolves to null instead of double-forking (the dialog also
+  // disables itself while busy — two independent lines per plan §4.2).
+  // Web build: not exposed; the frontend hides the menu entry on existence.
+  const forkingSessionIds = new Set();
+  async function forkSession(id, keepTurns, isolateRoots, locale) {
+    if (forkingSessionIds.has(id)) return null;
+    forkingSessionIds.add(id);
+    try {
+      const result = await invoke("fork_session", {
+        sessionId: id,
+        keepTurns: keepTurns === undefined ? null : keepTurns,
+        isolateRoots: isolateRoots === undefined ? null : isolateRoots,
+        locale: locale === undefined ? null : locale,
+      });
+      await refreshHistoryList();
+      return result;
+    } finally {
+      forkingSessionIds.delete(id);
+    }
+  }
+
 async function archiveSession(id) { return pinvouSharedtauriSessions().archiveSession(id); }
 
 async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().restoreArchivedSession(id); }
@@ -1280,7 +1309,8 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
-      exportSessionArchive
+      exportSessionArchive,
+      forkSession
     };
   };
 })(window);
