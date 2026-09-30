@@ -1549,6 +1549,14 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
     subscriptionSliceCache[domain] = { revision: subscriptionSliceRevision, snapshot };
     return snapshot;
   }
+  // Multi-domain reads go through the same per-domain slice cache as
+  // single-domain reads; the combined object is frozen fresh per call. This
+  // function runs once per subscription (the warm-up below) — the
+  // per-notification snapshot is the closure's own lastSlices/lastResult
+  // identity cache, so no per-call memoization belongs here. (A keyed
+  // multi-domain cache stood here briefly and was removed: it is cold-path
+  // code, and the identity contract it pinned is already enforced by the
+  // closure and pinned in tauri_bridge_state_identity.test.mjs.)
   function subscriptionStateSlices(domains) {
     if (!Array.isArray(domains) || domains.length === 0) {
       throw new Error("Tauri bridge state.subscribeMany requires at least one domain");

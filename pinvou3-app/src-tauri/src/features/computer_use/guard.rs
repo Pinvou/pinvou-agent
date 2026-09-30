@@ -64,8 +64,11 @@ fn physical_input_lock_timeout() -> Duration {
     }
 }
 
-/// The T3 consequential-action denylist (case-insensitive substring match;
-/// Chinese/English/Japanese/Traditional Chinese).
+/// The T3 consequential-action denylist. Terms are matched as substrings of
+/// [`fold_for_matching`] output, so every entry must itself already be in
+/// folded form: lowercase, and free of whitespace (the fold strips it, so a
+/// label split as `支 付` or `Place  Order` still matches).
+/// `t3_denylist_terms_are_prefolded` pins both properties.
 ///
 /// Only **consequence category** terms are listed — the five categories
 /// mainstream products confirm on (the same position as Google computer-use's
@@ -84,36 +87,63 @@ pub const T3_DENYLIST: &[&str] = &[
     "purchase",
     "checkout",
     "transfer",
-    "place order",
-    "order now",
+    "placeorder",
+    "ordernow",
     "购买",
     "購買",
     "支付",
     "付款",
     "转账",
+    "转帐",
     "结算",
     "轉賬",
     "轉帳",
     "結算",
+    "购入",
     "購入",
-    "支払い",
+    // Stem, not 支払い: `"支払う".contains("支払い")` is false, so the
+    // inflected form on a real 支払う button used to screen Clear. 決済 is
+    // the standard Japanese checkout verb and 振込/振替 the standard bank
+    // transfer terms; none were covered by 送金 alone.
+    "支払",
+    "決済",
+    "振込",
+    "振替",
     "送金",
     "注文",
     "下单",
     "下單",
     "充值",
     "儲值",
+    // 提现/汇款 carry a wider false-positive surface than the homoglyph
+    // class: informational labels like 汇款地址 (a remittance *address*, not
+    // an action) now raise a confirmation too. Accepted on the same
+    // fail-safe terms as the Cyrillic collisions — an extra dialog, never a
+    // missed one — and kept because a withdrawal or remittance button is
+    // exactly the confirmation surface this gate exists for.
+    "提现",
+    "提現",
+    "汇款",
+    "匯款",
     "捐款",
+    "捐赠",
     "捐贈",
     "投资",
     "投資",
+    "订阅",
     "訂閱",
     "subscribe",
+    "withdraw",
+    "remit",
     "donate",
+    // Both spellings: the fold strips whitespace but keeps the hyphen, so
+    // "Top up" folds to "topup" while "Top-up" keeps its hyphen.
     "top-up",
+    "topup",
     // Sends.
     "send",
     "发送",
+    "發送",
     "傳送",
     "送出",
     "送信",
@@ -138,6 +168,9 @@ pub const T3_DENYLIST: &[&str] = &[
     "削除",
     "格式化",
     "フォーマット",
+    // The standard Japanese "initialize / factory reset" button label; the
+    // 格式化/フォーマット pair does not cover it.
+    "初期化",
     // Form/order submission.
     "submit",
     "提交",
@@ -147,22 +180,586 @@ pub const T3_DENYLIST: &[&str] = &[
     "agree",
     "同意",
     "接受",
+    "承诺",
     "承諾",
 ];
 
+/// The longest [`T3_DENYLIST`] term, in folded characters. The streaming
+/// matcher in `platform::helpers` carries this much context across its window
+/// boundaries, so a term straddling two windows is still found; a longer term
+/// would be silently unmatchable, which `t3_denylist_terms_are_prefolded`
+/// pins.
+pub const T3_MATCH_WINDOW_CHARS: usize = 32;
+
+/// Raw characters folded per pass by [`for_each_folded_window`]: large enough
+/// that the per-chunk overhead is irrelevant, small enough that a
+/// pathological multi-megabyte accessible name is never copied wholesale.
+/// Shared with the platform helpers' chunk-boundary tests so their probes
+/// cannot drift away from the real chunk size.
+pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
+
+/// Whether `c` is invisible to the user and therefore must not separate two
+/// halves of a denylist term.
+///
+/// Covers C0/C1 controls and whitespace plus the format and default-ignorable
+/// characters a hostile label can splice into a word while rendering
+/// identically: soft hyphen, the zero-width space/joiner family, the bidi
+/// overrides and isolates, the invisible-operator block, the byte-order mark,
+/// the combining grapheme joiner, the Hangul fillers, the variation selectors
+/// (both planes), the interlinear annotation controls, the invisible musical
+/// beam controls, the Tag block, and the Unicode 15.1 ideographic description
+/// characters.
+///
+/// This is an enumeration of `Default_Ignorable_Code_Point` rather than a
+/// property lookup: the ranges are stable, and pulling a full property table
+/// in for one predicate is not worth the dependency. `zero_width_evasions`
+/// pins the list against the demonstrated families. The enumerated ranges must
+/// cover every Default_Ignorable code point; when Unicode assigns a new
+/// default-ignorable range both this list and its display-side twin in
+/// `platform::helpers` need the arm (`invisible_lists_stay_in_step` keeps the
+/// two in step but cannot see a family missing from both).
+///
+/// Deliberate non-default-ignorable members, all sharing the property that
+/// makes `U+070F` matter: category Cf (or, for the braille blank, a blank
+/// glyph), invisible or blank in isolation, and therefore **missed by a
+/// coverage diff against `Default_Ignorable_Code_Point`** — the exact hole
+/// the round-6 review showed a single-member list leaves open. The Arabic
+/// number-sign family (U+0600–U+0605, U+06DD, U+0890–U+0891, U+08E2), the
+/// Kaithi number signs (U+110BD, U+110CD) and the Egyptian hieroglyph format
+/// controls (U+13430–U+1343F) render with zero advance through font fallback,
+/// so `De⟨U+06DD⟩lete` displays as plain "Delete" while splitting the term.
+/// `U+2800 BRAILLE PATTERN BLANK` is not Cf at all but its UTS#39 skeleton is
+/// SPACE (it renders as an ordinary blank gap), which is the same treatment
+/// the whitespace fold already gives `支 付`.
+fn is_invisible_for_matching(c: char) -> bool {
+    c.is_control()
+        || c.is_whitespace()
+        || matches!(c,
+            '\u{00AD}'
+            | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2065}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{206A}'..='\u{206F}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFF8}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{2FFC}'..='\u{2FFF}'
+            | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// Maps a character to the Latin letter it is visually indistinguishable
+/// from.
+///
+/// Every arm is a **lowercase** character: the pipeline lowercases before
+/// folding (see [`fold_for_matching`]), so the uppercase sibling of an armed
+/// character is covered by construction. The arms used to sit before the
+/// lowercase and enumerated each case by hand — every round-3 addition
+/// (`ш ԝ Ь ү հ ց ɩ ւ ℮ þ ƿ γ`) shipped lowercase-only, which left the
+/// uppercase siblings (`paҮ`, `Ьuy` was caught but `paҮ`-class arms like
+/// `buҮ`'s capital were not, `Þay`, `Шithdraw`, `Ԝithdraw`, `dՕnate`,
+/// `witՀdraw`, `aՑree`, `TopⲺup`) screening Clear while rendering as the
+/// plain ASCII label.
+///
+/// This covers only the homoglyphs that have no Unicode compatibility
+/// decomposition and therefore survive the NFKC pass in
+/// [`fold_for_matching`]: the Cyrillic, Greek and same-script Latin letters
+/// that share a glyph with an ASCII letter (`Pаy` with a Cyrillic `а`,
+/// `ԁelete` with a Komi de, `submıt` with a dotless i). The compatibility
+/// families — fullwidth ASCII, the Math Alphanumeric block, circled and
+/// parenthesized letters, halfwidth katakana — are NFKC's job and are
+/// deliberately absent here.
+///
+/// Hyphens are folded here for the same reason: `U+2010 HYPHEN`, `U+2011
+/// NON-BREAKING HYPHEN`, `U+2012 FIGURE DASH`, `U+2013 EN DASH` and `U+2212
+/// MINUS SIGN` all render indistinguishably from the ASCII hyphen in
+/// `top-up` (an en dash is exactly what a word processor's autocorrect
+/// substitutes) but are NFKC-stable, unlike `U+FE63`/`U+FF0D` which decompose.
+///
+/// The Latin small-capital series is folded as one family: each is
+/// NFKC-stable, and a label that spells a term with them (`ꜱᴇɴᴅ`, `ᴅᴇʟᴇᴛᴇ`)
+/// reads as the plain uppercase term to the user, so folding them is the
+/// honest match, not a false positive. Every plain-letter member of the
+/// series is armed (`ʙ`/`ᴃ`, `ʜ`, `ᴊ`, `ᴎ`, `ᴠ`, `ᴢ` included, which carry no
+/// current term but keep the family claim true).
+///
+/// The accepted cost is a false-positive surface on real Cyrillic text:
+/// `р`→`p`, `а`→`a` and `у`→`y` together fold the common word `Раунд`
+/// ("round") onto `pay`, so a benign Russian label can raise a confirmation.
+/// The error direction is safe (an extra dialog, never a missed one), and
+/// the alternative — dropping `р` from the table the way the o-shaped σ/Σ
+/// are dropped — would reopen the `Pаy` evasion. Greek gets the mirror-image
+/// call where the letters differ: σ/Σ (common letter, common term letter)
+/// stay, while ω (common letter, rare term letter `w`) folds.
+///
+/// It is a best-effort subset, not a complete confusable table: the full
+/// relation is UTS#39's, and a determined attacker can still find a glyph pair
+/// this misses. Deliberately unmapped remainders: the o-shaped σ/Σ (and the
+/// mathematical sigma variants NFKC folds onto them), the `I`/`l` split
+/// (Latin `I`, `Ι`, fullwidth and mathematical `I` all lowercase to `i`, so
+/// `deΙete` is defended while `deΙete`-for-`delete`'s `l` is not — one glyph
+/// serves two term letters and `i` defends more terms), the digit `1`/`l`
+/// dilemma, `υ` (armed to `y` with `Υ`, not to the `u` UTS#39 also assigns
+/// it), and the letters of living scripts whose real text would
+/// false-positive (Arabic, Hebrew, Hangul, the Indic digits' `0`→`o` class).
+/// It raises the cost of the demonstrated single-substitution
+/// evasions; it does not make them impossible.
+fn fold_confusable(c: char) -> char {
+    match c {
+        // Hyphens and dashes that render as `-` but survive NFKC.
+        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2212}' => '-',
+        // Same class against `top-up`: UTS#39 maps each of these to a bare
+        // hyphen, and NFKC leaves every one alone.
+        '\u{02D7}' | '\u{06D4}' | '\u{2043}' | '\u{2CBB}' => '-',
+        // Cyrillic look-alikes (lowercase; uppercase siblings arrive here
+        // already lowercased by the pipeline).
+        'а' => 'a',
+        'ԁ' => 'd',
+        'ӏ' | 'Ӏ' => 'l',
+        'в' => 'b',
+        // The soft sign: UTS#39 assigns both cases to `b` (`Ьuy`); the arm
+        // sits on the lowercase the pipeline actually delivers.
+        'ь' => 'b',
+        'с' => 'c',
+        'е' | 'ё' => 'e',
+        'һ' => 'h',
+        'н' => 'h',
+        'і' => 'i',
+        'ј' => 'j',
+        'к' => 'k',
+        'м' => 'm',
+        'о' => 'o',
+        'р' => 'p',
+        'ѕ' => 's',
+        'т' => 't',
+        'у' => 'y',
+        'х' => 'x',
+        'ѡ' => 'w',
+        // More Cyrillic look-alikes whose UTS#39 skeleton is a single Latin
+        // letter (third review round): sha ш and we ԝ both render as `w`
+        // (`шithdraw`, `ԝithdraw`), and straight u ү as `y` (`pүy`).
+        'ш' => 'w',
+        'ԝ' => 'w',
+        'ү' => 'y',
+        // Greek look-alikes. `β`/`η`/`μ`/`ν`/`ζ` arm the lowercase forms of
+        // the capitals this table always caught (`Βuy`, `witΗdraw`,
+        // `suΜmit`, `seΝd`); UTS#39 assigns only the capitals a Latin
+        // skeleton, but after the pipeline's lowercase only the small forms
+        // arrive, and dropping them would have reopened those payloads. No
+        // natural Greek word folds onto a denylist term through them: every
+        // term needs a letter Greek cannot supply unaccented (`d`/`s`-class)
+        // or two c-shaped sigmas, and a mid-word ς does not occur.
+        'β' => 'b',
+        'η' => 'h',
+        'μ' => 'm',
+        'ν' => 'n',
+        'ζ' => 'z',
+        'α' => 'a',
+        'ε' => 'e',
+        'ι' => 'i',
+        'κ' => 'k',
+        'ο' => 'o',
+        'ρ' => 'p',
+        // The c-shaped sigmas: U+03F2 (lunate) NFKC-composes to U+03C2
+        // (final sigma, NFKC-stable), and both render as `c` in sans-serif
+        // fonts. The capital lunate Ϲ lowers to U+03F2 before NFKC (the
+        // pipeline lowercases first), so `aϹϹept` lands on this arm too —
+        // under the old fold-then-lowercase order NFKC merged it into the
+        // o-shaped Σ and the payload screened Clear. The o-shaped σ/Σ stay
+        // unmapped: mapping them would false-positive on every real Greek
+        // word.
+        '\u{03C2}' | '\u{03F2}' => 'c',
+        'τ' => 't',
+        'υ' => 'y',
+        'χ' => 'x',
+        // The w-shaped omegas: lowercase omega is common in real Greek, but
+        // it maps to `w`, which only the Latin term `withdraw` carries — no
+        // natural Greek word folds onto it, so this stays on the mapped side
+        // of the σ/Σ decision.
+        'ω' => 'w',
+        // Greek gamma: renders as `y` (`pγy`). Natural Greek words do not
+        // fold onto a denylist term through it — only `pay`/`buy` carry a
+        // `y`, and no Greek word is "p" or "b" + gamma.
+        'γ' => 'y',
+        // Other single-script look-alikes with no compatibility mapping.
+        'ɑ' => 'a',
+        'ɡ' => 'g',
+        'ı' => 'i',
+        'օ' => 'o',
+        // Latin iota and Armenian yiwn: `i`-shaped (`submɩt`, `submիt`).
+        'ɩ' => 'i',
+        'ւ' => 'i',
+        // Armenian completion: UTS#39 maps these to `w`, `n`, `n`, `u` and
+        // `f` (`աithdraw`, `seոd`, `seռd`, `pսrchase`, `քormat`). With the
+        // already-armed հ/ց/ւ/օ the Armenian set is {w h n u f g i o}; no
+        // denylist term is spellable from those letters alone — every term
+        // needs at least one of a/e/d/t/s/m/p/k — so real Armenian text
+        // cannot fold onto one.
+        'ա' => 'w',
+        'ո' => 'n',
+        'ռ' => 'n',
+        'ս' => 'u',
+        'ք' => 'f',
+        // Armenian ho and co: `h`- and `g`-shaped (`witհdraw`, `purcհase`,
+        // `aցree`). Armenian text does not fold onto a denylist term: the
+        // mapped letters only ever appear inside Latin terms.
+        'հ' => 'h',
+        'ց' => 'g',
+        // Estimated sign: `e`-shaped (`acc℮pt`, `del℮te`). A unit-suffix
+        // character, never part of a natural word.
+        '℮' => 'e',
+        // Thorn and wynn: `p`-shaped (`þay`, `ƿay`). Thorn appears in
+        // natural Icelandic text, but only ever word-initially before a
+        // vowel, which no denylist `p` term is.
+        'þ' => 'p',
+        'ƿ' => 'p',
+        // Latin small capitals (NFKC-stable, one per plain Latin letter).
+        'ᴀ' => 'a',
+        'ʙ' => 'b',
+        'ᴃ' => 'b',
+        'ᴄ' => 'c',
+        'ᴅ' => 'd',
+        'ᴇ' => 'e',
+        'ꜰ' => 'f',
+        'ɢ' => 'g',
+        'ʜ' => 'h',
+        'ɪ' => 'i',
+        'ᴊ' => 'j',
+        'ᴋ' => 'k',
+        'ʟ' => 'l',
+        'ᴍ' => 'm',
+        // U+0274 and U+1D0E are two encodings of the same small capital N.
+        'ɴ' => 'n',
+        'ᴎ' => 'n',
+        'ᴏ' => 'o',
+        'ᴘ' => 'p',
+        'ʀ' => 'r',
+        'ꜱ' => 's',
+        'ᴛ' => 't',
+        'ᴜ' => 'u',
+        'ᴠ' => 'v',
+        'ᴡ' => 'w',
+        'ʏ' => 'y',
+        'ᴢ' => 'z',
+        // Cherokee syllabary letters UTS#39 maps to a single term letter —
+        // whole-letterform substitutions (`ꮟuy`, `witꮒdraw`, `Ᏼuy`). The
+        // arms sit on the forms the pipeline actually delivers: the capital
+        // syllables lowercase into their small forms (Ꮟ→ꮟ, Ᏼ→ᏼ) before the
+        // fold. Cherokee renders as plain Latin-grade glyphs through the
+        // platform's fallback fonts, so this is the demonstrated spoof class;
+        // the fold maps the glyph skeleton, not the phonetic word, so real
+        // Cherokee text cannot fold onto an English payment term except by a
+        // glyph-sequence coincidence (the accepted safe direction: an extra
+        // dialog, never a missed one).
+        'ꭰ' => 'd',
+        'ꭱ' => 'r',
+        'ꭲ' => 't',
+        'ꭹ' => 'y',
+        'ꭺ' => 'a',
+        'ꭼ' => 'e',
+        'ꮇ' => 'm',
+        'ꮋ' => 'h',
+        'ꮍ' => 'y',
+        'ꮐ' => 'g',
+        'ꮢ' => 'r',
+        'ꮥ' => 's',
+        'ꮮ' => 'l',
+        'ꮲ' => 'p',
+        'ꮶ' => 'k',
+        'ᏻ' => 'g',
+        'ᏼ' => 'b',
+        'ꭵ' => 'i',
+        'ꮒ' => 'h',
+        'ꮟ' => 'b',
+        'ꮷ' => 'd',
+        'ꮁ' => 'r',
+        'ꮃ' => 'w',
+        'ꮤ' => 'w',
+        'ꮪ' => 's',
+        'ꮯ' => 'c',
+        // Coptic letters UTS#39 maps to a single term letter (`ⲣay`,
+        // `aⲥcept`, `ⲟrder now`), capitals folded to the small forms the
+        // pipeline delivers (`Ⲃuy` lowers to ⲃ). Coptic is liturgical and its
+        // fallback rendering is a plain letter; the same glyph-skeleton
+        // argument as Cherokee applies.
+        'ϭ' => 'o',
+        'ⲅ' => 'r',
+        'ⲓ' => 'i',
+        'ⲟ' => 'o',
+        'ⲣ' => 'p',
+        'ⲥ' => 'c',
+        'ⲩ' => 'y',
+        'ⲽ' => 'w',
+        'ⳏ' => 'p',
+        'ⳑ' => 'l',
+        'ⲃ' => 'b',
+        'ⲏ' => 'h',
+        'ⲕ' => 'k',
+        'ⲙ' => 'm',
+        'ⲛ' => 'n',
+        'ⲧ' => 't',
+        // Canadian syllabics and Lisu letters UTS#39 maps to a single term
+        // letter (`ᑲuy`, `ᖯuy`, `ᗷuy`, `witᕼdraw`, `ꓐuy`, `ꓪithdraw`) — the
+        // same whole-letterform class. Both scripts are caseless, so the
+        // arms sit directly on the delivered characters. Lisu's letterforms
+        // are Latin-capital-shaped by design (the Frazer alphabet), and
+        // Canadian syllabics render through Euphemia-class fallbacks; real
+        // text in either script in a consent-dialog label is effectively
+        // nonexistent, and the fold maps glyphs, not phonetics.
+        'ᑯ' => 'd',
+        'ᑲ' => 'b',
+        'ᖯ' => 'b',
+        'ᕼ' => 'h',
+        'ᗷ' => 'b',
+        'ᑌ' => 'u',
+        'ᑭ' => 'p',
+        'ᒪ' => 'l',
+        'ᖇ' => 'r',
+        'ᖴ' => 'f',
+        'ᗅ' => 'a',
+        'ᗞ' => 'd',
+        'ᗪ' => 'd',
+        'ᗰ' => 'm',
+        'ꓐ' => 'b',
+        'ꓑ' => 'p',
+        'ꓒ' => 'd',
+        'ꓓ' => 'd',
+        'ꓔ' => 't',
+        'ꓖ' => 'g',
+        'ꓗ' => 'k',
+        'ꓚ' => 'c',
+        'ꓝ' => 'f',
+        'ꓟ' => 'm',
+        'ꓠ' => 'n',
+        'ꓡ' => 'l',
+        'ꓢ' => 's',
+        'ꓣ' => 'r',
+        'ꓧ' => 'h',
+        'ꓪ' => 'w',
+        'ꓬ' => 'y',
+        'ꓮ' => 'a',
+        'ꓲ' => 'l',
+        'ꓰ' => 'e',
+        'ꓳ' => 'o',
+        'ꓴ' => 'u',
+        other => other,
+    }
+}
+
+/// Folds text for denylist matching: drops everything invisible (controls,
+/// whitespace, zero-width, bidi and default-ignorable formatting), lowercases,
+/// applies NFKC, maps the remaining cross-script confusables to Latin, and
+/// finally drops the invisible characters that only case folding can produce.
+///
+/// Each step closes a demonstrated evasion of the plain `to_lowercase()` match
+/// this replaces. A hostile `aria-label` only had to carry a zero-width space
+/// (`De<U+200B>lete`), a soft hyphen, fullwidth letters, a single Cyrillic `а`
+/// (`Pаy`) or an inserted space (`支 付`) to screen Clear while rendering
+/// identically to the user. Dropping the invisible characters rather than
+/// folding them to a space also closes the inverse hole, where space-folding a
+/// C0 character split a term the matcher would have found.
+///
+/// The lowercase runs **before** NFKC and the fold: an arm that sits before
+/// the lowercase only ever fires for the exact case it was written for, which
+/// is how every round-3 fold arm shipped lowercase-only and left its
+/// uppercase sibling unarmed (`paҮ` folded to `paү` — the armed character —
+/// *after* the fold had passed). Lowercasing first makes every arm
+/// case-agnostic by construction; the small arms the capitals now need
+/// (`β η μ ν ζ ь`) are the lowercase forms of characters the table always
+/// caught, and the capital lunate sigma Ϲ now lowers to the c-shaped ϲ before
+/// NFKC can merge it into the o-shaped Σ, so `aϹϹept` is caught instead of
+/// screening Clear.
+///
+/// Both the lowercase and the NFKC run **twice**, because each order alone
+/// loses a family:
+///
+/// - Rust's `char::to_lowercase` leaves the astral Math Alphanumeric capitals
+///   alone (`𝐃` lowercases to `𝐃`, not `𝐝`), so a single lowercase-first
+///   pass hands NFKC an uppercase `D` and `𝐃𝐞𝐥𝐞𝐭𝐞` — pinned since the
+///   first round — folded to `Delete` and screened Clear. The first NFKC
+///   brings the compatibility capitals down to ASCII, and the second
+///   lowercase maps them.
+/// - A single NFKC-first pass instead merges Ϲ into Σ before any lowercase
+///   sees it, which is precisely the `aϹϹept` hole above.
+///
+/// Both operations are idempotent, so doubling them changes nothing for text
+/// that needed only one pass.
+///
+/// NFKC runs **after** the invisible filter so a spliced default-ignorable
+/// cannot block a compatibility composition, and it is what collapses the
+/// whole-block substitutions a per-character table would have to enumerate
+/// one family at a time: `𝐃𝐞𝐥𝐞𝐭𝐞` (Math Alphanumeric), `Ｄｅｌｅｔｅ`
+/// (fullwidth), `Ⓓⓔⓛⓔⓣⓔ` (circled), `ﾌｫｰﾏｯﾄ` (halfwidth katakana) and the
+/// CJK compatibility ideographs all fold to their ordinary forms.
+///
+/// The final [`is_post_composition_invisible`] pass is matching-side only:
+/// the user still sees the mark, so the consent dialog names what their eyes
+/// see while the matcher reads through it (the safe divergence — an extra
+/// dialog, never a missed one).
+///
+/// This is not a complete confusable defence and is not meant to be read as
+/// one: combining marks are left in place (they are *visible*, so they change
+/// what the user sees rather than hiding from them — the one exception is the
+/// İ-dot below), and the cross-script table in [`fold_confusable`] is a
+/// subset of UTS#39's relation. The guarantee is that the demonstrated
+/// evasion families cost more than one code point, not that no glyph
+/// substitution can succeed.
+pub fn fold_for_matching(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
+
+    text.chars()
+        .filter(|c| !is_invisible_for_matching(*c))
+        .flat_map(char::to_lowercase)
+        .nfkc()
+        .flat_map(char::to_lowercase)
+        .nfkc()
+        .map(fold_confusable)
+        .filter(|c| !is_post_composition_invisible(*c))
+        .collect()
+}
+
+/// Characters that only a case fold or a compatibility composition can
+/// produce and that render as (near-)nothing: currently just `U+0307
+/// COMBINING DOT ABOVE`.
+///
+/// `İ` (U+0130) lowercases to `i` + `U+0307`, and the same expansion is what
+/// NFKC leaves behind for the decomposed forms, so without this pass
+/// `submİt`/`submi̇t` folded to `submi̇t` — an undeletable dot splitting the
+/// term at exactly the position the dotless-ı arm had closed. The dot cannot
+/// go into the shared invisible lists: it is a *visible* combining mark that
+/// real text uses (NFD Lithuanian `ė`, Turkish labels), and the display side
+/// must keep it so the consent dialog shows the label as the user sees it.
+/// Stripping it on the matching side only is the safe divergence: screening
+/// reads `submit` and raises the dialog, the dialog still shows the dotted
+/// label the user decides on.
+fn is_post_composition_invisible(c: char) -> bool {
+    matches!(c, '\u{0307}')
+}
+
 /// Whether a label hits the T3 consequential denylist.
 pub fn matches_t3_denylist(label: &str) -> bool {
-    let lower = label.to_lowercase();
-    T3_DENYLIST.iter().any(|term| lower.contains(term))
+    matches_t3_denylist_folded(&fold_for_matching(label))
+}
+
+/// The denylist match over text that is already [`fold_for_matching`] output.
+/// Exposed for the streaming matcher, which folds in bounded chunks so an
+/// arbitrarily long attacker-controlled label never has to be materialized.
+pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
+    T3_DENYLIST.iter().any(|term| folded.contains(term))
+}
+
+/// Streams `raw` through [`fold_for_matching`] in bounded chunks and calls
+/// `observe` with each folded window (this chunk's fold plus a carry of the
+/// previous window's tail), stopping at the first window where `observe`
+/// returns `true`, which is also the return value.
+///
+/// A needle of at most [`T3_MATCH_WINDOW_CHARS`] folded characters cannot
+/// straddle a window boundary unnoticed — the carry keeps the previous
+/// window's tail — so substring checks against each window see exactly what
+/// a whole-string fold would have shown, without ever materializing it.
+/// Peak memory is proportional to the chunk, not the label, so a hostile
+/// multi-megabyte accessible name or `AXRole` buys no proportional
+/// allocation. Used by the platform denylist matcher
+/// (`platform::helpers::screening_hit`) and [`is_secure_role`], which
+/// would otherwise each need its own copy of the walk.
+pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) -> bool) -> bool {
+    let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
+    let mut folded = String::new();
+    let mut chars = raw.chars();
+    loop {
+        let chunk: String = chars.by_ref().take(FOLD_CHUNK_CHARS).collect();
+        if chunk.is_empty() {
+            return false;
+        }
+        folded.push_str(&fold_for_matching(&chunk));
+        if observe(&folded) {
+            return true;
+        }
+        let count = folded.chars().count();
+        if count > carry {
+            folded = folded.chars().skip(count - carry).collect();
+        }
+    }
 }
 
 /// Whether the element role is a password/secure text field (a T3 signal;
 /// corresponds to Operator's takeover scenario). Roles that merely contain
 /// "insecure" (e.g. AXInsecureTextField) must not trip the "secure"
 /// substring.
+///
+/// The role runs through the same streaming [`fold_for_matching`] walk the
+/// denylist leg of this gate uses, rather than plain `to_lowercase()`: on
+/// macOS `AXRole`/`AXSubrole` are free-form app-supplied strings, so a
+/// fullwidth `ＰａｓｓｗｏｒｄＦｉｅｌｄ` or a homoglyph `Pаssword` would otherwise
+/// bypass the password screen while the denylist leg catches the identical
+/// trick in the name. Streaming also keeps a hostile multi-megabyte role
+/// from buying a proportional whole-string fold here. "password"/"secure"
+/// are shorter than the carry window, so a needle cannot straddle a window
+/// boundary unnoticed.
 pub fn is_secure_role(role: &str) -> bool {
-    let lower = role.to_lowercase();
-    lower.contains("password") || (lower.contains("secure") && !lower.contains("insecure"))
+    for_each_folded_window(role, |window| {
+        window.contains("password") || (window.contains("secure") && !window.contains("insecure"))
+    })
+}
+
+/// The per-process random key every consent binding hash is keyed with
+/// (in-process only — tokens are memory-bound with a TTL — but **keyed**:
+/// any deterministic 64-bit hash has a ~2^32 birthday surface an offline
+/// attacker can walk, and the model must have no oracle to forge bindings
+/// against; reading the key requires the same process-memory access the
+/// approval tokens themselves already rely on staying private). Shared by
+/// the tool's action binding and the platform layer's raw-target bindings.
+pub(crate) fn binding_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        for word in key.chunks_exact_mut(8) {
+            word.copy_from_slice(&rand::random::<u64>().to_le_bytes());
+        }
+        key
+    })
+}
+
+/// Keyed hash of one element's raw identity: the unsanitized, untruncated
+/// accessible name and role, length-prefixed so no adversary-chosen pair of
+/// fields folds into the same byte stream as a different pair. Computed at
+/// the platform boundary where the raw strings still exist (the `ElementInfo`
+/// copy of the name is display-sanitized and truncated); the tool layer
+/// combines these per-element bindings into the target-set binding the
+/// approval token carries, so a token cannot be replayed onto an element
+/// whose display line renders identically to the approved one.
+pub(crate) fn raw_element_binding(name: &str, role: &str) -> u64 {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(binding_key());
+    hasher.update((name.len() as u64).to_be_bytes());
+    hasher.update(name.as_bytes());
+    hasher.update((role.len() as u64).to_be_bytes());
+    hasher.update(role.as_bytes());
+    let digest = hasher.finalize();
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(prefix)
 }
 
 /// Guard rejection reasons.
@@ -174,13 +771,28 @@ pub enum GuardRejection {
     Stopped,
     /// An input-class action lacks a valid session grant.
     GrantRequired,
-    /// The session's confirmation dialog is unanswered. Every input action
-    /// from the session is rejected while a pending confirmation exists:
-    /// otherwise the model could click the dialog's own approve control — an
-    /// ordinary clickable element whose label screens Clear — and mint the
-    /// approval itself (round-17 self-approval finding). Observing stays
-    /// allowed; deny/stop/disable/expiry all clear the pending and unblock.
+    /// A confirmation dialog is unanswered. Every input action from **every**
+    /// session is rejected while any pending confirmation exists: otherwise
+    /// the model could click the dialog's own approve control — an ordinary
+    /// clickable element whose label screens Clear — and mint the approval
+    /// itself (round-17 self-approval finding). Observing stays allowed;
+    /// deny/stop/disable/expiry all clear the pending and unblock.
+    ///
+    /// The block is process-wide rather than per-session because the dialog
+    /// occupies the shared screen and physical input is a process-global
+    /// device: a per-session block left a second granted session free to
+    /// click the first session's "Allow this once" and mint its approval,
+    /// which is the same self-approval hole one indirection further out.
     ConfirmationPending,
+    /// A grant-request dialog is unanswered. Blocked for the same reason as
+    /// [`Self::ConfirmationPending`] and with the same process-wide scope:
+    /// the grant dialog's "Allow control" control is also an ordinary
+    /// clickable element whose label screens Clear, so a granted session
+    /// could otherwise click *another* session's grant button and mint that
+    /// session's grant — the same self-approval hole, one consent surface
+    /// over. Granting, revoking, denying and the shared stop/disable/expiry
+    /// sweeps all unblock.
+    GrantDialogPending,
     /// The cross-session physical input lock is held by another session and
     /// the bounded wait timed out (see
     /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]).
@@ -204,7 +816,11 @@ impl GuardRejection {
                     .to_string()
             }
             Self::ConfirmationPending => {
-                "a previous action is waiting for the user's confirmation in the app. No further input actions are accepted from this session until the dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
+                "an action is waiting for the user's confirmation in the app. No input actions are accepted until that dialog is answered (approved, denied, or stopped); wait for the user, or stop if the request is abandoned."
+                    .to_string()
+            }
+            Self::GrantDialogPending => {
+                "a session's request for computer control is waiting for the user in the app. No input actions are accepted until the user answers it (granted or denied); wait for the user."
                     .to_string()
             }
             Self::InputBusy => {
@@ -249,6 +865,14 @@ pub struct PendingConfirmation {
     /// cannot be silently swapped for a same-summary different-content one.
     pub action_binding: u64,
     pub element_label: String,
+    /// Keyed hash of the raw (unsanitized, untruncated) name/role identity
+    /// behind `element_label`, computed by the tool layer. The label is a
+    /// display line: sanitized and truncated to 80 chars, so distinct
+    /// elements can render it identically (payloads differing only past the
+    /// truncation tail, or only in characters sanitization rewrites). The
+    /// spend path compares this binding too, so a token cannot be replayed
+    /// onto a display-identical twin.
+    pub element_binding: u64,
     pub created_at: Instant,
     /// The full `confirm_required` event payload exactly as minted
     /// (identity + structured fields + optional preview), served through
@@ -260,25 +884,26 @@ pub struct PendingConfirmation {
     pub payload: serde_json::Value,
 }
 
-/// A minted approval token: bound to the session, the action summary and the
-/// action content hash; expires if not spent within [`CONFIRM_TTL`].
+/// A minted approval token: bound to the session, the action summary, the
+/// action content hash **and** the element label the dialog showed the user;
+/// expires if not spent within [`CONFIRM_TTL`].
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
     action_summary: String,
     action_binding: u64,
+    /// The screened target the user actually saw and approved. The action
+    /// parameters alone do not identify a target: `left_mouse_down` and a
+    /// coordinate-less `left_click` act wherever the cursor happens to be,
+    /// and even a coordinate-carrying click lands on whatever occupies that
+    /// point. Carrying the label lets the spend path re-screen and refuse a
+    /// token aimed at a different consequential control than the one on the
+    /// dialog.
+    element_label: String,
+    /// See [`PendingConfirmation::element_binding`]: the raw identity behind
+    /// the label, so the spend path can refuse a display-identical twin.
+    element_binding: u64,
     minted_at: Instant,
-}
-
-/// The result of spending an approval token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfirmationCheck {
-    /// The token is valid and matches both the session and the action
-    /// summary; it has been consumed (single-use).
-    Granted,
-    /// No such token (unknown / already spent / expired / session or action
-    /// mismatch).
-    Unknown,
 }
 
 /// The two consent maps (pending confirmations, approved tokens) share one
@@ -380,6 +1005,16 @@ impl ComputerUseShared {
             self.reset_stop();
         } else {
             self.revoke_all_sessions();
+            // Turning the master switch off is not an emergency stop, and it
+            // leaves nothing for a stop to protect: the sweep above already
+            // dropped every grant, pending and token. Leaving the latch raised
+            // made `computer_use_get_status` keep reporting `stopped: true`
+            // for a feature that is simply off, which is what drove the
+            // settings row to tell a user who had just switched the toggle OFF
+            // to "turn it off and back on". The flag is cleared here, in the
+            // one place that owns it, so the backend answer and the UI agree
+            // without the frontend having to guess.
+            self.stop.store(false, Ordering::SeqCst);
         }
     }
 
@@ -466,14 +1101,14 @@ impl ComputerUseShared {
     }
 
     /// Revokes all session grants and clears all consent state (pending
-    /// confirmations, minted tokens) but does **not** raise the stop flag —
+    /// confirmations, minted tokens) but does not touch the stop flag —
     /// distinct from [`Self::stop_all`]'s emergency-stop semantics: turning
-    /// the master switch off is not an emergency stop, and no stop state
-    /// should remain after re-enabling (the `computer_use_set_enabled(false)`
-    /// call). Consent state from the off period must not survive a re-enable:
-    /// the old grant and old approval tokens would otherwise remain valid.
-    /// Also invoked by [`Self::set_enabled`] on disable, so the sweep cannot
-    /// be skipped by a flag-only caller.
+    /// the master switch off is not an emergency stop. Consent state from the
+    /// off period must not survive a re-enable: the old grant and old approval
+    /// tokens would otherwise remain valid. Also invoked by
+    /// [`Self::set_enabled`] on disable, so the sweep cannot be skipped by a
+    /// flag-only caller; [`Self::set_enabled`] additionally lowers the stop
+    /// latch there, so no stop state remains for a feature that is off.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         self.grant_requests.lock().clear();
@@ -508,37 +1143,52 @@ impl ComputerUseShared {
 
     /// Gate for input-class actions: switch on, not stopped, the session
     /// holds a grant (grant lifetime: see the note at the top of this
-    /// module), and no confirmation dialog for this session is unanswered
-    /// (an unanswered dialog must not be clickable by the model itself — the
-    /// approve control is an ordinary clickable element, so letting input
-    /// through while a pending exists would let the session approve its own
-    /// consequential action). [`Self::verify_input_action`] must be checked
-    /// once more before injection.
+    /// module), and no confirmation dialog anywhere in the process is
+    /// unanswered (an unanswered dialog must not be clickable by the model
+    /// itself — the approve control is an ordinary clickable element, so
+    /// letting input through while a pending exists would let a session
+    /// approve a consequential action). [`Self::verify_input_action`] must be
+    /// checked once more before injection.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
             return Err(GuardRejection::GrantRequired);
         }
-        if self.has_outstanding_pending(session_id) {
+        if self.has_outstanding_pending() {
             return Err(GuardRejection::ConfirmationPending);
+        }
+        // The grant dialog gates input for the same reason the confirmation
+        // dialog does, and also process-wide: its "Allow control" control is
+        // an ordinary clickable element whose label screens Clear, so while
+        // ANY session's grant request is unanswered a granted session could
+        // click that button and mint the requesting session's grant. The
+        // marker has no TTL of its own, but every path that ends the request
+        // (grant / revoke / stop / disable / tool drop) clears it; the tool
+        // Drop sweep covers an abandoned request whose session went away.
+        if !self.grant_requests.lock().is_empty() {
+            return Err(GuardRejection::GrantDialogPending);
         }
         Ok(())
     }
 
-    /// Whether `session_id` has an unanswered (unexpired) pending
+    /// Whether **any** session has an unanswered (unexpired) pending
     /// confirmation. Expired pendings are swept under the same lock so a
     /// TTL'd-out dialog cannot block input until some other path happens to
     /// clear it.
-    fn has_outstanding_pending(&self, session_id: &str) -> bool {
+    ///
+    /// Deliberately not scoped to the calling session: the consent dialog
+    /// occupies the shared screen (it renders in the owning session's view,
+    /// but physical input is a process-global device any session's model can
+    /// steer), so a per-session block let a second granted session click the
+    /// first session's approve control (see
+    /// [`GuardRejection::ConfirmationPending`]).
+    fn has_outstanding_pending(&self) -> bool {
         let mut consent = self.consent.lock();
         let now = Instant::now();
         consent
             .pending
             .retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
-        consent
-            .pending
-            .values()
-            .any(|entry| entry.session_id == session_id)
+        !consent.pending.is_empty()
     }
 
     /// Read-only re-check: whether the grant is still valid (switch, stop
@@ -571,23 +1221,32 @@ impl ComputerUseShared {
     /// blocked action and is carried into the minted token. Also sweeps
     /// expired pendings.
     ///
-    /// Returns `None` when the master switch is off or the stop is latched:
-    /// `mint_confirmation` refuses in that state, so a pending registered
-    /// there could never be approved — an in-flight run racing a
-    /// disable/stop must not leave an unapprovable dialog on screen for the
-    /// TTL (its caller reports the refusal as part of the same stable error
-    /// prefix, so the audit shape is unchanged).
+    /// Returns `None` when the master switch is off, the stop is latched, or
+    /// the session's grant is already gone: `mint_confirmation` refuses in
+    /// each of those states, so a pending registered there could never be
+    /// approved — an in-flight run racing a disable/stop/revoke must not
+    /// leave an unapprovable dialog on screen for the TTL (its caller
+    /// reports the refusal as part of the same stable error prefix, so the
+    /// audit shape is unchanged).
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
         action_binding: u64,
+        element_binding: u64,
     ) -> Option<String> {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
         let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
+            return None;
+        }
+        // Re-checked under the same critical section as the insert: a revoke
+        // landing after the tool's pre-raise `verify_input_action` must not
+        // resurrect the dialog it just removed (same rule as the enabled /
+        // stopped checks above).
+        if !self.sessions.lock().contains(session_id) {
             return None;
         }
         let pending = &mut consent.pending;
@@ -607,6 +1266,7 @@ impl ComputerUseShared {
                 action_summary: action_summary.into(),
                 action_binding,
                 element_label: element_label.into(),
+                element_binding,
                 created_at: now,
                 // Attached right after the mint via `set_pending_payload`
                 // (the payload embeds the mint-returned confirm_id).
@@ -648,8 +1308,51 @@ impl ComputerUseShared {
 
     /// Marks a session as having an unanswered grant request (called right
     /// before the tool emits `grant_required`).
+    ///
+    /// Skipped while the feature is disabled or the stop is latched, for the
+    /// same reason [`Self::new_pending_confirmation`] drops a pending in
+    /// those states: [`Self::grant_session`] refuses while stopped or
+    /// disabled, so a request registered there could never be granted — an
+    /// in-flight request racing a stop/disable (the serialized variant can
+    /// wait out the full bounded input-lock timeout) must not pop an
+    /// unanswerable dialog that blocks input process-wide. Note the session
+    /// is deliberately **not** required to hold a grant here: the mark is
+    /// what raises the grant dialog for a not-yet-granted session.
     pub fn mark_grant_requested(&self, session_id: &str) {
+        if !self.is_enabled() || self.is_stopped() {
+            return;
+        }
         self.grant_requests.lock().insert(session_id.to_string());
+    }
+
+    /// [`Self::mark_grant_requested`], serialized against in-flight
+    /// injections: the caller runs on the executor thread **outside** the
+    /// physical-input lock, so a bare mark could pop the "Allow control"
+    /// dialog in the middle of another session's multi-event injection —
+    /// whose keystrokes are model-chosen, whose Tab/Return land as real key
+    /// events, and whose gate checks all happened before the dialog existed.
+    /// A granted session's own already-screened `type` could thus walk onto
+    /// the dialog and accept it — the same self-approval hole the global
+    /// gate exists to close, reached from underneath it.
+    ///
+    /// Holding the lock for the mark gives the grant gate the same invariant
+    /// the confirmation gate already has (a pending can only be minted from
+    /// inside the lock, so no dialog can appear under an in-flight
+    /// injection). Acquisition is the bounded [`Self::lock_physical_input`];
+    /// a legitimate action finishes far inside the bound, so the mark lands
+    /// between actions, where the gate's re-checks see it. A pathological
+    /// one (a maximum-length `type` against a slow injection backend) can
+    /// outrun the bound, in which case the mark lands mid-injection anyway —
+    /// the deliberate fail-safe, since an unanswered request must never be
+    /// withheld because the lock stayed busy.
+    pub fn mark_grant_requested_serialized(&self, session_id: &str) {
+        match self.lock_physical_input() {
+            // The guard lives to the end of the arm: the mark happens under
+            // the lock. A timed-out acquisition falls through — the dialog
+            // must never be withheld because the lock stayed busy.
+            Ok(_input) => self.mark_grant_requested(session_id),
+            Err(_) => self.mark_grant_requested(session_id),
+        }
     }
 
     /// Server truth for the consent UI: whether this session's grant
@@ -768,58 +1471,88 @@ impl ComputerUseShared {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
                 action_binding: entry.action_binding,
+                element_label: entry.element_label,
+                element_binding: entry.element_binding,
                 minted_at: now,
             },
         );
         true
     }
 
-    /// Spends an approval token (single-use). The tool calls it before
-    /// executing an action carrying a `confirm_id`; the token must exactly
-    /// match **this** session, the action summary **and** the action content
-    /// hash — the user approves a summary for readability but the token is
-    /// bound to the full action content, so a token approved for one
-    /// `type N characters` cannot be spent on a different same-length text.
-    /// On a match, execution proceeds — no second screening (mainstream
-    /// model: the API confirmation is just a per-action confirmation id; once
-    /// the client acknowledges, execute); on a mismatch the token is kept
-    /// (under exact binding, the only combination that can pass is the
-    /// user-approved original action replay — a wrong attempt should not burn
-    /// the user's confirmation).
-    pub fn take_confirmation(
+    /// Validates an approval token **without consuming it** and returns the
+    /// element label the user approved plus the raw-identity binding behind
+    /// it ([`PendingConfirmation::element_binding`]), so the spend path can
+    /// refuse a display-identical twin.
+    ///
+    /// The token must exactly match this session, the action summary and the
+    /// action content hash — the user approves a summary for readability, but
+    /// the token is bound to the full action content, so a token approved for
+    /// one `type N characters` cannot be spent on a different same-length
+    /// text. `None` on any mismatch, and the token is kept: under exact
+    /// binding the only combination that can pass is a replay of the
+    /// user-approved action, so a wrong attempt should not burn the
+    /// confirmation.
+    ///
+    /// Split from the consume step so the caller can re-screen the current
+    /// target against the returned label before spending: the action's own
+    /// parameters do not pin a target, so validating and consuming in one
+    /// step let an approval granted for one control be spent on another (see
+    /// [`ApprovedToken::element_label`]).
+    pub fn peek_confirmation(
         &self,
         confirm_id: &str,
         session_id: &str,
         action_summary: &str,
         action_binding: u64,
-    ) -> ConfirmationCheck {
+    ) -> Option<(String, u64)> {
         // Defense in depth (mirrors the mint side): a token minted while
         // enabled must not be spendable after a stop/disable landed — the
         // spend path still dies at verify_input_action, but consuming the
-        // user's approval there would be the wrong direction. The check now
-        // lives under the consent lock (the mint side always did), so a
-        // disable landing between the check and the spend cannot consume the
-        // approval.
+        // user's approval there would be the wrong direction. The check lives
+        // under the consent lock (the mint side always did), so a disable
+        // landing between the check and the spend cannot consume the approval.
         let now = Instant::now();
         let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
-            return ConfirmationCheck::Unknown;
+            return None;
         }
-        let Some(token) = consent.approved_tokens.get(confirm_id) else {
-            return ConfirmationCheck::Unknown;
-        };
+        let token = consent.approved_tokens.get(confirm_id)?;
         if now.duration_since(token.minted_at) > CONFIRM_TTL {
             consent.approved_tokens.remove(confirm_id);
-            return ConfirmationCheck::Unknown;
+            return None;
         }
         if token.session_id != session_id
             || token.action_summary != action_summary
             || token.action_binding != action_binding
         {
-            return ConfirmationCheck::Unknown;
+            return None;
         }
-        consent.approved_tokens.remove(confirm_id);
-        ConfirmationCheck::Granted
+        Some((token.element_label.clone(), token.element_binding))
+    }
+
+    /// Consumes a token previously validated by [`Self::peek_confirmation`],
+    /// making it single-use. Returns whether a token was actually spent.
+    ///
+    /// Called once the re-screen has agreed the target is still the one the
+    /// user approved, so a spend refused for naming a **different** target
+    /// does not burn the approval and a corrected retry can still use it.
+    /// Later refusals still consume it — a stop or revoke landing during
+    /// screening, a missing input capability, the backend itself failing. The
+    /// split exists to make the target check non-destructive, not to defer the
+    /// spend all the way to the injection call.
+    ///
+    /// The return value closes the deny race: `deny_confirmation` retracts an
+    /// unspent token ("approve → changed my mind"), and the a11y queries in
+    /// the replay's re-screen give that click a real window to land between
+    /// [`Self::peek_confirmation`] and here. A blind remove would execute the
+    /// action anyway over an approval its owner had just retracted, so the
+    /// caller aborts on `false`.
+    pub fn consume_confirmation(&self, confirm_id: &str) -> bool {
+        self.consent
+            .lock()
+            .approved_tokens
+            .remove(confirm_id)
+            .is_some()
     }
 }
 
@@ -838,17 +1571,41 @@ mod tests {
     /// both sides (mint copies it verbatim, spend compares it verbatim).
     fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
         shared
-            .new_pending_confirmation(session, summary, "Buy now", 0)
+            .new_pending_confirmation(session, summary, "Buy now", 0, 0)
             .expect("pending minted while the feature is enabled")
     }
 
-    fn take(
+    /// The spend outcome, as a value the assertions can compare. Production
+    /// splits validate-then-consume so the tool can re-screen the target in
+    /// between; these tests exercise the session/summary/binding/TTL and
+    /// single-use semantics, which are unchanged by that split.
+    #[derive(Debug, PartialEq, Eq)]
+    enum SpendOutcome {
+        Granted,
+        Unknown,
+    }
+
+    fn take(shared: &ComputerUseShared, id: &str, session: &str, summary: &str) -> SpendOutcome {
+        take_bound(shared, id, session, summary, 0)
+    }
+
+    fn take_bound(
         shared: &ComputerUseShared,
         id: &str,
         session: &str,
         summary: &str,
-    ) -> ConfirmationCheck {
-        shared.take_confirmation(id, session, summary, 0)
+        binding: u64,
+    ) -> SpendOutcome {
+        match shared.peek_confirmation(id, session, summary, binding) {
+            Some(_) => {
+                assert!(
+                    shared.consume_confirmation(id),
+                    "a peeked token must still be there to consume"
+                );
+                SpendOutcome::Granted
+            }
+            None => SpendOutcome::Unknown,
+        }
     }
 
     #[test]
@@ -1077,6 +1834,31 @@ mod tests {
         ] {
             assert!(!matches_t3_denylist(label), "should not match: {label}");
         }
+        // The terms this PR added, each with the inflected/variant spelling
+        // that motivated it: an entry that only matches its own dictionary
+        // form buys nothing on a real button.
+        for label in [
+            "支払う",
+            "お支払いへ進む",
+            "決済する",
+            "振込を実行",
+            "口座振替",
+            "初期化する",
+            "提现到银行卡",
+            "提現",
+            "汇款",
+            "匯款",
+            "订阅方案",
+            "捐赠",
+            "承诺并继续",
+            "转帐",
+            "购入",
+            "發送訊息",
+            "Withdraw funds",
+            "Remit payment",
+        ] {
+            assert!(matches_t3_denylist(label), "should match: {label}");
+        }
         assert!(is_secure_role("Password Text"));
         assert!(is_secure_role("AXSecureTextField"));
         assert!(!is_secure_role("button"));
@@ -1084,6 +1866,416 @@ mod tests {
         // signal — it must not trip the secure-role screen.
         assert!(!is_secure_role("AXInsecureTextField"));
         assert!(!is_secure_role("insecure text field"));
+        // The role is a free-form AXRole on macOS, so the password screen
+        // must survive the same renders-identically tricks the denylist leg
+        // closes: fullwidth (NFKC folds it), a Cyrillic homoglyph `а`, an
+        // invisible splice, and padding — the previous plain
+        // `to_lowercase().contains` missed all four.
+        assert!(is_secure_role("ＰａｓｓｗｏｒｄＦｉｅｌｄ"));
+        assert!(is_secure_role("Pаsswοrd text"));
+        assert!(is_secure_role("Pаssword"));
+        assert!(is_secure_role("Pass\u{200B}word Text"));
+        assert!(is_secure_role(&format!(
+            "{}Password Text{}",
+            " ".repeat(500),
+            "!"
+        )));
+        assert!(!is_secure_role("ＩｎｓｅｃｕｒｅＴｅｘｔＦｉｅｌｄ"));
+    }
+
+    /// The display-side and matching-side invisible lists are documented as
+    /// kept in step (`helpers::is_invisible_formatting` ↔ this module's
+    /// `is_invisible_for_matching`). A range added to one but not the other
+    /// is silent: U+2FFC–U+2FFF sat only in the matching list, so the
+    /// render-as-nothing characters survived `sanitize_name` into consent
+    /// dialog labels and the approval-token binding. Pin the step by
+    /// requiring every enumerated range on the display side to appear
+    /// verbatim on the matching side (the matching list is a superset: it
+    /// additionally folds whitespace).
+    #[test]
+    fn invisible_lists_stay_in_step() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helpers =
+            std::fs::read_to_string(manifest.join("src/features/computer_use/platform/helpers.rs"))
+                .expect("helpers.rs readable");
+        let display = list_body(&helpers, "fn is_invisible_formatting");
+        let guard = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/guard.rs"
+        ))
+        .expect("guard.rs readable");
+        let matching = list_body(&guard, "fn is_invisible_for_matching");
+
+        for range in [
+            "'\\u{00AD}'",
+            "'\\u{034F}'",
+            "'\\u{0600}'..='\\u{0605}'",
+            "'\\u{061C}'",
+            "'\\u{06DD}'",
+            "'\\u{070F}'",
+            "'\\u{0890}'..='\\u{0891}'",
+            "'\\u{08E2}'",
+            "'\\u{115F}'..='\\u{1160}'",
+            "'\\u{17B4}'..='\\u{17B5}'",
+            "'\\u{180B}'..='\\u{180F}'",
+            "'\\u{200B}'..='\\u{200F}'",
+            "'\\u{202A}'..='\\u{202E}'",
+            "'\\u{2060}'..='\\u{2064}'",
+            "'\\u{2065}'",
+            "'\\u{2066}'..='\\u{2069}'",
+            "'\\u{206A}'..='\\u{206F}'",
+            "'\\u{2800}'",
+            "'\\u{3164}'",
+            "'\\u{2FFC}'..='\\u{2FFF}'",
+            "'\\u{FE00}'..='\\u{FE0F}'",
+            "'\\u{FEFF}'",
+            "'\\u{FFA0}'",
+            "'\\u{FFF0}'..='\\u{FFF8}'",
+            "'\\u{FFF9}'..='\\u{FFFB}'",
+            "'\\u{110BD}'",
+            "'\\u{110CD}'",
+            "'\\u{13430}'..='\\u{1343F}'",
+            "'\\u{1BCA0}'..='\\u{1BCA3}'",
+            "'\\u{1D173}'..='\\u{1D17A}'",
+            "'\\u{E0000}'..='\\u{E0FFF}'",
+        ] {
+            assert!(display.contains(range), "display side lost {range}");
+            assert!(
+                matching.contains(range),
+                "the matching-side invisible list lost {range}; \
+                 the two lists are documented to stay in step"
+            );
+        }
+    }
+
+    /// The body (up to the closing brace) of a `fn <name>` in `source`, used
+    /// by [`invisible_lists_stay_in_step`] to compare the two enumerated
+    /// invisible-character lists without parsing Rust. The end is anchored on
+    /// the `matches!`-close-plus-`fn`-close brace pair rather than the first
+    /// `}`, because every `'\\u{XXXX}'` literal carries a `}` of its own.
+    fn list_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(name).expect("list function exists");
+        let end = start
+            + source[start..]
+                .find(")\n}")
+                .expect("list body ends with the matches! close and the fn close");
+        &source[start..end]
+    }
+
+    /// Every [`T3_DENYLIST`] entry must survive [`fold_for_matching`]
+    /// unchanged, and must fit inside the streaming matcher's carry window.
+    ///
+    /// Both invariants are silent when broken, which is why they are pinned
+    /// rather than reasoned about. Matching runs `folded.contains(term)`
+    /// against folded text, so a term carrying a space, an uppercase letter,
+    /// a fullwidth or compatibility form — anything the fold would rewrite —
+    /// is not merely weaker, it is **unmatchable forever**: the fold has
+    /// already removed from the haystack the very bytes the needle still
+    /// carries. `"place order"` was exactly that bug before this list moved to
+    /// folded matching. Likewise a term longer than
+    /// [`T3_MATCH_WINDOW_CHARS`] would be missed whenever it straddles two
+    /// streaming windows — an intermittent failure keyed on the label's
+    /// length, which is the hardest possible shape to notice in the field.
+    #[test]
+    fn t3_denylist_terms_are_prefolded() {
+        for term in T3_DENYLIST {
+            assert_eq!(
+                &fold_for_matching(term),
+                term,
+                "denylist term is not in folded form, so it can never match: {term:?}"
+            );
+            let folded_len = term.chars().count();
+            assert!(
+                folded_len <= T3_MATCH_WINDOW_CHARS,
+                "denylist term is longer than the {T3_MATCH_WINDOW_CHARS}-char match \
+                 window and would be missed across a chunk boundary: {term:?} ({folded_len})"
+            );
+            // `screen_element` also matches the *display* name as a fallback
+            // for a backend that forgot the raw verdict, and `sanitize_name`
+            // rewrites `"` to `'` on its way to the display copy. Folding does
+            // not, so a term containing either quote would match the raw name
+            // but not the display one — the fallback would silently stop being
+            // a subset of the real verdict.
+            assert!(
+                !term.contains('"') && !term.contains('\''),
+                "a denylist term must not contain a quote: sanitize_name rewrites \
+                 them, so the display-name fallback would disagree: {term:?}"
+            );
+        }
+    }
+
+    /// The fold must see through the substitution families that were
+    /// demonstrated as evasions, including the whole-block compatibility
+    /// forms NFKC collapses.
+    ///
+    /// This pins the *families*, not a closed set: the doc on
+    /// [`fold_for_matching`] is explicit that a complete confusable defence
+    /// is not claimed. What must not regress is that each of these costs an
+    /// attacker more than swapping one code point.
+    #[test]
+    fn zero_width_evasions() {
+        for label in [
+            // Invisible splices: each renders as plain "Delete".
+            "De\u{200B}lete",
+            "D\u{00AD}elete",
+            "De\u{FE0F}lete",
+            "De\u{FE00}lete",
+            "De\u{034F}lete",
+            "De\u{3164}lete",
+            "De\u{115F}lete",
+            "De\u{2065}lete",
+            "De\u{E0041}lete",
+            "De\u{1D173}lete",
+            // Whole-block compatibility substitutions (NFKC).
+            "\u{1D403}\u{1D41E}\u{1D425}\u{1D41E}\u{1D42D}\u{1D41E}", // math bold
+            "\u{1D673}\u{1D68E}\u{1D695}\u{1D68E}\u{1D69D}\u{1D68E}", // math monospace
+            "Ⓓⓔⓛⓔⓣⓔ",                                                 // circled
+            "Ｄｅｌｅｔｅ",                                           // fullwidth
+            "ﾌｫｰﾏｯﾄ",                                                 // halfwidth katakana
+            // Cross-script homoglyphs.
+            "Pаy",      // Cyrillic а
+            "ԁelete",   // Cyrillic Komi de
+            "Pɑy",      // Latin alpha
+            "dօnate",   // Armenian o
+            "τransfer", // Greek tau
+            // Same-class homoglyphs found in review: each renders as the
+            // plain ASCII label and survives NFKC.
+            "purcһase",             // Cyrillic shha һ
+            "aϲϲept",               // Greek lunate sigma ϲ
+            "aɡree",                // Latin script g ɡ
+            "submıt",               // Latin dotless i ı
+            "subscrıbe",            // Latin dotless i ı
+            "wıthdraw",             // Latin dotless i ı
+            "Top\u{2011}up wallet", // non-breaking hyphen, NFKC-stable
+            "Top\u{2010}up wallet", // hyphen, NFKC-stable
+            // Second review round: the same evasion class against the
+            // letters the first fold arms left unmapped.
+            "deӏete",               // Cyrillic palochka ӏ for l
+            "Pӏace order",          // Cyrillic palochka ӏ
+            "ѡithdraw",             // Cyrillic omega ѡ
+            "ωithdraw",             // Greek omega
+            "Ωithdraw",             // Greek capital omega
+            "ᴡithdraw",             // Latin small capital w
+            "sᴜbmit",               // Latin small capital u
+            "bᴜy",                  // Latin small capital u
+            "ᴅelete",               // Latin small capital d
+            "ꜱend",                 // Latin small capital s
+            "ᴅonate",               // Latin small capital d
+            "ᴀɡree",                // small capitals + script g spelling "agree"
+            "Top\u{2013}up wallet", // en dash (word-processor autocorrect)
+            "Top\u{2012}up wallet", // figure dash
+            "Top\u{2212}up wallet", // minus sign
+            // Third review round: arms whose UTS#39 skeleton is a single
+            // Latin letter but which survived both NFKC and the first fold
+            // arms — each renders as the plain ASCII label.
+            "шithdraw",             // Cyrillic sha for w
+            "ԝithdraw",             // Cyrillic we for w
+            "paү",                  // Cyrillic straight u for y (pay)
+            "paγ",                  // Greek gamma for y (pay)
+            "buү",                  // straight u (buy)
+            "submɩt",               // Latin iota for i
+            "wɩthdraw",             // Latin iota
+            "subm\u{0582}t",        // Armenian yiwn (U+0582) for i
+            "witհdraw",             // Armenian ho for h
+            "purcհase",             // Armenian ho
+            "aցree",                // Armenian co for g
+            "acc℮pt",               // estimated sign for e
+            "del℮te",               // estimated sign
+            "þay",                  // thorn for p
+            "Ьuy",                  // Cyrillic soft sign for b
+            "Top\u{2043}up wallet", // hyphen bullet
+            "Top\u{02D7}up wallet", // modifier letter minus sign
+            "Top\u{2CBB}up wallet", // Coptic dialect-p ni
+            "Top\u{06D4}up wallet", // Arabic full stop
+            // Unicode 15.1 ideographic description characters are
+            // default-ignorable and render as nothing.
+            "支\u{2FFF}付",
+            // Third review round: these default-ignorable ranges were missing
+            // from BOTH lists, so a single splice of each rendered-invisible
+            // character split a denylist term (De⟨one of these⟩lete read as
+            // plain "Delete" to the user).
+            "De\u{206A}lete",  // inhibit symmetric swapping
+            "De\u{206E}lete",  // activate arabic form shaping
+            "De\u{206F}lete",  // nominal digit shapes
+            "De\u{FFF0}lete",  // reserved, default-ignorable
+            "De\u{FFF8}lete",  // reserved, default-ignorable
+            "De\u{1BCA0}lete", // shorthand format letter overlap
+            "支\u{1BCA0}付",
+            "初\u{206E}期化",
+            // Fourth review round: the Syriac abbreviation mark is Cf but not
+            // default-ignorable, so it slipped past every coverage diff
+            // against that property; through font fallback it renders with
+            // zero advance.
+            "De\u{070F}lete",
+            "支\u{070F}付",
+            // Fourth review round: the pipeline lowercases before NFKC and
+            // the fold now, so the uppercase sibling of every armed
+            // character is covered by construction — each of these screened
+            // Clear while folding ran first.
+            "pa\u{04AE}y", // Cyrillic capital straight u (Ү)
+            "bu\u{04AE}y",
+            "a\u{03F9}\u{03F9}ept", // capital lunate sigma (Ϲ) — NFKC used to merge it into the o-shaped Σ
+            "\u{044C}uy",           // Cyrillic small soft sign (Ь's lowercase)
+            "\u{00DE}ay",           // capital thorn (Þ)
+            "\u{01F7}ay",           // capital wynn (Ƿ)
+            "\u{0428}ithdraw",      // capital sha (Ш)
+            "\u{0500}elete",        // capital Komi de (Ԁ)
+            "\u{051C}ithdraw funds", // capital we (Ԝ)
+            "d\u{0555}nate",        // capital Armenian ho (Օ)
+            "wit\u{0540}draw",      // capital Armenian ho (Հ)
+            "a\u{0551}ree",         // capital Armenian co (Ց)
+            "Top\u{2CBA}up wallet", // capital Coptic dialect-p (Ⲻ; lowers to the armed ⲻ)
+            // Fourth review round: small-capital series completion and the
+            // letterform scripts UTS#39 maps to term letters.
+            "\u{1D03}uy", // small capital b (ᴃ) — the series doc claimed one per letter
+            "\u{0299}uy", // small capital b (ʙ)
+            "wit\u{029C}draw", // small capital h (ʜ)
+            "order\u{1D0E}ow", // small capital n (ᴎ)
+            "\u{13CF}uy", // Cherokee si (Ꮟ) for b
+            "wit\u{13C2}draw", // Cherokee ni (Ꮒ) for h
+            "\u{13E7}elete", // Cherokee tsu (Ꮷ) for d
+            "subscr\u{13A5}be", // Cherokee v (Ꭵ) for i
+            "\u{AB83}ithdraw", // Cherokee small la (ꮃ) for w
+            "\u{ABAA}ubscribe", // Cherokee small du (ꮪ) for s
+            "\u{ABAF}heckout", // Cherokee small tli (ꮯ) for c
+            "o\u{AB81}dernow", // Cherokee small hu (ꮁ) for r
+            "\u{1472}uy", // Canadian syllabics ka (ᑲ) for b
+            "\u{15AF}uy", // Canadian syllabics aivilik b (ᖯ)
+            "\u{146F}elete", // Canadian syllabics ko (ᑯ) for d
+            "\u{A4D2}iscard", // Lisu pha (ꓒ) for d
+            "de\u{A4F2}ete", // Lisu i (ꓲ) for l
+            "se\u{0578}d", // Armenian vo (ո) for n
+            "se\u{057C}d", // Armenian ra (ռ) for n
+            "p\u{057D}rchase", // Armenian seh (ս) for u
+            "\u{0561}ithdraw", // Armenian ayb (ա) for w
+            "\u{0584}ormat", // Armenian keh (ք) for f
+            "ꜱᴇɴᴅ",       // whole small-capital term
+            "ᴅᴇʟᴇᴛᴇ",     // whole small-capital term
+            // Fifth round: the uppercase-skeleton letterform set — capitals
+            // that lowercase into the armed small forms, or caseless scripts
+            // armed directly. Each renders as the plain ASCII label through
+            // the platform's fallback fonts.
+            "ᗷuy",            // Canadian syllabics carrier khe (ᗷ) for b
+            "Ᏼuy",            // Cherokee capital yv (Ᏼ; lowers to ᏼ) for b
+            "ꓐuy",            // Lisu ba (ꓐ) for b
+            "ꓪithdraw",       // Lisu wa (ꓪ) for w
+            "witᕼdraw",       // Canadian syllabics Nunavut h (ᕼ) for h
+            "\u{13A0}iscard", // Cherokee capital a (Ꭰ; lowers to ꭰ) for d
+            "ſubmit",         // long s: NFKC's compatibility fold lands it on plain s
+            // Fifth round: one payload per previously unpinned invisible
+            // family (same code path as the pinned ranges — hygiene against
+            // a future list regression deleting an entire range).
+            "De\u{061C}lete",  // Arabic letter mark
+            "De\u{17B5}lete",  // Khmer vowels
+            "De\u{180B}lete",  // Mongolian free variation selectors
+            "De\u{2060}lete",  // word joiner
+            "De\u{2066}lete",  // left-to-right isolate
+            "De\u{FFA0}lete",  // halfwidth hangul filler
+            "De\u{FFF9}lete",  // interlinear annotation anchor
+            "De\u{1BCA1}lete", // shorthand format controls
+            "De\u{E0100}lete", // variation selector supplement
+            "支\u{2060}付",
+            // Sixth round: the remaining Cf-not-default-ignorable number and
+            // format marks (Arabic number signs, end-of-ayah, Kaithi and
+            // Egyptian hieroglyph format controls) plus the braille blank —
+            // the same renders-as-nothing class U+070F opened, one member per
+            // range so removing any single arm reddens.
+            "De\u{0600}lete",  // Arabic number sign
+            "De\u{0605}lete",  // Arabic number mark above
+            "De\u{06DD}lete",  // Arabic end of ayah
+            "De\u{0890}lete",  // Arabic pound mark above
+            "De\u{08E2}lete",  // Arabic disputed end of ayah
+            "De\u{110BD}lete", // Kaithi number sign
+            "De\u{110CD}lete", // Kaithi number sign above
+            "De\u{13430}lete", // Egyptian hieroglyph vertical joiner
+            "De\u{1343F}lete", // Egyptian hieroglyph end walled enclosure
+            "De\u{2800}lete",  // braille pattern blank (UTS#39 skeleton SPACE)
+            "支\u{06DD}付",
+            "支\u{2800}付",
+            // Fourth review round: the İ dot. Lowercasing İ produces i +
+            // U+0307, and NFKC leaves the sequence; without the
+            // post-composition pass the undeletable dot split every i-term.
+            "submi\u{0307}t",
+            "subm\u{0130}t",
+            "d\u{0130}scard",
+            "w\u{0130}thdraw",
+            // Splitting and padding.
+            "支 付",
+            "D\u{0001}elete",
+        ] {
+            assert!(
+                matches_t3_denylist(label),
+                "fold must see through this evasion: {label:?}"
+            );
+        }
+    }
+
+    /// Benign labels in the scripts the fold table arms letters from must
+    /// stay Clear — the fold's own documented false-positive posture
+    /// (`Раунд` is the one accepted Russian collision, via р→p а→a у→y).
+    /// Nothing here may match a denylist term; if a future arm breaks one of
+    /// these, that is a real false-positive surface change and the arm needs
+    /// the same kind of justification paragraph the table's comments carry.
+    #[test]
+    fn benign_foreign_labels_stay_clear() {
+        for label in [
+            "Начало работы", // Russian — О folds to o, but no term hides here
+            "Оплата услуги", // Russian "payment" — О armed, п/л are not
+            "Επιβεβαίωση",   // Greek "confirmation"
+            "Ρυθμίσεις",     // Greek "settings"
+            "հայերեն տեքստ", // Armenian text with the newly armed letters
+            "결제하기",      // Korean "pay" — Hangul never folds
+            "設定を開く",    // Japanese "open settings"
+            "確認",          // Chinese "confirm" — not 支付/提交 class
+        ] {
+            assert!(
+                !matches_t3_denylist(label),
+                "benign label must stay clear: {label:?}"
+            );
+        }
+    }
+
+    /// Every plain-letter Latin small capital folds to its ASCII letter: the
+    /// fold table's doc claims the series is armed one per letter, and a
+    /// missing member (`ᴃ` was, until the fourth round) both reopens the
+    /// `ᴃuy` evasion and makes that claim false. Letters with no denylist
+    /// term (`j v x z`-class) are armed to keep the claim true.
+    #[test]
+    fn small_capital_series_folds_to_its_letter() {
+        for (small, plain) in [
+            ('ᴀ', 'a'),
+            ('ʙ', 'b'),
+            ('ᴃ', 'b'),
+            ('ᴄ', 'c'),
+            ('ᴅ', 'd'),
+            ('ᴇ', 'e'),
+            ('ꜰ', 'f'),
+            ('ɢ', 'g'),
+            ('ʜ', 'h'),
+            ('ɪ', 'i'),
+            ('ᴊ', 'j'),
+            ('ᴋ', 'k'),
+            ('ʟ', 'l'),
+            ('ᴍ', 'm'),
+            ('ɴ', 'n'),
+            ('ᴎ', 'n'),
+            ('ᴏ', 'o'),
+            ('ᴘ', 'p'),
+            ('ʀ', 'r'),
+            ('ꜱ', 's'),
+            ('ᴛ', 't'),
+            ('ᴜ', 'u'),
+            ('ᴠ', 'v'),
+            ('ᴡ', 'w'),
+            ('ʏ', 'y'),
+            ('ᴢ', 'z'),
+        ] {
+            assert_eq!(
+                fold_for_matching(&small.to_string()),
+                plain.to_string(),
+                "small capital {small} must fold to '{plain}'"
+            );
+        }
     }
 
     #[test]
@@ -1095,10 +2287,7 @@ mod tests {
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
         // Cannot be spent before minting.
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
         assert!(
             shared.mint_confirmation(&id),
             "mint must report success for a live pending"
@@ -1108,26 +2297,20 @@ mod tests {
         // Only the correct session + action summary can spend it.
         assert_eq!(
             take(&shared, &id, "s-other", summary),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "token minted for s1 must not be spent by another session"
         );
         assert_eq!(
             take(&shared, &id, "s1", "type 5 characters"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "token must be bound to the action it approved"
         );
         // A mismatched wrong attempt does not destroy the token (under exact
         // binding, the only thing that can pass is the user-approved original
         // action).
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Granted
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Granted);
         // Single-use: the second spend fails.
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
     }
 
     /// deny consumes the pending; a denial records no server-side state — a
@@ -1147,7 +2330,7 @@ mod tests {
         // Retry the same id: the token is invalid.
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a denied id is simply unknown afterwards"
         );
         // Retry the same action: a new pending is minted (a new id) and the
@@ -1158,13 +2341,13 @@ mod tests {
         assert!(shared.mint_confirmation(&retry));
         assert_eq!(
             take(&shared, &retry, "s1", "left click"),
-            ConfirmationCheck::Granted
+            SpendOutcome::Granted
         );
         // deny on an unknown id fails.
         assert!(!shared.deny_confirmation("cu-unknown"));
         assert_eq!(
             take(&shared, "cu-unknown", "s1", "x"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "unknown id must stay Unknown"
         );
     }
@@ -1181,7 +2364,7 @@ mod tests {
         assert!(shared.deny_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left click x1 at Some((5, 6))"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a retracted token must not grant anything"
         );
         // Denying an already-spent (or unknown) id still reports false — the
@@ -1189,11 +2372,46 @@ mod tests {
         assert!(!shared.deny_confirmation(&id));
     }
 
+    /// The deny race between the replay's peek and consume: a Deny landing
+    /// while the tool is between `peek_confirmation` and
+    /// `consume_confirmation` (the re-screen's a11y queries give it a real
+    /// window) must stop the spend, not silently execute over a retracted
+    /// approval. The tool aborts when consume reports the token gone.
+    #[test]
+    fn deny_during_the_spend_window_stops_the_consume() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        let summary = "left click x1 at Some((7, 8))";
+        let id = new_pending(&shared, "s1", summary);
+        assert!(shared.mint_confirmation(&id));
+        // Peeked (not consumed): the tool is re-screening the target now.
+        let Some((label, element_binding)) = shared.peek_confirmation(&id, "s1", summary, 0) else {
+            panic!("a freshly minted token must peek");
+        };
+        assert_eq!(label, "Buy now");
+        assert_eq!(
+            element_binding, 0,
+            "the pending's raw binding is copied verbatim"
+        );
+        // The user denies before the consume lands.
+        assert!(shared.deny_confirmation(&id));
+        // The consume must report that nothing was spent, so the caller can
+        // abort instead of executing with confirmed_t3 = true.
+        assert!(
+            !shared.consume_confirmation(&id),
+            "consuming a retracted token must fail, not silently pass"
+        );
+    }
+
     /// One pending per session: a new request REPLACES the session's
     /// existing pending (newest wins, like a normal dialog).
     #[test]
     fn new_pending_confirmation_replaces_the_sessions_previous_pending() {
         let shared = enabled_shared();
+        // Pendings exist only downstream of the input gate, so the fixtures
+        // hold grants (the insert-side gate refuses a grant-less session).
+        shared.grant_session("s1");
+        shared.grant_session("s2");
         let first = new_pending(&shared, "s1", "left click");
         let second = new_pending(&shared, "s1", "left click 2");
         assert_ne!(first, second);
@@ -1337,7 +2555,7 @@ mod tests {
         // old tokens must not allow a confirmation-free replay.
         assert_eq!(
             take(&shared, &s2_pending, "s2", "left click 3"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a disabled cycle must wipe minted approval tokens"
         );
         // Distinct from stop_all semantics: the stop flag is not raised and
@@ -1369,7 +2587,7 @@ mod tests {
         assert!(shared.pending_confirmation(&pending_id).is_none());
         assert_eq!(
             take(&shared, &token_id, "s2", "type 3 characters"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "a flag-only disable must wipe minted approval tokens"
         );
 
@@ -1382,7 +2600,7 @@ mod tests {
         assert!(shared.pending_confirmation(&pending_id).is_none());
         assert_eq!(
             take(&shared, &token_id, "s2", "type 3 characters"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
 
         // The enable-side sweep (reset_stop semantics) rides on the same
@@ -1396,15 +2614,17 @@ mod tests {
         // not a dead dialog.
         assert!(
             shared
-                .new_pending_confirmation("s3", "left click", "Buy now", 0)
+                .new_pending_confirmation("s3", "left click", "Buy now", 0, 0)
                 .is_none(),
             "no pending may be registered while the stop latch is raised"
         );
         shared.set_enabled(true);
         // Re-enable restores the ability to ask (a fresh id), while nothing
-        // from the stopped window exists.
+        // from the stopped window exists; s3 needs a fresh grant first, since
+        // the disable swept the old one.
+        shared.grant_session("s3");
         let fresh = shared
-            .new_pending_confirmation("s3", "left click", "Buy now", 0)
+            .new_pending_confirmation("s3", "left click", "Buy now", 0, 0)
             .expect("pending registered after re-enable");
         assert!(shared.pending_confirmation(&fresh).is_some());
     }
@@ -1412,6 +2632,7 @@ mod tests {
     #[test]
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         let id = new_pending(&shared, "s1", "left_click (100,200)");
         // Manually wind created_at back past the TTL (waiting a real 5
         // minutes is too slow).
@@ -1428,7 +2649,7 @@ mod tests {
         assert!(!shared.mint_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left_click (100,200)"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
     }
 
@@ -1452,14 +2673,8 @@ mod tests {
         }
         // An expired token reports Unknown at spend and is removed (a replay
         // is Unknown too).
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
-        assert_eq!(
-            take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown
-        );
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
+        assert_eq!(take(&shared, &id, "s1", summary), SpendOutcome::Unknown);
     }
 
     /// The English "format" entry must stay: it is the reason the CJK
@@ -1496,7 +2711,7 @@ mod tests {
         shared.grant_session("s1");
         assert_eq!(
             take(&shared, &id, "s1", summary),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "revoking a session must wipe its minted approval tokens"
         );
         // That session's pending confirmations are wiped too.
@@ -1517,7 +2732,7 @@ mod tests {
         shared.revoke_session("s1");
         assert_eq!(
             take(&shared, &other_id, "s2", summary),
-            ConfirmationCheck::Granted,
+            SpendOutcome::Granted,
             "revoking s1 must not touch s2's minted token"
         );
     }
@@ -1541,11 +2756,11 @@ mod tests {
         for (session, id) in &ids {
             assert_eq!(
                 take(&shared, id, session, "left click"),
-                ConfirmationCheck::Granted
+                SpendOutcome::Granted
             );
             assert_eq!(
                 take(&shared, id, session, "left click"),
-                ConfirmationCheck::Unknown,
+                SpendOutcome::Unknown,
                 "each token is single-use"
             );
         }
@@ -1564,7 +2779,7 @@ mod tests {
         shared.stop_all();
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none(),
             "no pending may be registered while the stop latch is raised"
         );
@@ -1582,6 +2797,39 @@ mod tests {
         assert!(shared.pending_confirmation(&raced).is_none());
     }
 
+    /// Disabling the master switch lowers the emergency-stop latch.
+    ///
+    /// `computer_use_get_status` reports `is_stopped()` verbatim, and the
+    /// settings row renders its "stopped — turn it off and back on to resume"
+    /// hint from that flag. Leaving the latch raised for a feature that is
+    /// simply off therefore produced a status the UI cannot render sensibly —
+    /// the recovery hint next to an already-off toggle — and no amount of
+    /// frontend-local patching survives the next status read. The flag is
+    /// owned here, so it is cleared here.
+    #[test]
+    fn disabling_lowers_the_stop_latch() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.stop_all();
+        assert!(shared.is_stopped(), "stop_all raises the latch");
+
+        shared.set_enabled(false);
+        assert!(
+            !shared.is_stopped(),
+            "a disabled feature must not keep reporting an emergency stop"
+        );
+        assert!(!shared.is_enabled());
+        assert!(
+            !shared.has_active_grant("s1"),
+            "disable still revokes grants"
+        );
+
+        // Re-enabling is unchanged: no stop, and no consent state carried over.
+        shared.set_enabled(true);
+        assert!(!shared.is_stopped());
+        assert!(!shared.has_active_grant("s1"));
+    }
+
     /// Stop race, mint side: a token minted before the stop is wiped by
     /// stop_all and cannot be resurrected by a re-enable.
     #[test]
@@ -1594,7 +2842,7 @@ mod tests {
         shared.reset_stop();
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown,
+            SpendOutcome::Unknown,
             "no token may survive stop → resume"
         );
     }
@@ -1607,23 +2855,24 @@ mod tests {
         let shared = enabled_shared();
         shared.grant_session("s1");
         let id = shared
-            .new_pending_confirmation("s1", "type 3 characters", "field", 42)
+            .new_pending_confirmation("s1", "type 3 characters", "field", 42, 0)
             .expect("pending registered");
         assert!(shared.mint_confirmation(&id));
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "type 3 characters", 43),
-            ConfirmationCheck::Unknown,
+            take_bound(&shared, &id, "s1", "type 3 characters", 43),
+            SpendOutcome::Unknown,
             "a different content hash must not spend the token"
         );
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "type 3 characters", 42),
-            ConfirmationCheck::Granted,
+            take_bound(&shared, &id, "s1", "type 3 characters", 42),
+            SpendOutcome::Granted,
             "the exact approved content spends it; the failed attempt kept the token"
         );
         // Mint refuses while disabled, too (toggle-off race symmetry).
         let shared2 = enabled_shared();
+        shared2.grant_session("s2");
         let id2 = shared2
-            .new_pending_confirmation("s2", "left click", "Buy now", 7)
+            .new_pending_confirmation("s2", "left click", "Buy now", 7, 0)
             .expect("pending registered");
         shared2.set_enabled(false);
         assert!(
@@ -1642,7 +2891,7 @@ mod tests {
         let shared = enabled_shared();
         shared.grant_session("s1");
         let id = shared
-            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
             .expect("pending registered");
         shared.revoke_session("s1");
         assert!(!shared.mint_confirmation(&id));
@@ -1662,14 +2911,14 @@ mod tests {
         shared.set_enabled(false);
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none()
         );
         shared.set_enabled(true);
         shared.stop_all();
         assert!(
             shared
-                .new_pending_confirmation("s1", "left click", "Buy now", 0)
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
                 .is_none()
         );
     }
@@ -1718,7 +2967,7 @@ mod tests {
         assert!(shared.begin_input_action("s1").is_ok());
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Granted
+            SpendOutcome::Granted
         );
 
         // A stop sweeps the pending and unblocks.
@@ -1779,17 +3028,211 @@ mod tests {
         }
     }
 
-    /// A pending for another session never blocks this session's input.
+    /// A pending confirmation blocks input from **every** session, not only
+    /// the one that raised it.
+    ///
+    /// The dialog occupies the shared screen and its approve control is an
+    /// ordinary clickable element whose label screens Clear, so a per-session
+    /// block left a second granted session free to click "Allow this once"
+    /// and mint the first session's approval — the same self-approval hole
+    /// the per-session block was added to close, one indirection further out.
+    /// Observation stays allowed throughout, and deciding the dialog unblocks
+    /// both sessions.
     #[test]
-    fn another_sessions_pending_does_not_block_input() {
+    fn another_sessions_pending_blocks_input_everywhere() {
         let shared = enabled_shared();
         shared.grant_session("s1");
         shared.grant_session("s2");
-        let _id = new_pending(&shared, "s2", "left click");
-        assert!(shared.begin_input_action("s1").is_ok());
+        let id = new_pending(&shared, "s2", "left click");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::ConfirmationPending),
+            "a bystander session must not be able to click the dialog"
+        );
         assert_eq!(
             shared.begin_input_action("s2"),
             Err(GuardRejection::ConfirmationPending)
+        );
+        assert!(
+            shared.check_readonly().is_ok(),
+            "observation stays allowed while a dialog pends"
+        );
+        assert!(shared.deny_confirmation(&id));
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert!(shared.begin_input_action("s2").is_ok());
+    }
+
+    /// An unanswered **grant** request blocks input from every session for
+    /// the same reason a pending confirmation does: the grant dialog's
+    /// "Allow control" control is an ordinary clickable element whose label
+    /// screens Clear, so a second granted session could otherwise click it
+    /// and mint the requesting session's grant. Deciding the request
+    /// (grant or revoke) unblocks everyone.
+    #[test]
+    fn another_sessions_grant_request_blocks_input_everywhere() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.grant_session("s2");
+        // s2 (grant-less) asks for control; the dialog renders while both
+        // sessions hold live grants for everything else.
+        shared.mark_grant_requested("s2");
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::GrantDialogPending),
+            "a bystander session must not be able to click the grant dialog"
+        );
+        assert_eq!(
+            shared.begin_input_action("s2"),
+            Err(GuardRejection::GrantDialogPending)
+        );
+        assert!(
+            shared.check_readonly().is_ok(),
+            "observation stays allowed while a grant dialog pends"
+        );
+        // The user grants s2: everyone unblocks.
+        assert!(matches!(
+            shared.grant_session("s2"),
+            crate::features::computer_use::guard::GrantOutcome::Granted
+        ));
+        assert!(shared.begin_input_action("s1").is_ok());
+        assert!(shared.begin_input_action("s2").is_ok());
+        // And the symmetric path: a revoke also clears the request.
+        shared.mark_grant_requested("s1");
+        assert_eq!(
+            shared.begin_input_action("s2"),
+            Err(GuardRejection::GrantDialogPending)
+        );
+        shared.revoke_session("s1");
+        assert!(shared.begin_input_action("s2").is_ok());
+    }
+
+    /// A grant request racing a stop/disable must not survive the sweep: the
+    /// serialized mark can wait out the full bounded input-lock timeout, and
+    /// a request registered while stopped or disabled could never be granted
+    /// (`grant_session` refuses both states) — it would only pop an
+    /// unanswerable dialog blocking input process-wide. The not-yet-granted
+    /// shape is deliberate: the mark is what raises the dialog for a session
+    /// that has no grant yet, so grant presence must not be required here.
+    #[test]
+    fn late_grant_mark_is_dropped_while_stopped_or_disabled() {
+        let shared = enabled_shared();
+        shared.stop_all();
+        shared.mark_grant_requested("s1");
+        assert!(
+            !shared.grant_request_pending("s1"),
+            "a mark landing after the stop must not resurrect the grant dialog"
+        );
+        shared.set_enabled(false);
+        shared.mark_grant_requested("s2");
+        assert!(
+            !shared.grant_request_pending("s2"),
+            "a mark landing after the disable must not resurrect the grant dialog"
+        );
+        // The normal flow is untouched: enabled again, the mark lands.
+        shared.set_enabled(true);
+        shared.mark_grant_requested("s3");
+        assert!(shared.grant_request_pending("s3"));
+    }
+
+    /// The same unanswerable-dialog rule for pendings, one check over: a
+    /// revoke landing after the tool's pre-raise `verify_input_action` must
+    /// not re-insert the dialog that revoke just removed — `mint_confirmation`
+    /// would refuse it, leaving the dialog (and the process-wide input block)
+    /// to live out the TTL for nothing.
+    #[test]
+    fn late_pending_is_dropped_when_the_sessions_grant_was_revoked() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        shared.revoke_session("s1");
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
+                .is_none(),
+            "a pending for a revoked session must not be registered"
+        );
+        // A session that never held a grant is equally refused — pendings
+        // exist only downstream of the input gate, which requires the grant.
+        assert!(
+            shared
+                .new_pending_confirmation("s2", "left click", "Buy now", 0, 0)
+                .is_none()
+        );
+        // Re-granting restores normal minting.
+        shared.grant_session("s1");
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
+                .is_some()
+        );
+    }
+
+    /// The grant-request mark serializes with in-flight injections: while
+    /// another session's action holds the physical-input lock, the "Allow
+    /// control" dialog must not pop — a granted session's already-screened
+    /// multi-event `type` emits real Tab/Return keystrokes, and its gate
+    /// checks all ran before the dialog existed, so a dialog appearing
+    /// mid-injection is exactly the surface the global gate exists to close,
+    /// reached from underneath it. With the lock free the mark lands
+    /// immediately; a timed-out acquisition still marks (the dialog is never
+    /// withheld because the lock stayed busy).
+    #[test]
+    fn grant_dialog_marking_waits_for_in_flight_input() {
+        // Panic-safe restore (same drop-guard pattern as
+        // `physical_input_lock_times_out_with_the_test_override`): an assert
+        // failure here must not leak the override into unrelated tests.
+        struct RestoreTimeout;
+        impl Drop for RestoreTimeout {
+            fn drop(&mut self) {
+                set_physical_input_lock_timeout_for_tests(Duration::ZERO);
+            }
+        }
+        let _restore = RestoreTimeout;
+        // The acquisition bound must comfortably outlive the probe sleep so
+        // a slow runner cannot turn the mid-wait assertion into a flake.
+        set_physical_input_lock_timeout_for_tests(Duration::from_secs(2));
+
+        let shared = std::sync::Arc::new(enabled_shared());
+        let _in_flight = shared
+            .physical_input_lock
+            .try_lock()
+            .expect("a free lock must be acquirable");
+        let marker = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || shared.mark_grant_requested_serialized("s1"))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !shared.grant_request_pending("s1"),
+            "the grant dialog must not be marked while an injection holds the input lock"
+        );
+        drop(_in_flight);
+        marker.join().expect("marker thread finishes");
+        assert!(
+            shared.grant_request_pending("s1"),
+            "the mark must land once the injection is done"
+        );
+    }
+
+    /// The GrantRequired path in the tool must use the serialized marking.
+    /// The behavioral pin above covers the guard method; mutating the tool's
+    /// call site back to the bare mark kept that test green (the method was
+    /// still correct — the tool just stopped calling it), which is the same
+    /// report-side/consumer-side false-pin shape the third round found. The
+    /// call site runs on the async executor behind the gate rejection, which
+    /// the test harness cannot drive against a held input lock
+    /// deterministically, so — like the platform fault legs — it is pinned at
+    /// source level.
+    #[test]
+    fn grant_marking_is_serialized_at_the_tool_call_site() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/tool.rs"
+        ))
+        .expect("tool.rs readable");
+        assert!(
+            source.contains("shared.mark_grant_requested_serialized(&session_id);"),
+            "the GrantRequired path must mark under the physical-input lock \
+             (mark_grant_requested_serialized), not race a live injection"
         );
     }
 
@@ -1800,9 +3243,10 @@ mod tests {
     #[test]
     fn pending_payload_serves_newest_and_collapses_on_decision() {
         let shared = enabled_shared();
+        shared.grant_session("s1");
         assert!(shared.pending_payload_for_session("s1").is_none());
         let id1 = shared
-            .new_pending_confirmation("s1", "left click", "Buy now", 0)
+            .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
             .expect("pending registered");
         shared.set_pending_payload(&id1, serde_json::json!({ "confirm_id": id1 }));
         let served = shared
@@ -1811,7 +3255,7 @@ mod tests {
         assert_eq!(served["confirm_id"], id1);
         // Newest wins: the replacement's payload is the one served.
         let id2 = shared
-            .new_pending_confirmation("s1", "type 3 characters", "Buy now", 0)
+            .new_pending_confirmation("s1", "type 3 characters", "Buy now", 0, 0)
             .expect("pending registered");
         shared.set_pending_payload(&id2, serde_json::json!({ "confirm_id": id2 }));
         let served = shared
@@ -1866,13 +3310,183 @@ mod tests {
         shared.set_enabled(false);
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
         );
         shared.set_enabled(true);
         shared.stop_all();
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
-            ConfirmationCheck::Unknown
+            SpendOutcome::Unknown
+        );
+    }
+
+    /// Source-level pins for two fault legs this host cannot execute (one is
+    /// Windows-only and cross-compilation dies in `ring`'s C build; the other
+    /// needs a live AT-SPI session): the Windows `ui_tree` cache scope and
+    /// access-denied propagation, and the Linux undecidable-window policy.
+    ///
+    /// Weak by construction — they assert the code shape, not the behavior —
+    /// but a revert of either leg (the exact regression each shipped) turns
+    /// them red on every platform, where a behavior test would only redden
+    /// on the platform it needs. The Windows leg is the `TreeScope::Children`
+    /// bug: UIA does not cache the retrieved element's own properties unless
+    /// the scope includes `TreeScope_Element`, so reverting the scope renders
+    /// every node `<unreadable element>` with `Ok` — silently, on a platform
+    /// whose CI lane has no a11y tree to compare against.
+    #[test]
+    fn windows_and_linux_fault_legs_are_pinned_at_source_level() {
+        // The Windows cache scope must be the combined Element|Children flag
+        // (3 = 1|2) set through the raw COM interface; the crate enum cannot
+        // express it, and `Subtree` (7) would restore the unbounded fetch.
+        let windows_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/windows.rs"
+        ))
+        .expect("windows.rs readable");
+        assert!(
+            windows_source.contains("TREE_SCOPE_ELEMENT_AND_CHILDREN: i32 = 3"),
+            "the UIA cache scope must be TreeScope_Element | TreeScope_Children"
+        );
+        assert!(
+            windows_source.contains("CacheScope::ElementAndChildren => {"),
+            "the per-node descent must use the combined scope"
+        );
+        // Arm-level pins alone stay green if only the ui_tree call site
+        // reverts to `CacheScope::Element`, so the call site itself is
+        // anchored too.
+        assert!(
+            windows_source.contains("Self::property_cache(&uia, CacheScope::ElementAndChildren)?"),
+            "ui_tree must fetch through the combined-scope cache request"
+        );
+        assert!(
+            windows_source.contains(".SetTreeScope(RawTreeScope(TREE_SCOPE_ELEMENT_AND_CHILDREN))"),
+            "the combined scope must actually be set on the COM cache request — \
+             a const and a match arm that never reach SetTreeScope pin nothing"
+        );
+        assert!(
+            windows_source.contains("writer.next_index == 0 && error.code() == E_ACCESSDENIED"),
+            "E_ACCESSDENIED on the empty-tree leg must propagate, not fold into churn"
+        );
+        // The condition alone pins nothing: swallowing the error inside the
+        // arm (`return Ok(())`) used to keep the pin green while the whole
+        // leg regressed to the silently-empty tree this exists to prevent.
+        assert!(
+            windows_source.contains("return Err(map_uia_err(\"ui_tree node fetch\", error));"),
+            "the empty-tree E_ACCESSDENIED arm must propagate the error, not swallow it"
+        );
+        // The name-screening producers: screening must run on the RAW name,
+        // not a display-truncated copy — the macOS producer has a behavioral
+        // pin, the other two can only be pinned at source level here.
+        assert!(
+            windows_source.contains("name_screening_hit: screening_hit(&name)"),
+            "Windows must screen the raw accessible name"
+        );
+        assert!(
+            windows_source.contains("let raw_binding = raw_element_binding(&name, &role);"),
+            "Windows must bind the raw accessible name into the consent token"
+        );
+
+        let linux_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/linux.rs"
+        ))
+        .expect("linux.rs readable");
+        assert!(
+            linux_source.contains("let hit = screening_hit(&raw);"),
+            "Linux must screen the raw accessible name, not the sanitized display copy"
+        );
+        assert!(
+            linux_source.contains("raw_element_binding(&raw_name, role.name())"),
+            "Linux must bind the raw accessible name into the consent token"
+        );
+
+        // The Linux hit test must skip undecidable non-active windows and
+        // surface the remembered fault only when no window answered; the
+        // active window (index 0) is the exception and propagates its own
+        // fault immediately.
+        assert!(
+            linux_source.contains("if has_active && index == 0 {"),
+            "the active window's undecidable extents must propagate immediately"
+        );
+        assert!(
+            linux_source.contains("match first_fault {"),
+            "a skipped fault must surface when no window answered the point"
+        );
+
+        // The macOS `type` chunking must go through `utf16_chunks` (the
+        // helper is pinned behaviorally, but reverting only the call site to
+        // enigo's char-counted chunking would keep the suite green). The
+        // constants in the substring are NFKC-stable, so the pin is exact.
+        let macos_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/platform/macos.rs"
+        ))
+        .expect("macos.rs readable");
+        assert!(
+            macos_source.contains(
+                "TypeRun::Text(chunk) => utf16_chunks(&chunk, MACOS_UNICODE_STRING_UTF16_UNITS)"
+            ),
+            "macOS type injection must chunk by UTF-16 width — the raw \
+             enigo chunking truncates non-BMP runs inside a surrogate pair"
+        );
+        assert!(
+            macos_source.contains("let raw_binding = raw_element_binding(&name, &info.role);"),
+            "macOS must bind the raw accessible name into the consent token"
+        );
+
+        // The binding hash itself, shape-pinned: dropping the per-process key
+        // or either length prefix (so `("ab","c")` folds into the same byte
+        // stream as `("a","bc")`) must redden here, where the behavioral test
+        // below catches the prefix but only a source pin can catch the key.
+        let guard_source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/features/computer_use/guard.rs"
+        ))
+        .expect("guard.rs readable");
+        for shape in [
+            "hasher.update(binding_key());",
+            "hasher.update((name.len() as u64).to_be_bytes());",
+            "hasher.update((role.len() as u64).to_be_bytes());",
+        ] {
+            assert!(
+                guard_source.contains(shape),
+                "raw_element_binding is keyed and length-prefixed; lost: {shape}"
+            );
+        }
+    }
+
+    /// Behavioral pin for [`raw_element_binding`]: the length-prefix field
+    /// boundary is what keeps `("ab","c")` and `("a","bc")` from sharing a
+    /// binding, and the hash must be deterministic within the process while
+    /// distinguishing any field change (name, role, whitespace). The
+    /// display-identical-twin test supplies `raw_binding` on its mock, so
+    /// without this the primitive the whole target-binding story rests on
+    /// never executes anywhere.
+    #[test]
+    fn raw_element_binding_distinguishes_field_boundaries_and_inputs() {
+        // The prefix-collision pair: without the length prefixes these two
+        // fold into the identical byte stream.
+        assert_ne!(
+            raw_element_binding("ab", "c"),
+            raw_element_binding("a", "bc"),
+            "the length prefixes must separate the field boundary"
+        );
+        // Deterministic within the process, sensitive to every field.
+        assert_eq!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete", "AXButton")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete", "AXStaticText")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delete ", "AXButton")
+        );
+        assert_ne!(
+            raw_element_binding("Delete", "AXButton"),
+            raw_element_binding("Delet", "AXButtone")
         );
     }
 }

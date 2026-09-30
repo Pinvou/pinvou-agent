@@ -47,6 +47,27 @@
       for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
     }
 
+    // Drops the entries of sessions that no longer exist. `applyDeletedSession`
+    // lives in the shared session helpers and knows nothing about this module,
+    // so the pruning rides the status refresh instead: a deleted session's
+    // entry (including a full confirm request with its type preview) would
+    // otherwise outlive the session for the webview's lifetime. Entries for
+    // live sessions are untouched — the switch-back resurfacing relies on
+    // them.
+    // An ARCHIVED session is also dropped here (archiving removes it from
+    // state.sessions); its still-live backend pending resurfaces through the
+    // server-truth reconciliation in refreshStatus if the session is restored
+    // and re-entered, so nothing is lost — it just does not ride this map.
+    function pruneDeletedSessionPending() {
+      const sessions = (state && state.sessions) || null;
+      if (!sessions || !Array.isArray(sessions)) return;
+      for (const key of Object.keys(pendingBySession)) {
+        if (!sessions.some(function (session) { return session && session.id === key; })) {
+          delete pendingBySession[key];
+        }
+      }
+    }
+
     // Drops requests that belong to `sessionId` from the published slice.
     // pendingBySession is intentionally untouched: switching back to the
     // session must resurface them via refreshStatus. Pure state operation
@@ -205,14 +226,42 @@
         // (its platformSupported grey-out). A null raw means the backend
         // predates the session-less form — leave the slice untouched.
         if (raw) {
+          pruneDeletedSessionPending();
           state.computerUse = Object.assign({}, state.computerUse, {
             enabled: !!raw.enabled,
+            // The draft screen has no session: leave no previous session's id
+            // in the slice either (every reader gates on the request fields'
+            // own sessionId, so this is hygiene, not a user-visible fix).
+            sessionId: null,
+            // `stopped` is a process-global flag the backend reports for an
+            // empty session id too. Dropping it here left the settings page
+            // showing the "turn it off and back on" hint on the draft screen
+            // long after a successful resume.
+            stopped: !!raw.stopped,
+            // The draft screen has no session, so no grant can be active for
+            // what the user is looking at. A session-less refresh previously
+            // left a previous session's `granted: true` in place, keeping the
+            // "agent is controlling your machine" banner and its Stop button
+            // on the welcome page — the same stale-state defect the `stopped`
+            // fix above closed.
+            granted: false,
+            // Same class, one field over: a grant or confirm REQUEST left in
+            // the slice kept the previous session's dialog floating over the
+            // draft composer, and its Allow button still worked from a screen
+            // the user believes is session-less. `clearSessionRequests`
+            // cannot be reused here — it publishes to the active session, and
+            // there is none — so the fields are nulled directly; the
+            // per-session pending map is untouched, so switching back to the
+            // session still resurfaces a live request via refreshStatus.
+            grantRequest: null,
+            confirmRequest: null,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           });
           notify();
         }
         return raw;
       }
+      pruneDeletedSessionPending();
       reconcileServerTruth(sid, raw, snapshotAt);
       const pending = pendingBySession[sid] || null;
       publish(sid, {
@@ -403,8 +452,15 @@
         // permission flow, which can block on an OS dialog.
         await refreshStatus(state.activeSessionId);
       } else {
-        // Disable wipes the backend state globally, so the pending map must
-        // go too — same phantom-dialog hazard as stop().
+        // Disable wipes the backend state globally, so the pending map must go
+        // too — same phantom-dialog hazard as stop(). The latched stop goes
+        // with it, and this mirrors the authoritative answer rather than
+        // guessing it: `computer_use_set_enabled(false)` lowers the stop flag
+        // on the backend (guard.rs `set_enabled`), so the next `refreshStatus`
+        // reports the same `stopped: false` instead of re-latching it. Leaving
+        // the flag raised was what made the settings page tell a user who had
+        // just switched the toggle OFF to "turn it off and back on".
+        state.computerUse = Object.assign({}, state.computerUse, { stopped: false });
         clearAllPending();
         notify();
       }

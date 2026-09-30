@@ -107,6 +107,12 @@ struct MockState {
     /// answering — drives the last-moment re-check pin (a revoke landing
     /// mid-screening must abort before injection).
     revoke_grant_via: Option<Arc<ComputerUseShared>>,
+    /// When set, each screening query denies the pending confirmation through
+    /// this guard hook before answering (`false` return: the id was not a
+    /// live pending) — drives the deny-race pin: a Deny landing between the
+    /// token peek and the consume must stop the spend instead of executing
+    /// over a retracted approval.
+    deny_confirm_via: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
     /// When set, move_to latches the emergency stop before answering —
     /// drives the between-injections pin: a stop landing after the move_to
     /// request of a coordinate click must abort the second injection (the
@@ -173,6 +179,7 @@ impl Default for MockState {
             screenshot_cap: true,
             ui_tree_cap: true,
             revoke_grant_via: None,
+            deny_confirm_via: None,
             stop_via_move_to: None,
             revoke_via_move_to: None,
             stop_via_capabilities: None,
@@ -215,6 +222,17 @@ impl MockBackend {
         let shared = self.state.lock().revoke_grant_via.clone();
         if let Some(shared) = shared {
             shared.revoke_session("s-test");
+        }
+    }
+
+    /// Denies the live pending confirmation before answering a screening
+    /// query when the mock state asks for it. The denial happens while the
+    /// re-screen that will decide the spend is still running — exactly the
+    /// window between peek_confirmation and consume_confirmation.
+    fn maybe_deny_confirm(&self) {
+        let hook = self.state.lock().deny_confirm_via.clone();
+        if let Some(hook) = hook {
+            hook("deny-confirm-via");
         }
     }
 }
@@ -341,6 +359,7 @@ impl ComputerUseBackend for MockBackend {
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
         self.maybe_revoke_grant();
+        self.maybe_deny_confirm();
         let state = self.state.lock();
         if state.element_error {
             return Err(ComputerUseError::unavailable("mock: a11y backend failed"));
@@ -361,6 +380,7 @@ impl ComputerUseBackend for MockBackend {
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
         self.maybe_revoke_grant();
+        self.maybe_deny_confirm();
         let state = self.state.lock();
         if state.focused_error {
             return Err(ComputerUseError::unsupported(
@@ -517,7 +537,7 @@ fn read_audit_records(_fixture: &TestFixture) -> Vec<AuditRecord> {
 /// positive denylist/secure match still confirms.
 fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
     ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXGroup".to_string(),
         name: "Workspace".to_string(),
         x,
@@ -525,6 +545,7 @@ fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
         width,
         height,
         secure: false,
+        raw_binding: 0,
     }
 }
 
@@ -926,7 +947,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -934,6 +955,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1020,7 +1042,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Pay now".to_string(),
         x: 0,
@@ -1028,6 +1050,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -1042,7 +1065,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
     // The dialog is up. A click on a benign-screened control (the approve
     // button the dialog itself renders) must not reach the backend.
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Allow this once".to_string(),
         x: 40,
@@ -1050,6 +1073,7 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
         width: 30,
         height: 12,
         secure: false,
+        raw_binding: 0,
     });
     let attempt = fixture
         .tool
@@ -1076,7 +1100,7 @@ async fn secure_field_blocks_typing() {
     // Keyboard screening checks the **focused element**: focus on a password
     // field blocks regardless of the cursor position.
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -1084,6 +1108,7 @@ async fn secure_field_blocks_typing() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1162,7 +1187,7 @@ async fn mouse_down_up_composition_is_t3_screened() {
     fixture.shared.grant_session("s-test");
     // The denylist control sits at the cursor (7,9).
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Delete forever".to_string(),
         x: 0,
@@ -1170,6 +1195,7 @@ async fn mouse_down_up_composition_is_t3_screened() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     for action in ["left_mouse_down", "left_mouse_up"] {
         let result = fixture
@@ -1263,7 +1289,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     // Focus is on a password field; no element at all at the cursor (7,9)
     // (element only proves the cursor point is blank).
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 100,
@@ -1271,6 +1297,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
         width: 5,
         height: 5,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1289,7 +1316,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     // unanswered; the user's Deny is what lets the next leg proceed.)
     assert!(fixture.shared.deny_newest_pending_for_tests("s-test"));
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Send payment".to_string(),
         x: 100,
@@ -1297,6 +1324,7 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1350,7 +1378,7 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
     // confirmation.
     fixture.mock.lock().focused_error = false;
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -1358,6 +1386,7 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -1413,7 +1442,7 @@ async fn drag_drop_target_is_screened() {
     // screened and read Clear); the (12,12) drop point hits the denylist.
     fixture.mock.lock().background = vec![benign_element(0, 0, 3, 3)];
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Delete".to_string(),
         x: 10,
@@ -1421,6 +1450,7 @@ async fn drag_drop_target_is_screened() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -1444,7 +1474,7 @@ async fn drag_drop_target_is_screened() {
     // input from the session.)
     assert!(fixture.shared.deny_newest_pending_for_tests("s-test"));
     fixture.mock.lock().background = vec![ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Delete".to_string(),
         x: 0,
@@ -1452,6 +1482,7 @@ async fn drag_drop_target_is_screened() {
         width: 3,
         height: 3,
         secure: false,
+        raw_binding: 0,
     }];
     fixture.mock.lock().element = Some(benign_element(10, 10, 5, 5));
     let result = fixture
@@ -1481,7 +1512,7 @@ async fn denied_action_retry_mints_a_fresh_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -1489,6 +1520,7 @@ async fn denied_action_retry_mints_a_fresh_confirmation() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let first = fixture
         .tool
@@ -1579,7 +1611,7 @@ async fn confirm_token_is_bound_to_the_action() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "button".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -1587,6 +1619,7 @@ async fn confirm_token_is_bound_to_the_action() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let _ = fixture
         .tool
@@ -1735,7 +1768,7 @@ async fn type_summary_is_a_plain_character_count() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         // Non-secure denylisted focused element: the action is blocked (T3)
         // but the typing target is NOT a password/secure field.
         role: "AXButton".to_string(),
@@ -1745,6 +1778,7 @@ async fn type_summary_is_a_plain_character_count() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     // 20 chars, including a control char
     // the old in-summary preview had to escape.
@@ -1804,7 +1838,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -1812,6 +1846,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let text = "hunter2secret!".to_string();
     let result = fixture
@@ -2219,7 +2254,7 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
     // down must screen at the input point (60,40).
     fixture.mock.lock().cursor = (60, 40);
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 50,
@@ -2227,6 +2262,7 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         width: 20,
         height: 20,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -2327,7 +2363,7 @@ async fn key_chords_never_require_confirmation() {
     // Focus is an ordinary text area (denylist verdict Clear) — the old
     // position would have blocked it by chord semantics.
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXTextArea".to_string(),
         name: String::new(),
         x: 0,
@@ -2335,6 +2371,7 @@ async fn key_chords_never_require_confirmation() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     for chord in [
         "cmd+delete",
@@ -2397,7 +2434,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     // The denylist control "Pay" covers the cursor (7,9) and the whole
     // screenshot: scroll / mouse_move execute as usual.
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Pay".to_string(),
         x: 0,
@@ -2405,6 +2442,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     for input in [
         json!({"action": "scroll", "direction": "down", "amount": 2}),
@@ -2463,7 +2501,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     let down_text = down.ok().map(|r| r.content).unwrap_or_default();
     assert!(down_text.contains("mouse button is down"), "{down_text}");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Trash".to_string(),
         x: 10,
@@ -2471,6 +2509,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
         width: 5,
         height: 5,
         secure: false,
+        raw_binding: 0,
     });
     let held_move = fixture
         .tool
@@ -2521,7 +2560,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     // Generic affirmatives: execute directly.
     for name in ["OK", "Continue", "Run"] {
         fixture.mock.lock().element = Some(ElementInfo {
-            screening_name: None,
+            name_screening_hit: false,
             role: "AXButton".to_string(),
             name: name.to_string(),
             x: 0,
@@ -2529,6 +2568,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
             width: 16,
             height: 16,
             secure: false,
+            raw_binding: 0,
         });
         let result = fixture
             .tool
@@ -2557,7 +2597,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     // Consequence-category words: block + confirm event.
     for name in ["Pay", "Delete", "Submit", "Accept"] {
         fixture.mock.lock().element = Some(ElementInfo {
-            screening_name: None,
+            name_screening_hit: false,
             role: "AXButton".to_string(),
             name: name.to_string(),
             x: 0,
@@ -2565,6 +2605,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
             width: 16,
             height: 16,
             secure: false,
+            raw_binding: 0,
         });
         let result = fixture
             .tool
@@ -2721,12 +2762,12 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     let summary = "left click x1 at Some((5, 5))";
     let own_token = fixture
         .shared
-        .new_pending_confirmation("s-test", summary, "Buy now", 0)
+        .new_pending_confirmation("s-test", summary, "Buy now", 0, 0)
         .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&own_token));
     let other_token = fixture
         .shared
-        .new_pending_confirmation("s-other", summary, "Buy now", 0)
+        .new_pending_confirmation("s-other", summary, "Buy now", 0, 0)
         .expect("pending registered");
     assert!(fixture.shared.mint_confirmation(&other_token));
 
@@ -2738,20 +2779,20 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
         fixture.shared.begin_input_action("s-test"),
         Err(GuardRejection::GrantRequired)
     );
-    assert_eq!(
+    assert!(
         fixture
             .shared
-            .take_confirmation(&own_token, "s-test", summary, 0),
-        ConfirmationCheck::Unknown,
+            .peek_confirmation(&own_token, "s-test", summary, 0)
+            .is_none(),
         "tool drop must wipe the session's minted approval tokens"
     );
     // Other sessions: grants and artifacts kept intact.
     assert!(fixture.shared.has_active_grant("s-other"));
-    assert_eq!(
+    assert!(
         fixture
             .shared
-            .take_confirmation(&other_token, "s-other", summary, 0),
-        ConfirmationCheck::Granted,
+            .peek_confirmation(&other_token, "s-other", summary, 0)
+            .is_some(),
         "tool drop must not touch other sessions' consent artifacts"
     );
 }
@@ -2811,17 +2852,21 @@ async fn click_without_a11y_element_executes_without_confirmation() {
     );
 }
 
-/// A granted token spends directly: no spend-time re-screen and no
-/// "world changed" re-request arm (the mainstream model — the API
-/// confirmation is one per-action id the client acknowledges). Even when
-/// the target now reads differently than at mint time, the approval
-/// executes; the token is single-use afterwards.
+/// A granted token still spends when the target stopped being consequential.
+///
+/// The spend path re-screens (see
+/// `approved_token_is_refused_on_a_different_target`), but a re-screen that
+/// comes back Clear is not a mismatch: executing is exactly what an
+/// unapproved run would already do at that point, so the approval is simply
+/// spent and no second dialog is raised. This is the arm that keeps the
+/// re-screen from turning every benign change in the world into a
+/// confirmation loop. The token is single-use afterwards.
 #[tokio::test]
-async fn approved_token_executes_without_rescreening_when_the_world_changed() {
+async fn approved_token_spends_when_the_target_screens_clear() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2829,6 +2874,7 @@ async fn approved_token_executes_without_rescreening_when_the_world_changed() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -2847,8 +2893,8 @@ async fn approved_token_executes_without_rescreening_when_the_world_changed() {
     let confirm_id = latest_confirm_id(&fixture.events);
     assert!(fixture.shared.mint_confirmation(&confirm_id));
 
-    // The world changed: the target point now holds a benign element
-    // (Clear). The approval still executes — spending does not re-screen.
+    // The world changed: the target point now holds a benign element, so the
+    // spend-time re-screen returns Clear and the approval executes.
     fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let replay = fixture
         .tool
@@ -2898,7 +2944,7 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2906,6 +2952,7 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -2945,7 +2992,7 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -2953,6 +3000,7 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
 
     // Mint: the blocked click raises one pending.
@@ -3200,7 +3248,7 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
     // Non-secure denylisted focused element: the action is blocked (T3) but
     // the typing target is NOT a password/secure field.
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3208,6 +3256,7 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let text = "this paragraph is long enough to be truncated in the summary".to_string();
     let result = fixture
@@ -3265,7 +3314,7 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3273,6 +3322,7 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture
         .tool
@@ -3308,10 +3358,12 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
 // assertions
 // ---------------------------------------------------------------------------
 
-/// A cursor-acting action's approval token is bound to the session and the
-/// action summary only — the pointer moving after approval does NOT
-/// invalidate it (mainstream model: an approval is a per-action id; there
-/// is no cursor-origin binding).
+/// Moving the pointer does not invalidate an approval **while the target is
+/// unchanged**: the token is bound to the approved element, not to the cursor
+/// origin, so a pointer that drifts within (or back onto) the same control
+/// still spends. The redirect case — a pointer moved onto a *different*
+/// consequential control — is pinned by
+/// [`approved_token_is_refused_on_a_different_target`].
 #[tokio::test]
 async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     let (fixture, _restore) = fixture();
@@ -3319,7 +3371,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     // The cursor defaults to (7,9), covered by a consequential target → the
     // down is blocked and a pending minted.
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -3327,6 +3379,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3381,6 +3434,424 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     assert_eq!(fixture.mock.lock().downed.len(), 1, "nothing more ran");
 }
 
+/// A drag's approval is bound to **both** of its screened points.
+///
+/// `left_click_drag` screens its start and its drop point, but only one of
+/// them needs to hit for the dialog to appear. Binding the approval to the
+/// hitting point alone would leave the other end free: a model could get a
+/// drag approved while the drop point was innocuous, then let the page swap a
+/// destructive control in under it and replay the same call — the start still
+/// matches, the token spends, and the drop lands somewhere the user never saw.
+/// The hit label therefore names every screened point in order, so a change at
+/// either end fails the spend-time comparison.
+#[tokio::test]
+async fn approved_drag_is_refused_when_the_drop_target_changed() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let start = ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Delete file".to_string(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+        secure: false,
+        raw_binding: 0,
+    };
+    let benign_drop = ElementInfo {
+        name_screening_hit: false,
+        role: "AXGroup".to_string(),
+        name: "Documents".to_string(),
+        x: 12,
+        y: 12,
+        width: 4,
+        height: 4,
+        secure: false,
+        raw_binding: 0,
+    };
+    fixture.mock.lock().background = vec![start.clone(), benign_drop];
+
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 13, "y": 13}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        blocked.contains("Delete file") && blocked.contains("Documents"),
+        "the dialog must name both screened ends: {blocked}"
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved dropping onto "Documents". The drop target is now a
+    // different control; the start is untouched.
+    fixture.mock.lock().background = vec![
+        start.clone(),
+        ElementInfo {
+            name_screening_hit: false,
+            role: "AXButton".to_string(),
+            name: "Trash".to_string(),
+            x: 12,
+            y: 12,
+            width: 4,
+            height: 4,
+            secure: false,
+            raw_binding: 0,
+        },
+    ];
+    let redirected = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 13, "y": 13,
+                   "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = redirected.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("NOT executed"),
+        "a changed drop target must not inject: {text}"
+    );
+    assert!(
+        text.contains("Trash"),
+        "the fresh confirmation must name the new drop target: {text}"
+    );
+    assert!(
+        fixture.mock.lock().drags.is_empty(),
+        "no drag may reach the backend once the drop target changed"
+    );
+}
+
+/// The deny race at the spend window, at tool level.
+///
+/// `consume_confirmation` reports whether the token was actually spent, and
+/// neither spend arm in the tool may execute when it reports false: a Deny
+/// landing between the peek and the consume ("approve → changed my mind"
+/// while the re-screen's a11y queries run) is a retracted approval. The
+/// guard-side unit test pins the report; this pins the tool's use of it —
+/// the injection surface itself, which no guard test can see. The mock's
+/// `deny_confirm_via` hook denies the live pending from inside
+/// `element_at_point`, i.e. exactly inside that window.
+#[tokio::test]
+async fn deny_during_the_rescreen_stops_the_tool_spend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let target = ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 0,
+    };
+    fixture.mock.lock().element = Some(target.clone());
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved "Buy now" and the target is unchanged — the spend
+    // would normally go through. But during the re-screen the user hits Deny.
+    let shared = Arc::clone(&fixture.shared);
+    let pending_id = confirm_id.clone();
+    fixture.mock.lock().deny_confirm_via = Some(Arc::new(move |_hook_arg| {
+        shared.deny_confirmation(&pending_id)
+    }));
+    let denied = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = denied.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("denied by the user"),
+        "the spend must report the retracted approval: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "no injection may reach the backend over a retracted approval"
+    );
+
+    // Same race through the CLEAR arm, on the same fixture (fixture() holds
+    // the env lock for the test's lifetime; a second call would deadlock):
+    // the next pending's approved control disappears — the re-screen comes
+    // back Clear, so without the race the carried token would simply be
+    // spent and the action executed. A Deny landing during that re-screen
+    // must stop it all the same — this is the second abort site.
+    fixture.mock.lock().deny_confirm_via = None;
+    fixture.mock.lock().element = Some(ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 0,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let clear_confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&clear_confirm_id));
+
+    // The approved control disappears — the re-screen now comes back Clear —
+    // and the user denies during it. The tool must abort, not spend.
+    fixture.mock.lock().deny_confirm_via = Some(Arc::new({
+        let shared = Arc::clone(&fixture.shared);
+        let pending_id = clear_confirm_id.clone();
+        move |_hook_arg| shared.deny_confirmation(&pending_id)
+    }));
+    fixture.mock.lock().element = None;
+    let denied_clear = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": clear_confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = denied_clear.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("denied by the user"),
+        "a Clear re-screen must not spend a retracted approval: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "the Clear arm must not inject over a retracted approval either"
+    );
+}
+
+/// An approval may not be redirected onto a different consequential target.
+///
+/// The action's own parameters do not pin a target: `left_mouse_down` carries
+/// no coordinates, so its summary and content hash are identical wherever the
+/// cursor happens to be. With the token bound to the session/summary/content
+/// only, a model could get the user to approve a benign-looking control, then
+/// move the cursor — `mouse_move` is Input class but is never screened — onto
+/// a destructive one and replay the same call with the `confirm_id`. The
+/// spend path therefore re-screens the current target and refuses a token
+/// whose approved element does not match, raising a fresh confirmation that
+/// names what is actually under the pointer now.
+#[tokio::test]
+async fn approved_token_is_refused_on_a_different_target() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 0,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved "Buy now". The model now moves the pointer onto a
+    // different consequential control and replays the identical call.
+    fixture.mock.lock().element = Some(ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Transfer all funds".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 0,
+    });
+    let redirected = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = redirected.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("NOT executed"),
+        "the redirected spend must not inject: {text}"
+    );
+    assert!(
+        text.contains("Transfer all funds"),
+        "the fresh confirmation must name the real target: {text}"
+    );
+    assert!(
+        text.contains("was NOT spent"),
+        "the model must be told the token was kept: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "no injection may reach the backend on a redirected spend"
+    );
+
+    // The refusal left a fresh dialog on screen, which blocks input from
+    // every session until it is answered. The user denies it.
+    let fresh_id = latest_confirm_id(&fixture.events);
+    assert_ne!(fresh_id, confirm_id, "a fresh confirmation must be minted");
+    assert!(fixture.shared.deny_confirmation(&fresh_id));
+
+    // The original token was kept, so a correct retry on the approved target
+    // still spends it — a wrong attempt must not burn the user's approval.
+    fixture.mock.lock().element = Some(ElementInfo {
+        name_screening_hit: false,
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 0,
+    });
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let replay = match replay {
+        Ok(r) => r,
+        Err(e) => panic!("replay execute failed: {e}"),
+    };
+    assert!(replay.success, "{}", replay.content);
+    assert_eq!(fixture.mock.lock().downed.len(), 1);
+}
+
+/// The replay comparison binds the **raw** identity, not just the display
+/// line: `ElementInfo::name` is sanitized and truncated to 80 chars, so two
+/// different elements can render the identical consent label (payloads
+/// differing only past the truncation tail, or only in characters
+/// sanitization rewrites). A token approved on one must not spend on its
+/// display-identical twin — and must still spend on the original.
+#[tokio::test]
+async fn approved_token_is_refused_on_a_display_identical_twin() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // Two raw names that sanitize and truncate to the same 80-char display
+    // line but differ past the truncation tail.
+    let raw_a = format!("Buy now{}", "a".repeat(100));
+    let raw_b = format!("Buy now{}!", "a".repeat(100));
+    assert_eq!(
+        platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        platform::sanitize_name(&raw_b, MAX_LABEL_CHARS),
+        "test setup: the twins must share the display line"
+    );
+    let mut element = ElementInfo {
+        name_screening_hit: true,
+        role: "AXButton".to_string(),
+        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 111,
+    };
+    fixture.mock.lock().element = Some(element.clone());
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked.contains("Buy now"), "{blocked}");
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The user approved the original. The model swaps in the twin — same
+    // display line, different raw element — and replays the identical call.
+    element.name = platform::sanitize_name(&raw_b, MAX_LABEL_CHARS);
+    element.raw_binding = 222;
+    fixture.mock.lock().element = Some(element);
+    let twin = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = twin.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("was NOT spent"),
+        "the twin spend must be refused even though the label matches: {text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "no injection may reach the backend on a twin spend"
+    );
+
+    // The refusal left a fresh dialog (over the same display line, so only
+    // the raw binding can tell them apart). Deny it; the kept token must
+    // still spend on the element it actually approved.
+    let fresh_id = latest_confirm_id(&fixture.events);
+    assert_ne!(fresh_id, confirm_id, "a fresh confirmation must be minted");
+    assert!(fixture.shared.deny_confirmation(&fresh_id));
+    let element = ElementInfo {
+        name_screening_hit: true,
+        role: "AXButton".to_string(),
+        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+        raw_binding: 111,
+    };
+    fixture.mock.lock().element = Some(element);
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let replay = match replay {
+        Ok(r) => r,
+        Err(e) => panic!("replay execute failed: {e}"),
+    };
+    assert!(replay.success, "{}", replay.content);
+    assert_eq!(fixture.mock.lock().downed.len(), 1);
+}
+
 /// The token binds the action summary AND the full action content: another
 /// text with the same N characters produces the same summary
 /// `type 21 characters` but a different content hash, so the swap is rejected
@@ -3392,7 +3863,7 @@ async fn same_summary_type_text_swap_is_rejected() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -3400,6 +3871,7 @@ async fn same_summary_type_text_swap_is_rejected() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let approved_text = "correct-horse-battery"; // 21 chars
     let blocked = fixture
@@ -3482,15 +3954,15 @@ async fn same_summary_type_text_swap_is_rejected() {
 }
 
 /// An unreadable cursor position at spend time (the normal state before the
-/// first Wayland move) is irrelevant to the token: the token binds only the
-/// session and the summary, with no cursor comparison — an unreadable cursor
-/// does not block executing an approved action.
+/// first Wayland move) does not block an approved action. There is no cursor
+/// comparison in the binding: an unknown cursor makes screening impossible,
+/// which is Clear, and a Clear re-screen spends the token and executes.
 #[tokio::test]
 async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
         x: 0,
@@ -3498,6 +3970,7 @@ async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
         width: 16,
         height: 16,
         secure: false,
+        raw_binding: 0,
     });
     let blocked = fixture
         .tool
@@ -3649,10 +4122,10 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     // minted token coexist.
     shared.grant_session("s2");
     let pending_id = shared
-        .new_pending_confirmation("s1", "left click", "Buy now", 0)
+        .new_pending_confirmation("s1", "left click", "Buy now", 0, 0)
         .expect("pending registered");
     let token_id = shared
-        .new_pending_confirmation("s2", "type 3 characters", "secret-field", 0)
+        .new_pending_confirmation("s2", "type 3 characters", "secret-field", 0, 0)
         .expect("pending registered");
     assert!(shared.pending_confirmation(&pending_id).is_some());
     assert!(shared.mint_confirmation(&token_id));
@@ -3663,9 +4136,10 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
         shared.pending_confirmation(&pending_id).is_none(),
         "stop must clear pending confirmations"
     );
-    assert_eq!(
-        shared.take_confirmation(&token_id, "s2", "type 3 characters", 0),
-        ConfirmationCheck::Unknown,
+    assert!(
+        shared
+            .peek_confirmation(&token_id, "s2", "type 3 characters", 0)
+            .is_none(),
         "stop must wipe minted approval tokens"
     );
 }
@@ -3714,6 +4188,36 @@ async fn key_chord_text_length_is_capped() {
     );
 }
 
+/// confirm_id's length cap, same shape as the chord cap above: the id is
+/// model-supplied free text and is looked up in the approval-token map as
+/// given, so an uncapped string would be pure memory abuse (round-4 review
+/// finding). Real minted ids are far below the cap; over it is rejected as a
+/// parse error whose text does not echo the string.
+#[tokio::test]
+async fn confirm_id_length_is_capped() {
+    let (fixture, _restore) = fixture();
+    let oversized = "a".repeat(MAX_CONFIRM_ID_CHARS + 1);
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "confirm_id": oversized}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let error = match result {
+        Ok(r) => panic!("an oversized confirm_id must not parse: {r:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        error.contains("confirm_id exceeds"),
+        "expected the confirm_id cap error: {error}"
+    );
+    assert!(
+        !error.contains(&oversized),
+        "the cap error must not echo the oversized string: {error}"
+    );
+}
+
 /// The bounds returned by
 /// element_at_point must be in **screenshot pixel space** — a11y element
 /// rectangles are input/screen coordinates; when the screenshot's long edge
@@ -3731,7 +4235,7 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
         mock.capture_size = (200, 200);
         mock.input_scale = (0.5, 0.5);
         mock.element = Some(ElementInfo {
-            screening_name: None,
+            name_screening_hit: false,
             role: "AXButton".to_string(),
             name: "Buy now".to_string(),
             x: 50,
@@ -3739,6 +4243,7 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
             width: 20,
             height: 20,
             secure: false,
+            raw_binding: 0,
         });
     }
     // Establish the scale map.
@@ -3866,7 +4371,7 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3874,6 +4379,7 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let text = "x".repeat(4097);
     let result = fixture
@@ -3914,7 +4420,7 @@ async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
     let (fixture_plain, _restore_plain) = fixture();
     fixture_plain.shared.grant_session("s-test");
     fixture_plain.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXButton".to_string(),
         name: "Send message".to_string(),
         x: 0,
@@ -3922,6 +4428,7 @@ async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     });
     let result = fixture_plain
         .tool
@@ -3965,7 +4472,7 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     let (fixture_secure, _restore_secure) = fixture();
     fixture_secure.shared.grant_session("s-test");
     fixture_secure.mock.lock().focused = Some(ElementInfo {
-        screening_name: None,
+        name_screening_hit: false,
         role: "AXTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -3973,6 +4480,7 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
         width: 10,
         height: 10,
         secure: true,
+        raw_binding: 0,
     });
     let result = fixture_secure
         .tool
@@ -4733,10 +5241,11 @@ async fn stop_during_wait_sleep_aborts_the_followup_capture() {
 // Round-14 fix-wave regressions
 // ---------------------------------------------------------------------------
 
-/// The denylist must match the wider screening copy, not just the
-/// display-truncated name: an attacker-controlled label can pad past the
+/// The denylist verdict must come from the **raw** accessible name, not from
+/// the display-truncated one: an attacker-controlled label can pad past the
 /// 80-char display window so a consequential term never reaches the matcher
-/// ("AAA…A Pay now"). With `screening_name` present the padded term blocks.
+/// ("AAA…A Pay now"). The platform layer decides on the raw text and carries
+/// the verdict as `name_screening_hit`.
 #[test]
 fn denylist_matches_beyond_the_display_truncation_window() {
     let padded = format!("{} Pay now", "A".repeat(120));
@@ -4744,24 +5253,25 @@ fn denylist_matches_beyond_the_display_truncation_window() {
     assert!(!display_name.contains("Pay now"));
     let element = ElementInfo {
         role: "Button".into(),
-        screening_name: Some(
-            crate::features::computer_use::platform::screening_name(&padded, &display_name)
-                .expect("wider copy expected"),
-        ),
+        name_screening_hit: crate::features::computer_use::platform::screening_hit(&padded),
         name: display_name,
         x: 0,
         y: 0,
         width: 10,
         height: 10,
         secure: false,
+        raw_binding: 0,
     };
+    assert!(
+        element.name_screening_hit,
+        "the raw label must screen as a hit"
+    );
     assert!(matches!(screen_element(&element), T3Screening::Blocked(_)));
-    // Without a wider copy the truncated display name stays Clear — the
-    // residual gap is the bounded-copy cap, matching the disclosed
-    // best-effort screening contract.
-    let mut no_copy = element.clone();
-    no_copy.screening_name = None;
-    assert!(matches!(screen_element(&no_copy), T3Screening::Clear));
+    // The display name on its own carries no verdict: screening must never
+    // fall back to it, or the padding would win again.
+    let mut no_hit = element.clone();
+    no_hit.name_screening_hit = false;
+    assert!(matches!(screen_element(&no_hit), T3Screening::Clear));
 }
 
 /// The structured confirm fields must ride the real serialization path
