@@ -170,7 +170,9 @@ impl AuditLog {
         Self { path }
     }
 
-    pub fn path(&self) -> &Path {
+    /// Test-only path accessor (production code never needs the raw path).
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 

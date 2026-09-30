@@ -39,9 +39,20 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// lark-cli 是否已在 PATH(快速,~秒级)。
+/// Whether lark-cli is already on PATH (fast, ~seconds). Mirrors DingTalk's
+/// `dws_cli_present`: reuse the three-state probe below and fold both failure
+/// classes into "unavailable".
 fn lark_cli_present() -> bool {
-    matches!(cc::run(lark(&["--version"])), Ok((true, _, _)))
+    lark_cli_probe().unwrap_or(false)
+}
+
+/// `--version` three-state probe, mirroring DingTalk's `dws_cli_probe`:
+/// `Ok(true)` installed and usable; `Ok(false)` installed but the version probe exited
+/// non-zero; `Err(ProbeError)` classified as Spawn/Timeout/Other. The disconnect path
+/// must receive the [`cc::logout_probe_verdict`] verdict before it may degrade to
+/// not-installed.
+fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
+    cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
 
 /// `auth status` 里用户身份是否 ready(已授权)。
@@ -368,14 +379,28 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
-/// 断开飞书:`lark-cli auth logout`(清 token)。
+/// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
+/// unified with DingTalk/tmeet via [`cc::logout_probe_verdict`]: a genuinely not-installed
+/// CLI degrades to `installed:false` and clears the bundle store; when the credential
+/// state is unconfirmed the error is propagated as-is — never falsely report
+/// "disconnected".
 pub async fn feishu_logout() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
-        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
-        if ok {
+        let not_installed = || {
             cc::bundle_store_on_disconnected(ID);
+            Ok::<Value, String>(json!({ "ok": true, "installed": false }))
+        };
+        match cc::logout_probe_verdict("飞书", lark_cli_probe()) {
+            cc::LogoutProbeVerdict::Installed => {}
+            cc::LogoutProbeVerdict::NotInstalled => return not_installed(),
+            cc::LogoutProbeVerdict::Unconfirmed(message) => return Err(message),
         }
-        Ok::<Value, String>(json!({ "ok": ok, "stdout": so, "stderr": se }))
+        let (ok, so, se) = cc::run(lark(&["auth", "logout"]))?;
+        if !ok {
+            return Err("飞书 CLI 退出登录失败，请重试".to_string());
+        }
+        cc::bundle_store_on_disconnected(ID);
+        Ok::<Value, String>(json!({ "ok": true, "installed": true, "stdout": so, "stderr": se }))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?

@@ -80,8 +80,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
-    screening_name, split_type_runs,
+    TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints, map_scroll,
+    normalize_typed_newlines, sanitize_name, screening_name, split_type_runs,
 };
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
@@ -701,32 +701,6 @@ fn write_tree_node(
     Ok(())
 }
 
-/// Merge the interpolated-move and button-release results of `drag`. The
-/// release always runs, but `Result::and` kept only the first error: when the
-/// release failed too, callers never learned that the mouse button may still
-/// be pressed (the macOS/Linux backends already surface this signal).
-fn combine_drag_errors(
-    move_result: Result<(), ComputerUseError>,
-    release_result: Result<(), ComputerUseError>,
-) -> Result<(), ComputerUseError> {
-    match (move_result, release_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        // Only the path move failed and the release succeeded: report the
-        // move error unchanged.
-        (Err(move_error), Ok(())) => Err(move_error),
-        // Single-failure cases keep the ORIGINAL error kind: a UIPI-blocked
-        // release is `unavailable` — the "run elevated" classification
-        // upstreams rely on must survive the stranded-button annotation.
-        (Ok(()), Err(release)) => {
-            Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
-        }
-        (Err(move_error), Err(release)) => Err(move_error.same_kind(format!(
-            "drag move failed ({move_error}); its release also failed ({release}); \
-             the mouse button may still be pressed"
-        ))),
-    }
-}
-
 pub(super) struct WindowsComputerUseBackend {
     enigo: Enigo,
     /// The thread DPI awareness conclusion read once at `new()`: when not Per-Monitor-V2,
@@ -1284,16 +1258,6 @@ mod tests {
         }
     }
 
-    /// A move-failure sample for [`combine_drag_errors`] (test helper).
-    fn failed_move() -> ComputerUseError {
-        ComputerUseError::failed("move aborted")
-    }
-
-    /// A release-failure sample for [`combine_drag_errors`] (with map_input_err-style context).
-    fn failed_release() -> ComputerUseError {
-        ComputerUseError::failed("drag release: injected 0/1 events")
-    }
-
     #[test]
     fn normalize_typed_newlines_maps_cr_and_crlf() {
         // Borrowed when there is no CR.
@@ -1443,41 +1407,6 @@ mod tests {
         // Only awareness == 2 with a context that really is PMv2 passes.
         assert!(thread_is_pmv2(2, true));
         assert!(!thread_is_pmv2(1, true));
-    }
-
-    #[test]
-    fn drag_error_merging_surfaces_stranded_button() {
-        // Both succeed: nothing to merge.
-        assert!(combine_drag_errors(Ok(()), Ok(())).is_ok());
-        // Only the move failed: the move error passes through unchanged.
-        assert_eq!(
-            combine_drag_errors(Err(failed_move()), Ok(()))
-                .unwrap_err()
-                .to_string(),
-            "failed: move aborted"
-        );
-        // Only the release failed: the stranded-button warning must surface.
-        let only_release = combine_drag_errors(Ok(()), Err(failed_release()))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            only_release.contains("the mouse button may still be pressed"),
-            "{only_release}"
-        );
-        // Both fail: the move failure AND the stranded-button warning must
-        // both be present (`result.and(release)` used to drop the latter).
-        let both = combine_drag_errors(Err(failed_move()), Err(failed_release()))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            both.contains("drag move failed (failed: move aborted)"),
-            "{both}"
-        );
-        assert!(both.contains("its release also failed"), "{both}");
-        assert!(
-            both.contains("the mouse button may still be pressed"),
-            "{both}"
-        );
     }
 
     #[test]

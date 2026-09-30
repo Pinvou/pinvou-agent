@@ -794,6 +794,25 @@ pub(super) fn write_session_sidecar(
         .map_err(|error| format!("failed to write session sidecar: {error:#}"))
 }
 
+/// Reads a session sidecar as opaque JSON. A missing file means the session has not
+/// written anything yet; a file that exists but is unreadable or corrupt must fail
+/// explicitly, so data corruption is not disguised as a legitimate empty timeline.
+/// `label` keeps the per-sidecar error wording the bridges surface (persona/review/scene/steer).
+pub(super) fn read_session_sidecar(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<serde_json::Value, String> {
+    let payload = match std::fs::read(path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!([]));
+        }
+        Err(error) => return Err(format!("failed to read session {label} sidecar: {error}")),
+    };
+    serde_json::from_slice(&payload)
+        .map_err(|error| format!("failed to parse session {label} sidecar: {error}"))
+}
+
 /// 保存用户消息专业场景标签。sidecar 独立于 messages，但属于 session 持久数据，
 /// 因此通过后端共享给桌面端和 WebUI，而不是只留在某个宿主的 localStorage。
 #[tauri::command]
@@ -808,7 +827,9 @@ pub async fn save_session_pinvou_scene_events(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取用户消息专业场景标签。旧版本或损坏 sidecar 按空数组处理，不影响会话正文。
+/// Reads the persona-scene tags attached to user messages. A missing sidecar means the
+/// session has not written tags yet; a sidecar that exists but is corrupt must fail
+/// explicitly, so data corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_pinvou_scene_events(
     session_id: String,
@@ -816,13 +837,7 @@ pub async fn get_session_pinvou_scene_events(
 ) -> Result<serde_json::Value, String> {
     ensure_chat_session(&store, &session_id, "get_session_pinvou_scene_events")?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);
-    let Ok(payload) = std::fs::read(&path) else {
-        return Ok(serde_json::json!([]));
-    };
-    let Ok(events) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-        return Ok(serde_json::json!([]));
-    };
-    Ok(normalize_pinvou_scene_events(events).unwrap_or_else(|_| serde_json::json!([])))
+    normalize_pinvou_scene_events(read_session_sidecar(&path, "scene")?)
 }
 
 fn normalize_steered_messages(events: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -859,7 +874,9 @@ pub async fn save_session_steered_messages(
     write_session_sidecar(&path, &normalized)
 }
 
-/// 读取 mid-turn steer 消息的位置标记。旧版本或损坏 sidecar 按空数组处理。
+/// Reads the position markers for mid-turn steer messages. A missing sidecar means the
+/// session has not written markers yet; a sidecar that exists but is corrupt must fail
+/// explicitly, so data corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_steered_messages(
     session_id: String,
@@ -867,13 +884,48 @@ pub async fn get_session_steered_messages(
 ) -> Result<serde_json::Value, String> {
     ensure_chat_session(&store, &session_id, "get_session_steered_messages")?;
     let path = crate::platform::paths::session_steered_messages(&session_id);
-    let Ok(payload) = std::fs::read(&path) else {
-        return Ok(serde_json::json!([]));
-    };
-    let Ok(events) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-        return Ok(serde_json::json!([]));
-    };
-    Ok(normalize_steered_messages(events).unwrap_or_else(|_| serde_json::json!([])))
+    normalize_steered_messages(read_session_sidecar(&path, "steer")?)
+}
+
+#[cfg(test)]
+mod read_session_sidecar_tests {
+    use super::read_session_sidecar;
+
+    /// The missing-file contract (empty timeline) and the corrupt-file contract (explicit
+    /// failure, labelled per sidecar) are shared by the persona/review/scene/steer readers;
+    /// this pins them once at the helper every reader delegates to.
+    #[test]
+    fn missing_sidecar_is_empty_but_corrupt_sidecar_fails_explicitly() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-sidecar-read-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let path = root.join("scene.json");
+
+        assert_eq!(
+            read_session_sidecar(&path, "scene").expect("missing sidecar must stay empty"),
+            serde_json::json!([])
+        );
+
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        std::fs::write(&path, b"{not json").expect("write corrupt sidecar");
+        let error = read_session_sidecar(&path, "scene").expect_err("corrupt sidecar must fail");
+        assert!(
+            error.starts_with("failed to parse session scene sidecar:"),
+            "{error}"
+        );
+
+        std::fs::write(&path, b"[{\"pos\":1}]").expect("write valid sidecar");
+        assert_eq!(
+            read_session_sidecar(&path, "scene").expect("valid sidecar must parse"),
+            serde_json::json!([{ "pos": 1 }])
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
