@@ -712,20 +712,41 @@ fn resolve_secrets(secrets: &[(String, String)]) -> Result<HashMap<String, Strin
         // right-hand side of `--secret`, and a user who pasted the plaintext
         // secret instead of the variable NAME must not have it echoed back
         // into failure diagnostics. Only the config key (public manifest
-        // vocabulary) plus the KEY=ENV_VAR_NAME hint is surfaced.
-        let value = std::env::var(env_var).map_err(|_| {
-            CliError::failed(format!(
-                "the secret environment variable for config key {key} is not set; --secret \
-                 takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
-            ))
-        })?;
+        // vocabulary) plus the KEY=ENV_VAR_NAME hint is surfaced. A set-but
+        // non-UTF-8 variable is named as such (the same distinction
+        // `support::resolve_secret` draws): the two states have different
+        // fixes, and "not set" sends a user with a mojibake export hunting
+        // for a missing one.
+        let value = match std::env::var(env_var) {
+            Ok(value) => value,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(CliError::failed(format!(
+                    "the secret environment variable for config key {key} is set but not \
+                     valid UTF-8; re-export it as UTF-8"
+                )));
+            }
+            Err(std::env::VarError::NotPresent) => {
+                return Err(CliError::failed(format!(
+                    "the secret environment variable for config key {key} is not set; --secret \
+                     takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
+                )));
+            }
+            Err(err) => return Err(CliError::failed(err.to_string())),
+        };
         if value.trim().is_empty() {
             return Err(CliError::failed(format!(
                 "the secret environment variable for config key {key} is empty; --secret \
                  takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
             )));
         }
-        config.insert(key.clone(), value);
+        // Trim like `support::resolve_secret`: environment secrets routinely
+        // carry a trailing newline (`export KEY="$(cat key.txt)"`, a file
+        // mounted by a CI secret store, most `.env` loaders), and storing it
+        // verbatim put that "\n" into the credential while every read path
+        // trimmed — the tool kept reporting `configured` and every signed
+        // request failed auth. The empty check above stays on the *raw*
+        // value so a whitespace-only variable is still named as empty.
+        config.insert(key.clone(), value.trim().to_owned());
     }
     Ok(config)
 }
@@ -2451,6 +2472,58 @@ mod tests {
             ScopeArg::Both.scopes(),
             vec![ConnectorScope::Plain, ConnectorScope::Code]
         );
+    }
+
+    /// The credential channel stores the TRIMMED env value: CI secret
+    /// mounts and `.env` loaders routinely append a trailing newline, and a
+    /// verbatim "\n" in the credential meant every signed request failed
+    /// auth while auth status kept reporting configured (the exact failure
+    /// `support::resolve_secret` documents for the models lane). The empty
+    /// check stays on the raw value, and a set-but-non-UTF-8 variable is
+    /// named as such instead of "not set".
+    #[test]
+    #[cfg(unix)]
+    fn secret_env_values_store_trimmed_and_name_non_utf8() {
+        use crate::support::ENV_LOCK;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        // The lib test binary's shared env lock: env writes are serialized
+        // across tests; the variable is removed again before returning.
+        let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe {
+            std::env::set_var("PINVOU_TEST_SECRET_TRIM", "  s3cret-value \n");
+        }
+        let config =
+            resolve_secrets(&[("api_key".to_owned(), "PINVOU_TEST_SECRET_TRIM".to_owned())])
+                .unwrap();
+        assert_eq!(
+            config["api_key"].as_bytes(),
+            b"s3cret-value",
+            "the stored credential must be the trimmed value, without the \
+             trailing newline the env loader added"
+        );
+
+        unsafe {
+            std::env::set_var(
+                "PINVOU_TEST_SECRET_MOJIBAKE",
+                std::ffi::OsStr::from_bytes(b"\xff\xfe"),
+            );
+        }
+        let error = resolve_secrets(&[(
+            "api_key".to_owned(),
+            "PINVOU_TEST_SECRET_MOJIBAKE".to_owned(),
+        )])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("set but not valid UTF-8"),
+            "a set-but-mojibake variable must not be reported as missing: {error}"
+        );
+
+        unsafe {
+            std::env::remove_var("PINVOU_TEST_SECRET_TRIM");
+            std::env::remove_var("PINVOU_TEST_SECRET_MOJIBAKE");
+        }
+        drop(guard);
     }
 
     #[test]

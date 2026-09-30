@@ -215,6 +215,15 @@ jobs:
               - 'pinvou-cli/**/*.rs'
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
+              # Build inputs cargo reads but the patterns above miss: a
+              # `[build]`/`rustflags` edit in the workspace config and the
+              # Windows exe manifest (consumed by crates/cli/build.rs via
+              # /MANIFESTINPUT) both change the shipped binary. Without
+              # these entries a PR touching only them skips cli-test,
+              # cli-lint, windows-rust-test AND macos-cli-check while
+              # required-gate passes on `skipped`.
+              - 'pinvou-cli/.cargo/**'
+              - 'pinvou-cli/**/*.manifest'
               - 'CodeWhale'
               # This workflow file is deliberately excluded from cli_rust
               # (policy: workflow changes must not drag in the full app test

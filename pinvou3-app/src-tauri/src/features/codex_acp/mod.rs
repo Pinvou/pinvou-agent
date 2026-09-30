@@ -119,7 +119,13 @@ pub use crate::platform::process::GIT_IDENTITY_KEYS;
 // `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
 // 同一最低版本约束，消除手工副本漂移；行为不变。
 pub use runtime::MIN_CODEX_VERSION;
-use runtime::{ResolvedCodex, codex_version, probe_codex_runtime, version_at_least};
+/// The comparison itself, not only the constants: `pinvou-cli`'s `code`
+/// gates (`agents status`, override resolution) consume this so a
+/// comparison-semantics change app-side cannot drift behind a CLI-local
+/// copy (round-27 review; the fn's module stays private — the re-export is
+/// the sanctioned surface, same as the constants beside it).
+pub use runtime::version_at_least;
+use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 pub use store::{
     AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,

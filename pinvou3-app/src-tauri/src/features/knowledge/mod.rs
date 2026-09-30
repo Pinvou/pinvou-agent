@@ -659,21 +659,24 @@ impl KnowledgeService {
                 let mut visited = std::collections::HashSet::new();
                 let mut scanned_total = 0u64;
                 // Deletion authority is granted only for roots that were
-                // actually WALKED, not for roots that were REQUESTED (see
-                // `root_authorizes_deletion`): scanner::scan silently returns
-                // 0 entries for a root it cannot walk, and the cleanup phase
-                // still runs — treating that root as a deletion boundary would
-                // wipe its whole indexed slice as "discovered missing".
+                // actually WALKED WITHOUT ERROR, not for roots that were
+                // REQUESTED (see `root_authorizes_deletion`): scanner::scan
+                // reports zero entries for a root it cannot walk, and the
+                // cleanup phase still runs — treating that root as a deletion
+                // boundary would wipe its whole indexed slice as "discovered
+                // missing". A walk ERROR under an otherwise walkable root is
+                // the same veto (an unreadable subtree's slice is just as
+                // undecidable), so the error count rides along.
                 let mut swept_roots: Vec<PathBuf> = Vec::with_capacity(roots.len());
                 for root in &roots {
                     let base = scanned_total;
-                    let walked =
+                    let (walked, walk_errors) =
                         scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
                             scan_state.lock().scanned = base + n;
                         });
                     scanned_total = base + walked;
                     scan_state.lock().scanned = scanned_total;
-                    if root_authorizes_deletion(root, walked) {
+                    if root_authorizes_deletion(root, walked, walk_errors) {
                         swept_roots.push(root.clone());
                     }
                     if cancel.load(Ordering::Relaxed) {
@@ -776,7 +779,9 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
             files.push(root.clone());
             continue;
         }
-        for entry in scanner::walk_pruned(root, &ex) {
+        // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
+        // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
+        for entry in scanner::walk_pruned(root, &ex).flatten() {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -825,22 +830,33 @@ fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
 /// Whether THIS scan round is authorized to run "disappeared" deletions
 /// inside `root`.
 ///
-/// `scanner::scan` silently returns 0 entries for a root it cannot WALK
-/// (walk errors are skipped inside `walk_pruned`): an unmounted drive,
-/// revoked permissions, or the root being deleted after the pre-flight all
-/// look identical to "0 entries walked". Handing that root to
+/// `scanner::scan` reports zero entries for a root it cannot WALK: an
+/// unmounted drive, revoked permissions, or the root being deleted after the
+/// pre-flight all look identical to "0 entries walked". Handing that root to
 /// [`stale_entries`] as a deletion boundary would condemn its whole indexed
 /// slice as disappeared — `scan start --root /mnt/usb` after the drive drops
 /// would delete every entry under `/mnt/usb` and still report
-/// `phase: done`. The two flavors of "walked zero" must be separated:
+/// `phase: done`. The flavors that must NOT delete:
+/// - **Could not walk the root** (missing / not a directory / unreadable):
+///   the fate of that root's indexed entries is undecidable this round, so
+///   the round must not decide for it — skip (the next round cleans up
+///   naturally once the root is back).
+/// - **Walk errors under the root** (`walk_errors > 0`, the round-27 review
+///   gap): a top-level probe cannot see a subtree that failed mid-walk, but
+///   the slice under a chmod-000 subdirectory is just as undecidable — the
+///   entries are absent from `visited` because the walker could not read
+///   them, which is indistinguishable from "disappeared". `scanner::scan`
+///   therefore surfaces the walk-error count and any error vetoes the
+///   root's stale sweep for this round; the slice stays and the next fully
+///   readable round cleans it. The trade-off is disclosed: one permanently
+///   unreadable file pauses ghost cleanup for its whole root (the safe
+///   direction — lingering, not wiping).
+///
+/// The flavors that MUST delete:
 /// - **Walked, and it is empty** (the root is still a readable directory):
 ///   the user really did empty it; the slice should be cleaned, otherwise
 ///   ghost entries linger forever — this is why the deletion feature exists
 ///   at all, so it cannot be switched off for safety.
-/// - **Could not walk** (root missing / not a directory / unreadable): the
-///   fate of that root's indexed entries is undecidable this round, so the
-///   round must not decide for it — skip (the next round cleans up naturally
-///   once the root is back).
 ///
 /// One ambiguous corner remains: a static mountpoint whose unmount leaves a
 /// readable empty directory behind — filesystem-identical to "the user
@@ -850,8 +866,8 @@ fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
 /// mountpoint with it or makes it unreadable (udisks automounts, ESTALE/EIO
 /// after device removal, permission revocation), and it is at least not
 /// silent — deletion only ever happens inside a root the user NAMED.
-fn root_authorizes_deletion(root: &Path, walked: u64) -> bool {
-    walked > 0 || std::fs::read_dir(root).is_ok()
+fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool {
+    walk_errors == 0 && (walked > 0 || std::fs::read_dir(root).is_ok())
 }
 
 /// Computes this round's "disappeared" entries: decided ONLY within the
@@ -1482,15 +1498,26 @@ mod tests {
         // Walked (walked>0) → authorized; walked 0 but the root is still a
         // readable directory (the user emptied it) → authorized; walked 0
         // and the root is unreadable (drive dropped / deleted / no
-        // permission) → not authorized.
-        assert!(root_authorizes_deletion(&walkable, 12));
+        // permission) → not authorized; ANY walk error under the root →
+        // not authorized (the unreadable-subtree veto: the round-27 review
+        // gap, where a chmod-000 subtree's slice was wiped as "disappeared"
+        // because the top-level probe saw a walkable root).
+        assert!(root_authorizes_deletion(&walkable, 12, 0));
         assert!(
-            root_authorizes_deletion(&walkable, 0),
+            root_authorizes_deletion(&walkable, 0, 0),
             "an empty directory is genuinely empty; this slice must clean"
         );
         assert!(
-            !root_authorizes_deletion(&vanished, 0),
+            !root_authorizes_deletion(&vanished, 0, 0),
             "an unwalkable root must not authorize deletion"
+        );
+        assert!(
+            !root_authorizes_deletion(&walkable, 12, 1),
+            "a walk error under the root vetoes the stale sweep: the fate of              everything under the unreadable subtree is undecidable"
+        );
+        assert!(
+            !root_authorizes_deletion(&walkable, 0, 3),
+            "the veto applies on the empty-root flavor too"
         );
 
         // End to end: two indexed slices in the store; only the walkable

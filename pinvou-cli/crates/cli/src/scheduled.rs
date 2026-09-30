@@ -961,7 +961,19 @@ fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
                 serde_json::Value::Null
             }
         },
-        Err(_) => serde_json::Value::Null,
+        // A file that exists but cannot be read (chmod 000, EIO) degrades to
+        // the default like every IO error, but it must not degrade
+        // SILENTLY: the subsequent whole-file write would rename over the
+        // unreadable file and drop its siblings' entries. The parse/shape
+        // failure path announces for the same reason.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
+        Err(error) => {
+            eprintln!(
+                "pinvou: warning: cannot read {}: {error}; continuing with the empty default                  (the next write replaces the unreadable file)",
+                path.display()
+            );
+            serde_json::Value::Null
+        }
     }
 }
 
@@ -2182,25 +2194,31 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // slot, so the provisional pause must not leave a `next_run_at` no GUI
     // pause would ever produce. The original value is restored on every
     // blocked/failed path below, together with the status.
-    let previous_next_run_at = def.get("next_run_at").cloned();
     def["status"] = Value::String("paused".into());
     def["next_run_at"] = Value::Null;
     store_holder.write_def(&def)?;
     // Every failure below restores the pre-delete status like the GUI
     // (`restore_task_status_if_present` runs on every failed delete): a
     // caller retrying after fixing the cause must not find the task paused.
-    let restore_status = |def: &Value, status: &str| {
-        let mut restored = def.clone();
-        restored["status"] = Value::String(status.to_owned());
-        match &previous_next_run_at {
-            Some(value) => restored["next_run_at"] = value.clone(),
-            None => {
-                if let Some(object) = restored.as_object_mut() {
-                    object.remove("next_run_at");
-                }
+    // The restore goes through the foundation update (resume/pause) exactly
+    // like the GUI's, which eagerly re-resolves a future slot: a delete
+    // blocked long enough for the pre-delete slot to pass must not reinstate
+    // a past-due `next_run_at` that the sweep then fires late (the GUI's
+    // `resume_automation` recomputes; writing the raw pre-delete value back
+    // would not). Best-effort like before: a restore failure is noted, never
+    // masks the run's own outcome.
+    let restore_status = |status: &str| {
+        let restore = store_holder.manager().and_then(|manager| {
+            match status {
+                "active" => manager.resume_automation(id),
+                // The foundation status enum has exactly active/paused; the
+                // def was written by the same foundation, so anything else
+                // cannot occur — pause is the conservative arm.
+                _ => manager.pause_automation(id),
             }
-        }
-        if let Err(restore_error) = store_holder.write_def(&restored) {
+            .map_err(|error| CliError::failed(format!("{error:#}")))
+        });
+        if let Err(restore_error) = restore {
             note!(
                 "warning: scheduled delete: the rollback could not restore the pre-delete status: {restore_error}"
             );
@@ -2212,7 +2230,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     let runs = match store_holder.list_runs(id, None) {
         Ok(runs) => runs,
         Err(error) => {
-            restore_status(&def, &previous_status);
+            restore_status(&previous_status);
             return Err(error);
         }
     };
@@ -2230,7 +2248,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     }) {
         // Mirror the GUI's restore-on-blocked path: the task stays exactly
         // as it was, paused only for the duration of this check.
-        restore_status(&def, &previous_status);
+        restore_status(&previous_status);
         return Err(CliError::failed(format!(
             "scheduled_delete_blocked: run {} is {} for task {id}; wait for it to finish \
 (only the GUI runtime can cancel a scheduled run)",
@@ -2248,7 +2266,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // caller retrying after upgrading must not find the task paused.
     if archive.is_object() {
         if let Err(error) = ensure_sidecar_schema(&archive, 2, "history archive") {
-            restore_status(&def, &previous_status);
+            restore_status(&previous_status);
             return Err(error);
         }
     }
@@ -2291,7 +2309,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         archive["tasks"] = serde_json::Value::Object(merged);
     }
     if let Err(error) = write_json_atomic(&store_holder.history_archive_path(), &archive) {
-        restore_status(&def, &previous_status);
+        restore_status(&previous_status);
         return Err(error);
     }
     // If the removal below fails, roll the archive entry back so the task is
@@ -2306,7 +2324,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         Ok(path) => path,
         Err(error) => {
             let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
-            restore_status(&def, &previous_status);
+            restore_status(&previous_status);
             return Err(error);
         }
     };
@@ -2315,7 +2333,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
-            restore_status(&def, &previous_status);
+            restore_status(&previous_status);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
                 def_path.display()
@@ -2373,7 +2391,17 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             .and_then(|value| value.as_object_mut())
         {
             if tasks.remove(id).is_some() {
-                let _ = write_json_atomic(&path, &registry);
+                // Best-effort like the rollback lanes, but not silent: the
+                // GUI poll compaction prunes the stale entry within seconds,
+                // so the impact is small — still, a skipped cleanup write
+                // contradicts the file-head no-silent-failure policy.
+                if let Err(error) = write_json_atomic(&path, &registry) {
+                    note!(
+                        "pinvou: warning: could not clean task {id} out of {}: {error} \
+                         (the GUI poll compaction will prune it)",
+                        path.display()
+                    );
+                }
             }
         }
     }
@@ -2558,45 +2586,30 @@ enabled in settings",
 /// One memory-organize pass through the windowless product host, the same
 /// wiring as `memory organize` in this crate and the GUI scheduled executor's
 /// shared-bridge fallback: requires a display and a configured active model.
-/// The host bootstrap panics (tauri's EventLoop refuses a non-main thread)
-/// rather than returning Err in some embedded environments — a panic here
-/// would take the whole process down with exit 101, outside the exit-code
-/// contract, so the boot is catch_unwind-wrapped and downgraded to the
-/// command's ordinary failure lane.
+/// A bootstrap or event-loop panic is contained inside `run_windowless_host`
+/// (its single shared catch_unwind) and arrives here as an ordinary Err, so
+/// the exit-code contract holds without a call-site wrap — every host lane
+/// is covered at the source.
 fn organize_headless() -> Result<(), String> {
-    let result = std::panic::catch_unwind(|| {
-        pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
-            let mut bridge = pool.bridge.clone();
-            bridge.prefs = UserPrefs::load();
-            bridge.session_model = None;
-            // The work-closure bound (`WorkFuture: Future<Output =
-            // anyhow::Result<T>>`) pins the error type by inference, exactly
-            // like `memory organize`'s closure — so anyhow is never named
-            // here and the `--no-default-features` build (no `dep:anyhow` in
-            // the CLI) stays clean. Redaction happens once, in the
-            // `Ok(Err(error))` arm below.
-            memory_feature::organize_memory_with_llm(&bridge, None)
-                .await
-                .map(|_| ())
-        })
+    let result = pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
+        let mut bridge = pool.bridge.clone();
+        bridge.prefs = UserPrefs::load();
+        bridge.session_model = None;
+        // The work-closure bound (`WorkFuture: Future<Output =
+        // anyhow::Result<T>>`) pins the error type by inference, exactly
+        // like `memory organize`'s closure — so anyhow is never named
+        // here and the `--no-default-features` build (no `dep:anyhow` in
+        // the CLI) stays clean. Redaction happens once, in the
+        // `Err(error)` arm below.
+        memory_feature::organize_memory_with_llm(&bridge, None)
+            .await
+            .map(|_| ())
     });
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(pinvou3_lib::platform::credential_store::redact_secret(
+        Ok(()) => Ok(()),
+        Err(error) => Err(pinvou3_lib::platform::credential_store::redact_secret(
             &format!("{error:#}"),
         )),
-        Err(panic) => {
-            let reason = panic
-                .downcast_ref::<&str>()
-                .map(|reason| (*reason).to_owned())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| {
-                    "the product host could not boot in this environment".to_owned()
-                });
-            Err(format!(
-                "scheduled_host_unavailable: {reason} (a display and an active model are required; run this task from the Pinvou app if the host cannot start here)"
-            ))
-        }
     }
 }
 

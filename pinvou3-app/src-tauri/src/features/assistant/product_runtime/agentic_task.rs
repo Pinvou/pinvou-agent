@@ -44,7 +44,7 @@ use crate::features::assistant::product_runtime::{
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
     ExecutionRootResolver, MAX_HEADLESS_SESSIONS, RetentionEvictionRecord, SessionKind,
-    SessionStore, validate_user_workspace_path,
+    SessionStore, transcript_revision, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -90,6 +90,14 @@ pub(crate) trait AgenticTeardownExecutor {
     /// Whether an engine turn is running for the session right now.
     fn teardown_turn_active(&self, session_id: &str) -> bool;
     /// Delete the session (record + directory), returning best-effort errors.
+    ///
+    /// UNCONDITIONAL by design: no adoption or stub guard. Only the test
+    /// executor calls this (the production lifecycle routes every lane
+    /// through [`Self::teardown_schedule_delete`] /
+    /// [`Self::teardown_delete_stub_if_still_empty`], whose gates ARE the
+    /// adoption contract). Wiring this into a production lane would silently
+    /// regress the round-24/25 adoption guarantees — the trait requires the
+    /// method, so the footgun is documented here instead.
     async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error>;
     /// Delete the session through the one-shot lane, returning best-effort
     /// errors. Delete-on-entry is deliberate: the caller has already
@@ -900,6 +908,41 @@ async fn restore_pre_run_pins(
     }
 }
 
+/// Whether a failed submit may have durably admitted the user message: the
+/// caller-provided session's pins must then stay (the turn owns the session,
+/// like the timeout arm past `submit_entered`), and only a provably
+/// pre-append failure restores them. Decided from record facts — the
+/// transcript revision snapshotted just before the submit against the record
+/// read after the error — because the submit boundary itself is not atomic
+/// with the append: the engine lazily spawns on submit and appends the user
+/// message before several later fallible steps (reservation liveness, engine
+/// spawn, the send itself). A missing snapshot or an unloadable record means
+/// unknown, and unknown keeps the pins: restoring over an admitted turn is
+/// the unsafe direction.
+///
+/// The `run_turn` Err arm is the only production caller; this helper is split
+/// out (like the panic arm's `resume_unwind_after_pinned_restore`) so the
+/// decision is unit-pinnable against a real store without an
+/// `EnginePoolRuntime`.
+fn submit_err_admitted_turn(
+    store: &SessionStore,
+    session_id: &str,
+    pre_submit_revision: Option<&str>,
+) -> bool {
+    let Some(pre) = pre_submit_revision else {
+        return true;
+    };
+    match store.load(session_id) {
+        Ok(record) => transcript_revision(&record.messages)
+            .map(|now| now != pre)
+            .unwrap_or(true),
+        // Unloadable record: unknown state; restoring pins over a possibly
+        // admitted turn is the unsafe direction (the same rule the
+        // never-started disposition applies to deletes).
+        Err(_) => true,
+    }
+}
+
 /// The mode half of [`restore_pre_run_pins`], split out because it needs no
 /// engine and is pinned by a store-level test.
 fn restore_plan_mode(
@@ -1219,12 +1262,13 @@ async fn run_turn(
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     // The mode and model pins below persist BEFORE the turn exists, so a
     // caller-provided session must get back the values the user left it with
-    // when the setup then fails (attachment staging, submit) or times out
-    // before the submit. Once the submit is entered the turn may own the
-    // session and the pins stay, exactly like a GUI Plan send. Fresh sessions
-    // arm neither: the record was created by this run, so there is no pre-run
-    // state a user chose (and on the `Err` paths the stub cleanup deletes the
-    // whole record, mode sidecar included).
+    // when the setup then fails (attachment staging, or a submit that failed
+    // before its durable append — [`submit_err_admitted_turn`] tells the two
+    // apart) or times out before the submit. Once the submit is entered the
+    // turn may own the session and the pins stay, exactly like a GUI Plan
+    // send. Fresh sessions arm neither: the record was created by this run,
+    // so there is no pre-run state a user chose (and on the `Err` paths the
+    // stub cleanup deletes the whole record, mode sidecar included).
     let mut plan_restore: Option<PlanModeRestore> = None;
     // The model half: `--model` rewrites the session's durable model sidecar
     // before the turn exists, and a run that never happened must not leave
@@ -1240,6 +1284,14 @@ async fn run_turn(
     // pins) from "the deadline hit around the submit" (a turn may have been
     // admitted, leave them).
     let submit_entered = AtomicBool::new(false);
+    // Transcript revision of a caller-provided session, captured inside the
+    // setup just before the submit. The Err arm compares it against the
+    // post-error record: the durable user-message append inside the submit is
+    // the only write this run can put on the messages between the two reads,
+    // so a changed revision proves the turn was admitted. `None` (fresh
+    // session, or the pre-submit read failed) means "no snapshot" — the Err
+    // arm must then assume admission.
+    let mut pre_submit_revision: Option<String> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
@@ -1347,6 +1399,17 @@ async fn run_turn(
         // the pins themselves, the bind, and attachment staging, which is the
         // slow part and the usual reason a small timeout fires — provably
         // never reached the submit, and there the pins must be restored.
+        // Snapshot the admission fact at the same boundary: from here on, the
+        // submit's own durable append is the only transcript write this run
+        // can make.
+        pre_submit_revision = if existing_session {
+            store
+                .load(session_id)
+                .ok()
+                .and_then(|record| transcript_revision(&record.messages).ok())
+        } else {
+            None
+        };
         submit_entered.store(true, Ordering::SeqCst);
         let handle = runtime
             .submit(&TurnInput {
@@ -1436,15 +1499,28 @@ async fn run_turn(
         Ok(submitted) => match submitted {
             Ok(handle) => handle,
             Err(error) => {
-                restore_pre_run_pins(
-                    runtime,
-                    store,
-                    session_id,
-                    plan_restore.take(),
-                    model_restore.take(),
-                    "failure",
-                )
-                .await;
+                // The submit boundary is not atomic with transcript admission
+                // (the `!submitted` lifecycle lane below documents the same
+                // fact): the engine lazily spawns on submit and can durably
+                // admit the user message before the fault surfaces. Rolling a
+                // caller-provided session's pins back over an admitted
+                // transcript would reopen it in the run's transient
+                // mode/model — the exact unsafe divergence the timeout arm
+                // gates on `submit_entered`. Decide from record facts instead:
+                // the pins restore only when the transcript revision is
+                // unchanged since the pre-submit snapshot (nothing landed);
+                // unknown keeps them.
+                if !submit_err_admitted_turn(store, session_id, pre_submit_revision.as_deref()) {
+                    restore_pre_run_pins(
+                        runtime,
+                        store,
+                        session_id,
+                        plan_restore.take(),
+                        model_restore.take(),
+                        "failure",
+                    )
+                    .await;
+                }
                 sweep_unreferenced_staged_copies(
                     store,
                     session_id,
@@ -3410,6 +3486,54 @@ mod tests {
                 cache_control: None,
             }],
         }
+    }
+
+    /// The Err-arm admission decision, pinned against a real store: only an
+    /// unchanged transcript revision (nothing landed) is restore-eligible; a
+    /// landed append (the late-fault submit), a missing pre-submit snapshot,
+    /// or an unreadable record all count as admitted — restoring pins over a
+    /// possibly admitted turn is the unsafe direction.
+    #[test]
+    fn submit_err_admission_decides_from_the_transcript_revision() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let (store, _tmp) = lifecycle_home("submit-admission");
+
+        seed_record(&store, "adm_probe", &[user_text("first")]);
+        let pre = super::transcript_revision(&store.load("adm_probe").unwrap().messages).unwrap();
+
+        // Submit failed before the durable append (nothing landed) → the
+        // caller-provided session's pins restore.
+        assert!(!super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            Some(&pre)
+        ));
+
+        // Submit admitted the message and only then faulted (the engine can
+        // append before its spawn/send fails) → the pins stay.
+        seed_record(
+            &store,
+            "adm_probe",
+            &[user_text("first"), user_text("second")],
+        );
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            Some(&pre)
+        ));
+
+        // No pre-submit snapshot (fresh session, or the snapshot read
+        // failed) → assume admission.
+        assert!(super::submit_err_admitted_turn(&store, "adm_probe", None));
+
+        // Record unreadable after the error → unknown ⇒ keep.
+        seed_record(&store, "adm_probe", &[user_text("first")]);
+        store.delete("adm_probe").unwrap();
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            Some(&pre)
+        ));
     }
 
     fn set_keep_session(value: Option<&str>) {
