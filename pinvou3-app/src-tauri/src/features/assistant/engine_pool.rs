@@ -8626,6 +8626,57 @@ mod probed_facts_wiring_tests {
         );
     }
 
+    /// The real finalize_runtime_bridge injection block (Ollama side):
+    /// the kind probe completes as Ollama from the live `/api/tags`
+    /// signature (no hand-set `probed_local_kind`), and the adoption
+    /// follow-up then fetches the native window for the name actually sent
+    /// — pinning the production ordering "kind probe before adopt" that
+    /// the whole feature depends on: reordering those two blocks must turn
+    /// this red.
+    #[tokio::test]
+    async fn finalize_runtime_bridge_adopts_native_window_for_ollama_kind() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            // Ollama's OpenAI shim shape: the listing carries no window fact.
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            // The kind signature that classifies the endpoint as Ollama.
+            ("/api/tags", 200, r#"{"models":[{"name":"my-model"}]}"#.into()),
+            // The native effective context the follow-up must adopt.
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Ollama),
+            "the live /api/tags signature must classify the endpoint before adoption"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "the native effective context must ride the probed facts"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the /api/ps fact wins; /api/show stays unqueried"
+        );
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "non-vLLM routes do no served-name correction"
+        );
+    }
+
     /// The real finalize_runtime_bridge injection block (vLLM side):
     /// provider() derives "vllm" (skipping the kind probe) and a single
     /// entry renames to the served name and adopts facts.
