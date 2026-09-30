@@ -355,8 +355,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
           // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
           invokeTauri(cfg.commands.applySkills).catch(() => {});
-          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state)
-          setTimeout(() => conn.setFlow(null), 1800);
+          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state).
+          // The collapse must only close a card that already reached 'done': a
+          // stale timer from the previous round must not destroy a card the
+          // user re-opened within the window (and strand the busy slot with it).
+          setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
         } : async () => {
           conn.stopTick();
           try {
@@ -372,7 +375,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             await invokeTauri(cfg.commands.applySkills);
             // Same null guard as above: the awaited apply gives cancel a wide window.
             conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
-            setTimeout(() => conn.setFlow(null), 1800);
+            // Same done-only collapse guard as the apply-mode listener above: a
+            // stale timer must not close a freshly re-opened card.
+            setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
           } catch (e) {
             // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; every other failure
             // after authorization completed (dingtalk's awaited apply, tmeet's own skill write) reports
