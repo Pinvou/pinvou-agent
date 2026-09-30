@@ -739,8 +739,13 @@ it on its next refresh",
     };
     let mut lines = vec![
         format!(
+            // Collapsed like every other user-data cell: the identity
+            // fields are user-reachable with control characters (clean_text
+            // only splits on whitespace), and a bidi override here reorders
+            // the overview the user reads. JSON stays verbatim.
             "Profile: call_name={} assistant_alias={}",
-            profile.identity.call_name, profile.identity.assistant_alias
+            one_line(&profile.identity.call_name),
+            one_line(&profile.identity.assistant_alias),
         ),
         format!("Preferences: {}", preferences.len()),
         format!("Work context: {}", work_context.len()),
@@ -799,10 +804,12 @@ it on its next refresh",
 fn profile_get(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     let profile = feature::load_profile().map_err(|error| feature_error("profile_load", error))?;
+    // Same collapse discipline as the list rows: identity cells are
+    // user-reachable with control characters; JSON stays verbatim.
     let human = format!(
         "call_name: {}\nassistant_alias: {}\nlanguage: {}\nupdated_at: {}",
-        profile.identity.call_name,
-        profile.identity.assistant_alias,
+        one_line(&profile.identity.call_name),
+        one_line(&profile.identity.assistant_alias),
         profile.conventions.language,
         profile.updated_at,
     );
@@ -1703,8 +1710,13 @@ work-context, current-focus, recent-activity)",
             )));
         }
     };
+    // The warning composes filesystem paths (cleanup failures), so it gets
+    // the same collapse as user-data cells before it reaches the terminal.
     let mut human = match &warning {
-        Some(warning) => format!("{human}\nwarning: {warning}"),
+        Some(warning) => format!(
+            "{human}\nwarning: {}",
+            support::collapse_control_characters(warning)
+        ),
         None => human,
     };
     // Item fields stay top-level with `warning` appended (mirroring `add`):
@@ -2225,11 +2237,13 @@ fn loaded_topic_source<T: Default>(
 
 fn append_warning_lines(lines: &mut Vec<String>, warnings: &[serde_json::Value]) {
     for warning in warnings {
+        // Same collapse as the update lane's warning line: the detail
+        // composes filesystem paths, which are terminal input here.
         lines.push(format!(
             "Warning: {} {}: {}",
             warning["code"].as_str().unwrap_or(""),
             warning["source"].as_str().unwrap_or(""),
-            warning["detail"].as_str().unwrap_or(""),
+            support::collapse_control_characters(warning["detail"].as_str().unwrap_or("")),
         ));
     }
 }

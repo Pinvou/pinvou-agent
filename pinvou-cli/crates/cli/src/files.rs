@@ -134,6 +134,16 @@ fn write_file(
     // Same no-overwrite policy as `sessions export`: a plain write could
     // destroy an unrelated file the user pointed at with exit 0, and
     // `create_new` makes the check and the write one atomic step.
+    // Owner-only like `sessions export`: the extracted text is a derived
+    // copy of the user document and has no business being group/world
+    // readable by default.
+    #[cfg(unix)]
+    let destination_perms = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(std::fs::Permissions::from_mode(0o600))
+    };
+    #[cfg(not(unix))]
+    let destination_perms: Option<std::fs::Permissions> = None;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -166,6 +176,9 @@ fn write_file(
             destination.display()
         ))
     })?;
+    if let Some(perms) = destination_perms {
+        let _ = file.set_permissions(perms);
+    }
     let mut value = ingest_json(result);
     if let Some(map) = value.as_object_mut() {
         map.insert(
@@ -182,7 +195,11 @@ fn print_result(result: &IngestResult, output: OutputMode) -> Result<CliOutcome,
     let value = ingest_json(result);
     let mut human = summary_lines(result);
     if let Some(markdown) = &result.markdown {
-        human.push(markdown.clone());
+        // The extracted text is tool-written output of a user-supplied
+        // document (pdftotext/pandoc/OCR of an untrusted file), so the human
+        // block gets the same block-sanitizer treatment as the artifacts and
+        // code terminal lanes; JSON keeps the verbatim text.
+        human.push(crate::support::collapse_block_control_characters(markdown));
     }
     Ok(success(render(output, human.join("\n"), &value)))
 }

@@ -2176,13 +2176,18 @@ fn remote_probe(url: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
                 .map_err(|error| anyhow::anyhow!("{error}"))
         })
         .map_err(|error| host_error("remote probe", error))?;
+    // Collapsed like every other remote-derived cell in this family: the
+    // probed endpoint controls these strings, and this is exactly the
+    // output the user is told to confirm out-of-band, so a forged label
+    // line (`ready: true`, a fake identity code) must not be renderable
+    // with control characters. JSON keeps the verbatim values.
     let human = format!(
         "endpoint: {}\nserver: {}\nserver_id: {}\nidentity_code: {}\nnetwork: {:?}\nready: {}\n\
          note: confirm the identity code out-of-band before joining",
-        probe.endpoint,
-        probe.server_name,
-        probe.server_id,
-        probe.identity_code,
+        crate::support::collapse_control_characters(&probe.endpoint),
+        crate::support::collapse_control_characters(&probe.server_name),
+        crate::support::collapse_control_characters(&probe.server_id),
+        crate::support::collapse_control_characters(&probe.identity_code),
         probe.network_kind,
         probe.ready
     );
@@ -2385,14 +2390,21 @@ fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             Ok::<_, anyhow::Error>(pinvou3_lib::features::shared_knowledge_host::status().await)
         })
         .map_err(|error| host_error("host status", error))?;
+    // Same collapse discipline as the probe block: the endpoint is
+    // server-controlled and lands in a label the user reads; JSON keeps
+    // the verbatim value.
     let human = format!(
         "supported: {}\ninstalled: {}\nrunning: {}\nendpoint: {}\nservice_version: {}\n\
          app_version: {}\nupgrade_available: {}\nclient_outdated: {}",
         status.supported,
         status.installed,
         status.running,
-        status.endpoint,
-        status.service_version.as_deref().unwrap_or("none"),
+        crate::support::collapse_control_characters(&status.endpoint),
+        status
+            .service_version
+            .as_deref()
+            .map(crate::support::collapse_control_characters)
+            .unwrap_or_else(|| "none".to_owned()),
         status.app_version,
         status.upgrade_available,
         status.client_outdated

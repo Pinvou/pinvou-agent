@@ -593,12 +593,18 @@ fn external_asr_command() -> Option<PathBuf> {
         "PADDLESPEECH_BIN",
     ] {
         if let Ok(path) = std::env::var(name) {
-            // Mirror `asr_tool_exists`: a configured path counts only when it
-            // exists, otherwise asr-status would report ready for a missing
-            // tool.
+            // Mirror `asr_tool_exists` exactly (`platform/*/asr_tool_path`
+            // availability): a configured value counts when it exists as a
+            // file OR resolves on PATH as a bare name — the app's probe
+            // accepts both shapes, and the spawn side drives bare names
+            // through `build_command`. A file-only probe here would strand
+            // GUI-working bare-name configs on `asr_engine_missing` while
+            // the remediation note tells the user to set the variable they
+            // already set. Anything unresolvable stays unconfigured, so
+            // asr-status still refuses to report ready for a missing tool.
             if !path.trim().is_empty() {
                 let configured = PathBuf::from(path.trim());
-                if configured.is_file() {
+                if configured.is_file() || command_exists(&configured) {
                     return Some(configured);
                 }
             }
@@ -876,18 +882,13 @@ fn asr_install_human(steps: &[String], engine: bool, ffmpeg: bool, model: bool) 
             "voice asr-install: nothing left to install here, but the ASR engine binary is \
              still missing, so ASR is NOT ready",
         );
-        if cfg!(target_os = "windows") {
-            text.push_str(
-                ". The engine ships inside the desktop app's MSI; the CLI only looks under \
-                 AsrDir. Point PINVOU3_ASR_CMD at the bundled pinvou-asr.exe (or copy the \
-                 engine and model into AsrDir), or use the desktop app.",
-            );
-        } else {
-            text.push_str(
-                ". Copy the engine binary from the desktop app bundle into AsrDir (the CLI has \
-                 no download route for it), or point PINVOU3_ASR_CMD at a working `pinvou-asr`.",
-            );
-        }
+        // `asr_install` refuses non-Linux targets before any human output,
+        // so this renderer only ever runs on Linux — there is no reachable
+        // Windows arm to advise here.
+        text.push_str(
+            ". Copy the engine binary from the desktop app bundle into AsrDir (the CLI has \
+             no download route for it), or point PINVOU3_ASR_CMD at a working `pinvou-asr`.",
+        );
         return text;
     }
     "voice asr-install: nothing to install, ASR already ready".to_owned()
@@ -1490,11 +1491,14 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // The recognized-pid rule the wait loop below documents (no group kill
     // once `try_wait` has reaped the child) is about signaling, not
     // registration: the supervised bracket forgets the group on EVERY exit
-    // from here on — normal completion, timeout kill, broken wait — so an
-    // interrupt later in the command cannot signal a pgid the OS may already
-    // have recycled, while an interrupt that lands while the engine runs is
-    // forwarded to its group instead of orphaning it (and the loop below
-    // unwinds through its sigint check rather than waiting out the budget).
+    // path from here on, so the timeout/kill branches never target a group
+    // whose leader this command already reaped. Scope note, honestly stated:
+    // the registration LIVES until the bracket drops at function scope —
+    // including the drain-grace window after the reap — so an interrupt in
+    // that window can still forward to the (dead leader's) pgid; that is the
+    // same trade the connectors login lane documents for keeping the
+    // registration through its drain (it is what takes pipe-holding
+    // straggler descendants down with a Ctrl-C).
     let _supervised_engine = SupervisedGroup::new(&child);
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -1660,9 +1664,10 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .unwrap_or_else(|_| "zh".to_owned());
     let timeout = asr_timeout_secs();
 
-    // build_command wraps Windows `.cmd` shims (e.g. PINVOU3_ASR_CMD pointing
-    // at an npm-style asr.cmd) in `cmd /D /S /C`, which CreateProcess cannot
-    // spawn directly.
+    // build_command hands Windows `.cmd`/`.bat` shims (e.g. PINVOU3_ASR_CMD
+    // pointing at an npm-style asr.cmd) to std::process::Command as-is; std
+    // itself routes batch files through cmd.exe with the hardened batch
+    // quoting, which CreateProcess cannot do directly.
     let mut command_line = crate::support::build_command(command, &[]);
     command_line
         .arg("asr")
@@ -2988,6 +2993,71 @@ mod tests {
         execute, ffmpeg_missing_is_fatal_for, postprocess_http_exchange, postprocess_prompt,
         transcribe_with,
     };
+
+    /// Panic-safe `PINVOU3_ASR_CMD` restore for the resolution test below:
+    /// a failing assert must not leak the fixture into sibling tests (the
+    /// same RAII rule as lib.rs's `RestoreHomeGuard`), with `ENV_LOCK` held
+    /// for the whole lifetime.
+    struct RestoreAsrCmd(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+    );
+    impl RestoreAsrCmd {
+        fn set(value: &str) -> Self {
+            let guard = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("PINVOU3_ASR_CMD");
+            unsafe { std::env::set_var("PINVOU3_ASR_CMD", value) };
+            Self(Some(guard), previous)
+        }
+    }
+    impl Drop for RestoreAsrCmd {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_CMD", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_ASR_CMD") },
+            }
+            drop(self.0.take());
+        }
+    }
+
+    /// The env-configured external ASR must resolve bare PATH names exactly
+    /// like the app's `asr_tool_exists` (`is_file() || command_exists`): a
+    /// file-only probe strands GUI-working configs (e.g. `paddlespeech` on
+    /// PATH) on `asr_engine_missing` while the remediation note tells the
+    /// user to set the very variable they already set. The unresolvable half
+    /// must keep falling through: a configured-but-missing value never
+    /// resolves to itself.
+    #[test]
+    fn external_asr_env_config_resolves_bare_path_names_like_the_app() {
+        // Each fixture lives in its own scope: `ENV_LOCK` is a non-reentrant
+        // std Mutex and shadowing a guard does not drop it, so a stacked
+        // second `RestoreAsrCmd::set` would self-deadlock.
+        {
+            let bare = if cfg!(windows) { "cmd" } else { "sh" };
+            let _guard = RestoreAsrCmd::set(bare);
+            assert_eq!(
+                super::external_asr_command(),
+                Some(std::path::PathBuf::from(bare)),
+                "a bare PATH name must resolve like the app's asr_tool_exists"
+            );
+        }
+        {
+            let missing = if cfg!(windows) {
+                std::path::PathBuf::from(r"C:\definitely\not\here\tool.cmd")
+            } else {
+                std::path::PathBuf::from("/definitely/not/here/tool")
+            };
+            let _guard = RestoreAsrCmd::set(&missing.to_string_lossy());
+            let resolved = super::external_asr_command();
+            assert_ne!(
+                resolved.as_deref(),
+                Some(missing.as_path()),
+                "a configured-but-missing value must not resolve to itself"
+            );
+        }
+    }
 
     /// The call site, not just the helper: against a loopback endpoint
     /// speaking the Anthropic Messages wire, a `stop_reason: "max_tokens"`

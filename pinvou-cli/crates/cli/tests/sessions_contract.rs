@@ -437,6 +437,36 @@ fn sessions_metadata_round_trip_updates_list_and_state() {
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 0);
 }
 
+/// Round-28 review: the delete cascade's second half — the
+/// `session-agents.json` record removal — had no contract test, so a
+/// regression deleting `agents.remove(id)` (which resurrects a ghost
+/// `sessions/<id>/code-session.json` via the desktop app's boot backfill)
+/// would pass the whole suite. Pins the removal.
+#[test]
+fn sessions_delete_removes_the_session_agent_index_record() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-cascade");
+    let id = create_session_fixture();
+
+    // Seed the auxiliary index the app's boot backfill consults. A record
+    // with no fields is a valid entry (every field defaults).
+    let agents_path = home.root.join("session-agents.json");
+    std::fs::write(
+        &agents_path,
+        serde_json::json!({ "version": 2, "sessions": { id.clone(): {} } }).to_string(),
+    )
+    .unwrap();
+
+    let value = run_json(&["pinvou", "sessions", "delete", &id, "--yes"]);
+    assert_eq!(value["action"], "deleted");
+    let agents: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&agents_path).unwrap()).unwrap();
+    assert!(
+        agents["sessions"].get(&id).is_none(),
+        "the index record must be gone, or a desktop-app boot rebuilds a ghost directory"
+    );
+}
+
 #[test]
 fn sessions_show_limits_and_exports_transcript() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

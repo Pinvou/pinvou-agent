@@ -1171,7 +1171,15 @@ fn hide_connector_skills(kind: ConnectorKind) -> Result<(), CliError> {
 /// GUI-rendered store data stays identical regardless of which surface
 /// wrote it.
 fn bundle_store_on_disconnected(id: &str) {
-    let _ = BundleStore::new().mark_degraded(id, CLI_DISCONNECTED_DEGRADED_REASON);
+    // Mirror-write failures never fail the main operation (GUI parity), but
+    // they are disclosed: the module's own rule is "headless deviations are
+    // disclosed in command output, not silent", and a silent mirror failure
+    // leaves a store record that still reads connected.
+    if let Err(error) = BundleStore::new().mark_degraded(id, CLI_DISCONNECTED_DEGRADED_REASON) {
+        note!(
+            "pinvou: warning: connectors logout: the marketplace record could not be marked degraded: {error}"
+        );
+    }
 }
 
 /// Mirror of `connector_cli::bundle_store_on_connected`: register the CLI
@@ -1188,7 +1196,12 @@ fn bundle_store_on_connected(id: &str) {
     // silently dropped on every reconnect anyway. Content integrity on this
     // lane is the download's own SHA-256 verification, same as the GUI.
     let record = BundleRecord::installed_now(id, BundleSource::Builtin);
-    let _ = BundleStore::new().upsert_preserving(record);
+    // Same disclose-don't-swallow rule as the disconnected mirror above.
+    if let Err(error) = BundleStore::new().upsert_preserving(record) {
+        note!(
+            "pinvou: warning: connectors connect: the marketplace record could not be updated: {error}"
+        );
+    }
 }
 
 // ─────────────────────────────── execute ───────────────────────────────
@@ -1279,10 +1292,21 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
             Ok(entry) => entries.push(entry),
             Err(error) => entries.push(json!({
                 "id": "ima",
-                "connected": false,
-                "credentials_present": false,
-                "skill_installed": false,
+                "ok": false,
+                // Unknown is not false: a credential-store failure says
+                // nothing about connectivity, stored credentials, or skill
+                // installation — fabricating `false` here is the exact
+                // "unknown rendered as a clean-looking row" outcome the
+                // vendor panic arm refuses. The fields stay null for a JSON
+                // consumer (null is not false); the human row renders them
+                // "no" with this note alongside, and the dedicated
+                // `connectors ima status` still fails loudly with the real
+                // error.
+                "connected": Value::Null,
+                "credentials_present": Value::Null,
+                "skill_installed": Value::Null,
                 "note": error.to_string(),
+                "degraded": "credential_store",
             })),
         }
     }
@@ -1576,9 +1600,15 @@ fn set_enabled(
         "app-only"
     };
     let refresh_line = if skills_removed {
-        "skills refresh: companion skill files removed"
+        "skills refresh: companion skill files removed".to_owned()
+    } else if skills_should_show {
+        // Nothing was pending: enabling a connected connector (or disabling
+        // one that already kept its skills) leaves the skill files exactly
+        // as they are, and the "deferred" phrasing would imply pending work.
+        "skills refresh: nothing to do (skill files match the current state)".to_owned()
     } else {
         "skills refresh: deferred to the desktop app (embedded bundle unpack is app-only)"
+            .to_owned()
     };
     let human = format!(
         "{action} {}\nconnected: {}\nskills should show: {}\n{refresh_line}",
@@ -1857,8 +1887,18 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
         // Mirror `install_tmeet_cli`: npm global install of the pinned spec.
         "tmeet" => {
             if !run_npm_install(spec)? {
+                // The hint only names the log that actually exists: npm's
+                // stdio falls back to null when the log file cannot be
+                // created, and pointing at a file that was never written
+                // sends the user hunting a empty trail.
+                let log_path = pinvou3_home().join("cli-install.log");
+                let hint = if log_path.is_file() {
+                    format!(", see {}", log_path.display())
+                } else {
+                    String::new()
+                };
                 return Err(CliError::failed(format!(
-                    "{} CLI install failed, see ~/.pinvou3/cli-install.log",
+                    "{} CLI install failed{hint}",
                     spec.display_name
                 )));
             }
@@ -2588,8 +2628,11 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 .ok_or_else(|| {
                     CliError::failed("feishu auth login did not return a device code")
                 })?;
-            notes.push(format!("authorize-url: {url}"));
-            note!("lark-cli authorize-url: {url}");
+            // Vendor-controlled URL into human output: same collapse as the
+            // login link and version cells.
+            let printable = crate::support::collapse_control_characters(&url);
+            notes.push(format!("authorize-url: {printable}"));
+            note!("lark-cli authorize-url: {printable}");
             loop {
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
@@ -2724,7 +2767,12 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             let (url, user_code, _status_ok) =
                 spawn_and_capture_url(spec, args, &mut notes, &mut tail, deadline, None)?;
             if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
-                notes.push(format!("authorize-url: {url}"));
+                // Same collapse as the feishu lane: the URL is vendor output
+                // and reaches the terminal through the notes.
+                notes.push(format!(
+                    "authorize-url: {}",
+                    crate::support::collapse_control_characters(&url)
+                ));
             }
             // Mirror the GUI's exit handling: judge by the auth probe alone —
             // a CLI that authorizes successfully but exits non-zero connects

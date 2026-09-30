@@ -344,6 +344,17 @@ where
         let end = values.len() - 2;
         values.drain(end..=end + 1);
     }
+    // A bare trailing `--output` (`pinvou benchmark list --output`) is an
+    // incomplete global pair, not family input: every family would answer
+    // with its own "unknown ..." diagnostic for what is really a missing
+    // mode value, so name it here where the position is unambiguous. A
+    // family flag value can never legally be `--output` (values may not
+    // start with `--`), so this only fires on genuinely incomplete lines.
+    if values.last().map(String::as_str) == Some("--output") {
+        return Err(CliError::usage(
+            "--output requires human or json (submission files use --destination)",
+        ));
+    }
     if values.first().map(String::as_str) == Some("agent") {
         let command = agent_task::parse(&values)?;
         return Ok(ParsedCli {

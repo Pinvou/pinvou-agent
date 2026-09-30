@@ -631,8 +631,8 @@ fn require_safe_record_id(record: &AutomationRecord) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Task store rooted at the sandbox home, mirroring
-/// `features::scheduled::tasks::open_scheduled_automation_manager`:
+/// Task store rooted at the sandbox home, matching the app's private
+/// `scheduled_automation_root` layout (`features/scheduled/tasks.rs`):
 /// `AutomationManager::open(<home>/automations)` places definitions under
 /// `<home>/automations/automations` and runs under `<home>/automations/runs`.
 struct TaskStore {
@@ -991,6 +991,68 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
         && keys
             .iter()
             .all(|key| value.get(key).is_none_or(Value::is_object))
+}
+
+/// Health-aware read for MUTATION writers. The plain [`read_registry`]
+/// degrades an unusable registry to the default — the right answer for
+/// reads, but a mutation must never write a default-based registry back:
+/// the write replaces the whole file, and the canonical path is either
+/// still holding the unreadable bytes (every sibling entry is dropped) or
+/// was renamed aside by the quarantine while the desktop app — which keeps
+/// its in-memory registry on a quarantine — may hold the only healthy copy
+/// and would install the CLI's default-based file over it on its next
+/// persist, silently resetting the sidecar entries and resolving their
+/// kinds to plain chat tasks. Three refusal cases, each repairable:
+/// malformed-on-read (quarantined this invocation), absent-after-quarantine
+/// (a `.invalid-*` sibling copy exists — the app's persist heals the path,
+/// or removing the stale copies opts back into a fresh bootstrap), and
+/// unreadable-at-rest (chmod/EIO). A healthy read and a genuinely fresh
+/// bootstrap (no file, no quarantine copies) still write.
+fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Value, CliError> {
+    let quarantine_copies_exist = |path: &Path| -> bool {
+        let Some(file_name) = path.file_name() else {
+            return false;
+        };
+        let prefix = format!("{}.invalid-", file_name.to_string_lossy());
+        std::fs::read_dir(path.parent().unwrap_or(Path::new(".")))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or(false)
+    };
+    let refuse = |why: &str| -> CliError {
+        CliError::failed(format!(
+            "scheduled_store_unreadable: registry {} {why}; a default-based rewrite would \
+             destroy the other surface's entries — repair the registry (or remove the \
+             .invalid-* quarantine copies to start fresh) and retry",
+            path.display()
+        ))
+    };
+    match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(value) if registry_shape_valid(&value, keys) => Ok(value),
+            _ => {
+                quarantine_unreadable(path);
+                Err(refuse(
+                    "was malformed and has been quarantined aside, so the healthy copy may \
+                     live only in the desktop app's memory",
+                ))
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if quarantine_copies_exist(path) {
+                Err(refuse(
+                    "is absent right after a quarantine, so the desktop app may not have \
+                     re-persisted its healthy in-memory registry yet",
+                ))
+            } else {
+                Ok(serde_json::Value::Null)
+            }
+        }
+        Err(error) => Err(refuse(&format!("could not be read ({error})"))),
+    }
 }
 
 /// Best-effort `.invalid-<timestamp>` quarantine of a registry that failed
@@ -1974,6 +2036,30 @@ fn update(
                     "warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
                 );
             }
+            // `write_def` put the pre-update `next_run_at` back verbatim, and
+            // a binding failure landing after that slot passed would hand the
+            // sweep a past-due slot to fire late — the same rationale the
+            // delete rollback's manager-routed restore follows. Reinstate the
+            // pre-update status through the foundation instead: resume
+            // eagerly re-resolves a future slot, pause clears it. Best-effort
+            // like every restore here.
+            let status = pre_update_def
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("active")
+                .to_owned();
+            let reresolved = store_holder.manager().and_then(|manager| {
+                match status.as_str() {
+                    "active" => manager.resume_automation(id),
+                    _ => manager.pause_automation(id),
+                }
+                .map_err(|restore_error| CliError::failed(format!("{restore_error:#}")))
+            });
+            if let Err(restore_error) = reresolved {
+                note!(
+                    "warning: scheduled update: the rollback could not re-resolve the pre-update schedule: {restore_error}"
+                );
+            }
             return Err(error);
         }
     }
@@ -2047,7 +2133,7 @@ fn write_model_binding(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let mut registry = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
+    let mut registry = read_registry_for_write(&store_holder.model_bindings_path(), &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match model_id {
         Some(model_id) => {
@@ -2080,7 +2166,7 @@ fn persist_task_kind(
     id: &str,
     kind: Option<&str>,
 ) -> Result<(), CliError> {
-    let mut registry = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
+    let mut registry = read_registry_for_write(&store_holder.task_kinds_path(), &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match kind {
         Some(kind) => {
@@ -2155,7 +2241,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // Same existence gate as the GUI: pin state never lingers for a deleted
     // task.
     store_holder.read_def(id)?;
-    let mut registry = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+    let mut registry = read_registry_for_write(&store_holder.ui_metadata_path(), &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     if pinned {
         let now = now_string();
@@ -2259,7 +2345,18 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // Archive first (commit before removal), then delete the definition and
     // its runs, then drop the sidecar entries — the GUI delete order minus
     // the engine-task cancellation step.
-    let mut archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
+    // A write-path read: an unreadable/quarantined archive must not be
+    // rewritten from the default (the snapshot below would silently lose
+    // every other task's run history), so the refusal restores the
+    // provisional pause like every other blocked path.
+    let mut archive =
+        match read_registry_for_write(&store_holder.history_archive_path(), &["tasks"]) {
+            Ok(archive) => archive,
+            Err(error) => {
+                restore_status(&previous_status);
+                return Err(error);
+            }
+        };
     // Same newer-schema refusal as registry_tasks_mut: an archive written by
     // a newer app version must not be merged and written back. The refusal
     // restores the provisional pause like every other blocked path — a
@@ -2747,7 +2844,8 @@ viewed"
 viewed"
         )));
     }
-    let mut read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+    let mut read_state =
+        read_registry_for_write(&store_holder.read_state_path(), &["viewed_runs"])?;
     // Same newer-schema refusal as registry_tasks_mut: a read-state file
     // written by a newer app version must not be merged and written back.
     if read_state.is_object() {
