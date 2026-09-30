@@ -1,6 +1,6 @@
 # app-automations 内置工具（会话创建定时任务）设计与验收
 
-> 状态：**规划中，未实施**（2026-09-29 定稿）。配套契约：`docs/builtin-toolset-contract.md`（§9 注册表预留行 "Scheduled task creation | L1 | not initiated"，本文即其落地设计）。
+> 状态：**已实施**（设计定稿 2026-09-29，随本分支落地；§9 为 CRUD 阶段增补，同样已实施）。配套契约：`docs/builtin-toolset-contract.md`（§9 注册表行已由 "not initiated" 更新为已注册）。
 > 基线：`luzeyang-dev`（0a9fb107e）——本设计依赖 builtin 工具集契约、`session-reader` 包与 `features/messaging`（PR 尚未合入 main），实施分支须链接在该依赖之后。
 > 实现模式：完全复用 `send_message_to_session`（26b575a17）的 "MCP 工具 + spool + 应用侧 watcher" 骨架，**新开能力族** `app-automations`，零 CodeWhale 变更。
 > 用法：实施前逐节评审；实施后按 §5 验收矩阵逐项验收，P0 全过才算完成；矩阵编号被 §6 的测试映射反向引用。
@@ -128,7 +128,7 @@
 |---|---|---|---|---|---|
 | C1 | 同幂等键重试 | 同 key 连续两次调用 | 同一 spool 文件、同一任务；第二次返回同 taskId 且 `duplicate:true`，不新建 | ◇smoke journey + ◇python | P0 |
 | C2 | 无幂等键 | 不传 key | uuid 文件名，各自独立创建 | ◇python | P1 |
-| C3 | watcher 重启恢复 | spool 有未处理文件时重启应用 | 重启后继续处理；`.done` 已存在的不重复创建 | ◇Rust 测试 + 手工 | P0 |
+| C3 | watcher 重启恢复 | spool 有未处理文件时重启应用 | 重启后继续处理；`.done` 成功标记存在的不重复创建（ok:false 的失败标记允许重试重做）。投递语义为 at-least-once：应用与写标记之间的崩溃窗口内重试可重复 create（与 features/messaging 同窗口，已记录） | ◇Rust 测试 + 手工 | P0 |
 | C4 | 失败重试与隔离 | 创建持续失败（如磁盘只读） | ≤3 次重试 → 移入 `spool/failed/` + `.done {ok:false,error}`；等待中的调用收到失败而非悬挂 | ◇Rust 测试 | P1 |
 | C5 | 并发写容忍 | list 工具读取时恰逢 watcher 落盘 | 跳过坏行不崩溃 | ◇python | P1 |
 | C6 | 目录惰性创建 | spool 目录不存在 | 首次调用自动创建 | ◇python | P2 |
@@ -157,9 +157,9 @@
 
 | # | 场景 | 操作 | 预期结果 | 验证方式 | 优先级 |
 |---|---|---|---|---|---|
-| F1 | 关闭→目录移除 | `set_builtin_feature_enabled("scheduled-task-automation", false)` | 新会话 disallowed 含两工具全名（小写），目录不再出现 | ◇Rust（镜像 ○`feature_removal_flows_into_unavailable_tool_names`） | P0 |
+| F1 | 关闭→目录移除 | `set_builtin_feature_enabled("scheduled-task-automation", false)` | 新会话 disallowed 含本族五工具全名（小写），目录不再出现 | ◇Rust（镜像 ○`feature_removal_flows_into_unavailable_tool_names`） | P0 |
 | F2 | 在途调用降级 | 关闭后旧上下文仍调用 | 结构化 `feature_disabled` + 替代动作提示，非通用 not_found | ◇python（镜像 ○feature-gate 系列） | P1 |
-| F3 | 联合语义 | 仅关本族特性 | 只移除本族两工具，session-reader 工具不受影响 | ◇Rust 注册表测试 | P1 |
+| F3 | 联合语义 | 仅关本族特性 | 只移除本族五工具，session-reader 工具不受影响 | ◇Rust 注册表测试 | P1 |
 | F4 | 状态持久一致 | 开关后重启 | prefs 与 `builtin_features.json` 镜像一致（○既有 replay 机制回归） | ○既有测试 | P1 |
 
 ### G. 平台与兼容
@@ -236,11 +236,11 @@
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 粒度 | 五个 `verb_noun` 工具，不合入 mode 枚举 | 契约 §4.2 偏好 one tool + mode，但读写审批语义不同：合入会让 L0 读也吃 L1 Ask 门（骚扰）或写操作失去门控；session-reader 三工具先例同理 |
-| 删除授权 | delete 为 L1 + 逐次 Ask（非 L2 默认拒绝） | typed Ask 逐次确认即契约 §5 的"显式授权机制"：用户在批准时看到确切删除对象；且走面板同一条 archive-then-delete 管线（历史可追溯） |
+| 删除授权 | delete 为 L1；typed Ask 规则已注册，但当前产品两模式均为全自动审批（session_policy `approval_params` = (true, Auto)），运行时不会弹逐次确认 | 诚实披露：写操作（含删除）立即生效，实际审查入口是审计日志、时间线结果卡与定时任务面板；Ask 规则为审批模式分化（S-1）落地后的强制点预留。删除走面板同一条 archive-then-delete 管线（历史可追溯） |
 | spool 扩展 | 记录加 `kind`(`create`/`update`/`delete`) + `task_id`，其余字段全部可选 | 契约 §4.4 只允许增字段：旧 create 记录经 watcher 默认 `kind=create` 继续有效 |
-| 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")` | 同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
+| 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")`；key 必须随 from_session | 命名空间按发送方收敛，不随 from_session 缺省退化为全局；同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
 | 目标预检 | update/delete 在 server 侧先探测目标存在 | 快速失败省一轮 spool；watcher 与领域层仍重检（不信任 server 侧） |
-| Ask 规则 | update/delete 同 create 一样逐次 Ask；read/list 不加 | 读操作不加门（不打扰）；无人值守对三个写工具一律拒绝（递归自改被挡） |
+| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作不加门（不打扰）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由 watcher 拒绝 sched-/eval_/aux- 发起方兜底 |
 
 ### 9.3 验收矩阵追加（接续 §5 编号）
 

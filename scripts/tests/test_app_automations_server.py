@@ -185,10 +185,36 @@ class CreateValidationTests(unittest.TestCase):
         payload, error = self.create(prompt="p" * (server.MAX_PROMPT_CHARS + 1))
         self.assertIsNone(payload)
         self.assertIn("character limit", error)
-        payload, error = self.create(idempotency_key="k" * server.MAX_IDEMPOTENCY_KEY_CHARS)
+        payload, error = self.create(
+            idempotency_key="k" * server.MAX_IDEMPOTENCY_KEY_CHARS, from_session="reqsrc01"
+        )
         self.assertIsNone(error)
-        payload, error = self.create(idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1))
+        payload, error = self.create(
+            idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1),
+            from_session="reqsrc01",
+        )
         self.assertIsNone(payload)
+
+    def test_rrule_parsing_matches_the_watcher(self):
+        # Full-width digits are a classic LLM artifact: Python's int() would
+        # accept them while the Rust watcher's u32 parse rejects the record —
+        # parse-parity poison. The server must reject them up front.
+        payload, error = self.create(rrule="FREQ=HOURLY;INTERVAL=１０")
+        self.assertIsNone(payload)
+        self.assertIn("must be an integer", error)
+        # PEP 515 underscores are legal for int(), never for the watcher.
+        payload, error = self.create(rrule="FREQ=HOURLY;INTERVAL=1_0")
+        self.assertIsNone(payload)
+        self.assertIn("must be an integer", error)
+        # Duplicate rrule fields are ambiguous across the language boundary
+        # (Python dict last-wins, Rust find first-wins): reject outright.
+        payload, error = self.create(rrule="FREQ=ONCE;FREQ=HOURLY;AT=2027-06-01T09:30")
+        self.assertIsNone(payload)
+        self.assertIn("duplicate field", error)
+        # An oversize rrule is a validation error here, not watcher poison.
+        payload, error = self.create(rrule="FREQ=HOURLY;INTERVAL=2;" + "X" * 300)
+        self.assertIsNone(payload)
+        self.assertIn("rrule: exceeds", error)
 
     def test_invalid_sender_ids_are_rejected(self):
         for bad in ("../escape", "with space", "a" * 300, "sched-run1", "eval_b1", "aux-x1"):
@@ -219,6 +245,31 @@ class CreateSpoolAndResultTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_idempotency_key_requires_from_session(self):
+        payload, error = server.create_scheduled_task(**self._create_kwargs(idempotency_key="anon"))
+        self.assertIsNone(payload)
+        self.assertIn("from_session", error)
+        self.assertEqual(len(self._spooled()), 0)
+
+    def test_preexisting_marker_reports_duplicate_result(self):
+        import hashlib
+
+        spool_id = hashlib.sha256(b"reqsrc01|create||k9").hexdigest()
+        marker_dir = Path(self.requests, "spool", ".done")
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / ("%s.json" % spool_id)).write_text(
+            json.dumps({"ok": True, "task_id": "task-9", "task_name": "旧任务"}),
+            encoding="utf-8",
+        )
+        payload, error = server.create_scheduled_task(
+            **self._create_kwargs(from_session="reqsrc01", idempotency_key="k9")
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["taskId"], "task-9")
+        self.assertTrue(payload["duplicate"])
+        self.assertIn("recorded result", payload["note"])
 
     def _create_kwargs(self, **overrides):
         args = {
@@ -342,11 +393,12 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         old_wait = server.RESULT_WAIT_SECONDS
         server.RESULT_WAIT_SECONDS = 0.05
         try:
-            server.create_scheduled_task(**self._create_kwargs(from_title="来源"))
+            server.create_scheduled_task(**self._create_kwargs())
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
         record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
-        self.assertEqual(record["from_title"], "来源")
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["kind"], "create")
 
     def test_spool_errors_do_not_leak_host_paths(self):
         blocker = Path(self.tmp) / "blocked-file"
@@ -486,13 +538,18 @@ class UpdateDeleteRequestTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("not found", error)
 
+    def test_delete_rejects_stray_paused(self):
+        payload, error = self._schedule("delete", paused=True)
+        self.assertIsNone(payload)
+        self.assertIn("no extra fields", error)
+
     def test_idempotency_key_scopes_operation_kind(self):
-        self._schedule("update", name="a", idempotency_key="k1")
-        self._schedule("delete", idempotency_key="k1")
+        self._schedule("update", name="a", idempotency_key="k1", from_session="reqsrc01")
+        self._schedule("delete", idempotency_key="k1", from_session="reqsrc01")
         self.assertEqual(len(self._spooled()), 2, "same key, different kind: no clobber")
         import hashlib
 
-        expected = hashlib.sha256(b"|delete|task-1|k1").hexdigest()
+        expected = hashlib.sha256(b"reqsrc01|delete|task-1|k1").hexdigest()
         stems = [path.stem for path in self._spooled()]
         self.assertIn(expected, stems)
 
@@ -809,22 +866,26 @@ class StdioContractTests(unittest.TestCase):
 
     def test_result_marker_read_error_keeps_polling_not_crash(self):
         # A hostile/unreadable marker must not crash the server; the wait
-        # degrades to pending.
-        marker_dir = Path(self.tmp, "task-requests", "spool", ".done")
+        # degrades to pending. The marker is pre-corrupted for this exact
+        # request's spool id so the poll loop actually reads it.
+        import hashlib
 
-        def hostile_worker():
-            marker_dir.mkdir(parents=True, exist_ok=True)
-            marker = marker_dir / "placeholder.json"
-            marker.write_text("{not json", encoding="utf-8")
+        requests = Path(self.tmp, "task-requests")
+        spool_id = hashlib.sha256(b"reqsrc01|create||hostile-k").hexdigest()
+        marker_dir = Path(requests, "spool", ".done")
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / ("%s.json" % spool_id)).write_text("{not json", encoding="utf-8")
 
         old_wait = server.RESULT_WAIT_SECONDS
         server.RESULT_WAIT_SECONDS = 0.4
         try:
             payload, error = server.create_scheduled_task(
-                requests_dir=str(Path(self.tmp, "task-requests")),
+                requests_dir=str(requests),
                 name="早报",
                 prompt="汇总新闻",
                 rrule="FREQ=HOURLY;INTERVAL=6",
+                from_session="reqsrc01",
+                idempotency_key="hostile-k",
             )
         finally:
             server.RESULT_WAIT_SECONDS = old_wait

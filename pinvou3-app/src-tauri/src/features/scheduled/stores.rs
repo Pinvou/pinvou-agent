@@ -835,6 +835,20 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
             .map(|binding| binding.model_id.clone())
     }
 
+    /// The raw `(model_id, model)` binding for a task, so a failed update can
+    /// roll back to the previous pin (create's rollback discipline).
+    pub(crate) fn binding_for(
+        &self,
+        automation_id: &str,
+    ) -> Option<(Option<String>, Option<String>)> {
+        self.registry.read().tasks.get(automation_id).map(|binding| {
+            (
+                Some(binding.model_id.clone()),
+                Some(binding.model.clone()),
+            )
+        })
+    }
+
     pub(crate) fn set(
         &self,
         automation_id: &str,

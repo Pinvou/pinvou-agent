@@ -475,11 +475,24 @@ impl ScheduledTaskState {
         let updated = ensure_automation_workspace(&manager, updated)
             .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
         if requested_model_update.is_some() || requested_model_id.is_some() {
+            let previous_binding = self.model_bindings.binding_for(&id);
             if let Err(error) =
                 self.model_bindings
                     .set(&id, requested_model_id, updated.model.clone())
             {
                 if requires_model_binding {
+                    // Roll the binding back so the reported failure is not a
+                    // half-applied state that a retried update would stack on
+                    // top of (same discipline as create's rollback).
+                    let rollback = match previous_binding {
+                        Some((model_id, model)) => self.model_bindings.set(&id, model_id, model),
+                        None => self.model_bindings.remove(&id),
+                    };
+                    if let Err(rollback_error) = rollback {
+                        log::warn!(
+                            "Failed to roll back the model binding of scheduled task {id}: {rollback_error:#}"
+                        );
+                    }
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
