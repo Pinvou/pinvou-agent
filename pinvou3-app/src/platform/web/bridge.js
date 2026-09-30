@@ -888,6 +888,26 @@ function savePinvouSceneEventsForSession(sid, events) { return pinvouSharedweb()
     }
     return cached;
   }
+  // Persona events and pinvou reviews have no local migration cache, but the
+  // backend now fails a corrupt sidecar explicitly (missing stays []). Degrade
+  // to [] exactly as before, just not silently — report like the scene/steered
+  // readers so a durable-data defect cannot pose as "no data".
+  async function loadPersonaEventsForSession(sid) {
+    try {
+      return await invoke("get_session_persona_events", { sessionId: sid }) || [];
+    } catch (error) {
+      reportSidecarReadFailure("persona events", sid, error);
+      return [];
+    }
+  }
+  async function loadPinvouReviewsForSession(sid) {
+    try {
+      return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
+    } catch (error) {
+      reportSidecarReadFailure("pinvou reviews", sid, error);
+      return [];
+    }
+  }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedweb().recordPinvouSceneForMessage(sid, pos, scene); }
   function recordPinvouSceneForBufferMessage(sid, buffer, pos, scene) {
     scene = normalizePinvouScene(scene);
@@ -1380,8 +1400,8 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
     // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
     if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
-    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
-    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
+    buf.personaEvents = await loadPersonaEventsForSession(sid);
+    buf.pinvouReviews = await loadPinvouReviewsForSession(sid);
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
@@ -2521,8 +2541,8 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
     try {
       const primary = await Promise.all([
         loadSessionForClient(id, false),
-        invoke("get_session_persona_events", { sessionId: id }).catch(function () { return []; }),
-        invoke("get_session_pinvou_reviews", { sessionId: id }).catch(function () { return []; }),
+        loadPersonaEventsForSession(id),
+        loadPinvouReviewsForSession(id),
         invoke("get_session_timeline", { sessionId: id }).catch(function () { return []; }),
       ]);
       saved = primary[0];

@@ -225,7 +225,13 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
+  // Recomputed for the sidecar read-failure surfacing: the persona/review
+  // reads moved into local loadPersonaEventsForSession /
+  // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
+  // before degrading to []; same two commands, no new invoke or listen
+  // entries (the switch-path occurrences now pass sessionId: sid like the
+  // hydration ones).
+  sessions: '301b55cae8e44ab76baf0941263bf3818d70f2c7bcf47129e453013f559d9765',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.

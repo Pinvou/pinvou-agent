@@ -1058,6 +1058,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     bt, userMessageDisplayText,
     loadPinvouSceneEventsForSession,
     syncPinvouSceneEventsForSession,
+    reportSidecarReadFailure,
     loadSteeredMessagesForSession,
     syncSteeredMessagesForSession,
     loadMemoryOverview: function (...args) { return loadMemoryOverview(...args); },

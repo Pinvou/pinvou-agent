@@ -64,6 +64,27 @@ function pinvouSharedtauriSessions() {
     const loadSteeredMessagesForSession = context.loadSteeredMessagesForSession || function () { return []; };
     const syncSteeredMessagesForSession = context.syncSteeredMessagesForSession ||
       function (sid) { return Promise.resolve(loadSteeredMessagesForSession(sid)); };
+    const reportSidecarReadFailure = context.reportSidecarReadFailure;
+    // Persona events and pinvou reviews have no local migration cache, but the
+    // backend now fails a corrupt sidecar explicitly (missing stays []). Degrade
+    // to [] exactly as before, just not silently — report like the scene/steered
+    // readers so a durable-data defect cannot pose as "no data".
+    async function loadPersonaEventsForSession(sid) {
+      try {
+        return await invoke("get_session_persona_events", { sessionId: sid }) || [];
+      } catch (error) {
+        reportSidecarReadFailure("persona events", sid, error);
+        return [];
+      }
+    }
+    async function loadPinvouReviewsForSession(sid) {
+      try {
+        return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
+      } catch (error) {
+        reportSidecarReadFailure("pinvou reviews", sid, error);
+        return [];
+      }
+    }
     const MAX_SCHEDULED_SESSION_BUFFERS = 64;
     const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
@@ -346,8 +367,8 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
     if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
-    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
-    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
+    buf.personaEvents = await loadPersonaEventsForSession(sid);
+    buf.pinvouReviews = await loadPinvouReviewsForSession(sid);
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     buf.steeredMessages = await syncSteeredMessagesForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
@@ -857,13 +878,11 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       return false;
     }
 
-    let personaEvents = [];
-    let pinvouReviews = [];
     const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     const steeredMessages = await syncSteeredMessagesForSession(id);
+    const personaEvents = await loadPersonaEventsForSession(id);
+    const pinvouReviews = await loadPinvouReviewsForSession(id);
     let turnTimeline = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
 

@@ -11,6 +11,9 @@ const webBridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platf
   // normalizePinvouScene 已随 dead-code dedup 移入共享 payload；正则 pin 需把 payload 一并纳入。
   fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sessionsRustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'app', 'commands', 'sessions.rs'), 'utf8');
+// The tauri persona/review loaders live in the sessions bridge module (the
+// protocol map pins those invokes to the sessions domain).
+const tauriSessionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'sessions.js'), 'utf8');
 
 // 提取两个 bridge 里真实的 normalizePinvouScene 白名单正则源码，供测试复用，
 // 保证 sidecar 记录路径走的是源码里的白名单，而不是各自 mock 的宽松实现。
@@ -108,6 +111,43 @@ async function runSteeredSync(reporters, block, { readFails = false, saveFails =
   } catch (error) {
     return { value: null, warnings, threw: String(error) };
   }
+}
+
+// Persona events and pinvou reviews have no local migration cache, but the
+// backend now fails a corrupt sidecar explicitly (missing stays []). The
+// loaders must degrade to [] exactly as before, just not silently. Extracted
+// and executed verbatim like the scene/steered blocks, with the real tauri
+// reporters (the loader bodies are token-identical across hosts; the tauri
+// copies live in bridge/sessions.js at that file's indentation, so the
+// comparison normalizes per-line leading whitespace).
+function extractPersonaReviewLoaders(source) {
+  const match = source.match(
+    /\/\/ Persona events and pinvou reviews have no local migration cache[\s\S]*?async function loadPinvouReviewsForSession\(sid\) \{[\s\S]*?return \[\];\n *\}\n *\}\n/,
+  );
+  return match ? match[0] : '';
+}
+const normalizeLoaderBlock = block => block.split('\n').map(line => line.trim()).join('\n');
+async function runPersonaReviewLoaders(reporters, block, { readFails = false } = {}) {
+  const warnings = [];
+  const sandbox = {
+    console: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+    async invoke(command) {
+      if (readFails) throw new Error('sidecar unreadable');
+      if (command === 'get_session_persona_events') return [{ pos: 0, kind: 'equip' }];
+      if (command === 'get_session_pinvou_reviews') return null;
+      return null;
+    },
+  };
+  vm.runInNewContext(
+    `${reporters}\n${block}\nthis.__loadPersona = loadPersonaEventsForSession;\nthis.__loadReviews = loadPinvouReviewsForSession;`,
+    sandbox,
+    { filename: 'persona-review-sidecar-block.js' },
+  );
+  return {
+    persona: await sandbox.__loadPersona('s1'),
+    reviews: await sandbox.__loadReviews('s1'),
+    warnings,
+  };
 }
 
 function createFeature(options = {}) {
@@ -381,6 +421,28 @@ function rec(name, pass, detail = '') {
       !write.threw && JSON.stringify(write.value) === JSON.stringify(cached) &&
         write.warnings.some(text => text.includes('migration write failed')),
       JSON.stringify(write));
+  }
+
+  // Persona/review sidecars have no local cache: read failure must report and
+  // degrade to [] (never throw across the bare await in the switch path).
+  const tauriPersonaReviewLoaders = extractPersonaReviewLoaders(tauriSessionsSource);
+  const webPersonaReviewLoaders = extractPersonaReviewLoaders(webBridgeSource);
+  rec('persona/review sidecar 读取助手在两个宿主上逐字节同一',
+    tauriPersonaReviewLoaders !== '' &&
+      normalizeLoaderBlock(tauriPersonaReviewLoaders) === normalizeLoaderBlock(webPersonaReviewLoaders),
+    'tauri/web persona-review loaders must stay token-identical');
+  {
+    const ok = await runPersonaReviewLoaders(tauriSidecarReporters, tauriPersonaReviewLoaders, {});
+    rec('persona/review 读取成功路径保持原值(null 归一为 [])',
+      JSON.stringify(ok.persona) === JSON.stringify([{ pos: 0, kind: 'equip' }]) &&
+        JSON.stringify(ok.reviews) === '[]' && ok.warnings.length === 0,
+      JSON.stringify(ok));
+    const failed = await runPersonaReviewLoaders(tauriSidecarReporters, tauriPersonaReviewLoaders, { readFails: true });
+    rec('persona/review 读失败时逐项上报后降级为 []，绝不抛给会话切换',
+      JSON.stringify(failed.persona) === '[]' && JSON.stringify(failed.reviews) === '[]' &&
+        failed.warnings.some(text => text.includes('persona events read failed')) &&
+        failed.warnings.some(text => text.includes('pinvou reviews read failed')),
+      JSON.stringify(failed));
   }
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
