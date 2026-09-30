@@ -436,7 +436,7 @@ test("chatview: the task lane consumes only its own draft and maps restored to n
   const chatViewSource = read("src/features/chat/ChatView.jsx");
   assert.match(
     chatViewSource,
-    /sendChatMessage\(constrained\.text, \{ \.\.\.context, draftOwner: owner \}\)/,
+    /sendChatMessage\(outgoingText, \{ \.\.\.context, draftOwner: owner \}\)/,
     "the task lane must pass the draft owner through sendChatMessage",
   );
   assert.match(
