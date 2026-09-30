@@ -432,6 +432,9 @@ command_protocol!(
         "rename_session",
         "set_session_pinned",
         "set_session_archived",
+        "get_or_create_aux_session",
+        "discard_aux_session",
+        "reset_aux_session",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
         "get_session_pinvou_scene_events",
@@ -590,3 +593,165 @@ command_protocol!(
     "diagnostics.rs",
     ["record_authority_sync_diagnostics"]
 );
+
+// Round-34 MAJOR-2: the reset's emit-before-error sequencing must be
+// EXECUTED, not inferred — the pre-fix bug (event gated behind the
+// command's `?`) left web clients buffering a stale aux transcript when
+// the create half failed after the delete half committed.
+#[test]
+fn reset_finish_emits_the_committed_delete_even_when_the_create_half_failed() {
+    use crate::app::commands::sessions::reset_aux_session_finish;
+
+    // The exact post-fix failure shape: delete committed (Some), create
+    // half failed (Err) — the event fires AND the error still returns.
+    let outcome: (Option<String>, Result<(), std::io::Error>) = (
+        Some("aux-parent".to_string()),
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the parent session no longer exists",
+        )),
+    );
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result = reset_aux_session_finish(outcome, |aux_id| {
+        emitted.borrow_mut().push(aux_id.to_string());
+    });
+    assert!(
+        result.is_err(),
+        "the create-half failure must still surface to the command"
+    );
+    assert_eq!(
+        emitted.borrow().clone(),
+        vec!["aux-parent".to_string()],
+        "the committed delete's event must fire before the error returns"
+    );
+
+    // Control: no committed delete, no event, and success passes through.
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result: Result<u8, std::io::Error> = reset_aux_session_finish((None, Ok(7u8)), |aux_id| {
+        emitted.borrow_mut().push(aux_id.to_string());
+    });
+    assert_eq!(result.expect("success passes through"), 7);
+    assert!(emitted.borrow().is_empty(), "no committed delete, no event");
+
+    // And the event still fires on the success shape (fresh session).
+    let emitted = std::cell::RefCell::new(Vec::new());
+    let result: Result<u8, std::io::Error> =
+        reset_aux_session_finish((Some("aux-parent".to_string()), Ok(7u8)), |aux_id| {
+            emitted.borrow_mut().push(aux_id.to_string());
+        });
+    assert_eq!(result.expect("success passes through"), 7);
+    assert_eq!(emitted.borrow().clone(), vec!["aux-parent".to_string()]);
+}
+
+// Round-34 minor 17: the four inline aux refusals are command-layer guards
+// with no executable driver (State/AppHandle construction is not unit-wide),
+// so their presence is pinned by source shape — a deleted guard flips its
+// pin red.
+#[test]
+fn aux_refusal_guards_stay_in_their_commands() {
+    let sessions = include_str!("sessions.rs");
+    let interaction = include_str!("interaction.rs");
+    let projects = include_str!("projects.rs");
+
+    // The discard command must not silently no-op on aux-shaped ids.
+    assert!(
+        sessions.contains("discard_aux_session: auxiliary conversations do not own an aux session"),
+        "discard_aux_session must reject aux-shaped parent ids",
+    );
+    assert!(
+        interaction
+            .contains("set_multi_agent_mode: auxiliary conversations do not take multi-agent mode"),
+        "set_multi_agent_mode must reject aux ids explicitly",
+    );
+    assert!(
+        sessions.contains(
+            "rename_session: auxiliary conversations are managed through their main session"
+        ),
+        "rename_session must keep its aux refusal",
+    );
+    assert!(
+        sessions.contains(
+            "set_session_pinned: auxiliary conversations are managed through their main session"
+        ),
+        "set_session_pinned must keep its aux refusal",
+    );
+    assert!(
+        sessions.contains(
+            "set_session_archived: auxiliary conversations are managed through their main session"
+        ),
+        "set_session_archived must keep its aux refusal",
+    );
+    assert!(
+        projects.contains("move_session_to_project: auxiliary conversations are managed through their main session"),
+        "move_session_to_project must keep its aux refusal",
+    );
+    // Round-36 minor 3: the newest campaign member (round-34 minor 6).
+    let settings = include_str!("settings.rs");
+    assert!(
+        settings.contains(
+            "set_session_model: auxiliary conversations inherit the main session's model"
+        ),
+        "set_session_model must keep its aux refusal",
+    );
+    // The sched- send gates go through the alias-defeating predicate, not
+    // exact prefix matching (round-34 minor 4; the contains() form was
+    // corrected to the exact call shape — a re-spelled prefix would
+    // false-pass a substring hunt, round-35 minor 8).
+    let pool = include_str!("../../features/assistant/engine_pool.rs");
+    assert!(
+        pool.matches("crate::features::sessions::is_sched_session_id(session_id)")
+            .count()
+            >= 2,
+        "both sched- send gates must use the case-insensitive predicate",
+    );
+    assert!(
+        !pool.contains("starts_with(\"sched-\")"),
+        "no sched- send gate may keep the exact prefix check",
+    );
+}
+
+// Round-35 MAJOR-2: the aux-cascade wiring inside
+// `EnginePool::delete_chat_session` is load-bearing production routing (its
+// doc forbids substituting a bare delete) and had NO executing caller — a
+// mutation swapping the wrapper for a direct gate call kept every Rust test
+// green. Source-shape pin (the same class as the refusal pins above): the
+// method body must route through `delete_chat_session_with_aux_cascade`
+// and must not call the gate directly.
+#[test]
+fn delete_chat_session_keeps_its_aux_cascade_wrapper() {
+    let pool = include_str!("../../features/assistant/engine_pool.rs");
+    let method_start = pool
+        .find("pub(crate) async fn delete_chat_session(")
+        .expect("delete_chat_session must exist");
+    let method_end = pool[method_start..]
+        .find("/// Atomically reset a task's auxiliary conversation")
+        .expect("the next method doc must exist");
+    let body = &pool[method_start..method_start + method_end];
+    assert!(
+        body.contains("delete_chat_session_with_aux_cascade("),
+        "delete_chat_session must route through the aux-cascade wrapper (the gate call inside it is the wrapper's own closure argument — the reviewed mutation removes the wrapper call entirely, which fails this pin)",
+    );
+}
+
+// Round-36 minors 4+5: the two aux-classification surfaces an independent
+// re-enumeration found beyond the 26 guard sites. The deliverables index is a
+// cross-session surface, so it must skip aux records by the derived-id rule;
+// the ACP classification must never call an aux id ACP — an aux of an ACP
+// main inherits the exact ACP model string, so sniffing alone would let a
+// raw-metadata scan hand a full-tool ACP agent an aux id outside the
+// EnginePool pins.
+#[test]
+fn aux_stays_out_of_the_deliverables_index_and_acp_classification() {
+    let deliverables = include_str!("../../features/deliverables.rs");
+    assert!(
+        deliverables.contains("crate::features::sessions::is_aux_session_id"),
+        "the deliverables index must skip aux records (round-36 minor 4)",
+    );
+    let acp = include_str!("../../features/codex_acp/mod.rs");
+    assert!(
+        acp.matches("crate::features::sessions::is_aux_session_id")
+            .count()
+            >= 2,
+        "is_acp_metadata and is_acp must both reject aux ids (round-36 minor 5)",
+    );
+}

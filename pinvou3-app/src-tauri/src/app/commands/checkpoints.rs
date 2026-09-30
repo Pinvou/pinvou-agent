@@ -289,6 +289,18 @@ fn busy_peer_on_same_execution_root(
         if metadata.id == session_id {
             continue;
         }
+        // Aux side-chat sessions are zero-tool by construction (PR #433): they
+        // can never write files, so the gate's premise — a peer engine leaving
+        // half-written files in the shared execution root — is structurally
+        // false for them. In production the exclusion is defense-in-depth:
+        // `SessionStore::session_roots` resolves an aux id to its private
+        // `sessions/aux-<id>/workspace` (no codex record, no workspace-binding
+        // sidecar is ever written for aux), so an aux root can never equal
+        // the parent's. The skip keeps the gate correct against any future
+        // resolver change that would surface a shared root for aux records.
+        if crate::features::sessions::is_aux_session_id(&metadata.id) {
+            continue;
+        }
         let roots = match store.session_roots(&metadata.id) {
             Ok(roots) => roots,
             // 根解析失败的会话（如目录被删）无从比较执行根，跳过。
@@ -827,6 +839,76 @@ mod tests {
         let hit =
             busy_peer_on_same_execution_root(&store, &alice_id, &project, |id| id == busy_bob)
                 .expect("gate");
+        assert_eq!(hit, Some(bob.metadata.title.clone()));
+    }
+
+    /// An aux session (aux-) is not intercepted even when bound to the same
+    /// execution root and streaming an answer (PR #433 round-20 Major-1):
+    /// under zero-tools semantics it cannot write files into the directory,
+    /// so the busy gate's premise structurally does not hold for it. Note
+    /// (round-22 correction): the production root resolver always returns
+    /// None for aux ids (no codex record, and no workspace binding sidecar is
+    /// written), so the aux root always resolves to the private
+    /// `sessions/aux-<id>/workspace`, and the same-root-as-main scenario is
+    /// unreachable in production — the resolver binding below is a
+    /// hypothetical configuration that production could never produce for an
+    /// aux; what this test pins is the defensive exclusion itself, not a
+    /// mis-lock that ever really happened.
+    #[test]
+    fn busy_gate_ignores_busy_aux_peers_on_same_root() {
+        let (store, _g) = isolated_store("aux-peer");
+        let project = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-gate-aux-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&project).expect("project dir");
+        let main = store
+            .create_new("/model".into(), None, project.clone())
+            .expect("create main");
+        let main_id = main.metadata.id.clone();
+        let aux = store
+            .get_or_create_aux_session(&main_id)
+            .expect("create aux");
+
+        // Defensive configuration: the production root resolver always returns
+        // None for aux ids (see the test doc comment); here the aux is
+        // explicitly given the same root as the main session, purely to pin
+        // the exclusion logic itself.
+        let bound = project.clone();
+        let (m, x) = (main_id.clone(), aux.id.clone());
+        store.set_execution_root_resolver(Arc::new(move |id: &str| {
+            if id == m || id == x {
+                Some(bound.clone())
+            } else {
+                None
+            }
+        }));
+
+        // The aux session is streaming an answer (busy evaluates true) -> not intercepted.
+        let busy_aux = aux.id.clone();
+        let none =
+            busy_peer_on_same_execution_root(&store, &main_id, &project, |id| id == busy_aux)
+                .expect("gate");
+        assert_eq!(none, None, "busy aux peer must not block the main session");
+
+        // Control: a busy ordinary session on the same root still blocks (the
+        // aux exclusion did not weaken existing semantics).
+        let bob = store
+            .create_new("/model".into(), None, project.clone())
+            .expect("create bob");
+        let bound2 = project.clone();
+        let (m2, b2) = (main_id.clone(), bob.metadata.id.clone());
+        store.set_execution_root_resolver(Arc::new(move |id: &str| {
+            if id == m2 || id == b2 {
+                Some(bound2.clone())
+            } else {
+                None
+            }
+        }));
+        let busy_bob = bob.metadata.id.clone();
+        let hit = busy_peer_on_same_execution_root(&store, &main_id, &project, |id| id == busy_bob)
+            .expect("gate");
         assert_eq!(hit, Some(bob.metadata.title.clone()));
     }
 
