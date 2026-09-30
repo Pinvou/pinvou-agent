@@ -186,6 +186,7 @@ function injectSource() {
     var superPerm = false;
     var calls = [];
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
+    var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
@@ -209,6 +210,7 @@ function injectSource() {
     var failMemoryOverview = false;
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
+    var pendingDownloadReject = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
@@ -291,8 +293,11 @@ function injectSource() {
         case 'set_super_permission': return Promise.reject(new Error('pkexec unavailable'));
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({ online: true, ok: true, status: 'online' });
-        case 'check_for_update': return Promise.resolve(Object.assign({}, updateResponse));
-        case 'download_update': return new Promise(function (resolve) { pendingDownloadResolve = resolve; });
+        case 'check_for_update':
+          return updateCheckFailure
+            ? Promise.reject(new Error(updateCheckFailure))
+            : Promise.resolve(Object.assign({}, updateResponse));
+        case 'download_update': return new Promise(function (resolve, reject) { pendingDownloadResolve = resolve; pendingDownloadReject = reject; });
         case 'install_update': return Promise.resolve(null);
         case 'find_resumable_run': return Promise.resolve(null);
         case 'check_dependencies': return Promise.resolve(dependencyCheckResponse.slice());
@@ -340,6 +345,7 @@ function injectSource() {
       settings: function () { return settings; },
       activeModelId: function () { return activeModelId; },
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
+      setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
@@ -355,6 +361,13 @@ function injectSource() {
           var resolve = pendingDownloadResolve;
           pendingDownloadResolve = null;
           resolve({ package_path: 'C:\\\\tmp\\\\pinvou.zip', installer_path: 'C:\\\\tmp\\\\pinvou.msi', latest_version: updateResponse.latest_version });
+        }
+      },
+      rejectDownload: function (rawError) {
+        if (pendingDownloadResolve) {
+          var reject = pendingDownloadReject;
+          pendingDownloadResolve = null;
+          reject(new Error(rawError));
         }
       },
     };
@@ -597,7 +610,20 @@ async function modalWidth(page, headingText) {
       && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
 
   await clickSettingsSection(page, '更新');
+  // A failed manual check (offline, blocked request, ...) shows only the short localized hint, never the raw backend error.
   await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure('update request failed: error sending request for url');
+    await window.TauriBridge.updater.checkForUpdate();
+  });
+  await sleep(250);
+  const updateCheckFailureText = await page.evaluate(() => document.querySelector('#settings-version-update')?.innerText || '');
+  rec('update: a failed manual check shows only the short localized hint',
+    updateCheckFailureText.includes('检查失败')
+    && !updateCheckFailureText.includes('update request failed')
+    && !updateCheckFailureText.includes('error sending request'),
+    updateCheckFailureText);
+  await page.evaluate(async () => {
+    window.__SETTINGS_TEST__.setUpdateCheckFailure(null);
     window.__SETTINGS_TEST__.setUpdateResponse({
       available: true,
       current_version: '0.6.1',
@@ -639,6 +665,29 @@ async function modalWidth(page, headingText) {
   rec('①c 设置页可取消正在进行的更新下载', await callCount(page, 'cancel_download') === 1);
   await page.evaluate(() => window.__SETTINGS_TEST__.resolveDownload());
   await sleep(250);
+
+  // ①u A failed download/install shows only the localized short hint: the raw
+  // backend error string (it may carry request details and its language is
+  // undefined) never enters the card — it stays on bridge state and the
+  // updater's log as diagnostics. Do not await the returned promise: the
+  // download hangs until the reject hook fires, and awaiting would stall CDP.
+  await page.evaluate(() => { window.TauriBridge.updater.downloadAndInstallUpdate(); });
+  await sleep(250);
+  await page.evaluate(() => window.__SETTINGS_TEST__.rejectDownload('RAW update diagnostics: apt stderr http://proxy.internal'));
+  await sleep(250);
+  const updateFailureText = await page.evaluate(() => {
+    const root = document.querySelector('#settings-version-update');
+    return root ? root.innerText : '';
+  });
+  rec('①u 更新失败仅显示本地化提示,原始错误串不进卡片',
+    updateFailureText.includes('更新失败')
+    && !updateFailureText.includes('RAW update diagnostics')
+    && !updateFailureText.includes('proxy.internal'),
+    JSON.stringify(updateFailureText));
+  // Note: bs.updateError stays set on the bridge after this rec (the bridge only
+  // clears it at the start of the next download). Harmless today because no
+  // later test reads the update card, but any future update-section test must
+  // run a fresh downloadAndInstallUpdate (or reset state) before asserting.
 
   await clickSettingsSection(page, '模型');
   const modelList = await page.evaluate(() => {

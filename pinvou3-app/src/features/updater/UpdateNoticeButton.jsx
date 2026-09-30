@@ -30,6 +30,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
     installing: t.installing,
     restartNow: t.restartNow,
     updateInstallerStarted: t.updateInstallerStarted,
+    updateInstallFailed: t.updateInstallFailed,
   });
 
   const handleUpgrade = () => {

@@ -336,11 +336,11 @@ impl Pinvou3Bundle {
     /// The ordering and the reconcile call itself are load-bearing and pinned by
     /// `startup_maintenance_restores_missing_entry_before_python_repair`:
     /// deleting the reconcile call, or moving it after the repair, fails that
-    /// test. Reconcile actions go through the startup timeline: release builds
-    /// register no log sink, so `log::info!` alone would leave the outcomes
-    /// invisible. Reconcile failures never block startup; the repair closure's
-    /// integrity result and the builtin upsert's structural errors propagate to
-    /// the caller, which treats them like any other extraction failure.
+    /// test. Reconcile actions go through the startup timeline, keeping their
+    /// outcomes visible independent of the rotating app log. Reconcile failures
+    /// never block startup; the repair closure's integrity result and the
+    /// builtin upsert's structural errors propagate to the caller, which treats
+    /// them like any other extraction failure.
     pub(super) fn run_mcp_startup_maintenance<S, F>(
         &self,
         marketplace: &crate::features::marketplace::MarketplaceManager<S>,

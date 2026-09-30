@@ -31,7 +31,7 @@ pub async fn download_update_package(
     _cancel: &AtomicBool,
     _stall_timeout: Duration,
 ) -> Result<(), String> {
-    Err("当前平台暂不支持应用内更新".to_string())
+    Err("in-app updates are not supported on this platform".to_string())
 }
 
 pub fn install_downloaded_update(
@@ -39,7 +39,7 @@ pub fn install_downloaded_update(
     _installer_path: Option<String>,
     _info: Option<UpdateInfo>,
 ) -> Result<bool, String> {
-    Err("当前平台暂不支持应用内更新".to_string())
+    Err("in-app updates are not supported on this platform".to_string())
 }
 
 pub async fn report_pending_update_result_info(
@@ -50,6 +50,6 @@ pub async fn report_pending_update_result_info(
         had_pending: false,
         reported: false,
         result: String::new(),
-        message: "当前平台没有待反馈升级结果".to_string(),
+        message: "no pending update result to report".to_string(),
     })
 }
