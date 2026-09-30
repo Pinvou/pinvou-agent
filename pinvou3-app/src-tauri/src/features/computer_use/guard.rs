@@ -512,8 +512,8 @@ impl ComputerUseShared {
     /// (an unanswered dialog must not be clickable by the model itself — the
     /// approve control is an ordinary clickable element, so letting input
     /// through while a pending exists would let the session approve its own
-    /// consequential action). [`Self::verify_input_action`] must be checked
-    /// once more before injection.
+    /// consequential action). The gate (this method) must be checked once
+    /// more right before injection, so a revoke landing mid-run takes effect.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
@@ -539,16 +539,6 @@ impl ComputerUseShared {
             .pending
             .values()
             .any(|entry| entry.session_id == session_id)
-    }
-
-    /// Read-only re-check: whether the grant is still valid (switch, stop
-    /// flag, grant present). Between `begin_input_action` and the actual
-    /// injection there can be time-consuming steps such as an automatic
-    /// screenshot, and a revoke inside that window must take effect; must be
-    /// called before injecting — and before any consent surface, so a
-    /// stop/revoke landing mid-run cannot still pop a confirmation dialog.
-    pub fn verify_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
-        self.begin_input_action(session_id)
     }
 
     /// Serializes physical input injection across sessions (see
@@ -659,7 +649,10 @@ impl ComputerUseShared {
         self.grant_requests.lock().contains(session_id)
     }
 
-    pub fn pending_confirmation(&self, confirm_id: &str) -> Option<PendingConfirmation> {
+    /// Test-only peek at a pending confirmation (production paths consume the
+    /// pending through `confirm`/`deny` by id).
+    #[cfg(test)]
+    pub(crate) fn pending_confirmation(&self, confirm_id: &str) -> Option<PendingConfirmation> {
         let mut consent = self.consent.lock();
         let entry = consent.pending.get(confirm_id)?;
         if entry.created_at.elapsed() > CONFIRM_TTL {
@@ -795,7 +788,7 @@ impl ComputerUseShared {
     ) -> ConfirmationCheck {
         // Defense in depth (mirrors the mint side): a token minted while
         // enabled must not be spendable after a stop/disable landed — the
-        // spend path still dies at verify_input_action, but consuming the
+        // spend path still dies at begin_input_action, but consuming the
         // user's approval there would be the wrong direction. The check now
         // lives under the consent lock (the mint side always did), so a
         // disable landing between the check and the spend cannot consume the
@@ -943,7 +936,7 @@ mod tests {
         // Repeated gating/re-checks never invalidate.
         for _ in 0..10 {
             assert!(shared.begin_input_action("s1").is_ok());
-            assert!(shared.verify_input_action("s1").is_ok());
+            assert!(shared.begin_input_action("s1").is_ok());
             assert!(shared.has_active_grant("s1"));
         }
         // Granting/re-granting other sessions does not clear s1 (no idle
@@ -1219,23 +1212,23 @@ mod tests {
     }
 
     #[test]
-    fn verify_input_action_is_read_only_and_catches_revoke() {
+    fn begin_input_action_is_read_only_and_catches_revoke() {
         let shared = enabled_shared();
         assert_eq!(
-            shared.verify_input_action("s1"),
+            shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
         shared.grant_session("s1");
-        assert!(shared.verify_input_action("s1").is_ok());
+        assert!(shared.begin_input_action("s1").is_ok());
         shared.revoke_session("s1");
         assert_eq!(
-            shared.verify_input_action("s1"),
+            shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
-        // Read-only: repeated verify has no side effects.
+        // Read-only: repeated gating has no side effects.
         shared.grant_session("s1");
         for _ in 0..10 {
-            assert!(shared.verify_input_action("s1").is_ok());
+            assert!(shared.begin_input_action("s1").is_ok());
         }
     }
 
@@ -1855,7 +1848,7 @@ mod tests {
 
     /// Defense in depth: a token minted while enabled must not be spendable
     /// after the master switch goes off (the spend would die at
-    /// verify_input_action anyway, but consuming the user's approval there
+    /// begin_input_action anyway, but consuming the user's approval there
     /// would be the wrong direction).
     #[test]
     fn take_confirmation_refuses_while_disabled_or_stopped() {

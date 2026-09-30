@@ -84,12 +84,12 @@ assert.match(feature, /pub fn agent_catalog\(\)[\s\S]*?AgentBackend::ACP_BACKEND
 assert.match(agentProbe, /fn cli_probe_for\([\s\S]*?AgentBackend::ClaudeAcp[\s\S]*?AgentBackend::KimiAcp/);
 assert.match(
   install,
-  /if matches!\(probe, CliVersionProbe::TimedOut\)[\s\S]*?probe_cli_version\(&path\)/,
+  /if matches!\(probe, CliVersionProbe::TimedOut\)[\s\S]*?command_version_probe\(&path\)/,
   "a slow first CLI launch may retry once",
 );
 assert.doesNotMatch(
   install,
-  /CliVersionProbe::Failed\s*\|\s*CliVersionProbe::TimedOut[\s\S]{0,120}probe_cli_version/,
+  /CliVersionProbe::Failed\s*\|\s*CliVersionProbe::TimedOut[\s\S]{0,120}command_version_probe/,
   "deterministic CLI failures must stay cached instead of spawning repeatedly",
 );
 assert.match(

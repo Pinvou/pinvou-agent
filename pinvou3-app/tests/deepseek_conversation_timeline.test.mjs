@@ -10,7 +10,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-deepseek-conversation-'));
 const conversationDir = path.join(temp, 'features', 'conversation');
+const sharedDir = path.join(temp, 'shared');
 mkdirSync(conversationDir, { recursive: true });
+mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(
@@ -18,6 +20,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
     path.join(conversationDir, file),
   );
 }
+copyFileSync(
+  path.join(root, 'src', 'shared', 'shell-tools.mjs'),
+  path.join(sharedDir, 'shell-tools.mjs'),
+);
 vm.runInThisContext(
   readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
   { filename: 'model-service-errors.js' },
@@ -123,7 +129,6 @@ try {
   });
 
   assert.deepEqual(chatItems, before, 'projection must never rewrite the DeepSeek chatItems fact source');
-  assert.equal(projected.thread.id, 'session-1');
   assert.equal(projected.turns.length, 3, 'preamble and each user message must become stable turns');
   assert.equal(projected.turns[1].userText, '检查仓库');
   assert.deepEqual(

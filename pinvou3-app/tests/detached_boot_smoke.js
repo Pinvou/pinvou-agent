@@ -76,7 +76,6 @@ function injectSource() {
       if (cmd === 'get_backend_status') return { vllm_online:false };
       if (cmd === 'get_memory_overview') return {};
       if (cmd === 'get_monitor_snapshot') return {
-        generated_at_ms:Date.now(),
         cpu:{ name:'DETACHED-MONITOR-CPU', total_usage_pct:37 },
         ram:{ used_kib:4194304, total_kib:8388608, swap_used_kib:0, swap_total_kib:1048576 },
         app:{ pinvou3_version:'DETACHED_MONITOR_OK', session_uptime_secs:90 },

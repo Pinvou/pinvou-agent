@@ -132,6 +132,24 @@ function deferred() {
     'send completion must preserve references added after the request started');
 }
 
+{
+  // beginDraft hands the leaving session's attachments to the draft composer
+  // through the same helper. An empty source must be a no-op (the old ad-hoc
+  // updater wiped the draft bucket unconditionally), and a non-empty source
+  // must append to the draft bucket and delete the source key so the one-shot
+  // browser attachment handles keep a single owner.
+  const drafts = { draft: [{ id: 'kept' }], 'session-B': [{ id: 'b1' }] };
+  const moved = transferAcpDraftItems(drafts, 'session-B', 'draft', drafts['session-B'], item => item.id);
+  assert.deepEqual(moved.draft.map(item => item.id), ['kept', 'b1'],
+    'beginDraft must append the leaving session attachments to the draft bucket');
+  assert.equal('session-B' in moved, false,
+    'the source key must be deleted so the moved handles keep exactly one owner');
+
+  const untouched = transferAcpDraftItems({ draft: [{ id: 'kept' }] }, 'session-C', 'draft', [], item => item.id);
+  assert.deepEqual(untouched.draft.map(item => item.id), ['kept'],
+    'an empty source must not wipe the draft bucket');
+}
+
 const viewSource = await readFile(
   new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
   'utf8',

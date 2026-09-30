@@ -1628,9 +1628,9 @@ pub(crate) fn spawn_event_forwarder(
                 // Connector readiness is owned by Pinvou's marketplace state. The
                 // Engine event is intentionally observed only for diagnostics until
                 // that UI adopts the generation-based v0.9.12 snapshot protocol.
-                // Release builds register no log sink, so the terminal boot
-                // receipt is also persisted through the startup timeline
-                // (`~/.pinvou3/logs/startup.log`) to keep failures visible.
+                // The terminal boot receipt is additionally persisted through
+                // the startup timeline (`~/.pinvou3/logs/startup.log`) so it
+                // stays visible independent of the rotating app log.
                 // The engine re-reports the receipt on every real turn; only a
                 // changed failure set is persisted.
                 Event::McpSessionBoot { .. } => {

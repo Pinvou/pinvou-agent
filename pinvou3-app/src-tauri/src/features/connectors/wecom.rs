@@ -17,7 +17,7 @@
 
 use std::process::Stdio;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Manager};
@@ -133,18 +133,36 @@ pub async fn wecom_status() -> Result<Value, String> {
 
 /// 开始连接企微(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn wecom_connect_begin(app: AppHandle) -> Result<Value, String> {
-    app.state::<ConnectorConn>().reset(ID);
+    let conn = app.state::<ConnectorConn>();
+    // A reconnect without an intervening cancel leaves the previous round's
+    // long-running child registered in the pid slot; the reset below overwrites
+    // that slot, which would make the orphan invisible to cancel's tree-kill
+    // and to kill_all_pids at exit. Kill it before resetting.
+    if let Some(pid) = conn.cancel(ID) {
+        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    }
+    let generation = conn.reset(ID);
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
-    if let Err(e) = phase_scan(app) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
+    let conn = app.state::<ConnectorConn>();
+    if let Err(e) = phase_scan(app, generation) {
+        // The card renders a localized category message only; the raw cause
+        // is logged here (stdout in dev runs, the app log in packaged builds).
+        log::warn!("[wecom] connect flow failed: {e}");
+        // reset() clears the cancelled flag, so the flag alone cannot stop a
+        // late emit in the cancel-then-reconnect window; a cancelled or
+        // superseded round stays silent instead of polluting the new card.
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+            return;
+        }
         cc::emit(
             app,
             "wecom:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
         );
     }
 }
@@ -174,7 +192,7 @@ fn poll_qr_png(dir: &std::path::Path, timeout: Duration) -> Option<Vec<u8>> {
 }
 
 /// 单段:`auth init --noninteractive --no-browser` 长驻 → 抓 URL 出二维码 → 等进程退出 → 查 ready。
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     // CLI 1.1.0's --output-qrcode only accepts a path relative to the current
     // directory, so the real auth QR PNG is written into a temp dir. The stdout
     // URL is the /ai/qc/gen landing page (which would ask the user to scan
@@ -219,11 +237,13 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     };
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
-    // 排空 stdout+stderr,抓首个企微 URL(channel 送回)。主线程 tx 丢掉,
-    // 两个管道都 EOF 后 rx 自动断开,不会永久阻塞。
-    let (tx, rx) = mpsc::channel::<String>();
+    // 排空 stdout+stderr,每行送回 (首个企微 URL, 脱敏安全行)。主线程 tx 丢掉,
+    // 两个管道都 EOF 后 rx 自动断开,不会永久阻塞。安全行进失败原因缓冲:
+    // 卡片只显示本地化类目文案,捕获的原因行走 log 诊断轨迹。
+    let (tx, rx) = mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
         cc::drain_for_url(WECOM_CTX, o, tx.clone());
     }
@@ -232,19 +252,32 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     }
     drop(tx);
 
-    let url = match rx.recv_timeout(Duration::from_secs(40)) {
-        Ok(u) => u,
-        Err(_) => {
-            let _ = child.kill();
-            cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
-            let _ = std::fs::remove_dir_all(&qr_dir);
-            // Cancel tree-kills the child → pipe EOF lands here: the user stopped
-            // on purpose, so finish silently instead of misreporting a link timeout.
-            if conn.is_cancelled(ID) {
-                return Ok(());
+    let mut auth_lines = std::collections::VecDeque::with_capacity(32);
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let url = loop {
+        // 40s 总预算;无 URL 行只记入原因缓冲并继续等。管道 EOF(子进程没打
+        // URL 就退出)会让 recv_timeout 立即返回 Disconnected,走进下面的失败臂。
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((Some(u), safe)) => {
+                cc::remember_auth_line(&mut auth_lines, safe);
+                break u;
             }
-            return Err("no QR link within 40s (check network / proxy)".into());
+            Ok((None, safe)) => cc::remember_auth_line(&mut auth_lines, safe),
+            Err(_) => {
+                let _ = child.kill();
+                cc::reap_after_kill(&mut child);
+                conn.clear_pid_if(ID, pid);
+                let _ = std::fs::remove_dir_all(&qr_dir);
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting a link timeout.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
+                return Err(cc::auth_failure_reason(
+                    &auth_lines,
+                    "no QR link within 40s (check network / proxy)",
+                ));
+            }
         }
     };
     // Prefer the real auth QR written by the CLI; on failure (write failure /
@@ -254,13 +287,15 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .or_else(|| cc::make_qr(&url));
     let _ = std::fs::remove_dir_all(&qr_dir);
     // Cancel during the PNG wait window: exit silently. Emitting wecom:qr now
-    // would re-open the scan modal the user already dismissed.
-    // (wecom_cancel already tree-killed by pid; the extra kill + pid slot reset
-    // here covers the race.)
-    if conn.is_cancelled(ID) {
+    // would re-open the scan modal the user already dismissed — and after a
+    // reconnect it would paint the dead round's QR onto the new round's card,
+    // so a superseded generation is treated the same as a cancel here.
+    // (wecom_cancel already tree-killed by pid; the extra kill + pid-slot
+    // reset here covers the race. clear_pid_if keeps a newer round's pid.)
+    if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
         let _ = child.kill();
         cc::reap_after_kill(&mut child);
-        conn.set_pid(ID, None);
+        conn.clear_pid_if(ID, pid);
         return Ok(());
     }
     cc::emit(
@@ -269,27 +304,46 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         json!({ "phase": "authorize", "url": url, "qr_data_url": qr }),
     );
 
-    // 等进程退出(用户扫码完成);期间轮询取消标志。退出后查 ready 收尾。
+    // 等进程退出(用户扫码完成);期间轮询取消标志。URL 打出后 CLI 才打印的
+    // 失败原因行也持续收进缓冲,退出臂才有得拼。
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(()); // 取消:静默
         }
+        while let Ok((_, safe)) = rx.try_recv() {
+            cc::remember_auth_line(&mut auth_lines, safe);
+        }
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                conn.set_pid(ID, None);
-                if is_ready() {
+            Ok(Some(status)) => {
+                conn.clear_pid_if(ID, pid);
+                if conn.is_cancelled(ID) {
+                    // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                    log::info!("[wecom] cancelled; child exit={status}");
+                    return Ok(());
+                }
+                let ready = is_ready();
+                // The readiness probe is a subprocess call and can span a
+                // cancel: finish silently — no connected onto a closed card,
+                // no resurrected error card.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
+                if ready {
                     cc::bundle_store_on_connected(ID);
                     cc::emit(app, "wecom:connected", json!({ "ok": true }));
                     return Ok(());
                 }
-                return Err("授权未完成(可能已取消或超时)".into());
+                return Err(cc::auth_failure_reason(
+                    &auth_lines,
+                    "授权未完成(可能已取消或超时)",
+                ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("init 等待失败: {e}"));
             }
         }

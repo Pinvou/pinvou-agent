@@ -268,9 +268,9 @@ pub enum BundleKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidBundle;
 
-/// 就绪态（派生态，不进存储）。UI 消费 (installed, ready)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Ready state (derived state; never stored and not part of serde serialization).
+/// The UI consumes (installed, ready).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
     Ready,
     /// 未就绪；reason 给前端提示（如缺凭据的 key 列表）
