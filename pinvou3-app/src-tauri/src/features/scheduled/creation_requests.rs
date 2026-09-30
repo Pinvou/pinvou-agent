@@ -836,8 +836,12 @@ fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create done dir {}", parent.display()))?;
     }
-    std::fs::write(path, payload.to_string())
-        .with_context(|| format!("write result marker {}", path.display()))
+    // Atomic tmp+rename: the server polls this file, so it must never
+    // observe a torn write.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, payload.to_string())
+        .with_context(|| format!("write result marker {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("publish result marker {}", path.display()))
 }
 
 /// Whether a replayed request with an existing result marker should be

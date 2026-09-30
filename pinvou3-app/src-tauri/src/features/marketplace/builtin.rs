@@ -392,7 +392,7 @@ mod tests {
                 messaging.tools,
                 ["mcp_session-reader_send_message_to_session".to_string()]
             );
-            // The app-automations family: both tools under one feature,
+            // The app-automations family: all five tools under one feature,
             // owned by the app-automations plugin only.
             let scheduled = registry
                 .iter()
