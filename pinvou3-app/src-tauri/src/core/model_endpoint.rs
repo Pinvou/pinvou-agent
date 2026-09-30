@@ -178,44 +178,32 @@ pub(crate) fn parse_ollama_ps_contexts(
     out
 }
 
-/// Ollama `/api/show` 单模型上下文事实，按可信度排序：
-/// 1. `parameters` 中的 `num_ctx N` —— Modelfile 显式声明，模型加载后即生效值；
-/// 2. `model_info` 的 `<arch>.context_length` —— GGUF 训练上下文（模型能力上限）。
-///    多个架构键时优先取与 `general.architecture` 同前缀的键，否则取所有正值的
-///    最小值（保守方向：低报窗口只是早压缩，高报窗口会让上游静默截断）。
-/// 注意 2 是训练上限而非生效值：未设置 `num_ctx` 时 Ollama 按服务端默认值
-/// （常见 4096）运行，该值只能在上游文档/配置层面核实，接口层不可探测。
+/// Ollama `/api/show` 单模型上下文事实：仅采信 `parameters` 中的 `num_ctx N`
+/// —— Modelfile 显式声明的运行配置，模型加载后即生效值。
+///
+/// `model_info` 的 `<arch>.context_length` 是 GGUF 训练上下文（能力上限），
+/// **不是**运行配置：未声明 `num_ctx` 时 Ollama 按服务端默认值（常见 4096，
+/// `OLLAMA_CONTEXT_LENGTH`）运行，该默认值对未加载模型不可探测。采信训练
+/// 上限会在常见首启路径高报窗口，放宽 compaction/输入预算后由上游静默截断
+/// （低报只是早压缩，高报会让上游截断——保守方向必须拒绝），因此无声明时
+/// 返回 None，调用方保留各自的保守兜底；窗口事实在引擎生成时一次性采纳，
+/// 模型首次加载后的纠正依赖下次生成（`/api/ps` 生效值）。
 fn parse_ollama_show_context(v: serde_json::Value) -> Option<u32> {
-    if let Some(params) = v.get("parameters").and_then(|v| v.as_str()) {
-        for line in params.lines() {
-            let mut parts = line.split_whitespace();
-            if parts.next() == Some("num_ctx") {
-                if let Some(ctx) = parts
-                    .next()
-                    .and_then(|n| n.parse::<u64>().ok())
-                    .and_then(|n| u32::try_from(n).ok())
-                    .filter(|n| *n > 0)
-                {
-                    return Some(ctx);
-                }
+    let params = v.get("parameters").and_then(|v| v.as_str())?;
+    for line in params.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("num_ctx") {
+            if let Some(ctx) = parts
+                .next()
+                .and_then(|n| n.parse::<u64>().ok())
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| *n > 0)
+            {
+                return Some(ctx);
             }
         }
     }
-    let info = v.get("model_info")?.as_object()?;
-    let arch = info.get("general.architecture").and_then(|v| v.as_str());
-    let candidates: Vec<(&str, u32)> = info
-        .iter()
-        .filter_map(|(key, value)| {
-            let prefix = key.strip_suffix(".context_length")?;
-            Some((prefix, parse_positive_u32(value)?))
-        })
-        .collect();
-    if let Some(arch) = arch {
-        if let Some((_, ctx)) = candidates.iter().find(|(prefix, _)| *prefix == arch) {
-            return Some(*ctx);
-        }
-    }
-    candidates.iter().map(|(_, ctx)| *ctx).min()
+    None
 }
 
 /// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。
@@ -397,8 +385,8 @@ pub async fn fetch_ollama_contexts(
 }
 
 /// Ollama `/api/show` 单模型上下文事实（只读元数据查询，不触发模型加载）：
-/// Modelfile `num_ctx` 声明优先，其次 GGUF 训练上下文（见
-/// [`parse_ollama_show_context`] 的口径与局限）。
+/// 仅 Modelfile `num_ctx` 声明（见 [`parse_ollama_show_context`] 的口径与
+/// 局限——无声明返回 None，不采信 GGUF 训练上限）。
 pub async fn fetch_ollama_show_context(
     base_url: &str,
     bearer: Option<&str>,
@@ -421,8 +409,8 @@ pub async fn fetch_ollama_show_context(
 }
 
 /// 单模型上下文事实，按可信度排序：`/api/ps` 的生效值（模型已加载时即部署
-/// 真相）→ `/api/show`（Modelfile `num_ctx` → GGUF 训练上下文）。全部失败
-/// 返回 None，调用方保留既有兜底。Ollama 的 OpenAI 兼容 `/v1/models` 从不
+/// 真相）→ `/api/show` 的 Modelfile `num_ctx` 显式声明。全部失败返回 None，
+/// 调用方保留既有兜底。Ollama 的 OpenAI 兼容 `/v1/models` 从不
 /// 携带窗口事实，这是唯一的事实来源；缺失时 foundation 对 unknown ollama
 /// 模型按 8192 兜底窗口推导预算（压缩阈值打到 4096 地板、压缩后输入预算
 /// 只剩 1024，见 2026-09-30 用户报告）。
@@ -1694,38 +1682,42 @@ mod tests {
     }
 
     #[test]
-    fn ollama_show_context_prefers_num_ctx_then_arch_key() {
-        // 1) A Modelfile num_ctx declaration is the effective value once the
-        //    model loads — it outranks the GGUF trained context.
+    fn ollama_show_context_is_num_ctx_declaration_only() {
+        // A Modelfile num_ctx declaration is the effective value once the
+        // model loads — it outranks the GGUF trained context.
         let declared: serde_json::Value = serde_json::from_str(
             r#"{"parameters":"stop <|im_end|>\nnum_ctx 131072\ntop_p 0.9",
                 "model_info":{"general.architecture":"qwen3","qwen3.context_length":40960}}"#,
         )
         .unwrap();
         assert_eq!(parse_ollama_show_context(declared), Some(131_072));
-        // 2) Without num_ctx the GGUF trained context of the declared
-        //    architecture wins over unrelated arch keys.
+        // Without a num_ctx declaration the response yields no fact at all:
+        // `model_info`'s `<arch>.context_length` is the GGUF *trained* cap
+        // (a capability ceiling), while an unloaded model actually serves at
+        // the server default (OLLAMA_CONTEXT_LENGTH, 4096-class) — a value no
+        // API exposes. Adopting the cap would loosen compaction budgets
+        // beyond what the server accepts, so it is refused; callers keep
+        // their conservative fallback. Arch-matched, unrelated, and
+        // minimal-key variants are all refused alike.
         let trained: serde_json::Value = serde_json::from_str(
             r#"{"model_info":{"general.architecture":"llama",
                 "llama.context_length":131072,"llama2.context_length":4096}}"#,
         )
         .unwrap();
-        assert_eq!(parse_ollama_show_context(trained), Some(131_072));
-        // 3) No architecture match → the minimum positive value (a lower
-        //    window compacts earlier; an inflated one lets upstream truncate).
+        assert_eq!(parse_ollama_show_context(trained), None);
         let ambiguous: serde_json::Value = serde_json::from_str(
             r#"{"model_info":{"a.context_length":8192,"b.context_length":4096}}"#,
         )
         .unwrap();
-        assert_eq!(parse_ollama_show_context(ambiguous), Some(4_096));
-        // Invalid num_ctx values fall through to model_info instead of
-        // aborting the lookup.
+        assert_eq!(parse_ollama_show_context(ambiguous), None);
+        // A malformed num_ctx declaration is not a provable runtime config —
+        // undeclared, not "fall back to the trained cap".
         let bad_decl: serde_json::Value = serde_json::from_str(
             r#"{"parameters":"num_ctx not-a-number",
                 "model_info":{"qwen3.context_length":40960}}"#,
         )
         .unwrap();
-        assert_eq!(parse_ollama_show_context(bad_decl), Some(40_960));
+        assert_eq!(parse_ollama_show_context(bad_decl), None);
         // Absent / invalid shapes → None.
         assert_eq!(parse_ollama_show_context(serde_json::json!({})), None);
         assert_eq!(
@@ -1769,7 +1761,9 @@ mod tests {
             fetch_ollama_model_context(&mock.base_url, None, "my-model").await,
             Some(32_768)
         );
-        // Both absent → None (callers keep their existing fallbacks).
+        // Not loaded and no num_ctx declaration (the model_info entry is
+        // only the trained cap) → None (callers keep their existing
+        // conservative fallbacks).
         let mock = models_mock::spawn(&[
             ("/api/ps", 200, r#"{"models":[]}"#.into()),
             ("/api/show", 200, r#"{"model_info":{}}"#.into()),

@@ -467,8 +467,10 @@ async fn cached_ollama_show_context(
 /// Native window fact for a local target whose `/v1/models` listing carried
 /// none (Ollama is the local engine that never lists one): `/api/ps`
 /// effective context first (fresh; the deployment truth for loaded models),
-/// then `/api/show` (Modelfile `num_ctx` → GGUF trained context, 60s
-/// cached). A non-Ollama-shaped `/api/ps` (404/other servers) ends the
+/// then `/api/show` (Modelfile `num_ctx` declaration, 60s cached — a show
+/// response without one yields no fact: the GGUF trained cap is a
+/// capability ceiling, not the served window). A non-Ollama-shaped
+/// `/api/ps` (404/other servers) ends the
 /// lookup, so non-Ollama locals pay one extra small GET per poll. The
 /// queried entry is gated by `ollama_display_window_adoptable` — a window
 /// is never borrowed across model names.
@@ -947,6 +949,23 @@ mod tests {
             mock.hits_for("/api/show"),
             1,
             "the 1 Hz poll must be served from the 60s show cache"
+        );
+        // Not loaded and no num_ctx declaration: the show response only has
+        // the GGUF trained cap (a capability ceiling, not the served
+        // window) — the display stays without a native fact instead of
+        // adopting it.
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/show",
+                200,
+                r#"{"model_info":{"qwen3.context_length":131072}}"#.into(),
+            ),
+        ]);
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            None,
+            "the trained cap must not become the display window"
         );
         // Non-Ollama local (ps 404): lookup stops, no show request.
         let mock = models_mock::spawn(&[("/api/ps", 404, "{}".into())]);

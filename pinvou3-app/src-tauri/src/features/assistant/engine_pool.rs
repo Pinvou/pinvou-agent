@@ -1943,11 +1943,18 @@ impl EnginePool {
     /// Ollama exception: its OpenAI-compatible `/v1/models` never carries a
     /// window fact, so an endpoint probed as Ollama gets a native follow-up
     /// (`fetch_ollama_model_context`: `/api/ps` effective context →
-    /// `/api/show` num_ctx/trained context) for the name actually sent.
-    /// Without it the route declares no window and the foundation derives
-    /// its budget from the 8192 unknown-Ollama fallback — compaction floors
-    /// at 4096 and the post-compaction input budget collapses to 1024
-    /// (2026-09-30 user report: Ollama actually serving 131072).
+    /// `/api/show` Modelfile `num_ctx` declaration) for the name actually
+    /// sent. Only provable runtime facts are adopted: a model that was never
+    /// loaded and declares no `num_ctx` stays without a window (the GGUF
+    /// trained cap is a capability ceiling — the server actually serves its
+    /// 4096-class default, which no API exposes — and adopting it would
+    /// loosen budgets into silent upstream truncation, frozen for this
+    /// engine's lifetime). Without any fact the route declares no window and
+    /// the foundation derives its budget from the 8192 unknown-Ollama
+    /// fallback — compaction floors at 4096 and the post-compaction input
+    /// budget collapses to 1024 (2026-09-30 user report: Ollama actually
+    /// serving 131072); a respawn after the first load then picks up the
+    /// `/api/ps` effective value.
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,
@@ -8399,9 +8406,9 @@ mod probed_facts_wiring_tests {
         assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
     }
 
-    /// Model downloaded but not loaded (no /api/ps entry): the /api/show
-    /// fact (Modelfile num_ctx, else GGUF trained context) is the fallback
-    /// window fact.
+    /// Model downloaded but not loaded (no /api/ps entry) with a Modelfile
+    /// num_ctx declaration: the declared value is the window fact (it is the
+    /// effective value once the model loads).
     #[tokio::test]
     async fn ollama_probed_route_falls_back_to_show_context() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -8421,6 +8428,46 @@ mod probed_facts_wiring_tests {
         bridge.probed_local_kind = Some(LocalServerKind::Ollama);
         EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
         assert_eq!(bridge.probed_context_tokens, Some(32_768));
+    }
+
+    /// Never loaded and no num_ctx declaration: `/api/show` only carries the
+    /// GGUF *trained* context (a capability ceiling — an unloaded model
+    /// actually serves at the server default, e.g. 4096, which no API
+    /// exposes). The trained cap must not become the route limit: adopting
+    /// it would loosen compaction budgets beyond what the server accepts and
+    /// let upstream silently truncate, and the value is frozen for the
+    /// pooled engine's lifetime (no refresh after the first load). The route
+    /// keeps no probed window instead, i.e. the conservative foundation
+    /// fallback, until a respawn after the model has loaded (`/api/ps` then
+    /// reports the effective value).
+    #[tokio::test]
+    async fn ollama_probed_route_refuses_trained_context_without_num_ctx() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/show",
+                200,
+                r#"{"model_info":{"general.architecture":"qwen3","qwen3.context_length":131072}}"#
+                    .into(),
+            ),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "the /api/show follow-up ran and still must refuse the trained cap"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "a 128K trained cap with no runtime declaration must not become the route limit"
+        );
     }
 
     /// The native follow-up is gated on the endpoint being probed as Ollama:
