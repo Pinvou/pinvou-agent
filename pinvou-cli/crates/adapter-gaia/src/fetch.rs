@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use agent_backend_api::SecretText;
 use fs2::FileExt;
 use hf_hub::api::sync::ApiBuilder;
-use hf_hub::{Cache, Repo, RepoType};
+use hf_hub::{Repo, RepoType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
 use rand::random;
@@ -499,7 +499,14 @@ fn hf_repo(
     }
     let cache_dir = scratch_root.join(".hf-cache").join("hub");
     fs::create_dir_all(&cache_dir).map_err(|_| ())?;
-    let api = ApiBuilder::from_cache(Cache::new(cache_dir))
+    // from_env lets HF_ENDPOINT take effect (networks in mainland China can set the
+    // https://hf-mirror.com mirror; from_cache hard-codes the official endpoint),
+    // the cache directory stays explicitly pinned under the benchmark scratch
+    // directory, and the token comes from the explicit argument (same as the original
+    // behavior). Note: HF_ENDPOINT forwards the token to the selected endpoint too,
+    // so it must only point to a trusted endpoint (see docs/gaia-benchmark.md).
+    let api = ApiBuilder::from_env()
+        .with_cache_dir(cache_dir)
         .with_progress(false)
         .with_token(Some(token.expose_to_backend().to_owned()))
         .build()

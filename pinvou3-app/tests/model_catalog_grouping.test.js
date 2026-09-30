@@ -26,6 +26,7 @@ vm.runInContext(
   `this.selectorMainLabel = selectorMainLabel;\n` +
   `this.selectorSubLabel = selectorSubLabel;\n` +
   `this.MODEL_CATALOG = MODEL_CATALOG;\n` +
+  `this.MODEL_CATALOG_SECTIONS = MODEL_CATALOG_SECTIONS;\n` +
   `this.MODEL_PRESET_DEFS = MODEL_PRESET_DEFS;\n` +
   `this.findCloudProviderForModel = findCloudProviderForModel;\n` +
   `this.providerLabelForModel = providerLabelForModel;\n` +
@@ -44,7 +45,7 @@ vm.runInContext(
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_CATALOG_SECTIONS, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -198,18 +199,75 @@ test('2026-09-11 catalog additions land in their provider groups (preset recogni
   // the qwen international group lists qwen3.7-flash (in the international
   // full catalog, restored on the 2026-09-11 re-check)
   assert.strictEqual(isPresetModel(mkCloud('qwen', 'qwen', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen3.7-flash')), true);
-  // qwen3.8-flash enters all three qwen groups (cn / Token Plan / international)
+  // qwen3.8-flash enters the three pay-as-you-go qwen groups
+  // (cn / Token Plan / international); the Coding Plan group serves the
+  // official plan's exact-version list and deliberately omits it.
   const qwenGroups = (MODEL_CATALOG.cloud || []).filter(g => (g.key || '').startsWith('qwen'));
-  assert.strictEqual(qwenGroups.length, 3, 'sync this assertion when the qwen group count changes');
-  for (const g of qwenGroups) {
+  assert.strictEqual(qwenGroups.length, 4, 'sync this assertion when the qwen group count changes');
+  for (const g of qwenGroups.filter(g => g.key !== 'qwen_coding_plan')) {
     assert.ok(
       (g.items || []).some(i => i.model === 'qwen3.8-flash'),
       `${g.key} group should list qwen3.8-flash`,
     );
   }
+  const qwenCodingPlan = qwenGroups.find(g => g.key === 'qwen_coding_plan');
+  assert.ok(qwenCodingPlan, 'qwen coding plan group missing');
+  assert.ok(
+    !(qwenCodingPlan.items || []).some(i => i.model === 'qwen3.8-flash'),
+    'qwen Coding Plan serves the official exact-version list; qwen3.8-flash must not be listed',
+  );
 });
 
-test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (default_model_matches_vendor_docs_2026_09)', () => {
+test('2026-09-28 catalog refresh lands in their provider groups (preset recognition)', () => {
+  const mkCloud = (preset, vendor, base, model) => mk({ preset, provider_kind: 'official_api', vendor, base_url: base, model });
+  // GLM: the multimodal speed tier joins both standard APIs; glm-5.1 joins
+  // both coding plans as an auto-routing legacy row.
+  assert.strictEqual(isPresetModel(mkCloud('glm', 'glm', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flashx')), true);
+  assert.strictEqual(isPresetModel(mkCloud('glm', 'glm', 'https://api.z.ai/api/paas/v4', 'glm-5.3-flashx')), true);
+  const bigmodelCoding = 'https://open.bigmodel.cn/api/coding/paas/v4';
+  const zaiCoding = 'https://api.z.ai/api/coding/paas/v4';
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: bigmodelCoding, model: 'glm-5.1' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: zaiCoding, model: 'glm-5.1' })), true);
+  // MiniMax: the subscription-only preview tier joins both groups.
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash-Preview')), true);
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimax.io/v1', 'MiniMax-M3.1-Flash-Preview')), true);
+  // MiMo: the 2026-09-22 V2.6 series leads the group; the retiring v2.5
+  // rows stay classifiable.
+  assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.6-pro')), true);
+  assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.6-flash')), true);
+  assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.5-pro')), true);
+  // Doubao: the 260915 snapshots join the official group; the new Ark
+  // Coding Plan group classifies with its auto shell model.
+  assert.strictEqual(isPresetModel(mkCloud('doubao', 'doubao', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260915')), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'doubao', base_url: 'https://ark.cn-beijing.volces.com/api/coding/v3', model: 'ark-code-latest' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'doubao', base_url: 'https://ark.cn-beijing.volces.com/api/coding/v3', model: 'kimi-k2.8-preview' })), true);
+  // Alibaba Coding Plan group classifies with the plan's exact ids (intl
+  // alias host included; kimi-k2.5 stays excluded platform-wide).
+  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'qwen3.7-plus' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding-intl.dashscope.aliyuncs.com/v1', model: 'qwen3-coder-plus' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'kimi-k2.5' })), false);
+  // Aggregator groups: org-prefixed ids classify per vendor, and the new
+  // section is registered.
+  assert.strictEqual(MODEL_CATALOG_SECTIONS.aggregator, '聚合平台');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'openrouter', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4.1-flash')), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'siliconflow', 'https://api.siliconflow.cn/v1', 'deepseek-ai/DeepSeek-V4-Pro')), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'siliconflow', 'https://api.siliconflow.com/v1', 'Pro/zai-org/GLM-5.2')), true);
+  // Flagship refreshes: gpt-6-sol/luna, claude-opus-5-5, grok-4.7.
+  assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6-sol')), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6-luna')), true);
+  assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-opus-5-5')), true);
+  assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.7')), true);
+  // Reasoning tiers stay mirrored with the base: gpt-6 / grok-4.7 rows get
+  // no tier exposure until the base learns them; aggregator vendors do.
+  assert.strictEqual(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6-sol' }), null);
+  assert.strictEqual(reasoningEffortTiersForModel({ vendor: 'xai', model: 'grok-4.7' }), null);
+  // vm-realm arrays must be spread into host arrays before deepStrictEqual
+  // (same normalization as the tier tests below).
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'siliconflow', model: 'deepseek-ai/DeepSeek-V4-Pro', base_url: 'https://api.siliconflow.cn/v1' }) || [])], ['off', 'high']);
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', base_url: 'https://openrouter.ai/api/v1' }) || [])], ['off', 'low', 'medium', 'high']);
+});
+
+test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (default_model_matches_vendor_docs_2026_09_28)', () => {
   // The identically named test in prefs/model.rs locks the Rust side; this
   // test locks the frontend side, so drift on either side surfaces explicitly
   // in the corresponding test (the qwen default once drifted for a long time
@@ -223,11 +281,11 @@ test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (defa
     doubao: 'doubao-seed-evolving',
     minimax: 'MiniMax-M3',
     glm: 'glm-5.3',
-    mimo: 'mimo-v2.5-pro',
+    mimo: 'mimo-v2.6-pro',
     openai: 'gpt-5.6-terra',
-    anthropic: 'claude-sonnet-5',
+    anthropic: 'claude-opus-5-5',
     gemini: 'gemini-3.8-flash',
-    xai: 'grok-4.6',
+    xai: 'grok-4.7',
   };
   for (const [key, model] of Object.entries(expected)) {
     assert.strictEqual(MODEL_PRESET_DEFS[key] && MODEL_PRESET_DEFS[key].model, model, `${key} default model drift`);
@@ -269,9 +327,8 @@ test('MODEL_PRESET_DEFS and the Rust default_model table cross-check their sourc
   );
   // One known, intentional difference: openai_compatible is deliberately
   // empty on the frontend (pure custom template), while the Rust side keeps
-  // that preset's legacy migration fallback gpt-5.6-terra; the main.jsx
-  // override pair is pinned by a separate test. The other 12 presets must be
-  // equal item by item.
+  // that preset's legacy migration fallback gpt-5.6-terra. The other 12
+  // presets must be equal item by item.
   assert.strictEqual(rustTable.OpenaiCompatible, 'gpt-5.6-terra');
   assert.strictEqual(MODEL_PRESET_DEFS.openai_compatible.model, '');
   for (const [variant, key] of Object.entries(variantToKey)) {
@@ -318,9 +375,8 @@ test('MODEL_PRESET_DEFS and the Rust default_base_url table cross-check their so
   );
   // One known, intentional difference: openai_compatible is deliberately
   // empty on the frontend (pure custom template), while the Rust side keeps
-  // that preset's legacy migration fallback https://api.openai.com/v1; the
-  // main.jsx override pair is pinned by a separate test. The other 12 presets
-  // must be equal item by item.
+  // that preset's legacy migration fallback https://api.openai.com/v1. The
+  // other 12 presets must be equal item by item.
   assert.strictEqual(rustTable.OpenaiCompatible, 'https://api.openai.com/v1');
   assert.strictEqual(MODEL_PRESET_DEFS.openai_compatible.baseUrl, '');
   for (const [variant, key] of Object.entries(variantToKey)) {
@@ -654,9 +710,10 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k26)], ['off', 'high']);
   assert.ok(![...reasoningEffortTiersForModel(k3)].includes('off'));
   assert.strictEqual(reasoningEffortForModelSwitch(k3), 'high');
-  // 无档位模型切换置 null（未显式设置）；vllm 切回 off
+  // models without tiers switch to null (not explicitly set); vllm falls back
+  // to the local default lowest thinking tier low
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
-  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'off');
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'low');
   // z.ai glm-5.2 switch defaults to high; the bigmodel paas host (tiered route
   // since #53) is also
   // high; glm-5.2 on a compatible gateway has no tiers → null
@@ -767,10 +824,12 @@ test('local routes hitting the knowledge table: tiers/defaults/stored-value norm
   const r1Local = { preset: 'local_vllm', model: 'deepseek-r1:14b' };
   assert.strictEqual(reasoningEffortTiersForModel(r1Local), null);
   assert.strictEqual(normalizeStoredReasoningEffort(r1Local, 'high'), null);
-  // plain local models are unaffected: still default off, four tiers
+  // plain local models keep the four tiers; the default is the lowest
+  // thinking tier low (off is no longer the local default: real-world
+  // models like the Qwen3.8 family do not reliably honor it)
   const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
-  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'low');
   // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
   const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
@@ -821,11 +880,11 @@ test('reasoningEffortDisplayForTiers: display fallback of stored tiers against p
   assert.strictEqual(reasoningEffortDisplayForTiers(null, ['off', 'high']), null);
 });
 
-test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型→high，不支持→null', () => {
+test('defaultReasoningEffortForModel: vllm→low (lowest thinking tier), other models with tiers→high, unsupported→null', () => {
   const deepseek = { preset: 'deepseek', vendor: 'deepseek', model: 'deepseek-v4-pro' };
   assert.strictEqual(defaultReasoningEffortForModel(deepseek), 'high');
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
-  assert.strictEqual(defaultReasoningEffortForModel(vllm), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(vllm), 'low');
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(defaultReasoningEffortForModel(xai), null);
   // grok-4.6 on the xai official endpoint offers tiers and defaults to high
@@ -833,9 +892,13 @@ test('defaultReasoningEffortForModel：vllm→off，其余支持档位的模型�
   const xai46 = { preset: 'xai', vendor: 'xai', model: 'grok-4.6', base_url: 'https://api.x.ai/v1' };
   assert.strictEqual(defaultReasoningEffortForModel(xai46), 'high');
   assert.strictEqual(reasoningEffortForModelSwitch(xai46), 'high');
-  // 本地 loopback OpenAI 兼容端点默认关闭思考（与 vllm 一致）
+  // a local loopback OpenAI-compatible endpoint has the same static default,
+  // the lowest thinking tier low; when ollama is probed the runtime default
+  // is high (the think toggle only has off/on), and the static low maps to a
+  // high highlight via reasoningEffortDisplayForTiers on the ['off','high']
+  // probed tier table, consistent with the runtime
   const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };
-  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'off');
+  assert.strictEqual(defaultReasoningEffortForModel(localOllama), 'low');
 });
 
 test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 null', () => {
@@ -859,9 +922,10 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   // 无存量 → 回退默认档位
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek, null), 'high');
   assert.strictEqual(normalizeStoredReasoningEffort(deepseek), 'high');
-  // vllm 默认 off，存量为空时同样回退 off
+  // vllm defaults to the lowest thinking tier low; an empty stored value
+  // falls back to low as well
   const vllm = { preset: 'local_vllm', model: 'qwen36_35b_256k' };
-  assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'off');
+  assert.strictEqual(normalizeStoredReasoningEffort(vllm, null), 'low');
   // 无档位模型（xai 底座空操作）→ null
   const xai = { preset: 'xai', vendor: 'xai', model: 'grok-4.3' };
   assert.strictEqual(normalizeStoredReasoningEffort(xai, 'high'), null);

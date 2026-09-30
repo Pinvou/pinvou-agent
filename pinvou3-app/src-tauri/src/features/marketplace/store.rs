@@ -2,8 +2,8 @@
 //!
 //! 设计依据：`docs/marketplace-unification.md` §3.1（存储层 BundleRecord）、§4（存储
 //! 布局）、§9（首启一次性导入）。本模块只管 `~/.pinvou3/marketplace/bundles.json`
-//! 的读写与旧布局**登记**；物理目录搬移（`bundles/<id>/`、`assets/cli/`）与旧布局
-//! 删除在后续 PR，本刀一律不动磁盘上的包内容。
+//! 的读写与旧布局**登记**，一律不动磁盘上的包内容；物理搬移与旧布局同名残留
+//! 清理由 connectors 侧 `migrate_legacy_binary` 按 lock 校验执行。
 //!
 //! 纪律（§10）：
 //! - 原子写（tmp + rename，走底座 `write_atomic`）+ 进程内 FILE_LOCK 串行化读-改-写；
@@ -317,19 +317,19 @@ impl BundleStore {
     /// 局部更新：置 `Degraded` 原因（§3.2：登记在、资源缺），供 CLI 修复/断开
     /// 路径用。id 不存在 → Ok(false)；原因未变 → Ok(true) 但不写盘。
     pub fn mark_degraded(&self, id: &str, reason: &str) -> Result<bool, String> {
-        self.set_degraded(id, Some(reason.to_string()))
+        self.set_degraded(id, reason.to_string())
     }
 
-    fn set_degraded(&self, id: &str, reason: Option<String>) -> Result<bool, String> {
+    fn set_degraded(&self, id: &str, reason: String) -> Result<bool, String> {
         let _guard = file_lock();
         let mut file = load_locked(&self.file)?;
         let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
             return Ok(false);
         };
-        if record.degraded == reason {
+        if record.degraded.as_deref() == Some(reason.as_str()) {
             return Ok(true);
         }
-        record.degraded = reason;
+        record.degraded = Some(reason);
         save_locked(&self.file, &file)?;
         Ok(true)
     }
@@ -423,7 +423,9 @@ impl BundleStore {
     ///
     /// - **幂等**：`legacy_imported` 闸置位后直接跳过；闸未置位时也只补缺失 id，
     ///   已存在的记录永远保留（用户/新管线写入的赢）。
-    /// - **非破坏性**：只读旧布局、只写 bundles.json；目录搬移与旧布局删除在后续 PR。
+    /// - **非破坏性**：只读旧布局、只写 bundles.json；目录搬移与同名残留清理由
+    ///   connectors 侧 `migrate_legacy_binary` 按 lock 校验执行（boot 序列在
+    ///   本 import 之后）。
     /// - 全程持 FILE_LOCK（"读到即迁移"必须持锁，§9.4 / #287 竞态教训前置）。
     pub fn import_legacy(&self) -> Result<LegacyImportReport, String> {
         let _guard = file_lock();
@@ -639,8 +641,10 @@ fn save_locked(path: &Path, file: &BundlesFile) -> Result<(), String> {
 // 旧布局反推（只读旧文件，不动包内容）
 // ---------------------------------------------------------------------------
 
-/// 安装时间戳：RFC3339/ISO8601 UTC，对齐 SessionMetadata.updated_at 的 chrono 惯例。
-fn now_iso8601() -> String {
+/// Install/recycle timestamps: RFC3339/ISO8601 UTC, following the same chrono convention
+/// as SessionMetadata.updated_at. recycle_bin.rs reuses this implementation so the two
+/// timestamp formats cannot drift apart.
+pub(super) fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -726,7 +730,8 @@ fn legacy_skill_records() -> Vec<BundleRecord> {
 /// 内置 CLI 连接器 → Builtin 包记录。安装态判定：companion 技能目录在盘
 /// （连接时才解包）或 CLI 二进制在盘。存量二进制对照 lock 表验 SHA-256：
 /// 匹配 → 正常登记；不匹配/无法校验 → 记 `degraded`（§9.3，
-/// 修复动作 = 重新下载，物理搬移 `assets/cli/` 在后续 PR）。
+/// 修复动作 = 重新下载；旧布局搬移与同名残留清理由 connectors 侧
+/// `migrate_legacy_binary` 按 lock 校验执行）。
 fn legacy_cli_records() -> Vec<BundleRecord> {
     let skills_dir = paths::bundle_skills_dir();
     let now = now_iso8601();
@@ -785,7 +790,7 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
             "lock 表无 {bin} 条目，存量二进制无法校验，待重新下载"
         ));
     };
-    match connector_lock::file_sha256_hex(&path) {
+    match crate::platform::hashing::sha256_file(&path) {
         Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified,
         Ok(actual) => CliAssetState::Mismatch(format!(
             "CLI 二进制 SHA-256 与 lock 表不符（expected {}, got {actual}），待重新下载",
@@ -1129,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_and_clear_degraded_roundtrip() {
+    fn mark_degraded_roundtrip() {
         with_temp_home("pinvou3-store-test", || {
             let store = BundleStore::new();
             store
@@ -1141,12 +1146,8 @@ mod tests {
                 store.get("feishu").unwrap().unwrap().degraded,
                 Some("二进制缺失".to_string())
             );
-            // 清除路径走私有 set_degraded(id, None)（公开包装已随死代码清理删除）
-            assert!(store.set_degraded("feishu", None).unwrap());
-            assert_eq!(store.get("feishu").unwrap().unwrap().degraded, None);
             // 不存在的 id：Ok(false)，不误建记录
             assert!(!store.mark_degraded("ghost", "x").unwrap());
-            assert!(!store.set_degraded("ghost", None).unwrap());
             assert!(store.get("ghost").unwrap().is_none());
         });
     }

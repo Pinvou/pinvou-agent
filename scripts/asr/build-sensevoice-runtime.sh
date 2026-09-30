@@ -90,6 +90,11 @@ git init --quiet "$source_tmp"
 git -C "$source_tmp" remote add origin "$SENSEVOICE_SOURCE_URL"
 git -C "$source_tmp" fetch --quiet --depth 1 origin "$SENSEVOICE_SOURCE_COMMIT"
 git -C "$source_tmp" checkout --quiet --detach FETCH_HEAD
+# Verify the shallow checkout is exactly the pinned commit (the same
+# tripwire as setup-sensevoice.sh), so a broken refspec or env value cannot
+# silently swap the release source.
+test "$(git -C "$source_tmp" rev-parse HEAD)" = "$SENSEVOICE_SOURCE_COMMIT" \
+  || { echo "pinned commit checkout mismatch: expected $SENSEVOICE_SOURCE_COMMIT, got $(git -C "$source_tmp" rev-parse HEAD)" >&2; exit 1; }
 git -C "$source_tmp" submodule update --init --recursive --depth 1
 rm -rf -- "$source_dir" "$build_dir"
 mv "$source_tmp" "$source_dir"

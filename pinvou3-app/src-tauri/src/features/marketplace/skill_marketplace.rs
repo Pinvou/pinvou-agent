@@ -206,6 +206,20 @@ impl Default for SkillMarketplaceManager {
     }
 }
 
+/// Builtin-ownership predicate for the skill lane (review round-3 M2): a
+/// skill is pinned to the feature-switch mechanism only when a builtin
+/// package actually CLAIMS it — the owner package differs from the skill
+/// itself, same shape as the import pipeline's ownership check
+/// (`owner != skill_name && owner != id`). Self-claim (`skill_owner_package`
+/// identity fallback) is not ownership: a standalone user skill that happens
+/// to share a builtin package id stays uninstallable instead of wedging as
+/// "belongs to builtin plugin".
+pub(crate) fn builtin_claims_skill(skill_id: &str) -> bool {
+    let owner_package = super::scope::to_package_id(skill_id);
+    let skill_name = skill_id.strip_prefix("skill:").unwrap_or(skill_id);
+    owner_package != skill_name && super::builtin::is_builtin_tool(&owner_package)
+}
+
 impl SkillMarketplaceManager {
     pub fn new() -> Self {
         Self {
@@ -845,8 +859,8 @@ impl SkillMarketplaceManager {
         // through the skill lane either — builtin exposure changes go through
         // the feature-switch mechanism (§3.3). Normalized like the MCP-side
         // uninstall guard so a `skill:`-prefixed alias cannot slip past.
-        let owner_package = super::scope::to_package_id(skill_id);
-        if super::builtin::is_builtin_tool(&owner_package) {
+        if builtin_claims_skill(skill_id) {
+            let owner_package = super::scope::to_package_id(skill_id);
             return Err(format!(
                 "skill '{skill_id}' belongs to builtin plugin '{owner_package}', which is part of the application and cannot be uninstalled"
             ));
@@ -1763,7 +1777,7 @@ fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std:
     let prefix = format!("{source_dir}/");
     for file in dir.files() {
         let p = file.path();
-        if is_python_cache_path(p) {
+        if super::plugin_import::is_python_cache_rel_path(&p.to_string_lossy()) {
             continue;
         }
         let p = p.to_string_lossy();
@@ -1818,15 +1832,6 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
         digest.update(b"\0");
     }
     crate::platform::encoding::hex_lower(&digest.finalize())
-}
-
-/// Whether a path relative to the include_dir root is Python compilation
-/// cache (inside a `__pycache__/` subtree or a `.pyc` at any level, case
-/// insensitive). Pure function for easy unit testing; the predicate is the
-/// single `plugin_import::is_python_cache_rel_path` rule shared with package
-/// import comparison and package export.
-fn is_python_cache_path(rel: &std::path::Path) -> bool {
-    super::plugin_import::is_python_cache_rel_path(&rel.to_string_lossy())
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {
@@ -2604,6 +2609,7 @@ pub(crate) fn sanitize_skill_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::marketplace::mcp_catalog;
     use crate::platform::test_support::with_temp_home;
 
     /// `extract_embedded_subdir` 的 Python 编译缓存排除与 runtime_bundle 的
@@ -2611,16 +2617,15 @@ mod tests {
     /// 会被 include_dir! 内嵌,不得在用户安装预置技能时物化到运行时目录。
     #[test]
     fn python_cache_paths_are_excluded_from_extraction() {
-        assert!(is_python_cache_path(std::path::Path::new(
+        use crate::features::marketplace::plugin_import::is_python_cache_rel_path;
+        assert!(is_python_cache_rel_path(
             "visualizer/scripts/__pycache__/validate.cpython-311.pyc"
-        )));
-        assert!(is_python_cache_path(std::path::Path::new(
-            "visualizer/scripts/validate.PYC"
-        )));
-        assert!(!is_python_cache_path(std::path::Path::new(
+        ));
+        assert!(is_python_cache_rel_path("visualizer/scripts/validate.PYC"));
+        assert!(!is_python_cache_rel_path(
             "visualizer/scripts/validate_visualizer_html.py"
-        )));
-        assert!(!is_python_cache_path(std::path::Path::new("pua/SKILL.md")));
+        ));
+        assert!(!is_python_cache_rel_path("pua/SKILL.md"));
     }
 
     #[test]
@@ -3031,22 +3036,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Builtin guard (docs/builtin-toolset-contract.md §3.1): a skill id that
-    /// normalizes to a builtin package must be rejected by the skill lane too
+    /// Builtin guard (docs/builtin-toolset-contract.md §3.1): only a skill
+    /// actually CLAIMED by a builtin package is rejected by the skill lane
     /// (a builtin's companion skill must never be removable outside the
     /// feature-switch mechanism), including the `skill:`-prefixed alias.
+    /// Self-claim is not ownership: a standalone user skill that merely shares
+    /// the builtin's id stays uninstallable (review round-3 M2).
     #[test]
-    fn uninstall_rejects_builtin_owned_skill() {
-        let tmp = fresh_dir("builtin_guard");
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
-        for raw in ["session-reader", "skill:session-reader"] {
-            let err = mgr.uninstall(raw).unwrap_err();
+    fn uninstall_rejects_only_claimed_builtin_skills() {
+        // Hermetic: every phase runs under a clean PINVOU3_HOME — the guard's
+        // claim lookup reads the marketplace store, and a developer machine's
+        // live store (flocked by a running app) must not leak into the test.
+        with_temp_home("pinvou3-builtin-claim", || {
+            // Self-claimed standalone skill (owner == the skill itself): the
+            // builtin guard must NOT fire. The predicate is the guard —
+            // uninstall returns exactly this error — so the predicate
+            // assertion pins the behavior without the uninstall flow's
+            // not-installed side paths.
+            for raw in ["session-reader", "skill:session-reader"] {
+                assert!(!builtin_claims_skill(raw));
+            }
+
+            // Genuinely claimed companion: a released builtin manifest
+            // declaring the skill as companion, with the package installed,
+            // maps the skill to the builtin package (owner != the skill
+            // itself) — rejected, including the `skill:`-prefixed alias.
+            let mcp_dir = mcp_catalog::package_mcp_dir("session-reader");
+            std::fs::create_dir_all(&mcp_dir).unwrap();
+            std::fs::write(
+                mcp_dir.join("manifest.json"),
+                r#"{"id":"session-reader","name":"s","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":[],"builtin":true,"companion_skills":["trip-notes"]}"#,
+            )
+            .unwrap();
+            let store_file = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("bundles.json");
+            std::fs::create_dir_all(store_file.parent().unwrap()).unwrap();
+            std::fs::write(
+                &store_file,
+                r#"{"schema_version":1,"records":[{"id":"session-reader","source":"Preset","installed":true,"installed_at":"2026-01-01T00:00:00Z"}]}"#,
+            )
+            .unwrap();
+            assert!(builtin_claims_skill("trip-notes"));
+            assert!(builtin_claims_skill("skill:trip-notes"));
+            // End-to-end wiring pin (review round-4 minor 1): the guard lives
+            // in `uninstall` itself, so a real call through the default-roots
+            // manager must hit the same rejection — deleting the
+            // `builtin_claims_skill` block there turns this red (new() takes
+            // no ENV_LOCK, so it is safe inside with_temp_home).
+            let mgr = SkillMarketplaceManager::new();
+            let err = mgr.uninstall("trip-notes").unwrap_err();
             assert!(
-                err.contains("builtin") && err.contains("session-reader"),
-                "the rejection should name the builtin plugin: {err}"
+                err.contains("belongs to builtin plugin"),
+                "a claimed companion must be builtin-rejected end-to-end: {err}"
             );
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            // `uninstall`'s guard IS this predicate (`if builtin_claims_skill
+            // { return Err("belongs to builtin plugin ...") }`), so the
+            // predicate assertions pin the rejection; constructing the
+            // manager here would deadlock — `with_roots` takes ENV_LOCK,
+            // which with_temp_home already holds.
+        });
     }
 
     /// F2/F3 回归：install 落盘后清扫同名其余物理副本（滞留包目录 + 带标记

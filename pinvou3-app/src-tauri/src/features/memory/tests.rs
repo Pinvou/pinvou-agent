@@ -278,6 +278,31 @@ fn corrupted_authoritative_file_self_heals_from_backup() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn repeated_unparsable_journals_each_keep_their_quarantined_bytes() {
+    let root = recovery_test_root("journal-quarantine-repeat");
+    let journal = topic_migration_journal_path(&root.join("topic.json")).unwrap();
+    for garbage in ["first corruption", "second corruption"] {
+        fs::write(&journal, garbage).unwrap();
+        reconcile_topic_migration_journals_unlocked::<PreferenceFile>(&root).unwrap();
+        assert!(
+            !journal.exists(),
+            "an unparsable journal must be moved aside"
+        );
+    }
+    let mut quarantined: Vec<String> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    quarantined.sort();
+    assert_eq!(
+        quarantined,
+        ["first corruption", "second corruption"],
+        "the second quarantine in one process must not replace the first"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
 fn preference_fixture(id: &str, topic: &str, text: &str) -> PreferenceFile {
     PreferenceFile {
         id: id.to_string(),
@@ -3187,6 +3212,36 @@ fn ignore_pending_memory_never_clobbers_a_confirmed_item() {
         status(&load_pending_memory().unwrap()),
         PENDING_STATUS_CONFIRMED,
         "confirm must survive a late ignore"
+    );
+}
+
+/// The deliberate asymmetry to the test above: `never` has no automated caller,
+/// so a confirmed candidate must still be blacklisted when the user explicitly
+/// asks for it. An `ignore`-style decided guard here would turn the click into a
+/// silent no-op that the command still reports to the user as success.
+#[test]
+fn never_pending_memory_blacklists_even_a_confirmed_item() {
+    let _home = IsolatedPinvouHome::new("pending-never-vs-confirm");
+    enable_memory_for_tests();
+    let candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "answer_style".to_string(),
+        content: "回答保持简洁分点".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&candidate.id).unwrap();
+
+    let event = never_pending_memory(&candidate.id, Some("user_selected".to_string()))
+        .unwrap()
+        .expect("an explicit never click must report the write it performed");
+    assert_eq!(event.action, "never");
+    assert!(
+        load_never_memory()
+            .unwrap()
+            .iter()
+            .any(|item| item.pattern == "回答保持简洁分点"),
+        "the content the user asked never to see again must reach the never list"
     );
 }
 

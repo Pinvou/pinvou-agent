@@ -190,7 +190,6 @@ fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordi
 pub async fn install_marketplace_tool(
     tool_id: String,
     config: Option<std::collections::HashMap<String, String>>,
-    app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
@@ -222,12 +221,11 @@ pub async fn install_marketplace_tool(
         }
     }
 
-    let companion_tool_id = tool_id.clone();
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         // 联动:装该 MCP 声明的配套技能(引擎+引导整体到位)。
         // skill 是增强,装失败只记日志、不让已成功的 MCP 安装回滚。
-        for sid in mgr.companion_skills(&companion_tool_id) {
+        for sid in mgr.companion_skills(&tool_id) {
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .install(&sid)
@@ -240,7 +238,7 @@ pub async fn install_marketplace_tool(
             crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid);
         }
         // DenyAll 模式的 scope(如 code)已初始化时,新装的连接器默认仍关闭(显式开启)。
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&companion_tool_id);
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&tool_id);
         Ok::<(), String>(())
     })
     .await
@@ -262,12 +260,6 @@ pub async fn install_marketplace_tool(
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
     hot_refresh(&pool, true).await;
-    crate::features::behavior_telemetry::track(
-        &app,
-        crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
-            .tool(&tool_id, &tool_id, "mcp")
-            .success(true),
-    );
     Ok(())
 }
 
@@ -597,11 +589,9 @@ pub fn list_marketplace_skills()
 #[tauri::command]
 pub async fn install_marketplace_skill(
     skill_id: String,
-    app: tauri::AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    let install_skill_id = skill_id.clone();
-    tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&install_skill_id))
+    tokio::task::spawn_blocking(move || install_marketplace_skill_sync(&skill_id))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     // 安装影响两个 scope 的启用集：重写在线会话的组合目录（下一轮 prompt 生效）。
@@ -611,12 +601,6 @@ pub async fn install_marketplace_skill(
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
     hot_refresh(&pool, true).await;
-    crate::features::behavior_telemetry::track(
-        &app,
-        crate::features::behavior_telemetry::BehaviorEvent::new("tool_install_completed")
-            .tool(&skill_id, &skill_id, "skill")
-            .success(true),
-    );
     Ok(())
 }
 
@@ -1060,8 +1044,9 @@ pub async fn export_installed_plugin(
 pub struct BundleReadinessResult {
     pub installed: bool,
     pub ready: bool,
-    /// 动作下发（§3.3）：后端按当前状态推导的可用动作集。serde default 保持
-    /// 契约纯增量；前端切换为动作渲染器在后续 PR。
+    /// Action dispatch (§3.1): the action set is derived server-side from the
+    /// current state. serde default keeps the contract purely additive; the
+    /// frontend switch to the action renderer lands in a later PR.
     #[serde(default)]
     pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
     /// 包功能事实全量（§3.1：description/version/category/config_fields 等，

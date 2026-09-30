@@ -323,9 +323,11 @@ function hasStoredCredential(record) {
       const [baseUrl, setBaseUrl] = useState(initial.base_url || '');
       const [contextWindow, setContextWindow] = useState(initial.context_window_tokens ? String(initial.context_window_tokens) : '');
       const [maxOutput, setMaxOutput] = useState(initial.max_output_tokens ? String(initial.max_output_tokens) : '');
-      // 思考深度档位：初始取已保存值（先归一——存量可能是底座归一前的旧值，
-      // 如 deepseek 的 medium），无则按模型默认（vllm→off，其余→high；
-      // 底座不支持的模型无默认，保持 null = 未显式设置，避免保存时污染 SavedModel）。
+      // Thinking effort: initialize from the stored value (normalize first —
+      // legacy records may carry pre-normalization values such as deepseek's
+      // medium), otherwise fall back to the model default (vllm→low (lowest
+      // thinking tier), others→high; models without tiers have no default and
+      // stay null = not explicitly set, so saving does not pollute SavedModel).
       const [reasoningEffort, setReasoningEffort] = useState(
         normalizeStoredReasoningEffort(initial, initial.reasoning_effort)
       );
@@ -462,13 +464,15 @@ function hasStoredCredential(record) {
         setModel(nextModel);
         // 目录项切换是显式换模型:未手动改过档位时按新条目的视觉能力标注预填。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
-        if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
+        if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : (item.title || presetProviderLabel(p, t))));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
         // The output cap is no longer prefilled with 24K: left empty like
         // cloud/custom, declared uniformly by the runtime window tiers.
         setMaxOutput('');
-        // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
-        // 无档位模型置 null = 未显式设置）。带上 nextBaseUrl 以按新 route 判定档位。
+        // Reset the thinking effort to the new entry's default tier when the
+        // catalog item changes (vllm→low (lowest thinking tier), others→high;
+        // models without tiers get null = not explicitly set). Pass nextBaseUrl
+        // so the tier is decided by the new route.
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
@@ -732,10 +736,13 @@ function hasStoredCredential(record) {
         setPickerOpen(false);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
-        // 本地模型 → 手动添加是显式切换 route：丢弃草稿残留的思考深度，回落到 vLLM
-        // 默认 off（防 SSE timeout）。否则新建 DeepSeek 草稿初始化的 high 会被当成
-        // 合法 vLLM 档位保留，保存时显式写入 reasoning_effort=high，绕过桥接层
-        // 「vllm→off」的默认约束。与 applyCatalogItem / chooseModel 的切换语义一致。
+        // Local model → manual add is an explicit route switch: drop the
+        // draft's leftover thinking effort and fall back to the vLLM default
+        // lowest thinking tier low. Otherwise the high a fresh DeepSeek draft
+        // starts with would be kept as a legitimate vLLM tier and saved as an
+        // explicit reasoning_effort=high, bypassing the bridge's "vllm→low"
+        // default constraint. Same switch semantics as applyCatalogItem /
+        // chooseModel.
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: '', vendor, base_url: defs.baseUrl }));
       }
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
@@ -839,14 +846,19 @@ function hasStoredCredential(record) {
         <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
           {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
           <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>API Key</label>
-          <input type={showKey ? 'text' : 'password'} autoComplete="off" value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+          {/* Always type="text" + WebkitTextSecurity masking: type=password triggers the WebView2 built-in eye button (duplicating the show/hide toggle), same as ProviderFormModal.
+              type=password implied autoCorrect/autoCapitalize/spellCheck off; type=text does not, and handing a secret to the platform spellchecker (or letting autocapitalize mangle a pasted key) is not acceptable — so they are set explicitly, matching ProviderFormModal. */}
+          <input type="text" data-testid="model-api-key-input"
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
+            style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
           <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
         </div>
       );
       const renderCloudProviderPicker = () => {
-        const bySection = ['coding_plan', 'official_api', 'custom'].map(section => ({
+        const bySection = ['coding_plan', 'official_api', 'aggregator', 'custom'].map(section => ({
           section,
           title: settingsCopy.catalogSections[section] || MODEL_CATALOG_SECTIONS[section],
           groups: catalogGroups.filter(group => (group.section || 'official_api') === section),
@@ -1436,6 +1448,7 @@ function hasStoredCredential(record) {
                   {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                   <label className="shrink-0 text-[14px] leading-5">API Key</label>
                   <input type="text" value={draftKey} onChange={e => setDraftKey(e.target.value)}
+                    autoCorrect="off" autoCapitalize="off" spellCheck={false}
                     // biome-ignore lint/a11y/noAutofocus: the edit-search-source modal focuses the key input on open; focus is the input intent
                     autoFocus
                     placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
@@ -1482,8 +1495,8 @@ function hasStoredCredential(record) {
       </div>
     );
     // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
-    // Three isomorphic sites: model delete / search source delete / memory delete; RestartDialog (two-column grid, wider) is not one of them.
-    // Optional testid/confirmTestId mount the memory delete dialog's test pins; desc is omitted where the dialog carries no description row.
+    // Four isomorphic sites: model delete / search source delete / memory delete / feedback close; RestartDialog (two-column grid, wider) is not one of them.
+    // Optional testid/confirmTestId mount the test pins the memory-delete and feedback-close dialogs need; desc is omitted where the dialog carries no description row.
     const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId }) => (
       <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
@@ -2357,7 +2370,12 @@ function hasStoredCredential(record) {
         const updateReady = !!(bs && bs.updateReady);
         const updateProgress = (bs && bs.updateProgress) || 0;
         const isWindowsUpdate = upd && upd.platform === 'windows';
-        const updateError = (bs && bs.updateError) || (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? bs.updateCheckError : '');
+        // The localized hint replaces the raw backend string (it may carry request
+        // details and be untranslated); the raw cause stays in bridge state and
+        // is logged by the updater for diagnostics.
+        const updateError = bs && bs.updateError
+          ? t.updateInstallFailed
+          : (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? t.updateCheckFailed : '');
         const updateStatusDesc = updateDownloading
           ? (updateProgress >= 100 ? t.uiSettings.installingUpdate : t.uiSettings.downloading(updateProgress))
           : updateReady
@@ -2751,17 +2769,15 @@ function hasStoredCredential(record) {
           )}
           {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same recipe as MemoryDeleteDialog (backdrop click does not close) */}
           {feedbackOpen && feedbackCloseConfirm && (
-            <div data-testid="feedback-close-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
-              <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
-                <div className="px-5 pt-5 pb-4 text-center">
-                  <h3 className="text-[17px] leading-6 font-semibold">{t.feedbackCloseConfirm}</h3>
-                </div>
-                <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-                  <button type="button" data-testid="feedback-close-confirm-ok" onClick={() => { setFeedbackCloseConfirm(false); closeFeedback(); }} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{t.feedbackCloseAnyway}</button>
-                  <button type="button" onClick={() => setFeedbackCloseConfirm(false)} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{t.cancel}</button>
-                </div>
-              </div>
-            </div>
+            <SheetConfirmDialog
+              testid="feedback-close-confirm"
+              confirmTestId="feedback-close-confirm-ok"
+              title={t.feedbackCloseConfirm}
+              confirmLabel={t.feedbackCloseAnyway}
+              cancelLabel={t.cancel}
+              onConfirm={() => { setFeedbackCloseConfirm(false); closeFeedback(); }}
+              onCancel={() => setFeedbackCloseConfirm(false)}
+            />
           )}
           {feedbackNotice && (
             <div className="fixed left-1/2 bottom-8 z-[130] -translate-x-1/2 px-4 py-2.5 rounded-full bg-black/80 text-white text-[14px] shadow-xl backdrop-blur-md">

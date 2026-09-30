@@ -25,6 +25,13 @@ GAIA 数据集托管在 Hugging Face 仓库 `gaia-benchmark/GAIA`。该仓库为
 
 访问权限审批由 Hugging Face 平台管理，Pinvou 无法代为申请。
 
+## Mirror endpoint (HF_ENDPOINT)
+
+数据集拉取遵循标准 `HF_ENDPOINT` 环境变量（如国内镜像 `https://hf-mirror.com`）；
+评测 scratch 缓存目录与 token 的传入方式不受该变量影响。注意：设置
+`HF_ENDPOINT` 后，Hugging Face token 会随请求发送到所选端点，且 hf-hub 对
+下载内容不做本地校验——请只把它指向你信任的端点（公共镜像由第三方运营）。
+
 ## Pinned revisions
 
 为保证评测可复现性，所有关键资源均固定到精确版本：

@@ -63,11 +63,23 @@ impl ConnectorGate {
     pub async fn apply_skills_command(&'static self) -> Result<Value, String> {
         let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
             let show = self.skills_should_show();
-            self.apply_skills(show)?;
+            if let Err(e) = self.apply_skills(show) {
+                // The card renders a localized category message only; the raw
+                // cause is logged here (stdout in dev runs, the app log in
+                // packaged builds — the backend attaches in all builds now).
+                log::warn!("[{}] apply skills failed: {e}", self.id);
+                return Err(e);
+            }
             Ok(show)
         })
         .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
+        .map_err(|e| {
+            // The connected-catch on the card replaces this string with the
+            // skills_enable_failed code, so without this line the join
+            // failure's cause would be lost entirely.
+            log::warn!("[{}] apply skills task failed: {e}", self.id);
+            format!("spawn_blocking: {e}")
+        })??;
         if show {
             crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
         }

@@ -64,6 +64,27 @@ function pinvouSharedtauriSessions() {
     const loadSteeredMessagesForSession = context.loadSteeredMessagesForSession || function () { return []; };
     const syncSteeredMessagesForSession = context.syncSteeredMessagesForSession ||
       function (sid) { return Promise.resolve(loadSteeredMessagesForSession(sid)); };
+    const reportSidecarReadFailure = context.reportSidecarReadFailure;
+    // Persona events and pinvou reviews have no local migration cache, but the
+    // backend now fails a corrupt sidecar explicitly (missing stays []). Degrade
+    // to [] exactly as before, just not silently — report like the scene/steered
+    // readers so a durable-data defect cannot pose as "no data".
+    async function loadPersonaEventsForSession(sid) {
+      try {
+        return await invoke("get_session_persona_events", { sessionId: sid }) || [];
+      } catch (error) {
+        reportSidecarReadFailure("persona events", sid, error);
+        return [];
+      }
+    }
+    async function loadPinvouReviewsForSession(sid) {
+      try {
+        return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
+      } catch (error) {
+        reportSidecarReadFailure("pinvou reviews", sid, error);
+        return [];
+      }
+    }
     const MAX_SCHEDULED_SESSION_BUFFERS = 64;
     const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
@@ -346,8 +367,8 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     // 快照 hydrate 会截断正在流式生成的内容，必须复检后放弃（审计）。
     if (buf.busy || buf.remoteTurnActive) return;
     hydrateWorkingSetFromSaved(buf, saved);
-    try { buf.personaEvents = await invoke("get_session_persona_events", { sessionId: sid }) || []; } catch { buf.personaEvents = []; }
-    try { buf.pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: sid }) || []; } catch { buf.pinvouReviews = []; }
+    buf.personaEvents = await loadPersonaEventsForSession(sid);
+    buf.pinvouReviews = await loadPinvouReviewsForSession(sid);
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     buf.steeredMessages = await syncSteeredMessagesForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
@@ -536,17 +557,36 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
   let ensureSessionInFlight = null;
-  async function ensureSession() {
+  let ensureSessionDraftOutcome = null;
+  async function ensureSession(draftOwner) {
+    function applyDraftOutcome(outcome) {
+      if (!draftOwner || !outcome || draftOwner.draftEpoch !== outcome.epoch) return;
+      draftOwner.createdSessionId = outcome.createdSessionId;
+      if (outcome.rollbackEpoch !== undefined) {
+        draftOwner.rollbackFromDraftEpoch = outcome.epoch;
+        draftOwner.draftEpoch = outcome.rollbackEpoch;
+      }
+    }
     if (state.activeSessionId) return state.activeSessionId;
-    if (ensureSessionInFlight) return ensureSessionInFlight;
+    if (ensureSessionInFlight) {
+      const pendingOutcome = ensureSessionDraftOutcome;
+      const pendingResult = await ensureSessionInFlight;
+      if (draftOwner && pendingOutcome && draftOwner.draftEpoch === pendingOutcome.epoch) {
+        applyDraftOutcome(pendingOutcome);
+      }
+      return pendingResult;
+    }
     // 捕获导航 token：仅判 activeSessionId 覆盖不了「再进草稿」——enterDraft
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
+    const draftOutcome = { epoch: Number(state.draftEpoch || 0), createdSessionId: null };
+    ensureSessionDraftOutcome = draftOutcome;
     // boundWorkspace is captured outside the try: the catch-side recents
     // cleanup must also use the directory bound by this materialization, not
     // the live draftWorkspacePath.
     const boundWorkspace = state.draftWorkspacePath || null;
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- single materialization state machine (navigation guards + multi-agent rollback + lane defaults); split tracked separately
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
@@ -570,6 +610,7 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
           state.pendingDraftMode = null;
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
+          draftOutcome.createdSessionId = meta.id;
           return null;
         }
         // 草稿期开的多智能体开关此刻才落后端（开关本身不物化会话）。先取后
@@ -584,6 +625,7 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
         // create_session failure (outer catch) it is kept for retry.
         state.draftWorkspacePath = null;
         switchActiveTo(meta.id, { fresh: true });
+        draftOutcome.createdSessionId = meta.id;
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
         state.composerDraft = composerDraft;
@@ -601,7 +643,17 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             } catch {
               // 空会话残留可手动删除，不掩盖主错误。
             }
+            draftOutcome.createdSessionId = null;
+            // A real navigation during the toggle/cleanup awaits is not a
+            // rollback: never let it masquerade as the same draft.
+            if (navToken !== sessionSwitchRequestToken || state.activeSessionId !== meta.id) return null;
+            const rollbackComposerDraft = state.composerDraft || "";
             enterDraft();
+            state.composerDraft = rollbackComposerDraft;
+            // This rollback is still the same logical draft, not user
+            // navigation: record the epoch transition for the voice retry
+            // association (restoreTaskDraft rebinds via rollbackFromDraftEpoch).
+            draftOutcome.rollbackEpoch = Number(state.draftEpoch || 0);
             // Restore the registered intent captured before the failure: the
             // retry must keep the user's explicit toggle.
             state.pendingDraftMultiAgent = true;
@@ -685,11 +737,15 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
       }
     })();
     ensureSessionInFlight = p;
-    p.then(
-      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; },
-      function () { if (ensureSessionInFlight === p) ensureSessionInFlight = null; }
-    );
-    return p;
+    try {
+      const result = await p;
+      applyDraftOutcome(draftOutcome);
+      return result;
+    } finally {
+      // Reset on every path: a lingering in-flight entry would make every
+      // future draft send await a dead promise forever.
+      if (ensureSessionInFlight === p) ensureSessionInFlight = null;
+    }
   }
 
 function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedtauriSessions().reportSessionSwitchFailure(error, errorScope); }
@@ -857,13 +913,11 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       return false;
     }
 
-    let personaEvents = [];
-    let pinvouReviews = [];
     const pinvouSceneEvents = await syncPinvouSceneEventsForSession(id);
     const steeredMessages = await syncSteeredMessagesForSession(id);
+    const personaEvents = await loadPersonaEventsForSession(id);
+    const pinvouReviews = await loadPinvouReviewsForSession(id);
     let turnTimeline = [];
-    try { personaEvents = await invoke("get_session_persona_events", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
-    try { pinvouReviews = await invoke("get_session_pinvou_reviews", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
 

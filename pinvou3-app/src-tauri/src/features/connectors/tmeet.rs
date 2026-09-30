@@ -113,17 +113,52 @@ fn safe_auth_log_line(line: &str) -> Option<String> {
 }
 
 fn install_tmeet_cli() -> Result<(), String> {
-    let mut c = TMEET_CTX.base_cmd("npm");
-    cc::apply_user_npm_prefix(&mut c);
-    c.args(["install", "-g", TMEET_NPM_SPEC]);
-    // run_with_timeout 只回成败布尔;失败统一落到 cli-install.log 可诊断。
-    cc::run_with_timeout(c, 180).and_then(|installed| {
-        if installed {
-            Ok(())
-        } else {
-            Err("腾讯会议 CLI 安装失败，请查看 ~/.pinvou3/cli-install.log".to_string())
+    // registry.npmjs.org is often unreachable on China networks: after the
+    // default registry fails outright, retry this invocation once via
+    // npmmirror (only appending --registry, never reading or writing the
+    // user's npm config), the same policy as the codex/claude npm upgrade
+    // mirror retry; both attempts' output is separated by marker lines and
+    // appended in order to cli-install.log, so the first failure's cause is
+    // not lost.
+    let attempt = |registry: Option<&str>| -> Result<bool, String> {
+        let mut c = TMEET_CTX.base_cmd("npm");
+        cc::apply_user_npm_prefix(&mut c);
+        c.args(["install", "-g", TMEET_NPM_SPEC]);
+        if let Some(registry) = registry {
+            c.arg(format!("--registry={registry}"));
         }
-    })
+        // run_with_timeout only returns a success boolean; output is
+        // uniformly appended to cli-install.log for diagnosis.
+        cc::run_with_timeout(c, 180)
+    };
+    cc::append_cli_install_log("── npm install @tencentcloud/tmeet (default npm registry) ──");
+    let first = attempt(None);
+    if first.as_ref().is_ok_and(|ok| *ok) {
+        return Ok(());
+    }
+    cc::append_cli_install_log("── default registry failed, retrying via npmmirror ──");
+    let second = attempt(Some(crate::platform::download::NPM_MIRROR_REGISTRY));
+    if second.as_ref().is_ok_and(|ok| *ok) {
+        return Ok(());
+    }
+    // When both attempts fail, preserve the causal chain starting from the
+    // first error: reporting only the retry error would bury a first failure
+    // unrelated to the network (EACCES / disk full etc.) in the log.
+    let mut causes: Vec<String> = Vec::new();
+    if let Err(primary) = &first {
+        causes.push(format!("default registry error: {primary}"));
+    }
+    if let Err(retry) = &second {
+        causes.push(format!("npmmirror retry error: {retry}"));
+    }
+    let detail = if causes.is_empty() {
+        "both the default registry and the npmmirror mirror failed".to_string()
+    } else {
+        causes.join("; ")
+    };
+    Err(format!(
+        "Tencent Meeting CLI install failed: {detail}; see ~/.pinvou3/cli-install.log for details"
+    ))
 }
 
 /// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.18.
@@ -166,10 +201,18 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
     if let Some(pid) = conn.cancel(ID) {
         let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
     }
-    conn.reset(ID);
+    // The generation is captured at reset: the already_logged_in branch belongs
+    // to this round (login state is a machine-level fact, harmless when late),
+    // only the spawned flow thread needs the staleness self-check.
+    let generation = conn.reset(ID);
     let already_logged_in = tokio::task::spawn_blocking(is_logged_in)
         .await
-        .map_err(|e| format!("spawn_blocking: {e}"))?;
+        .map_err(|e| {
+            // The frontend renders only the derived error code, so without this
+            // line the join failure's cause would be lost entirely.
+            log::warn!("[tmeet] logged-in probe task failed: {e}");
+            format!("spawn_blocking: {e}")
+        })?;
     if already_logged_in {
         cc::bundle_store_on_connected(ID);
         cc::emit(
@@ -180,16 +223,26 @@ pub async fn tmeet_connect_begin(app: AppHandle) -> Result<Value, String> {
         return Ok(json!({ "started": true, "already_connected": true }));
     }
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || run_connect_flow(&app2));
+    tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
 }
 
-fn run_connect_flow(app: &AppHandle) {
-    if let Err(e) = phase_scan(app) {
+fn run_connect_flow(app: &AppHandle, generation: u64) {
+    let conn = app.state::<ConnectorConn>();
+    if let Err(e) = phase_scan(app, generation) {
+        // The card renders a localized category message only; the raw cause
+        // is logged here (stdout in dev runs, the app log in packaged builds).
+        log::warn!("[tmeet] connect flow failed: {e}");
+        // reset() clears the cancelled flag, so the flag alone cannot stop a
+        // late emit in the cancel-then-reconnect window; a cancelled or
+        // superseded round stays silent instead of polluting the new card.
+        if conn.is_cancelled(ID) || conn.flow_stale(ID, generation) {
+            return;
+        }
         cc::emit(
             app,
             "tmeet:error",
-            json!({ "phase": "authorize", "message": e }),
+            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
         );
     }
 }
@@ -215,7 +268,7 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
     })
 }
 
-fn phase_scan(app: &AppHandle) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     let mut cmd = tmeet(&["auth", "login", "--no-browser"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -227,7 +280,8 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("tmeet auth login 启动失败: {e}(需要 tmeet CLI)"))?;
     let conn = app.state::<ConnectorConn>();
-    conn.set_pid(ID, Some(child.id()));
+    let pid = child.id();
+    conn.set_pid(ID, Some(pid));
 
     let (tx, rx) = mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
@@ -245,8 +299,13 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         if now >= deadline {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
-            return Err(auth_failure_message(
+            conn.clear_pid_if(ID, pid);
+            // Cancel tree-kills the child; a cancel landing in this window must
+            // finish silently instead of misreporting an authorization timeout.
+            if conn.is_cancelled(ID) {
+                return Ok(());
+            }
+            return Err(cc::auth_failure_reason(
                 &auth_lines,
                 "60s 内未拿到腾讯会议授权链接(检查网络 / 代理)",
             ));
@@ -256,17 +315,34 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             deadline.saturating_duration_since(now),
         )) {
             Ok((Some(u), line)) => {
-                remember_auth_line(&mut auth_lines, line);
+                cc::remember_auth_line(&mut auth_lines, line);
                 break u;
             }
-            Ok((None, line)) => remember_auth_line(&mut auth_lines, line),
+            Ok((None, line)) => cc::remember_auth_line(&mut auth_lines, line),
             Err(_) => {
+                // Cancel tree-kills the child → pipe EOF lands here: the user stopped
+                // on purpose, so finish silently instead of misreporting an auth failure.
+                if conn.is_cancelled(ID) {
+                    let _ = child.kill();
+                    cc::reap_after_kill(&mut child);
+                    conn.clear_pid_if(ID, pid);
+                    return Ok(());
+                }
                 if let Ok(Some(status)) = child.try_wait() {
-                    conn.set_pid(ID, None);
-                    eprintln!("[tmeet] auth login exited before auth url: exit={status}");
-                    if auth_lines_say_already_logged_in(&auth_lines)
-                        && wait_logged_in(Duration::from_secs(5))
-                    {
+                    conn.clear_pid_if(ID, pid);
+                    log::info!("[tmeet] auth login exited before auth url: exit={status}");
+                    // A single status wait is enough: the already flag is decided
+                    // from the captured output lines, with no second 5s polling
+                    // run just to fill in already:true.
+                    let already = auth_lines_say_already_logged_in(&auth_lines)
+                        && wait_logged_in(Duration::from_secs(5));
+                    // wait_logged_in polls a subprocess for up to 5s; a cancel
+                    // landing inside it must finish silently instead of emitting
+                    // onto the just-closed card.
+                    if conn.is_cancelled(ID) {
+                        return Ok(());
+                    }
+                    if already {
                         cc::bundle_store_on_connected(ID);
                         cc::emit(
                             app,
@@ -275,7 +351,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                         );
                         return Ok(());
                     }
-                    return Err(auth_failure_message(
+                    return Err(cc::auth_failure_reason(
                         &auth_lines,
                         "腾讯会议授权进程提前退出，未拿到授权链接",
                     ));
@@ -284,28 +360,44 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    cc::emit(
-        app,
-        "tmeet:qr",
-        json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
-    );
+    // A cancelled round must not re-open the scan modal the user dismissed,
+    // and after a reconnect a superseded round's QR would be dead on arrival.
+    if !(conn.is_cancelled(ID) || conn.flow_stale(ID, generation)) {
+        cc::emit(
+            app,
+            "tmeet:qr",
+            json!({ "phase": "authorize", "url": url, "qr_data_url": cc::make_qr(&url) }),
+        );
+    }
 
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
             cc::reap_after_kill(&mut child);
-            conn.set_pid(ID, None);
+            conn.clear_pid_if(ID, pid);
             return Ok(());
         }
         while let Ok((_, line)) = rx.try_recv() {
-            remember_auth_line(&mut auth_lines, line);
+            cc::remember_auth_line(&mut auth_lines, line);
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
+                // Cancel race: a kill-induced failed exit is handled as a cancel, silent.
+                if conn.is_cancelled(ID) {
+                    log::info!("[tmeet] cancelled; child exit={status}");
+                    return Ok(());
+                }
                 // A single status wait is enough: the already flag is decided from the captured output lines,
                 // with no second 5s polling run just to fill in already:true.
-                if wait_logged_in(Duration::from_secs(5)) {
+                let logged_in = wait_logged_in(Duration::from_secs(5));
+                // wait_logged_in polls a subprocess for up to 5s; a cancel landing
+                // inside it must finish silently instead of emitting onto the
+                // just-closed card.
+                if conn.is_cancelled(ID) {
+                    return Ok(());
+                }
+                if logged_in {
                     cc::bundle_store_on_connected(ID);
                     let already = auth_lines_say_already_logged_in(&auth_lines);
                     cc::emit(
@@ -315,7 +407,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
                     );
                     return Ok(());
                 }
-                eprintln!("[tmeet] auth login exited without logged-in status: exit={status}");
+                log::info!("[tmeet] auth login exited without logged-in status: exit={status}");
                 let last_line = auth_lines
                     .iter()
                     .rev()
@@ -332,41 +424,10 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
-                conn.set_pid(ID, None);
+                conn.clear_pid_if(ID, pid);
                 return Err(format!("auth login 等待失败: {e}"));
             }
         }
-    }
-}
-
-fn remember_auth_line(auth_lines: &mut std::collections::VecDeque<String>, line: Option<String>) {
-    if let Some(line) = line {
-        if auth_lines.len() >= 32 {
-            auth_lines.pop_front();
-        }
-        auth_lines.push_back(line);
-    }
-}
-
-fn auth_failure_message(auth_lines: &std::collections::VecDeque<String>, fallback: &str) -> String {
-    let last_line = auth_lines
-        .iter()
-        .rev()
-        .find(|line| {
-            let l = line.to_ascii_lowercase();
-            l.contains("failed")
-                || l.contains("error")
-                || l.contains("timeout")
-                || l.contains("lock")
-                || line.contains("失败")
-        })
-        .cloned()
-        .or_else(|| auth_lines.back().cloned())
-        .unwrap_or_default();
-    if last_line.is_empty() {
-        fallback.to_string()
-    } else {
-        format!("{fallback}：{last_line}")
     }
 }
 
@@ -470,17 +531,6 @@ mod tests {
         ));
         assert!(auth_output_says_already_logged_in("already logged in"));
         assert!(!auth_output_says_already_logged_in("network timeout"));
-    }
-
-    #[test]
-    fn auth_failure_message_keeps_cli_reason() {
-        let mut lines = std::collections::VecDeque::new();
-        lines.push_back("starting auth".to_string());
-        lines.push_back("Error: file lock timeout (5s)".to_string());
-        assert_eq!(
-            auth_failure_message(&lines, "腾讯会议授权进程提前退出，未拿到授权链接"),
-            "腾讯会议授权进程提前退出，未拿到授权链接：Error: file lock timeout (5s)"
-        );
     }
 
     #[test]

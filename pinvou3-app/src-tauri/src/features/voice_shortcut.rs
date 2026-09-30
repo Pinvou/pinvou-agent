@@ -38,6 +38,10 @@ enum VoiceShortcutEvent {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct VoiceShortcutState {
     alt_down: bool,
+    /// Alt went down while Shift/Ctrl/Win was already held: the whole Alt
+    /// press belongs to a system chord (e.g. Shift+Alt input switching,
+    /// Ctrl+Alt+key) and passes through untouched until its Alt-up.
+    alt_passthrough: bool,
     alt_pending: bool,
     /// Which physical Alt key started the current gesture (meaningful only
     /// while `alt_down`); the platform layer reads it at combo replay time.
@@ -224,6 +228,35 @@ fn handle_voice_shortcut_key(
     }
 }
 
+/// Hook entry point: `other_modifier_down` reports whether Shift, Ctrl or Win
+/// was already held when this key event arrived. A modifier pressed before
+/// Alt belongs to a system chord, not a bare tap, so that Alt press is never
+/// armed, swallowed or replayed; its Alt-up also passes through, keeping the
+/// system's own down/up pairing intact. Everything else is delegated to
+/// `handle_voice_shortcut_key`.
+fn handle_voice_shortcut_with_modifiers(
+    state: &mut VoiceShortcutState,
+    key: VoiceShortcutKey,
+    key_down: bool,
+    active: bool,
+    foreground_hwnd: isize,
+    time_ms: u32,
+    other_modifier_down: bool,
+) -> VoiceShortcutDecision {
+    if matches!(key, VoiceShortcutKey::Alt(_)) && state.alt_passthrough {
+        if !key_down {
+            state.alt_passthrough = false;
+        }
+        return VoiceShortcutDecision::pass();
+    }
+    if matches!(key, VoiceShortcutKey::Alt(_)) && key_down && !state.alt_down && other_modifier_down
+    {
+        state.alt_passthrough = true;
+        return VoiceShortcutDecision::pass();
+    }
+    handle_voice_shortcut_key(state, key, key_down, active, foreground_hwnd, time_ms)
+}
+
 #[derive(Clone, Serialize)]
 struct VoiceShortcutTriggerPayload {
     mode: &'static str,
@@ -231,6 +264,10 @@ struct VoiceShortcutTriggerPayload {
     /// Target window label (a window mounting VoiceShortcutRouter); the
     /// frontend consumes it only after checking it matches its own window.
     window_label: String,
+    /// Ownership token bound to the current recording claim (present only
+    /// on the "recording" route); the frontend uses it to reject events
+    /// from a stale claim.
+    recording_token: Option<String>,
     /// Routing basis: "recording" (the targeted recording window, used for
     /// stop/mutual exclusion) or "focused" (the focused window, a normal
     /// trigger). The frontend uses this to spot a stale recording-window
@@ -241,40 +278,131 @@ struct VoiceShortcutTriggerPayload {
     route: &'static str,
 }
 
-/// Label of the window currently recording (synced by the frontend via a
-/// command when recording starts/ends).
+/// Recording claim: the (window, operation token) pair that currently owns
+/// the microphone (synced by the frontend via a command when recording
+/// starts/ends/fails, atomically claimed before the mic is opened).
 /// Used for cross-window recording mutual exclusion: while window A records,
 /// window B's Alt gesture is routed to A (to stop it) and never opens a
-/// second session.
-static RECORDING_LABEL: Mutex<Option<String>> = Mutex::new(None);
+/// second session; another window or an older operation cannot steal or
+/// clear the current claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RecordingOwner {
+    pub(super) label: String,
+    pub(super) token: String,
+}
 
-/// Called by the `set_voice_shortcut_recording` command; the frontend syncs
-/// its own window label when recording starts/ends/fails.
-pub(crate) fn set_recording_label(label: Option<String>) {
-    if let Ok(mut guard) = RECORDING_LABEL.lock() {
-        *guard = label.filter(|value| !value.trim().is_empty());
+static RECORDING_OWNER: Mutex<Option<RecordingOwner>> = Mutex::new(None);
+
+/// Command-layer token shape check, kept ahead of every claim so a malformed
+/// token can never reach the owner state.
+fn validate_recording_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() || token.len() > 128 {
+        log::debug!(
+            "invalid voice recording owner token (length {})",
+            token.len()
+        );
+        return Err("invalid voice recording owner token".to_string());
+    }
+    Ok(())
+}
+
+/// Called by the `set_voice_shortcut_recording` command; the frontend claims
+/// this window's label (bound to the operation token) before opening the
+/// microphone, and releases it when recording ends/fails.
+/// `claim` false releases the claim, but only when (label, token) still
+/// matches the recorded owner, so a stale teardown cannot wipe a newer
+/// session's claim.
+/// A claim also cannot resurrect a destroyed window's entry: sync commands
+/// and window events serialize on the main thread, and a destroyed webview's
+/// pending IPC dies with it, so `forget_recording_window` (window destroy)
+/// always lands before any later claim from the same label.
+pub(crate) fn set_recording_owner(label: &str, token: &str, claim: bool) -> Result<bool, String> {
+    // A release is a harmless no-op for any token shape from any window kind:
+    // the JS releases fire-and-forget, so an Err here would surface as an
+    // unhandled rejection, and a malformed token can never match a stored
+    // owner (claims always validate), so the exact-match release below
+    // already refuses it. Only a claim from a non-router window is invalid —
+    // a misbehaving renderer worth logging.
+    if !claim {
+        if !is_voice_shortcut_router_window(label) {
+            return Ok(false);
+        }
+    } else {
+        validate_recording_token(token)?;
+        if !is_voice_shortcut_router_window(label) {
+            log::warn!("voice recording claim from non-router window {label}");
+            return Err("voice recording claim from a non-router window".to_string());
+        }
+    }
+    let mut owner = RECORDING_OWNER.lock().map_err(|err| {
+        log::warn!("voice recording owner mutex poisoned: {err}");
+        "voice recording owner unavailable".to_string()
+    })?;
+    let landed = update_recording_owner(&mut owner, label, token, claim);
+    if !landed {
+        log::debug!(
+            "voice recording {} rejected for window {label} (stale token, or another window owns the recording)",
+            if claim { "claim" } else { "release" }
+        );
+    }
+    Ok(landed)
+}
+
+/// Pure state transition so the claim/release/steal rules stay testable
+/// without a global: a claim from another window fails, but a claim from the
+/// owning window itself replaces the recorded token — the JS keeps at most
+/// one live recording per window, so a same-window re-claim can only be a
+/// recovery from a start that failed after claiming (releasing on that path
+/// is best-effort); without the steal, one leaked claim would lock the
+/// microphone in every window until the owning window is destroyed. A
+/// release only lands on the exact matching owner.
+fn update_recording_owner(
+    owner: &mut Option<RecordingOwner>,
+    label: &str,
+    token: &str,
+    claim: bool,
+) -> bool {
+    if claim {
+        if owner.as_ref().is_some_and(|current| current.label != label) {
+            return false;
+        }
+        *owner = Some(RecordingOwner {
+            label: label.to_string(),
+            token: token.to_string(),
+        });
+        true
+    } else {
+        // Field borrows instead of building the expected owner first: a
+        // release that no-ops (stale token) must not allocate.
+        let matches = owner
+            .as_ref()
+            .is_some_and(|current| current.label == label && current.token == token);
+        if matches {
+            *owner = None;
+        }
+        matches
     }
 }
 
-pub(crate) fn recording_label() -> Option<String> {
-    RECORDING_LABEL.lock().ok().and_then(|guard| guard.clone())
-}
-
-fn clear_recording_label() {
-    if let Ok(mut guard) = RECORDING_LABEL.lock() {
-        *guard = None;
-    }
+pub(super) fn recording_owner() -> Option<RecordingOwner> {
+    RECORDING_OWNER.lock().ok().and_then(|guard| guard.clone())
 }
 
 /// Deregister proactively when a window is destroyed: if a recording window is
 /// closed outright, the frontend never gets to run the finishVoiceInput
-/// teardown. If the label is not cleared, the native hook keeps routing Alt
+/// teardown. If the claim is not released, the native hook keeps routing Alt
 /// gestures into the destroyed window (emit does not error on a destroyed
 /// window and the failure fallback never fires — effectively a global
 /// swallow-keys black hole).
 pub(crate) fn forget_recording_window(label: &str) {
-    if recording_label().as_deref() == Some(label) {
-        clear_recording_label();
+    if let Ok(mut owner) = RECORDING_OWNER.lock() {
+        forget_owner_window(&mut owner, label);
+    }
+}
+
+fn forget_owner_window(owner: &mut Option<RecordingOwner>, label: &str) {
+    if owner.as_ref().is_some_and(|current| current.label == label) {
+        *owner = None;
     }
 }
 
@@ -300,6 +428,20 @@ fn resolve_trigger_target(
     focused_router_label.map(|label| (label.to_string(), "focused"))
 }
 
+/// A "recording"-routed emit is only valid while the current owner still
+/// matches (same window and token); a stale registration must drop the
+/// gesture instead of ghost-targeting. Pure so the production guard itself —
+/// not just the claim state machine — stays tested.
+fn recording_route_is_current(
+    owner: Option<&RecordingOwner>,
+    window_label: &str,
+    recording_token: Option<&str>,
+) -> bool {
+    owner.is_some_and(|owner| {
+        owner.label == window_label && Some(owner.token.as_str()) == recording_token
+    })
+}
+
 mod platform;
 
 pub(crate) fn install(app: AppHandle) {
@@ -312,12 +454,25 @@ pub(crate) fn set_enabled(enabled: bool) {
 
 /// Targeted emit: send only to the target window; silently dropped when there
 /// is no focused/target window (no more broadcast to all windows).
+/// A "recording"-routed event is only emitted while the current owner still
+/// matches (same window and token); otherwise the claim is stale and the
+/// gesture is dropped instead of ghost-targeting an unrelated window.
 fn emit_shortcut_event(
     app: &AppHandle,
     event: VoiceShortcutEvent,
     window_label: &str,
     route: &'static str,
+    recording_token: Option<String>,
 ) {
+    if route == "recording"
+        && !recording_route_is_current(
+            recording_owner().as_ref(),
+            window_label,
+            recording_token.as_deref(),
+        )
+    {
+        return;
+    }
     match event {
         VoiceShortcutEvent::TriggerDictation => {
             let result = app.emit_to(
@@ -327,6 +482,7 @@ fn emit_shortcut_event(
                     mode: "dictation",
                     source: "native",
                     window_label: window_label.to_string(),
+                    recording_token: recording_token.clone(),
                     route,
                 },
             );
@@ -343,11 +499,14 @@ fn emit_shortcut_event(
                         window_label,
                         error
                     );
-                    // Target window already destroyed: if it is still recorded
-                    // as the recording window, clear the stale label so later
-                    // gestures are not black-holed.
-                    if recording_label().as_deref() == Some(window_label) {
-                        clear_recording_label();
+                    // Emit failed: the target webview is most likely
+                    // mid-teardown (an already-destroyed label emits Ok and
+                    // never reaches this branch — full destroy is handled by
+                    // forget_recording_window). Release the token-matched
+                    // claim so the teardown race cannot leave gestures routed
+                    // into a dying window.
+                    if let Some(token) = recording_token.as_deref() {
+                        let _ = set_recording_owner(window_label, token, false);
                     }
                 }
             }
@@ -361,6 +520,261 @@ mod tests {
 
     const HWND_A: isize = 100;
     const HWND_B: isize = 200;
+
+    #[test]
+    fn modifiers_held_before_alt_pass_through_without_pending_or_trigger() {
+        for modifier in ["Shift", "Ctrl", "Win"] {
+            for side in [AltSide::Left, AltSide::Right] {
+                let mut state = VoiceShortcutState::default();
+                let down = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    true,
+                    true,
+                    HWND_A,
+                    100,
+                    true,
+                );
+                assert_eq!(down, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                assert!(!state.alt_pending);
+                let repeat = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    true,
+                    true,
+                    HWND_A,
+                    150,
+                    false,
+                );
+                assert_eq!(repeat, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                // Even if the other modifier is released before Alt-up, no tap was armed.
+                let up = handle_voice_shortcut_with_modifiers(
+                    &mut state,
+                    VoiceShortcutKey::Alt(side),
+                    false,
+                    true,
+                    HWND_A,
+                    200,
+                    false,
+                );
+                assert_eq!(up, VoiceShortcutDecision::pass(), "{modifier} {side:?}");
+                assert!(!state.alt_down);
+                assert!(!state.alt_passthrough);
+            }
+        }
+    }
+
+    #[test]
+    fn bare_alt_tap_without_other_modifiers_still_triggers() {
+        let mut state = VoiceShortcutState::default();
+        let key = VoiceShortcutKey::Alt(AltSide::Left);
+        let down =
+            handle_voice_shortcut_with_modifiers(&mut state, key, true, true, HWND_A, 100, false);
+        assert!(down.suppress);
+        let up =
+            handle_voice_shortcut_with_modifiers(&mut state, key, false, true, HWND_A, 150, false);
+        assert!(up.suppress);
+        assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
+    }
+
+    #[test]
+    fn latched_passthrough_survives_a_missed_alt_up_and_recovers() {
+        // The Alt-up that would clear the latch is lost (hook gap). The next
+        // bare Alt-down still passes through with the latch retained, and its
+        // Alt-up clears the latch, so the latch can cost at most one
+        // sacrificed tap — never a dead shortcut.
+        let mut state = VoiceShortcutState::default();
+        let key = VoiceShortcutKey::Alt(AltSide::Left);
+        let chord_down =
+            handle_voice_shortcut_with_modifiers(&mut state, key, true, true, HWND_A, 100, true);
+        assert_eq!(chord_down, VoiceShortcutDecision::pass());
+        // Lost Alt-up: nothing recorded. The orphan bare Alt-down passes too.
+        let orphan_down =
+            handle_voice_shortcut_with_modifiers(&mut state, key, true, true, HWND_A, 500, false);
+        assert_eq!(orphan_down, VoiceShortcutDecision::pass());
+        assert!(state.alt_passthrough);
+        assert!(!state.alt_down);
+        let orphan_up =
+            handle_voice_shortcut_with_modifiers(&mut state, key, false, true, HWND_A, 550, false);
+        assert_eq!(orphan_up, VoiceShortcutDecision::pass());
+        assert!(!state.alt_passthrough);
+        // And the shortcut works again in full.
+        let bare_down =
+            handle_voice_shortcut_with_modifiers(&mut state, key, true, true, HWND_A, 600, false);
+        assert!(bare_down.suppress);
+        let bare_up =
+            handle_voice_shortcut_with_modifiers(&mut state, key, false, true, HWND_A, 650, false);
+        assert_eq!(bare_up.event, Some(VoiceShortcutEvent::TriggerDictation));
+    }
+
+    #[test]
+    fn stale_reset_clears_a_latched_passthrough() {
+        // A latched chord whose Alt-up is lost is also covered by the
+        // stale-gesture fallback: a non-Alt keystroke after the threshold
+        // resets the whole state, latch included.
+        let mut state = VoiceShortcutState::default();
+        // A non-Alt event starts the clock (the latched Alt-down below never
+        // reaches the gesture handler, so nothing else refreshes it).
+        assert_eq!(
+            handle_voice_shortcut_key(
+                &mut state,
+                VoiceShortcutKey::Other,
+                true,
+                true,
+                HWND_A,
+                1000,
+            ),
+            VoiceShortcutDecision::pass()
+        );
+        let chord_down = handle_voice_shortcut_with_modifiers(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Right),
+            true,
+            true,
+            HWND_A,
+            1500,
+            true,
+        );
+        assert_eq!(chord_down, VoiceShortcutDecision::pass());
+        assert!(state.alt_passthrough);
+        // Lost Alt-up; a non-Alt keystroke after the stale threshold resets.
+        let later = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Other,
+            true,
+            true,
+            HWND_A,
+            1000 + STALE_GESTURE_MS + 1000,
+        );
+        assert_eq!(later, VoiceShortcutDecision::pass());
+        assert!(!state.alt_passthrough);
+        assert!(!state.alt_down);
+        // And the next bare tap triggers normally.
+        let bare_down = handle_voice_shortcut_with_modifiers(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Right),
+            true,
+            true,
+            HWND_A,
+            1000 + STALE_GESTURE_MS + 1200,
+            false,
+        );
+        assert!(bare_down.suppress);
+    }
+
+    #[test]
+    fn recording_claim_release_and_window_destroy_preserve_authority() {
+        // A claim is atomic: another window cannot steal it, a tokenless or
+        // mismatched release cannot clear it, and window destruction only
+        // clears the claim of the window that still owns it.
+        let mut owner = None;
+        assert!(update_recording_owner(&mut owner, "main", "a1", true));
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "b1",
+            true
+        ));
+        assert!(!update_recording_owner(&mut owner, "main", "a0", false));
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "a1",
+            false
+        ));
+        assert_eq!(
+            resolve_trigger_target(owner.as_ref().map(|o| o.label.as_str()), Some("detached-b")),
+            Some(("main".to_string(), "recording"))
+        );
+        forget_owner_window(&mut owner, "detached-b");
+        assert!(owner.is_some());
+        assert!(update_recording_owner(&mut owner, "main", "a1", false));
+        assert!(update_recording_owner(&mut owner, "detached-b", "b1", true));
+        assert!(!update_recording_owner(&mut owner, "main", "a1", false));
+        forget_owner_window(&mut owner, "main");
+        assert_eq!(
+            resolve_trigger_target(owner.as_ref().map(|o| o.label.as_str()), Some("main")),
+            Some(("detached-b".to_string(), "recording"))
+        );
+        forget_owner_window(&mut owner, "detached-b");
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn recording_owner_command_rejects_invalid_claims_but_non_router_release_is_a_no_op() {
+        // Command-layer validation: a claim from a non-router window fails,
+        // while a release from one is a harmless no-op (the JS releases
+        // fire-and-forget and must not surface an unhandled rejection). Only
+        // the non-router and malformed-token *claim* branches return before
+        // taking the global; the router-label releases below do lock it,
+        // which stays deterministic because no other test writes the global.
+        assert!(set_recording_owner("pet", "tok", true).is_err());
+        assert_eq!(set_recording_owner("pet", "tok", false), Ok(false));
+        // A malformed token must not turn the no-op release into an Err
+        // either: the fire-and-forget JS release never surfaces one.
+        assert_eq!(set_recording_owner("pet", "   ", false), Ok(false));
+        assert!(set_recording_owner("main", "   ", true).is_err());
+        // Router releases are equally no-ops for any token shape: the stored
+        // owner only ever holds validated tokens, so a malformed release can
+        // only miss — an Err would just risk an unhandled rejection.
+        assert_eq!(set_recording_owner("main", "   ", false), Ok(false));
+        assert_eq!(set_recording_owner("main", "", false), Ok(false));
+    }
+
+    #[test]
+    fn recording_claim_same_window_replaces_a_leaked_token() {
+        // The JS keeps at most one live recording per window, so a
+        // same-window re-claim with a fresh token can only be the recovery
+        // path for a start that failed after claiming: it must heal instead
+        // of locking every window out of the microphone. Another window's
+        // claim still fails, and the replaced token no longer releases
+        // anything.
+        let mut owner = None;
+        assert!(update_recording_owner(&mut owner, "main", "a1", true));
+        assert!(update_recording_owner(&mut owner, "main", "a2", true));
+        assert_eq!(
+            owner.as_ref().map(|o| o.token.as_str()),
+            Some("a2"),
+            "the owning window replaces the stale token"
+        );
+        assert!(!update_recording_owner(&mut owner, "main", "a1", false));
+        assert!(owner.is_some(), "the replaced token must not release");
+        assert!(!update_recording_owner(
+            &mut owner,
+            "detached-b",
+            "b1",
+            true
+        ));
+        assert!(update_recording_owner(&mut owner, "main", "a2", false));
+        assert!(owner.is_none());
+    }
+
+    #[test]
+    fn recording_route_emits_only_while_the_owner_still_matches() {
+        // The emit-time guard (defense in depth for the check-to-emit gap):
+        // the current owner passes; a stale token, a stale label, or no
+        // owner at all drops the gesture.
+        let owner = Some(RecordingOwner {
+            label: "main".to_string(),
+            token: "a1".to_string(),
+        });
+        assert!(recording_route_is_current(
+            owner.as_ref(),
+            "main",
+            Some("a1")
+        ));
+        assert!(!recording_route_is_current(
+            owner.as_ref(),
+            "main",
+            Some("a0")
+        ));
+        assert!(!recording_route_is_current(
+            owner.as_ref(),
+            "detached-b",
+            Some("a1")
+        ));
+        assert!(!recording_route_is_current(None, "main", Some("a1")));
+    }
 
     #[test]
     fn alt_tap_swallows_down_and_up_symmetrically_and_triggers() {

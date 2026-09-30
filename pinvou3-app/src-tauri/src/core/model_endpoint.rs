@@ -108,7 +108,13 @@ fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
 pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     let client = shared_probe_client()?;
     let url = models_probe_url(base_url);
-    let resp = client.get(url).send().await.ok()?;
+    // Same consistency hardening as fetch_v1_models: gateway probes carry the
+    // session-affinity header (feature-label key); no-op off-gateway. All
+    // current callers are loopback-only, so this is latent-gap hardening.
+    let resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
+        .send()
+        .await
+        .ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -307,6 +313,74 @@ pub fn is_anthropic_endpoint(base_url: &str) -> bool {
         .is_some_and(|url| is_anthropic_api_url(&url))
 }
 
+/// OpenCode gateway endpoint detection (opencode.ai/zen/...).
+///
+/// The Go gateway (`/zen/go/v1`) has enforced the `x-opencode-session`
+/// affinity header with HTTP 400 `MissingSessionID` since 2026-09; plain Zen
+/// (`/zen/v1`) ignores the header today. Matching the whole `/zen` prefix is
+/// deliberate future-proofing so custom endpoints keep working if Zen turns
+/// the header on too. The foundation's builtin injection keys only on the
+/// OpencodeGo/OpencodeZen provider identities, so requests that reach the
+/// gateway through a custom OpenAI-compatible endpoint (provider `openai`)
+/// must get the header from the app layer.
+pub fn is_opencode_gateway_base_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .ok()
+        .is_some_and(|url| {
+            let host = url
+                .host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase());
+            let host_matches =
+                host.is_some_and(|host| host == "opencode.ai" || host.ends_with(".opencode.ai"));
+            let path = url.path();
+            host_matches && (path == "/zen" || path.starts_with("/zen/"))
+        })
+}
+
+/// Stable `x-opencode-session` value per conversation key.
+///
+/// OpenCode's documented contract is one stable ID per conversation. The
+/// foundation's builtin injection is process-global; this app keys IDs by
+/// conversation instead: engine spawns key on the session id (stable across
+/// respawns because `EnginePool::prepare_runtime_model` reuses the same
+/// session key), auxiliary gateway callers key on the session id when they
+/// hold a session-bound bridge and on their feature label otherwise. IDs are
+/// derived deterministically — UUID v5 over the conversation key under a
+/// fixed application namespace — so one conversation keeps one ID across app
+/// restarts and across the engine/auxiliary lanes.
+pub fn opencode_session_id_for(conversation_key: &str) -> String {
+    uuid::Uuid::new_v5(&OPENCODE_SESSION_NAMESPACE, conversation_key.as_bytes()).to_string()
+}
+
+/// Fixed v5 namespace for OpenCode session-affinity IDs: random bytes
+/// generated once offline, carrying no secret or identity.
+const OPENCODE_SESSION_NAMESPACE: uuid::Uuid =
+    uuid::Uuid::from_bytes(*b"\xd0\x7d\xd0\x5c\x48\xc1\x4e\x62\x8a\x4b\x6e\x54\xc0\x84\x12\xe2");
+
+/// Attach `x-opencode-session` to an auxiliary reqwest request when the
+/// endpoint is an OpenCode gateway; no-op otherwise.
+///
+/// The engine chat path carries the header through the foundation config
+/// (`Pinvou3Bridge::build_dt_config`). Hand-rolled auxiliary clients
+/// (memory review, voice postprocess, model review, connection test,
+/// image-capability probe, model probe) bypass the foundation config and
+/// must attach the header themselves or the Go gateway rejects them with
+/// 400 `MissingSessionID`.
+pub fn with_opencode_session_header(
+    req: reqwest::RequestBuilder,
+    base_url: &str,
+    conversation_key: &str,
+) -> reqwest::RequestBuilder {
+    if is_opencode_gateway_base_url(base_url) {
+        req.header(
+            "x-opencode-session",
+            opencode_session_id_for(conversation_key),
+        )
+    } else {
+        req
+    }
+}
+
 /// 模型列表探测地址：upstream 带 `/v1` 后缀时直接拼 `/models`；不带也拼 `/models`
 /// 而非补一层 `/v1`——glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai`
 /// 的 `/models` 端点均存在，补 `/v1` 会拼成不存在的地址永远 404。
@@ -383,8 +457,8 @@ pub enum LocalServerKind {
 /// `bearer` is a credential from the same origin as the endpoint's real
 /// inference requests (see [`apply_bearer`]): probing an authenticated
 /// endpoint (vLLM `--api-key`) without credentials always 401s into a
-/// Generic misclassification, losing default-off thinking and the real
-/// effort tiers. Pass `None` for endpoints without auth.
+/// Generic misclassification, losing the local default thinking tier and
+/// the real effort tiers. Pass `None` for endpoints without auth.
 ///
 /// Results are cached by base_url for `PROBE_CACHE_TTL`: even with parallel
 /// probes a hung endpoint still costs one ~3s,
@@ -736,7 +810,11 @@ pub(crate) async fn fetch_v1_models(
             Some(format!("{trimmed}/models")),
         )
     };
-    let resp = apply_bearer(client.get(primary), bearer)
+    // The gateway probes carry the same session-affinity header (feature-label
+    // key: the probe has no conversation); no-op off-gateway.
+    let attach =
+        |req: reqwest::RequestBuilder| with_opencode_session_header(req, base_url, "models-probe");
+    let resp = attach(apply_bearer(client.get(primary), bearer))
         .send()
         .await
         .ok()?;
@@ -748,7 +826,10 @@ pub(crate) async fn fetch_v1_models(
     let resp = match (resp.status().as_u16(), fallback) {
         (200..=299, _) => resp,
         (404 | 405, Some(url)) => {
-            let resp = apply_bearer(client.get(url), bearer).send().await.ok()?;
+            let resp = attach(apply_bearer(client.get(url), bearer))
+                .send()
+                .await
+                .ok()?;
             if !resp.status().is_success() {
                 return None;
             }
@@ -985,6 +1066,10 @@ pub struct AnthropicCompletion {
 /// Bearer），`system` 是独立字段而非 messages 首条。Messages API 没有
 /// `response_format`，JSON 约束靠 prompt 措辞 + 调用方解析兜底（与既有 chat/completions
 /// 路径的 fallback 解析同款）。api_key 为空时不带鉴权头（同连接测试口径）。
+/// `conversation_key` keys the OpenCode gateway session-affinity header: the
+/// gateway also serves `/v1/messages` (docs/go Endpoints table), so a
+/// preset-Anthropic caller pointed at a gateway base_url must carry it too;
+/// off-gateway this is a no-op.
 pub async fn post_anthropic_messages(
     client: &reqwest::Client,
     base_url: &str,
@@ -993,21 +1078,18 @@ pub async fn post_anthropic_messages(
     system: &str,
     user: &str,
     max_tokens: u32,
+    conversation_key: &str,
 ) -> Result<AnthropicCompletion> {
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{ "role": "user", "content": user }],
-        "temperature": 0,
-    });
-    let mut req = client
-        .post(anthropic_messages_url(base_url))
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .json(&body);
-    if !api_key.trim().is_empty() {
-        req = req.header("x-api-key", api_key.trim());
-    }
+    let req = anthropic_messages_request(
+        client,
+        base_url,
+        api_key,
+        model,
+        system,
+        user,
+        max_tokens,
+        conversation_key,
+    );
     let resp = req
         .send()
         .await
@@ -1021,6 +1103,38 @@ pub async fn post_anthropic_messages(
         text,
         stop_reason: anthropic_messages_stop_reason(&value),
     })
+}
+
+/// Request builder behind [`post_anthropic_messages`], extracted so tests can
+/// assert the header set (gateway vs off-gateway) without a live server.
+fn anthropic_messages_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    conversation_key: &str,
+) -> reqwest::RequestBuilder {
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{ "role": "user", "content": user }],
+        "temperature": 0,
+    });
+    let mut req = with_opencode_session_header(
+        client.post(anthropic_messages_url(base_url)),
+        base_url,
+        conversation_key,
+    )
+    .header("anthropic-version", ANTHROPIC_VERSION)
+    .json(&body);
+    if !api_key.trim().is_empty() {
+        req = req.header("x-api-key", api_key.trim());
+    }
+    req
 }
 
 /// Test-only: minimal model-list mock server. Returns a configurable status
@@ -2397,6 +2511,7 @@ mod tests {
             "sys",
             "user",
             64,
+            "messages-test",
         )
         .await
         .expect("mock messages response should parse");
@@ -2421,6 +2536,7 @@ mod tests {
             "sys",
             "user",
             64,
+            "messages-test",
         )
         .await
         .expect("mock messages response should parse");
@@ -2441,6 +2557,7 @@ mod tests {
             "sys",
             "user",
             64,
+            "messages-test",
         )
         .await
         .expect("a response without stop_reason must still parse");
@@ -2448,6 +2565,58 @@ mod tests {
         assert!(
             completion.stop_reason.is_none(),
             "absent stop_reason stays None (unknown, never treated as truncated)"
+        );
+    }
+
+    /// The Messages-protocol direct call carries the OpenCode gateway
+    /// session-affinity header when preset=Anthropic callers point at a
+    /// gateway base_url (the gateway serves /v1/messages), and stays clean
+    /// off-gateway.
+    #[test]
+    fn anthropic_messages_request_carries_gateway_header() {
+        let client = reqwest::Client::new();
+        let request = anthropic_messages_request(
+            &client,
+            "https://opencode.ai/zen/go/v1",
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+            "memory-review",
+        )
+        .build()
+        .expect("request builds");
+        assert_eq!(
+            request.headers().get("x-opencode-session"),
+            Some(
+                &opencode_session_id_for("memory-review")
+                    .parse()
+                    .expect("valid header value")
+            ),
+            "gateway /v1/messages request must carry the conversation-keyed header"
+        );
+        assert_eq!(
+            request.url().path(),
+            "/zen/go/v1/messages",
+            "the gateway URL must keep the documented /messages suffix"
+        );
+
+        let request = anthropic_messages_request(
+            &client,
+            "https://api.anthropic.com/v1",
+            "key",
+            "claude-x",
+            "sys",
+            "user",
+            64,
+            "memory-review",
+        )
+        .build()
+        .expect("request builds");
+        assert!(
+            request.headers().get("x-opencode-session").is_none(),
+            "off-gateway /v1/messages request must stay clean"
         );
     }
 }

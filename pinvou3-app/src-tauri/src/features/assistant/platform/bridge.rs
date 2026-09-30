@@ -16,11 +16,11 @@
 
 use crate::features::marketplace;
 pub(crate) use crate::features::runtime_bundle::platform as bundle;
-use crate::features::sessions::{self, ExecutionRootResolver, SessionRoots};
+use crate::features::sessions;
 pub use crate::platform::paths;
 pub use crate::platform::prefs;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use deepseek_tui::AppMode;
@@ -37,7 +37,8 @@ use self::bundle::{
 };
 use self::prefs::{ModelPreset, SavedModel, UserPrefs};
 use crate::core::always_thinking::{AlwaysThinkingSpec, always_thinking_spec};
-use crate::core::model_endpoint::LocalServerKind;
+use crate::core::model_endpoint::opencode_session_id_for;
+use crate::core::model_endpoint::{LocalServerKind, is_opencode_gateway_base_url};
 use crate::core::session_mode::SessionMode;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::image_capability::{
@@ -115,6 +116,24 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     matches!(normalized.as_str(), "https://api.deepseek.com")
 }
 
+/// Conversation key for engine configs that carry no session identity
+/// (global bridge clones, preview/headless builds). Session-bound bridges
+/// mint per-session IDs via `session_affinity_key` instead; see
+/// `core::model_endpoint::opencode_session_id_for`.
+const ENGINE_DEFAULT_CONVERSATION_KEY: &str = "engine-default";
+
+/// SiliconFlow China endpoint discrimination: the foundation splits
+/// Siliconflow / SiliconflowCN into two provider kinds with identical wire
+/// semantics but separate route identities (global default
+/// https://api.siliconflow.com/v1, China https://api.siliconflow.cn/v1,
+/// docs.siliconflow.cn quickstart, 2026-09-28). The saved model carries only
+/// one `siliconflow` vendor, so the kind is picked from the endpoint host.
+fn is_siliconflow_cn_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    normalized.starts_with("https://api.siliconflow.cn/")
+        || normalized == "https://api.siliconflow.cn"
+}
+
 pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -135,12 +154,13 @@ pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
 /// (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges (10/8, 172.16/12,
 /// 192.168/16), or Docker-specific hostnames (host.docker.internal, etc.).
 /// These endpoints usually run on the user's own machine/intranet; probing
-/// them is cheap and thinking can default to off; public OpenAI-compatible
-/// endpoints are excluded (keep the default high).
+/// them is cheap so real thinking tiers can be offered (defaulting to the
+/// lowest thinking tier — see `request_reasoning_effort`); public
+/// OpenAI-compatible endpoints are excluded (keep the default high).
 /// Difference from `base_url_uses_loopback`: the latter is only for the
 /// "allow unauthenticated" decision (api_key required), while this decision
 /// covers probing and thinking control (LAN vLLM/Ollama also defaults to
-/// thinking off).
+/// the lowest thinking tier).
 pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -197,6 +217,35 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// [`Pinvou3Bridge::scope_deny_ruleset_with`] and by features::messaging's
 /// audit records.
 pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
+/// The exec-root resolver and "two roots" types for native code sessions are
+/// defined in one place, [`crate::features::sessions`] (SessionStore and the
+/// bridge share the same implementation); this re-export keeps existing call
+/// paths unchanged.
+pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
+
+/// One-shot gate for the removed-`PINVOU3_MAX_TOOL_CALLS` warning: the config
+/// builder runs at every engine spawn, so without it a batch spawning N
+/// sessions prints N identical lines.
+static REMOVED_TOOL_CALL_CAP_WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Warn once per process that the removed `PINVOU3_MAX_TOOL_CALLS` override
+/// is still exported, and report whether THIS call printed the line: the
+/// config builder runs at every engine spawn, so without the gate a batch
+/// spawning N sessions prints N identical lines. The gate is injected so
+/// tests can pin the once-only contract against a fresh gate instead of the
+/// process-global static.
+fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
+    let present = std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some();
+    let warned = present && gate.set(()).is_ok();
+    if warned {
+        eprintln!(
+            "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
+             round cap was removed; runaway protection is the foundation's \
+             max_steps and per-turn wall clock."
+        );
+    }
+    warned
+}
 
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
@@ -207,6 +256,13 @@ pub struct Pinvou3Bridge {
     /// different models). None = use the prefs-global active model. Injected
     /// by EnginePool at spawn per that session's model_id.
     pub session_model: Option<SavedModel>,
+    /// Conversation identity for the OpenCode gateway session-affinity header
+    /// (`x-opencode-session`, one stable ID per conversation). Set by
+    /// `EnginePool::prepare_runtime_model` to the session id so a session
+    /// keeps one header value across engine respawns; `None` = non-session
+    /// bridge clone, falls back to a shared default conversation key in
+    /// `build_dt_config`.
+    pub session_affinity_key: Option<String>,
     /// `max_model_len` (context window) probed from the local vLLM
     /// `/v1/models` endpoint. Injected at
     /// EnginePool spawn by `resolve_served_model` (the matched entry's own
@@ -265,6 +321,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("bundle", &self.bundle)
             .field("workspace", &self.workspace)
             .field("session_model", &self.session_model)
+            .field("session_affinity_key", &self.session_affinity_key)
             .field("probed_context_tokens", &self.probed_context_tokens)
             .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
@@ -312,6 +369,10 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
 
     fn memory_locale_tag(&self) -> String {
         self.locale_tag().to_string()
+    }
+
+    fn aux_conversation_key(&self, feature_label: &str) -> String {
+        self.opencode_conversation_key(feature_label).to_string()
     }
 }
 
@@ -372,13 +433,17 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:bundle_extract:done");
         // One-time migration of old-layout CLI binaries
         // (connectors/<platform>/bin/) to the versioned asset library
-        // (marketplace-unification §9.3): only moved after SHA-256
-        // verification; mismatches stay in place (store-side degraded
-        // semantics, re-downloaded on reconnect). Done in the app-side boot
+        // (marketplace-unification §9.3): a legacy file matching the pin is
+        // moved in; a mismatch is kept only while the pinned version is absent
+        // (the connector's only local runtime; store-side degraded semantics,
+        // re-downloaded on reconnect) and removed once the pinned copy is
+        // verified in place (kept, it would only shadow the upgraded runtime).
+        // Done in the app-side boot
         // rather than inside runtime_bundle: the connectors → runtime_bundle
         // dependency already exists and a reverse call would form a cycle
         // (the architecture guard's rust_feature_cycles baseline is empty).
-        // Idempotent, returns no error internally, does not block startup.
+        // Idempotent, returns no error internally; microsecond-scale in
+        // steady state (per-artifact stat, early return) on the boot path.
         crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_values() {
@@ -401,6 +466,7 @@ impl Pinvou3Bridge {
             bundle,
             workspace: paths::user_home_dir(),
             session_model: None,
+            session_affinity_key: None,
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
@@ -957,6 +1023,17 @@ impl Pinvou3Bridge {
                 "kimi" | "moonshot" => Some("moonshot"),
                 "glm" | "zai" | "zhipu" => Some("zai"),
                 "minimax" => Some("minimax"),
+                // Aggregators have dedicated foundation routes
+                // (reasoning_content replay, thinking toggle at off, and
+                // OpenRouter's effort passthrough); routing by the saved
+                // vendor keeps those semantics instead of degrading to the
+                // generic openai wire (catalog groups added 2026-09-28).
+                "openrouter" => Some("openrouter"),
+                "siliconflow" => Some(if is_siliconflow_cn_base_url(&self.base_url()) {
+                    "siliconflow-cn"
+                } else {
+                    "siliconflow"
+                }),
                 "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
                 "doubao" | "volcengine" => Some("volcengine"),
                 // Anthropic uses the foundation's built-in anthropic provider
@@ -1048,6 +1125,10 @@ impl Pinvou3Bridge {
         if matches!(
             provider,
             "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
+                // Aggregator kinds the foundation lists in
+                // provider_accepts_reasoning_content (chat.rs): both return
+                // and accept the dedicated reasoning_content field.
+                | "openrouter" | "siliconflow" | "siliconflow-cn"
         ) {
             return Some(SEPARATE_REASONING_FIELD);
         }
@@ -1076,16 +1157,22 @@ impl Pinvou3Bridge {
     /// through to the foundation's `reasoning_effort`).
     ///
     /// Priority: user-explicit `SavedModel.reasoning_effort` > provider
-    /// default (local models — vLLM and probed Ollama — default to off to
-    /// prevent SSE timeouts; everything else defaults to high — the
-    /// foundation's own default is Max, and Pinvou uniformly caps it to high,
-    /// matching the product's default thinking intensity).
+    /// default (local models default to the lowest thinking tier the wire can
+    /// express — vLLM low, probed Ollama high because its wire only has the
+    /// boolean think — since real-world local models such as the Qwen3.8
+    /// family do not reliably honor thinking=off: a model that silently
+    /// thinks anyway stalls the first packet and leaks reasoning into plain
+    /// text, while a declared low tier keeps the stream alive and the
+    /// reasoning properly labeled. off stays available as an explicit user
+    /// choice. Everything else defaults to high — the foundation's own
+    /// default is Max, and Pinvou uniformly caps it to high, matching the
+    /// product's default thinking intensity).
     /// The exception is models whose thinking cannot be disabled on local
     /// routes: when the `core::always_thinking` knowledge table matches,
     /// normalize per the table (NoControl sends no thinking parameters; Tiers
     /// only allows the tiers in the table — out-of-tier/missing stored values
     /// normalize to the lowest tier), overriding the stored value and the
-    /// local default off.
+    /// local default tier.
     ///
     /// Local OpenAI-compatible endpoints (loopback LM Studio etc., where the
     /// probe cannot identify the server type or resolves to LM Studio/generic)
@@ -1158,10 +1245,25 @@ impl Pinvou3Bridge {
             return Some(effort.to_string());
         }
         match provider.as_str() {
-            // Local models default to thinking off: vLLM to prevent SSE
-            // timeouts; Ollama to prevent the thinking trace from preempting
-            // the first packet.
-            "vllm" | "ollama" => Some("off".to_string()),
+            // Local models default to the lowest thinking tier instead of
+            // off: real-world models (Qwen3.8 family etc.) do not reliably
+            // honor thinking=off, and a silently-thinking model stalls the
+            // first packet and leaks reasoning into plain text. vLLM exposes
+            // the low tier; the Ollama wire only has the boolean think, so
+            // its lowest thinking level is think=true, exposed as high. off
+            // remains selectable as an explicit user choice.
+            //
+            // Known trade-off on the ollama arm: think=true is a hard 400
+            // ("does not support thinking") on models without thinking
+            // support (ollama >=0.9), a class the old off default served
+            // fine — ollama honors think=false server-side, so its leak
+            // risk is the lowest of the local wires. Accepted per the
+            // #622 product decision; recovery is explicitly saving off
+            // (kept verbatim, see the tests below). Revisit with a
+            // per-model capability probe if real-machine reports cluster
+            // here.
+            "vllm" => Some("low".to_string()),
+            "ollama" => Some("high".to_string()),
             // Local OpenAI-compatible endpoints (loopback/private-network LM
             // Studio/generic services) are not injected, preserving the old
             // behavior.
@@ -1804,7 +1906,7 @@ impl Pinvou3Bridge {
             goal_token_budget,
             goal_status,
             disallowed_tools: _, // pinvou3 computes the initial value from the persisted list (see the construction site); the default value is ignored
-            max_tool_calls,
+            max_tool_calls: _,
             // —— Fields added upstream in v0.8.65, defaults passed through ——
             //   subagents_enabled: default true (generic multi-agent delegation requires SpawnSubAgent).
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
@@ -2069,48 +2171,18 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::unavailable_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
+            // No tool-call round limit: upstream `max_tool_calls` defaults to
+            // `None` (the admission gate is fully lazy). Runaway protection
+            // stays with the foundation's own max_steps, per-turn wall clock,
+            // bounded retries, and cancel boundaries — the host adds no
+            // per-call-count gate of its own. Harnesses that still export the
+            // old override get told it is dead instead of silently ignored —
+            // once per process, since this config builder runs at every
+            // engine spawn and a batch would otherwise print one identical
+            // line per session.
             max_tool_calls: {
-                #[cfg(feature = "benchmark-hooks")]
-                {
-                    // Eval builds pin 8 tool calls per turn by default (the
-                    // GAIA runaway guard). Long-horizon agentic scenarios such
-                    // as Terminal-Bench raise it explicitly via
-                    // PINVOU3_MAX_TOOL_CALLS, same env convention as
-                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
-                    // keeps the behavior bit-identical.
-                    let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
-                        Ok(value) => match value.parse::<u32>() {
-                            // A zero cap would disable every tool call, which
-                            // is never a useful configuration: reject it like
-                            // any other invalid value.
-                            Ok(0) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring PINVOU3_MAX_TOOL_CALLS=0 (a zero per-turn cap would disable every tool); falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                            Ok(cap) => cap,
-                            Err(_) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                        },
-                        Err(std::env::VarError::NotUnicode(value)) => {
-                            eprintln!(
-                                "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                            );
-                            8
-                        }
-                        Err(std::env::VarError::NotPresent) => 8,
-                    };
-                    Some(max_tool_calls.unwrap_or(cap).min(cap))
-                }
-                #[cfg(not(feature = "benchmark-hooks"))]
-                {
-                    max_tool_calls
-                }
+                removed_cap_env_warning(&REMOVED_TOOL_CALL_CAP_WARNED);
+                None
             },
             // [pinvou3-fork] pass the default through (empty); kb_search is
             // injected per session in spawn_for_session
@@ -2530,6 +2602,15 @@ impl Pinvou3Bridge {
             "xiaomi-mimo" => &mut providers.xiaomi_mimo,
             "anthropic" => &mut providers.anthropic,
             "xai" => &mut providers.xai,
+            // Aggregator kinds must keep their own foundation slots: the
+            // credential chain reads the provider table of the resolved kind
+            // (the root api_key belongs to DeepSeek), so falling into the
+            // vllm catch-all would strand the user's key in a slot these
+            // routes never read and redirect custom base URLs to the
+            // official defaults.
+            "openrouter" => &mut providers.openrouter,
+            "siliconflow" => &mut providers.siliconflow,
+            "siliconflow-cn" => &mut providers.siliconflow_cn,
             // Unknown providers uniformly fall through to vllm (consistent with the
             // existing catch-all behavior).
             _ => &mut providers.vllm,
@@ -2541,11 +2622,31 @@ impl Pinvou3Bridge {
             &model,
             reasoning_stream_style,
         );
+        if is_opencode_gateway_base_url(&base_url) {
+            cfg.http_headers.get_or_insert_with(HashMap::new).insert(
+                "x-opencode-session".to_string(),
+                opencode_session_id_for(
+                    self.opencode_conversation_key(ENGINE_DEFAULT_CONVERSATION_KEY),
+                ),
+            );
+        }
         cfg.default_text_model = Some(model);
-        // Local models (vLLM / probed Ollama) default to thinking off (to
-        // prevent SSE timeouts); everything else defaults to high.
+        // Local models (vLLM / probed Ollama) default to the lowest thinking
+        // tier (see request_reasoning_effort); everything else defaults to
+        // high.
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
+    }
+
+    /// Conversation key for the OpenCode gateway session-affinity header on
+    /// auxiliary (hand-rolled) requests: the session id when this bridge is
+    /// session-bound — matching the official client, where auxiliary calls
+    /// share the conversation's session ID — otherwise the caller's feature
+    /// label (connection tests and probes have no conversation).
+    pub(crate) fn opencode_conversation_key<'a>(&'a self, feature_label: &'a str) -> &'a str {
+        self.session_affinity_key
+            .as_deref()
+            .unwrap_or(feature_label)
     }
 
     /// Inject the native `[fleet.profiles]` of the Pinvou expert pool for an
@@ -2833,9 +2934,10 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
                 .with_read_only_dispatch();
         #[cfg(feature = "benchmark-hooks")]
-        let turn_tool_security = turn_tool_security
-            .with_final_only_after_tool_budget()
-            .with_missing_read_action_repair();
+        // With no tool-call round limit, the final-only-after-budget mode can
+        // never trigger, so it is no longer armed; missing-read-action repair
+        // is budget-independent and stays.
+        let turn_tool_security = turn_tool_security.with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
             mode: AppMode::Agent,
@@ -3079,8 +3181,8 @@ impl Pinvou3Bridge {
             // does not use it — take the default (no budget/Active).
             goal_token_budget: None,
             goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
-            // Local vLLM turns thinking off (to prevent SSE timeouts);
-            // everything else defaults to high.
+            // Local models default to the lowest thinking tier (see
+            // request_reasoning_effort); everything else defaults to high.
             reasoning_effort: self.request_reasoning_effort(),
             reasoning_effort_auto: false,
             auto_model: false,
@@ -3290,6 +3392,7 @@ impl Pinvou3Bridge {
             bundle: Pinvou3Bundle::paths(),
             workspace: std::env::temp_dir(),
             session_model,
+            session_affinity_key: None,
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
@@ -6645,65 +6748,72 @@ mod tests {
         );
     }
 
-    /// Tool-call guard of benchmark-hooks builds: the default 8 calls/turn
-    /// stays, PINVOU3_MAX_TOOL_CALLS raises it explicitly (Terminal-Bench and
-    /// similar agentic scenarios).
-    #[cfg(feature = "benchmark-hooks")]
+    /// The migration notice for the removed knob is emitted at most once per
+    /// process: an exported `PINVOU3_MAX_TOOL_CALLS` warns on the first
+    /// engine-config build and stays silent afterwards.
     #[test]
-    fn engine_config_tool_call_cap_respects_env_override() {
+    fn removed_cap_warning_fires_once_per_gate() {
+        let gate = std::sync::OnceLock::new();
         let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+        assert!(!removed_cap_env_warning(&gate), "no env: nothing to warn");
+        // SAFETY: see above.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        assert!(removed_cap_env_warning(&gate), "first presence warns");
+        assert!(
+            !removed_cap_env_warning(&gate),
+            "second presence must stay silent - one line per process"
+        );
+        assert!(!removed_cap_env_warning(&gate));
+    }
+
+    /// No host-level tool-call round limit under any feature combination:
+    /// `build_engine_config` must not configure `max_tool_calls` (upstream
+    /// `None` = unbounded, admission gate lazy). Runaway protection stays
+    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
+    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
+    /// must stay dead: setting it must not resurrect a cap in either config
+    /// path. This is the test `scripts/fork-guard.sh` pins by name.
+    #[test]
+    fn engine_config_has_no_tool_call_cap() {
+        // Taken FIRST, before any `build_engine_config`: that call reads
+        // PINVOU3_MAX_TOOL_CALLS (to warn about it) and the sibling test
+        // above writes the same variable under this lock. Reading it outside
+        // the lock races that `set_var` — the exact unsoundness the env lock
+        // exists to prevent.
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "eval builds must keep the default guard of 8 tool calls per turn"
+            None,
+            "the host must not configure a per-turn tool-call cap"
         );
-
-        // SAFETY: see above.
+        let cfg = fixture_bridge().build_engine_config_for_session("any_session");
+        assert_eq!(
+            cfg.max_tool_calls, None,
+            "per-session configs must not grow a tool-call cap either"
+        );
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(512),
-            "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
+            None,
+            "the removed PINVOU3_MAX_TOOL_CALLS knob must not resurrect a cap"
         );
-
-        // A zero cap would disable every tool call; it must be rejected like
-        // any other invalid value instead of silently disabling all tools.
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "0") };
         assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "PINVOU3_MAX_TOOL_CALLS=0 must fall back to the default guard of 8"
+            fixture_bridge()
+                .build_engine_config_for_session("any_session")
+                .max_tool_calls,
+            None,
+            "the removed knob must not reach per-session configs either"
         );
-
-        // Non-UTF-8 values cannot parse; they must fall back to the default
-        // instead of panicking or corrupting the cap. Unix-only: only Unix
-        // can build a non-UTF-8 OsStr from raw bytes.
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            // SAFETY: see above.
-            unsafe {
-                std::env::set_var(
-                    "PINVOU3_MAX_TOOL_CALLS",
-                    std::ffi::OsStr::from_bytes(&[0xff]),
-                );
-            }
-            assert_eq!(
-                fixture_bridge().build_engine_config().max_tool_calls,
-                Some(8),
-                "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
-            );
-        }
     }
 
     /// Security-sensitive fields must stay fixed — changing these values
     /// would give pinvou3 strange behavior or privilege escalation.
     #[test]
     fn engine_config_locks_critical_fields() {
-        // The reasoning_effort=off assertion pins LocalVllm behavior (the
+        // The reasoning_effort assertion pins LocalVllm behavior (the
         // default preset is now platform-aware), so set LocalVllm explicitly.
         let mut bridge = fixture_bridge();
         set_active_model(
@@ -6730,9 +6840,10 @@ mod tests {
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
-            Some("off"),
-            "本地 vLLM(Qwen3.6)每轮 thinking 必须关；v0.9.12 由 SendMessage 下发，\
-             不再依赖已删除的 EngineConfig 全局字段"
+            Some("low"),
+            "本地 vLLM(Qwen3.6)默认最低思考档 low（真机实测本地模型无法可靠关闭\
+             thinking）；v0.9.12 由 SendMessage 下发，不再依赖已删除的 \
+             EngineConfig 全局字段"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
@@ -7604,6 +7715,261 @@ mod tests {
         );
     }
 
+    /// OpenCode Go gateway (/zen/go/v1) enforces `x-opencode-session` with
+    /// HTTP 400 since 2026-09 (plain Zen ignores it today; the /zen prefix
+    /// match is future-proofing). Custom OpenAI-compatible endpoints resolve
+    /// to provider `openai`, so the bridge must supply the header itself,
+    /// keyed per conversation (`session_affinity_key`): one stable ID per
+    /// conversation, distinct across sessions, never on non-gateway routes.
+    #[test]
+    fn opencode_gateway_base_url_carries_stable_session_header() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        // locked_env snapshots but does not clear; drop any ambient overrides
+        // so the exclusion asserts below cannot be skewed by env pollution.
+        // SAFETY: ENV_LOCK held for the whole test; writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "grok-4.5",
+            "https://opencode.ai/zen/go/v1",
+            "sk-xxx",
+        );
+        let cfg = bridge.build_dt_config();
+        let first = cfg
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .expect("OpenCode gateway route must carry x-opencode-session")
+            .clone();
+        assert!(
+            uuid::Uuid::parse_str(&first).is_ok(),
+            "session id must be a UUID, got {first}"
+        );
+        let second = bridge
+            .build_dt_config()
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .cloned()
+            .expect("header must persist across config rebuilds");
+        assert_eq!(
+            first, second,
+            "session id must be stable across config rebuilds"
+        );
+
+        // Zen-native endpoint shares the /zen prefix and must be covered too;
+        // both fixtures have no session key, so they share the default
+        // conversation and therefore the same ID.
+        let mut zen = fixture_bridge();
+        set_active_model(
+            &mut zen,
+            ModelPreset::OpenaiCompatible,
+            "gpt-5.5",
+            "https://opencode.ai/zen/v1",
+            "sk-xxx",
+        );
+        let zen_header = zen
+            .build_dt_config()
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .cloned()
+            .expect("Zen-native gateway route must carry x-opencode-session");
+        assert_eq!(
+            first, zen_header,
+            "default-conversation bridges must share one stable ID"
+        );
+
+        // Per-conversation semantics: session-keyed bridges keep one ID
+        // across (simulated) respawns and differ across sessions.
+        let gateway = "https://opencode.ai/zen/go/v1";
+        let mut keyed_a = fixture_bridge();
+        keyed_a.session_affinity_key = Some("session-a".to_string());
+        set_active_model(
+            &mut keyed_a,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
+        let a = keyed_a
+            .build_dt_config()
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("x-opencode-session"))
+            .cloned()
+            .expect("session-keyed gateway route must carry the header");
+        assert_ne!(
+            a, first,
+            "session IDs must not collide with the default conversation"
+        );
+        let mut keyed_a_respawn = fixture_bridge();
+        keyed_a_respawn.session_affinity_key = Some("session-a".to_string());
+        set_active_model(
+            &mut keyed_a_respawn,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
+        assert_eq!(
+            keyed_a_respawn
+                .build_dt_config()
+                .http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("x-opencode-session"))
+                .cloned()
+                .expect("respawned bridge must carry the header"),
+            a,
+            "one stable ID per conversation: respawn must reuse the session ID"
+        );
+        let mut keyed_b = fixture_bridge();
+        keyed_b.session_affinity_key = Some("session-b".to_string());
+        set_active_model(
+            &mut keyed_b,
+            ModelPreset::OpenaiCompatible,
+            "m",
+            gateway,
+            "sk-xxx",
+        );
+        assert_ne!(
+            keyed_b
+                .build_dt_config()
+                .http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("x-opencode-session"))
+                .cloned()
+                .expect("second session must carry the header"),
+            a,
+            "distinct conversations must get distinct IDs"
+        );
+
+        let mut other = fixture_bridge();
+        set_active_model(
+            &mut other,
+            ModelPreset::OpenaiCompatible,
+            "custom-model",
+            "https://api.openai.com/v1",
+            "sk-xxx",
+        );
+        assert!(
+            other
+                .build_dt_config()
+                .http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("x-opencode-session"))
+                .is_none(),
+            "non-OpenCode routes must not carry the header"
+        );
+    }
+
+    /// Gateway matcher edges: uppercase hosts (URL parsing lowercases them),
+    /// FQDN trailing dots, and www subdomains match; non-gateway hosts and
+    /// paths that merely start with "/zen" (e.g. /zenith) do not.
+    #[test]
+    fn opencode_gateway_matcher_edges() {
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://OpenCode.AI/zen/v1"
+        ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai./zen/go/v1"
+        ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://www.opencode.ai/zen/v1"
+        ));
+        assert!(crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/zen"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai/zenith/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://evil.example.com/zen/v1"
+        ));
+        // Lookalike hosts: a suffix/prefix matcher regression would leak the
+        // session UUID to these, so both directions are pinned.
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://notopencode.ai/zen/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "https://opencode.ai.evil.com/zen/v1"
+        ));
+        assert!(!crate::core::model_endpoint::is_opencode_gateway_base_url(
+            "not a url"
+        ));
+    }
+
+    /// The auxiliary-request helper attaches the conversation-keyed header on
+    /// gateway routes and is a no-op elsewhere.
+    #[test]
+    fn aux_requests_carry_gateway_header_only_on_gateway_routes() {
+        let gateway = "https://opencode.ai/zen/v1";
+        let client = reqwest::Client::new();
+        let attach = |base_url: &str, key: &str| {
+            crate::core::model_endpoint::with_opencode_session_header(
+                client.post(format!("{base_url}/chat/completions")),
+                base_url,
+                key,
+            )
+        };
+        let request = attach(gateway, "memory-review")
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            request.headers().get("x-opencode-session"),
+            Some(
+                &crate::core::model_endpoint::opencode_session_id_for("memory-review")
+                    .parse()
+                    .expect("valid header value")
+            ),
+            "gateway aux request must carry the conversation-keyed header"
+        );
+        let request = attach("https://api.openai.com/v1", "memory-review")
+            .build()
+            .expect("request builds");
+        assert!(
+            request.headers().get("x-opencode-session").is_none(),
+            "non-gateway aux request must stay clean"
+        );
+        assert_ne!(
+            crate::core::model_endpoint::opencode_session_id_for("memory-review"),
+            crate::core::model_endpoint::opencode_session_id_for("voice-postprocess"),
+            "distinct conversation keys must mint distinct IDs"
+        );
+    }
+
+    /// Auxiliary callers key the gateway header on the session id when the
+    /// bridge is session-bound, falling back to their feature label otherwise.
+    #[test]
+    fn aux_conversation_key_prefers_session_id_over_feature_label() {
+        let mut bridge = fixture_bridge();
+        assert_eq!(
+            bridge.opencode_conversation_key("voice-postprocess"),
+            "voice-postprocess",
+            "unbound bridges keep the feature label"
+        );
+        bridge.session_affinity_key = Some("session-a".to_string());
+        assert_eq!(
+            bridge.opencode_conversation_key("voice-postprocess"),
+            "session-a",
+            "session-bound bridges share the conversation's session ID"
+        );
+    }
+
     /// Verifies the bridge-side Browser MCP gate: Work-mode sessions use a session-specific
     /// mcp.work.json, Code-mode sessions fall back to global mcp.json without a browser
     /// entry, and the unavailable-capability message is injected only into Work mode.
@@ -8082,10 +8448,12 @@ mod tests {
     }
 
     /// A local loopback endpoint probed as Ollama: use the foundation's
-    /// ollama provider (think toggle), default thinking off (off →
-    /// think=false), no auth required.
+    /// ollama provider (think toggle), default to the lowest thinking level
+    /// the wire can express (think=true, exposed as high — off is no longer
+    /// the default because real-world models do not reliably honor it), no
+    /// auth required.
     #[test]
-    fn local_ollama_probe_maps_to_ollama_wire_and_defaults_off() {
+    fn local_ollama_probe_maps_to_ollama_wire_and_defaults_high() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8103,9 +8471,9 @@ mod tests {
         bridge.probed_local_kind = Some(LocalServerKind::Ollama);
         assert_eq!(bridge.provider(), "ollama");
         assert!(!bridge.api_key_required(), "本地 Ollama 无需鉴权");
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
         let providers = cfg.providers.as_ref().expect("providers");
         assert_eq!(
             providers.ollama.base_url.as_deref(),
@@ -8116,10 +8484,10 @@ mod tests {
     }
 
     /// A local loopback endpoint probed as vLLM (an OpenAI-compatible preset
-    /// pointing at vLLM): use the vllm provider (tier wire), default thinking
-    /// off.
+    /// pointing at vLLM): use the vllm provider (tier wire), default to the
+    /// lowest thinking tier low.
     #[test]
-    fn local_vllm_probe_maps_to_vllm_wire_and_defaults_off() {
+    fn local_vllm_probe_maps_to_vllm_wire_and_defaults_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8136,9 +8504,9 @@ mod tests {
         );
         bridge.probed_local_kind = Some(LocalServerKind::Vllm);
         assert_eq!(bridge.provider(), "vllm");
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(
             cfg.providers
                 .as_ref()
@@ -8325,10 +8693,12 @@ mod tests {
         assert!(generic.api_key_required());
     }
 
-    /// On a local Ollama, a user-explicit thinking tier takes priority over
-    /// the default off.
+    /// On a local Ollama, an explicit user tier wins over the default: the
+    /// default is now the lowest thinking level (think=true → high), and a
+    /// stored off must still be kept verbatim (think=false) — off stays a
+    /// supported explicit choice.
     #[test]
-    fn local_ollama_explicit_effort_overrides_default_off() {
+    fn local_ollama_explicit_off_effort_is_kept() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8346,22 +8716,22 @@ mod tests {
         bridge.probed_local_kind = Some(LocalServerKind::Ollama);
         if let Some(model) = bridge.effective_model_owned() {
             let mut model = model;
-            model.reasoning_effort = Some("high".to_string());
+            model.reasoning_effort = Some("off".to_string());
             bridge.session_model = Some(model);
         }
         assert_eq!(
             bridge.request_reasoning_effort().as_deref(),
-            Some("high"),
-            "显式档位必须覆盖本地默认 off"
+            Some("off"),
+            "显式保存的 off 必须原样保留（think=false），不被本地默认档覆盖"
         );
     }
 
     /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner probe
     /// results all map to the engine's vllm provider (chat_template_kwargs +
-    /// reasoning_effort wire are structurally identical), defaulting to
-    /// thinking off locally.
+    /// reasoning_effort wire are structurally identical), defaulting to the
+    /// lowest thinking tier low locally.
     #[test]
-    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_off() {
+    fn local_reasoning_frameworks_map_to_vllm_wire_and_default_low() {
         for kind in [
             LocalServerKind::Sglang,
             LocalServerKind::LlamaCpp,
@@ -8387,7 +8757,7 @@ mod tests {
             assert_eq!(bridge.provider(), "vllm", "{kind:?}");
             assert_eq!(
                 bridge.request_reasoning_effort().as_deref(),
-                Some("off"),
+                Some("low"),
                 "{kind:?}"
             );
         }
@@ -8455,7 +8825,7 @@ mod tests {
     }
 
     /// kimi-k3 without a stored value: normalizes to the lowest tier "low"
-    /// (the local default off does not apply).
+    /// (matching the local default tier, which is itself the lowest tier).
     #[test]
     fn local_vllm_kimi_k3_without_stored_defaults_to_low() {
         let (_lock, _env) = locked_env(&[
@@ -8572,9 +8942,12 @@ mod tests {
     }
 
     /// A plain local model that does not match the knowledge table
-    /// (qwen3-32b without thinking): keeps the local default off unchanged.
+    /// (qwen3-32b without thinking): gets the new lowest-tier default (low).
+    /// This is the class of models (Qwen3.8 family etc.) whose off switch is
+    /// unreliable in real-world tests, which is why off is no longer the
+    /// local default.
     #[test]
-    fn local_vllm_plain_model_keeps_default_off() {
+    fn local_vllm_plain_model_defaults_to_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8590,7 +8963,91 @@ mod tests {
             "",
         );
         bridge.probed_local_kind = Some(LocalServerKind::Vllm);
-        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("off"));
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+    }
+
+    /// A plain local vLLM model with a stored off keeps it verbatim: off
+    /// stays an explicit user choice on the vLLM wire too (the provider
+    /// default is now low, but stored values win). Pins the vLLM half of
+    /// the upgrade contract — the ollama half is pinned by
+    /// `local_ollama_explicit_off_effort_is_kept`, and the one-time prefs
+    /// migration (`migrate_legacy_local_thinking_default`) only ever strips
+    /// pre-#622 machine-written defaults, never a later explicit save.
+    #[test]
+    fn local_vllm_explicit_off_effort_is_kept() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3-32b",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Vllm);
+        if let Some(model) = bridge.effective_model_owned() {
+            let mut model = model;
+            model.reasoning_effort = Some("off".to_string());
+            bridge.session_model = Some(model);
+        }
+        assert_eq!(
+            bridge.request_reasoning_effort().as_deref(),
+            Some("off"),
+            "显式保存的 off 必须原样保留（enable_thinking=false），不被本地默认档 low 覆盖"
+        );
+    }
+
+    /// The prefs one-time migration classifies pre-#622 records through a
+    /// frozen snapshot of THIS module's route predicates
+    /// (`platform::prefs::legacy_local_route_base_url` mirrors
+    /// `base_url_uses_local_or_private`; the deepseek snapshot mirrors
+    /// `is_official_deepseek_base_url`). The snapshot is allowed to drift
+    /// from future changes by design, but it must match today's semantics —
+    /// this contract test turns any drift into a conscious decision.
+    #[test]
+    fn prefs_legacy_local_route_snapshot_matches_bridge_predicate() {
+        for url in [
+            "http://127.0.0.1:8000/v1",
+            "http://localhost:11434",
+            "http://localhost.:11434/v1",
+            "http://LOCALHOST:8000/v1",
+            "http://127.1.2.3:8000",
+            "http://[::1]:11434/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://10.0.0.2:8000",
+            "http://172.16.4.5:8000/v1",
+            "http://172.31.255.254:8000",
+            "http://host.docker.internal:8080/v1",
+            "http://host.lima.internal:8080/v1",
+            "http://host.orbstack.internal:8080/v1",
+            "http://foo.docker.internal:8080/v1",
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com/beta/",
+            "https://api.deepseek.com/v1",
+            "https://gateway.example.com/v1",
+            "http://8.8.8.8:8000",
+            "http://[fe80::1]:11434/v1",
+            "https://api.deepseek.com:443",
+            "not a url",
+            "",
+        ] {
+            assert_eq!(
+                crate::platform::prefs::legacy_local_route_base_url(url),
+                base_url_uses_local_or_private(url),
+                "local-route snapshot diverged for {url}"
+            );
+            assert_eq!(
+                crate::platform::prefs::legacy_official_deepseek_base_url(url),
+                is_official_deepseek_base_url(url),
+                "deepseek snapshot diverged for {url}"
+            );
+        }
     }
 
     /// kimi-k3 on the official remote moonshot route does not enter local
@@ -8797,7 +9254,11 @@ mod tests {
         bridge.prefs.advanced.saved_models[0].vendor = Some("claude".to_string());
 
         assert_eq!(bridge.provider(), "anthropic");
-        assert_eq!(bridge.model(), "claude-sonnet-5");
+        // The Anthropic default follows the official recommendation slot
+        // (claude-opus-5-5 since 2026-09-22, locked in prefs); the literal
+        // keeps this assert from being tautological with the default_model()
+        // input fed into set_active_model above.
+        assert_eq!(bridge.model(), "claude-opus-5-5");
         assert_eq!(bridge.base_url(), "https://api.anthropic.com/v1");
         assert_eq!(bridge.api_key(), "sk-ant");
         let cfg = bridge.build_dt_config();
@@ -8816,6 +9277,107 @@ mod tests {
         // Anthropic thinking is a native thinking block; no OpenAI-family
         // reasoning field is injected.
         assert_eq!(providers.anthropic.reasoning_stream_style.as_deref(), None);
+    }
+
+    /// Aggregator catalog groups route to the foundation's dedicated
+    /// openrouter / siliconflow(+CN) kinds. Credentials and address must land
+    /// in those kinds' own provider slots — the foundation's credential chain
+    /// never reads the root api_key for them, so a vllm catch-all write would
+    /// strand the key and silently redirect custom endpoints to the official
+    /// defaults.
+    #[test]
+    fn aggregator_vendors_route_to_dedicated_provider_slots() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+
+        // OpenRouter routes by the saved vendor name alone.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek/deepseek-v4.1-flash",
+            "https://openrouter.ai/api/v1",
+            "or-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("openrouter".to_string());
+        assert_eq!(bridge.provider(), "openrouter");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Openrouter
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.openrouter.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(providers.openrouter.api_key.as_deref(), Some("or-key"));
+        assert_eq!(
+            providers.openrouter.reasoning_stream_style.as_deref(),
+            Some(SEPARATE_REASONING_FIELD)
+        );
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+        // Org-prefixed ids are not in the foundation's openrouter alias map,
+        // so route resolution must pass them through instead of rejecting.
+        bridge
+            .resolve_runtime_route_for_model("deepseek/deepseek-v4.1-flash")
+            .unwrap_or_else(|error| panic!("openrouter route must resolve: {error}"));
+
+        // SiliconFlow China: the CN kind is picked from the endpoint host and
+        // owns its own slot.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "https://api.siliconflow.cn/v1",
+            "sf-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("siliconflow".to_string());
+        assert_eq!(bridge.provider(), "siliconflow-cn");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::SiliconflowCn
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.siliconflow_cn.base_url.as_deref(),
+            Some("https://api.siliconflow.cn/v1")
+        );
+        assert_eq!(providers.siliconflow_cn.api_key.as_deref(), Some("sf-key"));
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
+        bridge
+            .resolve_runtime_route_for_model("deepseek-ai/DeepSeek-V4-Pro")
+            .unwrap_or_else(|error| panic!("siliconflow-cn route must resolve: {error}"));
+
+        // The global host routes to the plain siliconflow kind.
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "https://api.siliconflow.com/v1",
+            "sfg-key",
+        );
+        bridge.prefs.advanced.saved_models[0].vendor = Some("siliconflow".to_string());
+        assert_eq!(bridge.provider(), "siliconflow");
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Siliconflow
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.siliconflow.base_url.as_deref(),
+            Some("https://api.siliconflow.com/v1")
+        );
+        assert_eq!(providers.siliconflow.api_key.as_deref(), Some("sfg-key"));
+        assert_eq!(providers.vllm.base_url.as_deref(), None);
     }
 
     /// xAI uses the built-in xai provider; Gemini has no built-in provider
@@ -8868,10 +9430,10 @@ mod tests {
         );
     }
 
-    /// DtConfig must keep reasoning_effort=off in LocalVllm mode (to prevent
-    /// SSE timeouts).
+    /// DtConfig must keep the LocalVllm default at the lowest thinking tier
+    /// (reasoning_effort=low).
     #[test]
-    fn local_vllm_forces_reasoning_effort_off() {
+    fn local_vllm_defaults_reasoning_effort_low() {
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -8879,7 +9441,7 @@ mod tests {
             "DEEPSEEK_API_KEY",
         ]);
         // The default preset is now platform-aware (macOS/Windows→Deepseek),
-        // so set LocalVllm explicitly to test its reasoning_effort=off.
+        // so set LocalVllm explicitly to test its reasoning_effort=low.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -8889,7 +9451,7 @@ mod tests {
             "",
         );
         let cfg = bridge.build_dt_config();
-        assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
     }
 
     /// Tool surface at parity with mainline: no `workflow` ban may be added

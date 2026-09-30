@@ -75,11 +75,6 @@ command_protocol!(
     ["export_assistant_response", "open_assistant_share_target"]
 );
 command_protocol!(
-    behavior_telemetry_protocol,
-    "behavior_telemetry.rs",
-    ["track_behavior_event"]
-);
-command_protocol!(
     chat_protocol,
     "chat.rs",
     ["chat", "steer_chat", "withdraw_steer"]
@@ -216,15 +211,21 @@ command_protocol!(
         "kb_model_download"
     ]
 );
-command_protocol!(
-    local_llm_protocol,
-    "local_llm.rs",
-    [
+
+#[test]
+fn preinstalled_model_startup_commands_are_not_registered() {
+    let app_entrypoint = include_str!("../../lib.rs");
+    for removed in [
         "detect_local_vllm_setup",
+        "bootstrap_local_vllm",
         "decline_local_vllm_setup",
-        "bootstrap_local_vllm"
-    ]
-);
+    ] {
+        assert!(
+            !app_entrypoint.contains(removed),
+            "removed preinstalled-model startup command is still registered: {removed}"
+        );
+    }
+}
 command_protocol!(
     marketplace_protocol,
     "marketplace.rs",
@@ -287,7 +288,6 @@ command_protocol!(
     [
         "begin_detach_drag",
         "set_pet_enabled",
-        "get_pet_scale",
         "set_pet_scale",
         "set_pet_activity_visible",
         "save_pet_position",
@@ -462,7 +462,6 @@ command_protocol!(
         "test_image_input_capability",
         "update_settings",
         "update_search_settings",
-        "save_settings_and_restart",
         "save_search_settings_and_restart"
     ]
 );

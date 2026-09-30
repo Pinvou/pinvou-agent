@@ -32,7 +32,7 @@ const conversationJa = {
 
 const codexJa = {
   unknownDirectory:'不明なディレクトリ', temporaryWorkspace:'一時ワークスペース', projectMissing:'元のプロジェクトディレクトリが存在しません',
-  applyingConfig:'設定を適用中…', workspace:'ワークスペース', workspaceTitle:'Agent ワークスペースのファイルと変更を表示',
+  applyingConfig:'設定を適用中…', stop:'停止', workspace:'ワークスペース', workspaceTitle:'Agent ワークスペースのファイルと変更を表示',
   branches:'ブランチ', branchTooltip:'Git ブランチの表示と切り替え',
   branchSwitchDirtyConfirm:(branch, count)=>`ワークスペースに ${count} 件の未コミットの変更があります。「${branch}」への切り替え方法を選択してください：`,
   branchSwitchCancel:'キャンセル',
@@ -127,6 +127,18 @@ const codexJa = {
   accountRecoveryHint:'現在のアカウントは期限切れ、または利用枠不足の可能性があります。アカウントを切り替えても既存のセッションとメッセージは保持されます。',
   serviceRecoveryHint:'サービス状態を再確認してください。問題が続く場合は、後でもう一度試すかアカウントを切り替えてください。',
   errorDetails:'エラー詳細を表示', dismissNotice:'閉じる',
+  agentUnresponsive:agent=>`${agent} が応答しなくなっています`,
+  agentStderr:agent=>`${agent} が問題を報告しました`,
+  agentStallHint:'このターンはまだ新しいイベントがありません。待機を続けるか、「停止」で切り上げられます。',
+  agentStallCancelHint:'Agent が応答しない状態が続いたため、自動的に停止を要求しました。終了を待っています。',
+  agentStallSettledHint:'Agent が長時間応答しなかったため、このターンは中断として切り上げました。再送信するか、そのまま続けられます。',
+  agentCancelTimeoutHint:'「停止」に Agent から応答がなかったため、このターンは中断として切り上げました。',
+  agentStderrHint:'Agent アダプターのエラーは機密情報を除いて表示しています。原文はセッションログにのみ記録されます。',
+  agentStderrNoDetailHint:'Agent アダプターが問題を報告しました。エラー原文はデスクトップのセッションログにのみ保存されています。',
+  agentRestarted:agent=>`${agent} のセッションを再起動しました`,
+  agentStallRestartHint:'同じセッションが短時間に繰り返し応答しなくなったため、次のメッセージは新しい Agent セッションで続行します。以前の会話を引き継げるかはその Agent の復元機能によります。切り替え後にどちらになったかをお知らせします。',
+  agentRestartHint:'以前の Agent セッションが繰り返し応答しなくなったため、新しいセッションで続行しました。会話履歴は保持されますが、未完了のターンは再送信が必要です。',
+  agentRestartFreshHint:'以前の Agent セッションが繰り返し応答しなくなったため、新しいセッションで続行しました。この Agent は以前の会話を復元できませんでした。必要な文脈はもう一度お伝えください。未完了のターンは再送信が必要です。',
   runtimeSources:{ system:'システム CLI', override:'カスタム CLI', bundled:'内蔵 Bridge', legacy_bundled:'内蔵 Codex' },
 };
 
@@ -229,6 +241,7 @@ const jaBase = {
         kbModelItem1: 'bge-m3 多言語ベクトルモデル（int8 ONNX）', kbModelItem2: 'トークナイザーとモデル設定ファイル', kbModelItem3: 'CPU 推論・ネットワークと GPU 不要',
         kbModelDownloadBtn: 'ダウンロードしてセットアップ', kbModelFoot: '一度インストールすればオフラインで利用可 · ダウンロード中も他機能を利用可能',
         kbModelRetryBtn: '再読み込み', kbModelRepairBtn: '再ダウンロードして修復', kbModelLoading: 'モデルを読み込み中…',
+        kbModelNotLoadedTitle: 'モデルはインストール済み · 未読み込み', kbModelNotLoadedDesc: 'Embedding モデルはこの端末にありますが、まだメモリに読み込まれていません（意味検索の需要がまだなかったため。インストール途中の中断でもこの状態で止まります）。今すぐ読み込むか、ファイルを取り込むと自動的に読み込まれます。', kbModelLoadNowBtn: '今すぐ読み込む',
         kbModelStageDownload: 'モデルファイルをダウンロード中…', kbModelStageVerify: '検証中…', kbModelStagePrepare: 'モデルを準備中…', kbModelStageDone: '完了',
         kbStep1: 'ローカルファイル選択', kbStep2: 'AI 解析とインデックス', kbStep3: '会話で自動引用',
         kbMyColls: 'マイコレクション', kbNoColls: 'コレクションがありません。「新規コレクション」で開始。', kbNoCollsShort: 'コレクションがありません。まず作成してください。',
@@ -301,7 +314,6 @@ const jaBase = {
         modelEnvLocked: f => `環境変数でロック中：${f}（設定は反映されません）`, 
         
         
-         sudo: '高度な実行権限 (Sudo)', 
         
         uiRemote: {
           title:'モバイル遠隔操作', desc:'有効にすると、遠隔操作リンクからローカルファイルを参照し、選択したフォルダーでコード Agent を実行できます。信頼できる相手とのみ共有してください。', browser:'ブラウザー接続', stop:'停止', qrAlt:'遠隔操作 QR コード', qrHint:'スマートフォンでスキャンするか、下のリンクをコピーしてください', link:'遠隔操作リンク', linkHint:'QR コードとリンクは同一で、再起動後も有効です。更新または停止すると古いリンクは直ちに無効になります。', generating:'遠隔操作リンクを生成中…', notStarted:'遠隔操作は有効になっていません。', copy:'リンクをコピー', refresh:'QR コードを更新', enable:'アクセスを有効化', allowWorkspace:'ローカルフォルダーを許可', refreshTitle:'QR コードを更新しますか？', refreshDesc:'古い QR コードとリンクは直ちに無効になり、現在のブラウザー接続も切断されます。新しい QR コードをスキャンするか、新しいリンクをコピーして再接続してください。', refreshing:'更新中…', updated:'遠隔操作の状態を更新しました。', unavailable:'遠隔操作は一時的に利用できません。再試行してください。',
@@ -312,7 +324,7 @@ const jaBase = {
         uiSettings: { common:'一般', system:'システム', general:'一般', model:'モデル', search:'検索', memory:'メモリ', community:'ユーザーコミュニティ', permissions:'権限と環境', data:'データ管理', update:'更新', help:'ヘルプとフィードバック', appearance:'外観', language:'表示言語', languageDesc:'アプリの表示言語を切り替えます', theme:'テーマ', themeDesc:'システムに従う、またはライト/ダークを選択', notifications:'通知', taskNotice:'タスク完了通知', taskNoticeDesc:'タスク完了時にシステム通知を表示', voiceShortcuts:'音声ショートカット', voiceShortcutEnable:'Alt 音声ショートカットを有効化', voiceShortcutEnableDesc:'Alt で音声入力を開始します。入力欄にテキストがある場合は、Alt で現在のテキストを音声編集します。既定ではオフです。', voiceShortcutHelp:'Alt 音声ショートカットの説明を表示', voiceShortcutUnsupportedDesc:'Alt グローバルショートカットは Windows のみ対応しています。このプラットフォームでは、アプリのウィンドウ内で Alt 音声入力を利用できます。', voicePostprocess:'スマート整形', voicePostprocessDesc:'認識テキスト（入力欄の既存下書きも含む）を設定済みのモデルサービスへ送り、誤りを修正して構造化入力に整理します。オフの場合は端末内のルール修正のみ行います。', voiceShortcutWebDesc:'ブラウザーではアプリウィンドウ内で Alt 音声入力を利用できます。グローバルショートカットは利用できず、転写のみでスマート整形と音声編集は行われません。', desktopAssistant:'デスクトップアシスタント', pet:'デスクトップコンパニオン', petDesc:'デスクトップに常駐コンパニオンを表示', version:'バージョン', currentVersion:'現在のバージョン', beta:'ベータ版', releaseNotes:'更新内容', noReleaseNotes:'更新内容はありません', downloading:p=>`更新をダウンロード中 ${p}%`, installingUpdate:'更新をインストール中…', installerStarted:'インストーラー起動済み', cancelDownload:'ダウンロードをキャンセル', providers:'ACP' },
         uiSettingsDetail: { modelSection:'モデル', settingsLoadFailed:'設定ページの読み込みに失敗しました', addModel:'モデルを追加', envManaged:'環境変数で管理されるモデル設定はここに表示されますが、変更は環境変数側で行う必要があります。', localModel:'ローカルモデル', defaultTag:'デフォルト', edit:'編集', delete:'削除', noModels:'モデルがありません', localDefaultName:'ローカル Qwen3.6', searchList:'検索ソース一覧', setDefault:'デフォルトに設定', addSearch:'検索ソースを追加', searchDescriptions:{ bing:'内蔵検索', metaso:'中国語検索サービス', bocha:'検索サービス', baidu:'Qianfan AI 検索', tavily:'海外検索サービス' }, searchSourceHint:'内蔵検索はキー不要で利用できます。選択したサービスが失敗した場合は自動的に内蔵検索へフォールバックします。中国語の長い検索には中国語検索サービスの追加がおすすめです。', memoryTypes:{ preference:'長期の好み', work_context:'業務コンテキスト', current_focus:'現在の注目事項', recent_activity:'最近のアクティビティ' }, memoryDetail:'メモリ詳細', content:'内容', editTitle:label=>`${label}を編集`, userCallName:'ユーザーの呼び名', assistantNickname:'アシスタントの呼び名', callNameDesc:'アシスタントがあなたを呼ぶ名前', assistantNameDesc:'あなたがアシスタントを呼ぶ名前', unnamedMemory:'無題のメモリ', view:'表示', enableMemory:'メモリを有効化', enableMemoryDesc:'PINVOU が呼び名、好み、業務コンテキスト、最近の事項を記憶します', profile:'プロフィール', notSet:'未設定', longMemory:'長期メモリ', shortMemory:'短期メモリ', noLongMemory:'長期メモリはありません', noShortMemory:'短期メモリはありません', restore:'復元', system:'システム', advancedPermission:'高度な実行権限', advancedPermissionDesc:'環境設定などの高度なコマンド実行を許可します', missing:'不足', installMissing:'不足している依存関係をインストール', feedbackTitle:'問題または提案を送信', feedbackDesc:'画像と動画を添付できます。送信前にプライバシー通知を表示します', submitFeedback:'フィードバックを送信', editSearch:'検索ソースを編集', apiKeyPlaceholder:'API Key を入力', hide:'非表示', show:'表示', cancel:'キャンセル', save:'保存', restartSearchTitle:'検索設定を適用するため再起動しますか？', restartLanguageTitle:'言語設定を適用するため再起動しますか？', restartSearchDesc:'更新した検索ソースや認証情報を利用するにはアプリの再起動が必要です。', restartLanguageDesc:'表示言語を変更しました。再起動するとアシスタントの応答言語にも反映されます。', later:'後で', restartNow:'今すぐ再起動', deleteModelTitle:'モデルを削除しますか？', deleteModelDesc:'モデル設定と保存済み認証情報を削除します。', deleteModel:'モデルを削除', deleteSearchTitle:'検索ソースを削除しますか？', deleteSearchDesc:name=>`${name} と保存済み認証情報を削除します。`, deleteSearch:'検索ソースを削除', addSearchDesc:'検索ソースを選択して必要な認証情報を入力します', closeSettings:'設定を閉じる', chooseModelDesc:'モデルを選択して必要な認証情報を入力します', collapse:'閉じる', change:'変更', customModel:'カスタムモデル', localModelName:name=>name ? `ローカル ${name}` : 'ローカルモデル', apiKeyReadFailed:'API Key の読み込みに失敗しました', localModelId:'ローカルモデル ID', modelId:'モデル ID', modelIdPlaceholder:'モデル ID を入力', customModelTitle:provider=>`カスタム ${provider} モデル`, customModelDesc:'モデル ID を手動入力', customLocalDesc:'ローカルサービスが公開するモデル ID を入力', customCompatibleDesc:'モデル ID とサービス URL を手動入力', modelDescriptions:{            } },
         uiPetSettings: { choose:'コンパニオンを選択', placeholder:'開発中', preparing:'アニメーションを準備中', animationFailed:'アニメーションの読み込みに失敗', coverFailed:'カバーの読み込みに失敗', retry:'再試行', pets:{ lingling:{name:'リンリン',description:'星模様の巻き尾で、軽やかに寄り添います'}, langlang:{name:'ランラン',description:'黒い服と眼鏡で、落ち着いて寄り添います'}, 'ace-taffy':{name:'Ace Taffy',description:'ピンクの髪と王冠で元気に応援します'} } },
-        uiScheduled: { title:'定期タスク', subtitle:'繰り返し作業を PINVOU に自動実行させます', newTask:'新規タスク', templates:'おすすめテンプレート', myTasks:'マイタスク', loading:'定期タスクを読み込み中…', empty:'一致する定期タスクはありません', view:n=>`定期タスクを表示: ${n}`, useTemplate:n=>`${n} テンプレートを使用`, running:'タスク実行中', unread:'未確認の実行会話', navUnreadAria:'定期タスクに未確認の実行会話があります', closeError:'エラーを閉じる', deleteTitle:'定期タスクを削除しますか？', deleteDescription:n=>`「${n}」の今後の実行を停止してタスクリストから削除します。これまでの実行履歴は保持されます。`, cancel:'キャンセル', delete:'削除', save:'保存', filterAll:'すべて', filterActive:'有効', filterPaused:'一時停止', active:'有効', paused:'一時停止', enabled:'有効', unknown:'不明', notScheduled:'未予定', noSchedule:'予定なし', waitingDispatch:'実行待ち', soon:'まもなく実行', nextRun:(time,remaining)=>`次回 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}日${hours ? `${hours}時間` : ''}後`, hoursAfter:(hours,minutes)=>`${hours}時間${minutes ? `${minutes}分` : ''}後`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒後`, secondsAfter:seconds=>`${seconds}秒後`, runStatus:{ queued:'待機中', running:'実行中', completed:'完了', failed:'失敗', canceled:'キャンセル済み' }, weekdays:[['月曜日','月'],['火曜日','火'],['水曜日','水'],['木曜日','木'],['金曜日','金'],['土曜日','土'],['日曜日','日']], hourCount:n=>`${n} 時間`, choose:'選択してください', autoModel:'自動選択', currentModel:'現在のモデル', reselectModel:n=>`モデルを再選択 · ${n}`, repeatOptions:{ workdays:'平日', daily:'毎日', weekly:'毎週', hourly:'毎時', once:'一回のみ', custom:'カスタム' }, everyHours:n=>`${n} 時間ごと`, startsAt:time=>`${time} から`, repeat:'繰り返し', interval:'間隔', dateLabel:'曜日', startTime:'開始時刻', time:'時刻', chooseRepeat:'繰り返し頻度を選択', chooseInterval:'時間間隔を選択', chooseDate:'実行曜日を選択', chooseStartTime:'開始時刻を選択', chooseRunTime:'実行時刻を選択', setStart:'開始時刻を設定', createFromTemplate:'テンプレートから作成', closeCreate:'新規タスクを閉じる', taskName:'タスク名', taskNamePlaceholder:'例：毎日のデータバックアップ', taskPrompt:'実行内容', taskPromptPlaceholder:'実行ごとに行う作業を入力…', saveTask:'タスクを保存', editTask:'タスクを編集', closeDetail:'タスク詳細を閉じる', taskNameAria:'定期タスク名', taskPromptAria:'定期タスクの説明', aiModel:'AI モデル', chooseModel:'定期タスクのモデルを選択', runningStatus:'実行状態', nextExecution:'次回実行', enableTask:'タスクを有効化', runNow:'今すぐ実行', openFolder:'フォルダーを開く', runHistory:'実行履歴', records:n=>`${n} 件`, noRecords:'記録なし', openRun:'実行会話を開く', noOpenRun:'この実行には開ける会話がありません', openRunLabel:s=>`実行記録を開く：${s}`, viewRunResult:'会話を開いて結果を確認', noRunSession:'開ける会話がありません', noRunHistory:'実行履歴はありません', saveState:{ saving:'保存中…', saved:'保存しました', invalid:'名前と実行内容を入力してください', error:'保存に失敗しました' }, pause:n=>`${n} を一時停止`, resume:n=>`${n} を再開`, templateMap:{ 'daily-brief':{name:'デイリーブリーフ',schedule:'毎日 8:00',description:'重要ニュース、業界動向、接続済み業務システムの社内通知をまとめます',prompt:'過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめます。Lark または WeCom 接続時は社内通知も追加します。ユーザーのディレクトリはスキャンせず、結果はタスクのワークスペースに保存します。'}, 'follow-up-monitor':{name:'フォローアップ確認',schedule:'平日 9:00',description:'期限超過・期限間近の項目を整理し、リスクと次の対応を示します',prompt:'接続済みの Lark または WeCom から、期限超過・本日期限・今後3営業日以内の項目をまとめ、優先度別にリスクと次の対応を示します。確認と整理のみで、送信・承認・変更は行いません。ユーザーのディレクトリはスキャンしません。'}, 'weekly-review':{name:'週間レポート',schedule:'金曜日 16:00',description:'今週の業務記録から構造化された週間レポートを作成します',prompt:'接続済みの Lark または WeCom の今週の予定・ToDo・業務メッセージから週間レポートを作成し、進捗・残課題・リスク・来週の計画を含めます。ユーザーのディレクトリのスキャンや自動送信は行いません。'}, 'memory-organize':{name:'メモリ整理',schedule:'平日 9:30',description:'長期メモリを定期整理：重複の統合、不要項目の削除、表現の修正',prompt:'長期メモリを定期的に整理します：重複エントリを統合し、古いまたは無効な項目を削除し、曖昧な表現を修正して、メモリを簡潔で正確に保ちます。このタスクは会話を開かずに自動実行されます。メモリの整理のみを行い、メッセージの送信やその他の変更は行いません。'} } },
+        uiScheduled: { title:'定期タスク', subtitle:'繰り返し作業を PINVOU に自動実行させます', newTask:'新規タスク', templates:'おすすめテンプレート', myTasks:'マイタスク', loading:'定期タスクを読み込み中…', empty:'一致する定期タスクはありません', view:n=>`定期タスクを表示: ${n}`, useTemplate:n=>`${n} テンプレートを使用`, running:'タスク実行中', unread:'未確認の実行会話', navUnreadAria:'定期タスクに未確認の実行会話があります', closeError:'エラーを閉じる', deleteTitle:'定期タスクを削除しますか？', deleteDescription:n=>`「${n}」の今後の実行を停止してタスクリストから削除します。これまでの実行履歴は保持されます。`, cancel:'キャンセル', delete:'削除', save:'保存', filterAll:'すべて', filterActive:'有効', filterPaused:'一時停止', active:'有効', paused:'一時停止', enabled:'有効', unknown:'不明', notScheduled:'未予定', noSchedule:'予定なし', waitingDispatch:'実行待ち', soon:'まもなく実行', nextRun:(time,remaining)=>`次回 ${time}（${remaining}）`, date:(month,day)=>`${month}月${day}日 `, daysAfter:(days,hours)=>`${days}日${hours ? `${hours}時間` : ''}後`, hoursAfter:(hours,minutes)=>`${hours}時間${minutes ? `${minutes}分` : ''}後`, minutesAfter:(minutes,seconds)=>`${minutes}分${seconds}秒後`, secondsAfter:seconds=>`${seconds}秒後`, runStatus:{ queued:'待機中', running:'実行中', completed:'完了', failed:'失敗', canceled:'キャンセル済み' }, weekdays:[['月曜日','月'],['火曜日','火'],['水曜日','水'],['木曜日','木'],['金曜日','金'],['土曜日','土'],['日曜日','日']], hourCount:n=>`${n} 時間`, choose:'選択してください', currentModel:'現在のモデル', reselectModel:n=>`モデルを再選択 · ${n}`, repeatOptions:{ workdays:'平日', daily:'毎日', weekly:'毎週', hourly:'毎時', once:'一回のみ' }, repeat:'繰り返し', interval:'間隔', dateLabel:'曜日', startTime:'開始時刻', time:'時刻', chooseRepeat:'繰り返し頻度を選択', chooseInterval:'時間間隔を選択', chooseDate:'実行曜日を選択', chooseStartTime:'開始時刻を選択', chooseRunTime:'実行時刻を選択', setStart:'開始時刻を設定', createFromTemplate:'テンプレートから作成', closeCreate:'新規タスクを閉じる', taskName:'タスク名', taskNamePlaceholder:'例：毎日のデータバックアップ', taskPrompt:'実行内容', taskPromptPlaceholder:'実行ごとに行う作業を入力…', saveTask:'タスクを保存', editTask:'タスクを編集', closeDetail:'タスク詳細を閉じる', taskNameAria:'定期タスク名', taskPromptAria:'定期タスクの説明', aiModel:'AI モデル', chooseModel:'定期タスクのモデルを選択', runningStatus:'実行状態', nextExecution:'次回実行', enableTask:'タスクを有効化', runNow:'今すぐ実行', openFolder:'フォルダーを開く', runHistory:'実行履歴', records:n=>`${n} 件`, noRecords:'記録なし', openRun:'実行会話を開く', noOpenRun:'この実行には開ける会話がありません', openRunLabel:s=>`実行記録を開く：${s}`, viewRunResult:'会話を開いて結果を確認', noRunSession:'開ける会話がありません', noRunHistory:'実行履歴はありません', saveState:{ saving:'保存中…', saved:'保存しました', invalid:'名前と実行内容を入力してください', error:'保存に失敗しました' }, pause:n=>`${n} を一時停止`, resume:n=>`${n} を再開`, templateMap:{ 'daily-brief':{name:'デイリーブリーフ',schedule:'毎日 8:00',description:'重要ニュース、業界動向、接続済み業務システムの社内通知をまとめます',prompt:'過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめます。Lark または WeCom 接続時は社内通知も追加します。ユーザーのディレクトリはスキャンせず、結果はタスクのワークスペースに保存します。'}, 'follow-up-monitor':{name:'フォローアップ確認',schedule:'平日 9:00',description:'期限超過・期限間近の項目を整理し、リスクと次の対応を示します',prompt:'接続済みの Lark または WeCom から、期限超過・本日期限・今後3営業日以内の項目をまとめ、優先度別にリスクと次の対応を示します。確認と整理のみで、送信・承認・変更は行いません。ユーザーのディレクトリはスキャンしません。'}, 'weekly-review':{name:'週間レポート',schedule:'金曜日 16:00',description:'今週の業務記録から構造化された週間レポートを作成します',prompt:'接続済みの Lark または WeCom の今週の予定・ToDo・業務メッセージから週間レポートを作成し、進捗・残課題・リスク・来週の計画を含めます。ユーザーのディレクトリのスキャンや自動送信は行いません。'}, 'memory-organize':{name:'メモリ整理',schedule:'平日 9:30',description:'長期メモリを定期整理：重複の統合、不要項目の削除、表現の修正',prompt:'長期メモリを定期的に整理します：重複エントリを統合し、古いまたは無効な項目を削除し、曖昧な表現を修正して、メモリを簡潔で正確に保ちます。このタスクは会話を開かずに自動実行されます。メモリの整理のみを行い、メッセージの送信やその他の変更は行いません。'} } },
         uiChat: { ready:'準備完了', sceneModes:{ personalWorkbench:'パーソナルワークベンチ', documentWriting:'公文書作成', poster:'ポスター', dataVisualization:'データ可視化', pptDesign:'PPT デザイン', clear:label=>`${label}を解除` }, askMe:'質問してみて', naturalQuestion:'自然な言葉で質問できます。', backRuns:'定期タスクの実行履歴に戻る', scheduledRun:'定期タスクの実行', runRecords:'実行履歴', asrUnavailable:'音声認識がインストールされていません。デスクトップアプリでインストールしてから再試行してください。', gotIt:'了解', asrDownloadTitle:'音声認識モデルをダウンロード', asrEnableTitle:'ローカル音声認識を有効化', asrRuntimeMissing:'ローカル音声認識ランタイムがありません。アプリを修復または再インストールしてください。モデルのみ不足している場合はここからダウンロードできます。', asrReadyNotice:'音声モデルの準備ができました。マイクをクリックして録音を開始できます。', asrFirstUse:(size,ffmpeg)=>`初回利用時に音声認識モデル（${size}${ffmpeg ? ' + ffmpeg' : ''}）をダウンロードします。モデルと音声認識は端末内で動作し、音声が外部に送信されることはありません。スマート整形を有効にすると、認識テキスト（入力欄の既存下書きも含む）が設定済みのモデルサービスへ送られ、修正・整形されます。`, sizeModelOnly:'約 254 MB', sizeFull:'約 174～254 MB', asrStages:{ ffmpeg:'ffmpeg をインストール中（システムの認証画面が表示される場合があります）…', verify:'モデルの整合性を確認中…', cancelling:'ダウンロードをキャンセル中…', done:'完了', cancelled:'キャンセル済み', failed:'ダウンロードに失敗しました。再試行してください。', preparing:'準備中…' }, downloadingModel:p=>`モデルをダウンロード中 ${p}`, cancelling:'キャンセル中…', cancelDownload:'ダウンロードをキャンセル', cancel:'キャンセル', repairInstall:'インストールを修復', downloadModel:'モデルをダウンロード', install:'インストール', recordedRecent:'最近のアクティビティを記録しました', viewMemory:'メモリセンターで確認できます', memoryUpdated:'メモリを更新しました', processed:'処理済み', candidate:'メモリ候補', remember:'記憶する', ignoreOnce:'今回は無視', neverAsk:'今後表示しない', memoryMeta:{ current_focus:{label:'現在の注目事項',prompt:'この注目事項を記憶できます',hint:'現在進めている作業の理解に利用します。',notice:'今後の会話でこの最近の事項を参照します。'}, recent_activity:{label:'最近のアクティビティ',prompt:'このアクティビティを記憶できます',hint:'直前に完了した作業の理解に利用します。',notice:'今後の会話でこの完了内容を参照します。'}, work_context:{label:'業務コンテキスト',prompt:'この業務コンテキストを記憶できます',hint:'長期的な業務コンテキストの理解に利用します。',notice:'今後の会話でこの長期コンテキストを参照します。'}, profile:{label:'呼び名',prompt:'この呼び名を記憶できます',hint:'今後この呼び名で会話します。',notice:'今後の会話でこの呼び名を使用します。'}, preference:{label:'好み',prompt:'この好みを記憶できます',hint:'今後の応答をこの好みに合わせます。',notice:'今後の会話でこの好みを参照します。'} } },
         uiChatExtra: { transferRevision:type=>`Pinvou · ${type} · 修正を引き継ぎ`, draftingScheduled:'⏰ 定期タスクの下書きを準備中…' },
         uiToolStore: { title:'プラグインセンター', search:'コネクター、スキル、プラグインを検索', installedOnly:'インストール済みのみ', results:'検索結果', back:'プラグインセンターに戻る', view:'表示', modePlain:'通常セッション', modeCode:'コードセッション', modeVisibilityHint:'セッションモードごとにプラグインの表示を設定', manageVisibility:'表示を管理', doneManagingVisibility:'完了', guide:{ title:'プラグインガイド', close:'閉じる', dragTitle:'ドラッグでインストール', dragDesc:'標準スキル、単一の .md、MCP サービス、または Pinvou プラグインの .zip をこのウィンドウに直接ドラッグするとインポートできます。右上の「アップロード」でファイルを選ぶこともできます。', typesTitle:'対応形式', types:['標準スキル（SKILL.md フォルダ）','単一の .md スキルファイル','MCP サービス','Pinvou プラグインパッケージ（推奨）'], formatsNote:'標準スキル、.md、MCP、Pinvou プラグインパッケージはすべてインポート可能です。Pinvou プラグインパッケージは推奨の標準形式であり、それ以外は自動で正規化されます。', dragHintShort:'パッケージをドラッグしてカスタムプラグインを追加', introTitle:'Pinvou プラグインパッケージとは', introDesc:'1 パッケージ = 1 カード = 1 スイッチ。スキル、MCP サービス（またはその組み合わせ）を zip にまとめ、インポート時に内容から型を自動判定・検証して登録し、ストアとランタイムで統一してオン/オフ・アンインストールします。', specTitle:'プラグインパッケージ仕様', specDesc:'完全な仕様は「プラグインパッケージ仕様」を参照：zip レイアウト、plugin.json（schema v1）、mcp manifest.json、SKILL.md、アイコン、命名の安全性。', downloadSpec:'仕様書をダウンロード（Markdown）', downloadHint:'ダウンロードしてサードパーティの作者に配布できます。デスクトップ版では保存ダイアログが開きます。' } },
@@ -321,7 +333,7 @@ const jaBase = {
           ima:{ title:'Tencent ima', subtitle:'OpenAPI で ima のノートとナレッジベースを操作', latency:'クラウド', desc:'Tencent ima OpenAPI Skill に接続し、ノートの検索、閲覧、作成、追記や、ナレッジベースの検索、閲覧、Web ページとコンテンツの追加ができます。認証情報はこの端末だけに保存されます。', configTitle:'Tencent ima に接続', configDescription:'認証情報はこの端末だけに保存され、IMA OpenAPI Skill の有効化にのみ使用されます。', configDocLabel:'Client ID / API Key を取得', welcomeQueries:['ima のナレッジベースを検索','ima のノート一覧を表示','この内容から ima ノートを作成','ima のナレッジベースで製品案を検索'] },
           tmeet:{ title:'Tencent Meeting', subtitle:'本人として会議、録画、議事録、参加レポートを管理', type:'CLI + 公式 Skill', latency:'クラウド', desc:'Tencent Meeting 公式 CLI と Skill に接続し、会議の作成、検索、変更、キャンセルや、参加レポート、録画、文字起こし、AI 議事録の取得ができます。接続すると認証ページが開き、QR コードでログインします。', welcomeQueries:['Tencent Meeting を作成','Tencent Meeting の録画を検索','最近の会議の AI 議事録を表示','Tencent Meeting の参加者を確認'] },
         } },
-        uiPet: { waiting:'入力が必要', failed:'問題が発生', review:'確認できます', running:'処理中', sendFailed:'送信失敗', noMain:'メインウィンドウに接続できません', scheduledDone:'定期タスク完了', done:'完了', reply:'返信', collapseReply:'返信を閉じる', expandReply:'返信を展開', collapse:'閉じる', expand:'展開', replyPlaceholder:'返信を入力…', sendReply:'返信を送信', back:'PINVOU に戻る', ready:n=>`${n} の準備ができました`, backHint:'クリックして PINVOU に戻る', drag:n=>`クリックして PINVOU に戻る、${n} をドラッグして移動`, openScheduled:n=>`定期タスク「${n}」の今回の実行を開く`, closeScheduled:'定期タスク完了通知を閉じる', openChat:n=>`${n} の会話を開く`, closeNotice:n=>`${n} の通知を閉じる`, replyTo:n=>`${n} に返信`, expandActivities:n=>`${n} 件のアクティビティを展開`, collapseActivities:'アクティビティカードを閉じる', expandActivity:'アクティビティを展開', collapseActivity:'アクティビティを閉じる', loadFailed:'コンパニオンの読み込みに失敗', retry:'クリックして再試行', resizeTitle:'ドラッグしてサイズ変更', hide:'コンパニオンを非表示' },
+        uiPet: { waiting:'入力が必要', failed:'問題が発生', review:'確認できます', running:'処理中', sendFailed:'送信失敗', noMain:'メインウィンドウに接続できません', scheduledDone:'定期タスク完了', done:'完了', reply:'返信', collapseReply:'返信を閉じる', expandReply:'返信を展開', collapse:'閉じる', expand:'展開', replyPlaceholder:'返信を入力…', sendReply:'返信を送信', back:'PINVOU に戻る', ready:n=>`${n} の準備ができました`, backHint:'クリックして PINVOU に戻る', drag:n=>`クリックして PINVOU に戻る、${n} をドラッグして移動`, openScheduled:n=>`定期タスク「${n}」の今回の実行を開く`, closeScheduled:'定期タスク完了通知を閉じる', openChat:n=>`${n} の会話を開く`, closeNotice:n=>`${n} の通知を閉じる`, replyTo:n=>`${n} に返信`, expandActivities:n=>`${n} 件のアクティビティを展開`, collapseActivities:'アクティビティカードを閉じる', expandActivity:'アクティビティを展開', collapseActivity:'アクティビティを閉じる', loadFailed:'コンパニオンの読み込みに失敗', retry:'クリックして再試行', hide:'コンパニオンを非表示' },
         uiWebConnection: { idle:['遠隔操作を準備中','ブラウザー接続を初期化中…'], connecting:['デスクトップに接続中','中断時は自動再接続し、未確認の操作は重複実行しません。'], desktop_offline:['デスクトップはオフラインです','このページを開いたままにすると、復帰後に自動再接続します。'], credentials_missing:['リンクが不完全です','デスクトップで遠隔操作を有効にし、完全なリンクを貼り付けてください。'], denied:['アクセスできません','リンクが無効または更新済みです。デスクトップから新しいリンクをコピーしてください。'], revoked:['アクセス停止','デスクトップがこの遠隔操作リンクを停止しました。'], replaced:['別のブラウザーが引き継ぎました','同時に利用できるブラウザーは 1 つです。再取得するにはページを更新してください。'], incompatible_desktop:['デスクトップのバージョンが非互換','デスクトップアプリを更新してからリンクを開き直してください。'], error:['接続エラー','遠隔操作は再接続を続けます。'] },
         uiConversation: conversationJa,
         uiComputerUse: {
@@ -417,7 +429,7 @@ const jaBase = {
         uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToUngrouped:'未分類へ移動', alreadyUngrouped:'未分類です', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました' , rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindUpToDate:'再バインドが必要な会話はありませんでした', rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` , rebindRetryRemaining:'残りを再試行', rebindFailedSessions:'失敗した会話', rebindInProgress:'別のフォルダー再バインドが実行中です' , rebindBusyHint:'これらのセッションはターン実行中です。アイドルになってから再試行してください', rebindToRoot:'ファイルシステムのルートは指定できません。通常のフォルダーを選択してください', rebindToNested:'新しいフォルダーを元のフォルダー内に置くことはできません', rebindToUnusable:'選択したフォルダーは使用できません。別のフォルダーを選択してください', rebindRootsConflict:'そのフォルダーは他のプロジェクトのフォルダーと重なっています。他のプロジェクトのフォルダー外を選択してください', rebindRootsExpand:'すべての失効フォルダーを表示', rebindRootsCollapse:'最初の失効フォルダーのみ表示' },
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません',  unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。',   title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
-        checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
+        checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateInstallFailed: '更新に失敗しました',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
         downloadInstallRestart: '更新して再起動',
@@ -432,15 +444,6 @@ const jaBase = {
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
         dep_voice_asr_model: '音声認識モデル（SenseVoice q8）', dep_knowledge_embedding_model: 'ナレッジ埋め込みモデル（bge-m3）',
         depHint_email_manual: '手動インストールが必要：ターミナルで `sudo cpan -i Email::Outlook::Message` を実行（Homebrew に formula はありません）。詳細: https://metacpan.org/pod/Email::Outlook::Message',
-        vllmSetupTitle: 'ローカルモデルを有効化', vllmSetupDesc: 'この端末にローカルモデル環境がプリインストールされています。「有効化」を押すとシステム認証ダイアログが開き、認証後に推論エンジンを起動し、OS 起動時に自動開始するよう設定します。',
-        vllmSetupEnable: '有効化', vllmSetupSkip: '後で',
-        vllmSetupRunning: '推論エンジンを起動中。初回のモデル読み込みは遅い場合があります（最大約10分）。アプリを開いたままにしてください…',
-        vllmSetupDone: 'ローカルモデルの準備ができました。アプリを再起動してご利用ください。', vllmSetupFailed: '有効化に失敗しました', vllmSetupRetry: '再試行',
-        vllmStepAuth: 'システム認証待ち（ダイアログで確認）', vllmStepWait: 'モデルの読み込みを待機', vllmStepReady: '完了',
-        vllmElapsed: '経過', vllmProbing: (n) => 'プローブ #' + n,
-        vllmSetupNever: '今後表示しない',
-        vllmDeclineTitle: 'ローカルモデルのセットアップをスキップしますか？', vllmDeclineDesc: 'この案内は今後自動表示されません。利用するにはクラウドモデルを自分で設定するか、後で「設定 → モデル管理 → ローカルモデルサービスを検出」からプリインストール済みローカルモデルを有効化してください。',
-        vllmDeclineConfirm: '有効化しない', vllmDeclineReconsider: 'やっぱり有効化する',
         communityQrAlt: 'Pinvou QQ グループの QR コード', communityChannelTag: '中国語 QQ コミュニティ',
         communityQrHint: 'モバイル QQ でスキャンするか、グループ番号をコピーして手動で検索してください。',
         communityGroupLabel: 'グループ番号', communityCopyGroup: 'グループ番号をコピー', communityCopied: 'グループ番号をコピーしました',
@@ -629,10 +632,12 @@ dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しま
 
 dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'アプリ同梱の Node を使用'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
 
+// Retained for parity with the private implementation this tree aligns with; it has
+// no consumer in the public tree (the flow card always renders localized copy).
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
-  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴の読み取りと、他セッションへのメッセージ送信', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照し、別セッションへメッセージを送信者カードとして届けられます（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもなく、配信は監査ログに記録されます）。アンインストールすると、参照したセッションを読めなくなります。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
+  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴の読み取りと、他セッションへのメッセージ送信', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照し（入力欄で @ セッションを参照すると必要に応じて内容を取得）、別セッションへメッセージを送信者カードとして届けられます（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもなく、配信は監査ログに記録されます）。アンインストールすると、参照したセッションを読めなくなります。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
   card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
@@ -662,6 +667,8 @@ dictJa.uiBuiltinPlugins = {
   kindLabel:'タイプ',
   pageIntro:'アプリに同梱され、アプリと共に更新されるプラグインです。このページは能力とデータアクセス範囲の透明な表示のみを目的としており、アンインストールやオフの操作はできません。',
   readonlyBadge:'内蔵 · 常時有効',
+
+  readonlyBadge:'内蔵 · 常時有効', readonlyModeBadge:'内蔵 · モード制御',
   toolsLabel:'ツール一覧',
   securityLabel:'セキュリティレベル',
   versionLabel:'バージョン',
@@ -756,12 +763,6 @@ Object.assign(dictJa.uiScheduled, {
   chooseHour: '時を選択',
   chooseMinute: '分を選択',
   daySeparator: '、',
-  previewTasks: {
-'preview-daily-brief': { name: 'デイリーブリーフ', scheduleLabel: '毎日 08:00', prompt: '過去24時間の重要ニュースと業界動向を出典・リンク付きでまとめ、社内通知と重点リスクも追加します。' },
-'preview-follow-up': { name: 'フォローアップ確認', scheduleLabel: '平日 09:00', prompt: '期限超過・期限間近の項目を整理し、リスク・担当者・推奨する次の対応を示します。' },
-'preview-weekly-report': { name: 'リード週報', scheduleLabel: '金曜日 16:00', prompt: '今週の新規リード、フォロー状況、成約リスク、来週の重点顧客をまとめます。' },
-  },
-  previewRunError: '外部ニュースソースのリクエストがタイムアウトしました',
 });
 
 dictJa.uiKnowledge = {
@@ -940,7 +941,17 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
 { key:'cli', label:'接続コンポーネントをインストール', sub:'dws · 初回は約 40 秒' },
 { key:'qr', label:'スキャンしてログイン', sub:'DingTalk アプリでスキャン' },
   ],
-  connFailed:'接続に失敗しました', dingtalkSkillsFailed:err=>`DingTalk は認証されましたが、スキルの有効化に失敗しました：${err}`, tmeetAuthIncomplete:'Tencent Meeting の認証が完了していません。ブラウザーでログインを完了してから再試行してください',
+  // Connector flow-card failures, keyed by the error code the backend attaches (or the failed step's fallback code).
+  connectorErrors:{
+    runtime_prepare_failed:'コネクターの実行環境を準備できませんでした。再試行してください。',
+    cli_install_failed:'コネクターをインストールできませんでした。ネットワークを確認して再試行してください。',
+    auth_start_failed:'ログインを開始できませんでした。再試行してください。',
+    registration_failed:'アプリの登録が完了していません。再接続してください。',
+    auth_failed:'ログイン認証が完了していません。再接続してください。',
+    skills_enable_failed:'認証は完了しましたが、スキルを有効化できませんでした。再試行してください。',
+    cli_data_access_disabled:'組織のDingTalk CLIデータアクセスが有効になっていません。組織の管理者に、DingTalkオープンプラットフォームの開発者設定で「Allow members to access their personal data via CLI」を有効にするよう依頼し、再度サインインしてください。',
+    unknown:'接続に失敗しました。後で再試行してください。',
+  },
   emptyNoMatch:'一致するツールが見つかりません', emptyNoInstalled:'インストール済みのツールはまだありません', emptyNoTools:'ツールが見つかりません',
   emptyNoMatchHint:'別のキーワードを試すか、綴りを確認してください。', emptyNoInstalledHint:'ストアでコネクターやスキルをインストールすると、ここに表示されます。', emptyNoInstalledHintReadonly:'デスクトップにツールやスキルはまだインストールされていません。',
   emptyNoToolsHint:'検索語を変更するか、API 開発ドキュメントをご確認ください。',
@@ -963,7 +974,7 @@ visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシ�
 'package-author': { title:'プラグインパッケージ標準化', subtitle:'スキル/MCP/関数をアップロード可能な標準プラグインに整理', desc:'散在するスキル（SKILL.md）、MCP サービス、またはそれらの組み合わせを、Pinvou ストアがインポートできる標準プラグインに整理します：plugin.json、mcp/manifest.json、SKILL.md の frontmatter を補い、アイコンを生成し、命名とレイアウトを検証して、ディレクトリまたは zip を出力します。', latency:'ローカル' },
 'skill-author': { title:'スキル作成', subtitle:'一言の説明から、きちんとした SKILL.md スキルを生成', desc:'ユーザーの一言の説明を、使えるスキル（SKILL.md ディレクトリ）に変えます：name / description / 本文の指示を生成し、命名と構造を検証します。アップロード可能なパッケージとして納品したい場合は、続けて「プラグインパッケージ標準化」のルールで plugin.json とアイコンを補い、標準パッケージを書き出して、最後にユーザーへインストールするか尋ねます。', latency:'ローカル' },
 'tencent-docs-skill': { title:'Tencent ドキュメント', subtitle:'オンラインドキュメント / 表計算 / スライド / スマートシートの作成・編集・管理', desc:'Tencent Docs 公式 MCP スキル（v1.0.41 適合版）：プラグインセンターの「Tencent Docs MCP」コネクターと併用します。公式のカテゴリルーティング（スマートドキュメント / Word / Excel / PPT / マインドマップ / フローチャート / スマートシート）と完全なツール API リファレンスを内蔵。Token はコネクターがこの端末のシステム認証情報に書き込みます。', latency:'クラウド' },
-s5: { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
+'visual-design': { title:'ビジュアルデザイン', subtitle:'デザインシステム級の Web ページ / バナー / ポスター / レジュメを直接生成', desc:'内蔵の自動スキル：モデルが必要に応じて自動で読み込み、デザインシステム級の美観で Web ページ / バナー / ポスター / レジュメなどを直接生成します。インストール不要でいつでも利用できます。', version:'内蔵', latency:'ローカル' },
   },
   categories: { all:'すべて', collab:'連携・コラボ', docs:'ドキュメント・ナレッジ', dev:'開発', finance:'金融データ', life:'生活・実用', other:'その他' },
 } });
@@ -1030,7 +1041,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   autoDetectLocalModel:'ローカルモデルを自動検出',
   codingPlanTestUnavailable:'現在このプロバイダーの接続テストはできませんが、設定は保存できます',
   connectionMessages:{ ok:'接続に成功しました', auth_invalid:'API Key が無効です。確認して再入力してください', auth_forbidden:'この API Key にはアクセス権がありません', billing:'アカウント残高が不足しています。チャージするか、別のモデルに切り替えてください', rate_limited:'リクエストが多すぎるか、割り当てが不足しています。後でもう一度お試しください', redirect:'サービスアドレスがリダイレクトされ、可用性を確認できませんでした', request_invalid:'リクエスト形式が受け付けられませんでした。モデル設定を確認してください', timeout:'接続がタイムアウトしました。ネットワークまたはローカルサービスの起動を確認してください', tls_error:'セキュリティ証明書の検証に失敗しました。プロキシまたはネットワーク環境を確認してください', dns_failed:'サービスアドレスを解決できませんでした。ネットワークを確認してください', connection_refused:'サービスに接続できませんでした。ローカルのモデルサービスが起動しているか確認してください', server_unavailable:'サービスが一時的に利用できません。後でもう一度お試しください', endpoint_not_found:'エンドポイントを利用できません', method_not_allowed:'エンドポイントはテストリクエストに対応していません', http_error:'接続に失敗しました。設定を確認して再試行してください', unknown:'接続に失敗しました。後でもう一度お試しください' },
-  catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', custom:'カスタム互換エンドポイント' },
+  catalogSections:{ coding_plan:'Coding Plan', official_api:'公式 API', aggregator:'集約プラットフォーム', custom:'カスタム互換エンドポイント' },
   providerCatalog:{
     local:{title:'ローカルモデル',desc:'ローカルサービスのデフォルトモデル'}, glm_coding_plan:{title:'Zhipu Coding Plan / GLM Coding Plan',configTitle:'Zhipu Coding Plan',desc:'コーディングと Agent 向けの専用エンドポイント'},
     tencent_coding_plan:{title:'Tencent Cloud Coding Plan',configTitle:'Tencent Cloud Coding Plan',desc:'Tencent Cloud のコーディングプラン用エンドポイント'},
@@ -1050,6 +1061,11 @@ Object.assign(dictJa.uiSettingsDetail, {
     anthropic:{title:'Anthropic Claude',configTitle:'Anthropic Claude',desc:'Anthropic 公式 API（Messages ネイティブプロトコル）'},
     gemini:{title:'Google Gemini',configTitle:'Google Gemini',desc:'Gemini API（OpenAI 互換エンドポイント）'},
     xai:{title:'xAI Grok',configTitle:'xAI Grok',desc:'xAI 公式 API'},
+    volcengine_coding_plan:{title:'Volcengine Ark Coding Plan',configTitle:'Volcengine Ark Coding Plan',desc:'Volcengine Ark のコーディングプラン用エンドポイント'},
+    qwen_coding_plan:{title:'Qwen Coding Plan',configTitle:'Qwen Coding Plan',desc:'Alibaba Cloud Model Studio のコーディングプラン専用エンドポイント'},
+    openrouter:{title:'OpenRouter',configTitle:'OpenRouter',desc:'OpenRouter アグリゲーター公式 API'},
+    siliconflow:{title:'SiliconFlow China',configTitle:'SiliconFlow',desc:'SiliconFlow 中国公式 API'},
+    siliconflow_global:{title:'SiliconFlow Global',configTitle:'SiliconFlow Global',desc:'SiliconFlow 国際 API（キーは地域別）'},
     openai_compatible:{title:'OpenAI Compatible',desc:'カスタム OpenAI 互換エンドポイント'},
   },
   imageCapability:'画像入力', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応', imageCapabilityPinvou:'自動処理',
@@ -1078,7 +1094,11 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   'Coding Plan 自动模型':'Coding Plan 自動モデル',
   '自动模型，智能路由':'自動モデル（スマートルーティング）',
   'Hy 套餐专属模型':'Hy プラン専用モデル',
-  '标准编码模型':'標準コーディングモデル',
+  'K2.8 Preview，全档 1M 上下文':'K2.8 Preview、全ティア 1M コンテキスト',
+  '极速多模态，200 tokens/s':'高速マルチモーダル、200 tokens/s',
+  '新预览旗舰，仅订阅渠道':'新プレビューフラッグシップ、サブスクリプション専用',
+  '快速高性价比，夜间同样四折':'高速で高コストパフォーマンス、夜間も通常の 40%',
+  '官方将于 2026-10-21 下线':'2026-10-21 に提供終了予定',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
   'K3 256K 上下文，价格更低':'K3 256K コンテキスト、より低価格',
   '官方已转 Legacy，兼容保留':'公式レガシー化済み。互換性のため保持',
@@ -1099,23 +1119,26 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '通用推理，官方将于 2026-10-09 下线':'汎用推論、2026-10-09 に提供終了予定',
   '多模态高性价比':'マルチモーダルで高コストパフォーマンス', '最新多模态高性价比':'最新マルチモーダル、高コストパフォーマンス',
   'Kimi 最新旗舰':'Kimi 最新フラッグシップ', 'Kimi 编码模型':'Kimi コーディングモデル', 'MiniMax 最新旗舰':'MiniMax 最新フラッグシップ',
-  'Hy4 预览，高峰期可能限频':'Hy4 プレビュー、混雑時はレート制限の可能性あり',
   'V4.1-Flash 主力，1M 上下文，支持图片输入':'V4.1-Flash の主力モデル。1M コンテキスト、画像入力対応', '在售；官方确认 2026-09-14 后继续提供且计费不变':'販売中。公式に 2026-09-14 以降も提供継続・課金は変更なし',
   '最新旗舰，强制思考':'最新フラッグシップ、思考は常時オン', '最新旗舰，1M 上下文多模态':'最新フラッグシップ、1M コンテキスト・マルチモーダル',
-  '最新旗舰，1M 上下文':'最新フラッグシップ、1M コンテキスト', '全模态理解（图片/视频）':'全モーダル理解（画像・動画）',
+  '最新旗舰，1M 上下文':'最新フラッグシップ、1M コンテキスト',
+  'Hy4 预览':'Hy4 プレビュー',
   '上代旗舰推理（纯文本）':'前世代フラッグシップ推論（テキストのみ）', '上代快速款':'前世代の高速モデル',
-  '正式旗舰，夜间 22:00-08:00 五折（个人版）':'正式フラッグシップ、22:00-08:00 は半額（個人版）',
-  '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応', '快速响应，暂不支持 Responses API':'高速応答、Responses API は未対応',
-  '最新推荐，周级滚动升级':'最新の推奨モデル、週次ローリング更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
-  '编程特化（预览）':'コーディング特化（プレビュー）', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
+  '正式旗舰，夜间 22:00-08:00 四折（个人版）':'正式フラッグシップ、22:00-08:00 は通常の 40%（個人版）',
+  '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応',
+  '最新推荐，统一模型 ID 自动升级':'最新の推奨モデル、統一モデル ID で自動更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
+  '编程特化（预览），官方即将下线':'コーディング特化（プレビュー）。公式によりまもなく提供終了予定', '稳定通用，官方即将下线':'安定した汎用モデル。公式によりまもなく提供終了予定', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
+  '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用':'コーディング/ Agent の新フラッグシップ。Chat プロトコルの関数呼び出しは effort=none のみ',
+  '低价高效；Chat 协议仅 effort=none 支持函数调用':'低価格かつ高速。Chat プロトコルの関数呼び出しは effort=none のみ',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 ファミリーのフラッグシップ、推論とコーディング',
   '最强旗舰，高难推理与长程 Agent':'最強フラッグシップ、高難度推論と長時間エージェント',
-  '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '复杂 Agent 编码，默认推荐':'複雑なエージェントコーディング、デフォルト推奨',
+  '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '官方默认推荐，复杂 Agent 编码':'公式のデフォルト推奨、複雑なエージェントコーディング',
   '最快，200K 上下文':'最速、200K コンテキスト', '上一代 Flash':'前世代 Flash',
   '基线速度，兼容保留':'ベースライン速度、互換性のため保持',
   '旗舰，编码与 Agent 默认推荐':'フラッグシップ、コーディングと Agent のデフォルト推奨', '上代旗舰，编码与 Agent':'前世代フラッグシップ、コーディングと Agent',
   '4.20 推理，1M 上下文':'4.20 推論、1M コンテキスト', '4.20 非推理，1M 上下文':'4.20 非推論、1M コンテキスト',
   '快速可靠，强工具调用':'高速で安定、ツール呼び出しに強い', '代码 Agent，256K 上下文':'コーディングエージェント、256K コンテキスト',
+  '全模态，低成本':'フルモーダル、低コスト', '旗舰效果，极速输出':'フラッグシップ品質、超高速出力',
 });
 
 dictJa.uiSettingsDetail.customCodingPlanDesc = 'Coding Plan モデル ID を手動入力';
@@ -1127,6 +1150,8 @@ dictJa.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
   openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', tencent_token_plan:'カスタム Tencent Cloud Token Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
+  volcengine_coding_plan:'カスタム Volcengine Ark Coding Plan モデル', qwen_coding_plan:'カスタム Qwen Coding Plan モデル',
+  openrouter:'カスタム OpenRouter モデル', siliconflow:'カスタム SiliconFlow モデル', siliconflow_global:'カスタム SiliconFlow モデル',
 };
 
 // features/chat バックグラウンドタスク表示の辞書項目（uiChat は既存のためマージ）
@@ -1138,5 +1163,5 @@ Object.assign(dictJa.uiChat, {
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'ローカルサービスのデフォルトモデル'
 });
 // restored: inline catalog descriptions from jaBase (referenced by the model catalog)
-Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '高速响应': '高速応答', '稳定通用': '安定した汎用モデル', '轻量模型': '軽量モデル'
+Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '高速响应': '高速応答', '轻量模型': '軽量モデル'
 });

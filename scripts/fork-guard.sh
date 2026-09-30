@@ -261,6 +261,23 @@ fingerprints=(
   "APP|Shell 任务按稳定来源对账         |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
   "APP|GUI export reuses base session_export |pinvou3-app/src-tauri/src/features/sessions/store.rs|deepseek_tui::session_export::write_session_archive("
   "APP|GUI export store contract regression  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_session_archive_export_via_store_keeps_full_context"
+  # --fast runs only the fingerprint layer (CI's sole entry point), but
+  # renaming a pinned test is exactly the shape it cannot see: this
+  # source-level fingerprint pulls the existence of the "no tool-call cap
+  # pinned test" into the sub-second layer — a rename or deletion turns red
+  # immediately; whether it actually executes is still verified at compile
+  # level by the layer-3 run_pinned_cap_test.
+  "APP|engine config no-tool-call-cap pinned test |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
+  # Cross-feature / cross-language literal contracts: the two sides share no
+  # type-system link, so renaming either side alone fails silently — a code
+  # probe that misses the marker would treat a native code session as a plain
+  # chat and walk the wrong consent domain; a title-sentinel mismatch breaks
+  # sidebar localization and first-message auto-rename. One sub-second
+  # fingerprint pinned on each side.
+  "APP|code-session marker, probe-side literal    |pinvou3-app/src-tauri/src/features/sessions/store.rs|const CODE_SESSION_MARKER_FILE: &str = \"code-session.json\""
+  "APP|code-session marker, writer-side literal    |pinvou3-app/src-tauri/src/features/codex_acp/store.rs|join(\"code-session.json\")"
+  "APP|title sentinel, Rust-side literal          |pinvou3-app/src-tauri/src/features/sessions/store.rs|const NEW_CHAT_TITLE: &str = \"新对话\""
+  "APP|title sentinel, frontend dict literal      |pinvou3-app/src/shared/i18n.js|DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット'])"
 )
 
 for fp in "${fingerprints[@]}"; do
@@ -299,7 +316,22 @@ bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks eval_send_message_op_isolated_from_gui_authority_and_installs_exact_policy -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::headless_bridge::tests -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::agentic_task::tests -- --test-threads=1 ) || fail=1
-( cd "$APP" && cargo test --lib --locked --features benchmark-hooks engine_config_tool_call_cap_respects_env_override -- --test-threads=1 ) || fail=1
+# `cargo test <filter>` exits 0 when the filter matches nothing, so a renamed
+# or deleted pinned test would pass this gate silently — this very test has
+# already been renamed once. `--exact` plus the "1 passed" check makes the
+# absence of the test a failure instead of a no-op.
+run_pinned_cap_test() {
+  local output
+  output=$( cd "$APP" && cargo test --lib --locked --features benchmark-hooks \
+    features::assistant::platform::bridge::tests::engine_config_has_no_tool_call_cap \
+    -- --exact --test-threads=1 2>&1 ) || { printf '%s\n' "$output"; return 1; }
+  if ! grep -q '1 passed' <<<"$output"; then
+    printf '%s\n' "$output"
+    red "❌ pinned test engine_config_has_no_tool_call_cap did not run (renamed or deleted?)"
+    return 1
+  fi
+}
+run_pinned_cap_test || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks headless_bridge_contract_tests:: -- --test-threads=1 ) || fail=1
 
 echo

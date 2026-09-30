@@ -1,8 +1,8 @@
 #[cfg(target_os = "windows")]
 use super::{
     AltSide, VoiceShortcutDecision, VoiceShortcutEvent, VoiceShortcutKey, VoiceShortcutState,
-    emit_shortcut_event, handle_voice_shortcut_key, is_voice_shortcut_router_window,
-    recording_label, resolve_trigger_target,
+    emit_shortcut_event, handle_voice_shortcut_with_modifiers, is_voice_shortcut_router_window,
+    recording_owner, resolve_trigger_target,
 };
 #[cfg(target_os = "windows")]
 use std::sync::{
@@ -19,8 +19,8 @@ use tauri::Manager;
 use windows_sys::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, SendInput, VIRTUAL_KEY, VK_ESCAPE, VK_LMENU,
-    VK_MENU, VK_RMENU, VK_SPACE,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, SendInput, VIRTUAL_KEY,
+    VK_CONTROL, VK_ESCAPE, VK_LMENU, VK_LWIN, VK_MENU, VK_RMENU, VK_RWIN, VK_SHIFT, VK_SPACE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -37,7 +37,7 @@ static WORKERS_STARTED: OnceLock<()> = OnceLock::new();
 static SHORTCUT_STATE: OnceLock<Mutex<VoiceShortcutState>> = OnceLock::new();
 #[cfg(target_os = "windows")]
 static EVENT_SENDER: OnceLock<
-    Mutex<Option<mpsc::Sender<(VoiceShortcutEvent, String, &'static str)>>>,
+    Mutex<Option<mpsc::Sender<(VoiceShortcutEvent, String, &'static str, Option<String>)>>>,
 > = OnceLock::new();
 #[cfg(target_os = "windows")]
 static SHORTCUT_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -64,12 +64,13 @@ pub(super) fn install(app: AppHandle) {
     let _ = APP_HANDLE.set(app.clone());
 
     if WORKERS_STARTED.set(()).is_ok() {
-        let (tx, rx) = mpsc::channel::<(VoiceShortcutEvent, String, &'static str)>();
+        let (tx, rx) =
+            mpsc::channel::<(VoiceShortcutEvent, String, &'static str, Option<String>)>();
         let _ = EVENT_SENDER.set(Mutex::new(Some(tx)));
         let emit_app = app.clone();
         std::thread::spawn(move || {
-            while let Ok((event, window_label, route)) = rx.recv() {
-                emit_shortcut_event(&emit_app, event, &window_label, route);
+            while let Ok((event, window_label, route, token)) = rx.recv() {
+                emit_shortcut_event(&emit_app, event, &window_label, route, token);
             }
         });
 
@@ -256,13 +257,25 @@ unsafe extern "system" fn keyboard_hook_proc(
             Ok(guard) => guard,
             Err(_) => return call_next_hook(code, w_param, l_param),
         };
-        let decision = handle_voice_shortcut_key(
+        // Shift/Ctrl/Win already held means this Alt belongs to a system
+        // chord; the state machine lets that whole Alt press pass through.
+        // Only the Alt-down branch of the state machine consults held
+        // modifiers, so keep the probes off every other keystroke.
+        let other_modifier_down = matches!(key, VoiceShortcutKey::Alt(_))
+            && key_down
+            && [VK_SHIFT, VK_CONTROL, VK_LWIN, VK_RWIN].iter().any(|vk| {
+                // SAFETY: GetAsyncKeyState takes a plain virtual-key code and no
+                // pointer arguments; it is safe to call from the hook callback.
+                unsafe { GetAsyncKeyState(i32::from(*vk)) < 0 }
+            });
+        let decision = handle_voice_shortcut_with_modifiers(
             &mut state,
             key,
             key_down,
             target.is_some(),
             foreground as isize,
             info.time,
+            other_modifier_down,
         );
         if decision.inject_alt_down {
             // The combo down was swallowed: replay [Alt↓, combo↓] in order
@@ -296,11 +309,11 @@ unsafe extern "system" fn keyboard_hook_proc(
     log_shortcut_decision(
         key,
         key_down,
-        target.as_ref().map(|(label, _)| label.as_str()),
+        target.as_ref().map(|(label, _, _)| label.as_str()),
         decision,
     );
-    if let (Some(event), Some((window_label, route))) = (decision.event, target) {
-        send_event(event, window_label, route);
+    if let (Some(event), Some((window_label, route, token))) = (decision.event, target) {
+        send_event(event, window_label, route, token);
     }
     if decision.suppress {
         return 1;
@@ -315,12 +328,17 @@ unsafe extern "system" fn keyboard_hook_proc(
 /// focused window must be in the Router whitelist (main/detached); with
 /// neither, no swallowing and no emit.
 #[cfg(target_os = "windows")]
-fn hook_target_label(foreground: HWND) -> Option<(String, &'static str)> {
+fn hook_target_label(foreground: HWND) -> Option<(String, &'static str, Option<String>)> {
     if foreground.is_null() || !foreground_is_current_app(foreground) {
         return None;
     }
     let focused = focused_router_label(foreground);
-    resolve_trigger_target(recording_label().as_deref(), focused.as_deref())
+    let owner = recording_owner();
+    resolve_trigger_target(
+        owner.as_ref().map(|owner| owner.label.as_str()),
+        focused.as_deref(),
+    )
+    .map(|(label, route)| (label, route, owner.map(|owner| owner.token)))
 }
 
 #[cfg(target_os = "windows")]
@@ -540,7 +558,12 @@ fn log_shortcut_decision(
 }
 
 #[cfg(target_os = "windows")]
-fn send_event(event: VoiceShortcutEvent, window_label: String, route: &'static str) {
+fn send_event(
+    event: VoiceShortcutEvent,
+    window_label: String,
+    route: &'static str,
+    token: Option<String>,
+) {
     let Some(mutex) = EVENT_SENDER.get() else {
         return;
     };
@@ -548,7 +571,7 @@ fn send_event(event: VoiceShortcutEvent, window_label: String, route: &'static s
         return;
     };
     if let Some(sender) = guard.as_ref() {
-        match sender.send((event, window_label, route)) {
+        match sender.send((event, window_label, route, token)) {
             Ok(()) => {
                 log::debug!("voice shortcut queued event={:?}", event);
             }

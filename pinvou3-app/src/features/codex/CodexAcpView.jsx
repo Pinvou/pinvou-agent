@@ -1,15 +1,12 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip,
+  Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
   RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
-import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
-import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
-import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   refreshAcpAgentCatalog,
@@ -19,8 +16,10 @@ import {
 import {
   classifyAcpServiceFailure,
   isAcpAuthenticationFailure,
+  latestAgentRuntimeNotice,
 } from './runtimeNoticeState.js';
 import {
+  AgentRuntimeNotice,
   AgentServiceFailureNotice,
   RuntimeNotice,
   runtimeSourceLabel,
@@ -45,6 +44,7 @@ import {
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
   projectAcpTimeline,
+  redactDisplayError,
   resolveAcpSessionControls,
 } from './acp-state.js';
 import {
@@ -53,6 +53,7 @@ import {
   appendNativeSystemItem,
   createNativeLane,
   hydrateNativeLane,
+  nativeModelServiceContext,
   projectNativeLane,
   removeLocalUserMessage,
 } from './code-native-lane.js';
@@ -86,9 +87,10 @@ import { ModalDialogShell } from './ModalDialogShell.jsx';
 import {
   ConversationMarkdown,
   ConversationStatusBadge,
-  ConversationTurn,
+  ConversationTimeline,
   LiveConversationActivityIndicator,
 } from '../conversation/ConversationTimeline.jsx';
+import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import {
   transitionConversationScrollState,
   useConversationBottomFollower,
@@ -780,6 +782,7 @@ export function CodexAcpView({
     await checkoutWorkspaceBranch(branch, 'carry');
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
+  const [dismissedNoticeKey, setDismissedNoticeKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
@@ -876,11 +879,8 @@ export function CodexAcpView({
   // error notice copy needs the current UI language and model config;
   // the latest values are threaded through a ref so closures never hold a
   // stale bridge state snapshot (same pattern as activeIdRef).
+  // Assigned below, once the native session's own model context is known.
   const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
-  nativeEventContextRef.current = {
-    language: bs && bs.settings && bs.settings.language,
-    modelServiceState: bs,
-  };
   useLayoutEffect(() => {
     // loadSession may optimistically point this ref at a just-created session before
     // the parent commits activeId. Do not overwrite that handoff from an intermediate
@@ -1013,31 +1013,29 @@ export function CodexAcpView({
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
-  // projectNativeLane only consumes bs's model-service fields
-  // (providerLabelFromState reads currentSessionModelId/activeModelId/
-  // savedModels/effectiveModelConfig/activeProvider; the language comes
-  // from settings.language). bs is a whole-state snapshot that changes
-  // reference on every streaming notify, so depending on it directly
-  // would invalidate this useMemo throughout streaming and re-project
-  // everything; the deps are narrowed to the consumed field references.
+  // Only the native session's authoritative controls identify its model.
+  // bs belongs to the chat workspace: reuse its shared model catalog, never
+  // its active/effective model or provider, which describe a different
+  // session. A stale controls owner or an unloaded model yields no context
+  // (the error text's own provider signal still applies). Deps are the
+  // consumed references only, so streaming notifies do not re-project.
   const nativeModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const nativeControlsOwner = nativeControlsSessionRef.current;
+  const nativeSavedModels = bs && bs.savedModels;
   const nativeModelServiceState = useMemo(
-    () => (bs ? {
-      currentSessionModelId: bs.currentSessionModelId,
-      activeModelId: bs.activeModelId,
-      savedModels: bs.savedModels,
-      effectiveModelConfig: bs.effectiveModelConfig,
-      activeProvider: bs.activeProvider,
-    } : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the field references providerLabelFromState actually consumes, not the whole bs snapshot
-    [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+    () => nativeModelServiceContext(activeId, nativeControlsOwner, nativeControls.modelId, nativeSavedModels),
+    [activeId, nativeControlsOwner, nativeControls.modelId, nativeSavedModels],
   );
+  nativeEventContextRef.current = {
+    language: nativeModelServiceLanguage,
+    modelServiceState: nativeModelServiceState,
+  };
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
       // Same as the main chat ChatView: the timeline error card's friendly
-      // copy is built in the UI language, with the provider label derived
-      // from bridge state (internally, a provider signal in the error text
-      // still wins).
+      // copy is built in the UI language; the provider label comes from the
+      // native session's own controls (nativeModelServiceState above), and a
+      // provider signal in the error text itself still wins.
       language: nativeModelServiceLanguage,
       modelServiceState: nativeModelServiceState,
     }) : null),
@@ -1175,42 +1173,6 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setWorkspaceOpen(false);
   }, [rememberScrollBeforeRightPanelChange]);
-  // Aux chat panel: the same persistent, Q&A-only, one-per-task conversation
-  // as the work-mode task page (bridge.auxChat, restrictTools; it never
-  // touches the code session's execution or context). Unlike subagentPanel:
-  // it does not close when switching code sessions — the panel rebinds itself
-  // by sessionId; in draft state (no activeSession) the panel hides with its
-  // mount condition and restores automatically once the session is ready.
-  // auxChatDockActive is the panel's real visibility in the dock (same as
-  // workspaceDockActive): when covered by the workspace panel the entry
-  // button does not highlight, and clicking it again brings the panel to
-  // the front.
-  const [auxChatPanel, setAuxChatPanel] = useState(null);
-  const [auxChatDockActive, setAuxChatDockActive] = useState(false);
-  const openAuxChatPanel = useCallback(() => {
-    rememberScrollBeforeRightPanelChange();
-    setAuxChatPanel(current => ({ openTick: (current?.openTick || 0) + 1 }));
-  }, [rememberScrollBeforeRightPanelChange]);
-  const closeAuxChatPanel = useCallback(() => {
-    rememberScrollBeforeRightPanelChange();
-    setAuxChatPanel(null);
-  }, [rememberScrollBeforeRightPanelChange]);
-  // When the mount condition (auxChatPanel && activeSession && isNativeAgent
-  // && bridge.available && bridge.auxChat, see the panel mount point below)
-  // goes away, the panel unmounts outright,
-  // and RightDockPanel's onActiveChange has no unmount cleanup, so the
-  // highlight would linger; reset it synchronously here when the mount
-  // condition drops, and once the session is back the panel re-mounts and
-  // reports its real visibility again. isNativeAgent is part of the condition:
-  // switching to an external-ACP agent must unmount the panel, not leave it
-  // rebound to a session the side chat must not answer on. The bridge
-  // conjuncts keep the gate identical to the entry button and the sessionId
-  // prop (round-25 minor consistency note).
-  useEffect(() => {
-    if (auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below
-    setAuxChatDockActive(false);
-  }, [auxChatPanel, activeSession, isNativeAgent]);
   useLayoutEffect(() => {
     const snapshot = rightPanelScrollRef.current;
     if (!snapshot) return;
@@ -1224,7 +1186,7 @@ export function CodexAcpView({
       autoScrollRef.current = true;
       setShowScrollBottom(false);
     }
-  }, [auxChatPanel, subagentPanel, workspaceDockActivation, workspaceOpen]);
+  }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
@@ -1270,6 +1232,18 @@ export function CodexAcpView({
   const visibleServiceFailure = serviceFailure?.key === dismissedFailureKey
     ? null
     : serviceFailure;
+  // Adapter stderr can appear here; always redact it before display, as for turn errors.
+  const runtimeNotice = useMemo(() => {
+    const notice = latestAgentRuntimeNotice(events);
+    if (!notice) return null;
+    return {
+      ...notice,
+      detail: redactDisplayError(notice.detail, acpModelServiceLanguage) || '',
+    };
+  }, [events, acpModelServiceLanguage]);
+  const visibleRuntimeNotice = runtimeNotice?.key === dismissedNoticeKey
+    ? null
+    : runtimeNotice;
   const workspaceUnavailable = Boolean(
     activeSession
       && activeSession.workspace_kind === 'project'
@@ -2085,16 +2059,20 @@ export function CodexAcpView({
       // The composer moves to the new draft. Browser attachment handles are
       // one-shot resources, so retaining a second owner on the old session
       // would let a consumed handle reappear when the user switches back.
-      setAttachmentDrafts(current => {
-        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
-        delete next[activeId];
-        return next;
-      });
-      setWorkspaceReferenceDrafts(current => {
-        const next = { ...current, [DRAFT_ATTACHMENT_KEY]: current[activeId] || [] };
-        delete next[activeId];
-        return next;
-      });
+      setAttachmentDrafts(current => transferAcpDraftItems(
+        current,
+        activeId,
+        DRAFT_ATTACHMENT_KEY,
+        current[activeId] || [],
+        attachment => attachment.id,
+      ));
+      setWorkspaceReferenceDrafts(current => transferAcpDraftItems(
+        current,
+        activeId,
+        DRAFT_ATTACHMENT_KEY,
+        current[activeId] || [],
+        reference => reference,
+      ));
     }
     setEvents([]);
     setPending([]);
@@ -2340,7 +2318,7 @@ export function CodexAcpView({
     },
     canStart: () => !busy && !working && !activeRuntimeBusy,
     canSendTask: canSendNativeVoiceTask,
-    sendTask: async outgoing => send(outgoing),
+    sendTask: async (outgoing, context) => send(outgoing, { voiceOperationId: context?.operationId }),
   });
   const handleNativeVoiceTrigger = nativeVoice.triggerVoice;
 
@@ -2348,7 +2326,9 @@ export function CodexAcpView({
     nativeVoice.cancelVoice();
   }
   function handleNativeVoiceClose() {
-    nativeVoice.closeVoice();
+    // Dismiss without ending the unsent operation (an in-flight recording
+    // still cancels); closeVoice would abandon it.
+    nativeVoice.dismissVoice();
   }
 
   // 离开代码页（切模式/视图，组件卸载）时可靠取消进行中的语音输入：
@@ -2531,7 +2511,14 @@ export function CodexAcpView({
       const sessionId = payload.session_id;
       if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
       const lane = getNativeLane(sessionId);
-      const changed = applyNativeChatEvent(lane, name, payload, nativeEventContextRef.current);
+      const eventContext = nativeEventContextRef.current;
+      // Background lanes must not inherit the foreground session's model or
+      // provider. Their explicit error evidence remains sufficient; the
+      // owning model context applies once that session is opened.
+      const changed = applyNativeChatEvent(lane, name, payload, {
+        language: eventContext.language,
+        modelServiceState: sessionId === activeIdRef.current ? eventContext.modelServiceState : null,
+      });
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
@@ -2627,17 +2614,8 @@ export function CodexAcpView({
 
   useEffect(() => {
     if (!activeStatus?.login_in_progress) return;
-    let cancelled = false;
-    let timer = null;
-    const poll = async () => {
-      await refreshStatus(activeAgentId).catch(() => {});
-      if (!cancelled) timer = window.setTimeout(poll, 750);
-    };
-    timer = window.setTimeout(poll, 750);
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
+    const stopPolling = startSerialStatusPolling(() => refreshStatus(activeAgentId), 750, 750);
+    return () => { void stopPolling(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only on the login-in-progress edge; refreshStatus reference changes must not restart the poll chain
   }, [activeAgentId, activeStatus?.login_in_progress]);
 
@@ -2717,7 +2695,11 @@ export function CodexAcpView({
     if (!element) return;
     autoScrollRef.current = true;
     setShowScrollBottom(false);
-    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    // Smooth gliding through a virtualized document mounts and unmounts
+    // rows for its whole duration while estimates go stale; jump instead
+    // (same decision as the overflowAnchor gate below).
+    const virtualized = shouldVirtualizeConversationTurns(visibleTurns.length, scroller);
+    element.scrollTo({ top: element.scrollHeight, behavior: virtualized ? 'auto' : 'smooth' });
   }
 
   function beginRuntimeOperation(agentId, operation) {
@@ -2822,6 +2804,7 @@ export function CodexAcpView({
     sendBody,
     draftFailureCleanup,
     backgroundErrorLabel,
+    voiceOperationId,
   }) {
     let targetId = activeId;
     const materializingDraft = !targetId;
@@ -2830,11 +2813,24 @@ export function CodexAcpView({
     setError('');
     try {
       if (!targetId) {
+        // Park before materialization too: a cancel during createSession
+        // must wait for the admission result instead of recording
+        // voice_cancelled for a message that is then delivered (begin is
+        // idempotent; the begin after creation binds the created session).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId);
+        }
         const created = await createSession({
           shouldActivate: () => canApplyAcpSendOperation(operation),
           prepareSession,
         });
         targetId = created.id;
+        // First-turn materialization: the voice operation's submission gate
+        // binds to the really created session (shared voice bookkeeping; ACP
+        // itself never reports a chat task attempt).
+        if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+          bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
+        }
         if (created.activated && activeIdRef.current === targetId) {
           acpSendOperationTracker.switchSession(targetId);
           operation = beginAcpSendOperation(targetId);
@@ -2854,6 +2850,12 @@ export function CodexAcpView({
           workspaceReferencesAtSend,
           reference => reference,
         ));
+      } else if (voiceOperationId && bridge.voice && typeof bridge.voice.beginVoiceSubmission === 'function') {
+        // Existing-session send: park the operation before dispatch too, so a
+        // cancel during the in-flight send waits for the admission result
+        // instead of recording voice_cancelled for a message that was
+        // delivered (same contract as the first-turn branch above).
+        bridge.voice.beginVoiceSubmission(voiceOperationId, targetId);
       }
       await sendBody({ targetId, operation });
       updateAttachments(targetId, current => current.filter(
@@ -2865,10 +2867,20 @@ export function CodexAcpView({
         workspaceReferencesAtSend,
         reference => reference,
       ));
+      // A dispatched ACP send ends its voice operation; without this the
+      // accepted record would sit pending forever (leaking its audio chunks).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId, true);
+      }
       // Voice sendTask treats === false as failure: a real acceptance must explicitly report success.
       return true;
     } catch (err) {
       if (materializingDraft && draftFailureCleanup) draftFailureCleanup();
+      // A failed ACP send un-parks its voice operation and keeps the
+      // retryable association (same contract as the chat lane's rejections).
+      if (voiceOperationId && bridge.voice?.completeVoiceSubmission) {
+        bridge.voice.completeVoiceSubmission(voiceOperationId, targetId || null, false);
+      }
       if (canApplyAcpSendOperation(operation)) {
         showError(err);
         setDraft(message);
@@ -2884,7 +2896,7 @@ export function CodexAcpView({
     }
   }
 
-  async function send(messageOverride) {
+  async function send(messageOverride, sendOptions) {
     const hasMessageOverride = typeof messageOverride === 'string';
     if (!hasMessageOverride && nativeVoice && nativeVoice.editPreview) {
       return nativeVoice.applyVoiceEditPreview({ send: true });
@@ -2897,6 +2909,7 @@ export function CodexAcpView({
     const workspaceReferencesAtSend = workspaceReferences;
     const draftAgentAtSend = draftAgentId;
     const draftConfigAtSend = draftConfigSelections[draftAgentAtSend];
+    const voiceOperationId = sendOptions && sendOptions.voiceOperationId;
     if ((!message && !readyAttachments.length && !workspaceReferences.length)
       || composerSendBlockers.busy || composerSendBlockers.working || composerSendBlockers.configApplying) return false;
     if (composerSendBlockers.authMissing) {
@@ -2910,7 +2923,7 @@ export function CodexAcpView({
     if (composerSendBlockers.workspaceUnavailable) return false;
     if (composerSendBlockers.sessionNotReady) return false;
     if (isNativeAgent) {
-      return sendNative(message, readyAttachments);
+      return sendNative(message, readyAttachments, voiceOperationId);
     }
     return runAcpSendPipeline({
       message,
@@ -2918,6 +2931,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'ACP',
+      voiceOperationId,
       materializeDraft: async ({ created, targetId, operation }) => {
         const appliedInfo = await applyDraftConfigSelections(
           targetId,
@@ -2951,7 +2965,7 @@ export function CodexAcpView({
 
   /// 原生（品悟 Engine）发送：草稿态先建会话（强制临时工作区），随后走 chat 命令；
   /// 用户气泡乐观插入 lane，chat 命令同步失败（空消息 / turn 占用等）时回滚。
-  async function sendNative(message, readyAttachments) {
+  async function sendNative(message, readyAttachments, voiceOperationId) {
     const attachmentsAtSend = attachments;
     const workspaceReferencesAtSend = workspaceReferences;
     const nativeDraftControlsAtSend = nativeDraftControls;
@@ -2961,6 +2975,7 @@ export function CodexAcpView({
       attachmentsAtSend,
       workspaceReferencesAtSend,
       backgroundErrorLabel: 'native',
+      voiceOperationId,
       prepareSession: async sessionId => {
         const prepared = await persistNativeDraftControls(
           sessionId,
@@ -3200,7 +3215,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           streaming={item.status === 'in_progress'}
-          onOpenExternal={(url) => invoke('open_user_external_url', { url }).catch(showError)}
+          onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
           onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />
       );
@@ -3405,29 +3420,6 @@ export function CodexAcpView({
               swarmOn={nativeMultiAgentEnabled}
             />
           )}
-          {/* Aux chat answers on Pinvou's internal engine, so the entry is
-              native-agent-only: on an external-ACP task the side chat would
-              silently answer on the default model while the panel copy
-              implies the task's own assistant (round-18 must-land; the quote
-              popover and the panel mount suppress on external ACP for the
-              same reason). */}
-          {activeSession && isNativeAgent && bridge.available && bridge.auxChat && (
-            <button
-              type="button"
-              data-testid="aux-chat-open"
-              aria-label={t.uiAuxChat.openLabel}
-              title={t.uiAuxChat.openLabel}
-              onClick={openAuxChatPanel}
-              className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-                auxChatPanel && auxChatDockActive
-                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-                  : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
-              }`}
-            >
-              <MessageSquare size={14} />
-              <span>{t.uiAuxChat.openLabel}</span>
-            </button>
-          )}
           <WorkspacePanelToggle
             active={workspaceOpen && workspaceDockActive}
             changeCount={workspaceChangeCount}
@@ -3460,9 +3452,12 @@ export function CodexAcpView({
 
         <div className="flex-1 min-h-0 flex">
         <div className="relative min-w-0 flex-1 min-h-0 flex flex-col">
-        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-          {/* relative: the AuxQuoteSelection chip is absolutely positioned inside this column, clamped to its rect. */}
-          <div ref={conversationContentRef} className="relative w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
+        <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar" style={{
+          // Must match the timeline's own virtualization decision: anchoring off
+          // only while absolute virtual rows own the positioning.
+          overflowAnchor: shouldVirtualizeConversationTurns(visibleTurns.length, scroller) ? 'none' : undefined,
+        }}>
+          <div ref={conversationContentRef} className="w-full max-w-[920px] min-h-full mx-auto px-6 py-6 flex flex-col gap-7">
             {workspaceUnavailable ? (
               <div
                 data-testid="codex-workspace-unavailable"
@@ -3519,6 +3514,12 @@ export function CodexAcpView({
                     providerCopy={t.uiAcpProviders}
                   />
                 )}
+                <AgentRuntimeNotice
+                  notice={visibleRuntimeNotice}
+                  agentName={activeAgentName}
+                  onDismiss={() => setDismissedNoticeKey(runtimeNotice?.key || '')}
+                  copy={codexCopy}
+                />
               </>
             )}
             {!visibleTurns.length && (
@@ -3536,9 +3537,15 @@ export function CodexAcpView({
                 </div>
               </div>
             )}
-            {visibleTurns.map(turn => (
-                  <Fragment key={turn.id}>
-                    {isNativeAgent && rewindEntries.has(turn.id) && (
+            {visibleTurns.length > 0 && (
+                  <ConversationTimeline
+                    turns={visibleTurns}
+                    sessionId={activeId}
+                    scrollElementRef={scroller}
+                    busy={busy}
+                    turnGapPx={28}
+                    followOutputRef={autoScrollRef}
+                    renderBeforeTurn={turn => isNativeAgent && rewindEntries.has(turn.id) ? (
                       // 原生车道 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
                       // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
                       <RewindChip
@@ -3547,9 +3554,7 @@ export function CodexAcpView({
                         copy={codexCopy}
                         onOpen={openRewindDialog}
                       />
-                    )}
-                    <ConversationTurn
-                      turn={turn}
+                    ) : null}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3599,9 +3604,8 @@ export function CodexAcpView({
                       agentLabel={activeAgentName}
                       onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
                       onOpenResource={isWeb ? undefined : openWorkspaceResource}
-                    />
-                  </Fragment>
-                ))}
+                  />
+                )}
             {isNativeAgent && rewindUndoAvailable(rewindUndoState) && (
               // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
               // 与 RewindChip 同门控（仅原生代码车道）；undoState 为 null 即消失。
@@ -3612,20 +3616,6 @@ export function CodexAcpView({
                 onOpen={(state) => { setRewindUndoError(''); setRewindUndoEntry({ ...state, reloadFailed: false }); }}
               />
             )}
-            {/* Selection quotes: select text in the code-lane conversation
-                timeline → stage it as a quote of this session's aux chat and
-                open the panel. Availability matches the header aux-chat
-                entry: external ACP sessions get no quote popover (the aux
-                chat answers on Pinvou's internal engine, see the entry
-                comment; the round-18 boundary previously landed on the entry
-                button only, and the quote selection and panel mount could
-                bypass it). */}
-            <AuxQuoteSelection
-              containerRef={conversationContentRef}
-              sessionId={activeSession && isNativeAgent && bridge.available && bridge.auxChat ? activeSession.id : null}
-              copy={t.uiAuxChat}
-              onQuote={openAuxChatPanel}
-            />
           </div>
         </div>
 
@@ -4154,7 +4144,7 @@ export function CodexAcpView({
                   )}
                 </div>
                 {busy ? (
-                  <button type="button" onClick={cancel} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
+                  <button type="button" onClick={cancel} aria-label={codexCopy.stop} title={codexCopy.stop} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
                   <>
                     <VoiceComposerButton
@@ -4379,18 +4369,6 @@ export function CodexAcpView({
             t={t}
             onClose={closeSubagentPanel}
           />
-        )}
-        {auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat && (
-          <ViewErrorBoundary t={t} variant="panel">
-            <AuxChatPanel
-              sessionId={activeSession.id}
-              activationKey={auxChatPanel.openTick}
-              onActiveChange={setAuxChatDockActive}
-              t={t}
-              theme={theme}
-              onClose={closeAuxChatPanel}
-            />
-          </ViewErrorBoundary>
         )}
         </div>
     </div>

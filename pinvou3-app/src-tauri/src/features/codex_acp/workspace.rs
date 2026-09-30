@@ -288,7 +288,7 @@ pub fn resolve_workspace_resource(root: &Path, resource_path: &str) -> Result<Pa
 
 pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
     let root = canonical_workspace(root)?;
-    let git = git_root(&root).is_some_and(|git_root| git_root == root);
+    let git = is_git_workspace(&root);
     let (dirty_paths, entries) = if git {
         let status = git_status_entries(&root)?;
         let mut entries = BTreeMap::new();
@@ -331,7 +331,7 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
 
 pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChanges> {
     let root = canonical_workspace(root)?;
-    let git = git_root(&root).is_some_and(|git_root| git_root == root);
+    let git = is_git_workspace(&root);
     let baseline = load_baseline(session_id, &root)?;
     let baseline_available = baseline.is_some();
 
@@ -733,7 +733,7 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         });
     }
 
-    let mut text = if git_root(&root).is_some_and(|git_root| git_root == root) {
+    let mut text = if is_git_workspace(&root) {
         let unstaged = git_output(
             &root,
             &["diff", "--no-ext-diff", "--no-color", "--", &relative],

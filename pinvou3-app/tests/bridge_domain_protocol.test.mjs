@@ -190,7 +190,15 @@ const expectedProtocolHashes = {
   // save_session_messages had no remaining caller, so its Rust command is
   // retired with it; the exposed bridge.chat API is unchanged).
   // Recomputed for the shared-helper dedup (see batch note above).
-  chat: '2258b9ed785b1a73bfd271427689c7db902edc5fa0d06eab47c28a11e7f40b86',
+  // Retired with the behavior telemetry client: the trackSceneBehavior helper
+  // (scene_triggered track_behavior_event invoke) was removed, so the chat
+  // surface is one invoke smaller.
+  // Recomputed for per-frame stream notification coalescing; event names and
+  // invoke shapes remain unchanged.
+  // Recomputed for the coalescing hardening: chat:done cancels its session's
+  // pending notify frame, frame publishes contain subscriber throws, and the
+  // flush helper documents its runSyncOnSession extent contract.
+  chat: '648ace4c24985c2cd1cb8def8e8b2a4078824586295ba7016682cd2bf733baca',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -230,19 +238,30 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  sessions: 'bd3a774950c3be99938f4bdc403ceef47cdf598952d47b0655c7371887764702',
-
-  // Recomputed for the dead-code cleanup (the dead saveSettingsAndRestart
-  // wrapper was removed) and for the built-in feature toggles hook: settings.js
-  // gains the list_builtin_features / set_builtin_feature_enabled invoke
-  // wrappers (list_builtin_features is consumed by ChatView's session-mention
-  // gate, PR #586; the setter is the contract hook for future feature settings
+  // Recomputed for the sidecar read-failure surfacing: the persona/review
+  // reads moved into local loadPersonaEventsForSession /
+  // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
+  // before degrading to []; same two commands, no new invoke or listen
+  // entries (the switch-path occurrences now pass sessionId: sid like the
+  // hydration ones).
+  sessions: '301b55cae8e44ab76baf0941263bf3818d70f2c7bcf47129e453013f559d9765',
+  // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
+  // wrapper (save_settings_and_restart invoke) was removed — no production
+  // caller; the plain saveSettings + restart_app path stays the update route.
+  // Recomputed for the preinstalled-model startup removal: the
+  // detect_local_vllm_setup / bootstrap_local_vllm / decline_local_vllm_setup
+  // invokes left with the dead one-click setup chain.
+  // Recomputed for the built-in feature toggles hook: settings.js gains the
+  // list_builtin_features / set_builtin_feature_enabled invoke wrappers
+  // (list_builtin_features is consumed by ChatView's session-mention gate,
+  // PR #586; the setter is the contract hook for future feature settings
   // pages). Recomputed again for the review fix: set_builtin_feature_enabled
-  // now sends `{ featureId: id, enabled }` — the Rust command's parameter is
-  // `feature_id` (app/commands/builtin.rs) and Tauri v2 maps camelCase JS keys
-  // to snake_case.
-  settings: '257314bba1911acb1bba42c2b4ff71aaebf95b67ebcb49a29ff73f925eeb94c1',
-  // Recomputed for the dead-code cleanup: the never-emitted  // remote_control:status / remote_control:session_created listeners were
+  // sends `{ featureId: id, enabled }` — the Rust command's parameter is
+  // `feature_id` (app/commands/builtin.rs) and Tauri v2 maps camelCase JS
+  // keys to snake_case.
+  settings: '42190e3dd08e197f0b7a862a1b365dd5f2b8acdd64ec68fbb0b030fa7ae47e93',
+  // Recomputed for the dead-code cleanup: the never-emitted
+  // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
   // machinery were deleted with it (the backend download loop no longer has a
   // frontend progress consumer; completion still flips updateProgress to 100
@@ -252,7 +271,15 @@ const expectedProtocolHashes = {
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
-  voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
+  // Recomputed again for the recording-ownership port: the voice feature now
+  // owns an operation lifecycle (operationId submission gates) and claims the
+  // Rust recording ownership (set_voice_shortcut_recording with a token)
+  // before opening the microphone (command set unchanged; listener bodies and
+  // comment wording are part of the digest). The behavior-event emitter drop
+  // is not part of this PR: #616's telemetry-client retirement on main already
+  // removed the track_behavior_event call sites, while the terminal
+  // bookkeeping state machine stays (command set still unchanged).
+  voice: 'fe52e3a89d3f95932444d23eff68e8685d20e754fb402959388930093a34a10b',
   // Recomputed for the rebind carryover feed-back (review #463 F-Major):
   // rebind_workspace_root gains the optional previousPostBusySessionIds
   // payload — the dialog's previous report fed back on retry, honored by the

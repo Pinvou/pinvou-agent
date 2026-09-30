@@ -168,14 +168,13 @@ pub async fn save_session_persona_events(
     super::sessions::write_session_sidecar(&path, &events)
 }
 
-/// 读某 session 的卡牌事件时间线(无则返回空数组)。
+/// Reads a session's card-event timeline. A missing sidecar means the session has not
+/// written events yet; a sidecar that exists but is corrupt must fail explicitly, so data
+/// corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_persona_events(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_persona_events(&session_id);
-    match std::fs::read_to_string(&path) {
-        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
-        Err(_) => Ok(serde_json::json!([])),
-    }
+    super::sessions::read_session_sidecar(&path, "persona")
 }
 
 /// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
@@ -252,14 +251,13 @@ pub async fn save_session_pinvou_reviews(
     super::sessions::write_session_sidecar(&path, &merged)
 }
 
-/// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。
+/// Reads a session's Pinvou review timeline. A missing sidecar means the session has not
+/// written reviews yet; a sidecar that exists but is corrupt must fail explicitly, so data
+/// corruption is not disguised as a legitimate empty timeline.
 #[tauri::command]
 pub async fn get_session_pinvou_reviews(session_id: String) -> Result<serde_json::Value, String> {
     let path = crate::platform::paths::session_pinvou_reviews(&session_id);
-    match std::fs::read_to_string(&path) {
-        Ok(txt) => Ok(serde_json::from_str(&txt).unwrap_or_else(|_| serde_json::json!([]))),
-        Err(_) => Ok(serde_json::json!([])),
-    }
+    super::sessions::read_session_sidecar(&path, "review")
 }
 
 /// 摘下当前 session 的专家面具（点挂件取消 / 卡片"已加持"再点）。
@@ -269,8 +267,9 @@ pub async fn unequip_persona(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    store.set_active_persona(&session_id, None);
-    store.set_pending_persona_body(&session_id, None);
+    // Single atomic publish (same contract as equip): a torn two-step clear lets an
+    // in-flight take_pending_turn_injections + failed-send restore resurrect the body.
+    store.set_persona(&session_id, None, None);
     super::sessions::emit_session_event(&app, "session:persona_changed", &session_id, "unequipped");
     Ok(())
 }

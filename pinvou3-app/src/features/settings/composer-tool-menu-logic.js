@@ -1,13 +1,4 @@
-import { isBuiltinPlugin } from '../tools/builtin-plugin-logic.js';
-
-const DEFAULT_BUILTIN_SKILLS = [
-  {
-    id: 'visual-design',
-    title: '视觉设计',
-    // 设计期差量（后端 MODE_TABLE）：该技能在这些模式不提供，开关只读。
-    unavailableIn: ['code'],
-  },
-];
+import { isBuiltinPlugin, DEFAULT_BUILTIN_SKILLS } from '../tools/builtin-plugin-logic.js';
 
 function asArray(value) {
   if (Array.isArray(value)) return value;
@@ -137,4 +128,7 @@ function createToggleWriteGate() {
 // from the package-id space so an identically named package cannot collide with it.
 const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
 
+/** Builtin skills whose availability is session-mode-controlled (backend
+ * MODE_TABLE delta): the builtin page's audit badge must agree with the
+ * store card for these instead of claiming "always on". */
 export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };

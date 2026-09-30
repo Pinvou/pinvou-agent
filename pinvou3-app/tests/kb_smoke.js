@@ -115,6 +115,14 @@ function injectSource() {
           return Promise.resolve(null);
         }
         case 'kb_embed_info': return Promise.resolve({enabled:true,baseUrl:'local(fastembed)',model:'bge-m3'});
+        case 'kb_model_status': return Promise.resolve(window.__KB_MODEL_STATUS__ || null);
+        case 'kb_model_download': {
+          // 安装中断恢复链路：立即加载走 complete-dir 快路径，返回就绪状态。
+          const base = window.__KB_MODEL_STATUS__ || {installed:true};
+          const readyStatus = {...base, ready:true, loading:false, deferredNoUsage:false, error:null};
+          window.__KB_MODEL_STATUS__ = readyStatus;
+          return Promise.resolve(readyStatus);
+        }
         case 'remote_kb_connections': {
           const snapshot = window.__REMOTE_KB_CONNECTIONS__.map(connection=>({
             ...connection,scope:window.__REMOTE_KB_SCOPE__,online:true,ready:true,error:null
@@ -126,7 +134,7 @@ function injectSource() {
           return Promise.resolve(snapshot);
         }
         case 'remote_kb_pending_joins': return Promise.resolve(window.__REMOTE_PENDING_JOINS__ || []);
-        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
+        case 'shared_kb_host_status': return Promise.resolve(window.__REMOTE_HOST_STATUS__ || {supported:true,installed:true,endpoint:'https://127.0.0.1:3210',serviceVersion:'0.8.0',appVersion:'0.8.0',upgradeAvailable:false,clientOutdated:false});
         case 'shared_kb_host_lan_endpoints': return Promise.resolve(['https://192.168.1.20:3210']);
         case 'shared_kb_discover_nearby': {
           const discovered=[{
@@ -185,7 +193,7 @@ function injectSource() {
           }]);
         }
         case 'remote_kb_model_status': return Promise.resolve({ready:true,downloading:false,error:null});
-        case 'shared_kb_host_backup': return Promise.resolve({manifest:{format:1},recoveryCode:'AGE-SECRET-KEY-1MOCK'});
+        case 'shared_kb_host_backup': return Promise.resolve({recoveryCode:'AGE-SECRET-KEY-1MOCK'});
         case 'shared_kb_host_restore': return Promise.resolve({serverId:args?.serverId,name:'PINVOU Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'});
         case 'remote_kb_request_join': {
           if (window.__REMOTE_JOIN_PENDING_MODE__) {
@@ -675,7 +683,7 @@ async function chooseRemoteUploadSource(page, testId) {
   await page.waitForFunction(() => !document.querySelector('[data-testid="remote-refresh-connections"]')?.disabled);
   await page.evaluate(() => {
     window.__REMOTE_HOST_STATUS__ = {
-      supported:true,installed:true,running:true,endpoint:'https://127.0.0.1:3210',
+      supported:true,installed:true,endpoint:'https://127.0.0.1:3210',
       serviceVersion:'0.10.0',appVersion:'0.9.9',upgradeAvailable:true,clientOutdated:true
     };
     document.querySelector('[data-testid="remote-refresh-connections"]')?.click();
@@ -1203,6 +1211,7 @@ async function chooseRemoteUploadSource(page, testId) {
   await page.focus('[data-testid="remote-owner-people-tab"]');
   await page.keyboard.press('ArrowRight');
   await page.waitForSelector('#remote-owner-host-panel');
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'remote-owner-host-tab');
   const keyboardHostTab = await page.evaluate(() => ({
     selected: document.querySelector('[data-testid="remote-owner-host-tab"]')?.getAttribute('aria-selected'),
     focused: document.activeElement?.getAttribute('data-testid'),
@@ -1622,6 +1631,38 @@ async function chooseRemoteUploadSource(page, testId) {
   rec('⑩b 本地移除失败重新读取权威状态且不覆盖并发新增文档',
     failedDeleteRefresh.rows === 2 && failedDeleteRefresh.text.includes('并发新增.md'),
     JSON.stringify({ rows: failedDeleteRefresh.rows, hasConcurrent: failedDeleteRefresh.text.includes('并发新增.md') }));
+
+  // ⑩c 安装中断恢复：模型已装但未加载（deferred——崩溃中断安装后重启的典型状态）
+  // 时，知识库页必须给出「立即加载」入口，而不是只留一枚「语义检索未配置」徽标。
+  await page.evaluate(() => {
+    window.__KB_MODEL_STATUS__ = {
+      installed: true, ready: false, loading: false, failed: false,
+      deferredNoUsage: true, error: null, downloading: false,
+      sizeBytes: 585565019, installedBytes: 585565019, version: 'bge-m3',
+    };
+  });
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地文件管理')?.click());
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '本地知识库')?.click());
+  await sleep(900);
+  const deferredBanner = await page.evaluate(() => ({
+    banner: document.body.innerText.includes('模型已安装 · 尚未加载'),
+    loadBtn: [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '立即加载'),
+  }));
+  const downloadCallsBefore = (await page.evaluate(() =>
+    (window.__KB_CALLS__ || []).filter(c => c.cmd === 'kb_model_download').length));
+  await page.evaluate(() => [...document.querySelectorAll('button')]
+    .find(b => (b.textContent || '').trim() === '立即加载')?.click());
+  await sleep(700);
+  const loadNow = await page.evaluate((before) => ({
+    called: (window.__KB_CALLS__ || []).filter(c => c.cmd === 'kb_model_download').length === before + 1,
+    bannerGone: !document.body.innerText.includes('模型已安装 · 尚未加载'),
+  }), downloadCallsBefore);
+  rec('⑩c 安装中断(deferred)状态给出立即加载入口且点击后热加载恢复',
+    deferredBanner.banner && deferredBanner.loadBtn && loadNow.called && loadNow.bannerGone,
+    JSON.stringify({ deferredBanner, loadNow }));
 
   rec('⑪ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 
