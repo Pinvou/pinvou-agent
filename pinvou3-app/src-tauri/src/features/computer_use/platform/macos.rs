@@ -154,7 +154,9 @@ const AX_CANNOT_COMPLETE_LIMIT: u32 = 3;
 const CLICK_POSITION_TOLERANCE_PT: i32 = 2;
 
 /// Explicit error when Screen Recording is denied (the grant needs an app
-/// restart to take effect; the error says so).
+/// restart to take effect; the error says so). The pane kept its name across
+/// macOS versions ("Screen Recording" per Apple's own localization table on
+/// 27.2), so no rename guidance is needed.
 const SCREEN_RECORDING_DENIED: &str = "screen_recording_denied: enable in System Settings → Privacy & Security → Screen Recording, then restart the app";
 /// Explicit error when Accessibility is denied.
 const ACCESSIBILITY_DENIED: &str = "accessibility_denied: enable in System Settings → Privacy & Security → Accessibility, then restart the app";
@@ -231,6 +233,15 @@ fn accessibility_granted() -> bool {
     // SAFETY: no arguments, purely queries this process's TCC grant state,
     // shows no dialog, callable on any thread.
     unsafe { AXIsProcessTrusted() }
+}
+
+/// `(screen_recording, accessibility)` grant snapshot for the settings-page
+/// permission row. Both preflights are pure TCC queries (no dialog, any
+/// thread). Note the snapshot is advisory: a grant the user just made still
+/// reads `false` in this running process until relaunch — the UI pairs a
+/// miss with the restart guidance instead of re-polling for a flip.
+pub fn permission_status() -> Option<(bool, bool)> {
+    Some((screen_recording_granted(), accessibility_granted()))
 }
 
 fn screen_recording_error() -> ComputerUseError {

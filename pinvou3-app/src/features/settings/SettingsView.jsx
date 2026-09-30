@@ -1581,8 +1581,61 @@ function hasStoredCredential(record) {
       // resume path). Without this hint the stop state is invisible in
       // settings — the safety loop's exit must be discoverable.
       const stopped = !!computerUse.stopped;
+      // macOS permission onboarding: one snapshot fetch on mount (and a
+      // re-read after the user answers the OS dialogs). Null = unknown or no
+      // permission flow (web stub rejection, older backend, non-macOS): the
+      // row stays hidden instead of showing permanently-false toggles. A
+      // `false` grant is advisory — TCC applies a fresh grant to processes
+      // launched after it, so the hint always pairs a miss with the restart
+      // step instead of polling for a flip.
+      const [permStatus, setPermStatus] = useState(null);
+      const [permBusy, setPermBusy] = useState(false);
+      useEffect(() => {
+        if (unsupported) return;
+        if (!bridge.available || !bridge.computerUse) return;
+        let cancelled = false;
+        bridge.computerUse.permissionStatus()
+          .catch(() => null)
+          .then((status) => { if (!cancelled) setPermStatus(status || null); });
+        return () => { cancelled = true; };
+      }, [unsupported]);
+      const refreshPermStatus = () => {
+        if (!bridge.available || !bridge.computerUse) return Promise.resolve(null);
+        return bridge.computerUse.permissionStatus()
+          .catch(() => null)
+          .then((status) => { setPermStatus(status || null); return status; });
+      };
+      const permMissing = !!permStatus && permStatus.supported
+        && (permStatus.screen_recording === false || permStatus.accessibility === false);
+      const permValue = permStatus && permStatus.supported
+        ? `${t.uiComputerUse.permScreenRecording} ${permStatus.screen_recording ? t.uiComputerUse.permGranted : t.uiComputerUse.permNotGranted} · ${t.uiComputerUse.permAccessibility} ${permStatus.accessibility ? t.uiComputerUse.permGranted : t.uiComputerUse.permNotGranted}`
+        : null;
+      const openPermissionDialogs = () => {
+        if (!bridge.available || !bridge.computerUse || permBusy) return;
+        setPermBusy(true);
+        // A rejection here must not hide the row: keep the last snapshot and
+        // surface the failure through the section's actionError slot (same
+        // surface as the toggle), then re-read whatever the dialogs changed.
+        bridge.computerUse.requestPermissions()
+          .catch((error) => setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error))))
+          .finally(() => { setPermBusy(false); void refreshPermStatus(); });
+      };
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
+          {permValue && (
+            <IOSRow
+              label={t.uiComputerUse.permTitle}
+              desc={permMissing ? t.uiComputerUse.permRestartHint : undefined}
+            >
+              <div className="flex flex-col items-end gap-1.5 max-sm:items-stretch">
+                <span className={`text-[12px] leading-4 ${permMissing ? 'text-[#FF9500] dark:text-[#FF9F0A]' : 'text-[#8A8A8E] dark:text-[#98989D]'}`}>{permValue}</span>
+                {permMissing && (
+                  <button type="button" disabled={permBusy} onClick={openPermissionDialogs}
+                    className={`px-3 py-1.5 rounded-lg text-[12px] border border-black/10 hover:bg-black/5 disabled:opacity-50 dark:border dark:border-white/10 dark:hover:bg-white/10`}>{t.uiComputerUse.permRequest}</button>
+                )}
+              </div>
+            </IOSRow>
+          )}
           <IOSRow
             label={t.uiComputerUse.settingsToggle}
             desc={

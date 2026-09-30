@@ -285,6 +285,44 @@ pub fn computer_use_request_permissions() -> Result<(), String> {
     crate::features::computer_use::request_permissions().map_err(|error| error.to_string())
 }
 
+/// Return projection of `computer_use_permission_status` (the settings page
+/// renders the macOS permission onboarding row from it).
+#[derive(Debug, Clone, Serialize)]
+pub struct ComputerUsePermissionStatus {
+    /// Whether this OS has a computer-use permission flow at all (macOS
+    /// TCC). False leaves both grant fields null: the settings row is
+    /// hidden rather than showing permanently-false toggles.
+    pub supported: bool,
+    /// macOS Screen Recording TCC grant (screenshots). A `false` in the
+    /// running process may simply mean "granted after this process
+    /// launched" — the UI pairs a miss with the restart guidance.
+    pub screen_recording: Option<bool>,
+    /// macOS Accessibility TCC grant (AX tree reads + input injection).
+    /// Same restart caveat as `screen_recording`.
+    pub accessibility: Option<bool>,
+}
+
+/// Current macOS permission grants for computer use. Advisory only: the
+/// tool path re-checks per action, and TCC applies a fresh grant to
+/// processes launched after it, so a just-granted permission still reads
+/// false until the app restarts (the frontend must surface that, not poll
+/// for a flip).
+#[tauri::command]
+pub fn computer_use_permission_status() -> ComputerUsePermissionStatus {
+    match crate::features::computer_use::permission_status() {
+        Some((screen_recording, accessibility)) => ComputerUsePermissionStatus {
+            supported: true,
+            screen_recording: Some(screen_recording),
+            accessibility: Some(accessibility),
+        },
+        None => ComputerUsePermissionStatus {
+            supported: false,
+            screen_recording: None,
+            accessibility: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +380,47 @@ mod tests {
             value.get("pending_confirm"),
             Some(&serde_json::Value::Null),
             "{value}"
+        );
+    }
+
+    /// The permission projection's JSON keys are a frontend contract (the
+    /// settings permission row consumes them directly). Both shapes are
+    /// pinned: the macOS shape (supported + two concrete grants) and the
+    /// non-macOS shape (supported:false + two nulls — the keys must stay
+    /// PRESENT so the frontend can feature-detect off one struct).
+    #[test]
+    fn permission_status_serializes_contract_keys() {
+        let macos = ComputerUsePermissionStatus {
+            supported: true,
+            screen_recording: Some(true),
+            accessibility: Some(false),
+        };
+        let Ok(value) = serde_json::to_value(&macos) else {
+            panic!("ComputerUsePermissionStatus must serialize");
+        };
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "supported": true,
+                "screen_recording": true,
+                "accessibility": false,
+            })
+        );
+        let unsupported = ComputerUsePermissionStatus {
+            supported: false,
+            screen_recording: None,
+            accessibility: None,
+        };
+        let Ok(value) = serde_json::to_value(&unsupported) else {
+            panic!("ComputerUsePermissionStatus must serialize");
+        };
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "supported": false,
+                "screen_recording": null,
+                "accessibility": null,
+            })
         );
     }
 

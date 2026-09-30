@@ -1314,6 +1314,7 @@ pub fn run() {
             commands::computer_use::computer_use_confirm,
             commands::computer_use::computer_use_set_enabled,
             commands::computer_use::computer_use_request_permissions,
+            commands::computer_use::computer_use_permission_status,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_connect_begin,
