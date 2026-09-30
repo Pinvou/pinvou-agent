@@ -722,23 +722,6 @@ fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, t
     );
 }
 
-/// `String::truncate` panics when the cut index lands inside a multi-byte
-/// char — the common case for CJK diffs near the byte cap. Cut on the last
-/// char boundary at or below `limit` instead. The CLI's own diff lane
-/// carries the same guard (`truncate_utf8` in pinvou-cli), so the shared
-/// `DIFF_LIMIT` cannot mean a panic on one surface and a clean cut on the
-/// other.
-fn truncate_utf8(text: &mut String, limit: usize) {
-    if text.len() <= limit {
-        return;
-    }
-    let mut cut = limit;
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    text.truncate(cut);
-}
-
 pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
@@ -797,7 +780,14 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
 
     let truncated = text.len() > DIFF_LIMIT;
     if truncated {
-        truncate_utf8(&mut text, DIFF_LIMIT);
+        // Byte-capped cuts must floor to a char boundary (`String::truncate`
+        // panics mid-char — the common case for CJK diffs near the cap), via
+        // the crate-wide helper the P0 convention routes all such cuts
+        // through. The CLI's diff lane carries the same guard, so the shared
+        // `DIFF_LIMIT` cannot panic on one surface and cut cleanly on the
+        // other.
+        let boundary = crate::platform::strings::truncate_utf8(&text, DIFF_LIMIT).len();
+        text.truncate(boundary);
         text.push_str("\n\n…差异过大，已截断");
     }
     diff_cache_put(session_id, &root, &relative, text.clone(), truncated);
@@ -1416,25 +1406,47 @@ mod tests {
         assert!(resolve_workspace_file(root.path(), "missing.txt").is_err());
     }
 
+    /// The exact cut `workspace_diff` performs: floor to a char boundary via
+    /// the crate-wide helper, then truncate. 1 MiB is not a multiple of 3,
+    /// so the old plain `String::truncate(DIFF_LIMIT)` cut inside a CJK char
+    /// and panicked.
+    fn diff_truncate(text: &mut String, limit: usize) {
+        let boundary = crate::platform::strings::truncate_utf8(text, limit).len();
+        text.truncate(boundary);
+    }
+
     #[test]
     fn diff_truncation_cuts_on_char_boundaries() {
-        // A full cap of CJK: 1 MiB is not a multiple of 3 bytes, so the old
-        // plain `String::truncate(DIFF_LIMIT)` cut inside a char and panicked.
+        // A full cap of CJK.
         let mut text = "界".repeat(DIFF_LIMIT / 3 + 4);
-        truncate_utf8(&mut text, DIFF_LIMIT);
+        diff_truncate(&mut text, DIFF_LIMIT);
         assert!(text.len() <= DIFF_LIMIT);
         assert!(
             text.chars().all(|c| c == '界'),
             "the cut must land on a char boundary"
         );
 
+        // A 4-byte emoji straddling a small cap.
+        let mut emoji = "a🏖b".to_string();
+        diff_truncate(&mut emoji, 3);
+        assert_eq!(emoji, "a");
+
         let mut small = "ab界界".to_string();
-        truncate_utf8(&mut small, 3);
+        diff_truncate(&mut small, 3);
         assert_eq!(small, "ab");
 
         let mut exact = "abc".to_string();
-        truncate_utf8(&mut exact, 3);
+        diff_truncate(&mut exact, 3);
         assert_eq!(exact, "abc");
+
+        // Under the cap: untouched, whatever the content.
+        let mut short = "短文🐱".to_string();
+        diff_truncate(&mut short, 1024);
+        assert_eq!(short, "短文🐱");
+
+        let mut empty = String::new();
+        diff_truncate(&mut empty, 0);
+        assert_eq!(empty, "");
     }
 
     #[test]

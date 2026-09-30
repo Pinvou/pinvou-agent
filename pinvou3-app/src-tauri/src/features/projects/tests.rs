@@ -184,7 +184,7 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
     let project = create(&store, "待删", &[abs("x")]);
     let other = create(&store, "幸存", &[abs("y")]);
 
-    store
+    let assigned = store
         .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign s1");
     store
@@ -199,12 +199,16 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
     store
         .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
-    store
+    let moved_out = store
         .move_session_to_project("s3", None, None)
         .expect("move s3 out");
     store
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
+    // 归属结果回显目标项目;显式移出回显 None——跨进程消费者按字段
+    // 原样回显,这里钉住取值,防止构造函数退化为恒 None 还全绿。
+    assert_eq!(assigned.project_id, Some(project.id.clone()));
+    assert_eq!(moved_out.project_id, None);
 
     let report = store.delete_project(&project.id).expect("delete project");
     // s3 已显式移出、s4 属于别的项目:受影响的只有 s1/s2/s10,且按字典序。

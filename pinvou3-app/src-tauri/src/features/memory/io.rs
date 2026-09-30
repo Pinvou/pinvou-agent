@@ -314,7 +314,9 @@ pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
 /// reports `false`. Note the archived buckets are cap-compacted on every
 /// write (oldest `last_hit` first), so with a full bucket the row just
 /// archived can itself be evicted: `true` says the flip happened, not that
-/// the row is still stored.
+/// the row is still stored. A write fault partway through can leave the
+/// stores written earlier already flipped; the operation is idempotent, so
+/// retrying after the fault archives only the remainder.
 pub fn archive_recent_work(id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
     let id = clean_id(id);
