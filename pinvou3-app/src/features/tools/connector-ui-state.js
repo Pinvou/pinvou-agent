@@ -3,6 +3,14 @@
 // message in the current UI language; the raw backend diagnostic never
 // reaches the card (matching the Official repo's PR #442 behavior).
 
+// Round-37 F3 (review #455): the ONE consent-failure marker string, mirroring
+// `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned by
+// consent_marker_frontend.test.mjs + the Rust emitter pins). The three JS
+// matchers import this instead of hardcoding the literal, so one-site drift
+// cannot survive the pin.
+export const CONSENT_SYNC_FAILURE_MARKER =
+  'persisting their default-off consent state failed';
+
 // Stable machine-readable error codes for user-facing messages.
 // Backends attach a snake_case `code` (or prefix the message with `code: ...`);
 // the UI maps the code to a localized string and never shows raw backend text

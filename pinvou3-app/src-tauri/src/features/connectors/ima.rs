@@ -351,8 +351,16 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
         })();
 
         if let Err(err) = result {
-            rollback_secret(&store, &client_id_ref(), previous_client_id)?;
-            rollback_secret(&store, &api_key_ref(), previous_api_key)?;
+            // Round-37 C5 (review #455): a rollback failure must not replace
+            // the primary error (which carries the consent-guidance copy and
+            // the frontend marker) nor skip the second rollback — log each
+            // rollback failure and continue, letting the primary err win.
+            if let Err(e) = rollback_secret(&store, &client_id_ref(), previous_client_id) {
+                log::warn!("[ima] rolling back the client id secret failed: {e}");
+            }
+            if let Err(e) = rollback_secret(&store, &api_key_ref(), previous_api_key) {
+                log::warn!("[ima] rolling back the API key secret failed: {e}");
+            }
             return Err(err);
         }
 

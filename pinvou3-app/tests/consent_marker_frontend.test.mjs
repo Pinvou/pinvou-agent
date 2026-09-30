@@ -10,14 +10,31 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const store = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../src/features/tools/ToolStoreView.jsx'),
+// Round-37 F3 (review #455): the literal lives ONCE, in connector-ui-state.js
+// (mirroring scope::CONSENT_SYNC_FAILURE_MARKER); the three JS matchers import
+// the const. The pin asserts the single definition and that every matcher
+// site imports it — one-site drift cannot survive.
+const uiState = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '../src/features/tools/connector-ui-state.js'),
   'utf8',
 );
 const MARKER = 'persisting their default-off consent state failed';
 assert.ok(
-  store.includes(MARKER),
-  'ToolStoreView must key the consent-failure surfacing on the shared backend marker (update the Rust pin in the same commit if reworded)',
+  uiState.includes(`export const CONSENT_SYNC_FAILURE_MARKER =\n  '${MARKER}'`)
+    || uiState.includes(`export const CONSENT_SYNC_FAILURE_MARKER = '${MARKER}'`),
+  'connector-ui-state.js must define the shared consent marker exactly once (update the Rust pin in the same commit if reworded)',
+);
+const store = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '../src/features/tools/ToolStoreView.jsx'),
+  'utf8',
+);
+assert.ok(
+  !store.includes(MARKER),
+  'the marker literal must be defined only in connector-ui-state.js (import the const instead)',
+);
+assert.ok(
+  store.includes('CONSENT_SYNC_FAILURE_MARKER'),
+  'ToolStoreView must key the consent-failure surfacing on the shared const',
 );
 
 // Round-35 minor 1 (review #455): the two Rust production templates must also

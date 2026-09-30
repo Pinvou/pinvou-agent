@@ -332,6 +332,65 @@ mod tests {
         );
     }
 
+    /// Round-37 C1 (review #455): a consent persist failure between connect
+    /// and enable left the pair unledgered, so the startup refresh reverted
+    /// the user's enable across the restart (round-30 family residue). The
+    /// explicit-enable path now RECORDS the ledger pair, closing the window:
+    /// connect-sync persist fails → nothing lands → the enable succeeds →
+    /// refresh must not backfill the row.
+    #[test]
+    fn explicit_enable_records_the_ledger_over_a_failed_connect_sync() {
+        use crate::features::marketplace::scope::{
+            enable_packages_in_scope, sync_deny_all_scopes_after_install,
+        };
+        use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-skillgate-ledger-failedconnect", || {
+            // Pre-warm: the first read persists the freeze verdict, settling
+            // that write so the failpoint below hits the SYNC's save.
+            let _ = crate::features::marketplace::scope::load_disabled_bundles_for(
+                ConnectorScope::Plain,
+            );
+            // The connect-path sync's persist FAILS: neither the row nor the
+            // ledger entry reaches disk.
+            let _failpoint =
+                crate::features::marketplace::scope::fail_next_disabled_bundles_write_for_test();
+            assert!(
+                sync_deny_all_scopes_after_install("feishu").is_err(),
+                "fixture: the connect sync must fail on the injected persist error"
+            );
+
+            // The user's first enable still succeeds (nothing to remove; the
+            // materialization arm seeds the scope).
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            assert!(
+                outcome.state_changed,
+                "fixture: the enable must materialize"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "fixture: the enable removed the id"
+            );
+
+            // The startup refresh must stay gated by the ledger the ENABLE
+            // wrote — no silent default-off backfill over the enable.
+            let gate = ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "测试连接器",
+                ready_probe: || true,
+                apply_bundle_skills: |_| Ok(()),
+            };
+            gate.refresh_step().unwrap();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the enable must record the ledger, or the next boot reverts it (round-30 family residue)"
+            );
+        });
+    }
+
     /// Round-32 MAJOR 1 (review #455) twin negative control: the connect
     /// happens while plain is STILL UNINITIALIZED (fresh home), the user's
     /// first enable materializes the scope, and only then does the startup

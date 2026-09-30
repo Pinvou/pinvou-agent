@@ -14,7 +14,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { applyConnectorFailure, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
+import { applyConnectorFailure, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -359,23 +359,31 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // row leaves the connector live with zero consent until the next boot's ledger-gated backfill, silently. The
           // failure is surfaced ON THE CARD via applyConnectorFailure (the console-only reportConnectorFailure call was
           // the round-35 review's finding — success toast + connected card while only the console saw the error): the
-          // backend message carries the shared consent marker (scope::CONSENT_SYNC_FAILURE_MARKER, pinned on both sides
-          // — ima-pattern substring match) → the dedicated consent_persist_failed copy; anything else keeps the step's
-          // localized copy. The collapse timer's done-guard keeps the errored card alive.
-          invokeTauri(cfg.commands.applySkills).catch((e) => {
-            const msg = String(e && e.message ? e.message : e);
-            const failure = msg.includes('persisting their default-off consent state failed')
-              ? { code: 'consent_persist_failed' }
-              : { code: 'skills_enable_failed' };
-            reportConnectorFailure(cfg.key, failure, 'cli');
-            // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
-            conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
-          });
-          // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state).
-          // The collapse must only close a card that already reached 'done': a
-          // stale timer from the previous round must not destroy a card the
-          // user re-opened within the window (and strand the busy slot with it).
-          setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
+          // backend message carries the shared consent marker (CONSENT_SYNC_FAILURE_MARKER, pinned on both sides —
+          // ima-pattern substring match) → the dedicated consent_persist_failed copy; anything else keeps the step's
+          // localized copy.
+          // Round-37 F2 (review #455): the collapse timer is armed only AFTER the write settles — arming it
+          // synchronously let a failure resolving after 1.8s land on a nulled flow (the null guard no-op'ing),
+          // re-creating the silent-failure state. A slow write keeps the done card up until it resolves; a failed
+          // write swaps in the error card and stays (no auto-collapse on errors, same as the awaited branch).
+          invokeTauri(cfg.commands.applySkills).then(
+            () => {
+              // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived
+              // connection state). The collapse must only close a card that already reached 'done': a stale timer
+              // from the previous round must not destroy a card the user re-opened within the window (and strand the
+              // busy slot with it).
+              setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
+            },
+            (e) => {
+              const msg = String(e && e.message ? e.message : e);
+              const failure = msg.includes(CONSENT_SYNC_FAILURE_MARKER)
+                ? { code: 'consent_persist_failed' }
+                : { code: 'skills_enable_failed' };
+              reportConnectorFailure(cfg.key, failure, 'cli');
+              // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
+              conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
+            },
+          );
         } : async () => {
           conn.stopTick();
           try {
@@ -405,7 +413,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             const msg = String(e && e.message ? e.message : e);
             const failure = authIncomplete
               ? e
-              : msg.includes('persisting their default-off consent state failed')
+              : msg.includes(CONSENT_SYNC_FAILURE_MARKER)
                 ? { code: 'consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'qr');
@@ -1961,7 +1969,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // matcher keys on the backend marker pinned by
           // ima::consent_failure_message_keeps_the_frontend_marker.
           const msg = String(e && e.message ? e.message : e);
-          const consentFailure = msg.includes('persisting their default-off consent state failed');
+          const consentFailure = msg.includes(CONSENT_SYNC_FAILURE_MARKER);
           setAlert({
             visible: true, loading: false,
             title: detailCopy.actions.imaFailed,

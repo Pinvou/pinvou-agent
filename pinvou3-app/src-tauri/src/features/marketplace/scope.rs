@@ -582,7 +582,11 @@ pub(crate) fn to_package_id(raw: &str) -> String {
 /// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
 /// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry.
-fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
+/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
+/// hoist): one `available_tools()` walk serves the whole id list instead of
+/// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
+/// writer guard hoists the same snapshot for its normalization loop.
+pub(crate) fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     // Known-pack shield (review #455 round-23 MINOR 1): a stored entry that
     // names a physically present pack dir IS that pack and must not be
@@ -1219,7 +1223,9 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             // Merge note: the retain runs AFTER the disk-derived arm so the
             // filter covers disk-derived ids too.
             ids.retain(|id| {
-                !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id(id))
+                !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id_with(
+                    &tools, id,
+                ))
             });
             ids
         }
@@ -1725,6 +1731,7 @@ pub fn enable_packages_in_scope(
     }
     let mut not_applied: Vec<String> = Vec::new();
     let mut changed = false;
+    let mut applied: Vec<String> = Vec::new();
     if file.initialized.contains(key) {
         if let Some(list) = file.scopes.get_mut(key) {
             let before = list.len();
@@ -1738,6 +1745,7 @@ pub fn enable_packages_in_scope(
             defaults.retain(|id| !ids.contains(id));
             changed |= defaults.len() != before;
         }
+        applied = ids.clone();
     } else if scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
         let mut effective = resolve_scope_disabled_ids(&file, scope);
         let not_applied_ids: Vec<String> = ids
@@ -1755,6 +1763,11 @@ pub fn enable_packages_in_scope(
                 .insert(key.to_string(), effective.clone());
             file.scopes.insert(key.to_string(), effective);
             file.initialized.insert(key.to_string());
+            applied = ids
+                .iter()
+                .filter(|id| !not_applied_ids.contains(id))
+                .cloned()
+                .collect();
             changed = true;
         } else {
             // No requested id sits in the expansion: an explicit user action
@@ -1770,6 +1783,24 @@ pub fn enable_packages_in_scope(
         let before = hidden.len();
         hidden.retain(|id| !ids.contains(id));
         changed |= hidden.len() != before;
+    }
+    // Round-37 C1 (review #455): an explicit enable also RECORDS the ledger
+    // pair. The connect/install sync normally wrote it first (the
+    // uninitialized arm records without pushing a row); recording here closes
+    // the surviving window where that sync's persist FAILED between connect
+    // and enable — the row is absent and the pair unledgered, so the next
+    // boot's refresh classified the enable as never-synced and reverted it
+    // (surfaced only as a startup timeline mark). A ledger entry written by
+    // the enable is the same fact the refresh gates on — "this pair was
+    // settled", whatever wrote it. Only APPLIED ids are recorded: a
+    // not_applied id was never enabled, and ledgering it would suppress the
+    // legitimate backfill of its default-off row.
+    for id in &applied {
+        let ledger_key = format!("{key}:{id}");
+        if !file.install_default_synced.contains(&ledger_key) {
+            file.install_default_synced.push(ledger_key);
+            changed = true;
+        }
     }
     if changed {
         // Fail-visible (round-12 review): the caller must not report
