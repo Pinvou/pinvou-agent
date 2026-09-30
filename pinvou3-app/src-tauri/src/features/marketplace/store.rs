@@ -1515,8 +1515,12 @@ mod tests {
             let path = store.file_path();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             for bad in ["null", "\"pins\"", "{\"kind\": \"cli\"}"] {
+                // `installed_at` is present so the assets container is the
+                // ONLY thing that can fail this load — otherwise a missing
+                // required field fails it first and the assertion passes
+                // while blind to the rule it guards.
                 let file = format!(
-                    r#"{{"schema_version": 1, "records": [{{"id": "feishu", "source": "builtin", "installed": true, "assets": {bad}}}]}}"#
+                    r#"{{"schema_version": 1, "records": [{{"id": "feishu", "source": "builtin", "installed": true, "installed_at": "2026-09-30T00:00:00Z", "assets": {bad}}}]}}"#
                 );
                 std::fs::write(&path, file).unwrap();
                 assert!(
