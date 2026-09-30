@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use pinvou_knowledge::client::{KnowledgeClient, RemoteKnowledgeProbe};
+use pinvou_knowledge::client::RemoteKnowledgeProbe;
 use pinvou_knowledge::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, ModelStatus, SearchHit,
     ShareCreated, ShareRecord, UpdateDeviceRequest,
@@ -73,7 +73,7 @@ pub async fn remote_kb_request_join(
 pub async fn remote_kb_probe_private_endpoint(
     source: String,
 ) -> Result<RemoteKnowledgeProbe, String> {
-    KnowledgeClient::probe_private_identity(&source).await
+    crate::features::remote_knowledge::probe_private_identity(&source).await
 }
 
 #[tauri::command]
