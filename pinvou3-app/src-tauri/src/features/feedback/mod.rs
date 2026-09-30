@@ -38,6 +38,10 @@ pub enum FeedbackStatus {
 /// request shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackSubmitRequest {
+    /// Required at parse: a payload without it fails command-argument
+    /// deserialization (pre-PR the key was parsed and dropped). Deliberate
+    /// fail-loud — both first-party senders, the GUI settings view and the
+    /// CLI, always set it.
     #[serde(rename = "type")]
     pub feedback_type: FeedbackType,
     #[serde(default)]

@@ -135,7 +135,9 @@ pub struct AssetRef {
 /// One `BundleRecord.assets` entry. An entry that does not parse as an
 /// [`AssetRef`] (a shape written by another version, a missing field, a
 /// non-string value) is kept verbatim as `Unrecognized`: it must neither fail
-/// the whole `bundles.json` load nor be dropped by the next write.
+/// the whole `bundles.json` load nor be dropped by the next write. The
+/// retained value is endpoint-authored data: render it as data, never as
+/// markup, wherever a future consumer surfaces it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AssetEntry {
@@ -303,10 +305,13 @@ impl BundleStore {
     /// `assets` takes the new list when it is non-empty and otherwise keeps the
     /// existing one, so a writer that does not track assets must not wipe refs
     /// another writer recorded while a pin writer can still replace a stale
-    /// pin. No code records pins yet; the rule exists so the first pin writer
-    /// cannot silently wipe, and its protection is per-process: each process
-    /// merges against its own load-time snapshot, so cross-process writers
-    /// remain last-writer-wins on the whole file.
+    /// pin. The flip side: "unpin all" is not expressible through this
+    /// variant — a writer that genuinely wants an empty list must fall to
+    /// plain `upsert`, which replaces the whole record. No code records pins
+    /// yet; the rule exists so the first pin writer cannot silently wipe, and
+    /// its protection is per-process: each process merges against its own
+    /// load-time snapshot, so cross-process writers remain last-writer-wins
+    /// on the whole file.
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
         let _guard = file_lock();
         let mut file = load_locked(&self.file)?;
@@ -1487,11 +1492,11 @@ mod tests {
                 "entries this binary cannot read must stay unrecognized, not fail the load"
             );
 
-            // A read-modify-write preserves every entry semantically and
-            // key-order-exactly: unrecognized entries round-trip verbatim,
-            // recognized ones re-serialize canonically with their unknown
-            // fields kept. Not byte-exact — the whole file is re-pretty-
-            // printed on save, before and after this PR.
+            // A read-modify-write preserves every entry as an equal JSON
+            // value: unrecognized entries round-trip verbatim, recognized
+            // ones re-serialize canonically with their unknown fields kept.
+            // Not byte-exact — object key order is normalized on save, and
+            // the whole file is re-pretty-printed, before and after this PR.
             store.mark_degraded("feishu", "probe").unwrap();
             let value: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

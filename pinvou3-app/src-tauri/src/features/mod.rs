@@ -6,6 +6,12 @@ pub(crate) mod browser;
 // module would make the re-export unreachable. No in-tree caller exists yet —
 // an ahead-of-consumer surface, disclosed in PR #602.
 pub mod code_checkpoints;
+// The other `pub` modules below (`codex_acp`, `dependencies`, `knowledge`,
+// `monitor`, `projects`, `remote_knowledge`, `shared_knowledge_host`,
+// `voice`) are opened for the stacked headless CLI (#507 family), which
+// calls them across the `pinvoy3_lib` path dependency; like
+// `code_checkpoints`, some of that surface is ahead of its first in-tree
+// consumer.
 pub mod codex_acp;
 pub(crate) mod computer_use;
 pub(crate) mod connectors;
