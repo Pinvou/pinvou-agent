@@ -22,27 +22,17 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) paste_image_clipboard_read: bool,
 }
 
-/// Sole production-release switch for macOS BrowserCore. Keep it `false` until physical
-/// device E2E is complete. Acceptance builds use the non-default `browser-macos-preview`
-/// Cargo feature without changing production defaults.
-const MACOS_BROWSER_RELEASED: bool = false;
-
-fn browser_product_enabled_for(os: &str, macos_preview: bool) -> bool {
-    match os {
-        "windows" | "linux" => true,
-        "macos" => MACOS_BROWSER_RELEASED || macos_preview,
-        _ => false,
-    }
+fn browser_product_enabled_for(os: &str) -> bool {
+    matches!(os, "windows" | "linux" | "macos")
 }
 
 /// Single semantic product gate for the embedded browser. Runtime MCP, the native workspace,
 /// and public capabilities must consume this function together, preventing a half-enabled
-/// state where the Agent has tools but the user has no visible surface.
+/// state where the Agent has tools but the user has no visible surface. All three desktop
+/// platforms ship the browser; a platform that cannot display or automate it must be hidden
+/// here rather than half-registered anywhere downstream.
 pub(crate) fn browser_product_enabled() -> bool {
-    browser_product_enabled_for(
-        std::env::consts::OS,
-        cfg!(feature = "browser-macos-preview"),
-    )
+    browser_product_enabled_for(std::env::consts::OS)
 }
 
 pub(crate) fn current() -> DesktopCapabilities {
@@ -129,14 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn browser_product_gate_matches_release_and_preview_semantics() {
-        assert!(browser_product_enabled_for("windows", false));
-        assert!(browser_product_enabled_for("linux", false));
-        assert_eq!(
-            browser_product_enabled_for("macos", false),
-            MACOS_BROWSER_RELEASED
-        );
-        assert!(browser_product_enabled_for("macos", true));
-        assert!(!browser_product_enabled_for("android", true));
+    fn browser_product_gate_matches_desktop_platforms() {
+        assert!(browser_product_enabled_for("windows"));
+        assert!(browser_product_enabled_for("linux"));
+        assert!(browser_product_enabled_for("macos"));
+        assert!(!browser_product_enabled_for("android"));
     }
 }
