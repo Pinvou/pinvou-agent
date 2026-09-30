@@ -137,7 +137,7 @@ impl SessionStore {
             .context("list sessions for retention")?
             .as_ref()
             .clone();
-// Keep-forever fail-safe (#504): consulted before anything destructive
+        // Keep-forever fail-safe (#504): consulted before anything destructive
         // below — the orphan-aux reclaim included, which is a destructive
         // delete in its own right. Unknown pin state ⇒ no evictions at all.
 
