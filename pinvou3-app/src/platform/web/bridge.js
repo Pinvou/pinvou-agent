@@ -2828,6 +2828,8 @@ async function exitScheduledRunChat() { return pinvouSharedweb().exitScheduledRu
   // sidebar row behind in the other one.
 function applyDeletedSession(id) { return pinvouSharedweb().applyDeletedSession(id); }
 
+function onSessionDeleted(listener) { return pinvouSharedweb().onSessionDeleted(listener); }
+
   async function deleteSession(id) {
     try {
       // 后端按 SessionKind 分发:定时运行会话在 delete_session 里联动删除
@@ -7838,6 +7840,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     auxChatSnapshot,
     auxChatDiscard,
     auxChatReset,
+    onSessionDeleted,
     getComposerDraft: function () { return readComposerDraftWithRecovery(); },
     setComposerDraft,
     retryFirstTurn,
