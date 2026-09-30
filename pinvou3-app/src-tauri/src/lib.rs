@@ -16,6 +16,8 @@ pub mod platform;
 )]
 unsafe extern "C" {}
 
+use std::io::Write as _;
+
 use tauri::Manager;
 
 #[cfg(feature = "benchmark-hooks")]
@@ -742,15 +744,36 @@ pub fn run() {
             // them — is a no-op in release and the raw cause of a failure is
             // lost. LogDir is the OS-standard per-app log directory and the
             // plugin's default rotation keeps the file bounded (KeepOne, 40KB).
+            // The Stdout target is debug-only: packaged Windows runs without a
+            // console (`windows_subsystem = "windows"`), where stdout writes
+            // fail and fern's error fallback then panics the logging thread
+            // and starves the file target chained after it — release runs
+            // everywhere read the file instead, terminal dev runs keep stdout.
             // An unusable log directory must not take boot down, so an attach
-            // failure only leaves a stderr note and startup continues without
-            // the backend.
+            // failure only leaves a best-effort stderr note and startup
+            // continues without the backend.
+            let mut log_targets = vec![tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::LogDir { file_name: None },
+            )];
+            if cfg!(debug_assertions) {
+                log_targets.push(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ));
+            }
             if let Err(e) = app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
+                    .targets(log_targets)
                     .build(),
             ) {
-                eprintln!("[pinvou3] failed to attach the logging plugin: {e}");
+                // Best-effort only: `eprintln!` panics when the stderr write
+                // fails (no console on packaged Windows), and a panic inside
+                // setup takes boot down — the exact scenario this arm exists
+                // to survive.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[pinvou3] failed to attach the logging plugin: {e}"
+                );
             }
             startup::mark("setup:plugins_ready");
             crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
