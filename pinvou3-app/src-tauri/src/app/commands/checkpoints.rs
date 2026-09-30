@@ -163,7 +163,11 @@ pub async fn checkpoint_diff(
     )
     .await?;
     tauri::async_runtime::spawn_blocking(move || {
-        checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id)
+        // `false`: the webview renders only the `changes` list (RewindChip);
+        // generating the unified diff here would cost a full `git diff` per
+        // preview open for bytes nothing reads. The patch surface is the
+        // CLI's, whose caller passes `true`.
+        checkpoints::diff_checkpoint(&ledger, &execution, &checkpoint_id, false)
             .map_err(|error| format!("读取检查点差异失败: {error:#}"))
     })
     .await

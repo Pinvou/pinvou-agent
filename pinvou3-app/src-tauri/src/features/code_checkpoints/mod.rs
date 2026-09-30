@@ -35,7 +35,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -50,13 +50,12 @@ const MAX_CHECKPOINTS: usize = 20;
 /// Cap on the diff preview's patch text (truncated beyond it; the `changes`
 /// list is unaffected).
 ///
-/// `pub` for the stacked CLI families PR, so its renderer references this
-/// constant instead of mirroring the literal. No in-tree consumer today: the
-/// `pinvou-cli` workspace does not depend on this crate, so drift here breaks
-/// no existing build — same status as the `codex_acp::workspace` limits, and
-/// stated the same way now that the "must break the CLI build" claim has been
-/// checked and found untrue.
-pub const DIFF_PATCH_LIMIT: usize = 512 * 1024;
+/// Module-private on purpose: the cap is applied where the patch is produced
+/// and the `patchTruncated` flag travels with the data, so a patch renderer
+/// never needs this constant. Keep it private unless a consumer actually
+/// imports it — a speculative `pub` here is how a surface the dead-code
+/// cleanups removed comes back without a reader.
+const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -153,10 +152,12 @@ pub struct CheckpointMeta {
     /// 第几个用户 turn（1-based）；计数失败时为 None，前端按顺序兜底对齐。
     pub turn: Option<u32>,
     pub kind: CheckpointKind,
-    /// 展示标签。序列化恒带该键，写入端经 `normalize_checkpoint_label` 归一
-    /// （去首尾空白 + 80 字符截断）；反序列化对 `serde(default)` 兼容——
-    /// main 时代的索引没有 `label` 键，缺了它会让整份索引解析失败并被
-    /// quarantine 分支清空，升级即丢历史。
+    /// Display label. Always present on the wire; write-side values go
+    /// through `normalize_checkpoint_label` (trim + 80-char cap counted by
+    /// chars so a CJK label never splits). Reads are `serde(default)` for
+    /// compatibility: main-era indexes carry no `label` key, and a missing
+    /// key would fail the whole index parse into the quarantine branch,
+    /// which rebuilds from an empty index — an upgrade that loses history.
     #[serde(default)]
     pub label: String,
     /// 影子仓库中的 commit sha（orphan commit，互不为父子）。
@@ -186,7 +187,8 @@ pub struct CheckpointDiff {
     pub checkpoint: CheckpointMeta,
     /// 从快照到当前执行根的变更清单（即「回滚将撤销的变更」）。
     pub changes: Vec<CheckpointChange>,
-    /// unified diff 文本（可能截断）。
+    /// Unified diff text (possibly truncated; empty when the caller asked to
+    /// skip patch generation).
     pub patch: String,
     pub patch_truncated: bool,
 }
@@ -556,9 +558,12 @@ fn git_diff_capped(
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let output = git(repo, work_tree, &arguments)?;
     if !output.status.success() {
+        // Deliberately names no arguments: the argv carries the spill path
+        // (and this error reaches the frontend via the command layer), and
+        // the same privacy posture that keeps the quarantine path and serde
+        // message off stderr applies here.
         bail!(
-            "git {} 失败: {}",
-            arguments.join(" "),
+            "git diff 预览生成失败: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -637,6 +642,38 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
     Ok(())
 }
 
+/// Crash-leftover reaper for diff spill files: `.checkpoint-diff-<pid>-<nanos>.tmp`
+/// holds the UNFILTERED diff until `TempDiffFile` drops it, and a hard kill
+/// leaves it behind with no in-process owner. Age-gated far past the 120 s
+/// git command timeout so a concurrently running diff (this or another
+/// process) is never reaped mid-flight. Best-effort: sweep failures are
+/// silent, the next ensure_repo retries.
+fn reap_stale_diff_spills(checkpoints_dir: &Path) {
+    const STALE_SPILL_AGE: Duration = Duration::from_secs(600);
+    let Ok(entries) = fs::read_dir(checkpoints_dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".checkpoint-diff-")
+        {
+            continue;
+        }
+        let is_stale = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_SPILL_AGE);
+        if is_stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// 初始化影子仓库（幂等）：git-dir 在账本根，work-tree 指向执行根。
 /// - `core.autocrlf false`：不受用户全局行尾配置影响，快照/恢复保持原字节；
 ///   执行根自己的 .gitattributes 仍会被尊重（与用户在项目内看到的行尾一致）。
@@ -653,6 +690,7 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 ///   闭合评审 B1 的事故链（`.ENV` 逃过 exclude 却被 icase purge 移出 index、
 ///   被 `clean -fd` 物理删除）。
 fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
+    reap_stale_diff_spills(&checkpoints_dir(ledger_root));
     let repo = repo_dir(ledger_root);
     let fresh = !repo.join("HEAD").is_file();
     if fresh {
@@ -758,8 +796,12 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // identifies the write, and the evidence stays in the quarantined
             // file for inspection.
             match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                Ok(_) => eprintln!("[checkpoints] checkpoint 索引损坏，已隔离并从空索引重建"),
-                Err(_) => eprintln!("[checkpoints] 隔离损坏索引失败（现场未保留），从空索引重建"),
+                Ok(_) => eprintln!(
+                    "[checkpoints] corrupt checkpoint index quarantined; rebuilt from an empty index"
+                ),
+                Err(_) => eprintln!(
+                    "[checkpoints] failed to quarantine the corrupt index (scene not preserved); rebuilt from an empty index"
+                ),
             }
             Ok(CheckpointIndex {
                 version: 1,
@@ -1047,6 +1089,26 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
+/// Secret check for a `--raw` status path. `parse_raw_status` hands the field
+/// through verbatim, and with `core.quotepath=false` git still C-quotes paths
+/// containing quotes/backslashes/tabs (`"my \"key.pem"`), whose trailing
+/// quote defeats a plain suffix match — while the patch filter (which parses
+/// the quoted shapes) drops that section, leaving the two preview surfaces
+/// inconsistent. Unquote before matching so both agree. Only the common
+/// quote/backslash escapes are handled: the secret patterns are plain ASCII
+/// names, so an exotic escape can at worst over-retain a list entry — never
+/// leak a patch section (that filter is independent and conservative).
+fn raw_status_path_is_secret(path: &str) -> bool {
+    if secret_path_matches(path) {
+        return true;
+    }
+    let unquoted = path
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(path);
+    secret_path_matches(&unquoted.replace("\\\"", "\""))
+}
+
 /// Whether a `diff --git` section header points at a secret file. For the
 /// C-quoted form (git emits `diff --git "a/x" "b/x"` when the path contains
 /// quotes/tabs/non-ASCII) the a/ and b/ paths are extracted by quoted
@@ -1058,7 +1120,8 @@ fn secret_path_matches(path: &str) -> bool {
 /// only predicate; the token scan is the final fallback.
 fn diff_section_is_secret(header: &str) -> bool {
     if let Some(rest) = header.strip_prefix("diff --git \"") {
-        // C-quoted 形式：按引号段提取 a/ 与 b/ 路径（路径可含空格）。
+        // C-quoted shape: extract the a/ and b/ paths by quoted segment
+        // (the paths may contain spaces).
         if let Some(path) = rest.strip_prefix("a/").and_then(|s| s.split('"').next()) {
             if secret_path_matches(path) {
                 return true;
@@ -1153,10 +1216,17 @@ fn filter_secret_paths_from_patch(patch: &str) -> String {
 }
 
 /// 快照与当前执行根的差异预览（即「回滚将撤销的变更」），供 UI 确认前展示。
+///
+/// `include_patch` gates the unified diff: the `changes` list is always
+/// computed, but the patch costs a full `git diff` whose generation is
+/// unbounded (only the read-back is capped), and the desktop preview renders
+/// only the list — it must pass `false`. The patch surface exists for the
+/// CLI. When `false`, `patch` is empty and `patch_truncated` is `false`.
 pub fn diff_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
     checkpoint_id: &str,
+    include_patch: bool,
 ) -> Result<CheckpointDiff> {
     let meta = find_checkpoint(ledger_root, checkpoint_id)?;
     let execution_root = canonical_execution_root(execution_root)?;
@@ -1180,82 +1250,95 @@ pub fn diff_checkpoint(
             &meta.commit,
         ],
     )?;
-    let (raw_patch, patch_truncated) = git_diff_capped(
-        &repo,
-        &execution_root,
-        // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
-        // 也是 rename 形态，中文路径在两处都是原文。
-        &[
-            "-c",
-            "core.quotepath=false",
-            "-c",
-            "diff.noprefix=false",
-            "-c",
-            "diff.mnemonicPrefix=false",
-            // The secret-path filter parses `diff --git a/<p> b/<p>` and the
-            // `--- a/` / `+++ b/` markers, so the prefixes are part of its
-            // contract, not cosmetics. They are configurable
-            // (diff.noprefix, diff.srcPrefix, diff.dstPrefix,
-            // diff.mnemonicPrefix), and `isolated_git_command` only
-            // neutralizes the system and global config — the shadow repo's
-            // OWN config still applies, and for an unbound session that repo
-            // sits inside the directory the agent's own tools can write
-            // (see the ledger note on `restore_checkpoint`). A single
-            // `diff.noprefix = true` line there makes every section
-            // unparseable to the filter and passes `.env` plaintext straight
-            // into the preview. Pin them on the command line, where repo
-            // config cannot reach.
-            "diff",
-            "--cached",
-            "-M",
-            "--no-color",
-            // Same threat model, second escape hatch: `--no-ext-diff` closes
-            // `diff.external` / `GIT_EXTERNAL_DIFF`, but textconv is a
-            // separate switch and defaults to ON. `[diff "x"] textconv = <cmd>`
-            // in the shadow repo's own config plus one `.gitattributes` line
-            // makes git run an arbitrary command per file and substitute its
-            // stdout as the diff body — arbitrary content reaching the preview
-            // under a path the filter permits, and arbitrary execution in this
-            // process's group.
-            "--no-textconv",
-            "--no-ext-diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            &meta.commit,
-        ],
-        DIFF_PATCH_LIMIT,
-    )?;
-    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单与 patch 都剔除
-    // 命中敏感模式的条目，预览既不带原文上屏，也不谎称「回滚将删除 .env」
-    // （restore 实际保留工作区现有同名文件）。过滤恒大小写不敏感，与
-    // exclude/purge 三层同向。raw_patch 已在行边界截齐，段头要么完整参与
-    // 过滤判定、要么整体不出现——截断不可能残留半个秘密路径段头。
+    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感模式
+    // 的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有同名
+    // 文件）。过滤恒大小写不敏感，与 exclude/purge 三层同向。
     let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
-        .filter(|change| !secret_path_matches(&change.path))
+        .filter(|change| !raw_status_path_is_secret(&change.path))
         .collect();
-    let mut patch = filter_secret_paths_from_patch(&raw_patch);
-    // Truncation signals through `patch_truncated` alone: consumers pin the
-    // flag (and the byte cap), not a locale-specific tail appended to the
-    // data — an embedded CJK string here would leak into CLI output and
-    // bypass the trilingual i18n surface. The flag reports the raw `git diff`
-    // output exceeding the cap (the filter only removes content, so a capped
-    // read implies the caller is not seeing the full diff). The clamp is a
-    // belt-and-braces for `from_utf8_lossy` expansion (one invalid byte
-    // becomes three replacement bytes): it can only move the end backwards
-    // to the previous line boundary, so a section header stays whole — and
-    // when it does fire, content was dropped without the raw read ever
-    // crossing the cap, so the flag must flip too.
-    let mut patch_truncated = patch_truncated;
-    if patch.len() > DIFF_PATCH_LIMIT {
-        let bytes = patch.as_bytes();
-        let mut end = DIFF_PATCH_LIMIT;
-        while end > 0 && bytes[end - 1] != b'\n' {
-            end -= 1;
+    let (patch, patch_truncated) = if !include_patch {
+        // The desktop preview renders only the `changes` list. Generating the
+        // unified diff here cost a full `git diff` per preview open — main
+        // carried an explicit 「unified diff 不再生成」 decision for exactly
+        // that reason — and nothing in the webview reads `patch`.
+        (String::new(), false)
+    } else {
+        let (raw_patch, mut patch_truncated) = git_diff_capped(
+            &repo,
+            &execution_root,
+            // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
+            // 也是 rename 形态，中文路径在两处都是原文。
+            &[
+                "-c",
+                "core.quotepath=false",
+                "-c",
+                "diff.noprefix=false",
+                "-c",
+                "diff.mnemonicPrefix=false",
+                // The secret-path filter parses `diff --git a/<p> b/<p>` and the
+                // `--- a/` / `+++ b/` markers, so the prefixes are part of its
+                // contract, not cosmetics. They are configurable
+                // (diff.noprefix, diff.srcPrefix, diff.dstPrefix,
+                // diff.mnemonicPrefix), and `isolated_git_command` only
+                // neutralizes the system and global config — the shadow repo's
+                // OWN config still applies, and for an unbound session that repo
+                // sits inside the directory the agent's own tools can write
+                // (see the ledger note on `restore_checkpoint`). A single
+                // `diff.noprefix = true` line there makes every section
+                // unparseable to the filter and passes `.env` plaintext straight
+                // into the preview. Pin them on the command line, where repo
+                // config cannot reach.
+                "diff",
+                "--cached",
+                "-M",
+                "--no-color",
+                // Same threat model, second escape hatch: `--no-ext-diff` closes
+                // `diff.external` / `GIT_EXTERNAL_DIFF`, but textconv is a
+                // separate switch and defaults to ON. `[diff "x"] textconv = <cmd>`
+                // in the shadow repo's own config plus one `.gitattributes` line
+                // makes git run an arbitrary command per file and substitute its
+                // stdout as the diff body — arbitrary content reaching the preview
+                // under a path the filter permits, and arbitrary execution in this
+                // process's group.
+                "--no-textconv",
+                "--no-ext-diff",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                &meta.commit,
+            ],
+            DIFF_PATCH_LIMIT,
+        )?;
+        // Legacy snapshots (taken before the purge) may still carry secret
+        // plaintext in their trees: whole sections matching a secret pattern
+        // are dropped so the preview cannot leak it. The filter is always
+        // case-insensitive, aligned with the exclude/purge layers. raw_patch
+        // is already clamped to a line boundary, so a section header either
+        // fully participates in the filter's judgment or is absent entirely —
+        // truncation cannot leave half a secret-path header behind.
+        let mut patch = filter_secret_paths_from_patch(&raw_patch);
+        // Truncation signals through `patch_truncated` alone: consumers pin the
+        // flag (and the byte cap), not a locale-specific tail appended to the
+        // data — an embedded CJK string here would leak into CLI output and
+        // bypass the trilingual i18n surface. The flag reports the raw `git diff`
+        // output exceeding the cap (the filter only removes content, so a capped
+        // read implies the caller is not seeing the full diff). The clamp is a
+        // belt-and-braces for `from_utf8_lossy` expansion (one invalid byte
+        // becomes three replacement bytes): it can only move the end backwards
+        // to the previous line boundary, so a section header stays whole — and
+        // when it does fire, content was dropped without the raw read ever
+        // crossing the cap, so the flag must flip too.
+        if patch.len() > DIFF_PATCH_LIMIT {
+            let bytes = patch.as_bytes();
+            let mut end = DIFF_PATCH_LIMIT;
+            while end > 0 && bytes[end - 1] != b'\n' {
+                end -= 1;
+            }
+            patch.truncate(end);
+            patch_truncated = true;
         }
-        patch.truncate(end);
-        patch_truncated = true;
-    }
+        (patch, patch_truncated)
+    };
     Ok(CheckpointDiff {
         checkpoint: meta,
         changes,
@@ -1285,6 +1368,9 @@ pub fn restore_checkpoint(
         &execution_root,
         None,
         CheckpointKind::PreRestore,
+        // Fixed zh label persisted as ledger fidelity data (byte-identical
+        // with the pre-cleanup surface) and printed verbatim by the CLI;
+        // localizing it is a consumer-side decision (PR #602).
         &format!("回滚到 {} 前的自动快照", meta.id),
         &[&meta.id],
     )
@@ -1783,7 +1869,7 @@ mod tests {
         exec.write("文档/需求.md", "v2\n");
         exec.write("新建文件.rs", "fn main() {}\n");
 
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         assert!(
             diff.changes
                 .iter()
@@ -1795,6 +1881,20 @@ mod tests {
             diff.changes
                 .iter()
                 .any(|change| change.path == "新建文件.rs")
+        );
+        // The patch side carries the same pin: without the patch call's own
+        // `-c core.quotepath=false`, the header would render octal escapes,
+        // which both garbles the preview and blinds the secret filter's
+        // section-header parse.
+        assert!(
+            diff.patch.contains("文档/需求.md"),
+            "non-ASCII paths must reach the patch verbatim: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
+        );
+        assert!(
+            !diff.patch.contains("\\346"),
+            "the patch must not carry octal-escaped paths: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
         );
     }
 
@@ -2039,7 +2139,7 @@ mod tests {
 
         exec.write("ok.txt", "v2\n");
         exec.write("my dir/.env", "SECRET=current\n");
-        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1", true).unwrap();
         assert!(
             diff.changes
                 .iter()
@@ -2047,19 +2147,22 @@ mod tests {
             "含空格的秘密路径不得出现在清单: {:?}",
             diff.changes
         );
-        // patch 同样不得携带秘密段（---/+++ 兜底剔除对含空格路径的覆盖）。
+        // The patch must not carry the secret section either (the ---/+++
+        // strip covers paths containing spaces).
         assert!(
             !diff.patch.contains("SECRET") && !diff.patch.contains(".env"),
-            "含空格的秘密段不得进入 patch: {:?}",
+            "secret section with spaces must not enter the patch: {:?}",
             diff.patch
         );
     }
 
-    /// 二进制文件的 diff 段没有 ---/+++ marker 行，段头解析是唯一判定途径；
-    /// 而纯空格路径不触发 git 的 C-quoting（`diff --git a/my key.pem b/my
-    /// key.pem` 原样输出），段头必须按最后一个 ` b/` 切出两个完整路径才能
-    /// 命中 `*.pem` 这类模式——逐空白 token 会把 `key.pem` 与前缀拆散而漏判，
-    /// 秘密路径就会随 Binary 行泄入 patch。
+    /// A binary file's diff section has no ---/+++ marker lines, so the
+    /// header parse is its only predicate; and a pure-space path does not
+    /// trigger git's C-quoting (`diff --git a/my key.pem b/my key.pem` is
+    /// emitted verbatim), so the header must split at the LAST ` b/` to
+    /// recover both full paths for `*.pem`-style patterns — a whitespace
+    /// token scan would sever `key.pem` from its prefix and miss, leaking
+    /// the secret path into the patch via the Binary line.
     #[test]
     fn binary_secret_section_with_spaced_path_is_dropped() {
         let patch = concat!(
@@ -2081,6 +2184,95 @@ mod tests {
         assert!(
             !filtered.contains("key.pem"),
             "the binary secret section must be dropped wholesale: {filtered:?}"
+        );
+    }
+
+    /// The C-quoted header shape (`diff --git "a/x" "b/x"`, emitted when a
+    /// path contains quotes or tabs — plain spaces do NOT trigger quoting) is
+    /// the only predicate a binary section has, and the first line of defense
+    /// for text sections. The quoted branch must extract whole path segments,
+    /// not split on whitespace.
+    #[test]
+    fn cquoted_secret_sections_are_dropped() {
+        let quoted = "diff --git \"a/.env\" \"b/.env\"\n-SECRET=1\n";
+        assert_eq!(
+            filter_secret_paths_from_patch(quoted),
+            "",
+            "a C-quoted secret section with content must be dropped"
+        );
+        // Spaces inside a quoted path.
+        let spaced = concat!(
+            "diff --git \"a/my key.pem\" \"b/my key.pem\"\n",
+            "Binary files a/my key.pem and b/my key.pem differ\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(spaced),
+            "",
+            "a C-quoted binary secret section must be dropped"
+        );
+        // A non-secret section around it must survive untouched.
+        let mut mixed = String::from(
+            "diff --git a/ok.txt b/ok.txt\n--- a/ok.txt\n+++ b/ok.txt\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        mixed.push_str("diff --git \"a/.env\" \"b/.env\"\n-SECRET=1\n");
+        let filtered = filter_secret_paths_from_patch(&mixed);
+        assert!(
+            filtered.contains("ok.txt"),
+            "clean section lost: {filtered:?}"
+        );
+        assert!(
+            !filtered.contains(".env") && !filtered.contains("SECRET"),
+            "quoted secret section survived: {filtered:?}"
+        );
+    }
+
+    /// The marker predicates must stand alone. Synthetic shape (git would not
+    /// emit a clean header with quoted markers): pins that the
+    /// `--- "a/` / `+++ "b/` strips work without any help from the header
+    /// parse, and that a space-bearing secret path matches through the
+    /// unquoted marker form too.
+    #[test]
+    fn marker_lines_drop_the_section_without_header_help() {
+        let quoted_markers = concat!(
+            "diff --git a/placeholder b/placeholder\n",
+            "--- \"a/.env\"\n+++ \"b/.env\"\n@@ -1 +1 @@\n-SECRET=1\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(quoted_markers),
+            "",
+            "quoted marker lines must drop the section on their own"
+        );
+        let spaced_marker = concat!(
+            "diff --git a/placeholder b/placeholder\n",
+            "--- a/my dir/.env\n+++ b/my dir/.env\n@@ -1 +1 @@\n-SECRET=1\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(spaced_marker),
+            "",
+            "space-bearing marker paths must drop the section on their own"
+        );
+    }
+
+    /// A removed line whose CONTENT starts with `-- a/x` is emitted by git as
+    /// `-` + content = `--- a/x`, indistinguishable from a real marker; the
+    /// same holds for added `++ b/x` lines. The filter errs conservative and
+    /// drops the whole (innocent) section. Pin that intent: a silent preview
+    /// loss must stay a deliberate, tested trade-off, never an accident.
+    #[test]
+    fn content_lines_shaped_like_markers_drop_the_section_conservatively() {
+        let patch = concat!(
+            "diff --git a/docs.md b/docs.md\n",
+            "--- a/docs.md\n",
+            "+++ b/docs.md\n",
+            "@@ -1,2 +1,2 @@\n",
+            " context\n",
+            "--- a/.env\n",
+            "+++ b/.env\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(patch),
+            "",
+            "marker-shaped content lines must drop the section (conservative)"
         );
     }
 
@@ -2199,7 +2391,7 @@ mod tests {
         git_ok(&nested_git, &nested, &["add", "README.md"]).unwrap();
         git_ok(&nested_git, &nested, &["commit", "-m", "init"]).unwrap();
 
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         let gitlink = diff
             .changes
             .iter()
@@ -2277,28 +2469,28 @@ mod tests {
         // 的原始 diff 会显示 D .env）。
         exec.write("ok.txt", "v2\n");
         exec.write(".env", "SECRET=current\n");
-        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1", true).unwrap();
         assert!(
             diff.changes.iter().all(|change| change.path != ".env"),
             "敏感条目不得出现在变更清单: {:?}",
             diff.changes
         );
         assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
-        // patch 面向 CLI 直接上屏：秘密段（含路径与原文）必须被整段剔除，
-        // 正常文件的差异必须保留。
+        // The patch renders straight to the CLI: the secret section (path
+        // and content) must be stripped wholesale, normal files kept.
         assert!(
             !diff.patch.contains("SECRET"),
-            "秘密原文不得进入 patch: {:?}",
+            "secret content must not enter the patch: {:?}",
             diff.patch
         );
         assert!(
             !diff.patch.contains(".env"),
-            "秘密路径不得进入 patch: {:?}",
+            "secret path must not enter the patch: {:?}",
             diff.patch
         );
         assert!(
             diff.patch.contains("ok.txt"),
-            "正常文件差异必须保留在 patch: {:?}",
+            "normal file diffs must survive in the patch: {:?}",
             diff.patch
         );
     }
@@ -2311,8 +2503,8 @@ mod tests {
     /// unparseable and pass `.env` plaintext straight into the preview.
     #[test]
     fn diff_preview_filters_secrets_even_when_the_repo_config_drops_diff_prefixes() {
+        // git_available() itself logs the skip; no inline copy needed.
         if !git_available() {
-            eprintln!("[checkpoints] skipping git-dependent test coverage: git is unavailable");
             return;
         }
         let ledger = TestDir::new("noprefix-ledger");
@@ -2370,7 +2562,7 @@ mod tests {
         .unwrap();
         exec.write("ok.txt", "v2\n");
         exec.write(".env", "SECRET=current\n");
-        let diff = diff_checkpoint(ledger.path(), exec.path(), "np-1").unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "np-1", true).unwrap();
         assert!(
             !diff.patch.contains("SECRET"),
             "repo-local diff.noprefix must not defeat the secret filter: {:?}",
@@ -2439,8 +2631,9 @@ mod tests {
         );
     }
 
-    /// patch 输出超过 `DIFF_PATCH_LIMIT` 时必须截断并打标，且截断在秘密
-    /// 过滤之后执行（被截掉的尾部不可能是未过滤内容）。
+    /// Patch output beyond `DIFF_PATCH_LIMIT` must truncate and set the flag,
+    /// and truncation happens after the secret filter (the dropped tail can
+    /// never be unfiltered content).
     #[test]
     fn diff_patch_truncates_to_limit_with_flag() {
         if !git_available() {
@@ -2461,37 +2654,146 @@ mod tests {
             "big.txt",
             &format!("v2\n{}\n", "x".repeat(DIFF_PATCH_LIMIT)),
         );
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id, true).unwrap();
         assert!(
             diff.patch_truncated,
-            "超过上限的 patch 必须打截断标: len={}",
+            "a patch over the cap must carry the truncation flag: len={}",
             diff.patch.len()
         );
-        // 截断语义：正文钳在 DIFF_PATCH_LIMIT，提示只经 `patch_truncated`
-        // 标志传递——数据里不再内嵌任何（单语言的）提示尾注。
+        // Truncation semantics: the body is clamped to DIFF_PATCH_LIMIT and
+        // the notice travels only through the `patch_truncated` flag — no
+        // (single-language) tail is embedded in the data.
         assert!(
             !diff.patch.contains("已截断"),
-            "patch 数据不得内嵌提示尾注: {:?}",
+            "the patch data must not embed a notice tail: {:?}",
             &diff.patch[diff.patch.len().saturating_sub(64)..]
         );
         assert!(
             diff.patch.len() <= DIFF_PATCH_LIMIT,
-            "patch 长度必须被钳制在 DIFF_PATCH_LIMIT 内: len={}",
+            "the patch must be clamped to DIFF_PATCH_LIMIT: len={}",
             diff.patch.len()
         );
-        // 截断发生在行边界（`--output` 落盘后按行截齐读回）：秘密路径过滤
-        // 依赖完整的 `diff --git` 段头整段删除，半截段头既可能让该段漏删，
-        // 也会把残片带进消费方输出。
+        // Truncation lands on a line boundary (the `--output` file is read
+        // back line-clamped): the secret filter depends on whole
+        // `diff --git` headers to drop sections wholesale — a half header
+        // could both miss a section and leak fragments to the consumer.
         assert!(
             diff.patch.ends_with('\n') || diff.patch.is_empty(),
-            "截断后的 patch 必须止于完整行: {:?}",
+            "the truncated patch must end on a whole line: {:?}",
             &diff.patch[diff.patch.len().saturating_sub(64)..]
         );
         assert!(
             diff.patch.contains("big.txt"),
-            "截断保留的头部应仍含文件头: {:?}",
+            "the retained head must still carry the file header: {:?}",
             &diff.patch[..diff.patch.len().min(200)]
         );
+        // The spill file must not outlive the call: `.checkpoint-diff-*.tmp`
+        // holds the UNFILTERED diff (secret sections included), so a leftover
+        // is plaintext residue beside the shadow repo. Guards both the
+        // TempDiffFile drop and the spill's placement under the ledger (a
+        // regression to a shared temp dir would also fail the read-dir here).
+        let spills: Vec<String> = fs::read_dir(ledger.path().join("checkpoints"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".checkpoint-diff-"))
+            .collect();
+        assert!(
+            spills.is_empty(),
+            "diff spill files must be reaped after the call: {spills:?}"
+        );
+    }
+
+    /// The post-filter clamp exists for `from_utf8_lossy` expansion: a raw
+    /// diff under the cap whose bytes are invalid UTF-8 grows threefold when
+    /// read back as a String and can cross the cap after filtering. The flag
+    /// must flip even though the raw read never truncated.
+    #[test]
+    fn lossy_expansion_crossing_the_cap_flips_the_truncated_flag() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("lossy-ledger");
+        let exec = TestDir::new("lossy-exec");
+        exec.write("blob.txt", "");
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // Lone continuation bytes (0x80..0x9F): invalid UTF-8, no NUL anywhere
+        // (so git still emits a TEXT diff), ~200 KB raw — under the cap.
+        let bytes: Vec<u8> = (0..200_000usize)
+            .map(|i| 0x80u8 + (i % 0x20) as u8)
+            .collect();
+        fs::write(exec.path().join("blob.txt"), &bytes).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id, true).unwrap();
+        assert!(
+            diff.patch_truncated,
+            "lossy expansion past the cap must set the flag: len={}",
+            diff.patch.len()
+        );
+        assert!(
+            diff.patch.len() <= DIFF_PATCH_LIMIT,
+            "the post-filter clamp must hold: len={}",
+            diff.patch.len()
+        );
+        assert!(
+            diff.patch.ends_with('\n'),
+            "the clamp must end on a line boundary"
+        );
+    }
+
+    /// `--raw` C-quotes paths containing quotes/tabs even with
+    /// `core.quotepath=false`; the trailing quote defeats a plain suffix
+    /// match, so the changes list would keep an entry the patch filter drops.
+    #[test]
+    fn raw_status_quoted_secret_paths_still_match() {
+        assert!(raw_status_path_is_secret(".env"));
+        assert!(raw_status_path_is_secret("my key.pem"));
+        // The C-quoted form as `--raw` emits it, outer quotes and all.
+        assert!(raw_status_path_is_secret("\"my \\\"key.pem\""));
+        assert!(!raw_status_path_is_secret("ok.txt"));
+        assert!(!raw_status_path_is_secret("\"quoted but clean.txt\""));
+    }
+
+    /// A spill file left by a hard kill must be reaped by the next
+    /// ensure_repo once it is older than the safety window; a recent one (a
+    /// live diff in this or another process) must be left alone.
+    #[test]
+    fn stale_diff_spill_files_are_reaped() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("spill-reap-ledger");
+        let exec = TestDir::new("spill-reap-exec");
+        exec.write("a.txt", "v1\n");
+        let dir = ledger.path().join("checkpoints");
+        fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(".checkpoint-diff-1-100.tmp");
+        fs::write(&stale, b"stale unfiltered diff").unwrap();
+        let fresh = dir.join(".checkpoint-diff-1-200.tmp");
+        fs::write(&fresh, b"live diff").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        assert!(!stale.exists(), "a stale spill must be reaped");
+        assert!(fresh.exists(), "a recent spill must be kept");
     }
 
     /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
@@ -2605,7 +2907,7 @@ mod tests {
         assert_eq!(listed[1].id, second.id);
 
         // diff 预览：快照（第一轮前）→ 当前 = 3 个文件的变更。
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         assert_eq!(diff.checkpoint.id, first.id);
         assert_eq!(diff.changes.len(), 3);
         assert!(
@@ -2622,6 +2924,13 @@ mod tests {
             diff.changes
                 .iter()
                 .any(|change| change.path == "src/main.rs" && change.status == "modified")
+        );
+        // The patch must carry the round trip too: a fresh file's diff body is
+        // what the CLI renderer prints, not just the status line.
+        assert!(
+            diff.patch.contains("src/new.rs") && diff.patch.contains("pub fn added()"),
+            "added files must appear in the patch with content: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
         );
 
         // 回滚到第一轮前：文件内容还原、新建文件被删除；返回回滚点可反悔。

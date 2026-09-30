@@ -1,5 +1,10 @@
 pub mod assistant;
 pub(crate) mod browser;
+// `pub` (not `pub(crate)`) only because of the `count_user_turns_in_json`
+// re-export below: the stacked CLI families PR (#507) counts user turns for
+// `code checkpoints rewind` through that exact predicate, and a crate-private
+// module would make the re-export unreachable. No in-tree caller exists yet —
+// an ahead-of-consumer surface, disclosed in PR #602.
 pub mod code_checkpoints;
 pub(crate) mod codex_acp;
 pub(crate) mod computer_use;
