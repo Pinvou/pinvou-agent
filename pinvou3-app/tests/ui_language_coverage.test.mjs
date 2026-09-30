@@ -306,7 +306,10 @@ for (const language of ['zh', 'en', 'ja']) {
 // time, so en/ja users never see raw (often Chinese) backend text. The raw
 // backend diagnostic is never rendered in the flow card (same border as the
 // Official repo's PR #442: the localized category message is the only copy).
-const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'unknown'];
+// cli_data_access_disabled is dingtalk's org-level CLI block: only an org
+// admin can fix it, so the copy carries the remediation instead of the
+// generic retry advice.
+const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'cli_data_access_disabled', 'unknown'];
 for (const language of ['zh', 'en', 'ja']) {
   for (const code of connectorErrorCodes) {
     const copy = dict[language].uiToolStore.connectorErrors[code];
@@ -367,8 +370,27 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
 }
 {
   const toolStore = source('features/tools/ToolStoreView.jsx');
-  assert.match(toolStore, /errors=\{storeCopy\.connectorErrors\}/);
+  // All four flow cards must receive the localized-code dictionary — one card
+  // losing the prop would silently degrade that connector's failures to the
+  // generic connectionIncomplete fallback.
+  assert.ok(
+    (toolStore.match(/errors=\{storeCopy\.connectorErrors\}/g) || []).length >= 4,
+    'all four flow cards must receive the connectorErrors dictionary',
+  );
   assert.match(toolStore, /connectorErrorCopy\(errors, flow\.errorCode\) \|\| errors\.unknown \|\| copy\.connectionIncomplete/);
+  // The connected toast must read its copy through the latest ref at event
+  // time, so a mid-flow language switch shows the toast in the new language
+  // (the ref effect has no dep array and is declared before the listeners).
+  assert.match(toolStore, /const toastCopyRef = useRef\(null\);/);
+  assert.match(toolStore, /toastCopyRef\.current = \{ doneTitle, enabledSubtitle: detailCopy\.actions\.enabled \};/);
+  assert.match(toolStore, /toastCopyRef\.current && toastCopyRef\.current\.doneTitle/);
+  // The auto-collapse timer must only close a card that already reached
+  // 'done': a stale timer from a previous round would destroy a freshly
+  // re-opened card and strand the busy slot with it.
+  assert.ok(
+    (toolStore.match(/setTimeout\(\(\) => conn\.setFlow\(f => \(f && f\.phase === 'done' \? null : f\)\), 1800\)/g) || []).length >= 2,
+    'both connected listeners must guard the auto-collapse against a re-opened card',
+  );
   assert.match(toolStore, /applyConnectorFailure\(f, p, p\.phase\)/);
   assert.doesNotMatch(toolStore, /\berr:\s*String\(/);
   assert.doesNotMatch(toolStore, /flow\.err\b/);
@@ -378,9 +400,16 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
   const feishu = tauriSource('features/connectors/feishu.rs');
   assert.match(feishu, /"phase": "register", "code": "registration_failed"/);
   assert.match(feishu, /"phase": "authorize", "code": "auth_failed"/);
-  for (const connector of ['wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
+  for (const connector of ['wecom.rs', 'tmeet.rs']) {
     assert.match(tauriSource(`features/connectors/${connector}`), /"phase": "authorize", "code": "auth_failed"/, `${connector} error events must carry an error code`);
   }
+  // DingTalk's error code travels on its FlowError (the org-level CLI block
+  // gets its own `cli_data_access_disabled` code; everything else defaults to
+  // `auth_failed`), so pin the emit's code field plus the default category.
+  const dingtalk = tauriSource('features/connectors/dingtalk.rs');
+  assert.match(dingtalk, /"phase": "authorize", "code": e\.code/, 'dingtalk error events must carry the FlowError code');
+  assert.match(dingtalk, /code: "auth_failed"/, 'dingtalk FlowError must default to the auth_failed category');
+  assert.match(dingtalk, /code: "cli_data_access_disabled"/, 'dingtalk org CLI block must carry its own stable code');
   // Source contract: every connector's error arm must consult BOTH the cancel
   // flag and the generation (cancel alone is cleared by the next reset), and
   // each file must gate at least two emit paths on the generation (the error
@@ -394,10 +423,17 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
       `${connector} must consult the generation on both the error and the QR emit path`,
     );
   }
-  // The wrapped QR emits (feishu register / dingtalk / tmeet) gate on the same pair.
-  assert.match(feishu, /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
+  // The wrapped QR emits (feishu register + authorize / dingtalk / tmeet) gate
+  // on the same pair. Feishu has two QR phases, so require two wraps there:
+  // the authorize emit once shipped with only a pre-parse guard, and a cancel
+  // landing inside parse + QR rendering could still paint a dead device code
+  // onto a newer round's card.
   assert.match(tauriSource('features/connectors/dingtalk.rs'), /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
   assert.match(tauriSource('features/connectors/tmeet.rs'), /!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/);
+  assert.ok(
+    (feishu.match(/!\(conn\.is_cancelled\(ID\) \|\| conn\.flow_stale\(ID, generation\)\)/g) || []).length >= 2,
+    'both feishu QR emits (register and authorize) must be wrapped in the cancel-or-stale guard at the emit site',
+  );
   // Frontend: a late error event must not fabricate a flow card from null.
   assert.match(toolStore, /f \? applyConnectorFailure\(f, p, p\.phase\) : f\)/);
   // Frontend: the same guard family on the remaining fabrication points — a
@@ -419,6 +455,17 @@ assert.equal(connectorUiStep({ active: 'cli' }), 'cli');
     assert.doesNotMatch(src, /set_pid\(ID, None\)/, `${connector} pid cleanup must use the clear_pid_if compare-and-set`);
     assert.match(src, /let pid = child\.id\(\);/, `${connector} must capture its child pid for the CAS clear`);
     assert.match(src, /clear_pid_if\(ID, pid\)/, `${connector} must clear the pid slot via clear_pid_if`);
+  }
+  // Source contract: a reconnect without an intervening cancel must not orphan
+  // the previous round's registered child — begin's reset overwrites the pid
+  // slot, which would make that child invisible to cancel's tree-kill and to
+  // kill_all_pids at exit. Every begin therefore tree-kills the registered pid
+  // before resetting (the smoke cannot exercise real child processes, so this
+  // is pinned at source level like the other begin-time wiring).
+  for (const connector of ['feishu.rs', 'wecom.rs', 'dingtalk.rs', 'tmeet.rs']) {
+    const src = tauriSource(`features/connectors/${connector}`);
+    assert.match(src, /if let Some\(pid\) = conn\.cancel\(ID\)/, `${connector} connect_begin must take the previous round's registered pid before reset`);
+    assert.match(src, /kill_pid_tree\(pid\)/, `${connector} connect_begin must tree-kill the stale child`);
   }
   assert.match(source('features/settings/SettingsView.jsx'), /item\.title \|\| presetProviderLabel\(p, t\)/);
 }
