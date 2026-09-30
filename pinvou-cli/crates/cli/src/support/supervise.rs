@@ -68,6 +68,15 @@ pub fn install_signal_cleanup() {
 /// signals blocked, a pending interrupt stays pending until the unblock
 /// below and is delivered once, with the child already registered.
 ///
+/// THREAD REQUIREMENT: the block/unblock here is per-thread. The guarantee
+/// holds only when this runs on the main thread before worker threads are
+/// spawned (the process-wide rule `install_signal_cleanup` already
+/// establishes): an interrupt landing in the window on a worker thread is
+/// delivered to the main thread's still-open handler, which re-raises with
+/// the fresh child unregistered. Every current call site runs on `main`;
+/// a future worker-thread caller must route through the main thread's
+/// supervision instead.
+///
 /// Std semantics this relies on (assumption stated per the round-25
 /// review): a child created while the spawning thread's signal mask blocks
 /// the interrupt family inherits that mask only until `exec`, which std
@@ -115,6 +124,13 @@ pub fn register_child_group(pgid: u32) {
 /// Removes a process group from supervision. Call when the site has waited
 /// for the child (or killed it), so a later interrupt does not signal a pgid
 /// the OS may already have recycled for an unrelated process.
+///
+/// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
+/// the release half is per-site — a missed `forget` leaves a stale pgid the
+/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Every
+/// current site pairs the forget on all exits (several via RAII guards);
+/// keep it that way, or give the registry a shared RAII handle instead of
+/// a new manual pair.
 pub fn forget_child_group(pgid: u32) {
     #[cfg(unix)]
     {

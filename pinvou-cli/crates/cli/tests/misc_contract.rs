@@ -276,6 +276,36 @@ fn files_ingest_refuses_a_file_outside_the_home_directory() {
     );
 }
 
+/// Round-28 review: the credential-component arm of the ingest refusal had
+/// no contract test — if upstream rewords `crosses sensitive component`,
+/// the English translation silently degrades to the raw feature string
+/// (the same regression class round-27 pinned for feedback's body-file
+/// gate). The `$HOME` leg passes because the fixture lives under the
+/// scoped home directory.
+#[test]
+fn files_ingest_translates_the_credential_component_refusal() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("files-credential");
+    let scoped = ScopedHomeDir::new("files-credential");
+    let ssh = scoped.dir.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("leaked.md");
+    std::fs::write(&key, "# pretend notes\n").unwrap();
+
+    let error = run(&["pinvou", "files", "ingest", key.to_str().unwrap()])
+        .expect_err("a credential path must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("crosses the credential path component"),
+        "the credential arm must translate: {message}"
+    );
+    assert!(
+        !message.contains(" crosses sensitive component "),
+        "the raw feature wording must not reach CLI output: {message}"
+    );
+}
+
 /// The `warning` chip is GUI i18n copy. Printing it verbatim put Chinese into
 /// an English tool; the boundary translator turns the known cases into English
 /// in both output modes.
@@ -1641,6 +1671,37 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
     // The refusal happens before anything is staged.
     let pending_dir = home.root.join("feedback").join("pending");
     assert!(!pending_dir.exists(), "nothing may be staged: {error}");
+}
+
+/// Round-28 review: the `agent run --attach` credential gate (the same
+/// `check_sensitive_path` rule `feedback --attach` applies) had no contract
+/// test — the identical gap round-27 closed for `feedback --body-file`.
+/// Deleting the gate in `agent_task.rs` passes the whole suite without this.
+/// The gate runs after the prompt read and before any host boot, so the
+/// refusal is hermetic.
+#[test]
+fn agent_run_refuses_an_attachment_under_a_credential_path() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("agent-attach-secret");
+    let ssh = home.root.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+    let prompt = home.root.join("prompt.txt");
+    std::fs::write(&prompt, "summarize the report").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "agent",
+        "run",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--attach",
+        key.to_str().unwrap(),
+    ])
+    .expect_err("a credential attachment must be refused before any host boot");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("refusing attachment"), "{error}");
 }
 
 /// The receipt write used to `?` out before the cleanup below it, leaving the
