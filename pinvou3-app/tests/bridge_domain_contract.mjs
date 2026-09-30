@@ -3,10 +3,11 @@ export const desktopBridgeApi = {
   state: ['get', 'getMany', 'subscribe', 'subscribeMany'],
   platform: ['refreshConnectorAuthGates'],
   chat: ['cancelGeneration', 'cancelShellTask', 'editQueued', 'getComposerDraft', 'interruptAndSendQueued', 'prefillComposer', 'prioritizeQueued', 'removeQueued', 'restoreTaskDraft', 'retryFirstTurn', 'sendMessage', 'sendMessageToSession', 'setComposerDraft'],
+  auxChat: ['discard', 'ensure', 'reset', 'send', 'snapshot'],
   voice: ['abandonVoiceResult', 'appendVoiceText', 'beginVoiceSubmission', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'completeVoiceSubmission', 'dismissVoiceInput', 'getVoiceOperationId', 'hasVoiceSubmissionPending', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
+  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
 
   settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
