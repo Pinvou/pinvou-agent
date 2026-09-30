@@ -1961,7 +1961,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
           else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
-          if (meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
+          // Same §3.3 layer-2 gate as the other send paths: with the feature
+          // off, a hand-pasted byte-valid block in a scene send is plain text —
+          // it must not be re-canonicalized onto the payload head (round-9 M1).
+          if (sessionMentionEnabled && meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
             meta = {
               ...meta,
               // dedupe + cap: a hand-forged block in history can carry far more
@@ -2097,7 +2100,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // as-is: the voice task lane needs to tell "restored" apart from
         // accepted, while ordinary sends treat both as not-false.
         return dispatchResult;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, sessionMentionEnabled, t, visualPosterSceneActive]);
 
       const sendChatMessage = useCallback(async (text, voiceContext) => {
         const operationId = voiceContext?.operationId
