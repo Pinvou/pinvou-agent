@@ -355,17 +355,21 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // writing would resurrect a zombie "done" card.
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
           // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
-          // Round-33 MAJOR 2 (review #455): the fire-and-forget write is consent-critical — a lost row leaves the
-          // connector live with zero consent until the next boot's ledger-gated backfill, silently. The failure is
-          // surfaced on the card: the backend message carries the shared consent marker (scope::CONSENT_SYNC_FAILURE_MARKER,
-          // pinned on both sides — ima-pattern substring match) → the dedicated consent_persist_failed copy; anything
-          // else keeps the step's localized copy.
+          // Round-33 MAJOR 2 + round-35 MAJOR 1 (review #455): the fire-and-forget write is consent-critical — a lost
+          // row leaves the connector live with zero consent until the next boot's ledger-gated backfill, silently. The
+          // failure is surfaced ON THE CARD via applyConnectorFailure (the console-only reportConnectorFailure call was
+          // the round-35 review's finding — success toast + connected card while only the console saw the error): the
+          // backend message carries the shared consent marker (scope::CONSENT_SYNC_FAILURE_MARKER, pinned on both sides
+          // — ima-pattern substring match) → the dedicated consent_persist_failed copy; anything else keeps the step's
+          // localized copy. The collapse timer's done-guard keeps the errored card alive.
           invokeTauri(cfg.commands.applySkills).catch((e) => {
             const msg = String(e && e.message ? e.message : e);
             const failure = msg.includes('persisting their default-off consent state failed')
               ? { code: 'consent_persist_failed' }
               : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'cli');
+            // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
+            conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
           });
           // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state).
           // The collapse must only close a card that already reached 'done': a
@@ -391,11 +395,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // stale timer must not close a freshly re-opened card.
             setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
           } catch (e) {
-            // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; every other failure
-            // after authorization completed (dingtalk's awaited apply, tmeet's own skill write) reports
-            // skills_enable_failed — the sign-in demonstrably succeeded on those paths.
+            // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; a consent-persist failure
+            // (the backend copy carries the shared marker) reports consent_persist_failed — "Try again" cannot fix a
+            // persist failure; every other failure after authorization completed (dingtalk's awaited apply, tmeet's
+            // own skill write) reports skills_enable_failed — the sign-in demonstrably succeeded on those paths.
+            // Round-35 MAJOR 1 (review #455): without this classification the consent_persist_failed catalog entry
+            // was unreachable for every connector.
             const authIncomplete = cfg.connectedMode !== 'applyAwait' && e && e.code === 'auth_failed';
-            const failure = authIncomplete ? e : { code: 'skills_enable_failed' };
+            const msg = String(e && e.message ? e.message : e);
+            const failure = authIncomplete
+              ? e
+              : msg.includes('persisting their default-off consent state failed')
+                ? { code: 'consent_persist_failed' }
+                : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));

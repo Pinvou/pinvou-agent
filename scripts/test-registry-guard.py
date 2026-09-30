@@ -95,6 +95,33 @@ def list_tests():
     return paths
 
 
+def ignored_source_pins():
+    """Round-35 minor 10 (review #455): libtest's stable `--list` output cannot
+    distinguish an #[ignore]d test from a live one, so scan the crate sources:
+    any `fn <pin>` whose preceding attribute lines contain `#[ignore` is a
+    silenced required pin."""
+    src_root = os.path.join(os.path.dirname(MANIFEST), "src")
+    hits = {}
+    for root, _dirs, files in os.walk(src_root):
+        for name in files:
+            if not name.endswith(".rs"):
+                continue
+            path = os.path.join(root, name)
+            try:
+                lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+            except OSError:
+                continue
+            for i, line in enumerate(lines):
+                stripped = line.lstrip()
+                body = stripped[6:] if stripped.startswith("async ") else stripped
+                if body.startswith("fn ") and "{" in body:
+                    fn_name = body[3:].split("(")[0].strip()
+                    window = "\n".join(lines[max(0, i - 4):i])
+                    if "#[ignore" in window:
+                        hits.setdefault(fn_name, path)
+    return hits
+
+
 def main():
     paths = list_tests()
     failures = []
@@ -108,13 +135,21 @@ def main():
             + "\n".join(f"  {p} x{counts[p]}" for p in duplicates)
         )
 
-    seen = {p.rsplit("::", 1)[-1] for p in paths}
-    missing = sorted(pin for pin in REQUIRED_PINS if pin not in seen)
-    if missing:
-        failures.append(
-            "required pins absent from the registry (stolen #[test] "
-            "attribute?):\n" + "\n".join(f"  {p}" for p in missing)
-        )
+    # Pin matching (round-35 minor 10, review #455): per full-path match
+    # count — exactly once — plus a source-level #[ignore] scan (stable
+    # libtest --list cannot flag ignored tests). A name-collision test
+    # elsewhere no longer satisfies a pin whose real test was deleted, and an
+    # ignored pin is reported instead of passing silently.
+    full_path_matches = collections.Counter(paths)
+    ignored_src = ignored_source_pins()
+    for pin in REQUIRED_PINS:
+        matches = [p for p in paths if p.rsplit("::", 1)[-1] == pin]
+        if not matches:
+            failures.append(f"required pin absent from the registry (stolen #[test] attribute?): {pin}")
+        elif len(matches) > 1:
+            failures.append(f"required pin registered more than once: {matches}")
+        elif pin in ignored_src:
+            failures.append(f"required pin is #[ignore]d at {ignored_src[pin]}")
 
     if failures:
         print("test-registry-guard: FAILED", file=sys.stderr)

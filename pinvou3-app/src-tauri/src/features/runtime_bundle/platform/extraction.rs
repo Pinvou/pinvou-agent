@@ -487,16 +487,14 @@ impl Pinvou3Bundle {
             // entirely (its last step deletes `bundles/<id>` wholesale).
             let user_uploaded = Self::user_upload_record_exists(tool_id);
             if !user_uploaded {
-                // Round-32 minor 4 (review #455): the whole decision — the
-                // top probe above, the residue probe and uninstall below, the
-                // deletion-point re-probe and the final delete — runs under
-                // the id's import lock (the same lock the import path
-                // serializes its landing under). The round-31 m4 lock covered
-                // only the final re-probe + delete pair, so an Upload import
-                // completing between the top probe and the uninstall still
-                // got its just-landed pack recycled wholesale by that
-                // uninstall; holding the lock across the decision closes the
-                // window instead of narrowing it.
+                // Round-32 minor 4 (review #455): the id's import lock (the
+                // same lock the import path serializes its landing under) is
+                // held from here down — the top probe above is pre-lock and
+                // advisory only; the LOAD-BEARING piece is the under-lock
+                // re-check below (the round-31 m4 lock covered only the final
+                // re-probe + delete pair, so an Upload import completing
+                // between the top probe and the uninstall still got its
+                // just-landed pack recycled wholesale by that uninstall).
                 let import_lock =
                     crate::features::marketplace::plugin_import::import_lock_for(tool_id);
                 let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -621,9 +619,11 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// Upload 记录探测（退役 id 保护的共用判定,round-30 m5）：Upload 记录存在
-    /// → true;store 不可读 → true(fail-closed,与卸载路径的 `source_may_be_upload`
-    /// 同方向:读不了就当"可能是上传"处理)。
+    /// Upload-record probe (shared verdict for the retired-id protection,
+    /// round-30 m5): an Upload record exists → true; the store is unreadable
+    /// → true (fail-closed, same direction as the uninstall path's
+    /// `source_may_be_upload`: when it cannot be read, treat it as a possible
+    /// upload).
     fn user_upload_record_exists(tool_id: &str) -> bool {
         crate::features::marketplace::store::BundleStore::new()
             .records()

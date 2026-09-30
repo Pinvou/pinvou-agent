@@ -262,7 +262,8 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
         // this arm — the pack stays installed with zero consent rows, so the
         // message must say exactly that (review #455 round-22 MAJOR 1).
         format!(
-            "connector '{tool_id}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}"
+            "connector '{tool_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
         )
     })?;
 
@@ -733,7 +734,8 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|e| {
             format!(
-                "skill '{skill_id}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}"
+                "skill '{skill_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
             )
         })?;
     Ok(())
@@ -908,7 +910,8 @@ pub async fn import_plugin_package_cmd(
     // Same contract as install_marketplace_tool. Fail-visible persist (review #455 R13-B3).
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
         format!(
-            "plugin '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
+            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
             report.id
         )
     })?;
@@ -975,7 +978,8 @@ pub async fn import_plugin_package_bytes_cmd(
     // Fail-visible persist (review #455 R13-B3).
     crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
         format!(
-            "plugin '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
+            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
             report.id
         )
     })?;
@@ -1024,7 +1028,8 @@ pub async fn import_skill_md_bytes(
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id).map_err(
         |e| {
             format!(
-                "skill '{}' installed, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
+                "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
                 report.id
             )
         },

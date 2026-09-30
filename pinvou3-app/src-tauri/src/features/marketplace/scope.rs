@@ -2851,14 +2851,14 @@ mod tests {
     fn deny_all_sync_skips_builtin_packages() {
         with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            sync_deny_all_scopes_after_install("session-reader");
+            sync_deny_all_scopes_after_install("session-reader").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()],
                 "builtin id must not be synced into the initialized DenyAll scope"
             );
             // A normal package is still synced in.
-            sync_deny_all_scopes_after_install("pptx");
+            sync_deny_all_scopes_after_install("pptx").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string(), "pptx".to_string()]

@@ -20,4 +20,23 @@ assert.ok(
   'ToolStoreView must key the consent-failure surfacing on the shared backend marker (update the Rust pin in the same commit if reworded)',
 );
 
+// Round-35 minor 1 (review #455): the two Rust production templates must also
+// carry the marker — a pin that only asserts the constant cannot catch a
+// deleted interpolation at an emit site.
+const rustDir = join(dirname(fileURLToPath(import.meta.url)), '../src-tauri/src/features');
+for (const [file, emitSite] of [
+  ['connectors/skill_gate.rs', 'but {}: new sessions will enable it by default'],
+  ['connectors/ima.rs', "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}:"],
+]) {
+  const src = readFileSync(join(rustDir, file), 'utf8');
+  assert.ok(
+    src.includes('scope::CONSENT_SYNC_FAILURE_MARKER'),
+    `${file} must interpolate the shared consent marker constant in its production template`,
+  );
+  assert.ok(
+    src.includes(emitSite),
+    `${file} production emit site drifted — re-check the marker interpolation`,
+  );
+}
+
 console.log('consent_marker_frontend: ok');

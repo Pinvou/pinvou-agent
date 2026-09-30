@@ -2553,14 +2553,20 @@ pub(crate) fn foreign_skill_copies_under(
 /// 期间市场状态可能已变（例如导入了把同名技能作为 companion 的包），碰撞状态
 /// 下恢复会造出同技能的双份物理副本，此后技能卸载的候选目录清理会把唯一副本
 /// 连他包副本一起删掉。与上传通道（`install_upload_skill`）同三查：预置名占用 /
-/// 属主认领 / 他包物理副本。属主认领与他包副本两查都以 `restoring_pkg`（被恢复
-/// 的包 id）为"自己"的锚 —— round-32 minor 5（评审 #455）：按技能名锚定会在
-/// "单技能包恰好以该技能名建包"时把 live 的 S 包误判为自身（认领/物理嵌套
-/// 都解析到 S 包名 == 技能名），恢复 P 的 skills/S/ 便在 live 的 bundles/S/
-/// 旁再造一份双副本。身份回退（owner == 技能名，无认领无副本）不拒绝：
-/// 那是被恢复包自己的未声明技能，他包副本已由 foreign-copy 臂排除。仅读盘与登记，不动任何状态；碰撞对象的建包不持同 id 锁，极端并发
-/// 交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站 `restore_plugin`
-/// 在取回目录前应用同一检查。
+/// The owner-claim and foreign-copy arms anchor "own" on `restoring_pkg` —
+/// round-32 minor 5 (review #455): anchoring on the skill name misjudges a
+/// live S pack as "own" when a single-skill pack happens to be named exactly
+/// like the skill (both the claim and the physical nesting resolve to the
+/// S-named pack == the skill name), so restoring P's skills/S/ would
+/// double-materialize beside live bundles/S/. The identity fallback
+/// (owner == skill name — no claim, no live copy) is NOT refused: it is the
+/// restored pack's own undeclared skill, and the foreign-copy arm already
+/// excludes live copies under other packs. Read-only registry/disk
+/// inspection, no state changes; the colliding pack's import holds no shared
+/// id lock here — extreme interleavings are backstopped by the
+/// fail-closed refusal in skill uninstall. `pub(crate)`:
+/// recycle_bin's `restore_plugin` applies the same check before taking the
+/// directory back.
 pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> Result<(), String> {
     if is_preset_skill_name(skill_name) {
         return Err(format!(

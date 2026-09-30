@@ -2657,7 +2657,7 @@ async fn install_validation_failure_rollback_leaves_no_consent_rows() {
         .await
         .unwrap_err();
     assert!(
-        !err.contains("installed, but persisting its default-off consent state failed"),
+        !err.contains("installed, but persisting their default-off consent state failed"),
         "the failure is the validation leg, not the consent-sync leg: {err}"
     );
 
@@ -2718,7 +2718,7 @@ async fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
         .await
         .unwrap_err();
     assert!(
-        err.contains("installed, but persisting its default-off consent state failed"),
+        err.contains("installed, but persisting their default-off consent state failed"),
         "the consent-sync persist failure must surface the honest sibling copy: {err}"
     );
 

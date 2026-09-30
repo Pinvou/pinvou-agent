@@ -2188,8 +2188,10 @@ mod tests {
         let held = gate.lock().unwrap_or_else(|p| p.into_inner());
 
         let cleaner = std::thread::spawn(move || bundle.cleanup_removed_marketplace_tools());
-        // The cleaner can only sit blocked on the import lock — it cannot
-        // have passed the top probe yet (the lock is acquired before it).
+        // The cleaner can only sit blocked on the import lock. Strictly, the
+        // pre-lock top probe may already have run with a no-record store —
+        // which is exactly why the under-lock re-check (not the probe) is the
+        // load-bearing piece this pin protects.
         std::thread::sleep(std::time::Duration::from_millis(200));
         // The import lands while the cleanup waits.
         crate::features::marketplace::store::BundleStore::new()
