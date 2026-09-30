@@ -39,6 +39,18 @@ pub mod automation_foundation {
     };
 }
 
+/// Facade for the OpenCode gateway session-affinity helpers, consumed by the
+/// `models` family of pinvou-cli: `models test` mirrors the GUI's
+/// `probe_model_connection`, which must attach `x-opencode-session` itself
+/// when the base URL is an OpenCode gateway endpoint (the Go gateway
+/// rejects hand-rolled auxiliary clients without it since 2026-09; see
+/// `core::model_endpoint`). Same precedent as the `automation_foundation`
+/// facade: only the entries the CLI actually consumes are re-exported, and
+/// the GUI keeps calling `crate::core::model_endpoint` directly.
+pub mod model_probe {
+    pub use crate::core::model_endpoint::{is_opencode_gateway_base_url, opencode_session_id_for};
+}
+
 use crate::app::commands;
 use crate::features::{
     assistant::{engine_pool::EnginePool, platform::bridge},

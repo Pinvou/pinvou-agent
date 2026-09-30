@@ -115,7 +115,14 @@ pub(crate) fn organize_lock_path() -> PathBuf {
 /// Marker message carried on an `io::ErrorKind::WouldBlock` error from
 /// [`try_lock_organize_pass`], so the caller can distinguish "another pass
 /// is running" from real lock failures.
-pub(crate) const ORGANIZE_LOCK_BUSY: &str = "another organize pass is already running";
+/// Cross-surface busy marker: carried in the anyhow message
+/// `organize_memory_with_llm` fails with while `.organize.lock` is held, so
+/// the CLI (`pinvou memory organize`) and the scheduled lane can map the
+/// feature-layer lock contention onto their documented `*_organize_busy`
+/// refusals by value instead of a duplicated literal. `pub` (not
+/// `pub(crate)`) exactly for that consumer; the GUI itself never matches on
+/// the text.
+pub const ORGANIZE_LOCK_BUSY: &str = "another organize pass is already running";
 
 /// Guard for an acquired organize pass lock. `Drop` releases the OS advisory
 /// lock, so holding the guard for the scope of the pass covers every exit

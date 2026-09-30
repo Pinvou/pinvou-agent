@@ -58,6 +58,7 @@ pub use self::io::{
 // The CLI's `memory add` validation must use the same cap constant as the
 // write side; a local copy would reintroduce a spurious
 // `memory_add_not_materialized` failure whenever the cap changes.
+pub use self::io::ORGANIZE_LOCK_BUSY;
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 
 // ---- stored-text normalization (util) ----
