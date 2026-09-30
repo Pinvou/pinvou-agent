@@ -2151,7 +2151,10 @@ mod tests {
             "an uploaded pack must never be swept by the retired-tool cleanup"
         );
         assert!(
-            !paths::pinvou3_home().join("marketplace").join("installed.json").exists(),
+            !paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json")
+                .exists(),
             "the top-probe skip must not run the uninstall (uninstall unconditionally rewrites installed.json)"
         );
         cleanup(&tmp);
@@ -2211,7 +2214,10 @@ mod tests {
             "an upload landing under the import lock must never be swept"
         );
         assert!(
-            !paths::pinvou3_home().join("marketplace").join("installed.json").exists(),
+            !paths::pinvou3_home()
+                .join("marketplace")
+                .join("installed.json")
+                .exists(),
             "the post-lock top probe must defer BEFORE the uninstall (old placement ran the uninstall outside the lock)"
         );
         cleanup(&tmp);

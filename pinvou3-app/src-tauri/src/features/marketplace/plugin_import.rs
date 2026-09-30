@@ -684,7 +684,9 @@ fn mark_landing(id: &str) {
     let path = landing_mark_path(id);
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            log::warn!("[plugin-import] writing the landing journal failed (crash recovery for {id} degraded to live-by-absence): {e}");
+            log::warn!(
+                "[plugin-import] writing the landing journal failed (crash recovery for {id} degraded to live-by-absence): {e}"
+            );
             return;
         }
     }
@@ -1325,7 +1327,10 @@ mod tests {
         )
         .unwrap();
         mark_landing("crash-pkg");
-        assert!(landing_mark_path("crash-pkg").exists(), "fixture: mark present");
+        assert!(
+            landing_mark_path("crash-pkg").exists(),
+            "fixture: mark present"
+        );
 
         reconcile_import_journal().unwrap();
 
@@ -1345,8 +1350,14 @@ mod tests {
             "the landed dir moves to exactly one recoverable holding dir: {moved:?}"
         );
         assert!(
-            landing_journal_dir().join(&moved[0]).join("plugin.json").is_file()
-                || landing_journal_dir().join(&moved[0]).join("skills").is_dir(),
+            landing_journal_dir()
+                .join(&moved[0])
+                .join("plugin.json")
+                .is_file()
+                || landing_journal_dir()
+                    .join(&moved[0])
+                    .join("skills")
+                    .is_dir(),
             "the holding dir keeps the pack contents for manual recovery"
         );
         assert!(
@@ -1391,12 +1402,14 @@ mod tests {
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
         crate::features::marketplace::store::BundleStore::new()
-            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                "done-pkg",
-                crate::features::marketplace::store::BundleSource::Upload(
-                    "done.zip".to_string(),
+            .upsert(
+                crate::features::marketplace::store::BundleRecord::installed_now(
+                    "done-pkg",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "done.zip".to_string(),
+                    ),
                 ),
-            ))
+            )
             .unwrap();
         mark_landing("done-pkg");
 
@@ -1451,7 +1464,9 @@ mod tests {
             "a mark without a landed dir clears"
         );
         assert!(
-            !crate::platform::paths::bundles_root().join("ghost-pkg").exists(),
+            !crate::platform::paths::bundles_root()
+                .join("ghost-pkg")
+                .exists(),
             "nothing may be materialized by the reconcile"
         );
 

@@ -338,8 +338,7 @@ mod tests {
                 "fixture: the first enable must materialize the scope"
             );
             assert!(
-                !load_disabled_bundles_for(ConnectorScope::Plain)
-                    .contains(&"feishu".to_string()),
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
                 "fixture: the enable removed the id"
             );
 
@@ -355,8 +354,7 @@ mod tests {
             };
             gate.refresh_step().unwrap();
             assert!(
-                !load_disabled_bundles_for(ConnectorScope::Plain)
-                    .contains(&"feishu".to_string()),
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
                 "the startup refresh must not backfill over an enable made after an uninitialized-scope connect (round-32 MAJOR 1)"
             );
         });
@@ -449,9 +447,7 @@ mod tests {
             assert!(
                 raw["install_default_synced"]
                     .as_array()
-                    .map(|entries| entries
-                        .iter()
-                        .any(|entry| entry == "plain:connector-x"))
+                    .map(|entries| entries.iter().any(|entry| entry == "plain:connector-x"))
                     .unwrap_or(false),
                 "fixture: the enable must keep the ledger entry"
             );

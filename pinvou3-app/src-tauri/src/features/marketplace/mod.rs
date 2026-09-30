@@ -8964,7 +8964,10 @@ mod tests {
                     {"key":"GOOD_KR_KEY","provider":"builtin","required":true}
                 ]
             });
-            write_tool_manifest("empty-kr", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest(
+                "empty-kr",
+                &serde_json::to_string_pretty(&manifest).unwrap(),
+            );
             write_installed_ids(&["empty-kr".to_string()]);
             let store = FallbackActiveFaultStore {
                 inner: MemoryCredentialStore::default(),
@@ -8990,13 +8993,11 @@ mod tests {
 
             manager.sync_secret_values().unwrap();
             assert!(
-                !snapshot_secret_values()
-                    .contains_key(&mcp_secret_env_var("EMPTY_KR_KEY")),
+                !snapshot_secret_values().contains_key(&mcp_secret_env_var("EMPTY_KR_KEY")),
                 "an empty stored value under an unreachable keyring must be skipped, not materialized"
             );
             assert!(
-                !snapshot_secret_values()
-                    .contains_key(&mcp_secret_env_var("MISS_KR_KEY")),
+                !snapshot_secret_values().contains_key(&mcp_secret_env_var("MISS_KR_KEY")),
                 "a plain miss under an unreachable keyring must be skipped the same way"
             );
             assert_eq!(

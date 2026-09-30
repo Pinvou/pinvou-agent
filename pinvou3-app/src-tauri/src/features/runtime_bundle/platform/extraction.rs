@@ -147,9 +147,7 @@ impl Pinvou3Bundle {
         // must be quarantined, not admitted live-by-absence with zero consent
         // (nor swept by a later cleanup). Best-effort: a failure is logged and
         // retried next boot.
-        if let Err(e) =
-            crate::features::marketplace::plugin_import::reconcile_import_journal()
-        {
+        if let Err(e) = crate::features::marketplace::plugin_import::reconcile_import_journal() {
             log::warn!("[runtime-bundle] import-crash journal reconciliation failed: {e}");
         }
         // 已从工具市场下架的预置 MCP 工具也要清理运行态残留;否则旧 manifest 仍会被

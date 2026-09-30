@@ -454,8 +454,7 @@ mod tests {
             "the shipped message must carry the frontend-matched marker: {message}"
         );
         assert_eq!(
-            IMA_CONSENT_SYNC_FAILURE_MARKER,
-            "persisting their default-off consent state failed",
+            IMA_CONSENT_SYNC_FAILURE_MARKER, "persisting their default-off consent state failed",
             "the marker value is the frontend contract (ToolStoreView consentFailure) — update both sides together"
         );
     }

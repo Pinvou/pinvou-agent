@@ -2539,9 +2539,10 @@ pub(crate) fn foreign_skill_copies_under(
 /// 连他包副本一起删掉。与上传通道（`install_upload_skill`）同三查：预置名占用 /
 /// 属主认领 / 他包物理副本。属主认领与他包副本两查都以 `restoring_pkg`（被恢复
 /// 的包 id）为"自己"的锚 —— round-32 minor 5（评审 #455）：按技能名锚定会在
-/// "单技能包恰好以该技能名建包"时把 live 的 S 包误判为自身（owner 回退返回
-/// S 包名 == 技能名），恢复 P 的 skills/S/ 便在 live 的 bundles/S/ 旁再造一份
-/// 双副本。仅读盘与登记，不动任何状态；碰撞对象的建包不持同 id 锁，极端并发
+/// "单技能包恰好以该技能名建包"时把 live 的 S 包误判为自身（认领/物理嵌套
+/// 都解析到 S 包名 == 技能名），恢复 P 的 skills/S/ 便在 live 的 bundles/S/
+/// 旁再造一份双副本。身份回退（owner == 技能名，无认领无副本）不拒绝：
+/// 那是被恢复包自己的未声明技能，他包副本已由 foreign-copy 臂排除。仅读盘与登记，不动任何状态；碰撞对象的建包不持同 id 锁，极端并发
 /// 交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站 `restore_plugin`
 /// 在取回目录前应用同一检查。
 pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> Result<(), String> {
@@ -2551,7 +2552,15 @@ pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> 
         ));
     }
     let owner = super::bundle::skill_owner_package(skill_name);
-    if owner != restoring_pkg {
+    // Round-32 minor 5 (review #455): refuse a real claim by ANOTHER pack.
+    // The identity fallback (owner == skill_name — no manifest claim, no live
+    // physical copy) is the "unclaimed skill of the pack being restored"
+    // shape (a corrupt or under-declared combo's skills resolve to
+    // themselves); the foreign-copy arm below already excludes live copies
+    // under other packs at this point, so refusing on the fallback would
+    // strand that legitimate restore (round-33 correction after it broke
+    // restore_unreadable_bin_manifest_fails_toward_force et al.).
+    if owner != skill_name && owner != restoring_pkg {
         return Err(format!(
             "技能名 '{skill_name}' 已被已安装包 '{owner}' 的配套技能占用，无法恢复；请先卸载该包再从回收站恢复"
         ));
