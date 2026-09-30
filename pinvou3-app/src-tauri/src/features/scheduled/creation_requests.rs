@@ -691,12 +691,18 @@ fn audit_request(
             ("rrule", request.rrule.is_some()),
             ("model_id", request.model_id.is_some()),
             ("paused", request.paused.is_some()),
+            ("target_session", request.target_session.is_some()),
         ]
         .into_iter()
         .filter(|(_, present)| *present)
         .map(|(label, _)| label)
         .collect();
         detail["changed"] = serde_json::json!(changed);
+        if let Some(target) = request.target_session.as_deref() {
+            // A retarget redirects where every future prompt fires — the
+            // audit line must say where it now goes.
+            detail["target_session"] = serde_json::json!(target);
+        }
     }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);

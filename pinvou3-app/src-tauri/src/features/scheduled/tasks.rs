@@ -518,6 +518,18 @@ impl ScheduledTaskState {
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
+        // The 32k message-body cap also guards the panel/update path: a
+        // session-message task must never persist a body the delivery belt
+        // would then reject on every fire (same bound as create).
+        if let Some(prompt) = input.prompt.as_deref() {
+            if self.task_kinds.kind_for(&id).as_deref() == Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE)
+                && prompt.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS
+            {
+                return Err(format!(
+                    "Scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+                ));
+            }
+        }
         // The kind is a one-time creation property, so a target change is only
         // meaningful for an existing session_message task; a chat/memory task
         // cannot be converted into one (and vice versa) through an update.
@@ -1610,9 +1622,12 @@ fn target_file_missing(target: &str) -> bool {
         .is_file()
 }
 
-/// Kind allow-list: missing means an ordinary chat task; only `memory_organize` is
-/// accepted for now. Same style as [`canonical_scheduled_mode`]: exact match after
-/// trimming, everything else is rejected.
+/// Kind allow-list: missing means an ordinary chat task; `memory_organize` is
+/// the only explicitly nameable kind. A `session_message` task is created by
+/// passing `target_session` (the kind is implied, never named) so the kind
+/// and its delivery target cannot drift apart. Same style as
+/// [`canonical_scheduled_mode`]: exact match after trimming, everything else
+/// is rejected.
 fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, String> {
     let Some(kind) = kind else {
         return Ok(None);
@@ -1620,8 +1635,12 @@ fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, Stri
     let kind = kind.trim();
     match kind {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => Ok(Some(kind.to_string())),
+        SCHEDULED_TASK_KIND_SESSION_MESSAGE => Err(
+            "pass target_session to create a scheduled-message task; the kind itself is implied"
+                .to_string(),
+        ),
         _ => Err(format!(
-            "Unsupported scheduled task kind '{kind}'; the only supported kind is 'memory_organize'"
+            "Unsupported scheduled task kind '{kind}'; supported: 'memory_organize', or pass target_session for a scheduled-message task"
         )),
     }
 }
