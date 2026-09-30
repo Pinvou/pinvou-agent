@@ -1343,6 +1343,36 @@ fn entry_is_fresh(
 
 /// A session's resident entry in the pool: the engine + its own event
 /// forwarder task.
+/// A reused engine's pending native-window re-check (see
+/// `EngineEntry::native_window_pending`): which server kind to ask and for
+/// which model name. No URL or credential — the re-probe runs against the
+/// freshly prepared bridge's base_url/key, which for a fresh entry is the
+/// same model config the engine was spawned from.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingNativeWindow {
+    model_name: String,
+    kind: crate::core::model_endpoint::LocalServerKind,
+}
+
+impl PendingNativeWindow {
+    /// Captured from the finalized spawn bridge: only routes that are
+    /// native-probeable (Ollama / LM Studio) and ended the spawn without a
+    /// served-window fact are pending. A fact present at spawn means the
+    /// normal frozen-until-rebuild discipline applies (no re-checking).
+    fn from_finalized(bridge: &Pinvou3Bridge) -> Option<Self> {
+        use crate::core::model_endpoint::LocalServerKind;
+        if bridge.probed_context_tokens.is_some() {
+            return None;
+        }
+        let kind = bridge.probed_local_kind?;
+        if !matches!(kind, LocalServerKind::Ollama | LocalServerKind::LmStudio) {
+            return None;
+        }
+        let model_name = bridge.effective_model_owned()?.model;
+        Some(Self { model_name, kind })
+    }
+}
+
 struct EngineEntry {
     engine: AppEngine,
     /// This engine's event forwarder; aborted on evict so a zombie task does
@@ -1353,12 +1383,24 @@ struct EngineEntry {
     runtime_model: PreparedRuntimeState,
     /// MCP config revision. Changers of mcp.json (the marketplace
     /// install/uninstall/import/trash-restore commands) bump it via
-    /// `mark_mcp_config_updated`; the next engine fetch safely reclaims the old
-    /// instance and lazily rebuilds. A plain session's engine reads the
+    /// `mark_mcp_config_updated`; the next engine fetch safely reclaims the
+    /// old instance and lazily rebuilds. A plain session's engine reads the
     /// session-derived mcp config (rewritten from the global mcp.json only at
     /// spawn); without a rebuild, servers installed midway would never be
     /// visible to the live engine.
     mcp_config_revision: u64,
+    /// Set at spawn when the route is native-probeable (kind Ollama / LM
+    /// Studio, local) but no served-window fact could be adopted — the
+    /// common shape of a model that was never JIT-loaded yet. While this is
+    /// Some, engine reuse re-checks the native API once per turn
+    /// (`reprobe_missing_native_window`): the first post-load check finds
+    /// `/api/ps` / `/api/v0/models` serving the real window and the entry is
+    /// dropped for a rebuild that adopts it — instead of the collapsed
+    /// 8192-fallback budget surviving the whole first engine lifetime
+    /// (2026-09-30 user report). Holds only the model name and server kind
+    /// (no credentials — the re-probe resolves the key from the freshly
+    /// prepared bridge, which for a fresh entry is the same model config).
+    native_window_pending: Option<PendingNativeWindow>,
     /// Engine epoch (UNIX ms): on the worker ledger, a "still running" record
     /// counts as truly alive only if it had activity within this epoch. The
     /// foundation's restart-load only flips in-memory state and does not
@@ -1875,10 +1917,19 @@ impl EnginePool {
         pins_scheduled_model: bool,
     ) -> Pinvou3Bridge {
         bridge.session_model = Some(prepared.model.clone());
-        // Local endpoints (OpenAI-compatible presets pointing at local/intranet
-        // services): probe the service type (Ollama / vLLM / LM Studio /
-        // generic) so thinking control follows the corresponding foundation
-        // wire protocol.
+        // Local endpoints (OpenAI-compatible presets and LocalVllm presets
+        // pointing at local/intranet services): probe the service type
+        // (Ollama / vLLM / LM Studio / generic) so thinking control follows
+        // the corresponding foundation wire protocol, and so the native
+        // served-window follow-up below knows which API to ask. LocalVllm
+        // presets must probe too: discovery saves Ollama/LM Studio endpoints
+        // under that preset, and `/v1/models` there never carries a window
+        // fact — without the kind probe the native fetch below can never
+        // fire and the route keeps the 128K fallback while the monitor shows
+        // the real window. The probe result cannot flip the wire route for
+        // these presets (`provider()` resolves LocalVllm to "vllm" from the
+        // preset arm before ever consulting the probed kind), so a real vLLM
+        // classified `Vllm` is inert here.
         // A probe failure (service not started/timeout/auth failure) is
         // classified as generic, keeping the existing openai wire route. The
         // probe request carries a credential from the same origin as real
@@ -1887,7 +1938,9 @@ impl EnginePool {
         // generic endpoint loses the local default thinking tier and the
         // vLLM tiers (inference itself still succeeds with the configured
         // key).
-        if bridge.provider() == "openai" && base_url_uses_local_or_private(&bridge.base_url()) {
+        if (bridge.provider() == "openai" || bridge.provider() == "vllm")
+            && base_url_uses_local_or_private(&bridge.base_url())
+        {
             let api_key = bridge.api_key();
             bridge.probed_local_kind = Some(
                 crate::core::model_endpoint::probe_local_server_kind(
@@ -1940,21 +1993,23 @@ impl EnginePool {
     /// unreachable / name not matched) both facts are None and the route
     /// falls back to configured values / window tiers.
     ///
-    /// Ollama exception: its OpenAI-compatible `/v1/models` never carries a
-    /// window fact, so an endpoint probed as Ollama gets a native follow-up
-    /// (`fetch_ollama_model_context`: `/api/ps` effective context →
-    /// `/api/show` Modelfile `num_ctx` declaration) for the name actually
-    /// sent. Only provable runtime facts are adopted: a model that was never
-    /// loaded and declares no `num_ctx` stays without a window (the GGUF
-    /// trained cap is a capability ceiling — the server actually serves its
-    /// 4096-class default, which no API exposes — and adopting it would
-    /// loosen budgets into silent upstream truncation, frozen for this
-    /// engine's lifetime). Without any fact the route declares no window and
-    /// the foundation derives its budget from the 8192 unknown-Ollama
-    /// fallback — compaction floors at 4096 and the post-compaction input
-    /// budget collapses to 1024 (2026-09-30 user report: Ollama actually
-    /// serving 131072); a respawn after the first load then picks up the
-    /// `/api/ps` effective value.
+    /// Ollama / LM Studio exception: their OpenAI-compatible `/v1/models`
+    /// never carries a window fact, so an endpoint probed as one of them
+    /// gets a native follow-up for the name actually sent — Ollama's
+    /// `/api/ps` effective context → `/api/show` Modelfile `num_ctx`
+    /// declaration, LM Studio's `/api/v0/models` served window
+    /// (`loaded_context_length` on a loaded entry). Only provable runtime
+    /// facts are adopted: a model that was never loaded and declares no
+    /// `num_ctx` stays without a window (the GGUF trained cap is a
+    /// capability ceiling — the server actually serves its 4096-class
+    /// default, which no API exposes — and adopting it would loosen budgets
+    /// into silent upstream truncation). Without any fact the route declares
+    /// no window and the foundation derives its budget from the 8192
+    /// unknown-Ollama fallback — compaction floors at 4096 and the
+    /// post-compaction input budget collapses to 1024 (2026-09-30 user
+    /// report: Ollama actually serving 131072); engine reuse re-checks the
+    /// missing fact (`native_window_pending`), so the first JIT load is
+    /// picked up on the next send instead of at the idle reap.
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,
@@ -1989,34 +2044,87 @@ impl EnginePool {
         if adopts {
             bridge.probed_context_tokens = max_len;
             bridge.probed_output_tokens = max_output;
-            // Native window fact for probed-Ollama endpoints, only when the
-            // list probe had none and the facts are adoptable (the queried
-            // name is the one actually sent, so the fact belongs to this
-            // route by construction). The kind probe only runs for the
-            // openai provider, so LocalVllm-preset routes are not kind-probed
-            // — unless a persisted non-empty `vendor` maps them to "openai"
-            // (the settings preset switch does not clear it), in which case
-            // the fetch fires and is correct for a genuinely Ollama-shaped
-            // endpoint while a real vLLM server 404s `/api/ps` and ends the
-            // lookup. The `adopts` gate above is an exact-name match, so a
-            // configured name missing from a single-entry `/v1/models` list
-            // (or differing only by case) skips the native fetch too and
-            // keeps the foundation fallback — the same conservative outcome
-            // as before this follow-up existed.
-            if max_len.is_none()
-                && bridge.probed_local_kind
-                    == Some(crate::core::model_endpoint::LocalServerKind::Ollama)
-            {
-                if let Some(ctx) = crate::core::model_endpoint::fetch_ollama_model_context(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &sent_name,
-                )
-                .await
-                {
+            // Native window fact for probed-Ollama / probed-LM Studio
+            // endpoints, only when the list probe had none and the facts are
+            // adoptable (the queried name is the one actually sent, so the
+            // fact belongs to this route by construction). Ollama's
+            // `/api/ps`→`/api/show` cascade and LM Studio's
+            // `/api/v0/models` served window are the only native facts these
+            // servers expose; every other kind keeps the listing (vLLM and
+            // friends list `max_model_len`) or no fact (generic). A model
+            // that was never loaded and declares no `num_ctx` stays without
+            // an Ollama window (the GGUF trained cap is a capability
+            // ceiling — the server actually serves its 4096-class default,
+            // which no API exposes — and adopting it would loosen budgets
+            // into silent upstream truncation); engine reuse re-checks the
+            // missing fact once per turn (`native_window_pending`), so the
+            // first load is picked up by the next send without waiting for
+            // the idle reap. For non-vLLM routes the `adopts` gate is an
+            // exact-name match; on a case-mismatched multi-entry list the
+            // native fetch still fires with the configured name and safely
+            // misses the exact-keyed native maps (conservative, already a
+            // Mismatch display state).
+            if max_len.is_none() {
+                use crate::core::model_endpoint::LocalServerKind;
+                let native = match bridge.probed_local_kind {
+                    Some(LocalServerKind::Ollama) => {
+                        crate::core::model_endpoint::fetch_ollama_model_context(
+                            &bridge.base_url(),
+                            Some(api_key.as_str()),
+                            &sent_name,
+                        )
+                        .await
+                    }
+                    Some(LocalServerKind::LmStudio) => {
+                        crate::core::model_endpoint::fetch_lmstudio_served_context(
+                            &bridge.base_url(),
+                            Some(api_key.as_str()),
+                            &sent_name,
+                        )
+                        .await
+                    }
+                    _ => None,
+                };
+                if let Some(ctx) = native {
                     bridge.probed_context_tokens = Some(ctx);
                 }
             }
+        }
+    }
+
+    /// Re-check for a reused engine whose spawn ended without a native
+    /// served-window fact (`EngineEntry::native_window_pending`): ask the
+    /// same native API the spawn adoption would have. Returns the window
+    /// once the server can actually serve it (model JIT-loaded since), None
+    /// while it still can't (unloaded / endpoint down / no declaration) —
+    /// the caller keeps the engine in that case. `bridge` is the freshly
+    /// prepared (unfinalized) bridge of this same model config; the fact is
+    /// deliberately not written here — adoption goes through the normal
+    /// finalize so the route limits derive in one place.
+    async fn reprobe_missing_native_window(
+        bridge: &Pinvou3Bridge,
+        pending: &PendingNativeWindow,
+    ) -> Option<u32> {
+        use crate::core::model_endpoint::LocalServerKind;
+        let api_key = bridge.api_key();
+        match pending.kind {
+            LocalServerKind::Ollama => {
+                crate::core::model_endpoint::fetch_ollama_model_context(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &pending.model_name,
+                )
+                .await
+            }
+            LocalServerKind::LmStudio => {
+                crate::core::model_endpoint::fetch_lmstudio_served_context(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &pending.model_name,
+                )
+                .await
+            }
+            _ => None,
         }
     }
 
@@ -2056,7 +2164,7 @@ impl EnginePool {
         let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
         let mcp_config_revision = self.mcp_config_revision.load(Ordering::Acquire);
 
-        let (fresh_engine, stale) = {
+        let (fresh_engine, pending_window, stale) = {
             let mut entries = self.entries.lock().await;
             if let Some(entry) = entries.get(session_id) {
                 if entry_is_fresh(
@@ -2064,32 +2172,63 @@ impl EnginePool {
                     entry.mcp_config_revision,
                     mcp_config_revision,
                 ) {
-                    (Some(entry.engine.clone()), None)
+                    (
+                        Some(entry.engine.clone()),
+                        entry.native_window_pending.clone(),
+                        None,
+                    )
                 } else {
-                    (None, entries.remove(session_id))
+                    (None, None, entries.remove(session_id))
                 }
             } else {
-                (None, None)
+                (None, None, None)
             }
         };
         if let Some(engine) = fresh_engine {
-            crate::features::assistant::timing::record_engine_ready(
-                session_id,
-                crate::features::assistant::timing::EngineAcquireTiming {
-                    kind: "reused",
-                    total_ms: elapsed_ms(acquisition_started),
-                    runtime_lock_ms,
-                    prepare_model_ms,
-                    reclaim_ms: 0,
-                    finalize_bridge_ms: 0,
-                    tool_setup_ms: 0,
-                    materialize_skills_ms: 0,
-                    spawn_engine_ms: 0,
-                    load_session_ms: 0,
-                    sync_session_ms: 0,
-                },
-            );
-            return Ok(engine);
+            // Missing-native-window re-adoption (see
+            // `EngineEntry::native_window_pending`): while the spawn ended
+            // without a served-window fact — the shape of a model that was
+            // never JIT-loaded yet — every reuse re-asks the native API once
+            // (the `/api/show` leg is 60s-cached in core, `/api/ps` /
+            // `/api/v0/models` are one small local GET each; bounded by the
+            // shared 3s probe client). The first post-load check finds the
+            // real window; the entry is dropped and the rebuild below
+            // re-finalizes with the fact adopted, instead of the collapsed
+            // 8192-fallback budget surviving the whole first engine lifetime
+            // (2026-09-30 user report). Runs outside the entries lock.
+            let loaded_since_spawn = match pending_window.as_ref() {
+                Some(pending) => Self::reprobe_missing_native_window(&bridge, pending)
+                    .await
+                    .is_some(),
+                None => false,
+            };
+            if !loaded_since_spawn {
+                crate::features::assistant::timing::record_engine_ready(
+                    session_id,
+                    crate::features::assistant::timing::EngineAcquireTiming {
+                        kind: "reused",
+                        total_ms: elapsed_ms(acquisition_started),
+                        runtime_lock_ms,
+                        prepare_model_ms,
+                        reclaim_ms: 0,
+                        finalize_bridge_ms: 0,
+                        tool_setup_ms: 0,
+                        materialize_skills_ms: 0,
+                        spawn_engine_ms: 0,
+                        load_session_ms: 0,
+                        sync_session_ms: 0,
+                    },
+                );
+                return Ok(engine);
+            }
+            // The model loaded since this engine spawned: reclaim and fall
+            // through to the rebuild path (mirrors the revision-mismatch
+            // reclaim; a mid-session rebuild is the same path a model edit
+            // takes, including history hydration).
+            let removed = self.entries.lock().await.remove(session_id);
+            if let Some(entry) = removed {
+                self.reclaim_engine_entry(session_id, entry).await;
+            }
         }
         let acquire_kind = if stale.is_some() { "rebuilt" } else { "cold" };
         let reclaim_started = Instant::now();
@@ -2103,6 +2242,11 @@ impl EnginePool {
         let bridge =
             Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
         let finalize_bridge_ms = elapsed_ms(finalize_bridge_started);
+        // Pending re-adoption marker for engine reuse (see
+        // `EngineEntry::native_window_pending`): a native-probeable route
+        // that ended the spawn without a served-window fact re-checks on
+        // every reuse until the model loads and a rebuild adopts the fact.
+        let native_window_pending = PendingNativeWindow::from_finalized(&bridge);
         let tool_setup_started = Instant::now();
         // The shell execution directory and the engine cwd share one source:
         // resolved uniformly via SessionStore::session_roots
@@ -2233,6 +2377,7 @@ impl EnginePool {
                 forwarder,
                 runtime_model: prepared,
                 mcp_config_revision,
+                native_window_pending,
                 spawned_at_ms,
                 steer_incarnation,
                 last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
@@ -8283,7 +8428,7 @@ mod scheduled_model_tests {
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod probed_facts_wiring_tests {
-    use super::{EnginePool, Pinvou3Bridge, PreparedRuntimeModel};
+    use super::{EnginePool, PendingNativeWindow, Pinvou3Bridge, PreparedRuntimeModel};
     use crate::core::model_endpoint::{LocalServerKind, models_mock};
     use crate::platform::credential_store::CredentialState;
     use crate::platform::paths::tests::ENV_LOCK;
@@ -8689,9 +8834,234 @@ mod probed_facts_wiring_tests {
         );
     }
 
+    /// Round-3 R1: a discovery-added Ollama endpoint is saved under the
+    /// LocalVllm preset (provider "vllm"). The kind probe must run for
+    /// vllm-provider local routes too, so the native follow-up fires and
+    /// the route carries the real window — instead of the 128K fallback
+    /// while the monitor shows the truth. Driven through the real finalize
+    /// block (no hand-set kind): the live `/api/tags` signature classifies
+    /// the endpoint, then the adoption adopts the `/api/ps` fact.
+    #[tokio::test]
+    async fn finalize_runtime_bridge_probes_local_vllm_route_for_ollama_window() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            // Ollama's OpenAI shim shape: the listing carries no window fact.
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            // The kind signature that classifies the endpoint as Ollama.
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Ollama),
+            "a local vllm-provider route must be kind-probed (discovery saves Ollama under this preset)"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "the native effective context must reach the route instead of the 128K fallback"
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0, "the /api/ps fact wins");
+    }
+
+    /// Adoption-level pin for the same path: a hand-set Ollama kind on a
+    /// vllm-provider route adopts the `/api/ps` effective context for the
+    /// name actually sent.
+    #[tokio::test]
+    async fn local_vllm_preset_ollama_kind_adopts_native_ps_context() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "a vllm-preset route with an Ollama kind must adopt the native window"
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+    }
+
+    /// Round-3 R1 (LM Studio side): a probed-LM Studio endpoint adopts the
+    /// native `/api/v0/models` served window (`loaded_context_length` of
+    /// the loaded entry — bug #726's 131072-vs-12918 divergence), never the
+    /// capability cap, and never the Ollama native APIs.
+    #[tokio::test]
+    async fn lmstudio_kind_adopts_v0_served_window() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            // The listing carries no window fact.
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/v0/models",
+                200,
+                r#"{"data":[{"id":"my-model","state":"loaded","max_context_length":131072,"loaded_context_length":12918}]}"#
+                    .into(),
+            ),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::LmStudio);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(12_918),
+            "the served window (12918), not the capability cap (131072)"
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "an LM Studio endpoint must not be asked the Ollama native API"
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+    }
+
+    /// Round-3 R3: the reuse-path re-adoption marker. `from_finalized`
+    /// captures only native-probeable routes that ended the spawn without a
+    /// served-window fact (a fact at spawn means the normal
+    /// frozen-until-rebuild discipline applies; non-native kinds never
+    /// re-check); `reprobe_missing_native_window` returns the window once
+    /// the server can actually serve it (model JIT-loaded since) and None
+    /// while it can't. The get_or_spawn glue (drop the entry, reclaim, let
+    /// the rebuild path re-finalize and adopt) mirrors the
+    /// revision-mismatch reclaim verbatim and needs a real pool — the same
+    /// unit-test boundary as the rest of the spawn wiring.
+    #[tokio::test]
+    async fn pending_native_window_marks_factless_native_routes() {
+        // Ollama route, model never loaded, no num_ctx → pending.
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        let pending = PendingNativeWindow::from_finalized(&bridge)
+            .expect("a factless Ollama route must be marked pending");
+        assert_eq!(pending.model_name, "my-model");
+        // The re-probe against the still-unloaded server: no fact (engine
+        // stays).
+        assert_eq!(
+            EnginePool::reprobe_missing_native_window(&bridge, &pending).await,
+            None
+        );
+        // After the model loads, the re-probe finds the effective window.
+        let loaded = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut loaded_model =
+            saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        loaded_model.base_url = loaded.base_url.clone();
+        let loaded_bridge = wiring_bridge(loaded_model);
+        assert_eq!(
+            EnginePool::reprobe_missing_native_window(&loaded_bridge, &pending).await,
+            Some(131_072),
+            "the post-load fact must be found so the caller can drop the entry for a rebuild"
+        );
+        // A route that ended the spawn WITH a fact is not pending.
+        let loaded_finalize = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut with_fact_model =
+            saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        with_fact_model.base_url = loaded_finalize.base_url.clone();
+        let with_fact_bridge = wiring_bridge(with_fact_model.clone());
+        let with_fact_bridge = EnginePool::finalize_runtime_bridge(
+            with_fact_bridge,
+            &PreparedRuntimeModel::unchanged(with_fact_model),
+            false,
+        )
+        .await;
+        assert_eq!(
+            PendingNativeWindow::from_finalized(&with_fact_bridge),
+            None,
+            "a fact adopted at spawn means the normal rebuild discipline applies"
+        );
+        // A Generic (no-signature) route is never pending.
+        let generic =
+            models_mock::spawn(&[("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into())]);
+        let mut generic_model =
+            saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        generic_model.base_url = generic.base_url.clone();
+        let generic_bridge = wiring_bridge(generic_model.clone());
+        let generic_bridge = EnginePool::finalize_runtime_bridge(
+            generic_bridge,
+            &PreparedRuntimeModel::unchanged(generic_model),
+            false,
+        )
+        .await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Ollama),
+            "sanity: the first fixture classified Ollama"
+        );
+        assert_eq!(
+            PendingNativeWindow::from_finalized(&generic_bridge),
+            None,
+            "non-native kinds have no native API to re-check"
+        );
+    }
+
     /// The real finalize_runtime_bridge injection block (vLLM side):
-    /// provider() derives "vllm" (skipping the kind probe) and a single
-    /// entry renames to the served name and adopts facts.
+    /// provider() derives "vllm" and a single entry renames to the served
+    /// name and adopts facts. The kind probe now also runs for vllm-provider
+    /// routes (see `finalize_runtime_bridge_probes_local_vllm_route_for_
+    /// ollama_window`); this mock carries no kind signature, so the probe
+    /// lands Generic — inert for the listing-facts path.
     #[tokio::test]
     async fn finalize_runtime_bridge_renames_and_injects_vllm_route() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
