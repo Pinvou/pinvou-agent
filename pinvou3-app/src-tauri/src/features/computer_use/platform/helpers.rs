@@ -576,8 +576,11 @@ mod tests {
             '\u{070F}',
             '\u{0600}',
             '\u{06DD}',
+            '\u{0890}',
+            '\u{0891}',
             '\u{08E2}',
             '\u{110BD}',
+            '\u{110CD}',
             '\u{13430}',
             '\u{2800}',
             '\u{115F}',
@@ -688,6 +691,39 @@ mod tests {
         assert!(
             screening_hit(&raw),
             "longest term split at its deepest straddle"
+        );
+    }
+
+    #[test]
+    fn screening_hit_composes_across_the_chunk_boundary() {
+        // NFC composition is applied per chunk, so a base character and the
+        // mark that completes it must not be separated by the
+        // [`FOLD_CHUNK_CHARS`] split: ゴ is the only denylist-term character
+        // with a multi-char decomposition, and only the exact straddle used
+        // to miss it — the seam landing between ｺ and its voiced mark —
+        // while both neighbors hit. The walker re-feeds the previous chunk's
+        // raw tail so the pair composes.
+        let build = |filler_chars: usize| {
+            let mut raw = "a".repeat(filler_chars);
+            raw.push('ｺ');
+            raw.push('\u{FF9E}');
+            raw.push_str("ミ箱");
+            raw
+        };
+        for filler_chars in [FOLD_CHUNK_CHARS - 1, FOLD_CHUNK_CHARS, FOLD_CHUNK_CHARS + 1] {
+            assert!(
+                screening_hit(&build(filler_chars)),
+                "ｺ+U+FF9E must compose to ゴ across the seam at {filler_chars}"
+            );
+        }
+        // The precomposed-pair variant: コ + U+3099 composes the same way.
+        let mut raw = "a".repeat(FOLD_CHUNK_CHARS - 1);
+        raw.push('コ');
+        raw.push('\u{3099}');
+        raw.push_str("ミ箱");
+        assert!(
+            screening_hit(&raw),
+            "コ+U+3099 must compose across the seam"
         );
     }
 

@@ -534,17 +534,30 @@ async fn app_windows<'a>(
 /// the active window). Returns whether an active window was found, so the
 /// caller can tell "index 0 is the active window" from "index 0 is merely
 /// first on the bus" — bus order is not z-order, so that distinction is the
-/// only ordering signal available here.
-async fn active_first(windows: &mut [AccessibleProxy<'_>]) -> bool {
+/// only ordering signal available here. A failed state query is remembered
+/// and returned alongside: "no window claims Active" and "we failed to ask"
+/// are different facts, and only the first licenses the bus-order
+/// fall-through (the same rule `focused_element_async` applies).
+async fn active_first(windows: &mut [AccessibleProxy<'_>]) -> (bool, Option<ComputerUseError>) {
+    let mut state_fault = None;
     for (index, window) in windows.iter().enumerate() {
-        if let Ok(state) = window.get_state().await {
-            if state.contains(State::Active) {
-                windows.swap(0, index);
-                return true;
+        match window.get_state().await {
+            Ok(state) => {
+                if state.contains(State::Active) {
+                    windows.swap(0, index);
+                    return (true, None);
+                }
+            }
+            Err(error) => {
+                if state_fault.is_none() {
+                    state_fault = Some(ComputerUseError::unavailable(format!(
+                        "AT-SPI window state query: {error}"
+                    )));
+                }
             }
         }
     }
-    false
+    (false, state_fault)
 }
 
 /// Builds an [`ElementInfo`] from an AccessibleProxy.
@@ -704,9 +717,10 @@ async fn ui_tree_async(
     };
 
     // Observation path: best-effort enumeration (a single hung app is
-    // skipped).
+    // skipped); the state-fault half of the result is irrelevant here, the
+    // tree only borrows the ordering.
     let mut windows = app_windows(conn, &root, false).await?;
-    active_first(&mut windows).await;
+    let _ = active_first(&mut windows).await;
     if let Some(active) = windows.first() {
         if let Ok(state) = active.get_state().await {
             if state.contains(State::Active) {
@@ -731,20 +745,37 @@ async fn ui_tree_async(
 /// Hit test. The two outcomes have clearly distinct semantics (the review's
 /// fail-open fix):
 /// - `Ok(None)`: **no element** — none of the enumerated windows covers the
-///   point, the AT-SPI hit inside the covering window is empty (null
-///   ObjectRef), **or the reachable tree is empty** (the registry answers but
-///   no application registered — the normal state when the target app's
-///   toolkit a11y is disabled). An empty tree and "the element is not at this
-///   point" are indistinguishable here; both are let through under the
-///   mainstream None policy (no element → no forced confirmation); this is a
-///   policy statement, not a screening proof.
+///   point, or the reachable tree is empty (the registry answers but no
+///   application registered — the normal state when the target app's
+///   toolkit a11y is disabled). An empty tree and "the element is not at
+///   this point" are indistinguishable here; both are let through under the
+///   mainstream None policy (no element → no forced confirmation); this is
+///   a policy statement, not a screening proof. A **null hit** (the
+///   covering window answers with an empty ObjectRef) is deliberately *not*
+///   this outcome: the window's extents contained the point, so "nothing
+///   here" is not proven and the search falls through to the windows
+///   behind — conservative, in the same direction as the extents
+///   skip-and-remember below.
 /// - `Err`: **query failure** — a breakdown in any link of root/app/window
 ///   enumeration or the hit query is propagated, as is the **active**
-///   window's extents fault. A non-active window's extents fault is
-///   deliberately skipped-and-remembered (see below) and surfaces as `Err`
-///   only when no window answered the point; how screening handles faults
-///   (let it execute, no confirmation) is decided uniformly by the tool
-///   layer.
+///   window's extents fault, and as is a **window-state fault when no
+///   window claimed Active** (we cannot distinguish "no active window"
+///   from "the active window failed to answer", so any answer would risk
+///   naming the occluded element behind it; `focused_element_async` raises
+///   the same way). A non-active window's extents fault is deliberately
+///   skipped-and-remembered (see below) and surfaces as `Err` only when no
+///   window answered the point; how screening handles faults (let it
+///   execute, no confirmation) is decided uniformly by the tool layer.
+///
+/// Ordering limitation, architectural: AT-SPI exposes no z-order, so
+/// "active first, then bus order" is the only signal, and the first
+/// extents-containing window answers even when a non-active overlay
+/// (notification toast, always-on-top panel) actually covers the point —
+/// the occluded element of the window *behind* it is then what gets named
+/// and bound. A hostile app can also self-report `Active` on an invisible
+/// window (below). Surfacing a degraded-screening state instead of the
+/// tool layer's silent Clear is a product decision, tracked with the
+/// other disclosure items.
 async fn element_at_point_async(
     conn: &zbus::Connection,
     x: i32,
@@ -752,7 +783,19 @@ async fn element_at_point_async(
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
     let root = root_accessible(conn).await?;
     let mut windows = app_windows(conn, &root, true).await?;
-    let has_active = active_first(&mut windows).await;
+    let (has_active, state_fault) = active_first(&mut windows).await;
+    // A state-query fault means the enumeration cannot tell "no window is
+    // active" from "the active window failed to answer": answering from
+    // whichever window is listed first (or reports extents) risks binding
+    // the approval token to the occluded element behind a window we failed
+    // to identify. Raise the fault instead of guessing — the tool layer
+    // fails open on Err, so the cost is the disclosed degraded-screening
+    // posture, never a wedge.
+    if !has_active {
+        if let Some(fault) = state_fault {
+            return Err(fault);
+        }
+    }
     // One undecidable window must not abandon the whole hit test. AT-SPI
     // reports all-zero extents for unmapped top-levels — and commonly for
     // every window on Wayland — while `app_windows` enumerates without a
