@@ -675,9 +675,7 @@ function pinvouSharedtauriChatN31666() {
         // Recover in the created session or the original draft epoch, never in
         // the unrelated active composer; "restored" stops the caller from doing
         // it a second time, including when recovery stays in a background buffer.
-        // The mention injection block never re-enters the composer (the chips
-        // were consumed by the send attempt), only the body is restored.
-        restoreTaskDraft(stripMentionBlockForComposerRestore(text), draftOwner);
+        restoreTaskDraft(text, draftOwner);
         return "restored";
       }
     }

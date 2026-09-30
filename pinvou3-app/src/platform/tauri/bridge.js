@@ -1115,6 +1115,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const archiveSession = sessionsFeature.archiveSession;
   const restoreArchivedSession = sessionsFeature.restoreArchivedSession;
   const exportSessionArchive = sessionsFeature.exportSessionArchive;
+  const onSessionDeleted = sessionsFeature.onSessionDeleted;
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
     const bg = sessionStates[sid]; if (!bg) return;
@@ -2557,6 +2558,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       archiveSession,
       restoreArchivedSession,
       exportSessionArchive,
+      // session:deleted subscription (see applyDeletedSession): the one
+      // deletion path feature code can observe per id — list_sessions
+      // excludes code-mode sessions, so slice-diffing alone misses them.
+      onSessionDeleted,
       // Draft-state working directory selection (desktop only: system directory
       // dialog + the create_session workspacePath parameter; the web side has no
       // such channel, the UI guards on method existence).

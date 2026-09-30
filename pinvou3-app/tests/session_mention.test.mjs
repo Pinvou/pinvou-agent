@@ -462,9 +462,13 @@ test('registry refresh closure applies the host switch state and keeps state on 
 });
 
 test('voice sendTask assembles the block under the gate and consumes chips on acceptance (behavioral)', async () => {
-  const fn = extractChatViewFunction('sendTask: async outgoing =>');
+  // Merged shape: sendTask takes (outgoing, context) and routes the send
+  // through the draft-owner machinery (restoreTaskDraft on a lost race). The
+  // mention semantics this test pins — block rides ahead under the gate, the
+  // accepted send consumes the chips — are unchanged.
+  const fn = extractChatViewFunction('sendTask: async (outgoing, context) =>');
   const make = ({ enabled, truncated = false }) => {
-    const calls = { sent: [], clearedRefs: 0, inputReplaced: [] };
+    const calls = { sent: [], clearedRefs: 0, inputReplaced: [], restored: [] };
     const sandbox = {
       constrainChatInput: (value) => ({ text: value, truncated }),
       setInputText: (value) => { calls.inputReplaced.push(value); },
@@ -474,6 +478,14 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
       sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return true; },
       setSessionRefs: () => { calls.clearedRefs += 1; },
       console,
+      // The exact-draft contract: the composer holds exactly the dictated
+      // task text, so the consume check passes.
+      inputTextRef: { current: '帮我把这份纪要排成 PPT' },
+      activeSessionIdRef: { current: null },
+      draftEpoch: 0,
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      bridge: { chat: { restoreTaskDraft: (text) => { calls.restored.push(text); } } },
     };
     // sendTask is an object member of the useComposerVoiceInput config.
     vm.runInNewContext(`const config = ({ ${fn} });\nthis.sendTask = config.sendTask;`, sandbox);
