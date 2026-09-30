@@ -78,6 +78,31 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
+// Only the benchmark-gated headless runner (agentic_task) mints headless ids
+// and warns about retention eviction, so both re-exports follow its gate.
+// Retention itself reaches `store` directly and needs neither.
+/// Re-export the headless session id prefix: the runner mints ids from it and
+/// retention keys the separate headless eviction budget on it, so the two must
+/// not drift into separate literals.
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
+/// Re-export the headless retention cap: it is the number the runner's
+/// eviction warning quotes, and quoting the chat cap there would name a budget
+/// headless runs no longer touch.
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
+/// Re-exported for the observer-filter test: the same sweep can also evict
+/// from the chat budget, and the test must pin that such evictions are NOT
+/// reported as headless ones. Gated to the same cfg as its only consumer
+/// (the `agentic_task` tests module) — a plain `#[cfg(test)]` re-export is
+/// unused, and therefore a `[lints]`-denied error, in every test build that
+/// compiles without `benchmark-hooks` (plain `cargo test`, rust-lint).
+#[cfg(all(test, feature = "benchmark-hooks"))]
+pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
+/// Re-export the new-chat placeholder sentinel: the auto-rename trigger in
+/// the command layer must compare against the same value GUI-created and kept
+/// headless sessions carry, or a renamed constant silently breaks auto-rename.
+pub(crate) use self::store::NEW_CHAT_TITLE;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
 /// Re-export the crate-visible session-id validator (used by commands). It is
@@ -148,6 +173,18 @@ pub struct SessionStore {
     /// independently to `_pinned_sessions.json` without changing the
     /// SavedSession structure.
     pub(crate) pinned_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Whether the boot-time load of `_pinned_sessions.json` actually produced
+    /// the file's contents.
+    ///
+    /// `durable_pinned_sessions` falls back to the in-memory map when the file
+    /// cannot be read, on the reasoning that the boot map can only be a subset
+    /// and so can never widen the eviction set. That reasoning fails when the
+    /// file was ALREADY corrupt at boot: the load is a no-op on failure, so the
+    /// map is empty for the same reason the file is unusable, and the first
+    /// sweep — which `SessionStore::boot` runs immediately afterwards — would
+    /// exempt nothing and delete every pinned session. This flag lets the sweep
+    /// tell "no pins" from "pins unknown" and refuse to evict in the latter.
+    pub(crate) pinned_sessions_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Sessions collapsed from the left task list: session_id -> hidden_at.
     /// Persisted independently to `_hidden_sessions.json` without changing the
     /// SavedSession structure.
@@ -207,18 +244,41 @@ pub struct SessionStore {
     /// the **older snapshot that finishes writing last** overwrites the newer
     /// one — after a restart, the flag state of some sessions is gone.
     multi_agent_flags_io: Arc<Mutex<()>>,
+    /// Persistence mutex for `_pinned_sessions.json` (same contract as
+    /// `multi_agent_flags_io`): the id-level RMWs of `set_pinned` and the
+    /// retention sweep must be serialized, or a lost update erases a freshly
+    /// written pin and the sweep then turns that session evictable.
+    pinned_sessions_io: Arc<Mutex<()>>,
+    /// Persistence mutex for `_hidden_sessions.json` (same contract as
+    /// `pinned_sessions_io`).
+    hidden_sessions_io: Arc<Mutex<()>>,
+    /// Persistence mutex for `_session_models.json` (same contract as
+    /// `pinned_sessions_io`): `set_session_model_id` is self-consistent across
+    /// the RMW under the cache's write lock, but the sweep side's batch removal
+    /// was previously lock-free — interleaving loses updates.
+    session_models_io: Arc<Mutex<()>>,
+    /// Persistence mutex for `_session_mode_states.json` (same contract as
+    /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
+    /// retention sweep.
+    session_mode_states_io: Arc<Mutex<()>>,
     /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
     /// call does a full-directory read_dir + per-file prefix parsing, and the
     /// startup paths (boot restore / retention policy / AcpPool metadata) plus
     /// every list command call it — the same-generation metadata gets rescanned
     /// 3+ times. The cache is invalidated by `save_session_atomic`/`delete` and
-    /// the other App-side exclusive write paths; external-process writes that
-    /// bypass the App are out of scope (see the store.rs comment for how this
-    /// differs from the upstream read-every-time contract).
+    /// the other App-side exclusive write paths.
+    ///
+    /// Entry = (generation, sessions-dir change token, snapshot). The
+    /// generation covers this process's writes; the token covers a peer
+    /// process's creates and deletes, which a headless `agent run` sharing
+    /// `PINVOU3_HOME` now produces under a live GUI. See
+    /// `SessionStore::sessions_dir_change_token` for what the token does and
+    /// does not observe.
     pub(crate) list_cache: Arc<
         RwLock<
             Option<(
                 u64,
+                Option<Vec<std::ffi::OsString>>,
                 Arc<Vec<deepseek_tui::session_manager::SessionMetadata>>,
             )>,
         >,
@@ -238,6 +298,12 @@ pub struct SessionStore {
     /// before workspace/side-map cleanup succeeds, while a side-map purge does
     /// not itself prove that the durable session record is absent.
     session_deleted_hooks: Arc<RwLock<Vec<SessionDeletedHook>>>,
+    /// Headless retention-eviction receiver: the `agent run` runner installs
+    /// one around the turn so its stderr warning keys on the sweep's real
+    /// deletions (see `product_runtime::agentic_task`). `None` everywhere
+    /// else — the GUI never installs one and the sweep pays nothing.
+    #[cfg(feature = "benchmark-hooks")]
+    retention_eviction_observer: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
 }
 
 /// Execution-root resolver for native code sessions (Pinvou Engine): a native

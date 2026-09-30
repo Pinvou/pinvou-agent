@@ -1,6 +1,7 @@
 use super::prelude::*;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
+use crate::features::sessions::NEW_CHAT_TITLE;
 use std::path::PathBuf;
 use tauri_plugin_dialog::DialogExt;
 
@@ -210,7 +211,7 @@ pub(crate) fn apply_default_session_title(
     let session = store
         .load(session_id)
         .map_err(|error| format!("读取会话 {session_id} 失败: {error:#}"))?;
-    if session.metadata.title != "新对话" {
+    if session.metadata.title != NEW_CHAT_TITLE {
         return Ok(());
     }
     let title = title_source.chars().take(28).collect::<String>();
@@ -672,7 +673,12 @@ pub async fn set_session_pinned(
     store
         .load(&id)
         .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
-    store.set_pinned(&id, pinned);
+    // Report a refused/failed persist instead of swallowing it: the list is
+    // re-read from the durable file, so a silently dropped write shows the
+    // user their pin reverting with no explanation.
+    store
+        .set_pinned(&id, pinned)
+        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -690,7 +696,9 @@ pub async fn set_session_archived(
     store
         .load(&id)
         .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
-    store.set_hidden(&id, archived);
+    store
+        .set_hidden(&id, archived)
+        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())

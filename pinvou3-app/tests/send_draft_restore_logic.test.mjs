@@ -83,6 +83,9 @@ vm.runInNewContext(read('src', 'platform', 'tauri', 'bridge', 'chat.js'), sandbo
     stopThinking() {},
     ensureSessionBufferLoaded() { return Promise.resolve(); },
     ensureSession: overrides.ensureSession || (() => Promise.resolve('s1')),
+    // chat.js resolves its voice lane as `context.voice || noop`; the voice
+    // operation settlement test injects a recording stub here.
+    voice: overrides.voice,
     getBuffer(sid) { return sessionStates[sid]; },
     recordPinvouSceneForMessage() {},
     recordSteeredMessages() {},
@@ -307,6 +310,38 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 }
 
 {
+  // Voice-task sends: given meta already carries voiceOperationId, the
+  // bridge's admission gate must park the operation and the dispatched exit
+  // must settle it accepted. This pins the bridge-level contract only — the
+  // case builds meta itself, so a ChatView merge-drop stays green here. The
+  // funnel hop above the merge (resolve → begin → dispatch argument) is
+  // pinned by source anchors in voice_operation_lifecycle.test.mjs.
+  const begins = [];
+  const completes = [];
+  const { feature, state } = createTauriChat({
+    voice: () => ({
+      beginVoiceSubmission: (operationId, sessionId) => begins.push({ operationId, sessionId }),
+      completeVoiceSubmission: (operationId, sessionId, accepted) => completes.push({ operationId, sessionId, accepted }),
+      voiceOperationSessionId: () => null,
+      rebindVoiceDraftAfterRollback: () => false,
+    }),
+  });
+  const result = await feature.sendMessage('你好', { voiceOperationId: 'voiceop-e2e' }, null);
+  assert.equal(result, true, 'tauri 语音任务发送必须派发');
+  assert.equal(state.messages.length, 1, 'user 消息必须进入 transcript');
+  assert.deepEqual(
+    begins,
+    [{ operationId: 'voiceop-e2e', sessionId: 's1' }],
+    '桥接层受理门槛必须先冻结语音操作',
+  );
+  assert.deepEqual(
+    completes,
+    [{ operationId: 'voiceop-e2e', sessionId: 's1', accepted: true }],
+    '派发出口必须把语音操作结算为 accepted，否则操作记录连同音频泄漏',
+  );
+}
+
+{
   // 主路径失败仍必须 reject（surfaceFailure 契约不变，调用方走 catch 恢复）。
   const { feature } = createTauriChat({
     invoke: async (command) => {
@@ -425,12 +460,13 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 }
 
 // ── ChatView 源码契约 ─────────────────────────────────────────────────
-// sendChatMessage 必须把 sendMessage 的返回协议映射给 handleSend：
-// 仅 false 触发恢复；"restored"/true/undefined（旧后端兜底）都不得触发。
+// dispatch must preserve the three-state protocol: handleSend restores
+// only on false, while the voice task lane distinguishes "restored" (text
+// returned, not accepted) from a genuine acceptance.
 assert.match(
   chatViewSource,
-  /dispatchResult = await bridge\.chat\.sendMessage\(visibleOutgoing, meta\);[\s\S]*?return dispatchResult !== false;/,
-  'sendChatMessage 必须按 dispatchResult !== false 映射 sendMessage 的返回协议',
+  /dispatchResult = await bridge\.chat\.sendMessage\(visibleOutgoing, meta, voiceOwner\);[\s\S]*?return dispatchResult;/,
+  'dispatchChatMessage 必须保留 sendMessage 的三态返回协议',
 );
 // handleSend 的恢复必须保留 empty-vs-typed 区分（空输入框整体还原，非空降级为 append prefill）。
 assert.match(
