@@ -100,31 +100,42 @@ static USER_STAMP: Mutex<Option<UserDirStamp>> = Mutex::new(None);
 /// What the user-card directory looked like when the pool was loaded: its
 /// path plus every `*.json` entry's name, size and mtime. A card created or
 /// deleted by another process always changes the name set; an in-place
-/// rewrite is caught by size or mtime.
+/// rewrite is caught by size or mtime. `entries: None` marks a directory
+/// that could not be read at all, which is distinct from "readable and
+/// empty": a transient fault must never be mistaken for "every card
+/// deleted".
 #[derive(Debug, PartialEq, Eq)]
 struct UserDirStamp {
     dir: PathBuf,
-    entries: Vec<(std::ffi::OsString, u64, Option<SystemTime>)>,
+    entries: Option<Vec<(std::ffi::OsString, u64, Option<SystemTime>)>>,
 }
 
 fn user_dir_stamp() -> UserDirStamp {
     let dir = crate::platform::paths::user_personas_dir();
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
-        .map(|entry| {
-            let meta = entry.metadata().ok();
-            (
-                entry.file_name(),
-                meta.as_ref().map_or(0, std::fs::Metadata::len),
-                meta.and_then(|meta| meta.modified().ok()),
-            )
-        })
-        .collect();
+    let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+            .map(|entry| {
+                let meta = entry.metadata().ok();
+                (
+                    entry.file_name(),
+                    meta.as_ref().map_or(0, std::fs::Metadata::len),
+                    meta.and_then(|meta| meta.modified().ok()),
+                )
+            })
+            .collect(),
+        // A missing directory legitimately means "no cards": the directory
+        // is gone and its cards are gone with it. Any other read failure is
+        // a transient fault (permissions, IO error), not a pool change.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return UserDirStamp { dir, entries: None },
+    };
     entries.sort();
-    UserDirStamp { dir, entries }
+    UserDirStamp {
+        dir,
+        entries: Some(entries),
+    }
 }
 
 fn set_user_stamp(stamp: UserDirStamp) {
@@ -137,6 +148,14 @@ fn set_user_stamp(stamp: UserDirStamp) {
 /// was loaded from. Must be called without holding the `USER` lock.
 fn sync_user_from_disk() {
     let current = user_dir_stamp();
+    if current.entries.is_none() {
+        // The card directory is temporarily unreadable. Treating that as
+        // "every card deleted" would wipe the pool and unequip the card in
+        // every session that holds it, with nothing to restore from once
+        // the fault clears, so keep the last-known-good pool and wait for
+        // the directory to become readable again.
+        return;
+    }
     let stale = USER_STAMP
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -343,7 +362,10 @@ fn write_card(card: &PersonaCard) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("建目录失败: {e}"))?;
     let path = dir.join(format!("{}.json", card.id));
     let json = serde_json::to_string_pretty(card).map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("写卡失败: {e}"))
+    // Readers poll the card directory since cross-process sync landed, so a
+    // truncate-then-write here is a torn card that reads as "deleted
+    // elsewhere" and unequips every session holding it. Publish atomically.
+    deepseek_tui::utils::write_atomic(&path, json.as_bytes()).map_err(|e| format!("写卡失败: {e}"))
 }
 
 /// 新建用户卡。生成 `user-<slug>-<nanos>` id,写盘,刷新缓存,返回摘要。
@@ -750,6 +772,70 @@ mod tests {
         assert!(!all_summaries().iter().any(|s| s.id == card.id));
         assert!(!executable_cards().iter().any(|c| c.id == card.id));
         assert!(with_card(&card.id, |_| ()).is_none());
+
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        reload_user();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unreadable_card_dir_keeps_the_cached_pool() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-persona-unreadable-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        reload_user();
+
+        let dir = crate::platform::paths::user_personas_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = PersonaCard {
+            id: "user-unreadable-1".to_string(),
+            dept: "specialized".to_string(),
+            name: "Unreadable".to_string(),
+            description: String::new(),
+            emoji: "U".to_string(),
+            color: "#000000".to_string(),
+            body: "body".to_string(),
+            source: "user".to_string(),
+            conversational_only: false,
+        };
+        let path = dir.join("user-unreadable-1.json");
+        std::fs::write(&path, serde_json::to_string(&card).unwrap()).unwrap();
+        assert!(get(&card.id).is_some(), "card must load before the fault");
+
+        // Replace the directory with a regular file: every read now fails
+        // with an error that is not NotFound, the way a stuck mount or a
+        // permission fault presents. This must NOT read as "every card
+        // deleted" — the equipped pool is the only state there is to keep.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        assert!(
+            get(&card.id).is_some(),
+            "an unreadable card directory must keep the last-known-good pool"
+        );
+
+        // A genuinely emptied directory is still detected: once readable
+        // again, the deletion the fault had masked becomes visible.
+        std::fs::remove_file(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            get(&card.id).is_none(),
+            "a readable empty directory must reload as empty"
+        );
 
         match prev {
             // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
