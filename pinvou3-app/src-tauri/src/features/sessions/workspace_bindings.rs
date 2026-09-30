@@ -1002,8 +1002,6 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::SessionStore;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     /// Round-24 review M1: the plain owner probe's LIVE-on-stat-error arm
     /// must be pinned behaviorally, not just the codex twin — reverting the
@@ -1014,6 +1012,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn plain_owner_probe_treats_stat_error_as_live() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
         let (lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-plain-owner-probe-eacces-{}-{}",
