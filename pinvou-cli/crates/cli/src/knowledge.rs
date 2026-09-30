@@ -2394,11 +2394,10 @@ fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // server-controlled and lands in a label the user reads; JSON keeps
     // the verbatim value.
     let human = format!(
-        "supported: {}\ninstalled: {}\nrunning: {}\nendpoint: {}\nservice_version: {}\n\
+        "supported: {}\ninstalled: {}\nendpoint: {}\nservice_version: {}\n\
          app_version: {}\nupgrade_available: {}\nclient_outdated: {}",
         status.supported,
         status.installed,
-        status.running,
         crate::support::collapse_control_characters(&status.endpoint),
         status
             .service_version

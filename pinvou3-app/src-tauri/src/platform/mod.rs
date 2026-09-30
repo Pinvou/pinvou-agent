@@ -23,6 +23,10 @@ pub(crate) mod process;
 // visibility, so without this re-export the external consumer cannot name
 // the path.
 pub use process::external_command;
+// Same crate-boundary shape as `external_command` above: the headless CLI
+// verifies downloaded artifacts (connector CLI binaries, staged voice
+// models) with the app's own sha256 rather than a drifting copy.
+pub use hashing::sha256_file;
 pub(crate) mod startup;
 pub(crate) mod strings;
 pub mod super_permission;

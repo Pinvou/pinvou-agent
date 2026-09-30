@@ -73,10 +73,11 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON;
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
-use pinvou3_lib::platform::connector_lock::{executable_name, file_sha256_hex, locked_cli_path};
+use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
+use pinvou3_lib::platform::sha256_file;
 
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
@@ -2213,7 +2214,7 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
 }
 
 fn file_is_sha256(path: &Path, expected: &str) -> bool {
-    file_sha256_hex(path)
+    sha256_file(path)
         .map(|actual| actual == expected)
         .unwrap_or(false)
 }

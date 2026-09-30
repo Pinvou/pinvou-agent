@@ -5199,7 +5199,7 @@ fn checkpoints_diff(
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root)?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "diff", session)?;
-    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id)
+    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id, true)
         .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
     let value = serde_json::to_value(&diff)
         .map(|value| serde_json::json!({ "session": session, "diff": value }))

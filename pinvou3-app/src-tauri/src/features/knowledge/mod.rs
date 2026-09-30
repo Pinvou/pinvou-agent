@@ -69,6 +69,7 @@ pub struct KnowledgeService {
     /// validate-then-mount race without coupling either domain to the other.
     mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
+    cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
@@ -154,6 +155,7 @@ impl KnowledgeService {
                 ..Default::default()
             })),
             imports,
+            cancel: Arc::new(AtomicBool::new(false)),
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
             embedder_reaper: Arc::new(Mutex::new(None)),

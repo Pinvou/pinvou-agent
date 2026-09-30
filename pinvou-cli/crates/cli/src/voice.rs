@@ -961,7 +961,7 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
 }
 
 fn file_is_sha256(path: &Path, expected: &str) -> bool {
-    pinvou3_lib::platform::connector_lock::file_sha256_hex(path)
+    pinvou3_lib::platform::sha256_file(path)
         .map(|actual| actual == expected)
         .unwrap_or(false)
 }
