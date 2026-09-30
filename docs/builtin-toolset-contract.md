@@ -170,9 +170,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   failures retry with backoff; poison files are quarantined under
   `messaging/spool/failed/`).
 - **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
-  model-supplied and unauthenticated — the execpolicy approval prompt and the
-  audit log are the trust boundary, not the `from_session` field; delivery is
-  at-least-once (a crash between delivery and the done-marker write replays on
+  model-supplied and unauthenticated — the working gates are the app's
+  mutating-tool approval posture at call time and the watcher-side isolated
+  sender/target validation, plus the audit log; the registered typed Ask rule
+  is the enforcement point awaiting the approval-mode split, not the
+  `from_session` field; delivery is at-least-once (a crash between delivery and the done-marker write replays on
   next boot); a steer accepted against a mid-turn target can still be dropped
   by the foundation when that turn is cancelled (the `chat:steer_dropped`
   window is not yet correlated); receive-side historical sender cards have no

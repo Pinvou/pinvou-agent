@@ -4466,7 +4466,8 @@ mod tests {
         );
         // Drift pin: the rule's tool name must stay byte-identical to the
         // manifest's registered full name (a rename on either side would
-        // silently disarm the L1 approval gate). Asserted here (assistant)
+        // silently disarm the registered Ask rule — the approval-mode-split
+        // enforcement point). Asserted here (assistant)
         // rather than in marketplace: an assistant -> marketplace edge is the
         // existing direction, and a marketplace -> assistant import would
         // close a dependency cycle.
