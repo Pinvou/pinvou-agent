@@ -69,17 +69,35 @@ assert.match(
   'the mark must carry the timestamp and the segment chain',
 );
 const sessionsSource = read('platform/tauri/bridge/sessions.js');
-assert.match(
-  sessionsSource,
-  /applyWorkspaceReboundMark\(payload\)/,
-  'the session:list_changed listener must stamp the mark via the shared helper',
-);
 const webSource = read('platform/web/bridge.js');
-assert.match(
-  webSource,
-  /applyWorkspaceReboundMark\(payload\)/,
-  'the web listener must stamp the mark via the shared helper',
-);
+// Round-24 MAJOR 2: the previous bare /applyWorkspaceReboundMark\(payload\)/
+// pins were satisfied by the module-level wrapper declarations themselves —
+// deleting the listener's stamp call kept every suite green (the same
+// phantom-pin shape rounds 18–21 kept re-banning). Pin the stamp CALL inside
+// the session:list_changed listener span instead: between the rebind
+// listener's registration and the next listener, exactly once per host.
+function rebindListenerSpan(source, host) {
+  const start = source.indexOf('listen("session:list_changed"');
+  assert.ok(start >= 0, `${host} must register session:list_changed`);
+  const next = source.indexOf('listen("session:model_changed"', start);
+  assert.ok(
+    next > start,
+    `${host} must keep session:model_changed right after the rebind listener`,
+  );
+  return source.slice(start, next);
+}
+for (const [host, source] of [
+  ['the tauri sessions bridge', sessionsSource],
+  ['the web bridge', webSource],
+]) {
+  const span = rebindListenerSpan(source, host);
+  const stamps = span.match(/applyWorkspaceReboundMark\(payload\);/g) || [];
+  assert.equal(
+    stamps.length,
+    1,
+    `${host} must stamp the rebind mark exactly once inside the session:list_changed listener`,
+  );
+}
 assert.match(
   webSource,
   /function rebaseArtifactPathsForRebind\(sid, paths\)/,
