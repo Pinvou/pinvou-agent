@@ -67,7 +67,15 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             if id.is_empty() {
                 return None;
             }
-            let max_model_len = item.get("max_model_len").and_then(parse_positive_u32);
+            // LM Studio's /v1 shim reports the window as `max_context_length`
+            // (lmstudio.ai REST v0 docs; the native /api/v0/models uses the
+            // same key) — an endpoint self-reported fact about the model,
+            // same trust class as vLLM's `max_model_len`, which keeps
+            // precedence when both exist.
+            let max_model_len = item
+                .get("max_model_len")
+                .or_else(|| item.get("max_context_length"))
+                .and_then(parse_positive_u32);
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
@@ -144,6 +152,72 @@ fn parse_ollama_ps_names(v: serde_json::Value) -> std::collections::HashSet<Stri
         .unwrap_or_default()
 }
 
+/// Ollama `/api/ps` 返回的已加载模型 → 实际生效上下文。`context_length` 是
+/// 服务端 `num_ctx`（Modelfile 参数 / `OLLAMA_CONTEXT_LENGTH` / 服务端默认值）
+/// 叠加后的最终生效值，即部署真相本身；模型未加载时该接口不包含它。
+/// 同一条目的 `name` 与 `model` 两个键都登记（显式 digest 拉取时二者不同）。
+/// 非正值 / 越界值按未声明处理（与 `parse_positive_u32` 同口径）。
+pub(crate) fn parse_ollama_ps_contexts(
+    v: serde_json::Value,
+) -> std::collections::HashMap<String, u32> {
+    let mut out = std::collections::HashMap::new();
+    if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
+        for item in models {
+            let Some(ctx) = item.get("context_length").and_then(parse_positive_u32) else {
+                continue;
+            };
+            for key in ["name", "model"] {
+                if let Some(name) = item.get(key).and_then(|v| v.as_str()).map(str::trim) {
+                    if !name.is_empty() {
+                        out.insert(name.to_string(), ctx);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Ollama `/api/show` 单模型上下文事实，按可信度排序：
+/// 1. `parameters` 中的 `num_ctx N` —— Modelfile 显式声明，模型加载后即生效值；
+/// 2. `model_info` 的 `<arch>.context_length` —— GGUF 训练上下文（模型能力上限）。
+///    多个架构键时优先取与 `general.architecture` 同前缀的键，否则取所有正值的
+///    最小值（保守方向：低报窗口只是早压缩，高报窗口会让上游静默截断）。
+/// 注意 2 是训练上限而非生效值：未设置 `num_ctx` 时 Ollama 按服务端默认值
+/// （常见 4096）运行，该值只能在上游文档/配置层面核实，接口层不可探测。
+fn parse_ollama_show_context(v: serde_json::Value) -> Option<u32> {
+    if let Some(params) = v.get("parameters").and_then(|v| v.as_str()) {
+        for line in params.lines() {
+            let mut parts = line.split_whitespace();
+            if parts.next() == Some("num_ctx") {
+                if let Some(ctx) = parts
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0)
+                {
+                    return Some(ctx);
+                }
+            }
+        }
+    }
+    let info = v.get("model_info")?.as_object()?;
+    let arch = info.get("general.architecture").and_then(|v| v.as_str());
+    let candidates: Vec<(&str, u32)> = info
+        .iter()
+        .filter_map(|(key, value)| {
+            let prefix = key.strip_suffix(".context_length")?;
+            Some((prefix, parse_positive_u32(value)?))
+        })
+        .collect();
+    if let Some(arch) = arch {
+        if let Some((_, ctx)) = candidates.iter().find(|(prefix, _)| *prefix == arch) {
+            return Some(*ctx);
+        }
+    }
+    candidates.iter().map(|(_, ctx)| *ctx).min()
+}
+
 /// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。
 fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -178,7 +252,9 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
                 .map(|state| state == "loaded");
             Some(OpenAiModelInfo {
                 id: id.to_string(),
-                max_model_len: None,
+                // Native v0 fact: `max_context_length` (llm/vlm entries only —
+                // embeddings omit it, staying undeclared).
+                max_model_len: item.get("max_context_length").and_then(parse_positive_u32),
                 max_output_tokens: None,
                 loaded,
             })
@@ -248,6 +324,9 @@ fn shared_probe_client() -> Option<&'static reqwest::Client> {
 
 /// 探测 Ollama：区分"已加载"（/api/ps）与"仅下载未加载"（/api/tags）。
 /// 两个接口都是只读列表，不会触发加载；绝不能用推理请求探测。
+/// `/api/ps` 的 `context_length`（已加载模型的生效上下文）同步填入对应条目的
+/// `max_model_len`；未加载模型不补查 `/api/show`（列表探测保持零推理元数据
+/// 之外的开销，逐模型事实由 `fetch_ollama_model_context` 按需查询）。
 /// See [`apply_bearer`] for `bearer` semantics.
 pub async fn probe_ollama_models(
     base_url: &str,
@@ -255,19 +334,22 @@ pub async fn probe_ollama_models(
 ) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
-    // 已加载集合：失败按空集（全部未加载），不影响已下载列表。
-    let loaded_names = match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        Ok(resp) => resp
-            .json::<serde_json::Value>()
+    // 已加载集合与生效上下文表：失败按空（全部未加载、无窗口事实），不影响已下载列表。
+    let (loaded_names, ps_contexts) =
+        match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
+            .send()
             .await
-            .map(parse_ollama_ps_names)
-            .unwrap_or_default(),
-        Err(_) => Default::default(),
-    };
+            .and_then(|r| r.error_for_status())
+        {
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(v) => (
+                    parse_ollama_ps_names(v.clone()),
+                    parse_ollama_ps_contexts(v),
+                ),
+                Err(_) => Default::default(),
+            },
+            Err(_) => Default::default(),
+        };
     // 已下载列表：/api/tags 是必需项，失败则整个候选离线。
     let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
         .send()
@@ -281,14 +363,81 @@ pub async fn probe_ollama_models(
             .map(|name| {
                 let loaded = loaded_names.contains(&name);
                 OpenAiModelInfo {
+                    max_model_len: ps_contexts.get(&name).copied(),
                     id: name,
-                    max_model_len: None,
                     max_output_tokens: None,
                     loaded: Some(loaded),
                 }
             })
             .collect(),
     })
+}
+
+/// 拉取 Ollama `/api/ps` 的已加载模型生效上下文表。返回值三态：
+/// `Some(map)` —— 端点以 Ollama 形状应答（`models` 数组存在，可为空）；
+/// `None` —— 请求失败 / 非成功状态 / 响应不是 Ollama 形状（非 Ollama 端点）。
+/// 调用方以 `Some` 判定"这是 Ollama 形状的原生接口"，再决定是否补查
+/// `/api/show`。See [`apply_bearer`] for `bearer` semantics.
+pub async fn fetch_ollama_contexts(
+    base_url: &str,
+    bearer: Option<&str>,
+) -> Option<std::collections::HashMap<String, u32>> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = shared_probe_client()?;
+    let resp = apply_bearer(client.get(format!("{host}/api/ps")), bearer)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    let ollama_shaped = v.get("models").and_then(|m| m.as_array()).is_some();
+    ollama_shaped.then(|| parse_ollama_ps_contexts(v))
+}
+
+/// Ollama `/api/show` 单模型上下文事实（只读元数据查询，不触发模型加载）：
+/// Modelfile `num_ctx` 声明优先，其次 GGUF 训练上下文（见
+/// [`parse_ollama_show_context`] 的口径与局限）。
+pub async fn fetch_ollama_show_context(
+    base_url: &str,
+    bearer: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    let host = strip_v1_suffix(base_url)?;
+    let client = shared_probe_client()?;
+    let resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+        .ok()?;
+    let v = resp
+        .error_for_status()
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    parse_ollama_show_context(v)
+}
+
+/// 单模型上下文事实，按可信度排序：`/api/ps` 的生效值（模型已加载时即部署
+/// 真相）→ `/api/show`（Modelfile `num_ctx` → GGUF 训练上下文）。全部失败
+/// 返回 None，调用方保留既有兜底。Ollama 的 OpenAI 兼容 `/v1/models` 从不
+/// 携带窗口事实，这是唯一的事实来源；缺失时 foundation 对 unknown ollama
+/// 模型按 8192 兜底窗口推导预算（压缩阈值打到 4096 地板、压缩后输入预算
+/// 只剩 1024，见 2026-09-30 用户报告）。
+pub async fn fetch_ollama_model_context(
+    base_url: &str,
+    bearer: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    if let Some(ctx) = fetch_ollama_contexts(base_url, bearer)
+        .await
+        .and_then(|contexts| contexts.get(model).copied())
+    {
+        return Some(ctx);
+    }
+    fetch_ollama_show_context(base_url, bearer, model).await
 }
 
 /// 探测 LM Studio：优先原生 `/api/v0/models`（带 loaded 状态），
@@ -1517,6 +1666,161 @@ mod tests {
     }
 
     #[test]
+    fn ollama_ps_contexts_maps_effective_context_per_loaded_model() {
+        // Real /api/ps shape (ollama ≥0.6, api/types.go ProcessModelResponse):
+        // context_length is the effective runtime context after num_ctx /
+        // OLLAMA_CONTEXT_LENGTH / server default composition.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"models":[
+                {"name":"qwen3:32b","model":"qwen3:32b","size_vram":1,"context_length":131072},
+                {"name":"mproj:7b","model":"mproj:7b-instruct","context_length":8192},
+                {"name":"legacy","context_length":0},
+                {"name":"huge","context_length":4294967296},
+                {"name":"no-field"}
+            ]}"#,
+        )
+        .unwrap();
+        let contexts = parse_ollama_ps_contexts(json);
+        assert_eq!(contexts.get("qwen3:32b"), Some(&131_072));
+        // Both name and model keys are registered when they differ.
+        assert_eq!(contexts.get("mproj:7b"), Some(&8192));
+        assert_eq!(contexts.get("mproj:7b-instruct"), Some(&8192));
+        // 0 / out-of-u32-range / missing are undeclared, never fabricated.
+        assert!(!contexts.contains_key("legacy"));
+        assert!(!contexts.contains_key("huge"));
+        assert!(!contexts.contains_key("no-field"));
+        // Bad shape → empty map (callers fall through to /api/show).
+        assert!(parse_ollama_ps_contexts(serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn ollama_show_context_prefers_num_ctx_then_arch_key() {
+        // 1) A Modelfile num_ctx declaration is the effective value once the
+        //    model loads — it outranks the GGUF trained context.
+        let declared: serde_json::Value = serde_json::from_str(
+            r#"{"parameters":"stop <|im_end|>\nnum_ctx 131072\ntop_p 0.9",
+                "model_info":{"general.architecture":"qwen3","qwen3.context_length":40960}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_ollama_show_context(declared), Some(131_072));
+        // 2) Without num_ctx the GGUF trained context of the declared
+        //    architecture wins over unrelated arch keys.
+        let trained: serde_json::Value = serde_json::from_str(
+            r#"{"model_info":{"general.architecture":"llama",
+                "llama.context_length":131072,"llama2.context_length":4096}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_ollama_show_context(trained), Some(131_072));
+        // 3) No architecture match → the minimum positive value (a lower
+        //    window compacts earlier; an inflated one lets upstream truncate).
+        let ambiguous: serde_json::Value = serde_json::from_str(
+            r#"{"model_info":{"a.context_length":8192,"b.context_length":4096}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_ollama_show_context(ambiguous), Some(4_096));
+        // Invalid num_ctx values fall through to model_info instead of
+        // aborting the lookup.
+        let bad_decl: serde_json::Value = serde_json::from_str(
+            r#"{"parameters":"num_ctx not-a-number",
+                "model_info":{"qwen3.context_length":40960}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_ollama_show_context(bad_decl), Some(40_960));
+        // Absent / invalid shapes → None.
+        assert_eq!(parse_ollama_show_context(serde_json::json!({})), None);
+        assert_eq!(
+            parse_ollama_show_context(serde_json::json!({"model_info":{}})),
+            None
+        );
+        assert_eq!(
+            parse_ollama_show_context(serde_json::json!({"model_info":{"x.context_length":0}})),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_ollama_model_context_prefers_ps_then_show() {
+        // Loaded model: the /api/ps effective value wins and /api/show is not
+        // consulted.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "my-model").await,
+            Some(131_072)
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+        // Not loaded (or pre-0.6 server without the field): the /api/show
+        // fact is queried — a Modelfile num_ctx declaration here.
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/show",
+                200,
+                r#"{"parameters":"num_ctx 32768","model_info":{"general.architecture":"qwen3","qwen3.context_length":40960}}"#.into(),
+            ),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "my-model").await,
+            Some(32_768)
+        );
+        // Both absent → None (callers keep their existing fallbacks).
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "gone").await,
+            None
+        );
+        // The bearer credential rides the native probes the same as
+        // real inference (authenticated gateways 401 without it).
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let _ = fetch_ollama_model_context(&mock.base_url, Some("secret"), "m").await;
+        assert_eq!(mock.auth_for("/api/ps").as_deref(), Some("Bearer secret"));
+        assert_eq!(mock.auth_for("/api/show").as_deref(), Some("Bearer secret"));
+    }
+
+    #[tokio::test]
+    async fn probe_ollama_models_fills_window_for_loaded_entries() {
+        // The same /api/ps response that yields the loaded set also carries
+        // the effective context; loaded entries get their own window, the
+        // downloaded-only ones stay undeclared (no per-model /api/show
+        // fan-out in the list probe).
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"loaded-131k","context_length":131072}]}"#.into(),
+            ),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"loaded-131k"},{"name":"jit-only"}]}"#.into(),
+            ),
+        ]);
+        let probe = probe_ollama_models(&mock.base_url, None).await.unwrap();
+        let window_of = |id: &str| {
+            probe
+                .models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_model_len
+        };
+        assert_eq!(window_of("loaded-131k"), Some(131_072));
+        assert_eq!(window_of("jit-only"), None);
+    }
+
+    #[test]
     fn ollama_tag_names_dedupes_and_keeps_order() {
         let json: serde_json::Value = serde_json::from_str(
             r#"{"models":[{"name":"qwen3:8b"},{"name":"deepseek-r1:14b"},{"name":"qwen3:8b"},{"name":" "}]}"#,
@@ -1530,22 +1834,53 @@ mod tests {
 
     #[test]
     fn lmstudio_v0_models_parse_loaded_state() {
+        // Real v0 shape (lmstudio.ai REST docs): llm/vlm entries carry
+        // `max_context_length`; embedding entries omit it.
         let json: serde_json::Value = serde_json::from_str(
             r#"{"object":"list","data":[
-                {"id":"qwen3-8b","state":"loaded"},
-                {"id":"deepseek-r1-14b","state":"not-loaded"},
-                {"id":"legacy-model"}
+                {"id":"qwen3-8b","state":"loaded","max_context_length":131072},
+                {"id":"deepseek-r1-14b","state":"not-loaded","max_context_length":65536},
+                {"id":"legacy-model"},
+                {"id":"nomic-embed","type":"embeddings","state":"loaded"}
             ]}"#,
         )
         .unwrap();
         let models = parse_lmstudio_v0_models(&json).unwrap();
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 4);
         assert_eq!(models[0].loaded, Some(true));
+        assert_eq!(models[0].max_model_len, Some(131_072));
         assert_eq!(models[1].loaded, Some(false));
-        // 缺 state 字段 = 未知；空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测。
+        assert_eq!(models[1].max_model_len, Some(65_536));
+        // 缺 state 字段 = 未知；缺 max_context_length = 窗口未声明。
         assert_eq!(models[2].loaded, None);
+        assert_eq!(models[2].max_model_len, None);
+        // Embedding entries carry no context length → undeclared, never fabricated.
+        assert_eq!(models[3].max_model_len, None);
+        // 空列表 / 坏形状返回 None，调用方回退 OpenAI 兼容探测。
         assert!(parse_lmstudio_v0_models(&serde_json::json!({"data":[]})).is_none());
         assert!(parse_lmstudio_v0_models(&serde_json::json!({})).is_none());
+    }
+
+    /// LM Studio's OpenAI-compatible `/v1` shim reports the window as
+    /// `max_context_length` (its native v0 key); the generic list parser
+    /// adopts it so the engine spawn path (`resolve_served_model` →
+    /// `/v1/models`) sees the same fact the v0 listing carries.
+    /// `max_model_len` keeps precedence when a gateway serves both keys.
+    #[test]
+    fn parse_models_response_list_reads_lmstudio_context_alias() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"shim-alias","max_context_length":131072},
+                {"id":"both-keys","max_model_len":4096,"max_context_length":131072},
+                {"id":"alias-zero","max_context_length":0}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let window_of = |id: &str| models.iter().find(|m| m.id == id).unwrap().max_model_len;
+        assert_eq!(window_of("shim-alias"), Some(131_072));
+        assert_eq!(window_of("both-keys"), Some(4_096));
+        assert_eq!(window_of("alias-zero"), None);
     }
 
     /// Anthropic 地址走 x-api-key + anthropic-version，非 Anthropic 地址走 Bearer。

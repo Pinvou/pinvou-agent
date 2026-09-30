@@ -1939,6 +1939,15 @@ impl EnginePool {
     /// and `probed_output_tokens` are written. On probe failure (endpoint
     /// unreachable / name not matched) both facts are None and the route
     /// falls back to configured values / window tiers.
+    ///
+    /// Ollama exception: its OpenAI-compatible `/v1/models` never carries a
+    /// window fact, so an endpoint probed as Ollama gets a native follow-up
+    /// (`fetch_ollama_model_context`: `/api/ps` effective context →
+    /// `/api/show` num_ctx/trained context) for the name actually sent.
+    /// Without it the route declares no window and the foundation derives
+    /// its budget from the 8192 unknown-Ollama fallback — compaction floors
+    /// at 4096 and the post-compaction input budget collapses to 1024
+    /// (2026-09-30 user report: Ollama actually serving 131072).
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,
@@ -1960,13 +1969,39 @@ impl EnginePool {
         .await;
         let adopts =
             crate::features::monitor::adopts_probed_facts(is_vllm_route, &model.model, &served);
-        if is_vllm_route && served != model.model && !pins_scheduled_model {
+        let renamed = is_vllm_route && served != model.model && !pins_scheduled_model;
+        let sent_name = if renamed {
+            served.clone()
+        } else {
+            model.model.clone()
+        };
+        if renamed {
             model.model = served;
             bridge.session_model = Some(model);
         }
         if adopts {
             bridge.probed_context_tokens = max_len;
             bridge.probed_output_tokens = max_output;
+            // Native window fact for probed-Ollama endpoints, only when the
+            // list probe had none and the facts are adoptable (the queried
+            // name is the one actually sent, so the fact belongs to this
+            // route by construction). A LocalVllm-preset route is never
+            // kind-probed as Ollama in production (the kind probe gates on
+            // the openai provider), so the fallback stays on the vLLM path.
+            if max_len.is_none()
+                && bridge.probed_local_kind
+                    == Some(crate::core::model_endpoint::LocalServerKind::Ollama)
+            {
+                if let Some(ctx) = crate::core::model_endpoint::fetch_ollama_model_context(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &sent_name,
+                )
+                .await
+                {
+                    bridge.probed_context_tokens = Some(ctx);
+                }
+            }
         }
     }
 
@@ -8325,6 +8360,135 @@ mod probed_facts_wiring_tests {
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
         assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    /// Ollama's `/v1/models` never carries a window fact; an endpoint probed
+    /// as Ollama must follow up on the native API. The loaded model's
+    /// `/api/ps` effective context (the deployment ground truth, e.g. a
+    /// 131072 OLLAMA_CONTEXT_LENGTH serving) fills `probed_context_tokens`,
+    /// so route limits no longer fall to the foundation's 8192
+    /// unknown-Ollama fallback (compaction floor 4096 / input budget 1024).
+    #[tokio::test]
+    async fn ollama_probed_route_adopts_native_ps_context() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "the native effective context must ride the probed facts"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the /api/ps fact wins; /api/show stays unqueried"
+        );
+        assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    /// Model downloaded but not loaded (no /api/ps entry): the /api/show
+    /// fact (Modelfile num_ctx, else GGUF trained context) is the fallback
+    /// window fact.
+    #[tokio::test]
+    async fn ollama_probed_route_falls_back_to_show_context() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/show",
+                200,
+                r#"{"parameters":"num_ctx 32768","model_info":{"general.architecture":"qwen3","qwen3.context_length":40960}}"#.into(),
+            ),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(bridge.probed_context_tokens, Some(32_768));
+    }
+
+    /// The native follow-up is gated on the endpoint being probed as Ollama:
+    /// any other kind (Generic / vLLM / LM Studio / unprobed) never issues
+    /// the native requests.
+    #[tokio::test]
+    async fn non_ollama_kind_skips_native_context_fetch() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Generic);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(bridge.probed_context_tokens, None);
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "non-Ollama kinds must not receive Ollama native probes"
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+    }
+
+    /// Facts never borrow across names: the configured name missing from the
+    /// list is *kept* (served == configured → adopts holds), so the native
+    /// follow-up fires — but it queries `/api/ps` + `/api/show` **by that
+    /// name**, and another loaded model's context ("a" here) cannot be
+    /// misattributed to it.
+    #[tokio::test]
+    async fn kept_unlisted_name_fetches_only_its_own_native_fact() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"a"},{"id":"b"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"a","context_length":131072}]}"#.into(),
+            ),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "gone", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            1,
+            "the native follow-up fires for the kept name"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "another model's /api/ps fact must not be lent to the unlisted name"
+        );
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "gone",
+            "non-vLLM routes keep the configured name"
+        );
     }
 
     #[tokio::test]

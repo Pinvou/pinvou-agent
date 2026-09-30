@@ -252,7 +252,7 @@ async fn snapshot_for_model_config(
         None => None,
     };
 
-    let (served_model, max_model_len) = match models_resp {
+    let (served_model, mut max_model_len) = match models_resp {
         Some(r) => match r.json::<serde_json::Value>().await.ok() {
             Some(v) => {
                 parse_models_response(v, configured_model.as_deref()).unwrap_or((None, None))
@@ -261,6 +261,23 @@ async fn snapshot_for_model_config(
         },
         None => (None, None),
     };
+    // Ollama's OpenAI-compatible `/v1/models` never carries a window fact.
+    // For a local target whose listed window is missing, follow up on the
+    // native API (`ollama_display_window`: an Ollama-shaped `/api/ps` gates
+    // the `/api/show` follow-up, so non-Ollama locals pay one extra small
+    // GET per poll). This keeps the monitor denominator on the same
+    // deployment truth the engine route limits use
+    // (`core::model_context::resolve_context_window` single scale) instead
+    // of the preset fallback diverging from the engine's probed value.
+    if target_kind == "local" && max_model_len.is_none() {
+        max_model_len = ollama_display_window(
+            upstream,
+            api_key,
+            configured_model.as_deref(),
+            served_model.as_deref(),
+        )
+        .await;
+    }
 
     // 2) /metrics（用 host 根目录，不带 /v1）
     let metrics_url = metrics_applicable
@@ -393,6 +410,83 @@ fn parse_models_response(
         None
     };
     Some((Some(entry.id.clone()), window))
+}
+
+/// Window-attribution gate for the Ollama display follow-up: the queried
+/// entry must be the configured model's own (same matching scale as
+/// `parse_models_response`: exact, then ASCII case-insensitive); with no
+/// configured name the served entry is the display subject. A partial
+/// roster (configured name absent from the list) must not borrow the first
+/// entry's window — the same "a window is never borrowed from another
+/// model" principle as `parse_models_response` /
+/// `resolve_served_model_from_entries`.
+fn ollama_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
+    let Some(served) = served else {
+        return false;
+    };
+    match configured.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(configured) => served.eq_ignore_ascii_case(configured),
+        None => true,
+    }
+}
+
+/// `/api/show` lookup cache (60s TTL, keyed by upstream + model): the
+/// monitor snapshot polls at 1 Hz and `/api/show` re-reads GGUF metadata
+/// per call, so only the fresh `/api/ps` effective value is fetched every
+/// poll (one small local GET; it follows load state and server config).
+/// Only positive hits are cached; misses re-try after the TTL window.
+static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), (std::time::Instant, u32)>>,
+> = std::sync::OnceLock::new();
+
+const OLLAMA_SHOW_CACHE_TTL: Duration = Duration::from_secs(60);
+
+async fn cached_ollama_show_context(
+    upstream: &str,
+    api_key: Option<&str>,
+    name: &str,
+) -> Option<u32> {
+    let cache = OLLAMA_SHOW_CACHE.get_or_init(Default::default);
+    {
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((at, ctx)) = guard.get(&(upstream.to_string(), name.to_string())) {
+            if at.elapsed() < OLLAMA_SHOW_CACHE_TTL {
+                return Some(*ctx);
+            }
+        }
+    }
+    let ctx =
+        crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await?;
+    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
+        (upstream.to_string(), name.to_string()),
+        (std::time::Instant::now(), ctx),
+    );
+    Some(ctx)
+}
+
+/// Native window fact for a local target whose `/v1/models` listing carried
+/// none (Ollama is the local engine that never lists one): `/api/ps`
+/// effective context first (fresh; the deployment truth for loaded models),
+/// then `/api/show` (Modelfile `num_ctx` → GGUF trained context, 60s
+/// cached). A non-Ollama-shaped `/api/ps` (404/other servers) ends the
+/// lookup, so non-Ollama locals pay one extra small GET per poll. The
+/// queried entry is gated by `ollama_display_window_adoptable` — a window
+/// is never borrowed across model names.
+async fn ollama_display_window(
+    upstream: &str,
+    api_key: Option<&str>,
+    configured: Option<&str>,
+    served: Option<&str>,
+) -> Option<u32> {
+    if !ollama_display_window_adoptable(configured, served) {
+        return None;
+    }
+    let name = served?;
+    let contexts = crate::core::model_endpoint::fetch_ollama_contexts(upstream, api_key).await?;
+    if let Some(ctx) = contexts.get(name) {
+        return Some(*ctx);
+    }
+    cached_ollama_show_context(upstream, api_key, name).await
 }
 
 /// Display-side context window (the monitor card + the progress-bar denominator
@@ -774,6 +868,110 @@ mod tests {
         let (id, max) = parse_models_response(json, Some("user-picked")).unwrap();
         assert_eq!(id.as_deref(), Some("user-picked"));
         assert_eq!(max, None);
+    }
+
+    /// Ollama display follow-up attribution gate: the queried entry must be
+    /// the configured model's own (trimmed, ASCII case-insensitive — the
+    /// same scale as parse_models_response); with no configured name the
+    /// served entry is the display subject; a partial roster never borrows
+    /// the first entry's window; no served name → nothing to query.
+    #[test]
+    fn ollama_display_window_gate_never_borrows_across_names() {
+        assert!(ollama_display_window_adoptable(
+            Some("ollama-model"),
+            Some("ollama-model")
+        ));
+        assert!(ollama_display_window_adoptable(
+            Some("Ollama-Model"),
+            Some("ollama-model")
+        ));
+        assert!(ollama_display_window_adoptable(
+            Some("  ollama-model\t"),
+            Some("ollama-model")
+        ));
+        assert!(ollama_display_window_adoptable(None, Some("served")));
+        assert!(
+            !ollama_display_window_adoptable(Some("configured"), Some("first-entry")),
+            "a partial roster must not borrow the first entry's window"
+        );
+        assert!(!ollama_display_window_adoptable(Some("m"), None));
+        assert!(!ollama_display_window_adoptable(None, None));
+    }
+
+    /// The display follow-up on a local Ollama endpoint: /api/ps effective
+    /// value wins (fresh, loaded ground truth); an Ollama-shaped ps with no
+    /// entry for the model falls through to /api/show; a non-Ollama-shaped
+    /// ps (404 — vLLM/LM Studio/generic locals) ends the lookup with no
+    /// native follow-up at all.
+    #[tokio::test]
+    async fn ollama_display_window_ps_then_show_then_stop() {
+        use crate::core::model_endpoint::models_mock;
+        // Loaded: ps wins, show unqueried.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"m","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            Some(131_072)
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+        // Ollama-shaped but model not loaded: show fallback (cached).
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/show",
+                200,
+                r#"{"parameters":"num_ctx 32768","model_info":{"qwen3.context_length":40960}}"#
+                    .into(),
+            ),
+        ]);
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            Some(32_768)
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "first poll pays one /api/show"
+        );
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            Some(32_768)
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "the 1 Hz poll must be served from the 60s show cache"
+        );
+        // Non-Ollama local (ps 404): lookup stops, no show request.
+        let mock = models_mock::spawn(&[("/api/ps", 404, "{}".into())]);
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            None
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+        // Partial roster: the gate declines before any request.
+        let mock = models_mock::spawn(&[(
+            "/api/ps",
+            200,
+            r#"{"models":[{"name":"m","context_length":8}]}"#.into(),
+        )]);
+        assert_eq!(
+            ollama_display_window(
+                &mock.base_url,
+                None,
+                Some("configured"),
+                Some("first-entry")
+            )
+            .await,
+            None
+        );
+        assert_eq!(mock.hits_for("/api/ps"), 0);
     }
 
     /// A user-declared window (cloud; probe value 131072 from a gateway list):
