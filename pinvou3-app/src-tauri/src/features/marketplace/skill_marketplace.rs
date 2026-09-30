@@ -2553,17 +2553,36 @@ pub(crate) fn foreign_skill_copies_under(
 /// 期间市场状态可能已变（例如导入了把同名技能作为 companion 的包），碰撞状态
 /// 下恢复会造出同技能的双份物理副本，此后技能卸载的候选目录清理会把唯一副本
 /// 连他包副本一起删掉。与上传通道（`install_upload_skill`）同三查：预置名占用 /
-/// 属主认领 / 他包物理副本。仅读盘与登记，不动任何状态；碰撞对象的建包不持同
-/// id 锁，极端并发交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站
-/// `restore_plugin` 在取回目录前应用同一检查。
-pub(crate) fn ensure_skill_restorable(skill_name: &str) -> Result<(), String> {
+/// The owner-claim and foreign-copy arms anchor "own" on `restoring_pkg` —
+/// round-32 minor 5 (review #455): anchoring on the skill name misjudges a
+/// live S pack as "own" when a single-skill pack happens to be named exactly
+/// like the skill (both the claim and the physical nesting resolve to the
+/// S-named pack == the skill name), so restoring P's skills/S/ would
+/// double-materialize beside live bundles/S/. The identity fallback
+/// (owner == skill name — no claim, no live copy) is NOT refused: it is the
+/// restored pack's own undeclared skill, and the foreign-copy arm already
+/// excludes live copies under other packs. Read-only registry/disk
+/// inspection, no state changes; the colliding pack's import holds no shared
+/// id lock here — extreme interleavings are backstopped by the
+/// fail-closed refusal in skill uninstall. `pub(crate)`:
+/// recycle_bin's `restore_plugin` applies the same check before taking the
+/// directory back.
+pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> Result<(), String> {
     if is_preset_skill_name(skill_name) {
         return Err(format!(
             "技能名 '{skill_name}' 与市场预置技能冲突，无法恢复；请先卸载同名预置技能，或从回收站彻底删除后改名重新导入"
         ));
     }
     let owner = super::bundle::skill_owner_package(skill_name);
-    if owner != skill_name {
+    // Round-32 minor 5 (review #455): refuse a real claim by ANOTHER pack.
+    // The identity fallback (owner == skill_name — no manifest claim, no live
+    // physical copy) is the "unclaimed skill of the pack being restored"
+    // shape (a corrupt or under-declared combo's skills resolve to
+    // themselves); the foreign-copy arm below already excludes live copies
+    // under other packs at this point, so refusing on the fallback would
+    // strand that legitimate restore (round-33 correction after it broke
+    // restore_unreadable_bin_manifest_fails_toward_force et al.).
+    if owner != skill_name && owner != restoring_pkg {
         return Err(format!(
             "技能名 '{skill_name}' 已被已安装包 '{owner}' 的配套技能占用，无法恢复；请先卸载该包再从回收站恢复"
         ));
@@ -2571,7 +2590,7 @@ pub(crate) fn ensure_skill_restorable(skill_name: &str) -> Result<(), String> {
     if let Some(other) = foreign_skill_copies_under(
         &SkillMarketplaceManager::new().packages_root,
         skill_name,
-        skill_name,
+        restoring_pkg,
     )
     .into_iter()
     .next()

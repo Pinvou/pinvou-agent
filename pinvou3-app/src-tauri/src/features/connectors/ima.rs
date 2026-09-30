@@ -334,13 +334,33 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID);
+            // Fail-visible persist (review #455 R13-B3): like the install Err above,
+            // this rolls back the secrets, so the reconnect does not complete with
+            // credentials committed and consent state lost. The pack itself is not
+            // uninstalled here (live-by-absence until the denied state applies on
+            // reconnect) — that residual is named in the registered follow-up.
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)
+                .map_err(|e| {
+                // The frontend fire-and-forget call may swallow this Err (review #455 R16-MAJOR2), so it must be logged here.
+                log::warn!("[ima] persisting the skills' default-off consent state failed: {e}");
+                format!(
+                    "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}: new sessions will enable them by default — turn them off in the tools list: {e}"
+                )
+            })?;
             Ok(())
         })();
 
         if let Err(err) = result {
-            rollback_secret(&store, &client_id_ref(), previous_client_id)?;
-            rollback_secret(&store, &api_key_ref(), previous_api_key)?;
+            // Round-37 C5 (review #455): a rollback failure must not replace
+            // the primary error (which carries the consent-guidance copy and
+            // the frontend marker) nor skip the second rollback — log each
+            // rollback failure and continue, letting the primary err win.
+            if let Err(e) = rollback_secret(&store, &client_id_ref(), previous_client_id) {
+                log::warn!("[ima] rolling back the client id secret failed: {e}");
+            }
+            if let Err(e) = rollback_secret(&store, &api_key_ref(), previous_api_key) {
+                log::warn!("[ima] rolling back the API key secret failed: {e}");
+            }
             return Err(err);
         }
 
@@ -366,11 +386,37 @@ pub async fn ima_logout() -> Result<Value, String> {
         let store = SystemCredentialStore::new();
         let client_result = store.delete(&client_id_ref());
         let api_key_result = store.delete(&api_key_ref());
-        let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
+        // Round-25 MAJOR 4: a swallowed uninstall failure must NOT reach the
+        // consent cleanup — with `bundles/ima/` still on disk, stripping its
+        // consent rows would set ima-skills live with zero consent in every
+        // initialized scope while logout reported success. Surface the
+        // uninstall failure instead; the logout stays retryable (the consent
+        // rows and the pack dir are both intact).
+        //
+        // Round-28 MINOR 1 (review #455): the consent rows are keyed by the
+        // HARD rule `"ima-skills" -> "ima"` (bundle.rs), not by the dir — so
+        // the exact cleanup consumes `"ima"` directly. (Round-27 m2's
+        // `IMA_SKILL_ID`-verbatim form was a structural no-op; and the
+        // round-26 `resolve_pack_owner_id` form was already hijack-proof for
+        // this literal — the hard rule is not dir-dependent.)
+        if let Err(e) = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
+            return Err(format!(
+                "ima logout: skill uninstall failed — the pack stays installed and its consent rows are unchanged; retry: {e}"
+            ));
+        }
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID);
+        // Round-24 minor 4：凭据删除结果先行返回；同意清理的瞬时持久失败只
+        // 告警降级（stale-deny 方向本就 fail-safe）——否则清理在凭据已删后
+        // 失败会让登出永久报错（每次重试都在同一步失败）。
+        let cleanup_result = crate::features::marketplace::scope::
+            remove_bundle_from_disabled_scopes_exact("ima");
+        if let Err(e) = &cleanup_result {
+            log::warn!(
+                "[ima] logout consent-cleanup persist failed (the residue is stale-deny, fail-safe): {e}"
+            );
+        }
         client_result.map_err(|e| e.user_message())?;
         api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))
@@ -391,8 +437,37 @@ fn redact_known_credentials(mut text: String, client_id: &str, api_key: &str) ->
     text
 }
 
+/// Round-32 minor 10 (review #455): the stable marker the frontend ima card
+/// keys its actionable-guidance branch on (ToolStoreView's `consentFailure`
+/// substring check). A backend rewording would silently degrade the en/ja
+/// guidance to the generic copy — the pin below forces the two sides to move
+/// together. Round-33 MAJOR 2 (review #455): the string now lives once, in
+/// `scope::CONSENT_SYNC_FAILURE_MARKER`, shared by every consent-sync
+/// emitter (skill_gate included).
+pub(crate) const IMA_CONSENT_SYNC_FAILURE_MARKER: &str =
+    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER;
+
 #[cfg(test)]
 mod tests {
+    /// Round-32 minor 10 (review #455): the consent-failure copy carries the
+    /// exact marker the frontend matches (ToolStoreView `consentFailure`);
+    /// rewording it without updating the frontend matcher would silently
+    /// degrade the en/ja guidance to the generic copy.
+    #[test]
+    fn consent_failure_message_keeps_the_frontend_marker() {
+        let message = format!(
+            "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}: new sessions will enable them by default — turn them off in the tools list: store down"
+        );
+        assert!(
+            message.contains(IMA_CONSENT_SYNC_FAILURE_MARKER),
+            "the shipped message must carry the frontend-matched marker: {message}"
+        );
+        assert_eq!(
+            IMA_CONSENT_SYNC_FAILURE_MARKER, "persisting their default-off consent state failed",
+            "the marker value is the frontend contract (ToolStoreView consentFailure) — update both sides together"
+        );
+    }
+
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
