@@ -264,6 +264,13 @@ pub(super) fn append_memory_review_diagnostic_to(
         .write_all(line.as_bytes())
 }
 
+/// Classify a review failure for the diagnostics ledger. Parse markers are
+/// checked before request markers on purpose: a parse failure's chain still
+/// contains "chat/completions" from the earlier request contexts, so the
+/// order decides its stage. Side effect of status errors now embedding the
+/// endpoint body (`error_for_status_with_body`): a 400 body that happened to
+/// quote a parse marker would be filed as `parse_failed`. Diagnostics-only,
+/// so the substring exposure is accepted rather than parsed around.
 pub(super) fn memory_review_error_stage(error: &anyhow::Error) -> &'static str {
     let message = format!("{error:#}").to_ascii_lowercase();
     if message.contains("parse memory review") || message.contains("memory review response json") {

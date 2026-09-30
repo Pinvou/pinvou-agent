@@ -1150,6 +1150,33 @@ fn memory_review_request_body_mirrors_engine_wire_no_temperature() {
     assert_eq!(body["messages"][1]["content"], "user content");
 }
 
+/// Pin the call site, not just the builder: the pin above goes red when
+/// `memory_review_request_body` itself changes, but a re-inlined body inside
+/// `send_memory_llm_request` would bypass it silently. The request region
+/// must build through the shared builder and must not carry a sampling
+/// parameter (the Kimi Coding Plan gateway rejects client temperature).
+#[test]
+fn send_memory_llm_request_call_site_builds_body_through_builder() {
+    let source = include_str!("llm_review.rs");
+    let start = source
+        .find("async fn send_memory_llm_request")
+        .expect("send_memory_llm_request definition present");
+    let region = &source[start
+        ..source[start..]
+            .find("pub(super) fn memory_review_request_body")
+            .expect("memory_review_request_body definition present")
+            + start];
+    assert!(
+        region.contains("memory_review_request_body("),
+        "send_memory_llm_request must build its body via \
+         memory_review_request_body"
+    );
+    assert!(
+        !region.contains("\"temperature\""),
+        "the memory request region must not re-inline a temperature field"
+    );
+}
+
 /// The memory review prompt body carries no language constraint of its own; the
 /// output-language directive is appended per locale (`content` follows the UI
 /// language, enum values stay ASCII); zh-Hans/unknown → no-op. The en/ja

@@ -1362,6 +1362,34 @@ mod voice_postprocess_tests {
         );
     }
 
+    /// Pin the call site, not just the builder: the builder pin above goes
+    /// red when `voice_postprocess_request_body` itself changes, but a
+    /// re-inlined body inside `call_voice_postprocess_model` would bypass it
+    /// silently. The request region must build through the shared builder
+    /// and must not carry a sampling parameter.
+    #[test]
+    fn call_voice_postprocess_model_builds_body_through_builder() {
+        let source = include_str!("voice.rs");
+        let start = source
+            .find("async fn call_voice_postprocess_model")
+            .expect("call_voice_postprocess_model definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("fn voice_postprocess_request_body")
+                .expect("voice_postprocess_request_body definition present")
+                + start];
+        assert!(
+            region.contains("voice_postprocess_request_body("),
+            "call_voice_postprocess_model must build its body via \
+             voice_postprocess_request_body"
+        );
+        assert!(
+            !region.contains("\"temperature\""),
+            "the postprocess request region must not re-inline a temperature \
+             field"
+        );
+    }
+
     #[test]
     fn voice_postprocess_body_mirrors_engine_wire_no_temperature() {
         let body = voice_postprocess_request_body("k3", "sys prompt", "user content", 512);

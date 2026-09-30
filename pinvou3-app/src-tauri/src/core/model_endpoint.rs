@@ -2732,6 +2732,33 @@ mod tests {
         assert_eq!(body["system"], "sys");
     }
 
+    /// Pin the call site, not just the builder: the pin above goes red when
+    /// `anthropic_messages_request` itself changes, but a re-inlined body
+    /// inside `post_anthropic_messages` would bypass it silently. The
+    /// request region must build through the shared builder and must not
+    /// carry a sampling parameter.
+    #[test]
+    fn post_anthropic_messages_call_site_builds_body_through_builder() {
+        let source = include_str!("model_endpoint.rs");
+        let start = source
+            .find("pub async fn post_anthropic_messages")
+            .expect("post_anthropic_messages definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("fn anthropic_messages_request")
+                .expect("anthropic_messages_request definition present")
+                + start];
+        assert!(
+            region.contains("anthropic_messages_request("),
+            "post_anthropic_messages must build its body via \
+             anthropic_messages_request"
+        );
+        assert!(
+            !region.contains("\"temperature\""),
+            "the Messages request region must not re-inline a temperature field"
+        );
+    }
+
     #[tokio::test]
     async fn status_error_surfaces_response_body() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

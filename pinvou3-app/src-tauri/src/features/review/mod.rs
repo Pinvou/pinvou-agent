@@ -977,6 +977,32 @@ mod tests {
         assert_eq!(body["messages"][1]["content"], "user content");
     }
 
+    /// Pin the call site, not just the builder: the builder pin above goes
+    /// red when `review_request_body` itself changes, but a re-inlined body
+    /// inside `model_review` would bypass it silently. The request region
+    /// must build through the shared builder and must not carry a sampling
+    /// parameter (the Kimi Coding Plan gateway rejects client temperature).
+    #[test]
+    fn model_review_call_site_builds_body_through_builder() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("async fn model_review")
+            .expect("model_review definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("fn review_request_body")
+                .expect("review_request_body definition present")
+                + start];
+        assert!(
+            region.contains("review_request_body("),
+            "model_review must build its one-shot body via review_request_body"
+        );
+        assert!(
+            !region.contains("\"temperature\""),
+            "the review request region must not re-inline a temperature field"
+        );
+    }
+
     #[test]
     fn review_reasoning_controls_cover_builtin_presets() {
         let mut qwen = json!({});
