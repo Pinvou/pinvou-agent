@@ -100,8 +100,11 @@ static USER_STAMP: Mutex<Option<UserDirStamp>> = Mutex::new(None);
 /// What the user-card directory looked like when the pool was loaded: its
 /// path plus every `*.json` entry's name, size and mtime. A card created or
 /// deleted by another process always changes the name set; an in-place
-/// rewrite is caught by size or mtime. `entries: None` marks a directory
-/// that could not be enumerated, which is distinct from "readable and
+/// rewrite is caught by size or mtime (accepted corner: a same-length
+/// rewrite landing inside one mtime tick aliases on coarse-clock
+/// filesystems — atomic-replace writers always carry a fresh mtime).
+/// `entries: None` marks a directory that could not be enumerated — an open
+/// fault or an error mid-iteration — which is distinct from "readable and
 /// empty": a transient fault must never be mistaken for "every card
 /// deleted".
 #[derive(Debug, PartialEq, Eq)]
@@ -122,36 +125,66 @@ fn personas_dir_parent_intact(dir: &std::path::Path) -> bool {
 
 fn user_dir_stamp() -> UserDirStamp {
     let dir = crate::platform::paths::user_personas_dir();
-    let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .flatten()
-            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
-            .map(|entry| {
-                let meta = entry.metadata().ok();
-                (
-                    entry.file_name(),
-                    meta.as_ref().map_or(0, std::fs::Metadata::len),
-                    meta.and_then(|meta| meta.modified().ok()),
-                )
-            })
-            .collect(),
+    match std::fs::read_dir(&dir) {
         // A missing directory next to an intact parent legitimately means
         // "no cards": the directory is gone and its cards are gone with it.
         // Any other outcome — a read failure, or a missing parent (an
-        // unmounted volume) — is a transient fault, not a pool change.
+        // unmounted volume) — is a transient fault, not a pool change. A
+        // directory path replaced by a regular file reads as
+        // `NotADirectory` on every supported platform and lands here too.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if personas_dir_parent_intact(&dir) {
-                Vec::new()
+                UserDirStamp {
+                    dir,
+                    entries: Some(Vec::new()),
+                }
             } else {
-                return UserDirStamp { dir, entries: None };
+                UserDirStamp { dir, entries: None }
             }
         }
-        Err(_) => return UserDirStamp { dir, entries: None },
-    };
-    entries.sort();
+        Err(_) => UserDirStamp { dir, entries: None },
+        Ok(entries) => user_dir_stamp_from(
+            dir,
+            entries.map(|entry| {
+                entry.map(|entry| {
+                    let meta = entry.metadata().ok();
+                    (
+                        entry.file_name(),
+                        meta.as_ref().map_or(0, std::fs::Metadata::len),
+                        meta.and_then(|meta| meta.modified().ok()),
+                    )
+                })
+            }),
+        ),
+    }
+}
+
+/// Stamp from per-entry measurements; split from `user_dir_stamp` so a
+/// mid-iteration fault can be exercised without mocking the filesystem.
+fn user_dir_stamp_from(
+    dir: PathBuf,
+    entries: impl Iterator<Item = std::io::Result<(std::ffi::OsString, u64, Option<SystemTime>)>>,
+) -> UserDirStamp {
+    let mut list = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            // A dirent that errors mid-iteration is the same fault class as
+            // a directory that cannot be opened: publish "unknown" rather
+            // than a shorter listing that could later alias a real deletion
+            // and mask it.
+            Err(_) => return UserDirStamp { dir, entries: None },
+        };
+        let name = std::path::Path::new(&entry.0);
+        if name.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        list.push(entry);
+    }
+    list.sort();
     UserDirStamp {
         dir,
-        entries: Some(entries),
+        entries: Some(list),
     }
 }
 
@@ -163,6 +196,12 @@ fn set_user_stamp(stamp: UserDirStamp) {
 
 /// Reload the user pool when the directory no longer matches the stamp it
 /// was loaded from. Must be called without holding the `USER` lock.
+///
+/// Per-chat-turn readers call this on every turn. While the stamp matches,
+/// the cost is one directory enumeration plus one metadata read per
+/// `*.json` entry and no card-file reads — sub-millisecond at realistic
+/// card counts on local storage. A mismatch falls back to a full reload
+/// (read and parse every card).
 fn sync_user_from_disk() {
     let current = user_dir_stamp();
     if current.entries.is_none() {
@@ -237,27 +276,56 @@ struct UserCardsLoad {
 /// 整个目录枚举失败才返回 incomplete。
 fn load_user_cards() -> UserCardsLoad {
     let dir = crate::platform::paths::user_personas_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return UserCardsLoad {
+                cards: Vec::new(),
+                complete: personas_dir_parent_intact(&dir),
+                degraded: Vec::new(),
+            };
+        }
+        Err(_) => {
+            return UserCardsLoad {
+                cards: Vec::new(),
+                complete: false,
+                degraded: Vec::new(),
+            };
+        }
+    };
+    load_user_cards_from(entries.map(|entry| entry.map(|entry| entry.path())))
+}
+
+/// Parse the card files behind an entries iterator; split from
+/// `load_user_cards` so a mid-iteration fault can be exercised without
+/// mocking the filesystem.
+fn load_user_cards_from(entries: impl Iterator<Item = std::io::Result<PathBuf>>) -> UserCardsLoad {
     let mut load = UserCardsLoad {
         cards: Vec::new(),
         complete: true,
         degraded: Vec::new(),
     };
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            load.complete = personas_dir_parent_intact(&dir);
-            return load;
-        }
-        Err(_) => {
-            load.complete = false;
-            return load;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for path in entries {
+        let path = match path {
+            Ok(path) => path,
+            // A dirent that errors mid-iteration means the enumeration was
+            // only partial: report it like a whole-directory fault, so the
+            // publisher keeps the last-known-good pool instead of evicting
+            // a card whose dirent merely failed this pass.
+            Err(_) => {
+                load.complete = false;
+                load.cards.clear();
+                load.degraded.clear();
+                return load;
+            }
+        };
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
+        // Degraded tracking keys by file stem while pool identity is the
+        // card's inner `id`. The app always writes `<id>.json`, so the two
+        // agree; an app-foreign file whose stem differs from its id can
+        // still be evicted while torn, and self-heals once it parses again.
         let degraded_id = || {
             path.file_stem()
                 .and_then(|s| s.to_str())
@@ -871,6 +939,53 @@ mod tests {
         }
         reload_user();
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn mid_iteration_dirent_fault_loads_as_incomplete() {
+        // A readdir that fails partway (flaky volume) previously skipped the
+        // failing dirent silently: the load published as complete, the card
+        // vanished from the pool while its file still existed, and the
+        // matching stamp never retried. It must classify like a
+        // whole-directory fault instead.
+        let entries: Vec<std::io::Result<PathBuf>> = vec![
+            Ok(PathBuf::from("/tmp/pinvou3/a.json")),
+            Err(std::io::Error::other("simulated getdents failure")),
+        ];
+        let load = load_user_cards_from(entries.into_iter());
+        assert!(
+            !load.complete,
+            "a partial enumeration must not publish as complete"
+        );
+        assert!(load.cards.is_empty(), "no card may survive a partial load");
+        assert!(
+            load.degraded.is_empty(),
+            "a fault is not a degraded id: the pool must stay whole"
+        );
+    }
+
+    #[test]
+    fn mid_iteration_dirent_fault_stamps_as_unknown() {
+        let entries: Vec<std::io::Result<(std::ffi::OsString, u64, Option<SystemTime>)>> = vec![
+            Ok(("a.json".into(), 5, None)),
+            Err(std::io::Error::other("simulated getdents failure")),
+        ];
+        let stamp =
+            user_dir_stamp_from(PathBuf::from("/tmp/pinvou3/personas"), entries.into_iter());
+        assert_eq!(
+            stamp.entries, None,
+            "a partial enumeration must not stamp as a complete listing"
+        );
+
+        let healthy: Vec<std::io::Result<(std::ffi::OsString, u64, Option<SystemTime>)>> =
+            vec![Ok(("a.json".into(), 5, None))];
+        let stamp =
+            user_dir_stamp_from(PathBuf::from("/tmp/pinvou3/personas"), healthy.into_iter());
+        assert_eq!(
+            stamp.entries,
+            Some(vec![("a.json".into(), 5u64, None)]),
+            "the fault arm must not swallow healthy listings"
+        );
     }
 
     #[test]
