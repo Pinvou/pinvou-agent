@@ -739,7 +739,7 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     builtinPage.list&&builtinPage.sr&&builtinPage.badge&&builtinPage.tools&&builtinPage.level&&builtinPage.version&&builtinPage.access&&builtinPage.noAction&&builtinPage.skill,
     builtinPage.list?'':JSON.stringify(builtinPage));
   rec('builtin subpage mode-controlled skill badge agrees with the store card',
-    !!builtinPage.skillCardText&&builtinPage.skillCardText.includes('内置 · 随会话模式')&&!builtinPage.skillCardText.includes('内置 · 始终启用'),
+    !!builtinPage.skillCardText&&builtinPage.skillCardText.includes('内置 · 受模式控制')&&!builtinPage.skillCardText.includes('内置 · 始终启用'),
     builtinPage.skillCardText===null?'card missing':builtinPage.skillCardText);
   await page.click('[data-testid="builtin-plugins-back"]');
   await sleep(200);

@@ -1291,9 +1291,18 @@ impl Pinvou3Bundle {
                         );
                         continue;
                     }
+                    // ensure_package_released keys the EXACT catalog id: a
+                    // legacy case-variant record (pre-canon install on a
+                    // case-insensitive filesystem) would silently no-op here
+                    // while its package dir never converges — canonicalize the
+                    // spelling for the release check only; the record itself
+                    // is left untouched (review round-6 M3b, boot lane).
+                    let release_id =
+                        crate::features::marketplace::mcp_catalog::canonical_catalog_id(&record.id)
+                            .unwrap_or(record.id.as_str());
                     if let Err(e) =
                         crate::features::marketplace::mcp_catalog::ensure_package_released(
-                            &record.id,
+                            release_id,
                         )
                     {
                         log::warn!("[runtime-bundle] MCP 包资源补齐失败（{}）: {e}", record.id);
@@ -1642,9 +1651,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// The preservation contract must hold through the REAL boot chain, not
-    /// just `run_mcp_startup_maintenance`: `ensure_extracted` first runs the
-    /// retired-tool cleanup, whose residue probe treats a corrupt mcp.json as
     /// Boot wiring smoke (review round-4 minor 7): the boot chain must seed
     /// the default-installed builtin and replay the feature-switch state
     /// file — deleting either wiring line at the call site turns this red.
@@ -1718,6 +1724,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// The preservation contract must hold through the REAL boot chain, not
+    /// just `run_mcp_startup_maintenance`: `ensure_extracted` first runs the
+    /// retired-tool cleanup, whose residue probe treats a corrupt mcp.json as
     /// "residue present" and calls `uninstall` — and an uninstall that reset
     /// the file would destroy the original bytes *before* the reconcile ever
     /// got to back them up. With the refusal in `remove_from_mcp_json`, the

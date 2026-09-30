@@ -131,6 +131,76 @@ class ReadSessionTests(unittest.TestCase):
         self.assertFalse(second["hasMore"])
         self.assertIsNone(second["nextCursor"])
 
+    def test_cursor_survives_turns_appended_between_pages(self):
+        # The referenced session can still be ACTIVE: a turn that completed
+        # between two pages appends ABOVE the anchor and would shift every
+        # newest-first index — the anchored cursor must keep paging over the
+        # ORIGINAL turn set (no duplicate of the newest turn, no skip).
+        first = self.read(turn_limit=2)
+        self.assertTrue(first["hasMore"])
+        _write_session(self.dir, "abc123", _three_turn_messages() + [
+            _msg("user", _text("fourth question")),
+            _msg("assistant", _text("fourth answer")),
+        ], title="referenced session")
+        second = self.read(turn_limit=2, cursor=first["nextCursor"])
+        self.assertEqual([t["userText"] for t in second["turns"]], ["first question"])
+        self.assertFalse(second["hasMore"])
+        # The appended turn is visible to a FRESH read (totalTurns grew) —
+        # anchoring must not hide new content from new callers.
+        fresh = self.read(turn_limit=10)
+        self.assertEqual(fresh["totalTurns"], 4)
+        self.assertEqual(fresh["turns"][0]["userText"], "fourth question")
+
+    def test_forged_cursor_offsets_terminate(self):
+        # A forged huge offset must terminate (hasMore false, empty page), not
+        # loop; a negative offset clamps to 0; a non-integer offset is
+        # rejected as an invalid cursor.
+        huge = server.base64.urlsafe_b64encode(
+            json.dumps({"o": 10 ** 9, "t": 3}).encode("utf-8")).decode("ascii")
+        payload, error = server.read_session_history(self.dir, "abc123", cursor=huge)
+        self.assertIsNone(error)
+        self.assertEqual(payload["turns"], [])
+        self.assertFalse(payload["hasMore"])
+        negative = server.base64.urlsafe_b64encode(
+            json.dumps({"o": -5}).encode("utf-8")).decode("ascii")
+        payload, error = server.read_session_history(self.dir, "abc123", cursor=negative)
+        self.assertIsNone(error)
+        self.assertEqual(payload["turns"][0]["userText"], "third question")
+        junk = server.base64.urlsafe_b64encode(
+            json.dumps({"o": "later"}).encode("utf-8")).decode("ascii")
+        payload, error = server.read_session_history(self.dir, "abc123", cursor=junk)
+        self.assertIsNone(payload)
+        self.assertEqual(error, "invalid cursor")
+
+    def test_envelope_metadata_counts_against_response_budget(self):
+        # The envelope fields (title/workspace/model) are user-derived and ride
+        # the same response: a ~4 KB title must consume budget, not ride free
+        # above the per-turn accounting (worst case ~12 KB of envelope in one
+        # response otherwise).
+        _write_session(self.dir, "bigtitle", [
+            _msg("user", _text("question one")),
+            _msg("assistant", _text("answer one")),
+            _msg("user", _text("question two")),
+            _msg("assistant", _text("answer two")),
+        ], title="t" * server.MAX_METADATA_FIELD_CHARS)
+        _write_session(self.dir, "smalltitle", [
+            _msg("user", _text("question one")),
+            _msg("assistant", _text("answer one")),
+            _msg("user", _text("question two")),
+            _msg("assistant", _text("answer two")),
+        ], title="")
+        old_budget = server.MAX_RESPONSE_BYTES
+        server.MAX_RESPONSE_BYTES = 700
+        try:
+            big = self.read("bigtitle", turn_limit=10)
+            small = self.read("smalltitle", turn_limit=10)
+        finally:
+            server.MAX_RESPONSE_BYTES = old_budget
+        self.assertTrue(big["truncated"])
+        self.assertEqual(len(big["turns"]), 1)
+        self.assertFalse(small["truncated"])
+        self.assertEqual(len(small["turns"]), 2)
+
     def test_invalid_cursor_reports_error(self):
         payload, error = server.read_session_history(self.dir, "abc123", cursor="@@bad@@")
         self.assertIsNone(payload)
@@ -593,6 +663,60 @@ class ListSessionsTests(unittest.TestCase):
         finally:
             server.MAX_LIST_SCAN_ENTRIES = old_cap
 
+    def test_scan_cap_keeps_most_recently_updated_entries(self):
+        # Session ids encode a nanosecond timestamp least-significant-digit
+        # first, so filename order is effectively random with respect to
+        # recency: the cap must rank by mtime and keep the NEWEST entries,
+        # or the newest sessions are permanently invisible on a large store.
+        _write_session(self.dir, "old000", [], title="old session",
+                       updated_at="2026-01-01T00:00:00Z")
+        _write_session(self.dir, "new000", [], title="new session",
+                       updated_at="2026-09-01T00:00:00Z")
+        # Pin every fixture mtime (setUp files included) so the ranking does
+        # not depend on wall-clock creation order.
+        os.utime(Path(self.dir) / "aaa111.json", (500000, 500000))
+        os.utime(Path(self.dir) / "bbb222.json", (500000, 500000))
+        os.utime(Path(self.dir) / "old000.json", (1000000, 1000000))
+        os.utime(Path(self.dir) / "new000.json", (2000000, 2000000))
+        old_cap = server.MAX_LIST_SCAN_ENTRIES
+        server.MAX_LIST_SCAN_ENTRIES = 3
+        try:
+            for i in range(6):
+                path = Path(self.dir) / f"cap{i:03d}.json"
+                _write_session(self.dir, f"cap{i:03d}", [], title=f"cap {i}")
+                os.utime(path, (1000000, 1000000))  # older than new000
+            payload, error = server.list_sessions(self.dir)
+            self.assertIsNone(error)
+            self.assertTrue(payload.get("truncated"))
+            ids = [entry["sessionId"] for entry in payload["sessions"]]
+            self.assertIn("new000", ids, "the newest entry must survive the cap")
+            self.assertNotIn("old000", ids, "the oldest entries are the ones the cap drops")
+        finally:
+            server.MAX_LIST_SCAN_ENTRIES = old_cap
+
+    def test_oversize_session_file_is_skipped_by_listing(self):
+        # The full-parse fallback of the LISTING path is bound by the file-size
+        # ceiling like the read path: an oversize snapshot is skipped, not
+        # parsed, and the listing survives. Head extraction is forced to fail
+        # by padding the JSON with >64 KB before the metadata key.
+        padding = {"padding": "x" * (server.METADATA_HEAD_BYTES + 1),
+                   "metadata": {"id": "huge000", "title": "huge session",
+                                "updated_at": "2026-09-15T00:00:00Z",
+                                "message_count": 0},
+                   "messages": []}
+        (Path(self.dir) / "huge000.json").write_text(
+            json.dumps(padding), encoding="utf-8")
+        old_limit = server.MAX_SESSION_FILE_BYTES
+        server.MAX_SESSION_FILE_BYTES = 16
+        try:
+            payload, error = server.list_sessions(self.dir)
+        finally:
+            server.MAX_SESSION_FILE_BYTES = old_limit
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertNotIn("huge000", ids)
+        self.assertEqual(payload["total"], 2)
+
     def test_metadata_head_extraction_matches_full_parse(self):
         path = Path(self.dir) / "aaa111.json"
         head = server._extract_metadata_head(str(path))
@@ -762,6 +886,15 @@ class FeatureGateTests(unittest.TestCase):
             server.full_tool_name("read_session"),
             "mcp_session-reader_read_session")
 
+    def test_shipped_manifest_tool_features_wiring(self):
+        # The Python gate is keyed by the full tool names the manifest's
+        # tool_features declares; a key-format drift (hyphen vs underscore,
+        # a renamed tool) would silently fail the gate OPEN with no red on
+        # the python side — pin the shipped manifest against the exact set
+        # the server derives from SERVER_KEY.
+        shipped = SERVER_PATH.with_name("manifest.json")
+        self.assertEqual(server.load_tool_features(shipped), self.TOOL_FEATURES)
+
 
 class StdioContractTests(unittest.TestCase):
     """Spawns the real stdio server and verifies the initialize/tools/list/tools/call protocol shapes."""
@@ -857,6 +990,28 @@ class StdioContractTests(unittest.TestCase):
         proc = self._spawn()
         try:
             response = self._rpc(proc, "ping")
+            self.assertEqual(response["result"], {})
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_notification_gets_no_response(self):
+        # JSON-RPC notifications (no id) must produce NO output line: the
+        # engine pairs one response line per request, and replying to a
+        # notification would desync that matching for every later request.
+        # The first response line after the notification must belong to the
+        # next request (a stray reply would carry id null and land first).
+        proc = self._spawn()
+        try:
+            proc.stdin.write(json.dumps({
+                "jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+            proc.stdin.write(json.dumps({
+                "jsonrpc": "2.0", "id": 77, "method": "ping"}) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            self.assertTrue(line, "the ping must still be answered")
+            response = json.loads(line)
+            self.assertEqual(response["id"], 77)
             self.assertEqual(response["result"], {})
         finally:
             proc.kill()

@@ -619,7 +619,7 @@ dictZh.uiToolDetails.showRawErrors = true;
 // 注:weather/iwencai/wecom-bot 的 zh label 由泛化的「API Key/Webhook Key」改为与
 // manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
-  'session-reader':{ title:'会话读取', subtitle:'只读读取本机其他会话的历史记录', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史：在输入框 @ 引用某个会话后，AI 按需翻页读取其内容（默认安装，纯本地读取会话文件，不联网、不上传）。内建插件不可卸载；会话读取能力可经内建功能开关关闭。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
+  'session-reader':{ title:'会话读取', subtitle:'只读读取本机其他会话的历史记录', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史：在输入框 @ 引用某个会话后，AI 按需翻页读取其内容（默认安装，纯本地读取会话文件，不联网、不上传）。内置插件不可卸载；会话读取能力可经内置功能开关关闭。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
   card3:{ title:'QQ邮箱 API', subtitle:'智能邮件收发与线程提炼', desc:'提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。' },
@@ -648,7 +648,7 @@ dictZh.uiBuiltinPlugins = {
   sectionTitle:'内置插件',
   kindLabel:'类型',
   pageIntro:'应用自带的内置插件，随应用一起升级。此页面仅用于透明展示其能力与数据访问范围，不提供卸载或开关。',
-  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 随会话模式',
+  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 受模式控制',
   toolsLabel:'工具清单',
   securityLabel:'安全级别',
   versionLabel:'版本',

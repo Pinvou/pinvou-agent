@@ -837,11 +837,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // embedded catalog for builtin ids: a tampered on-disk
                 // manifest must not rewrite what the transparency page shows
                 // until the next boot self-heal (review round-3 minor 2).
-                // `is_builtin` true implies a catalog hit; non-builtin ids
-                // keep their own (uploaded) manifest values. Borrowed before
+                // The probe folds like `is_builtin` itself: a case-variant
+                // builtin id would leave the exact `embedded_manifest` empty
+                // and fall back to the on-disk values — the exact tamper
+                // vector this override exists to close. Non-builtin ids keep
+                // their own (uploaded) manifest values. Borrowed before
                 // the display-override match below moves name/description.
                 let audit_source = if is_builtin {
-                    mcp_catalog::embedded_manifest(&m.id).ok().flatten()
+                    mcp_catalog::builtin_manifest_probe(&m.id).ok().flatten()
                 } else {
                     None
                 };
@@ -1009,13 +1012,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // A healthy or absent file passes through untouched.
         connectors::load_mcp_json_for_reconcile()?;
         self.migrate_mcp_plaintext_secrets()?;
-        // A case-variant catalog spelling (direct-IPC install("Session-Reader"))
-        // canonicalizes to the catalog id before any write: every write path
-        // below (release_package, package_mcp_dir, mcp.json keying, the store
-        // record) keys the exact id, and the folded uninstall guard would
-        // otherwise refuse the variant record forever while boot re-release
-        // never converges (review round-6 M3b). Non-catalog ids pass through.
-        let tool_id: &str = mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id);
+        // A case-variant spelling of a BUILTIN id (direct-IPC
+        // install("Session-Reader")) canonicalizes to the catalog id before
+        // any write: every write path below (release_package,
+        // package_mcp_dir, mcp.json keying, the store record) keys the exact
+        // id, and the folded uninstall guard would otherwise refuse the
+        // variant record forever while boot re-release never converges
+        // (review round-6 M3b). Only builtin ids canonicalize: a legacy
+        // case-variant upload of a NON-builtin preset id (pre-PR imports
+        // collided exactly, so `Weather` beside the catalog `weather` is a
+        // reachable user package) must keep installing the user's own
+        // package, not hijack the preset under the catalog spelling.
+        let tool_id: &str = if builtin::is_builtin_tool(tool_id) {
+            mcp_catalog::canonical_catalog_id(tool_id).unwrap_or(tool_id)
+        } else {
+            tool_id
+        };
         // 内嵌目录工具的安装只能信任编译进应用的 manifest——磁盘副本可能来自旧
         // 版本或已被修改，不得改写安装期写入 mcp.json 的任何内容（含 command/
         // args 与 secret 声明）。无内嵌 spec 的上传/自定义包仍从自身包目录读取。
@@ -4520,6 +4532,45 @@ mod tests {
         });
     }
 
+    /// Round-9 review: `is_builtin` folds case but the audit-source lookup
+    /// used the exact `embedded_manifest`, so a case-variant builtin row fell
+    /// back to its own on-disk manifest values — reopening the tamper vector
+    /// the audit override exists to close (a user-writable disk manifest
+    /// rewriting what the read-only transparency page shows). The folded
+    /// probe must supply the values for every id `is_builtin` accepts.
+    #[test]
+    fn list_tools_case_variant_builtin_audit_values_come_from_catalog() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "Session-Reader",
+                r#"{
+                    "id":"Session-Reader","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
+                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]
+                }"#,
+            );
+            let tools = MarketplaceManager::new().list_tools();
+            let variant = tools
+                .iter()
+                .find(|t| t.id == "Session-Reader")
+                .expect("the variant row must still be listed");
+            assert!(
+                variant.builtin,
+                "the folded membership probe must recognize the variant as builtin"
+            );
+            assert_eq!(
+                variant.security_level.as_deref(),
+                Some("L0"),
+                "audit values must come from the embedded catalog, not the disk manifest"
+            );
+            assert_eq!(
+                variant.data_access,
+                vec!["sessions.read".to_string()],
+                "data access must come from the embedded catalog"
+            );
+        });
+    }
+
     /// §3.2 contract pin: `list_tools.installed` shares the readiness card's
     /// store-first source of truth — the BundleStore record wins, a missing
     /// record means not-installed (standalone installed.json writes don't
@@ -5592,6 +5643,56 @@ mod tests {
                 command.contains("bundles/session-reader/mcp")
                     && !command.contains("Session-Reader"),
                 "args must point at the real released dir: {command}"
+            );
+        });
+    }
+
+    /// Round-9 review: install-entry canonicalization must stay scoped to
+    /// BUILTIN ids. A legacy case-variant upload of a NON-builtin preset id
+    /// (pre-PR imports collided exactly, so a user `Weather` package beside
+    /// the catalog `weather` is reachable) is the user's own package: the
+    /// install must key its variant spelling and run the USER's manifest —
+    /// not hijack the catalog preset under the canonical id.
+    #[test]
+    fn install_case_variant_non_builtin_keeps_user_package() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "Weather",
+                r#"{
+                    "id":"Weather","name":"User Weather","description":"d","version":"2","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"node","args":["user-weather.js"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.install("Weather", &std::collections::HashMap::new())
+                .unwrap();
+
+            let mcp = read_mcp_json();
+            assert!(
+                mcp["servers"].get("Weather").is_some(),
+                "the user's variant spelling must be keyed: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("weather").is_none(),
+                "the catalog preset must not be hijacked into the install: {mcp}"
+            );
+            assert_eq!(
+                mcp["servers"]["Weather"]["command"].as_str(),
+                Some("node"),
+                "the USER manifest's wiring must run, not the preset's"
+            );
+            let store = store::BundleStore::new();
+            assert!(
+                store
+                    .get("Weather")
+                    .unwrap()
+                    .map(|r| r.installed)
+                    .unwrap_or(false),
+                "the variant record must exist and be installed"
+            );
+            assert!(
+                store.get("weather").unwrap().is_none(),
+                "no preset record may be created by the user's install"
             );
         });
     }

@@ -72,12 +72,20 @@ import stat
 import sys
 from pathlib import Path
 
-# Windows defaults stdout to GBK; the MCP protocol requires UTF-8. stdin is
-# intentionally NOT rewrapped: the main loop reads sys.stdin.buffer as raw
-# bytes and decodes tolerantly so a single non-UTF-8 byte cannot kill the
-# process (errors="replace" below).
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+# The MCP wire is UTF-8 regardless of the host locale: Windows defaults
+# stdout to GBK, and on POSIX the engine's child-env allowlist passes
+# LANG/LC_ALL through, so a non-UTF-8 locale (e.g. LC_ALL=C with coercion
+# disabled, or a legacy eucJP locale) would make every CJK title/content
+# raise UnicodeEncodeError mid-response. Force UTF-8 on every platform (same
+# stance as scripts/mcp-server-contract-smoke.py). stdin is intentionally NOT
+# rewrapped: the main loop reads sys.stdin.buffer as raw bytes and decodes
+# tolerantly so a single non-UTF-8 byte cannot kill the process
+# (errors="replace" below).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -589,10 +597,13 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
         max_output_chars_per_item, DEFAULT_MAX_OUTPUT_CHARS, 100, MAX_MAX_OUTPUT_CHARS)
 
     offset = 0
+    anchor_total = None
     if cursor:
         try:
             decoded = json.loads(base64.urlsafe_b64decode(str(cursor).encode("ascii")).decode("utf-8"))
             offset = max(0, int(decoded["o"]))
+            if "t" in decoded:
+                anchor_total = max(0, int(decoded["t"]))
         except Exception:
             return None, "invalid cursor"
 
@@ -602,6 +613,16 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
     # the model can locate turns.
     newest_first = list(reversed(completed))
     total = len(newest_first)
+    # Cursor stability under appends: the cursor anchors the turn total it
+    # was minted at. The sessions being read can still be ACTIVE — turns that
+    # completed between two pages append ABOVE the anchor and would otherwise
+    # shift every newest-first index, silently duplicating or skipping turns.
+    # Re-anchor the offset into current indexing and mint the next cursor
+    # against the SAME anchor so the window keeps sliding over the original
+    # turn set. Deletions (anchor > total) cannot be re-anchored; the offset
+    # degrades exactly like a plain offset cursor there.
+    if anchor_total is not None and anchor_total < total:
+        offset += total - anchor_total
     page = newest_first[offset:offset + turn_limit]
     base_index = total - offset  # global index of page[0] (0-based, oldest first)
     # Aggregate response budget on top of the per-item cap: stop filling the
@@ -610,8 +631,18 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
     # strictly advances and clients can page past the truncation point, but it
     # counts against the budget like any other turn: an oversized first turn
     # is shrunk by _fit_turn_to_budget instead of bypassing the budget.
+    # The envelope fields (title/workspace/model, each field-capped) count
+    # against the budget too — they are user/paste-derived and ride the same
+    # response; only the wire's JSON-string re-escaping of the payload stays
+    # outside (documented factor above MAX_RESPONSE_BYTES).
+    envelope = {
+        "sessionId": session_id,
+        "title": _truncate(str(metadata.get("title") or ""), MAX_METADATA_FIELD_CHARS),
+        "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
+        "model": _truncate(str(metadata.get("model") or ""), MAX_METADATA_FIELD_CHARS),
+    }
     shaped_turns = []
-    used_bytes = 0
+    used_bytes = _json_bytes(envelope)
     truncated = False
     for position, turn in enumerate(page):
         shaped = shape_turn(turn, base_index - 1 - position, include_outputs, max_chars)
@@ -625,18 +656,17 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
         used_bytes += _json_bytes(shaped)
     next_offset = offset + len(shaped_turns)
     has_more = next_offset < total
+    cursor_anchor = total if anchor_total is None else anchor_total
     payload = {
-        "sessionId": session_id,
-        "title": _truncate(str(metadata.get("title") or ""), MAX_METADATA_FIELD_CHARS),
-        "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
-        "model": _truncate(str(metadata.get("model") or ""), MAX_METADATA_FIELD_CHARS),
+        **envelope,
         "totalTurns": total,
         "turns": shaped_turns,
         "hasMore": has_more,
         "truncated": truncated,
         "nextCursor": (
             base64.urlsafe_b64encode(
-                json.dumps({"o": next_offset}).encode("utf-8")).decode("ascii")
+                json.dumps({"o": next_offset, "t": cursor_anchor}).encode("utf-8")
+            ).decode("ascii")
             if has_more else None
         ),
         "untrusted": True,
@@ -726,22 +756,23 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
         sessions_base = Path(sessions_dir).resolve()
     except (OSError, ValueError, RuntimeError):
         return None, "sessions directory is not readable"
-    scanned = 0
-    scan_truncated = False
+    # Pass 1 (stat-only, no content reads): collect valid candidates with
+    # their mtime. The scan cap then ranks by mtime and keeps the MOST
+    # RECENTLY UPDATED entries: session ids encode a nanosecond timestamp
+    # least-significant-digit-first, so filename order is effectively random
+    # with respect to recency, and a name-ordered cap on a large store would
+    # permanently hide the newest sessions — the very thing this tool exists
+    # to surface. Drift defense (skip, never error): one pathological entry
+    # must not fail the listing — RuntimeError from symlink-loop resolution
+    # is beyond the OSError family, and anything else abnormal degrades the
+    # same way.
+    candidates = []
     for name in names:
         if not name.endswith(".json"):
             continue
         session_id = name[:-len(".json")]
         if validate_session_id(session_id) is not None:
             continue
-        # Drift defense (skip, never error): one pathological entry must not
-        # fail the listing — RuntimeError from symlink-loop resolution is
-        # beyond the OSError family, and anything else abnormal degrades the
-        # same way.
-        scanned += 1
-        if scanned > MAX_LIST_SCAN_ENTRIES:
-            scan_truncated = True
-            break
         try:
             # Containment: a planted symlink must not resolve outside the
             # sessions directory; escaped entries are skipped, not listed.
@@ -751,8 +782,20 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
             path = candidate
             # Regular files only: a planted FIFO would block open() forever in
             # this single-threaded stdio loop (review round-3 M3).
-            if not stat.S_ISREG(os.stat(path).st_mode):
+            file_stat = os.stat(path)
+            if not stat.S_ISREG(file_stat.st_mode):
                 continue
+            candidates.append((file_stat.st_mtime, session_id, path))
+        except Exception:
+            continue
+    scan_truncated = len(candidates) > MAX_LIST_SCAN_ENTRIES
+    if scan_truncated:
+        # Most recently updated first; ties broken by id for determinism.
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        candidates = candidates[:MAX_LIST_SCAN_ENTRIES]
+    # Pass 2 (bounded content reads): metadata only for the surviving entries.
+    for _mtime, session_id, path in candidates:
+        try:
             metadata = _read_metadata(path)
         except Exception:
             continue

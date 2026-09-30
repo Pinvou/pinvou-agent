@@ -189,8 +189,10 @@ pub struct MarketplaceToolInfo {
     #[serde(default = "default_tool_exportable")]
     pub exportable: bool,
     // --- docs/builtin-toolset-contract.md §3.1: builtin semantics
-    // passthrough (non-empty only for builtin plugins; empty values are
-    // omitted from serialization) ---
+    // passthrough. The marker/level/scope/version/visibility fields are
+    // builtin-only (empty values are omitted from serialization); mcp_tools
+    // passes through in full for every plugin (the builtin section lists a
+    // plugin's tools — see list_tools). ---
     /// Builtin plugin marker (from the manifest's `builtin`).
     #[serde(default)]
     pub builtin: bool,

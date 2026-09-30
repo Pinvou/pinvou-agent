@@ -837,7 +837,7 @@ pub fn import_plugin_package(
     for component in &mcp_servers {
         if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(component).is_some() {
             return Err(format!(
-                "组件 id '{component}' 与内建 MCP 服务冲突，请改用其它 id 或通过市场直接安装"
+                "组件 id '{component}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
             ));
         }
     }
@@ -853,7 +853,7 @@ pub fn import_plugin_package(
                 .is_some()
             {
                 return Err(format!(
-                    "组件 id '{}' 与内建 MCP 服务冲突，请改用其它 id 或通过市场直接安装",
+                    "组件 id '{}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装",
                     inner.id
                 ));
             }
@@ -2519,7 +2519,7 @@ mod tests {
 
         let error = import_plugin_package(&zip_path.to_string_lossy(), "my-tool.zip").unwrap_err();
         assert!(
-            error.contains("内建 MCP 服务"),
+            error.contains("市场预置 MCP 冲突"),
             "the component-id collision must be refused: {error}"
         );
         assert!(

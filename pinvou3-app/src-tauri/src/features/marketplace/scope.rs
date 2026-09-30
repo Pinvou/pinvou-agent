@@ -551,6 +551,14 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
 /// 写失败原样上抛（用户治理状态不得静默丢写）。
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
+    // Builtin plugins cannot be disabled (§3.1): the guard lives on the
+    // persistence function itself so every caller inherits it — not only
+    // `apply_disabled_connectors_for` — and a future direct writer cannot
+    // silently seed a builtin into an initialized scope (the read-time
+    // self-heal would drop it again, but the write should refuse upfront).
+    // The DenyAll computed default and the install-sync exemption already
+    // exclude builtin ids, so legitimate internal callers are unaffected.
+    crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1159,6 +1167,34 @@ mod tests {
             let mut expected = builtin;
             expected.push("gongwen".to_string());
             assert_eq!(load_disabled_bundles_for(ConnectorScope::Code), expected);
+        });
+    }
+
+    /// Round-9 review: the disable writer itself must reject builtin ids, not
+    /// only the `apply_disabled_connectors_for` layer above it — the function
+    /// is pub-re-exported, and a future direct caller would otherwise
+    /// silently seed a builtin into an initialized scope. Same layering as
+    /// the hide writer (`save_hidden_bundles_for`), which already guards
+    /// inside the persistence function.
+    #[test]
+    fn save_disabled_bundles_for_rejects_builtin_ids_directly() {
+        with_temp_home("pinvou3-scope-disable-guard", || {
+            crate::platform::paths::ensure_dirs().unwrap();
+            for builtin_id in ["session-reader", "Session-Reader"] {
+                let error =
+                    save_disabled_bundles_for(ConnectorScope::Plain, &[builtin_id.to_string()])
+                        .expect_err("a direct disable write must refuse builtin ids");
+                assert!(
+                    error.contains(builtin_id),
+                    "the refusal must name the rejected id: {error}"
+                );
+            }
+            // A clean write still initializes the scope normally.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()]
+            );
         });
     }
 
