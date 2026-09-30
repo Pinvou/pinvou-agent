@@ -146,7 +146,11 @@ fn external_command_for(executable: &Path, windows: bool) -> Command {
 
 /// 构造隐藏窗口的外部 CLI 命令。Windows npm 生成的 `.cmd` / `.bat` shim
 /// 必须经 `cmd /D /S /C`，否则探测、登录或启动 Agent 时会被当成原生可执行文件。
-pub(crate) fn external_command(executable: &Path) -> Command {
+/// `pub` for the pinvou-cli kill tree (`support.rs` Windows arm): a planted
+/// `taskkill.exe` in the working directory must not win PATH resolution on a
+/// platform where exe search historically includes it — the hardened
+/// `external_application_path` resolution is the point of sharing.
+pub fn external_command(executable: &Path) -> Command {
     external_command_for(executable, crate::platform::capabilities::is_windows())
 }
 

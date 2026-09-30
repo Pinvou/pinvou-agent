@@ -567,9 +567,11 @@ fn session_workspace_path(sessions: &SessionStore, session_id: &str) -> Option<P
 ///
 /// Known limit: the frontend also case-folds when BOTH sides look like Windows
 /// paths. This comparison does not, so on Windows a root and a workspace that
-/// differ only in case resolve as unrelated. That can only make the gate below
-/// more permissive (it never refuses a move the GUI would allow), which is the
-/// safe direction for an irreversible write.
+/// differ only in case resolve as unrelated, and the gate below then refuses
+/// a move the GUI would allow (the resolution comes back None where the GUI
+/// resolves Some). Refusing an irreversible write is the safe direction —
+/// but it IS a refusal, not a permission: a user hitting it must re-run the
+/// move from the GUI.
 fn path_is_under_root(path: &Path, root: &Path) -> bool {
     !root.as_os_str().is_empty() && path.starts_with(root)
 }
@@ -742,8 +744,15 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
 /// Mirror of `SessionStore::durable_session_record_is_absent` (the helper is
 /// `pub(crate)` to the app crate, the layout is the store's own:
 /// `<sessions root>/<id>.json`): only NotFound counts as absent, so a corrupt
-/// record is never mistaken for an orphan and stays a retryable failure.
+/// record is never mistaken for an orphan and stays a retryable failure. An
+/// invalid id is "present" fail-closed like the GUI's — the id is validated
+/// BEFORE joining it into a path, so a hostile sidecar key can never move the
+/// probe outside the sessions root and get a NotFound read back
+/// (misclassified as "rebound" instead of failed).
 fn session_record_is_absent(session_id: &str) -> bool {
+    if pinvou3_lib::features::sessions::validate_session_id(session_id).is_err() {
+        return false;
+    }
     let record = pinvou3_lib::platform::paths::sessions_root().join(format!("{session_id}.json"));
     matches!(
         std::fs::metadata(&record),
@@ -806,7 +815,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     if from_display == to_display {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
-        return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
+        return rebind_report(output, Vec::new(), Vec::new(), Vec::new(), false);
     }
     if rebind_target_is_same_or_nested(&to_display, &from_display) {
         return Err(CliError::failed(
@@ -844,6 +853,20 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     for session_id in &plain_rebind.failed_session_ids {
         if !final_stale.contains(session_id) {
             final_stale.push(session_id.clone());
+        }
+    }
+    // Plain-lane fence rescan, the GUI's `plain_lane_fence_rescan`: a binding
+    // whose rewrite succeeded no longer matches `from`, and a failed rewrite
+    // is already listed — so every binding still under `from` belongs to a
+    // session created (or re-bound) while this run was in flight. The
+    // to-lane retry pass below only scans the `to` side, so without this
+    // fence the run would report `rebound N (0 failed)` while the straggler
+    // survives at the old directory; reporting it failed makes the documented
+    // "a rerun converges them" true instead of silent. (The contains-guard
+    // keeps this a pure addition of NEW hits, exactly like the GUI.)
+    for (session_id, _) in sessions.workspace_bindings_under(&from_display) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
         }
     }
     // SavedSession metadata replay over the union of what the two lanes
@@ -950,7 +973,14 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // every session it would resurrect at the next boot joins the failures,
     // independently of this run's rebound set (on a retry nothing is left to
     // rewrite, so the rebound set alone would claim a false full success).
-    if plain_rebind.legacy_sync_failed {
+    // An empty resurrection set with the failure flag set is the corrupt /
+    // unparsed-table case: there is no session id to name, but the run must
+    // not report a clean success either — the flag surfaces in the JSON and
+    // the human note names the stale table so a rerun after fixing it is
+    // obviously required (the store contract says the caller must report the
+    // sync failure; the GUI shares this blind spot today).
+    let legacy_sync_failed = plain_rebind.legacy_sync_failed;
+    if legacy_sync_failed {
         for session_id in &plain_rebind.legacy_resurrection_ids {
             if !failed_session_ids.contains(session_id) {
                 failed_session_ids.push(session_id.clone());
@@ -973,6 +1003,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         rebound_session_ids,
         failed_session_ids,
         affected_project_ids,
+        legacy_sync_failed,
     )
 }
 
@@ -1011,6 +1042,7 @@ fn rebind_report(
     rebound_session_ids: Vec<String>,
     failed_session_ids: Vec<String>,
     affected_project_ids: Vec<String>,
+    legacy_sync_failed: bool,
 ) -> Result<CliOutcome, CliError> {
     // Scope disclosure, every run and both output modes: stderr only, so a
     // `--output json` consumer's stdout parse is unaffected.
@@ -1031,11 +1063,22 @@ fn rebind_report(
         human.push_str("; failed sessions (a rerun retries them): ");
         human.push_str(&failed_session_ids.join(", "));
     }
-    let value = serde_json::json!({
+    if legacy_sync_failed && failed_session_ids.is_empty() {
+        human.push_str(
+            "; WARNING: the legacy binding table could not be synced and is still on disk in              the old format \u{2014} fix or remove it and re-run, or the next boot migration              will move bindings back",
+        );
+    }
+    let mut value = serde_json::json!({
         "rebound_session_ids": rebound_session_ids,
         "failed_session_ids": failed_session_ids,
         "affected_project_ids": affected_project_ids,
     });
+    if legacy_sync_failed {
+        value
+            .as_object_mut()
+            .expect("rebind report object")
+            .insert("legacy_sync_failed".to_owned(), serde_json::json!(true));
+    }
     Ok(success(render(output, human, &value)))
 }
 

@@ -50,6 +50,21 @@
 //! pool, and the turn lane discards a staged orphan body instead of ever
 //! injecting it (see `staged_persona_turn`).
 //!
+//! Two at-least-once windows, disclosed (round-27): (1) a `personas equip`
+//! racing a `personas delete` of the same card — the equip reads the live
+//! card unguarded (the GUI equips under the `user_operations` gate, which is
+//! in-process and cannot serialize two CLI processes), the delete commits and
+//! sweeps, and the equip then persists an orphan sidecar the sweep already
+//! passed. Contained at the same consume point as above (a staged orphan body
+//! is discarded, never injected; `active`/`unequip` name the remedy). (2) a
+//! staged body is injected AT LEAST ONCE, not exactly once: two concurrent
+//! `agent run --session` processes can both read the same staged pair before
+//! either consumes (the loser's consume is a no-op), and a process dying
+//! between submit and the post-run consume re-injects the body on the next
+//! run. Both are the same last-writer-wins class the sessions module
+//! discloses for transcript writes; the effect is bounded (duplicated
+//! injection text, no corruption).
+//!
 //! Field note (headless deviation): `create`/`update` expose only the GUI
 //! dialog's name/description/body fields — the department is fixed to
 //! "specialized" and the emoji/color take the card defaults.

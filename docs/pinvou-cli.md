@@ -32,9 +32,11 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   collision: `sessions export`, `plugins export`, `plugins recycle export`,
   `code providers export`, `files ingest`, and the legacy `benchmark
   submission gaia --output` alias) accepts any other value as
-  that flag's argument — so `code providers export --output json`, which
-  names a destination file, would instead print the provider JSON WITH
-  PLAINTEXT KEYS to stdout — and a parser with no
+  that flag's argument — so `code providers export --agent claude
+  --output json`, where the value names a destination file, would instead
+  print the provider JSON WITH PLAINTEXT KEYS to stdout (without `--agent`
+  the command still exits 2 on the missing required flag, so the hazard
+  needs the complete command) — and a parser with no
   `--output` refuses the pair as an unknown flag instead of silently
   collapsing the tokens around it. A file literally named `json` or `human`
   at the end of the line must still be spelled `./json`.
@@ -44,6 +46,13 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   arguments, so `pinvou --help benchmark` is a usage error. There is no
   per-family `--help`: an invalid invocation prints the usage line for that
   family on stderr and exits 2, which is the same text in the diagnostic role.
+- A panic that escapes every layer above exits `101` with one clean
+  `pinvou: internal error (panic ...) ...` line on stderr — that is always a
+  bug to report, never a diagnosable command failure. The windowless product
+  host contains its own bootstrap/event-loop panics into ordinary exit-1
+  failures (every host lane: `monitor`, `knowledge`, `voice`, `agent run`,
+  benchmarks, the organize lanes), and `RUST_BACKTRACE=1` captures the trace
+  for the report.
 - Exit codes: `0` success, `1` host/runtime failure, `2` usage error. Exit
   2 covers malformed invocations — unknown flags, missing values,
   mutually-exclusive flag combinations — AND a set of content findings the

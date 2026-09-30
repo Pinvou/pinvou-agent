@@ -47,8 +47,8 @@ use std::path::PathBuf;
 
 use pinvou3_lib::features::memory as feature;
 use pinvou3_lib::features::memory::{
-    MemoryOrganizeReport, MemorySuggestion, MemoryTextPatch, PendingIgnoreOutcome, PreferenceFile,
-    RecentWorkItem, TimedMemoryItem, WorkContextFile,
+    MemoryOrganizeReport, MemorySuggestion, MemoryTextPatch, ORGANIZE_LOCK_BUSY,
+    PendingIgnoreOutcome, PreferenceFile, RecentWorkItem, TimedMemoryItem, WorkContextFile,
 };
 
 use crate::support::{self, render, require_yes, success};
@@ -1465,6 +1465,20 @@ memory profile instead",
             ADD_PIPELINE_TEXT_MAX_CHARS,
             "applied when the candidate is queued",
         );
+    } else if expected != collapsed {
+        // In-cap rewrite (a leading 请记住-style prefix or outer punctuation
+        // stripped by the confirm path's `clean_candidate_sentence` stage):
+        // the same disclosure the update lane carries, so a consumer diffing
+        // the submitted text against the stored item cannot conclude content
+        // was lost — the exact misreading the update lane's comment says the
+        // disclosure exists to prevent. An over-cap add is covered by the
+        // truncation branch above (its counts already show the shrink).
+        disclose_normalization(
+            &mut value,
+            &mut human,
+            collapsed.chars().count(),
+            expected.chars().count(),
+        );
     }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {
@@ -1877,13 +1891,6 @@ fn pending(
     Ok(success(render(output, human, &value)))
 }
 
-/// Text marker the feature layer carries when its cross-process organize lock
-/// is held: `features/memory/io.rs` `ORGANIZE_LOCK_BUSY` ("another organize
-/// pass is already running …"), surfaced by `organize_memory_with_llm` as an
-/// anyhow message. The constant is `pub(crate)` to `pinvou3_lib`, so the host
-/// error mapping matches it by text.
-const ORGANIZE_LOCK_BUSY_MARKER: &str = "another organize pass is already running";
-
 /// The one busy refusal for both single-flight gates: the CLI's own
 /// `memory-organize.lock` (CLI vs CLI) and the feature layer's
 /// `.organize.lock` (GUI button and scheduled executor vs CLI). The same
@@ -1967,12 +1974,12 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             ))
         }
     })?;
-    // The host bootstrap panics (tauri's EventLoop refuses a non-main
-    // thread in some embedded environments) rather than returning Err — a
-    // panic here would take the whole process down with exit 101, outside
-    // the exit-code contract. Same catch_unwind wrap as the scheduled lane's
-    // `organize_headless`, downgraded to the command's ordinary failure.
-    let host_result = std::panic::catch_unwind(|| {
+    // A bootstrap or event-loop panic on this path is contained inside
+    // `run_windowless_host` (its single shared catch_unwind) and surfaces
+    // here as an ordinary Err, so the documented exit-code contract holds —
+    // every host lane is covered at the source, and this call site carries
+    // no wrap of its own.
+    let host_result =
         pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
             // Same shared-bridge fallback as the GUI command and the scheduled
             // executor; fresh_bridge_for is crate-private to pinvou3_lib, so the
@@ -1986,37 +1993,25 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             // one-shot CLI process never owns), and the live GUI's cached prompt
             // can only be refreshed by the GUI process itself. The snapshot
             // document refresh happens below, outside the host.
-        })
-    });
+        });
     let report = match host_result {
-        Ok(Ok(report)) => report,
-        Ok(Err(error)) => {
+        Ok(report) => report,
+        Err(error) => {
             let detail =
                 pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
             // A lock held by another SURFACE (the GUI button or the scheduled
             // executor) surfaces here, not at the CLI lock above: the feature
             // layer's `.organize.lock` is taken inside `organize_memory_with_llm`,
             // on the host path, and reaches this map as an anyhow error carrying
-            // [`ORGANIZE_LOCK_BUSY_MARKER`]. That is the same "another organize is
+            // [`ORGANIZE_LOCK_BUSY`]. That is the same "another organize is
             // in flight" situation as the CLI-vs-CLI `WouldBlock`, so it must get
             // the same documented `memory_organize_busy` refusal instead of a
             // generic `memory_organize_failed` that reads like a crashed pass.
-            if detail.contains(ORGANIZE_LOCK_BUSY_MARKER) {
+            if detail.contains(ORGANIZE_LOCK_BUSY) {
                 return Err(organize_busy_error());
             }
             return Err(CliError::failed(format!(
                 "memory_organize_failed: {detail}"
-            )));
-        }
-        Err(panic) => {
-            let reason = panic
-                .downcast_ref::<&str>()
-                .map(|reason| (*reason).to_owned())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown panic".to_owned());
-            return Err(CliError::failed(format!(
-                "memory_organize_failed: the windowless host bootstrap panicked: {}",
-                pinvou3_lib::platform::credential_store::redact_secret(&reason)
             )));
         }
     };

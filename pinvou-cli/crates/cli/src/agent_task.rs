@@ -381,8 +381,11 @@ fn run_agent(
     // The reported id is resolvable once the record exists: the engine only
     // deletes a fresh session when the run returned no report at all (exit
     // 1, nothing printed). A setup timeout that lands before the record's
-    // first durable write leaves nothing to resolve, and the run fails
-    // loudly. The one exception is the caller's own
+    // first durable write leaves nothing to resolve: the run still produces
+    // a `timeout` report (exit 0) whose `session_id` names a record that was
+    // never created — the app-side resolvability contract applies only once
+    // the record exists, and the report's `error` field names the setup
+    // timeout. The one exception is the caller's own
     // `PINVOU3_AGENT_TASK_KEEP_SESSION=0`, whose entire purpose is to remove
     // this run's session afterwards.
     //

@@ -989,7 +989,16 @@ fn type_counts(output: OutputMode) -> Result<CliOutcome, CliError> {
     } else {
         counts
             .iter()
-            .map(|count| format!("{}\t{}", count.ext, count.count))
+            // `ext` derives from filenames, and Unix filenames may carry
+            // tabs/C0 controls: collapse like every other store-derived cell
+            // so the row cannot forge columns (JSON keeps the original).
+            .map(|count| {
+                format!(
+                    "{}\t{}",
+                    crate::support::collapse_control_characters(&count.ext),
+                    count.count
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -1047,7 +1056,10 @@ fn search(
                 format!(
                     "{}\t{}\t{}\t{}\t{}",
                     crate::support::collapse_control_characters(&hit.name),
-                    hit.ext.as_deref().unwrap_or("-"),
+                    hit.ext
+                        .as_deref()
+                        .map(|ext| crate::support::collapse_control_characters(ext))
+                        .unwrap_or_else(|| "-".to_owned()),
                     hit.size,
                     hit.mtime,
                     crate::support::collapse_control_characters(&hit.path)
@@ -2119,7 +2131,12 @@ fn remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
                     status.ready
                 );
                 match &status.error {
-                    Some(error) => format!("{base}\t{error}"),
+                    // Server-originated error text: collapse like every other
+                    // remote-derived cell so it cannot forge rows/columns.
+                    Some(error) => format!(
+                        "{base}\t{}",
+                        crate::support::collapse_control_characters(error)
+                    ),
                     None => base,
                 }
             })
@@ -2226,7 +2243,10 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
                 }));
             }
             Err(error) => {
-                lines.push(format!("{server_id}\terror: {error}"));
+                lines.push(format!(
+                    "{server_id}\terror: {}",
+                    crate::support::collapse_control_characters(&error)
+                ));
                 errors.push(serde_json::json!({ "server_id": server_id, "error": error }));
             }
         }
@@ -2323,7 +2343,10 @@ fn remote_search(
                 }));
             }
             (_, Some(error)) => {
-                lines.push(format!("{server_id}\terror: {error}"));
+                lines.push(format!(
+                    "{server_id}\terror: {}",
+                    crate::support::collapse_control_characters(&error)
+                ));
                 errors.push(serde_json::json!({ "server_id": server_id, "error": error }));
             }
             _ => {}

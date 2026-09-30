@@ -232,13 +232,44 @@ mod imp {
         // The double cast (fn item → raw pointer → sighandler_t) is the
         // lint-approved spelling of "handler address"; a direct
         // fn-to-integer cast is the shape the lint exists for.
-        // SIGHUP is in the set for the same reason as SIGINT/SIGTERM: see
-        // the module docs.
+        // SIGINT/SIGTERM install unconditionally (the conventional choice:
+        // an inherited SIG_IGN for them is rare and interactive shells do
+        // not set it). SIGHUP is the one that must RESPECT an inherited
+        // SIG_IGN: `nohup pinvou connectors connect …` in the foreground
+        // runs with SIGHUP ignored by the caller's explicit choice, and
+        // installing the handler here made terminal-close kill a job the
+        // user deliberately detached (a round-27 review regression against
+        // the pre-CLI status quo).
         // SAFETY: signal(2) with a plain handler address; no preconditions.
+        // The disposition probe (null sigaction) reads without installing.
         unsafe {
             libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
-            libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
+            if inherited_sighup_is_ignored() {
+                // Leave SIGHUP ignored, exactly as the caller arranged it.
+            } else {
+                libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
+            }
+        }
+    }
+
+    /// Whether SIGHUP arrived at this process with SIG_IGN installed
+    /// (`nohup`, a daemonizing shell, `setsid`). Read via `sigaction` with a
+    /// null act — a pure probe, no disposition is changed. Split out so a
+    /// unit test can pin both answers without real terminal state.
+    pub(super) fn inherited_sighup_is_ignored() -> bool {
+        // SAFETY: sigaction with a null act only WRITES the old disposition
+        // into the out-param; no handler state is modified.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) != 0 {
+                // The probe itself failed: install the handler (the
+                // conventional behaviour) rather than guess.
+                return false;
+            }
+            // SIG_IGN is 1 on every supported platform; compare the stored
+            // handler address.
+            old.sa_sigaction == libc::SIG_IGN as usize
         }
     }
 
@@ -555,6 +586,47 @@ mod imp {
 
 #[cfg(all(test, unix))]
 mod tests {
+
+    /// The inherited-SIG_IGN probe: `nohup` (SIG_IGN) must be respected —
+    /// the handler must NOT be installed over a caller's explicit detach —
+    /// while the default disposition installs normally. The test saves and
+    /// restores the process-wide SIGHUP disposition, and flips it through
+    /// SIG_IGN and SIG_DFL to drive both probe answers without real
+    /// terminal state.
+    #[test]
+    fn sighup_probe_reads_the_inherited_disposition() {
+        use super::imp::inherited_sighup_is_ignored;
+        // SAFETY: sigaction with a null act only reads the disposition;
+        // the installs below are restored before returning.
+        unsafe {
+            let mut saved: libc::sigaction = std::mem::zeroed();
+            assert_eq!(
+                libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut saved),
+                0,
+                "the disposition probe must work in-process"
+            );
+            // SIG_IGN inherited (what nohup arranges) → the caller sees it.
+            // The handler field is the same sighandler_t the installer
+            // writes (same double cast).
+            let mut ign: libc::sigaction = std::mem::zeroed();
+            ign.sa_sigaction = libc::SIG_IGN as *const () as libc::sighandler_t as usize;
+            assert_eq!(libc::sigaction(libc::SIGHUP, &ign, std::ptr::null_mut()), 0);
+            assert!(inherited_sighup_is_ignored());
+
+            // Default disposition → install normally.
+            let mut dfl: libc::sigaction = std::mem::zeroed();
+            dfl.sa_sigaction = libc::SIG_DFL as *const () as libc::sighandler_t as usize;
+            assert_eq!(libc::sigaction(libc::SIGHUP, &dfl, std::ptr::null_mut()), 0);
+            assert!(!inherited_sighup_is_ignored());
+
+            // Restore exactly what the process had (an installed handler
+            // from a previous test's real_install must survive this test).
+            assert_eq!(
+                libc::sigaction(libc::SIGHUP, &saved, std::ptr::null_mut()),
+                0
+            );
+        }
+    }
     use super::imp;
 
     /// Decision precedence: no survivors ends the wait no matter how much

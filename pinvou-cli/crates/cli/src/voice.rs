@@ -720,13 +720,16 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "\nNote: `voice transcribe` needs the external ASR CLI (PINVOU3_ASR_CMD or `pinvou-asr` on PATH); macOS Speech is GUI-only.",
         );
     }
-    if cfg!(target_os = "windows") {
+    if cfg!(target_os = "windows") && !cli_transcribe_ready {
         // The old note said "repair or reinstall pinvou", which can never flip
         // these flags: the MSI installs the engine and model next to the
         // desktop executable, and `engine_path`/`model_path` only look under
         // `asr_dir` (the app resolves the bundled copy through a `pub(crate)`
         // helper the CLI cannot call). Name the remediation that is actually
-        // reachable from this process instead.
+        // reachable from this process instead — and only when transcription
+        // is NOT already working (the macOS note above gates on the same
+        // fact): remediation advice in a state that needs no remediation is
+        // noise.
         human.push_str(
             "\nNote: the CLI only looks for the ASR engine and model under AsrDir; it cannot see \
              the copies the desktop app's MSI installs beside pinvou.exe. Point PINVOU3_ASR_CMD \
@@ -975,8 +978,17 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     // download must never leave a truncated/garbage file at the real path.
     // The checksum is verified on the .part BEFORE the rename (the app's
     // download helper order), so no window exists where an unverified model
-    // sits at the canonical path.
-    let part = dest.with_extension("part");
+    // sits at the canonical path. The staged name APPENDS `.part`
+    // (`model.gguf.part`) — the app's `temp_model_path` convention, not
+    // `with_extension` (which would replace the real suffix): identical
+    // staging names keep the two downloaders' on-disk footprint legible and
+    // any future cross-surface lock derivable from one path.
+    let part = dest.with_file_name(format!(
+        "{}.part",
+        dest.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("asr-model.gguf")
+    ));
     // Best-effort unlink of the staged `.part` on EVERY path out of this
     // function (the explicit removes below cover the named failures; the
     // guard adds the unnamed ones — an early error return between them, a

@@ -473,11 +473,24 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), CliError> {
 }
 
 fn new_feedback_id() -> String {
+    // The process-wide call counter suffixes the millis+pid id: two
+    // `execute` calls inside one process within the same millisecond
+    // (contract tests mint several back-to-back; a future in-process
+    // library consumer likewise) used to mint the SAME id, and the staged
+    // bundle's atomic write silently renamed the second receipt over the
+    // first. Real CLI usage spawns one process per invocation, so pids
+    // already disambiguate there — the counter closes the in-process case.
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CALL_SEQ: AtomicU32 = AtomicU32::new(0);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    format!("feedback-{millis}-{}", std::process::id())
+    format!(
+        "feedback-{millis}-{}-{}",
+        std::process::id(),
+        CALL_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Polls an await-free future once on the current thread with a no-op waker.

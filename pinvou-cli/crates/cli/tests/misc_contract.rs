@@ -1611,6 +1611,38 @@ fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
     assert!(!pending_dir.exists(), "nothing may be staged: {error}");
 }
 
+/// Round-27 review: the `--body-file` credential gate (the same
+/// `check_sensitive_path` rule `--attach` applies, per the disclosure and
+/// docs) had no contract test — deleting the gate passed the whole suite.
+/// This pins it on its own input.
+#[test]
+fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("feedback-body-secret");
+    let ssh = home.root.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "secret body",
+        "--body-file",
+        key.to_str().unwrap(),
+    ])
+    .expect_err("a credential body file must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("refusing body file"), "{error}");
+    // The refusal happens before anything is staged.
+    let pending_dir = home.root.join("feedback").join("pending");
+    assert!(!pending_dir.exists(), "nothing may be staged: {error}");
+}
+
 /// The receipt write used to `?` out before the cleanup below it, leaving the
 /// staged bundle under `feedback/pending/` forever — the exact state the
 /// module docs argue must never exist, since nothing retries it.

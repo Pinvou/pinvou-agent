@@ -1859,9 +1859,35 @@ fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
     let Some(client) = connection_client() else {
         return connection_result(false, "client_error", None, None);
     };
+    match connection_probe_request(client, &parsed_url, base_url, key).send() {
+        Ok(response) => connection_http_result(response.status()),
+        Err(error) => connection_error_result(&error),
+    }
+}
+
+/// The `models test` request, factored out of [`run_connection_probe`] so the
+/// header contract is inspectable without a network (the unit test builds the
+/// request and reads its headers; nothing is sent).
+///
+/// The Go gateway (`/zen/go/v1`) has rejected auxiliary requests without the
+/// `x-opencode-session` affinity header with 400 `MissingSessionID` since
+/// 2026-09; the GUI probe this lane mirrors attaches it
+/// (`with_opencode_session_header(req, base_url, "connection-test")`), so the
+/// CLI probe must too — with the SAME conversation key and the same
+/// deterministic derivation, so both surfaces send the same value for the
+/// same endpoint, not merely a well-formed one. The app helper itself takes
+/// the async `reqwest::RequestBuilder`, which the blocking client here
+/// cannot consume; the gate + id functions are the shared surface (re-exported
+/// through `pinvou3_lib::model_probe`).
+fn connection_probe_request(
+    client: &'static reqwest::blocking::Client,
+    parsed_url: &reqwest::Url,
+    base_url: &str,
+    key: &str,
+) -> reqwest::blocking::RequestBuilder {
     let mut request = client.get(parsed_url.clone());
     if !key.trim().is_empty() {
-        request = if is_anthropic_host(&parsed_url) {
+        request = if is_anthropic_host(parsed_url) {
             request
                 .header("x-api-key", key.trim())
                 .header("anthropic-version", "2023-06-01")
@@ -1869,10 +1895,13 @@ fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
             request.bearer_auth(key.trim())
         };
     }
-    match request.send() {
-        Ok(response) => connection_http_result(response.status()),
-        Err(error) => connection_error_result(&error),
+    if pinvou3_lib::model_probe::is_opencode_gateway_base_url(base_url) {
+        request = request.header(
+            "x-opencode-session",
+            pinvou3_lib::model_probe::opencode_session_id_for("connection-test"),
+        );
     }
+    request
 }
 
 // --- local server kind probe (models probe-local) ---
@@ -3471,6 +3500,35 @@ mod tests {
     /// CI secret store mount, or a `.env` loader), and a value that dodged
     /// that trim 401s every request while `settings search test` — which
     /// trims on read — still reports the provider as `configured`.
+    /// The `models test` probe must carry the `x-opencode-session` header on
+    /// OpenCode gateway base URLs (the Go gateway 400s `MissingSessionID`
+    /// without it — the GUI probe this lane mirrors attaches it) and must
+    /// NOT carry it anywhere else. Header value parity with the GUI comes
+    /// from the shared deterministic derivation (`opencode_session_id_for`
+    /// over the same `connection-test` key), so this pin is shape + presence;
+    /// the value derivation is pinned app-side. Building the request never
+    /// sends it.
+    #[test]
+    fn connection_probe_carries_the_opencode_session_header_on_gateway_urls() {
+        let client = connection_client().expect("probe client singleton");
+        for (base_url, on_gateway) in [
+            ("https://opencode.ai/zen/go/v1", true),
+            ("https://gateway.opencode.ai/zen/v1", true),
+            ("https://api.example.com/v1", false),
+            ("https://opencode.ai/docs", false),
+        ] {
+            let parsed = reqwest::Url::parse(&models_probe_url(base_url)).unwrap();
+            let request = connection_probe_request(client, &parsed, base_url, "sk-test")
+                .build()
+                .unwrap();
+            assert_eq!(
+                request.headers().get("x-opencode-session").is_some(),
+                on_gateway,
+                "{base_url}"
+            );
+        }
+    }
+
     #[test]
     fn secret_for_storage_strips_the_whitespace_ci_secrets_carry() {
         assert_eq!(secret_for_storage("sk-abc123\n"), "sk-abc123");

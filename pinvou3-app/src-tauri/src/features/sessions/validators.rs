@@ -13,7 +13,11 @@ use deepseek_tui::session_manager::SessionManager;
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
-pub(crate) fn validate_session_id(id: &str) -> Result<()> {
+/// `pub` for the pinvou-cli `projects` family: the rebind orphan probe
+/// validates an id before joining it into a sessions-root path (the same
+/// fail-closed rule the GUI path applies), through the `features::sessions`
+/// re-export. The GUI itself keeps calling the crate-private path.
+pub fn validate_session_id(id: &str) -> Result<()> {
     validate_id_charset(id, "session")
 }
 
