@@ -675,11 +675,20 @@ function hasStoredCredential(record) {
         }).sort((a, b) => (a.loaded === false ? 1 : 0) - (b.loaded === false ? 1 : 0)); // 已加载/未知的排前，未加载的沉底
       }
       function buildLocalModelPayload(row) {
+        // Ollama/LM Studio 的 max_model_len 是运行时生效值（/api/ps 的生效
+        // 上下文、/api/v0/models 的 loaded_context_length），随加载状态与
+        // 服务端配置变化：不能持久化为用户声明——声明在
+        // resolve_context_window 里永久 min-clamp 后续探测，且本表单对
+        // local 预设隐藏该字段，用户无法纠正。引擎在每次 spawn 时按服务
+        // 类别原生探测实时采纳（Ollama /api/ps→show、LM Studio
+        // /api/v0/models），存 null 即可。vLLM 的 /v1/models max_model_len
+        // 是部署配置，保持既有持久化语义。
+        const runtimeProbedProvider = row.provider === 'ollama' || row.provider === 'lm_studio';
         return {
           id: makeModelId(),
           name: settingsCopy.localModelName(row.model),
           preset: 'local_vllm',
-          context_window_tokens: row.max_model_len || null,
+          context_window_tokens: runtimeProbedProvider ? null : (row.max_model_len || null),
           max_output_tokens: null,
           model: row.model,
           base_url: row.base_url,

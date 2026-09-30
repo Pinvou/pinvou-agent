@@ -1097,7 +1097,10 @@ async function modalWidth(page, headingText) {
       && savedLocalModel.preset === 'local_vllm'
       && savedLocalModel.model === 'qwen2.5-coder:32b'
       && savedLocalModel.base_url === 'http://127.0.0.1:11434/v1'
-      && savedLocalModel.context_window_tokens === 32768
+      // Ollama 的 max_model_len 是运行时生效值（/api/ps），不持久化为用户
+      // 声明——声明会永久 min-clamp 后续探测且表单对该预设隐藏本字段；窗口
+      // 由引擎每次 spawn 原生探测实时采纳（vLLM 候选仍持久化其部署配置）。
+      && savedLocalModel.context_window_tokens === null
       && savedLocalModel.api_key === ''
       && savedLocalModel.credential_action === 'keep_existing',
     JSON.stringify(savedLocalModel));
