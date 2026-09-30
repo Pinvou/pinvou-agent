@@ -99,34 +99,26 @@ fn safe_auth_log_line(line: &str) -> Option<String> {
     cc::safe_auth_log_line(line, false)
 }
 
-fn dingtalk_auth_error_hint(text: &str) -> Option<String> {
-    let parsed = cc::parse_json(text);
-    let msg = parsed
-        .as_ref()
-        .and_then(|v| v.get("error"))
-        .and_then(|v| v.get("message"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(text);
-    if msg.contains("CLI data access is not enabled")
-        || text.contains("CLI data access is not enabled")
-    {
-        let admin = text
-            .lines()
-            .find_map(|line| line.split_once("组织主管理员").map(|(_, rest)| rest))
-            .map(|s| s.trim_matches(|c: char| c == ':' || c == '：' || c.is_whitespace()))
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("组织主管理员：{s}。"))
-            .unwrap_or_default();
-        return Some(format!(
-            "钉钉组织未开启 CLI 数据访问。{admin}请联系组织主管理员在钉钉开放平台开发者设置中开启“Allow members to access their personal data via CLI”，然后重新登录。"
-        ));
-    }
-    parsed
+/// The organization-level CLI block: the CLI's auth output reports that CLI
+/// data access is not enabled for this organization. Only an org admin can
+/// fix this, so it gets its own stable card code with actionable localized
+/// copy — the generic "reconnect and try again" advice can never fix it. The
+/// detection deliberately matches anywhere in the raw text so both the
+/// pretty-printed and embedded-JSON output shapes hit.
+fn cli_data_access_blocked(text: &str) -> bool {
+    text.contains("CLI data access is not enabled")
+}
+
+/// Best raw-cause line for the failure trail: prefer the CLI's structured
+/// `error.message`, then the last failure-ish output line. The card never
+/// renders this — it keys localized copy off the stable code.
+fn dingtalk_cli_auth_reason(text: &str) -> Option<String> {
+    cc::parse_json(text)
         .and_then(|v| {
             v.get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
-                .map(|s| format!("钉钉 CLI 授权失败：{s}"))
+                .map(|s| format!("dingtalk CLI auth failed: {s}"))
         })
         .or_else(|| {
             text.lines()
@@ -135,8 +127,32 @@ fn dingtalk_auth_error_hint(text: &str) -> Option<String> {
                     let l = line.to_ascii_lowercase();
                     l.contains("failed") || l.contains("error") || line.contains("失败")
                 })
-                .map(|line| format!("钉钉 CLI 授权失败：{}", line.trim()))
+                .map(|line| format!("dingtalk CLI auth failed: {}", line.trim()))
         })
+}
+
+/// A phase-scan failure pairs the stable card code with the raw cause: the
+/// card renders localized dictionary copy keyed by the code, and the raw
+/// cause goes to the failure trail. Known failure categories carry their own
+/// code; everything else defaults to `auth_failed`.
+struct FlowError {
+    code: &'static str,
+    message: String,
+}
+
+impl From<String> for FlowError {
+    fn from(message: String) -> Self {
+        FlowError {
+            code: "auth_failed",
+            message,
+        }
+    }
+}
+
+impl From<&str> for FlowError {
+    fn from(message: &str) -> Self {
+        FlowError::from(message.to_string())
+    }
 }
 
 fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
@@ -231,7 +247,15 @@ pub async fn dingtalk_status() -> Result<Value, String> {
 
 /// 开始连接钉钉(单段扫码)。立即返回 `{started:true}`,前端 listen 事件驱动 UI。
 pub async fn dingtalk_connect_begin(app: AppHandle) -> Result<Value, String> {
-    let generation = app.state::<ConnectorConn>().reset(ID);
+    let conn = app.state::<ConnectorConn>();
+    // A reconnect without an intervening cancel leaves the previous round's
+    // long-running child registered in the pid slot; the reset below overwrites
+    // that slot, which would make the orphan invisible to cancel's tree-kill
+    // and to kill_all_pids at exit. Kill it before resetting.
+    if let Some(pid) = conn.cancel(ID) {
+        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
+    }
+    let generation = conn.reset(ID);
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || run_connect_flow(&app2, generation));
     Ok(json!({ "started": true }))
@@ -242,7 +266,7 @@ fn run_connect_flow(app: &AppHandle, generation: u64) {
     if let Err(e) = phase_scan(app, generation) {
         // The card renders a localized category message only; the raw cause
         // is logged here (stdout in dev runs, the app log in packaged builds).
-        log::warn!("[dingtalk] connect flow failed: {e}");
+        log::warn!("[dingtalk] connect flow failed ({}): {}", e.code, e.message);
         // reset() clears the cancelled flag, so the flag alone cannot stop a
         // late emit in the cancel-then-reconnect window; a cancelled or
         // superseded round stays silent instead of polluting the new card.
@@ -252,12 +276,12 @@ fn run_connect_flow(app: &AppHandle, generation: u64) {
         cc::emit(
             app,
             "dingtalk:error",
-            json!({ "phase": "authorize", "code": "auth_failed", "message": e }),
+            json!({ "phase": "authorize", "code": e.code, "message": e.message }),
         );
     }
 }
 
-fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
+fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), FlowError> {
     let mut cmd = dws(&["auth", "login", "--device"]);
     // 独立进程组:npm shim(shell→node)派生的孙进程与 shim 同组,退出收割的
     // kill_pid_tree 按负 pid 组杀整棵树,单杀 shim pid 会把 node 孤儿化。
@@ -345,7 +369,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                 .map(|s| s.to_string());
         }
     }
-    eprintln!(
+    log::info!(
         "[dingtalk] auth device url ready: has_user_code_param={}, has_user_code={}",
         url.contains("user_code="),
         user_code.is_some()
@@ -397,18 +421,29 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
                     cc::emit(app, "dingtalk:connected", json!({ "ok": true }));
                     return Ok(());
                 }
-                eprintln!(
+                log::warn!(
                     "[dingtalk] auth login exited without authenticated status: exit={status}, {}",
                     auth_status_message()
                 );
                 let raw = auth_lines.iter().cloned().collect::<Vec<_>>().join("\n");
-                return Err(dingtalk_auth_error_hint(&raw)
-                    .unwrap_or_else(|| "授权未完成(可能已取消或超时)".into()));
+                // Known org-level block: the card dictionary carries actionable
+                // copy under this stable code; only an org admin can fix it, so
+                // the generic retry advice would be wrong.
+                if cli_data_access_blocked(&raw) {
+                    return Err(FlowError {
+                        code: "cli_data_access_disabled",
+                        message: "dingtalk org has not enabled CLI data access".into(),
+                    });
+                }
+                return Err(FlowError::from(
+                    dingtalk_cli_auth_reason(&raw)
+                        .unwrap_or_else(|| "授权未完成(可能已取消或超时)".into()),
+                ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(400)),
             Err(e) => {
                 conn.clear_pid_if(ID, pid);
-                return Err(format!("auth login 等待失败: {e}"));
+                return Err(format!("auth login 等待失败: {e}").into());
             }
         }
     }
@@ -510,13 +545,20 @@ mod tests {
     }
 
     #[test]
-    fn cli_data_access_error_is_explained() {
-        let hint = dingtalk_auth_error_hint(
-            r#"组织主管理员：xuyajing
-{"error":{"category":"auth","code":2,"message":"device authorization failed: CLI data access is not enabled for this organization, please contact admin to enable it"}}"#,
-        )
-        .unwrap();
-        assert!(hint.contains("钉钉组织未开启 CLI 数据访问"));
-        assert!(hint.contains("xuyajing"));
+    fn cli_data_access_error_gets_its_own_code() {
+        let raw = r#"组织主管理员：xuyajing
+{"error":{"category":"auth","code":2,"message":"device authorization failed: CLI data access is not enabled for this organization, please contact admin to enable it"}}"#;
+        assert!(cli_data_access_blocked(raw));
+        let reason = dingtalk_cli_auth_reason(raw).unwrap();
+        assert!(reason.contains("CLI data access is not enabled"));
+        // A plain signed-out JSON is not the org block; the reason extractor
+        // still prefers its structured message for the log trail.
+        assert!(!cli_data_access_blocked(
+            r#"{"error":{"message":"未登录"}}"#
+        ));
+        assert_eq!(
+            dingtalk_cli_auth_reason(r#"{"error":{"message":"未登录"}}"#).as_deref(),
+            Some("dingtalk CLI auth failed: 未登录")
+        );
     }
 }
