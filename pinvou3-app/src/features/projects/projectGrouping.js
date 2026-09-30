@@ -7,7 +7,7 @@
 //   1. explicit assignment wins — assignments[sessionId] is a project id
 //      (or null = explicit move-out, which skips tier 2 on purpose);
 //   2. workspace path under a project root -> auto-group into that project
-//      (longest matching root wins);
+//      (projects ordered by (position, id), first root match wins — §9.9);
 //   3. implicit folder group by workspace path; temporary sessions merge into
 //      one bottom group (unchanged legacy behavior).
 // Projects sort by manual position, implicit folders follow by latest
@@ -83,38 +83,47 @@ function rootPath(root) {
   return root && typeof root === 'object' ? root.path : root;
 }
 
-// Longest root wins so nested project roots cannot steal sessions from a
-// deeper project (backend also rejects cross-project nesting, this is the
-// display-side guard for hand-edited state).
-function matchProjectByPath(projects, workspacePath) {
-  let best = null;
-  let bestRoot = '';
-  projects.forEach((project) => {
-    (project && project.roots ? project.roots : []).forEach((root) => {
-      if (isUnderRoot(workspacePath, rootPath(root)) && String(rootPath(root)).length > bestRoot.length) {
-        best = project;
-        bestRoot = String(rootPath(root));
-      }
-    });
-  });
-  return best;
+// Membership follows the backend's §9.9 ruling: cross-project nesting is
+// legal, projects are ordered by (position, id), and the first project whose
+// roots contain the workspace wins — the old longest-root-wins rule is
+// retired (workspace-single-entry-blueprint.md). The id tiebreak uses
+// localeCompare where the store sorts byte-wise (`Ord` on `(&i64, &String)`);
+// the orders coincide for the generated id alphabet (`prj-` + fixed-width
+// base-36) — the sort here is display-order insurance, not a separate rule.
+// The (position, id) display order, materialized once per pass. Hot-path
+// callers (the workspace picker resolves every session at every turn
+// boundary) must pass the pre-ordered list instead of re-sorting per
+// resolution — review #484 round-11 M5.
+function orderedProjectsByPosition(projects) {
+  return [...projects].sort(
+    (a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)),
+  );
+}
+
+function matchProjectByPath(projects, workspacePath, orderedProjects) {
+  const ordered = Array.isArray(orderedProjects) ? orderedProjects : orderedProjectsByPosition(projects);
+  return (
+    ordered.find((project) =>
+      (project && project.roots ? project.roots : []).some((root) => isUnderRoot(workspacePath, rootPath(root))),
+    ) || null
+  );
 }
 
 // Resolve the project a session currently belongs to for UI affordances
 // (current-project marker in the move picker, "remove from project" entry).
 // Mirrors the grouping tiers: explicit assignment first, then auto-grouping;
 // returns null for ungrouped sessions.
-function resolveSessionProjectId(item, projects, assignments) {
+function resolveSessionProjectId(item, projects, assignments, orderedProjects) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
-  if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
+  if (Object.hasOwn(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
     if (assigned === null) return null;
   }
   if (!hasProjectWorkspace(item)) return null;
-  const matched = matchProjectByPath(projectList, item.workspacePath);
+  const matched = matchProjectByPath(projectList, item.workspacePath, orderedProjects);
   return matched ? matched.id : null;
 }
 
@@ -156,6 +165,11 @@ function groupSessionsWithProjects(items, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   const byId = new Map(projectList.map(project => [project.id, project]));
+  // The (position, id) order is materialized ONCE per pass and handed to
+  // every tier-2 resolution — the pre-round-13 shape re-cloned and re-sorted
+  // the project list per session via matchProjectByPath's fallback
+  // (review #484 round-13 minor 9, same fix as the picker path).
+  const ordered = orderedProjectsByPosition(projectList);
 
   const projectRows = new Map(projectList.map(project => [project.id, []]));
   const byFolder = new Map();
@@ -164,7 +178,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     if (!item) return;
     let target = null;
     let autoGroupBlocked = false;
-    if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
+    if (Object.hasOwn(assignmentMap, item.id)) {
       const assigned = assignmentMap[item.id];
       if (assigned && byId.has(assigned)) {
         // Tier 1: explicit id resolves.
@@ -180,7 +194,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     // sessions participate — temporary sessions enter a project exclusively
     // through explicit assignment (the "adopt" flow), never implicitly.
     if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
-      target = matchProjectByPath(projectList, item.workspacePath);
+      target = matchProjectByPath(projectList, item.workspacePath, ordered);
     }
     if (target) {
       projectRows.get(target.id).push(item);
@@ -265,4 +279,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay, unavailableProjectRootPaths };
+export { capUnavailableRootsForDisplay, groupSessionsWithProjects, hasProjectWorkspace, isUnderRoot, needsAddFolderConfirm, orderedProjectsByPosition, PROJECT_SESSION_DRAG_TYPE, projectCoversPath, resolveSessionProjectId, rootPath, TEMPORARY_GROUP_KEY, unavailableProjectRootPaths };

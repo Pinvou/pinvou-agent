@@ -75,6 +75,12 @@ pub struct RebindBindingsPlan {
     /// Candidates rejected in the planning half (invalid session id); carried
     /// into the outcome so the report treats them like write failures.
     failed_session_ids: Vec<String>,
+    /// The rebind prefix (resolved display forms, as planned): the keychain
+    /// translation in the apply half runs against `from → to`, not against
+    /// each binding's own new path (review #484 B1) — carried so the split
+    /// apply phase (review #463 round-13 M1) keeps it in scope.
+    from: PathBuf,
+    to: PathBuf,
 }
 
 /// Why the legacy-table sync refused a rebind run (review #463 round-13 M2):
@@ -108,6 +114,11 @@ const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
 struct SessionWorkspaceSidecar {
     version: u32,
     path: PathBuf,
+    /// Keychain snapshot locked at creation (§6): the full accessible-root
+    /// set (primary included). Legacy sidecars missing the key, or an empty
+    /// set = single-root semantics (the `path` directory only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workspace_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound_at: Option<i64>,
 }
@@ -132,6 +143,36 @@ fn folded_path_is_same_or_nested(path: &Path, base: &Path) -> bool {
         path_key.trim_end_matches('/'),
         base_key.trim_end_matches('/'),
     )
+}
+
+/// Keychain persist shape at creation/bind time (§6; review #484 round-5 M2):
+/// the primary slot is always the session's own cwd. The base's
+/// `normalize_workspace_roots` consumes the set cwd-first, so persisting the
+/// caller's storage order verbatim would diverge the stored order from the
+/// effective one and the workspace chip would mislabel the primary root.
+/// Mirrors `ProjectStore::keychain_for_workspace` and the base normalizer:
+/// cwd promoted to slot 0 verbatim (matching the binding path persisted
+/// beside it), the remaining roots keep their relative order with duplicates
+/// removed under folded identity keys (case/separator spellings of the same
+/// directory collapse). An empty set stays empty — it is the documented
+/// single-root contract, not a one-element keychain.
+pub(crate) fn cwd_first_workspace_roots(cwd: &Path, roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if roots.is_empty() {
+        return roots;
+    }
+    let mut seen = vec![crate::platform::os::filesystem_path_identity_key(
+        &cwd.to_string_lossy(),
+    )];
+    let mut normalized = vec![cwd.to_path_buf()];
+    for root in roots {
+        let key = crate::platform::os::filesystem_path_identity_key(&root.to_string_lossy());
+        if seen.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        seen.push(key);
+        normalized.push(root);
+    }
+    normalized
 }
 
 /// A future-version format must never be silently parsed as the current version:
@@ -218,6 +259,21 @@ impl SessionStore {
     /// empty session, leaving no session that merely "looked bound" and lost the
     /// binding after restart.
     pub fn bind_session_workspace(&self, id: &str, path: PathBuf) -> Result<()> {
+        self.bind_session_workspace_with_roots(id, path, Vec::new())
+    }
+
+    /// Binding + keychain snapshot (§6): `workspace_roots` is the full
+    /// accessible-root set (empty = single-root semantics; the base
+    /// normalizes against the cwd). Normalized through
+    /// `cwd_first_workspace_roots` before persisting — cwd first, deduped —
+    /// so the persisted order IS the base-effective order. Same persist
+    /// discipline as `bind_session_workspace`.
+    pub fn bind_session_workspace_with_roots(
+        &self,
+        id: &str,
+        path: PathBuf,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<()> {
         validate_session_id(id)?;
         let record = self.manager.sessions_dir().join(format!("{id}.json"));
         if !record.is_file() {
@@ -225,6 +281,7 @@ impl SessionStore {
         }
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            workspace_roots: cwd_first_workspace_roots(&path, workspace_roots),
             path,
             bound_at: Some(now_unix_secs()),
         };
@@ -241,6 +298,61 @@ impl SessionStore {
             .write()
             .insert(id.to_string(), sidecar.path);
         Ok(())
+    }
+
+    /// Creates-time keychain snapshot (§6); unbound / legacy sidecar / stale
+    /// directory = empty (single-root semantics). Cold path: reads the
+    /// sidecar directly without populating the `session_workspaces` path
+    /// cache. Callers: engine spawn/resume AND the chat lane's
+    /// `list_sessions` (per bound session per refresh, uncached — review
+    /// #484 round-10 m16; acceptable at today's list sizes, but the cost
+    /// recurs on every session event, so cache or piggyback the binding
+    /// cache before scaling the list).
+    pub fn session_workspace_roots(&self, id: &str) -> Vec<PathBuf> {
+        if validate_session_id(id).is_err()
+            || !self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+        {
+            return Vec::new();
+        }
+        read_workspace_sidecar(&self.session_workspace_sidecar_path(id))
+            .map(|sidecar| sidecar.workspace_roots)
+            .unwrap_or_default()
+    }
+
+    /// Keychain replacement for "align to project" (§9.7): rewrites the
+    /// whole sidecar snapshot (binding path and bound_at preserved).
+    /// Ok(false) when unbound — temporary sessions are rejected at the
+    /// command layer first; this is the second line of defense.
+    pub fn set_session_workspace_roots(
+        &self,
+        id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<bool> {
+        validate_session_id(id)?;
+        let file = self.session_workspace_sidecar_path(id);
+        let Some(existing) = read_workspace_sidecar(&file) else {
+            return Ok(false);
+        };
+        // Structural normalization (review #484 round-10 m5 / round-11 m5):
+        // the persisted order must equal the base-effective order
+        // (cwd-first, deduped) by construction, not because the sole caller
+        // happens to pre-normalize.
+        let workspace_roots = cwd_first_workspace_roots(&existing.path, workspace_roots);
+        let updated = SessionWorkspaceSidecar {
+            version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            path: existing.path,
+            workspace_roots,
+            bound_at: existing.bound_at,
+        };
+        let payload =
+            serde_json::to_vec_pretty(&updated).context("serialize session workspace binding")?;
+        crate::platform::filesystem::atomic_write(&file, &payload)
+            .with_context(|| format!("persist session workspace roots to {}", file.display()))?;
+        Ok(true)
     }
 
     /// Reads the session's user working-directory binding (None when unbound; the
@@ -478,6 +590,14 @@ impl SessionStore {
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
             path: next.clone(),
+            // The keychain snapshot translates together with the binding:
+            // a single uncovered-prefix root replacement leaves the existing
+            // on-disk snapshot untouched (per-root translation goes through
+            // the batch rebind_workspace_bindings channel below).
+            workspace_roots: previous
+                .as_ref()
+                .map(|sidecar| sidecar.workspace_roots.clone())
+                .unwrap_or_default(),
             bound_at: previous.and_then(|sidecar| sidecar.bound_at),
         };
         let payload = match serde_json::to_vec_pretty(&sidecar) {
@@ -597,7 +717,11 @@ impl SessionStore {
             }
             candidates.push((id, path));
         }
-        let mut plan = RebindBindingsPlan::default();
+        let mut plan = RebindBindingsPlan {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+            ..RebindBindingsPlan::default()
+        };
         for (id, path) in candidates {
             // Shared containment + suffix cut (round-8 review should-fix 9):
             // one platform predicate serves all three lanes.
@@ -687,6 +811,7 @@ impl SessionStore {
             return outcome;
         }
         for (id, next, sidecar_path) in plan.entries {
+            let (from, to) = (&plan.from, &plan.to);
             // Owner re-check (review #463 round-14 M2): the session may have
             // been deleted between the plan scan and this apply (the codex
             // lane runs in between and session deletion is not fenced by
@@ -709,11 +834,35 @@ impl SessionStore {
                 }
                 // bound_at is metadata only: keep it as-is, same convention as
                 // the codex store's rebind; it is no longer reset to None
-                // (review #452 finding 3).
-                let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
+                // (review #452 finding 3). The keychain snapshot shifts along:
+                // roots under the `from` prefix move onto `to`, the rest stay
+                // (round-8 should-fix 9: the same shared predicate and suffix
+                // cut as the containment above).
+                let previous = read_workspace_sidecar(&sidecar_path);
+                let bound_at = previous.as_ref().and_then(|s| s.bound_at);
+                let rebound_roots: Vec<PathBuf> = previous
+                    .map(|s| s.workspace_roots)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|root| {
+                        // The keychain is translated against the rebind prefix
+                        // (`from` → `to`), not against the binding's own new
+                        // path `next` (= `to` + the binding's suffix): a session
+                        // bound at `from/deep` whose keychain holds `from`
+                        // itself or the sibling root `from/x` must land on
+                        // `to` / `to/x`, same convention as the codex lane's
+                        // rebind_workspace_prefix (review #484 B1).
+                        match crate::platform::os::path_relative_suffix_under(&root, from) {
+                            Some(suffix) if suffix.as_os_str().is_empty() => to.to_path_buf(),
+                            Some(suffix) => to.join(suffix),
+                            None => root,
+                        }
+                    })
+                    .collect();
                 let updated = SessionWorkspaceSidecar {
                     version: SESSION_WORKSPACE_SIDECAR_VERSION,
                     path: next.clone(),
+                    workspace_roots: rebound_roots,
                     bound_at,
                 };
                 let payload = serde_json::to_vec_pretty(&updated)

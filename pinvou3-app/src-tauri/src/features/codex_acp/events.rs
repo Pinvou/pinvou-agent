@@ -1104,7 +1104,7 @@ fn timeline_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, TIMELINE_FILE)
 }
 
-fn state_path(session_id: &str) -> Result<PathBuf> {
+pub(crate) fn state_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, STATE_FILE)
 }
 

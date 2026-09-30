@@ -56,9 +56,16 @@ export async function pickAcpWorkspace({ title, defaultPath } = {}) {
   return { path, workspaceHandle };
 }
 
-export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
+export function createAcpSession({ workspacePath, workspaceHandle, agentId, workspaceRoots, projectId }) {
   if (!isWeb) {
-    return invokeTauri('create_codex_acp_session', { workspacePath, agentId });
+    // Keychain snapshot and project ownership (§6/§9.3): desktop channel only;
+    // Web is a single authorized root directory (§9.8).
+    return invokeTauri('create_codex_acp_session', {
+      workspacePath,
+      agentId,
+      workspaceRoots: workspaceRoots && workspaceRoots.length ? workspaceRoots : null,
+      projectId: projectId || null,
+    });
   }
   if (workspacePath && !workspaceHandle) {
     return Promise.reject(acpClientError('web_workspace_authorization_required'));
@@ -67,6 +74,29 @@ export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
     workspaceHandle: workspaceHandle || null,
     agentId,
   });
+}
+
+// Align to project (§9.7, desktop-only): the session keychain is replaced by
+// the owning project's full root set at that moment. Typed errors
+// (ALIGN_BUSY/ALIGN_NO_WORKSPACE) are thrown as-is; the caller maps them to
+// copy by marker.
+export function alignAcpSession(sessionId) {
+  if (!isWeb) {
+    return invokeTauri('align_session_to_project', { sessionId });
+  }
+  return Promise.reject(acpClientError('workspace_align_desktop_only'));
+}
+
+// Folder-project ensure (§9.9, desktop-only): anchor reuse / materialization
+// for an explicitly picked folder. The codex lane's recents channel runs it
+// before staging the draft so the session carries the anchored project id —
+// without it tier-2 nested grouping adopts the session into a broader
+// project whose root covers the folder (e.g. a Desktop-rooted one).
+export function ensureFolderProjects(roots) {
+  if (!isWeb) {
+    return invokeTauri('ensure_folder_projects', { roots: roots || [] });
+  }
+  return Promise.reject(acpClientError('folder_ensure_desktop_only'));
 }
 
 export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {

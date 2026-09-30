@@ -241,6 +241,11 @@ fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
     warned
 }
 
+/// 会话钥匙串快照解析器闭包（创建时锁定的全量可访问根，§6）。注入理由同
+/// [`crate::features::sessions::ExecutionRootResolver`]：bridge 够不到 SessionStore/AcpPool。
+pub type WorkspaceRootsResolver =
+    std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -284,6 +289,11 @@ pub struct Pinvou3Bridge {
     /// artifacts) is unaffected and is still decided uniformly by the `ledger`
     /// field of `SessionStore::session_roots`.
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// Session keychain-snapshot resolver: the full accessible-root set
+    /// locked at session creation (empty = single-root semantics). Injected
+    /// once at the same place as the execution-root resolver (composition
+    /// root, once the AcpPool is ready).
+    pub workspace_roots_resolver: Option<WorkspaceRootsResolver>,
     /// Native code session predicate (code_session=true, covering both
     /// temporary and project-bound forms). Used for rendering the work/code
     /// branches of instructions and for tool shaping; lib.rs shares the same
@@ -322,6 +332,10 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "workspace_roots_resolver",
+                &self.workspace_roots_resolver.as_ref().map(|_| "Some(..)"),
             )
             .field(
                 "code_session_predicate",
@@ -465,6 +479,7 @@ impl Pinvou3Bridge {
             probed_output_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -695,6 +710,24 @@ impl Pinvou3Bridge {
     /// is ready.
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// Inject the keychain-snapshot resolver; assembled by the app
+    /// composition root at the same place as the execution-root resolver.
+    pub fn set_workspace_roots_resolver(&mut self, resolver: WorkspaceRootsResolver) {
+        self.workspace_roots_resolver = Some(resolver);
+    }
+
+    /// The keychain snapshot locked at session creation (§6): the full
+    /// accessible-root set; empty when no resolver is injected or the session
+    /// has no snapshot (legacy/temporary sessions) — after base normalization
+    /// this is equivalent to `workspace`, leaving the single-root status quo
+    /// unchanged.
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        self.workspace_roots_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_default()
     }
 
     /// Inject the native code session predicate (the same SessionAgentStore
@@ -1924,6 +1957,10 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
+            // v0.9.12 workspace_roots foundation field: this stage only
+            // enumerates the default shape; the real per-session keychain is
+            // assigned in `build_engine_config_for_session_roots`.
+            workspace_roots: _,
         } = EngineConfig::default();
 
         // Hooks have two consumption paths: turn_loop runs ToolCallBefore
@@ -1953,6 +1990,9 @@ impl Pinvou3Bridge {
             // pinvou3 override
             model: self.model(),
             workspace: self.workspace.clone(),
+            // 编译收敛:空集合 = 仅主根(单根现状);多根钥匙串在
+            // `build_engine_config_for_session_roots` 里按会话赋值。
+            workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
@@ -2264,6 +2304,10 @@ impl Pinvou3Bridge {
         } else {
             self.session_instructions(session_id)
         };
+        // 钥匙串快照(§6):创建时锁定的全量根;空 = 单根(底座 normalize
+        // 会归约到 [workspace];cwd 优先去重由底座保证)。Aux sessions carry
+        // no keychain — empty reads as single-root after base normalize.
+        cfg.workspace_roots = self.session_workspace_roots(session_id);
         // The skill discovery root points at the composed directory per
         // session (skill dual-scope governance: directory content = the
         // enabled skill set of that session's scope). Pre-spawn
@@ -3397,6 +3441,7 @@ impl Pinvou3Bridge {
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
+            workspace_roots_resolver: None,
             image_analyze_always: false,
         }
     }
@@ -4403,6 +4448,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -4458,6 +4504,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -4521,6 +4568,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };
@@ -4716,6 +4764,7 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
+                    workspace_roots: Vec::new(),
                 })
                 .unwrap()
         };

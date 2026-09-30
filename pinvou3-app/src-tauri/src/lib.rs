@@ -61,6 +61,65 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "280"),
 ];
 
+/// §6 钥匙串快照组合解析(评审 #484 round-13 M4 提取并钉死;round-14 修正
+/// 文档错位):code/ACP 会话读 session-agents 记录(权威),记录为空回落纯
+/// 绑定 sidecar,两边都空 = 单根(底座按 cwd 归一)。此前是内联闭包,审计
+/// 变异(删掉 agents 优先分支)时全部宿主测试仍然绿;提成自由函数让交付
+/// 优先级可被行为测试钉住。
+///
+/// Round-19 minor 6(投递时再校验):intake 对不存在/非目录的附加根走软保留
+/// ——按词法拼写存储(目录之后可能被重建)。若该拼写后来物化为指向 `/`(或
+/// 主根祖先)的符号链接,逐回合的规范化执行会按宽目标放行。组合点在这里对
+/// **可规范化**的附加根复核两条硬不变量(文件系统根 / 主根的祖先,与
+/// `validate_workspace_roots` 同一判定),命中即从投递集里丢弃并记日志——
+/// 收窄方向 fail-safe,会话继续;仍不存在/不可规范化的拼写保持软保留语义。
+pub(crate) fn compose_workspace_roots(
+    agents: &crate::features::codex_acp::SessionAgentStore,
+    bindings: &crate::features::sessions::SessionStore,
+    session_id: &str,
+) -> Vec<std::path::PathBuf> {
+    let roots = agents.session_workspace_roots(session_id);
+    let recorded = if !roots.is_empty() {
+        roots
+    } else {
+        bindings.session_workspace_roots(session_id)
+    };
+    if recorded.len() < 2 {
+        return recorded;
+    }
+    use crate::features::sessions::{is_filesystem_root, lexical_normalize};
+    let primary_lexical = lexical_normalize(&recorded[0]);
+    let mut delivered = Vec::with_capacity(recorded.len());
+    delivered.push(recorded[0].clone());
+    for root in recorded.iter().skip(1) {
+        let Ok(canonical) = root.canonicalize() else {
+            delivered.push(root.clone());
+            continue;
+        };
+        if !canonical.is_dir() {
+            delivered.push(root.clone());
+            continue;
+        }
+        let canonical = std::path::PathBuf::from(crate::platform::os::platform_compat_path(
+            &canonical.to_string_lossy(),
+        ));
+        let canonical_lexical = lexical_normalize(&canonical);
+        let widens = is_filesystem_root(&canonical_lexical)
+            || (primary_lexical != canonical_lexical
+                && primary_lexical.starts_with(&canonical_lexical));
+        if widens {
+            // Log hygiene(CodeQL cleartext-logging,同 rebind 车道约定):
+            // 日志只记失败类别,不落用户路径。
+            eprintln!(
+                "[sessions] a soft-kept workspace root resolved to a widening target at delivery; dropped"
+            );
+            continue;
+        }
+        delivered.push(root.clone());
+    }
+    delivered
+}
+
 /// 为 release 安装包（.deb 双击启动场景）注入 run-dev.sh 里集中处理的运行时 env。
 /// dev 启动走 run-dev.sh 已经 export 过的不会被覆盖（var_os().is_none() 守门）。
 fn ensure_release_env() {
@@ -1103,6 +1162,16 @@ pub fn run() {
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
                     store_for_engine.set_execution_root_resolver(execution_root_resolver);
+                    // 钥匙串快照(§6)解析:code/ACP 会话读 session-agents 记录,
+                    // 纯绑定会话读 workspace-binding sidecar;两边都没有快照 =
+                    // 单根(底座按 cwd 归一)。
+                    pool.bridge.set_workspace_roots_resolver(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        let store = store_for_engine.clone();
+                        move |session_id: &str| {
+                            compose_workspace_roots(&agents, &store, session_id)
+                        }
+                    }));
                     pool.bridge.set_code_session_predicate(std::sync::Arc::new({
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
@@ -1439,6 +1508,9 @@ pub fn run() {
             commands::projects::update_project,
             commands::projects::delete_project,
             commands::projects::move_session_to_project,
+            commands::projects::ensure_folder_projects,
+            commands::projects::projects_set_never_materialize,
+            commands::projects::align_session_to_project,
             commands::projects::rebind_workspace_root,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
@@ -2533,5 +2605,224 @@ mod release_env_defaults_guard {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(test)]
+    mod workspace_roots_resolver_tests {
+        use crate::compose_workspace_roots;
+
+        #[test]
+        fn workspace_roots_resolver_prefers_the_agents_record() {
+            // Round-13 M4: the composition priority is the feature's delivery
+            // contract — an agents record (code/ACP) is authoritative, the plain
+            // binding sidecar is the fallback, both empty = single-root. As an
+            // inline closure this went unpinned (deleting the agents branch kept
+            // every test green); composed through compose_workspace_roots the
+            // conflicting fixture goes red. Hermetic under ENV_LOCK + PINVOU3_HOME.
+            let _lock = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prev_home = std::env::var("PINVOU3_HOME").ok();
+            let home = std::env::temp_dir()
+                .join(format!("pinvou3-compose-roots-home-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+            let sessions = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                home.join("scheduled"),
+            )
+            .expect("boot plain store");
+            let agents = crate::features::codex_acp::SessionAgentStore::for_test(
+                home.join("session-agents.json"),
+            );
+            let w = std::env::temp_dir().join("pinvou3-compose-roots-w");
+            let _ = std::fs::remove_dir_all(&w);
+            std::fs::create_dir_all(&w).unwrap();
+
+            // Both stores populated with DIFFERENT non-empty sets: the agents
+            // record wins and the plain sidecar must not leak through. The
+            // bind requires a live session record, so create it first (the id
+            // is what both stores key on).
+            let s_both = sessions
+                .create_new("s-both".to_string(), None, w.clone())
+                .expect("create session")
+                .metadata
+                .id;
+            sessions
+                .bind_session_workspace_with_roots(
+                    &s_both,
+                    w.clone(),
+                    vec![w.clone(), w.join("plain-extra")],
+                )
+                .expect("bind plain sidecar");
+            agents
+                .set_acp_workspace(
+                    &s_both,
+                    crate::features::codex_acp::AgentBackend::CodexAcp,
+                    crate::features::codex_acp::CodexWorkspaceKind::Project,
+                    Some(w.clone()),
+                    vec![w.clone(), w.join("agents-extra")],
+                )
+                .expect("seed agents record");
+            let composed = compose_workspace_roots(&agents, &sessions, &s_both);
+            assert!(
+                composed.iter().any(|root| root.ends_with("agents-extra")),
+                "{composed:?}"
+            );
+            assert!(
+                !composed.iter().any(|root| root.ends_with("plain-extra")),
+                "{composed:?}"
+            );
+
+            // An agents record with an EMPTY set falls back to the plain sidecar.
+            let s_conv = sessions
+                .create_new("s-conv".to_string(), None, w.clone())
+                .expect("create session")
+                .metadata
+                .id;
+            agents
+                .set_acp_workspace(
+                    &s_conv,
+                    crate::features::codex_acp::AgentBackend::CodexAcp,
+                    crate::features::codex_acp::CodexWorkspaceKind::Project,
+                    Some(w.clone()),
+                    Vec::new(),
+                )
+                .expect("seed empty agents record");
+            sessions
+                .bind_session_workspace_with_roots(
+                    &s_conv,
+                    w.clone(),
+                    vec![w.clone(), w.join("plain-only")],
+                )
+                .expect("bind plain sidecar for the fallback leg");
+            let composed = compose_workspace_roots(&agents, &sessions, &s_conv);
+            assert!(
+                composed.iter().any(|root| root.ends_with("plain-only")),
+                "the empty agents record must fall back to the sidecar: {composed:?}"
+            );
+
+            // Both empty = single-root (empty vector).
+            let composed = compose_workspace_roots(&agents, &sessions, "s-none");
+            assert!(composed.is_empty());
+
+            // SAFETY: ENV_LOCK held for the whole test; restoring the caller's
+            // environment.
+            unsafe {
+                match prev_home {
+                    Some(home) => std::env::set_var("PINVOU3_HOME", home),
+                    None => std::env::remove_var("PINVOU3_HOME"),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&w);
+        }
+
+        #[test]
+        fn workspace_roots_delivery_rechecks_soft_kept_spellings() {
+            // Round-19 minor 6: a soft-kept (nonexistent at intake) root is
+            // stored lexically; if it later materializes as a symlink to `/`
+            // or to the primary's ancestor, the per-turn canonicalizing
+            // enforcement would grant the wide target. compose_workspace_roots
+            // re-checks the two hard invariants on the canonical form of every
+            // resolvable additional root and DROPS the widening ones
+            // (fail-safe narrowing); a benign materialized root and an
+            // still-missing spelling stay delivered. Hermetic like the
+            // sibling test: ENV_LOCK + PINVOU3_HOME + own temp dirs.
+            let _lock = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prev_home = std::env::var("PINVOU3_HOME").ok();
+            let home = std::env::temp_dir().join(format!(
+                "pinvou3-compose-recheck-home-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&home);
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+            let sessions = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                home.join("scheduled"),
+            )
+            .expect("boot plain store");
+            let agents = crate::features::codex_acp::SessionAgentStore::for_test(
+                home.join("session-agents.json"),
+            );
+            let base = std::env::temp_dir()
+                .join(format!("pinvou3-compose-recheck-w-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let w = base.join("ws");
+            std::fs::create_dir_all(&w).unwrap();
+
+            let s = sessions
+                .create_new("s-recheck".to_string(), None, w.clone())
+                .expect("create session")
+                .metadata
+                .id;
+            let benign = w.join("materialized");
+            std::fs::create_dir_all(&benign).unwrap();
+            let still_missing = w.join("still-missing");
+
+            #[cfg(unix)]
+            let root_link = {
+                let link = base.join("root-link");
+                std::os::unix::fs::symlink("/", &link).expect("symlink to /");
+                link
+            };
+            #[cfg(unix)]
+            let ancestor_link = {
+                let link = base.join("ancestor-link");
+                std::os::unix::fs::symlink(&base, &link).expect("symlink to the primary's parent");
+                link
+            };
+
+            // The `mut` lives inside the unix arm only: with the extend
+            // cfg'd out on Windows a plain `let mut` would trip
+            // `-D unused-mut` on the all-targets leg (the round-19 BLOCKER
+            // class — platform-conditional code must stay clean on both
+            // targets).
+            #[cfg(unix)]
+            let roots = {
+                let mut all = vec![w.clone(), benign.clone(), still_missing.clone()];
+                all.extend([root_link.clone(), ancestor_link.clone()]);
+                all
+            };
+            #[cfg(not(unix))]
+            let roots = vec![w.clone(), benign.clone(), still_missing.clone()];
+            sessions
+                .bind_session_workspace_with_roots(&s, w.clone(), roots)
+                .expect("bind sidecar");
+
+            let composed = compose_workspace_roots(&agents, &sessions, &s);
+            assert!(
+                composed.contains(&benign),
+                "a benign materialized root stays delivered: {composed:?}"
+            );
+            assert!(
+                composed.contains(&still_missing),
+                "an unverifiable spelling keeps the soft-keep semantics: {composed:?}"
+            );
+            #[cfg(unix)]
+            {
+                assert!(
+                    !composed.contains(&root_link),
+                    "a symlink resolving to the filesystem root must be dropped at delivery: {composed:?}"
+                );
+                assert!(
+                    !composed.contains(&ancestor_link),
+                    "a symlink resolving to the primary's ancestor must be dropped at delivery: {composed:?}"
+                );
+            }
+
+            // SAFETY: ENV_LOCK held for the whole test; restoring the caller's
+            // environment.
+            unsafe {
+                match prev_home {
+                    Some(home) => std::env::set_var("PINVOU3_HOME", home),
+                    None => std::env::remove_var("PINVOU3_HOME"),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 }

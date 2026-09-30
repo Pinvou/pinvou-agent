@@ -30,6 +30,9 @@
       state.projectsList = {
         projects: snapshot.projects,
         assignments: snapshot.assignments || {},
+        // Anti-materialization exclusion list (§3, canonical keys; on POSIX
+        // the identity key is the path itself).
+        neverMaterializeRoots: snapshot.never_materialize_roots || [],
         loadedAt: Date.now(),
       };
       notify();
@@ -91,6 +94,49 @@
       return outcome;
     }
 
+    // Folder-project auto-materialization: idempotent ensure; the backend
+    // broadcasts projects:list_changed on creation (event refresh plus the
+    // active refresh below, belt and braces, same as createProject). Failed
+    // roots (nesting conflicts etc.) are reported per root; errors are not
+    // swallowed here.
+    async function ensureFolderProjects(roots) {
+      const outcomes = await invoke("ensure_folder_projects", { roots: roots || [] });
+      await loadProjects();
+      return outcomes;
+    }
+
+    // Manage panel (§4): whole-set roots replacement (the backend writes
+    // explicit move-outs for the removed roots' auto members).
+    async function updateProjectRoots(projectId, roots) {
+      const updated = await invoke("update_project", { projectId, roots });
+      await loadProjects();
+      return updated;
+    }
+
+    // Project-remembered primary folder (§9.2): the manage panel's "set as
+    // primary folder" entry.
+    async function setPrimaryRoot(projectId, root) {
+      const updated = await invoke("update_project", { projectId, lastPrimaryRoot: root });
+      await loadProjects();
+      return updated;
+    }
+
+    // Anti-materialization exclusion list (§3): never=true stops
+    // auto-creating a project for this folder; false revokes it.
+    async function setNeverMaterialize(root, never) {
+      const updated = await invoke("projects_set_never_materialize", { root, never: !!never });
+      await loadProjects();
+      return updated;
+    }
+
+    // Align to project (§6/§9.7): the session keychain is replaced by the
+    // owning project's full root set at that moment; typed errors
+    // (ALIGN_BUSY/ALIGN_NO_WORKSPACE) are thrown as-is for the caller to map
+    // to copy by marker.
+    async function alignSessionToProject(sessionId) {
+      return invoke("align_session_to_project", { sessionId });
+    }
+
     // Directory rebind (broken-link repair): confirmExisting is driven by the
     // frontend's two-phase handshake — the first call omits the confirmation,
     // the backend rejects it with a typed marker while the old directory still
@@ -117,6 +163,11 @@
       renameProject,
       deleteProject,
       moveSessionToProject,
+      ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
       rebindWorkspaceRoot
     };
   };
