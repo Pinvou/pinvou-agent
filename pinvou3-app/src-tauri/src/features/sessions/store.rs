@@ -535,7 +535,12 @@ impl SessionStore {
         // `aux_session_id`. The cascade is all-or-nothing: a failed aux
         // delete aborts the main delete and preserves both records.
         if let Some(aux_id) = self.aux_session_id(id) {
-            self.delete(&aux_id)
+            // The mutation guard is already held here, so the cascade leg
+            // must re-enter `delete_locked`, not the public `delete` —
+            // `scheduled_mutation` is not reentrant (parking_lot), and the
+            // public call would deadlock on every main-with-aux delete.
+            // Depth stays bounded at 1: an aux id never owns an aux.
+            self.delete_locked(&aux_id)
                 .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
         // Upstream delete_session removes the session JSON before cleaning the
