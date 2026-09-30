@@ -283,6 +283,11 @@ function pinvouSharedtauriMain() {
     // create_session via the workspacePath parameter, cleared after successful
     // materialization, reset by enterDraft.
     draftWorkspacePath: null,
+    // Draft staging for the project channel (§9.3): the keychain snapshot and
+    // project ownership, passed down with the materializing create_session;
+    // null/empty = a plain-folder or temporary draft.
+    draftWorkspaceRoots: [],
+    draftProjectId: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -507,6 +512,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose folders to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
+      manageAddFolderTitle: "Choose a folder to add to the project",
+      workspacePickFolderTitle: "Choose a workspace folder",
       memoryWriteFailed: "Memory write failed: ", memoryIgnoreFailed: "Failed to ignore memory: ", memoryNeverFailed: "Failed to set \"never ask\": ",
       attachEmptyFile: "Empty files cannot be added", attachAddCancelled: "Attachment add canceled", attachInvalidResult: "Attachment add returned no valid result", deviceUploadFailed: "⚠️ Upload failed: ",
       planTicketInvalid: "⚠️ The plan credential is no longer valid. Regenerate the plan before executing.",
@@ -608,6 +615,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
+      manageAddFolderTitle: "プロジェクトに追加するフォルダーを選択",
+      workspacePickFolderTitle: "ワークスペースフォルダーを選択",
       memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
       attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
       planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
@@ -709,6 +718,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
+      manageAddFolderTitle: "选择要添加到项目的文件夹",
+      workspacePickFolderTitle: "选择工作区文件夹",
       memoryWriteFailed: "记忆写入失败：", memoryIgnoreFailed: "忽略记忆失败：", memoryNeverFailed: "设置不再提示失败：",
       attachEmptyFile: "空文件无法添加", attachAddCancelled: "附件添加已取消", attachInvalidResult: "附件添加未返回有效结果", deviceUploadFailed: "⚠️ 上传失败: ",
       planTicketInvalid: "⚠️ 方案凭证已失效，请重新生成方案后再执行",
@@ -1108,6 +1119,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const createNewSession = sessionsFeature.createNewSession;
   const setDraftWorkspace = sessionsFeature.setDraftWorkspace;
   const pickDraftWorkspace = sessionsFeature.pickDraftWorkspace;
+  const rememberDraftWorkspaceRecent = sessionsFeature.rememberDraftWorkspaceRecent;
   const getSessionWorkspaceBinding = sessionsFeature.getSessionWorkspaceBinding;
   const ensureSession = sessionsFeature.ensureSession;
   const hydratedMessageKey = sessionsFeature.hydratedMessageKey;
@@ -1190,6 +1202,17 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
+  }
+
+  // The mode a chat draft WILL run once a workspace pick binds it (review
+  // #484 round-11 M6): grant-notice surfaces must describe the post-binding
+  // posture — bound drafts align with the code lane's safety posture
+  // (currentDraftModeState's bound arm), so the composer chip and the
+  // pre-grant notice must agree instead of the notice reading the unbound
+  // snapshot while the chip flips to plan.
+  function boundDraftMode() {
+    const d = state.modeDefaults && state.modeDefaults.code;
+    return d || "plan";
   }
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -2334,6 +2357,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
   const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
+  const ensureFolderProjects = projectsFeature.ensureFolderProjects;
+  const updateProjectRoots = projectsFeature.updateProjectRoots;
+  const setPrimaryRoot = projectsFeature.setPrimaryRoot;
+  const setNeverMaterialize = projectsFeature.setNeverMaterialize;
+  const alignSessionToProject = projectsFeature.alignSessionToProject;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2364,6 +2392,23 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   async function pickRebindFolder() {
     if (!dialogOpen) return null;
     const selected = await dialogOpen({ directory: true, multiple: false, title: bt("rebindPickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  // Round-35 M4: the two workspace channels used pickFolders — the
+  // knowledge-base MULTI-select import dialog — and kept picked[0] only,
+  // silently discarding the rest of a multi-selection (#463 Minor-6's
+  // defect class reintroduced). Dedicated single-select pickers with
+  // channel-matching titles.
+  async function pickManageFolder() {
+    if (!dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("manageAddFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  async function pickWorkspaceFolder() {
+    if (!dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("workspacePickFolderTitle") });
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
@@ -2561,6 +2606,13 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       // such channel, the UI guards on method existence).
       setDraftWorkspace,
       pickDraftWorkspace,
+      // Recents-list recorder for the single-entry picker path (the system
+      // dialog lane records inside pickDraftWorkspace itself; review #484
+      // round-18 M3).
+      rememberDraftWorkspaceRecent,
+      // Pre-grant notice mode for the chat lane's workspace surfaces (the
+      // posture the draft takes once the pick binds; review #484 round-11 M6).
+      boundDraftMode,
       // Working directory binding query for materialized sessions (bound
       // sessions share the code mode's safety posture; web/remote sessions have
       // no binding concept, stub returns null).
@@ -2573,6 +2625,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       deleteProject,
       moveSessionToProject,
       rebindWorkspaceRoot,
+      ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
     },
     monitor: {
       startMonitorPolling,
@@ -2684,6 +2741,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     files: {
       pickFiles,
       pickFolders,
+      pickManageFolder,
+      pickWorkspaceFolder,
       pickRebindFolder,
       pickFeedbackFiles,
     },

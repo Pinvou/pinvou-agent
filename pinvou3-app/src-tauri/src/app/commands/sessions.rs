@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::projects::ProjectStore;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
 use crate::features::sessions::NEW_CHAT_TITLE;
@@ -18,6 +19,11 @@ pub struct SessionListItem {
     /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
+    /// Keychain snapshot locked at creation (§6, the full accessible root set
+    /// including the primary); empty = single-root semantics. The picker /
+    /// management panel shows "the set of folders this conversation can access".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
 }
 
 /// Web boundary projection for SessionListItem: degrade the host absolute
@@ -34,6 +40,12 @@ pub struct SessionListItem {
 pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     if let Some(binding) = &item.workspace_binding {
         item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+    // The keychain snapshot likewise holds host-absolute paths: degrade each
+    // entry to its last component before crossing the Web boundary — the same
+    // projection as workspace_binding (web does not group by it, inert leaf only).
+    for root in item.workspace_roots.iter_mut() {
+        *root = super::codex::redact_workspace_path_for_web(root);
     }
 }
 
@@ -165,6 +177,7 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     metas.retain(|m| {
@@ -187,11 +200,28 @@ pub async fn list_sessions(
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
+            // The keychain snapshot exists only once bound; a sidecar cold read
+            // (same order of magnitude as the binding).
+            // Round-30 minor 5: the projection goes through
+            // compose_workspace_roots — the same delivery-time re-check the
+            // codex lane applies (round-21 M1's "display == engine-effective"
+            // invariant) — so a soft-kept root that later resolves to a
+            // dropped widening target does not display as accessible while
+            // the engine drops it.
+            let workspace_roots = if workspace_binding.is_some() {
+                crate::compose_workspace_roots(acp_pool.agents(), &store, &projects, &metadata.id)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
                 workspace_binding,
+                workspace_roots,
                 metadata,
             }
         })
@@ -391,23 +421,60 @@ pub(super) fn create_session_record(
 pub async fn create_session(
     set_active: Option<bool>,
     workspace_path: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     let workspace = workspace_path
         .as_deref()
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    // Keychain snapshot (§6): non-absolute paths hard-rejected; non-existent
+    // directories soft-warned and kept (per rebind's lenient semantics — an extra
+    // root may be rebuilt later). Empty/omitted = single root (cwd only).
+    let roots = crate::features::sessions::validate_workspace_roots(
+        workspace_roots.unwrap_or_default(),
+        workspace.as_deref(),
+    )
+    .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // Without workspace_path the keychain / project membership has nowhere to
+    // land: silently dropping them after hard validation would misreport the
+    // granted scope (review #484 round-7 minor) — an explicit parameter error; the caller re-sends.
+    if workspace.is_none() && (!roots.is_empty() || project_id.is_some()) {
+        return Err(
+            "create_session: invalid workspace_roots/project_id: both require workspace_path"
+                .to_string(),
+        );
+    }
+    // Same rebind fence as every sibling root-accepting writer (review #484
+    // round-11 M3): the binding write and the project-choice writes
+    // (last_primary_root + tier-1 assignment) must not commit between the
+    // rebind's candidate snapshot and its translation, or the fresh binding
+    // keeps the dead `from` spelling and escapes translation entirely. Held
+    // only for the binding window — the plain no-workspace create path stays
+    // fence-free. Taken BEFORE create_session_record (review #484 round-13
+    // minor 1): a REBIND_IN_PROGRESS rejection after the session was created
+    // would leave a persisted orphan session behind — the exact state the
+    // adjacent bind-failure path rolls back by deleting.
+    let _fence = if workspace.is_some() {
+        Some(projects.rebind_fence()?)
+    } else {
+        None
+    };
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
-    if let Some(workspace) = workspace {
+    if let Some(workspace) = workspace.clone() {
         // A failed binding persist must not leave behind a session that "looked
         // created but falls back to the private execution root after restart":
         // roll back by deleting the just-created empty session (in the rollback
         // style of create_new).
-        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+        if let Err(error) =
+            store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
+        {
             let rollback = store.delete(&metadata.id);
             return Err(match rollback {
                 Ok(()) => format!("create_session: bind workspace: {error:#}"),
@@ -417,7 +484,23 @@ pub async fn create_session(
                 ),
             });
         }
+        // Project channel (§9.3): creation updates the project's remembered primary folder
+        // and writes explicit membership. Writing in the same backend command is more
+        // atomic than a frontend update_project follow-up (no second RPC, no missed
+        // write); a memory-write failure never affects session creation itself (retried
+        // on the next create), it only logs. Success must broadcast the list change —
+        // direct store writes fire no events; a stale frontend assignments snapshot
+        // would file the new session into the wide project as tier-2 in the sidebar.
+        if super::projects::record_project_choice(
+            &projects,
+            &metadata.id,
+            project_id.as_deref(),
+            Some(&workspace),
+        ) {
+            super::projects::emit_create_channel_assignment_event(&app);
+        }
     }
+    drop(_fence);
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
@@ -1705,11 +1788,23 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec![
+                "/Users/host/Documents/secret-project".to_string(),
+                "/Users/host/very-secret-extra".to_string(),
+            ],
             metadata,
         };
 
         redact_session_list_item_for_web(&mut item);
 
+        assert_eq!(
+            item.workspace_roots,
+            vec![
+                "secret-project".to_string(),
+                "very-secret-extra".to_string()
+            ],
+            "钥匙串快照过 Web 边界同样必须逐项降级为末级目录名"
+        );
         assert_eq!(
             item.workspace_binding.as_deref(),
             Some("secret-project"),
@@ -1748,6 +1843,7 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec!["/Users/host/Documents/secret-project".to_string()],
             metadata,
         }];
 

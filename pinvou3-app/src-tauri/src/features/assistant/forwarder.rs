@@ -7,7 +7,7 @@
 
 use super::*;
 
-use crate::features::assistant::engine_pool::stamp_steer_generation;
+use crate::features::assistant::engine_pool::{EnginePool, stamp_steer_generation};
 
 /// Summary detail line for the persistent startup timeline describing a
 /// terminal MCP session-boot receipt. `enabled_servers` counts only enabled
@@ -281,6 +281,17 @@ pub(crate) fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        // Manual-compaction in-flight flag (review #484 round-18 M2): compact_now
+        // sets it at enqueue; this forwarder clears it on terminal compaction
+        // events (the Started arm re-sets it idempotently). Compaction takes no
+        // turn reservation, so the turn-side busy probe cannot see it — the event
+        // source must do this teardown, or align's busy fence would misjudge forever.
+        // try_state: headless harness / tests may not manage EnginePool — skip when
+        // absent; engine reclamation also removes the entry, leaving no sticky busy
+        // flag (same defensive shape as self_metrics above).
+        let engine_pool = app
+            .try_state::<EnginePool>()
+            .map(|pool| pool.inner().clone());
         let mut current_turn_id: Option<String> = None;
         let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
@@ -1428,6 +1439,11 @@ pub(crate) fn spawn_event_forwarder(
                 Event::CompactionStarted {
                     id, message, auto, ..
                 } => {
+                    // Idempotently re-set the in-flight flag (review #484 round-18 M2): already
+                    // set at enqueue; covers auto-compaction paths bypassing pool.compact_now.
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, true);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
@@ -1473,11 +1489,21 @@ pub(crate) fn spawn_event_forwarder(
                             u64::from(bridge.usage_context_window()),
                         );
                     }
+                    // Compaction terminal state: release the in-flight flag (review #484
+                    // round-18 M2), through which align's busy fence sees the recovery.
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                 }
                 Event::CompactionCancelled { id, message, auto } => {
                     // Cancellation is a terminal compaction phase just like done/fail.
                     // Forward the stable id so both UI lanes can settle the exact
                     // in-flight card instead of leaving the manual compact action locked.
+                    // Terminal state: synchronously release the in-flight flag
+                    // (review #484 round-18 M2).
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({
                         "session_id": session_id,
                         "phase": "cancel",
@@ -1493,6 +1519,11 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::CompactionFailed { id, message, auto } => {
+                    // A terminal failure likewise releases the in-flight flag
+                    // (review #484 round-18 M2).
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "fail", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(

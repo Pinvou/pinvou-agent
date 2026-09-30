@@ -10,7 +10,7 @@
 - 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `0bc868ff010d2ef1b8cea103c8fad3c9cc53481d`（领先不可变 tag `pinvou-v0.9.12-r3`，tag 仍钉在其收口 `61cb769be`），共 57 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 42 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次、2026-09-21 批次（#64/#67）、2026-09-22/23 批次（#63/#65/#68/#69/#70/#71/#72/#73/#76，另含 Windows 编译修复 #77）、2026-10-02 批次（#80）与 2026-10-08/09 批次（#79/#88/#89/#75/#78/#94/#95）经 PR squash 合入。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
-- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
+- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。叠层候选状态（2026-10-09 起，#484/#54）：一个**待合入的候选主题线**（重定基于公共维护头之上）也可充当过渡期 gitlink——此时 gitlink 不等于维护分支头而是包含它（`scripts/fork-guard.sh` 第 0 层断言该包含性与领先量），`verify-public-submodule` 的三方相等断言保持披露红直到候选 squash 合入、gitlink 重钉到合并头。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前维护 4 个长期主题、3 个追加减量主题与 1 个已合入维护分支的主题：
 
