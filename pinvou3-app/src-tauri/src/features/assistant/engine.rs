@@ -30,6 +30,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
+use crate::features::assistant::engine_pool::turn_tool_restrict::TurnToolRestrict;
 pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
 use crate::features::assistant::engine_support::{
     TurnCompletionTracker, apply_scheduled_turn_policy, maybe_notify_task_completed,
@@ -1846,14 +1847,29 @@ impl AppEngine {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
-        self.send_reserved_user_message(
-            content,
-            mode,
-            persona_reminder,
+        // The per-turn restriction crosses this seam as the pool's
+        // `TurnToolRestrict` token, not the caller's `bool` (main #596 added
+        // this wrapper against the pre-token signature; the rebase union
+        // adapted it). Minting here keeps the wrapper's public `bool`
+        // signature for the external harnesses while the last-mile policy —
+        // and the aux zero-tool reminder merge, a no-op for headless ids —
+        // stays in the one place it is enforced.
+        super::engine_pool::forward_forced_turn_restrict(
+            &self.session_id,
+            false,
             restrict_tools,
-            expert_snapshot,
-            expert_candidates,
-            reservation,
+            persona_reminder,
+            |restrict_tools, persona_reminder| {
+                self.send_reserved_user_message(
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                    expert_snapshot,
+                    expert_candidates,
+                    reservation,
+                )
+            },
         )
         .await
     }
@@ -1864,7 +1880,11 @@ impl AppEngine {
         content: String,
         mode: AppMode,
         persona_reminder: Option<String>,
-        restrict_tools: bool,
+        // Proof token, not the caller's `bool`: only the pool's policy
+        // (`turn_restrict_tools`) can mint it (PR #433 review S2(b)). The value
+        // is re-checked against THIS engine's session id, so a bogus token can
+        // never un-restrict an aux session.
+        restrict_tools: TurnToolRestrict,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
         reservation: TurnReservation,
@@ -1873,7 +1893,7 @@ impl AppEngine {
             content,
             mode,
             persona_reminder,
-            restrict_tools,
+            restrict_tools.restricts_tools_for(&self.session_id),
             expert_snapshot,
             expert_candidates,
         )?;

@@ -137,22 +137,9 @@ impl SessionStore {
             .context("list sessions for retention")?
             .as_ref()
             .clone();
-        let mut chat_count = 0usize;
-        let mut headless_count = 0usize;
-        let mut deleted_ids = Vec::new();
-        let mut delete_error = None;
-        // Pinned sessions are the user's explicit "keep forever" mark: they
-        // count against neither the cap nor eviction. The sweep consults the
-        // durable pin file, not the boot-time map: a GUI pinning sessions
-        // while a headless batch is alive only shows up in the file.
-        //
-        // Unknown exemption set (the pin file is unreadable or absent in a
-        // state this process cannot attribute to a legitimate save — e.g. a
-        // mutation quarantined an unusable file — AND the boot load failed the
-        // same way, so the in-memory map is empty because of the fault rather
-        // than because there are no pins): refuse to evict. Sitting over the
-        // cap is recoverable; deleting the sessions the user marked
-        // keep-forever is not.
+        // Keep-forever fail-safe (#504): consulted before anything destructive
+        // below — the orphan-aux reclaim included, which is a destructive
+        // delete in its own right. Unknown pin state ⇒ no evictions at all.
         let Some(mut pinned) = self.durable_pinned_sessions() else {
             // stderr, not `log::warn!`: the sweep's operator is the headless
             // CLI process, which installs no logger — a log-framework line
@@ -164,13 +151,155 @@ impl SessionStore {
             );
             return Ok(());
         };
-        for metadata in sessions {
+        // Aux records ride the same snapshot for the pair-liveness ordering
+        // below — the one derived-id (round-30 B8) consumer that needs
+        // `updated_at`; the orphan reclaim reads the raw directory instead
+        // (see below), and the eviction cascade probes each record directly.
+        let aux_freshness: std::collections::HashMap<&str, chrono::DateTime<chrono::Utc>> =
+            sessions
+                .iter()
+                .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
+                .map(|metadata| (metadata.id.as_str(), metadata.updated_at))
+                .collect();
+        let mut deleted_ids = Vec::new();
+        let mut delete_error = None;
+        // Orphan reclaim ("aux records die with their main", the derived-id
+        // half): an aux record whose main record is genuinely gone can only
+        // arise from an out-of-band main deletion, an interrupted cascade —
+        // the aux-first eviction commits the aux delete and aborts the main
+        // on a post-record fault, and the delete path's cascade has the same
+        // window (see the eviction leg below) — or a benign ensure-vs-delete
+        // race. No in-band path orphans an aux on its happy path, but
+        // "all-or-nothing" only holds before the aux record commits.
+        // Reclaim it here; the boot sweep is what collects it after a crash.
+        // Identity comes from the FILENAME, never from parsing the record
+        // (round-31 M3): the metadata listing silently drops any record it
+        // cannot read (truncated, momentarily unopenable), so an orphan pass
+        // driven off that listing would leave exactly those records
+        // unreclaimable — invisible to every list, exempt from the budget,
+        // still holding the user's side-chat text. NotFound-only: a
+        // transient stat fault on the main record counts as "unknown", and
+        // unknown is never "absent" in a destructive path.
+        let aux_record_ids: Vec<String> = std::fs::read_dir(self.manager.sessions_dir())
+            .context("scan session records for orphan aux reclaim")?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let id = name.to_str()?.strip_suffix(".json")?;
+                // Only the exact lowercase prefix a derived id carries is
+                // classified; a case-variant alias file is not a record this
+                // pass can classify, so it is left alone.
+                id.starts_with("aux-").then(|| id.to_string())
+            })
+            .collect();
+        for aux_id in aux_record_ids {
+            // `get(4..)` instead of slicing: ids reach here from filenames,
+            // and a multibyte char at the boundary must not panic (the
+            // is_aux_session_id boundary argument).
+            let Some(main_id) = aux_id.get(4..) else {
+                continue;
+            };
+            if !self.durable_session_record_is_absent(main_id) {
+                continue;
+            }
+            let (committed, result) = self.delete_session_record(&aux_id);
+            if committed {
+                // Push even when the result is an error: a partial commit
+                // (record gone, workspace cleanup failed) must still purge the
+                // record's side maps and invalidate the list snapshot.
+                deleted_ids.push(aux_id.clone());
+            }
+            if let Err(error) = result {
+                // NotFound: the record was already gone (benign). InvalidInput:
+                // a charset-invalid id the validated delete API can never
+                // address — the file stays quarantined on disk, invisible to
+                // every store entry point. That must not fail the sweep, and
+                // the upstream message embeds the raw id, so it must not enter
+                // the boot-log-reachable chain either (round-20 minor-8).
+                if error.kind() != ErrorKind::NotFound
+                    && error.kind() != ErrorKind::InvalidInput
+                    && delete_error.is_none()
+                {
+                    // No raw ids in log-reachable chains (the cleartext-logging
+                    // stance): this context ends up in the boot eprintln
+                    // through `{error:#}`, so the step identifies the failure
+                    // and the id stays out.
+                    delete_error = Some(
+                        anyhow::anyhow!(error).context("delete the orphan aux session record"),
+                    );
+                }
+            }
+        }
+        // Liveness protection (round-26 MAJOR-1): an aux turn refreshes only
+        // the aux record's `updated_at` — the main record is never touched by
+        // aux activity, so ordering victims by the main record alone would let
+        // a user's own aux send evict the very main session whose side chat is
+        // in active use (the aux turn's save triggers this sweep). Order
+        // eviction candidates by max(main.updated_at, aux.updated_at): activity
+        // on either half of the pair keeps the pair alive, restoring the
+        // pre-aux invariant "in use ⇒ not evicted".
+        // Stable sort: pairs without aux activity keep the snapshot's
+        // main-`updated_at` descending order, so behavior is unchanged where
+        // no aux session exists. The ordering key is PRECOMPUTED once per
+        // candidate (round-34 MAJOR-1): `sort_by_key` re-evaluates the key
+        // for both arguments of every comparison, so the blind-spot stat
+        // below — one per freshness-map miss — would otherwise cost up to
+        // two `fs::metadata` syscalls per comparison (O(n log n) stats per
+        // sweep, under the store write lock, on every transcript persist).
+        let mut candidates: Vec<(&SessionMetadata, chrono::DateTime<chrono::Utc>)> = sessions
+            .iter()
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
-            if metadata.id.starts_with("sched-") {
-                continue;
-            }
+            // The lifecycle of an auxiliary conversation (aux-) is owned by the
+            // main session's cascade/discard (same precedent as sched-): it is
+            // never an eviction candidate and does not consume the retention
+            // budget of visible sessions.
+            .filter(|metadata| {
+                !super::validators::is_sched_session_id(&metadata.id)
+                    && !super::validators::is_aux_session_id(&metadata.id)
+            })
+            .map(|metadata| {
+                let aux_id = Self::aux_session_id_for(&metadata.id);
+                let aux_at = match aux_freshness.get(aux_id.as_str()).copied() {
+                    Some(aux_at) => Some(aux_at),
+                    // Listing blind spot (round-33 MAJOR-7): the snapshot
+                    // silently drops a record it cannot read, so an in-use
+                    // pair whose aux momentarily fails to parse would sort
+                    // by the stale main `updated_at` alone, drift past the
+                    // line, and the fail-closed delete-side probe — which
+                    // does NOT trust the listing — would cascade-evict the
+                    // live pair. A freshness-map miss stats the record
+                    // directly: a real mtime feeds the same max(), so an
+                    // alive-but-unparseable record still protects its pair.
+                    // A stat that cannot read the record at all (NotFound
+                    // or any other fault) degrades this ordering leg to the
+                    // main timestamp alone — the round-31 M3 contract (an
+                    // unreadable stale aux is still reclaimable by the
+                    // cascade) lives on the delete-side probe, which stays
+                    // the fail-closed authority.
+                    None => match std::fs::metadata(
+                        self.manager.sessions_dir().join(format!("{aux_id}.json")),
+                    ) {
+                        Ok(stat) => stat.modified().ok().map(chrono::DateTime::from),
+                        Err(_) => None,
+                    },
+                };
+                let key = match aux_at {
+                    Some(aux_at) => std::cmp::max(metadata.updated_at, aux_at),
+                    None => metadata.updated_at,
+                };
+                (metadata, key)
+            })
+            .collect();
+        candidates.sort_by_key(|(_, key)| std::cmp::Reverse(*key));
+        let mut chat_count = 0usize;
+        let mut headless_count = 0usize;
+        for (metadata, _) in candidates {
+            // Pinned sessions are the user's explicit "keep forever" mark: they
+            // count against neither the cap nor eviction. The initial set came
+            // from the durable pin file (fail-closed above); a pinned session
+            // is skipped before it can consume any budget slot.
             if pinned.contains(&metadata.id) {
                 continue;
             }
@@ -238,7 +367,52 @@ impl SessionStore {
                         break;
                     }
                 }
-                let id = metadata.id;
+                let id = metadata.id.clone();
+                // Evicting a main session cascade-evicts its aux session,
+                // all-or-nothing (round-30 D7): the aux record is deleted
+                // FIRST, and a failed aux delete aborts the main eviction —
+                // a visible main whose side chat was destroyed while its
+                // record stayed would silently lose the pair's other half.
+                // Presence comes from the fail-closed derived-id probe
+                // (`SessionStore::aux_session_id`), never from the listing
+                // snapshot (round-31 M3): the metadata listing silently
+                // drops records it cannot read, so gating on the snapshot
+                // would evict the main while stranding an unreadable
+                // `aux-<main>.json` — invisible to every list, exempt from
+                // the budget, and missed by the orphan pass's own former
+                // snapshot source. The probe counts only a genuine NotFound
+                // as absent, so a transient stat fault reads as "present"
+                // and the pair stays together. The store layer cannot reach
+                // the pool (dependency direction), so deleting the aux
+                // record here reclaims no engine and emits no
+                // session:deleted — a still running aux engine is reclaimed
+                // by id as a fallback by the pool's idle-eviction sweep.
+                if let Some(aux_id) = self.aux_session_id(&id) {
+                    let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
+                    if aux_committed {
+                        // Push even on a partial commit (record gone, cleanup
+                        // error): the record's side maps must still be purged.
+                        deleted_ids.push(aux_id.clone());
+                    }
+                    match aux_result {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == ErrorKind::NotFound => {}
+                        Err(error) => {
+                            if delete_error.is_none() {
+                                delete_error = Some(
+                                    anyhow::anyhow!(error)
+                                        .context("delete the evicted session's aux record"),
+                                );
+                            }
+                            // Abort this pair's eviction: the main record
+                            // stays (all-or-nothing). If the aux deletion had
+                            // already partially committed, the error still
+                            // surfaces and the next sweep evicts the main
+                            // alone — proceeding now would hide the failure.
+                            continue;
+                        }
+                    }
+                }
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
                     deleted_ids.push(id.clone());
@@ -561,7 +735,12 @@ impl SessionStore {
         if self.scheduled_profiles.read().contains_key(id) {
             return Ok(true);
         }
-        if !id.starts_with("sched-") {
+        // The prefix leg is alias-defeating (round-36 minor 2): on a
+        // case-insensitive filesystem a hand-copied `SCHED-<id>.json` IS the
+        // automation's record file, so an exact `sched-` prefix here would
+        // let a case-variant alias skip every gate built on this predicate
+        // (the delete refusal among them).
+        if !super::validators::is_sched_session_id(id) {
             return Ok(false);
         }
         Ok(scheduled_session_file(&self.manager, id)?.exists())

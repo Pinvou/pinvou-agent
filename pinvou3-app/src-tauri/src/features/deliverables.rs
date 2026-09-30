@@ -89,6 +89,18 @@ pub(crate) fn list_deliverable_index_impl() -> Vec<DeliverableItem> {
         if file.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
+        // Aux sessions carry no deliverables today, and the index is a
+        // cross-session surface: an aux record parses identically here, so a
+        // future artifact on an aux would surface its paths outside the aux
+        // boundary (round-36 minor 4). Identity comes from the FILENAME, the
+        // same derived-id rule as the retention orphan pass.
+        let is_aux = file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(crate::features::sessions::is_aux_session_id);
+        if is_aux {
+            continue;
+        }
         let Ok(meta) = std::fs::metadata(&file) else {
             continue;
         };

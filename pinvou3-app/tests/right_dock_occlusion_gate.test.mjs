@@ -11,6 +11,7 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const rightDock = read('../src/components/layout/RightDock.jsx');
 const composerPopover = read('../src/components/ComposerPopover.jsx');
 const attachmentDrop = read('../src/features/attachments/AttachmentDropOverlay.jsx');
+const auxQuoteSelection = read('../src/features/aux-chat/AuxQuoteSelection.jsx');
 const chatView = read('../src/features/chat/ChatView.jsx');
 const main = read('../src/app/main.jsx');
 
@@ -37,6 +38,27 @@ test('every child overlay that can cover the native browser waits for the permit
   );
 });
 
+test('the aux quote chip is NOT an occlusion consumer: it stays inside the conversation column', () => {
+  // The genuine occlusion users above are all modal or fullscreen overlays
+  // that can cover the dock's native browser WebView. The quote chip is a
+  // text-selection affordance: it renders absolutely positioned INSIDE the
+  // conversation column (no portal) with coordinates clamped to the
+  // container rect, so it can never reach the native surface. Registering an
+  // occlusion here is not a paint permit — rightDockSnapshot computes
+  // activePanelId = null while ANY occlusion is registered, so merely
+  // selecting conversation text collapsed every dock panel and reflowed the
+  // main column. Keep this as a negative pin.
+  assert.doesNotMatch(auxQuoteSelection, /useRightDockOcclusion/);
+  assert.doesNotMatch(auxQuoteSelection, /createPortal/);
+  assert.match(auxQuoteSelection, /quoteChipPosition\(containerRect, rect\)/);
+  assert.match(auxQuoteSelection, /absolute z-40/);
+  // Both mount sites must mark the conversation container `relative` so the
+  // chip's absolute coordinates resolve against the column it is clamped to.
+  assert.match(chatView, /ref=\{conversationContentRef\} className="relative max-w-\[800px\]/);
+  const codexAcp = read('../src/features/codex/CodexAcpView.jsx');
+  assert.match(codexAcp, /ref=\{conversationContentRef\} className="relative w-full max-w-\[920px\]/);
+});
+
 test('App reserves BrowserView suspension in the same gated publication batch', () => {
   assert.match(main, /channel: `right-dock-occlusion:\$\{occlusionId\}`,[\s\S]*hideMode: 'visible'/);
   assert.match(main, /const published = publish\(\);[\s\S]*setRightDockOcclusionPublications/);
@@ -58,6 +80,63 @@ test('subagent selection and its first render share the App ACK-gated publicatio
     /isSubagentPanelPublicationCurrent\(\{[\s\S]*?sessionId: requestedSessionId,[\s\S]*?currentSessionId: activeSessionIdRef\.current/,
   );
   assert.match(chatView, /restorePanelId: current[\s\S]*?current\.restorePanelId/);
+});
+
+test('closing the aux chat panel restores the dock panel recorded at open', () => {
+  // Full parity with the subagent panel (round-30 D3): the first open records
+  // restorePanelId (repeat opens keep the first record) and close jumps back
+  // to the recorded panel — and ONLY to a recorded panel. The earlier aux
+  // copy dropped the `restorePanelId &&` guard and fell back to 'browser',
+  // so any close without a record (aux opened with the dock closed, or after
+  // a session switch) popped the native browser webview over the panel the
+  // user was actually on — and its own rationale contradicted the
+  // `browserDockOpen === true` guard the branch sits behind.
+  // Anchor-resolution guards (the vacuous-slice class ui_language_coverage
+  // fixed for its own slices): a renamed anchor would make indexOf return -1
+  // and the pair-slice run to near-EOF, letting these assertions pass on
+  // handleRestart-style copies elsewhere in the file.
+  const openStart = chatView.indexOf('const openAuxChatPanel');
+  const closeStart = chatView.indexOf('const closeAuxChatPanel');
+  const closeEnd = chatView.indexOf('const handlePreviewArtifact');
+  assert.ok(
+    openStart >= 0 && closeStart > openStart && closeEnd > closeStart,
+    'open/close block anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const openBlock = chatView.slice(openStart, closeStart);
+  const closeBlock = chatView.slice(closeStart, closeEnd);
+  assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
+  assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
+  // Subagent-pattern parity: the dock restore runs only with a recorded
+  // target (no 'browser' fallback), matching closeSubagentPanel exactly.
+  assert.match(
+    closeBlock,
+    /if \(browserDockOpen && restorePanelId && onRightDockPanelSelectionChange\) \{/,
+    'closeAuxChatPanel must gate the dock restore on a recorded target (round-30 D3: the dropped guard popped the native browser webview over the current panel)',
+  );
+  assert.match(closeBlock, /\[restorePanelId, requestedSessionId, publishClose\]/);
+  assert.doesNotMatch(
+    closeBlock,
+    /restorePanelId \|\| 'browser'/,
+    'no browser fallback: an unrecorded close must leave the dock selection alone (round-30 D3)',
+  );
+  // The recorded target must not outlive a session switch (round-30 D3): the
+  // aux panel rebinds instead of closing, so without an explicit reset task
+  // A's recorded target would apply to task B (the subagent panel gets the
+  // same reset by closing outright).
+  assert.match(
+    chatView,
+    /setAuxChatPanel\(\(current\) => \(current \? \{ \.\.\.current, restorePanelId: null \} : current\)\);\s*\}, \[activeSessionId\]\);/,
+    'restorePanelId must reset on session switch (round-30 D3)',
+  );
+  // Round-26 minor M5: the close publishes through the same currency guard as
+  // closeSubagentPanel — a rapid close→open must invalidate the stale close's
+  // dock restore, or it settles out of order and leaves the dock on the
+  // restore panel with the aux panel mounted but occluded.
+  assert.match(
+    closeBlock,
+    /const requestId = auxChatPanelRequestRef\.current \+ 1;\s*auxChatPanelRequestRef\.current = requestId;[\s\S]*?isSubagentPanelPublicationCurrent\(\{[\s\S]*?currentRequestId: auxChatPanelRequestRef\.current,[\s\S]*?sessionId: requestedSessionId,[\s\S]*?currentSessionId: activeSessionIdRef\.current/,
+    'closeAuxChatPanel must gate its publication on request/session currency (round-26 minor M5)',
+  );
 });
 
 test('a newer subagent open invalidates a delayed close across same-session ABA', () => {

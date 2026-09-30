@@ -204,8 +204,17 @@ pub async fn move_session_to_project(
     // 真实 load。scheduled-run 的拒绝是归属域自身的产品决策(归属表只收
     // chat 会话)——兄弟元数据命令(delete/rename/pin)并不拒绝
     // scheduled-run,此处不与它们同口径。
+    // Aux conversations are anchored to their main session (round-34
+    // minor 3): admitting them into the assignments table would create the
+    // ghost-entry class the sibling metadata guards prevent.
+    if crate::features::sessions::is_aux_session_id(&session_id) {
+        return Err(
+            "move_session_to_project: auxiliary conversations are managed through their main session"
+                .to_string(),
+        );
+    }
     ensure_chat_session(&sessions, &session_id, "move_session_to_project")
-        .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
+        .map_err(|e| format!("move_session_to_project: {e}"))?;
     sessions
         .load(&session_id)
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;

@@ -1629,6 +1629,14 @@ impl AcpPool {
     /// / Claude / Kimi 会话掉回普通聊天列表；创建会话时写入的 `* (ACP)` 元数据
     /// 是长期兼容依据。列表调用已经持有 metadata，应使用本方法避免重复读取 transcript。
     pub fn is_acp_metadata(&self, metadata: &SessionMetadata) -> bool {
+        // Defense-in-depth (round-36 minor 5): an aux of an ACP main inherits
+        // the exact ACP model string, so model-string sniffing alone would
+        // classify it ACP and let a raw-metadata scan feed a full-tool ACP
+        // agent an aux id outside the EnginePool pins. Aux sessions are never
+        // ACP: their lifecycle and tool posture are aux-owned.
+        if crate::features::sessions::is_aux_session_id(&metadata.id) {
+            return false;
+        }
         let backend = self.agents.backend(&metadata.id);
         let Some(backend) = acp_session_backend(backend, &metadata.model) else {
             return false;
@@ -1642,6 +1650,9 @@ impl AcpPool {
     }
 
     pub fn is_acp(&self, session_id: &str) -> bool {
+        if crate::features::sessions::is_aux_session_id(session_id) {
+            return false;
+        }
         self.agents.backend(session_id).is_acp()
             || self.acp_metadata_backends.read().contains_key(session_id)
     }

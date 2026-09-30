@@ -684,6 +684,7 @@ try {
     'utf8',
   );
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
+  const auxChatPanelView = readFileSync(path.join(root, 'src', 'features', 'aux-chat', 'AuxChatPanel.jsx'), 'utf8');
   const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
   const resizableSidePanel = readFileSync(path.join(root, 'src', 'components', 'layout', 'ResizableSidePanel.jsx'), 'utf8');
   const rightDock = readFileSync(path.join(root, 'src', 'components', 'layout', 'RightDock.jsx'), 'utf8');
@@ -945,8 +946,29 @@ try {
   'Codex workspace and subagent panels must remain mounted independently and delegate visibility to Right Dock');
   assert.ok(codexView.includes('if (workspaceOpen && workspaceDockActive)')
     && codexView.includes('setWorkspaceDockActivation(value => value + 1)')
-    && codexView.includes('[subagentPanel, workspaceDockActivation, workspaceOpen]'),
+    && codexView.includes('[auxChatPanel, subagentPanel, workspaceDockActivation, workspaceOpen]'),
   'an already-open hidden workspace must reactivate without remounting and preserve conversation scroll');
+  const openAuxChatStart = codexView.indexOf('const openAuxChatPanel');
+  const openAuxChatEnd = codexView.indexOf('const closeAuxChatPanel');
+  // Anchor-resolution guard (round-32 review minor 17, same vacuous-slice
+  // class right_dock_occlusion_gate pins): a renamed anchor would make
+  // indexOf return -1 and the slice run to near-EOF.
+  assert.ok(
+    openAuxChatStart >= 0 && openAuxChatEnd > openAuxChatStart,
+    'open/close aux-chat anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const openAuxChatBlock = codexView.slice(openAuxChatStart, openAuxChatEnd);
+  assert.ok(codexView.includes("import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';")
+    && codexView.includes('{auxChatPanel && activeSession && isNativeAgent && bridge.available && bridge.auxChat && (')
+    && !codexView.includes('{auxChatPanel && activeSession && (')
+    && codexView.includes('activeSession && isNativeAgent && bridge.available && bridge.auxChat ? activeSession.id : null')
+    && codexView.includes('activationKey={auxChatPanel.openTick}')
+    && codexView.includes('onActiveChange={setAuxChatDockActive}')
+    && openAuxChatBlock.includes('rememberScrollBeforeRightPanelChange()')
+    && codexView.includes('auxChatPanel && auxChatDockActive')
+    && auxChatPanelView.includes('panelId="aux-chat"')
+    && auxChatPanelView.includes('onActiveChange={onActiveChange}'),
+  'the code-mode aux chat must reuse the shared Right Dock panel, remember scroll on open, keep its entry highlight tied to real dock visibility, and gate the panel mount and the quote selection on isNativeAgent like the entry button (external-ACP tasks must never reach the aux session)');
 
   let codexDockState = createRightDockState();
   codexDockState = activateRightDockPanel(codexDockState, 'codex-workspace');
