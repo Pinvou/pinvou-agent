@@ -310,7 +310,7 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // Recomputed for M7: the auxChat cluster joined the shared base (the
 // get_or_create_aux_session / discard_aux_session / reset_aux_session invokes
 // moved here from the per-lane aux bridge copies).
-const expectedSharedBaseHash = '0f3ace8d7d7d0021a4cbaac894a228185e4af2e9e8bf09d2d9bfe50a9b5d41a1';
+const expectedSharedBaseHash = 'ceeb3d03d8c8713d65ec1dedb907849db410bd2d8802372332c361342ea07485';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

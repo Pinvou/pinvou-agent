@@ -858,11 +858,11 @@ function areConversationTurnPropsEqual(prev, next) {
 // function one point over; splitting the projection out is follow-up cleanup.
 /// Staged aux-chat quote chips (PR #586) rendered above the delivered user
 /// text; extracted so ConversationTurnView stays under the complexity budget.
-function TurnUserQuotes({ quotes, hasUserText }) {
-  if (!Array.isArray(quotes) || quotes.length === 0) return null;
+function TurnUserQuotes({ userQuotes, hasUserText }) {
+  if (!Array.isArray(userQuotes) || userQuotes.length === 0) return null;
   return (
     <div className={`flex flex-col gap-1.5 ${hasUserText ? 'mb-2' : ''}`}>
-      {quotes.map((quote, index) => (
+      {userQuotes.map((quote, index) => (
         <div
           key={`${index}-${String(quote.text || '').slice(0, 24)}`}
           data-testid="conversation-user-quote"
@@ -936,7 +936,7 @@ function ConversationTurnView({
       ? (
           <div className="flex justify-end">
             <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-              <TurnUserQuotes quotes={userQuotes} hasUserText={!!turn.userText} />
+              <TurnUserQuotes userQuotes={userQuotes} hasUserText={!!turn.userText} />
               {turn.userText && <div>{turn.userText}</div>}
               {userAttachments.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>

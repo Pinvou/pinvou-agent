@@ -59,6 +59,20 @@ const wireAuxSessionPurge = () => {
     }
     reconcileLiveTaskIds(knownTaskIds, liveTaskIds, (taskId) => auxChatController.purgeTask(taskId));
   });
+  // session:deleted leg: applyDeletedSession is the one path that observes
+  // EVERY deleted id, while the slice-diff leg above only sees ids that
+  // list_sessions reported — and that listing excludes code-mode sessions
+  // (they are listed by list_codex_acp_sessions), so deleting a code task
+  // would otherwise leave its registries growing for the app's lifetime.
+  // purgeTask is idempotent, so double delivery (event now + the list
+  // refresh the deletion triggers) is harmless.
+  if (bridge.sessions && typeof bridge.sessions.onSessionDeleted === 'function') {
+    bridge.sessions.onSessionDeleted((id) => {
+      if (!id) return;
+      knownTaskIds.delete(id);
+      auxChatController.purgeTask(id);
+    });
+  }
 };
 
 export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onActiveChange }) {
@@ -196,7 +210,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           title={view.restartArmed ? copy.newTopicConfirm : copy.newTopic}
         >
           <RotateCcw size={13} />
-          <span>{view.restartArmed ? copy.newTopicConfirm : copy.newTopic}</span>
+          {/* Visible label is the short confirm (round-34 minor 12): the full
+              destructive sentence overflowed the 420 px dock minimum; the
+              complete copy stays in the title/aria above. */}
+          <span>{view.restartArmed ? copy.newTopicConfirmShort : copy.newTopic}</span>
         </button>
         <button
           type="button"
