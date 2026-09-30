@@ -243,6 +243,10 @@ const expectedProtocolHashes = {
   // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
+  // Recomputed again for the single-entry workspace picker: create_session now
+  // also carries the keychain snapshot (workspaceRoots) and project ownership
+  // (projectId) captured from the draft, and the draft staging gains
+  // draftWorkspaceRoots/draftProjectId (bridge/sessions.js).
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed again for review #463 round-13: the workspace_rebound
   // mark-stamp block moved verbatim into the shared
@@ -255,8 +259,11 @@ const expectedProtocolHashes = {
   // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
   // before degrading to []; same two commands, no new invoke or listen
   // entries (the switch-path occurrences now pass sessionId: sid like the
-  // hydration ones).
-  sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
+  // hydration ones). Recomputed for the rebase union: main's sidecar-helper
+  // wave (#596) and aux-session surface merged with this PR's create_session
+  // workspaceRoots/projectId and draft staging; the pin below is the
+  // extractor's output on the merged bridge/sessions.js.
+  sessions: 'f8346efa688c34cbf10b6cc353bcb91d955e7944cfa5d8960554eab02e4bea3c',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -298,8 +305,12 @@ const expectedProtocolHashes = {
   // payload — the dialog's previous report fed back on retry, honored by the
   // backend only as a reporting reclassification inside its own to-lane
   // retry population. Same command surface, no new invoke or listen entries.
-  projects: '90c12ab7494aba3975ac4ece4b23594f4a4fcf309f6252b721ce15575b245979',
-};
+  // Recomputed again after the single-entry workspace picker merge: on top of
+  // the rebind carryover feed-back the domain also gains
+  // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
+  // projects_set_never_materialize / align_session_to_project
+  // (bridge/projects.js).
+  projects: '04a4d40cc4d870c691ae9c524241f0b340ab62afdef413af9e4a249ae8771413',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

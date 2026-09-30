@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::projects::ProjectStore;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
 use crate::features::sessions::NEW_CHAT_TITLE;
@@ -18,6 +19,10 @@ pub struct SessionListItem {
     /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
+    /// 创建时锁定的钥匙串快照(§6,含主根的全量可访问根);空 = 单根语义。
+    /// picker/管理面板据此展示「本对话可访问的文件夹集合」。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
 }
 
 /// Web boundary projection for SessionListItem: degrade the host absolute
@@ -34,6 +39,11 @@ pub struct SessionListItem {
 pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     if let Some(binding) = &item.workspace_binding {
         item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+    // 钥匙串快照同样是主机绝对路径:过 Web 边界前逐项降级为末级目录名,与
+    // workspace_binding 同一套投影(Web 端不用它做分组,仅作惰性叶子)。
+    for root in item.workspace_roots.iter_mut() {
+        *root = super::codex::redact_workspace_path_for_web(root);
     }
 }
 
@@ -165,6 +175,7 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     metas.retain(|m| {
@@ -187,11 +198,27 @@ pub async fn list_sessions(
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
+            // 钥匙串快照只在已绑定时存在;sidecar 冷读(与 binding 同一量级)。
+            // Round-30 minor 5: the projection goes through
+            // compose_workspace_roots — the same delivery-time re-check the
+            // codex lane applies (round-21 M1's "display == engine-effective"
+            // invariant) — so a soft-kept root that later resolves to a
+            // dropped widening target does not display as accessible while
+            // the engine drops it.
+            let workspace_roots = if workspace_binding.is_some() {
+                crate::compose_workspace_roots(acp_pool.agents(), &store, &projects, &metadata.id)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
                 workspace_binding,
+                workspace_roots,
                 metadata,
             }
         })
@@ -391,23 +418,58 @@ pub(super) fn create_session_record(
 pub async fn create_session(
     set_active: Option<bool>,
     workspace_path: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     let workspace = workspace_path
         .as_deref()
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    // 钥匙串快照(§6):绝对路径硬拒;不存在的目录软警告保留(参照 rebind 的
+    // 宽松语义,附加根可能稍后重建)。空/未传 = 单根(仅 cwd)。
+    let roots = crate::features::sessions::validate_workspace_roots(
+        workspace_roots.unwrap_or_default(),
+        workspace.as_deref(),
+    )
+    .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // 没有 workspace_path 时钥匙串/项目归属无处可落:硬校验完再静默丢弃会谎报
+    // 授权范围(评审 #484 round-7 minor)——显式参数错误,让调用方重传。
+    if workspace.is_none() && (!roots.is_empty() || project_id.is_some()) {
+        return Err(
+            "create_session: invalid workspace_roots/project_id: both require workspace_path"
+                .to_string(),
+        );
+    }
+    // Same rebind fence as every sibling root-accepting writer (review #484
+    // round-11 M3): the binding write and the project-choice writes
+    // (last_primary_root + tier-1 assignment) must not commit between the
+    // rebind's candidate snapshot and its translation, or the fresh binding
+    // keeps the dead `from` spelling and escapes translation entirely. Held
+    // only for the binding window — the plain no-workspace create path stays
+    // fence-free. Taken BEFORE create_session_record (review #484 round-13
+    // minor 1): a REBIND_IN_PROGRESS rejection after the session was created
+    // would leave a persisted orphan session behind — the exact state the
+    // adjacent bind-failure path rolls back by deleting.
+    let _fence = if workspace.is_some() {
+        Some(projects.rebind_fence()?)
+    } else {
+        None
+    };
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
-    if let Some(workspace) = workspace {
+    if let Some(workspace) = workspace.clone() {
         // A failed binding persist must not leave behind a session that "looked
         // created but falls back to the private execution root after restart":
         // roll back by deleting the just-created empty session (in the rollback
         // style of create_new).
-        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+        if let Err(error) =
+            store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
+        {
             let rollback = store.delete(&metadata.id);
             return Err(match rollback {
                 Ok(()) => format!("create_session: bind workspace: {error:#}"),
@@ -417,7 +479,21 @@ pub async fn create_session(
                 ),
             });
         }
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹并写显式归属。后端在同
+        // 一命令内写比前端补一发 update_project 更原子(免二次 RPC、免漏写);
+        // 记忆写失败不影响会话创建本身(下次创建会重试),只记日志。写入成功
+        // 须广播列表变更——store 直写不触发事件,前端 assignments 快照滞留会
+        // 让侧栏按 tier-2 把新会话归进宽项目。
+        if super::projects::record_project_choice(
+            &projects,
+            &metadata.id,
+            project_id.as_deref(),
+            Some(&workspace),
+        ) {
+            super::projects::emit_create_channel_assignment_event(&app);
+        }
     }
+    drop(_fence);
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
@@ -1705,11 +1781,23 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec![
+                "/Users/host/Documents/secret-project".to_string(),
+                "/Users/host/very-secret-extra".to_string(),
+            ],
             metadata,
         };
 
         redact_session_list_item_for_web(&mut item);
 
+        assert_eq!(
+            item.workspace_roots,
+            vec![
+                "secret-project".to_string(),
+                "very-secret-extra".to_string()
+            ],
+            "钥匙串快照过 Web 边界同样必须逐项降级为末级目录名"
+        );
         assert_eq!(
             item.workspace_binding.as_deref(),
             Some("secret-project"),
@@ -1748,6 +1836,7 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec!["/Users/host/Documents/secret-project".to_string()],
             metadata,
         }];
 

@@ -29,6 +29,208 @@ fn display(path: &std::path::Path) -> PathBuf {
     super::store::root_display(path)
 }
 
+#[test]
+fn rebind_ignores_legacy_bad_roots_on_unaffected_projects() {
+    // Round-26 MAJOR 1: validate_roots' reject set gained the cap and the
+    // fs-root classes in this PR while load_state revalidates nothing, so a
+    // pre-PR project whose stored root folds to `/` (the round-18 M1b
+    // legacy shape) used to brick every UNRELATED rebind — both
+    // plan_rebind_roots and rebind_roots iterated the WHOLE candidate copy.
+    // The base scoped revalidation to affected projects for exactly this
+    // reason; both loops are scoped again, pinned here.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store_path = temp.path().join("projects.json");
+    let from = abs("rebind-from");
+    let to = abs("rebind-to");
+    let seed = serde_json::json!({
+        "schema_version": 2,
+        "projects": [
+            {
+                "id": "prj-legacy-bad",
+                "name": "遗留坏根",
+                "roots": ["/"],   // load_state admits it; validate_roots rejects it
+                "position": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "id": "prj-good",
+                "name": "正常项目",
+                // Seed the DISPLAY form (what every store writer persists):
+                // the raw temp spelling matches root_display's canonical
+                // ancestor resolution only on Linux, and the rebind match
+                // runs in the display domain (Windows CI caught this).
+                "roots": [display(&from).to_string_lossy().to_string()],
+                "position": 2,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        ],
+        "assignments": {},
+        "never_materialize_roots": [],
+    });
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec_pretty(&seed).expect("serialize seed"),
+    )
+    .expect("seed store");
+    let store = store_in(&temp);
+
+    // Plan: the unrelated legacy bad-root project must not fail the plan.
+    let planned = store
+        .plan_rebind_roots(&from, &to)
+        .expect("an unrelated legacy bad-root project must not block the plan");
+    assert_eq!(planned, vec!["prj-good".to_string()]);
+
+    // Commit: same scoping — the rebind succeeds and the bad root is left
+    // exactly as the legacy disk state had it.
+    let affected = store
+        .rebind_roots(&from, &to)
+        .expect("an unrelated legacy bad-root project must not block the rebind");
+    assert_eq!(affected, vec!["prj-good".to_string()]);
+    let good = store.get("prj-good").expect("good project survives");
+    assert_eq!(good.roots, vec![display(&to)]);
+    let legacy = store
+        .get("prj-legacy-bad")
+        .expect("legacy project survives");
+    assert_eq!(
+        legacy.roots,
+        vec![std::path::PathBuf::from("/")],
+        "the untouched legacy root is preserved verbatim"
+    );
+}
+
+#[test]
+fn move_add_root_enforces_the_shared_root_cap() {
+    // Round-30 minor 2: the add-root arm's cap gate (round-29 M4) — a
+    // 64-root project must refuse the 65th root on the move-with-add path
+    // (the whole-set validator never sees the single-element push), and the
+    // refusal must NOT wear the rebind conflict marker family (a later
+    // rebind mis-mapping that class to Overlap's nesting dialog was the
+    // motivation).
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let at_cap: Vec<PathBuf> = (0..64).map(|i| abs(&format!("cap-move-r{i}"))).collect();
+    let target = create(&store, "满员", &at_cap);
+    let extra = abs("cap-move-extra");
+
+    let error = store
+        .move_session_to_project("s-cap", Some(&target.id), Some(&extra))
+        .expect_err("the 65th root must be rejected on the add path");
+    let message = error.to_string();
+    assert!(message.contains("64-root cap"), "{message}");
+    assert!(
+        !message.contains("must not nest") && !message.contains("ROOTS_NEST"),
+        "the cap rejection must not wear the nesting-conflict copy: {message}"
+    );
+    assert_eq!(
+        store.get(&target.id).map(|p| p.roots.len()),
+        Some(64),
+        "the project stays at the cap"
+    );
+    // The 64th root on a 63-root project still lands (guard is >, not >=).
+    let below: Vec<PathBuf> = (0..63).map(|i| abs(&format!("cap-ok-r{i}"))).collect();
+    let room = create(&store, "有余", &below);
+    store
+        .move_session_to_project("s-ok", Some(&room.id), Some(&abs("cap-ok-extra")))
+        .expect("a 63-root project still admits one more");
+}
+
+#[test]
+fn validate_roots_enforces_the_shared_root_cap() {
+    // Round-21 M8: create's intake always capped at 64, but validate_roots
+    // (the align/update/rebind chain's gate) capped nothing — an over-64
+    // project persisted a >64-entry keychain the engine silently truncated
+    // at delivery. The cap now lives in validate_roots and references the
+    // base crate's pub const so the two cannot drift apart.
+    // normalize_roots is the public validate_roots entry (the command
+    // layer's pre-diff normalizer); every project mutation routes through
+    // the same validator.
+    let over: Vec<std::path::PathBuf> = (0..65).map(|i| abs(&format!("cap-r{i}"))).collect();
+    let err =
+        ProjectStore::normalize_roots(&over).expect_err("an over-cap project must be rejected");
+    assert!(err.to_string().contains("the cap is 64"), "{err:#}");
+    let at: Vec<std::path::PathBuf> = (0..64).map(|i| abs(&format!("cap-r{i}"))).collect();
+    assert!(
+        ProjectStore::normalize_roots(&at).is_ok(),
+        "a project at exactly the cap is admitted"
+    );
+}
+
+#[test]
+fn create_rejects_a_filesystem_root_project_lexically() {
+    // Round-11 M1 lexical leg: a project whose root is the filesystem flows
+    // into member keychains via keychain_for_workspace and makes every
+    // member session's sandbox the whole filesystem. The canonical leg
+    // (a symlink to `/` rejected on its link spelling) is a sibling
+    // #[cfg(unix)] test below — a runtime OS check does NOT keep
+    // `std::os::unix` out of the Windows type-check (round-19 BLOCKER 1:
+    // the all-targets Windows build failed E0433 on this file). The
+    // platform's own fs-root spelling keeps the lexical leg running (and
+    // reaching the fs-root rejection, not the absoluteness one) everywhere:
+    // `/` is not `is_absolute()` on Windows.
+    let fs_root = if cfg!(windows) { "C:\\" } else { "/" };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let err = store
+        .create_project(
+            "root-project".to_string(),
+            vec![std::path::PathBuf::from(fs_root)],
+        )
+        .expect_err("lexical fs-root must be rejected");
+    assert!(
+        err.to_string().contains("filesystem root"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn create_rejects_a_symlink_to_the_filesystem_root_canonically() {
+    // Round-11 M1 canonical leg: a symlink resolving to `/` must not pass
+    // on its link spelling. Unix-gated (sibling of the five other symlink
+    // tests in this file): symlink creation is only available unprivileged
+    // on unix.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let link = temp.path().join("root-link");
+    std::os::unix::fs::symlink("/", &link).expect("symlink to /");
+    let err = store
+        .create_project("root-project".to_string(), vec![link])
+        .expect_err("a symlink resolving to / must be rejected");
+    assert!(
+        err.to_string().contains("filesystem root"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn create_rejects_a_dotdot_spelling_over_a_missing_prefix() {
+    // Round-18 M1b: a `..` spelling over a prefix that does not exist all
+    // the way up (`/pinvou3-ghost/..`) fails canonicalize, so the raw and
+    // canonical fallback spellings both kept a Normal component and passed,
+    // while root_display folded the spelling down to `/` — the stored
+    // project root WAS the filesystem. The display/identity form is now
+    // checked too.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let ghost = std::path::PathBuf::from("/pinvou3-projects-test-ghost").join("..");
+    assert!(ghost.is_absolute());
+    assert!(
+        !ghost.exists(),
+        "the ghost prefix must stay missing so canonicalize fails: {}",
+        ghost.display()
+    );
+    let err = store
+        .create_project("ghost-project".to_string(), vec![ghost])
+        .expect_err("a .. spelling over a missing prefix must be rejected");
+    assert!(
+        err.to_string().contains("filesystem root"),
+        "unexpected error: {err}"
+    );
+}
+
 fn create(store: &ProjectStore, name: &str, roots: &[PathBuf]) -> super::Project {
     store
         .create_project(name.to_string(), roots.to_vec())
@@ -98,45 +300,62 @@ fn create_rejects_duplicate_and_nested_roots_within_project() {
 }
 
 #[test]
-fn create_rejects_overlap_with_other_projects() {
+fn create_allows_overlap_with_other_projects() {
+    // §9.9 legalizes cross-project root overlap: a folder may be referenced by
+    // several projects (auto-materialization and the browse channel both rely
+    // on it). The intra-set no-nesting invariant is what still holds.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     create(&store, "已有项目", &[abs("work")]);
 
-    let same = store
+    store
         .create_project("同路径".to_string(), vec![abs("work")])
-        .expect_err("same root across projects rejected");
-    assert!(same.to_string().contains("overlaps project '已有项目'"));
+        .expect("same root across projects is legal");
 
-    let nested = store
+    store
         .create_project("子路径".to_string(), vec![abs("work").join("sub")])
-        .expect_err("nested root across projects rejected");
-    assert!(nested.to_string().contains("overlaps project"));
+        .expect("nested root across projects is legal");
 
-    // 无关路径不受影响;父路径方向同样拦截。
     create(&store, "无关", &[abs("other")]);
-    let parent = store
+    store
         .create_project(
             "父路径".to_string(),
             vec![abs("work").parent().unwrap().to_path_buf()],
         )
-        .expect_err("parent root across projects rejected");
-    assert!(parent.to_string().contains("overlaps project"));
+        .expect("ancestor root across projects is legal");
+
+    // 组内不嵌套不变量仍然成立:同一个项目的 roots 不得互相嵌套。
+    let nested = store
+        .create_project(
+            "组内嵌套".to_string(),
+            vec![abs("work"), abs("work").join("sub")],
+        )
+        .expect_err("intra-set nesting rejected");
+    assert!(nested.to_string().contains("must not nest"), "{nested}");
 }
 
 #[test]
-fn canonicalized_real_dirs_catch_overlap_across_projects() {
+fn canonicalized_real_dirs_still_reject_intra_set_nesting() {
+    // Canonicalization must keep working with the overlap legalization: two
+    // real, symlink-resolved directories that nest inside ONE project are
+    // still rejected (the cross-project direction is legal since §9.9).
     let temp = tempfile::tempdir().expect("tempdir");
     let parent = temp.path().join("repo");
     let child = parent.join("sub");
     std::fs::create_dir_all(&child).expect("create dirs");
 
     let store = store_in(&temp);
-    create(&store, "父", std::slice::from_ref(&parent));
+    store
+        .create_project("父".to_string(), vec![parent.clone()])
+        .expect("first project");
+    store
+        .create_project("子".to_string(), vec![child.clone()])
+        .expect("cross-project overlap is legal");
+
     let error = store
-        .create_project("子".to_string(), vec![child])
-        .expect_err("canonical overlap rejected");
-    assert!(error.to_string().contains("overlaps project"));
+        .create_project("组内".to_string(), vec![parent, child])
+        .expect_err("intra-set nesting rejected");
+    assert!(error.to_string().contains("must not nest"), "{error}");
 }
 
 #[test]
@@ -210,27 +429,39 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
     assert_eq!(assigned.project_id, Some(project.id.clone()));
     assert_eq!(moved_out.project_id, None);
 
-    let report = store.delete_project(&project.id).expect("delete project");
-    // s3 已显式移出、s4 属于别的项目:受影响的只有 s1/s2/s10,且按字典序。
-    assert_eq!(
-        report.affected_session_ids,
-        vec!["s1".to_string(), "s10".to_string(), "s2".to_string()]
-    );
+    let report = store
+        .delete_project(&project.id, &[])
+        .expect("delete project");
+    // Assert the report vector DIRECTLY: the store sorts unconditionally
+    // (deterministic cross-process output), so a local sort here would
+    // silently un-pin it (rebase union of the s10 fixture and the PR's
+    // order-blind spelling).
+    assert_eq!(report.affected_session_ids, vec!["s1", "s10", "s2"]);
 
-    assert_eq!(store.assignment_of("s1"), None);
-    assert_eq!(store.assignment_of("s2"), None);
-    assert_eq!(store.assignment_of("s10"), None);
-    // s3 的显式移出条目保留,不被删除项目连带清理。
+    // 删除把成员写成显式移出(tombstone),而不是清空条目:否则该文件夹下一次
+    // 自动物化会把它们重新收编,删除结果死而复生。
+    assert_eq!(store.assignment_of("s1"), Some(None));
+    assert_eq!(store.assignment_of("s2"), Some(None));
+    assert_eq!(store.assignment_of("s10"), Some(None));
+    // s3 已有的显式移出条目保留(不被删除项目连带改写)。
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));
     assert!(store.get(&project.id).is_none());
 
-    // 全部项目删除 + 归属清空后,空状态不留文件。
-    store
-        .move_session_to_project("s3", None, None)
-        .expect("re-move s3");
-    store.delete_project(&other.id).expect("delete other");
+    // 仅剩 tombstone 时仍要保留文件(否则重启后删除过的文件夹会被重新物化);
+    // 真正无项目、无归属、无排除表时,空状态不留文件。Round-21 should-fix 7:
+    // the keeps-file leg used to be asserted in prose only — pin it directly
+    // between the last delete and the forgets.
+    store.delete_project(&other.id, &[]).expect("delete other");
+    assert!(
+        temp.path().join("projects.json").exists(),
+        "a tombstone-only state keeps the store file"
+    );
+    store.forget_session("s1");
+    store.forget_session("s2");
+    store.forget_session("s10");
     store.forget_session("s3");
+    store.forget_session("s4");
     assert!(!temp.path().join("projects.json").exists());
 }
 
@@ -296,15 +527,15 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
-    // 落在他人领地内的目录必须拦截,且不得污染两个项目。
-    let conflict = store
+    // 落在他人领地内的目录现在合法(§9.9):归属与根一并落盘,两个项目各自
+    // 保留自己的 roots。
+    store
         .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
         .map(|_| ())
-        .expect_err("cross-project overlap rejected");
-    assert!(conflict.to_string().contains("overlaps project '他人领地'"));
-    assert_eq!(store.assignment_of("s3"), None);
+        .expect("cross-project overlap is legal");
+    assert_eq!(store.assignment_of("s3"), Some(Some(project.id.clone())));
     assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
-    assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 3);
 }
 
 #[test]
@@ -394,7 +625,7 @@ fn persist_roundtrip_preserves_state_on_reopen() {
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("read persisted file"))
             .expect("parse persisted file");
-    assert_eq!(raw["schema_version"], 1);
+    assert_eq!(raw["schema_version"], 2);
     assert!(
         !path.with_extension("json.tmp").exists(),
         "tmp file cleaned up"
@@ -622,23 +853,64 @@ fn rebind_fence_excludes_writers_and_rebinds_in_both_directions() {
 }
 
 #[test]
-fn rebind_roots_rejects_overlap_and_keeps_state() {
+fn rebind_roots_legalizes_cross_project_overlap_and_keeps_intra_set_rule() {
+    // Section-9.9: a rebind may land a root on (or nested under) another
+    // project's territory — cross-project overlap is legal, so plan and
+    // commit both succeed there and the surviving project is untouched. What
+    // the commit still rejects is the intra-set no-nesting invariant, and the
+    // rollback contract is unchanged for it.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("from2");
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
+    // Cross-project: `from` translates onto `occupied`, which another project
+    // holds — plan and commit agree it is legal.
     let project = create(&store, "待搬", std::slice::from_ref(&from));
-    create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let other = create(&store, "已有领地", std::slice::from_ref(&occupied));
+    assert_eq!(
+        store.plan_rebind_roots(&from, &occupied).expect("plan"),
+        vec![project.id.clone()],
+        "cross-project overlap is legal in the pre-flight too"
+    );
+    assert_eq!(
+        store.rebind_roots(&from, &occupied).expect("commit"),
+        vec![project.id.clone()]
+    );
+    // Stored roots are display forms: compare through the same projection
+    // (raw temp paths can carry Windows 8.3 short-name segments).
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![display(&occupied)]
+    );
+    assert_eq!(
+        store.get(&other.id).unwrap().roots,
+        vec![display(&occupied)],
+        "the surviving project is untouched"
+    );
 
-    let before = store.get(&project.id).unwrap();
+    // Intra-set: a translation that would nest the translated root against a
+    // sibling root of the SAME project is rejected by plan and commit alike,
+    // with the memory state rolled back to the on-disk state.
+    let nested_from = abs("nest-from");
+    let to = temp.path().join("nest-to");
+    std::fs::create_dir_all(to.join("sub")).expect("create target dirs");
+    let both = create(&store, "组内嵌套", &[nested_from.clone(), to.join("sub")]);
+    let before = store.get(&both.id).unwrap();
     let error = store
-        .rebind_roots(&from, &occupied)
-        .expect_err("overlap after rebind rejected");
-    assert!(error.to_string().contains("overlap"));
-    // Error rolls back: memory state unchanged (nothing persisted).
-    assert_eq!(store.get(&project.id).unwrap(), before);
+        .plan_rebind_roots(&nested_from, &to)
+        .expect_err("intra-set nesting rejected in the pre-flight");
+    assert!(error.to_string().contains("nest"));
+    let error = store
+        .rebind_roots(&nested_from, &to)
+        .expect_err("intra-set nesting rejected at commit");
+    assert!(error.to_string().contains("nest"));
+    assert_eq!(
+        store.get(&both.id).unwrap(),
+        before,
+        "commit rollback leaves memory identical to disk"
+    );
 }
 
 /// Pre-flight for the reordered rebind (review #463 round-8 M3): the session
@@ -650,50 +922,205 @@ fn plan_rebind_roots_previews_without_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("plan-from");
-    let occupied = temp.path().join("plan-occupied");
-    std::fs::create_dir_all(&occupied).expect("create occupied dir");
+    let to = temp.path().join("plan-to");
+    std::fs::create_dir_all(to.join("sub")).expect("create target dirs");
 
-    let project = create(&store, "To be moved", std::slice::from_ref(&from));
-    create(
-        &store,
-        "Holds the territory",
-        std::slice::from_ref(&occupied),
-    );
+    // Conflict: the translation would nest `to` against the project's own
+    // `to/sub` sibling root — the one failure mode the commit still has. The
+    // plan must fail without touching state…
+    let project = create(&store, "To be moved", &[from.clone(), to.join("sub")]);
     let before = store.get(&project.id).unwrap();
-
-    // Conflict: the plan must fail without touching state…
     let error = store
-        .plan_rebind_roots(&from, &occupied)
-        .expect_err("overlap rejected in the pre-flight");
-    assert!(error.to_string().contains("overlap"));
+        .plan_rebind_roots(&from, &to)
+        .expect_err("intra-set nesting rejected in the pre-flight");
+    assert!(error.to_string().contains("nest"));
     assert_eq!(store.get(&project.id).unwrap(), before);
 
     // …and on a clean target it must report the same set `rebind_roots`
     // commits, still without writing.
-    let to = temp.path().join("plan-target");
-    std::fs::create_dir_all(&to).expect("create target dir");
+    let clean_from = abs("plan-clean-from");
+    let clean_to = temp.path().join("plan-clean-to");
+    std::fs::create_dir_all(&clean_to).expect("create clean target dir");
+    let lone = create(&store, "Lone holder", std::slice::from_ref(&clean_from));
     assert_eq!(
-        store.plan_rebind_roots(&from, &to).expect("plan"),
-        vec![project.id.clone()]
+        store
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("plan"),
+        vec![lone.id.clone()]
     );
     assert_eq!(
         store.get(&project.id).unwrap(),
         before,
         "planning must not persist the rewrite"
     );
-    // The plan is idempotent with no matching roots, matching the retry contract.
-    assert!(
+    // The plan is a pure preview: rerunning it on the untouched state reports
+    // the same set again.
+    assert_eq!(
         store
-            .plan_rebind_roots(&from, &to)
-            .expect("plan again")
-            .contains(&project.id)
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("plan again"),
+        vec![lone.id.clone()]
     );
-    assert!(store.rebind_roots(&from, &to).expect("commit").len() == 1);
+    // The commit lands exactly what the plan previewed; afterwards nothing
+    // matches `clean_from` any more, matching the retry contract.
     assert!(
         store
-            .plan_rebind_roots(&from, &temp.path().join("unrelated"))
-            .expect("nothing left under from")
+            .rebind_roots(&clean_from, &clean_to)
+            .expect("commit")
+            .len()
+            == 1
+    );
+    assert!(
+        store
+            .plan_rebind_roots(&clean_from, &clean_to)
+            .expect("nothing left under clean_from")
             .is_empty()
+    );
+}
+
+#[test]
+fn ensure_folder_roots_materializes_reuses_and_honors_exclusions() {
+    // §3 client-driven auto-materialization: per-root outcomes, anchored
+    // reuse (§9.9), exclusion skip without an outcome, and per-root failure
+    // isolation.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("browse-folder");
+
+    // Created: named after the directory basename, anchored at the folder.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    match outcomes.as_slice() {
+        [super::EnsureFolderOutcome::Created { project }] => {
+            assert_eq!(project.name, "browse-folder");
+            assert_eq!(project.origin.as_deref(), Some("folder"));
+            assert_eq!(project.roots, vec![display(&folder)]);
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // Anchored reuse (and idempotency): the same folder is Covered, never a
+    // duplicate project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure again");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Covered { .. }]
+        ),
+        "second run must be Covered, got {outcomes:?}"
+    );
+    assert_eq!(store.list().len(), 1);
+
+    // A manual project that merely REFERENCES a folder does not anchor it
+    // (§9.9): the browse channel materializes its own same-named project —
+    // legal cross-project overlap.
+    let referenced = abs("referenced");
+    create(&store, "手动引用", std::slice::from_ref(&referenced));
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&referenced))
+        .expect("ensure referenced");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [super::EnsureFolderOutcome::Created { .. }]
+        ),
+        "referencing does not anchor; got {outcomes:?}"
+    );
+
+    // Exclusion (§3): a banned folder is skipped WITHOUT an outcome — the
+    // browse channel can tell exclusion apart from failure.
+    store.set_never_materialize(&folder, true).expect("exclude");
+    let outcomes = store
+        .ensure_folder_roots(&[folder.clone(), abs("fresh-tail")])
+        .expect("ensure with excluded root");
+    assert_eq!(outcomes.len(), 1, "excluded roots produce no outcome");
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+
+    // Failure isolation: a relative path fails alone and never blocks the
+    // rest of the batch.
+    let outcomes = store
+        .ensure_folder_roots(&[PathBuf::from("relative/path"), abs("after-failure")])
+        .expect("ensure batch");
+    assert_eq!(outcomes.len(), 2);
+    assert!(matches!(
+        &outcomes[0],
+        super::EnsureFolderOutcome::Failed { .. }
+    ));
+    assert!(matches!(
+        &outcomes[1],
+        super::EnsureFolderOutcome::Created { .. }
+    ));
+}
+
+#[test]
+fn set_never_materialize_is_idempotent_and_only_gates_future_ensure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("excluded-folder");
+    // Materialize via ensure (not a manual create): anchored reuse in the
+    // revoked step requires an origin=folder project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Created { .. }]
+    ));
+
+    // Idempotent registration; the list is exposed for the manage panel.
+    let registered = store.set_never_materialize(&folder, true).expect("set");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(
+        store
+            .set_never_materialize(&folder, true)
+            .expect("set again"),
+        registered,
+        "re-adding must not duplicate the entry"
+    );
+    // Existing projects and their assignments are untouched: the list gates
+    // only FUTURE auto-materialization.
+    assert_eq!(store.list().len(), 1);
+
+    // Revocation re-opens the folder; a fresh ensure reuses the surviving
+    // project (anchored) instead of materializing a second one.
+    store.set_never_materialize(&folder, false).expect("revoke");
+    assert!(store.never_materialize_roots().is_empty());
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("ensure");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [super::EnsureFolderOutcome::Covered { .. }]
+    ));
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn keychain_for_workspace_keeps_cwd_primary_and_project_order() {
+    // §6: the primary slot is always the session's own cwd (display form);
+    // additional roots are the caller's roots VERBATIM, in order, minus the
+    // identity equal to the cwd. The store hands over stored DISPLAY forms,
+    // so the test must too: on Windows hosts whose temp path carries an 8.3
+    // short-name segment (GitHub runners: RUNNER~1), a raw spelling and the
+    // display form fold to DIFFERENT identity keys and the cwd root would
+    // survive into the keychain as a bogus additional root.
+    let cwd = abs("k-cwd");
+    let roots = vec![display(&abs("k-b")), display(&cwd), display(&abs("k-a"))];
+    let keychain = ProjectStore::keychain_for_workspace(&cwd, &roots);
+    assert_eq!(keychain.len(), 3);
+    assert_eq!(keychain[0], display(&cwd));
+    assert_eq!(keychain[1], roots[0]);
+    assert_eq!(keychain[2], roots[2]);
+    // Empty project roots → single-root semantics (cwd only).
+    assert_eq!(
+        ProjectStore::keychain_for_workspace(&cwd, &[]),
+        vec![display(&cwd)]
     );
 }
 
@@ -757,11 +1184,16 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 
 #[test]
 fn root_keys_fold_case_only_on_windows() {
-    // Windows 大小写不敏感:同一(不存在的)目录的两种大小写/分隔符写法必须
-    // 折叠为同一 root,否则重叠校验对 `C:\Work` vs `c:\work` 失明;
-    // Unix 文件系统大小写敏感,两种写法是两个互不重叠的 root,都允许创建。
-    // 用 std::env::consts::OS 常量分支而非 cfg 语法:平台条件编译不得出现在
-    // 适配层外(architecture-guard rust_target_cfg_outside_adapter)。
+    // Windows folds case/separators: two spellings of the same (absent)
+    // directory are one identity root. Since the section-9.9 overlap
+    // legalization a folded identity shared ACROSS projects is legal, so the
+    // fold contract is locked by the intra-set duplicate rejection instead:
+    // the same two spellings inside one create call are one root twice. Unix
+    // filesystems are case-sensitive: the two spellings are distinct roots,
+    // legal even in one root set.
+    // Branches on the std::env::consts::OS constant rather than cfg syntax:
+    // platform conditional compilation must not appear outside the adapter
+    // layer (architecture-guard rust_target_cfg_outside_adapter).
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     if std::env::consts::OS == "windows" {
@@ -769,16 +1201,99 @@ fn root_keys_fold_case_only_on_windows() {
         let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
         assert_ne!(upper, lower);
 
+        // Cross-project identity equality is legal since section-9.9
+        // (anchored coverage and the browse channel both rely on it).
         create(&store, "大写", &[PathBuf::from(&upper)]);
+        create(&store, "小写", &[PathBuf::from(&lower)]);
+        assert_eq!(store.list().len(), 2);
+
+        // The fold itself is what the intra-set duplicate check exercises.
         let error = store
-            .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
-            .expect_err("case-folded duplicate root rejected");
-        assert!(error.to_string().contains("overlaps project"));
+            .create_project(
+                "组内重复".to_string(),
+                vec![PathBuf::from(&upper), PathBuf::from(&lower)],
+            )
+            .expect_err("case-folded intra-set duplicate rejected");
+        assert!(error.to_string().contains("duplicate project root"));
     } else {
         create(&store, "大写", &[abs("CaseProbe")]);
         create(&store, "小写", &[abs("caseprobe")]);
         assert_eq!(store.list().len(), 2);
     }
+}
+
+#[test]
+fn rebind_roots_translates_the_remembered_primary_folder() {
+    // §9.2 + review #484 round-3 M1: the remembered primary folder moves
+    // with its directory — stranding a `/from`-spelled memory would break
+    // "new conversation" on every later project-row entry with a
+    // nonexistent-path rejection, minted by the very command that repairs
+    // broken links. A primary OUTSIDE the prefix stays.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("mem-from");
+    let outside_primary = abs("mem-outside");
+    let to = temp.path().join("mem-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let project = create(&store, "搬家", std::slice::from_ref(&from));
+    store
+        .set_last_primary_root(&project.id, &from)
+        .expect("remember primary under from");
+    let other = create(&store, "别的项目", std::slice::from_ref(&outside_primary));
+    store
+        .set_last_primary_root(&other.id, &outside_primary)
+        .expect("remember primary outside from");
+
+    store
+        .rebind_roots(&from, &to)
+        .expect("rebind translates the primary");
+    let moved = store.get(&project.id).unwrap();
+    assert_eq!(moved.roots, vec![display(&to)]);
+    assert_eq!(
+        moved.last_primary_root.as_deref(),
+        Some(display(&to).as_path()),
+        "the remembered primary is translated, not stranded"
+    );
+    let untouched = store.get(&other.id).unwrap();
+    assert_eq!(
+        untouched.last_primary_root.as_deref(),
+        Some(display(&outside_primary).as_path()),
+        "a primary outside the prefix stays"
+    );
+}
+
+#[test]
+fn move_ancestor_absorb_demotes_a_covered_primary() {
+    // Review #484 round-3 M1: when add_workspace_root absorbs covered
+    // descendants, a remembered primary that was one of them must be
+    // demoted (the channel falls back to the first roots entry) instead of
+    // stranding a path the project no longer claims.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let parent = temp.path().join("ancestor");
+    let child = parent.join("child");
+    std::fs::create_dir_all(&child).expect("create dirs");
+
+    let project = create(&store, "目标", std::slice::from_ref(&child));
+    store
+        .set_last_primary_root(&project.id, &child)
+        .expect("remember the child as primary");
+
+    // Adding the workspace = the parent: the covered child is absorbed and
+    // the remembered primary demoted. The store layer writes assignments
+    // without loading sessions (the command layer owns the existence check),
+    // so a synthetic id is enough here.
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&parent))
+        .expect("move with ancestor add");
+    assert_eq!(outcome.added_root, Some(display(&parent)));
+    let updated = store.get(&project.id).unwrap();
+    assert_eq!(updated.roots, vec![display(&parent)]);
+    assert_eq!(
+        updated.last_primary_root, None,
+        "the covered primary is demoted, not stranded"
+    );
 }
 
 #[test]
@@ -865,56 +1380,584 @@ fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
     let _gate = store.begin_rebind().expect("gate released on drop");
 }
 
+/// §9.9 backend authority (review #484 round-6): tier-② multi-hit resolution
+/// must follow the (position, id) order the store loads in — the frontend
+/// `matchProjectByPath` pins the same rule, and `align_session_to_project`
+/// resolves through this store method. The fixture lists projects in an order
+/// that disagrees with both rules, so a resolution trusting file order alone
+/// cannot pass.
 #[test]
-fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
+fn resolve_session_project_multi_hit_follows_position_then_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = abs("overlap-ws");
+    // The store hands pure functions stored display forms; the fixture must
+    // spell roots the same way. A raw temp spelling folds to a different
+    // identity key than the ancestor-resolved display form on hosts whose
+    // temp path carries an 8.3 short-name segment (GitHub Windows runners:
+    // RUNNER~1) or a symlinked /var (macOS), so the tier-2 lookup misses and
+    // resolve returns None there while passing on Linux.
+    let root = display(&workspace).to_string_lossy().to_string();
+    let now = "2026-09-01T00:00:00Z";
+    let project = |id: &str, position: i64| {
+        serde_json::json!({
+            "id": id,
+            "name": id,
+            "roots": [root],
+            "position": position,
+            "created_at": now,
+            "updated_at": now,
+        })
+    };
+    // File order: highest position first, then the id-order loser of the
+    // position-0 tie — trusting file order picks prj-b-high; skipping the id
+    // tiebreak leaves the position-0 pair ambiguous.
+    let file = serde_json::json!({
+        "schema_version": 1,
+        "projects": [
+            project("prj-b-high", 1),
+            project("prj-zz", 0),
+            project("prj-aa", 0),
+        ],
+        "assignments": {},
+        "never_materialize_roots": [],
+    });
+    std::fs::write(
+        temp.path().join("projects.json"),
+        serde_json::to_vec(&file).expect("serialize fixture"),
+    )
+    .expect("write fixture");
+    let store = store_in(&temp);
+
+    let resolved = store
+        .resolve_session_project("s1", &workspace)
+        .expect("multi-hit workspace resolves");
+    assert_eq!(
+        resolved.id, "prj-aa",
+        "smallest position wins; the position tie breaks by id order"
+    );
+
+    // tier-① beats tier-②: an explicit assignment overrides the position rule.
+    let assigned = serde_json::json!({
+        "schema_version": 1,
+        "projects": file["projects"].clone(),
+        "assignments": { "s1": "prj-b-high" },
+        "never_materialize_roots": [],
+    });
+    std::fs::write(
+        temp.path().join("projects.json"),
+        serde_json::to_vec(&assigned).expect("serialize fixture"),
+    )
+    .expect("rewrite fixture");
+    let store = store_in(&temp);
+    let resolved = store
+        .resolve_session_project("s1", &workspace)
+        .expect("explicit assignment resolves");
+    assert_eq!(
+        resolved.id, "prj-b-high",
+        "explicit assignment beats the position rule"
+    );
+}
+
+#[test]
+fn update_project_and_expel_writes_tombstones_and_keeps_existing_entries() {
+    // §4 root-removal semantics: expel candidates WITHOUT an assignment entry
+    // become explicit move-outs (None) in the same persist as the roots
+    // replacement when they resolve to no project after the edit; ids with
+    // existing entries (explicit Some / already moved out) stay untouched —
+    // tier-① wins over the expulsion enumeration.
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let outer = abs("legacy-outer");
-    let inner = abs("legacy-outer").join("nested");
-    let from = abs("unrelated-from");
-    let to = temp.path().join("unrelated-to");
-    std::fs::create_dir_all(&to).expect("create target dir");
+    let project = create(&store, "项目", &[abs("u-old"), abs("u-keep")]);
+    let other = create(&store, "他处", &[abs("u-elsewhere")]);
+    store
+        .move_session_to_project("s-keep", Some(&other.id), None)
+        .expect("assign elsewhere");
 
-    let mover = create(&store, "to-move", std::slice::from_ref(&from));
-    create(&store, "legacy-outer", std::slice::from_ref(&outer));
-    let legacy_inner = create(
-        &store,
-        "legacy-inner",
-        std::slice::from_ref(&abs("legacy-inner-original")),
+    let s_auto_cwd = abs("u-old").join("session");
+    let updated = store
+        .update_project_and_expel(
+            &project.id,
+            Some("改名".to_string()),
+            vec![abs("u-keep")],
+            &[
+                ("s-auto".to_string(), s_auto_cwd.clone()),
+                ("s-keep".to_string(), s_auto_cwd.clone()),
+                ("s-auto".to_string(), s_auto_cwd), // duplicates in the enumeration are harmless
+            ],
+        )
+        .expect("update and expel");
+    assert_eq!(updated.name, "改名");
+    assert_eq!(updated.roots, vec![display(&abs("u-keep"))]);
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        Some(None),
+        "entry-less expel id that resolves nowhere becomes a tombstone"
     );
-    // create_project validates, so the overlap is introduced AFTER the fact by
-    // editing the persisted file directly — the legacy-data shape load_state
-    // accepts without revalidation.
-    let store_path = temp.path().join("projects.json");
-    let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
-            .expect("parse store");
-    file["projects"]
-        .as_array_mut()
-        .expect("projects array")
-        .iter_mut()
-        .find(|project| project["id"].as_str() == Some(legacy_inner.id.as_str()))
-        .expect("find legacy-inner")["roots"][0] =
-        serde_json::json!(display(&inner).to_string_lossy().into_owned());
-    // `outer` folds to the parent of `inner`: the two now overlap on disk.
-    std::fs::write(
-        &store_path,
-        serde_json::to_vec_pretty(&file).expect("serialize"),
-    )
-    .expect("write store");
+    assert_eq!(
+        store.assignment_of("s-keep"),
+        Some(Some(other.id.clone())),
+        "an existing explicit assignment is not rewritten"
+    );
+}
+
+/// review #484 round-11 M4: under the §9.9 overlap legalization two projects
+/// may reference the same folder. Removing that folder from the edited
+/// project expels only the edited project's membership — an entry-less
+/// session under the shared root that still resolves into the other project
+/// (position rule) must stay entry-less, or the global tombstone would
+/// silently ungroup it from a project this edit never touched (its "align to
+/// project" would then answer no_project).
+#[test]
+fn update_project_and_expel_keeps_sessions_still_resolving_into_another_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    assert!(
-        store.rebind_roots(&from, &to).is_ok(),
-        "an overlap between two untouched legacy projects must not block an unrelated rebind"
-    );
-    assert_eq!(store.get(&mover.id).unwrap().roots, vec![display(&to)]);
+    let first = create(&store, "先建", &[abs("shared")]);
+    let edited = create(&store, "编辑", &[abs("shared"), abs("own-dir")]);
+    let cwd = abs("shared").join("session");
 
-    // A conflict the rebind itself introduces still rejects: moving `mover`
-    // back under a legacy project's territory.
+    let updated = store
+        .update_project_and_expel(
+            &edited.id,
+            None,
+            vec![abs("own-dir")],
+            &[("s-shared".to_string(), cwd.clone())],
+        )
+        .expect("update and expel");
+    assert_eq!(updated.roots, vec![display(&abs("own-dir"))]);
+    assert_eq!(
+        store.assignment_of("s-shared"),
+        None,
+        "still resolvable through the surviving project: no tombstone"
+    );
+    let resolved = store
+        .resolve_session_project("s-shared", &cwd)
+        .expect("session keeps resolving after the edit");
+    assert_eq!(
+        resolved.id, first.id,
+        "tier-② lands in the position-0 project"
+    );
+}
+
+/// review #484 M3: update_project_and_expel persists BEFORE committing the
+/// in-memory state. A persist failure must leave memory identical to disk so
+/// an in-process retry recomputes the same removed set and expels — the
+/// previous commit-first order let the retry see the NEW roots in memory,
+/// compute removed=[], and skip the expulsion forever. Same obstruction idiom
+/// as rebind_roots_rolls_back_memory_when_persist_fails.
+#[test]
+fn update_project_and_expel_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "搬家", &[abs("e-old")]);
+    let before = store.get(&project.id).unwrap();
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
     let error = store
-        .rebind_roots(&to, &outer)
-        .expect_err("a NEW overlap with a legacy project still rejects");
-    assert!(error.to_string().contains("overlap"));
+        .update_project_and_expel(
+            &project.id,
+            Some("新名".to_string()),
+            vec![abs("e-new")],
+            &[("s1".to_string(), abs("e-old").join("session"))],
+        )
+        .expect_err("persist failure surfaces as an error");
+    assert!(!error.to_string().is_empty());
+    assert_eq!(
+        store.get(&project.id).unwrap(),
+        before,
+        "roots AND name roll back to the on-disk state"
+    );
+    assert_eq!(
+        store.assignment_of("s1"),
+        None,
+        "the expel tombstone is not committed either"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let updated = store
+        .update_project_and_expel(
+            &project.id,
+            Some("新名".to_string()),
+            vec![abs("e-new")],
+            &[("s1".to_string(), abs("e-old").join("session"))],
+        )
+        .expect("retry persists");
+    assert_eq!(updated.roots, vec![display(&abs("e-new"))]);
+    assert_eq!(store.assignment_of("s1"), Some(None), "the retry expels");
+}
+
+#[test]
+fn create_project_rolls_back_memory_when_persist_fails() {
+    // Round-21 M4: create used to be the one commit-first holdout, with a
+    // doc justifying it via the in-memory overlap check — a check §9.9 has
+    // since deleted. A failed persist left a ghost project in live memory
+    // that any later successful persist would commit, and an immediate
+    // retry minted a DUPLICATE project with identical roots. The persist-
+    // first convention (same as the six sibling mutators) must leave memory
+    // empty on failure, and the retry after the obstruction clears must
+    // persist exactly one project.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let existing = create(&store, "已有", &[abs("c-x")]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    let error = store
+        .create_project("幽灵".to_string(), vec![abs("c-y")])
+        .expect_err("persist failure surfaces as an error");
+    assert!(!error.to_string().is_empty());
+    let all_after_failure = store.list();
+    assert_eq!(
+        all_after_failure.len(),
+        1,
+        "no ghost project is committed to memory: {all_after_failure:?}"
+    );
+    assert_eq!(all_after_failure[0].id, existing.id);
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let created = store
+        .create_project("幽灵".to_string(), vec![abs("c-y")])
+        .expect("retry persists");
+    assert_eq!(created.name, "幽灵");
+    let all_after_retry = store.list();
+    assert_eq!(
+        all_after_retry.len(),
+        2,
+        "the retry creates exactly one project, no duplicate: {all_after_retry:?}"
+    );
+
+    // Fresh-boot view agrees: the disk holds the two projects, nothing more.
+    let reloaded = store_in(&temp);
+    assert_eq!(reloaded.list().len(), 2, "disk and memory agree");
+}
+
+#[test]
+fn delete_project_expel_ids_become_tombstones_and_existing_entries_survive() {
+    // The expel_session_ids path of delete_project (previously untested — all
+    // callers in the suite passed &[]): command-enumerated auto members under
+    // the deleted project's roots are written as explicit move-outs so the
+    // folder's next materialization cannot revive them; ids that already have
+    // an entry (explicit elsewhere / already moved out) are skipped.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "待删", &[abs("d-x")]);
+    let other = create(&store, "幸存", &[abs("d-y")]);
+    store
+        .move_session_to_project("s-member", Some(&project.id), None)
+        .expect("assign member");
+    store
+        .move_session_to_project("s-elsewhere", Some(&other.id), None)
+        .expect("assign elsewhere");
+    store
+        .move_session_to_project("s-out", None, None)
+        .expect("explicit move out");
+
+    let report = store
+        .delete_project(
+            &project.id,
+            &[
+                "s-auto".to_string(),      // entry-less auto member: tombstone
+                "s-elsewhere".to_string(), // explicit elsewhere: skipped
+                "s-out".to_string(),       // already moved out: skipped
+                "s-member".to_string(),    // already an explicit member: no dup
+            ],
+        )
+        .expect("delete");
+    let mut affected = report.affected_session_ids;
+    affected.sort();
+    assert_eq!(
+        affected,
+        vec!["s-auto".to_string(), "s-member".to_string()],
+        "explicit members plus entry-less expel ids, no duplicates"
+    );
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+    assert_eq!(store.assignment_of("s-member"), Some(None));
+    assert_eq!(
+        store.assignment_of("s-elsewhere"),
+        Some(Some(other.id.clone())),
+        "explicit assignment to a surviving project is untouched"
+    );
+    assert_eq!(
+        store.assignment_of("s-out"),
+        Some(None),
+        "pre-existing move-out stays (and was not double-reported)"
+    );
+}
+
+/// Round-19 minor 5: delete_project 的全局墓碑语义(store.rs 的「由测试锁定」
+/// 声明此前没有对应测试——既有删除测试全部使用互不相交的根,把墓碑作用域收窄
+/// 到被删项目的回归不会变红)。A 与 B 共享同一根 R(§9.9 跨项目重叠合法);
+/// 删除 A 时把 R 下的无条目自动成员写成显式移出,B 的 tier-② 分组不得重新
+/// 收编该会话——删除是用户的显式声明,自动复活会推翻它。
+#[test]
+fn delete_on_a_shared_root_tombstones_globally_across_surviving_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let shared = abs("shared-root");
+    let a = create(&store, "共享 A", std::slice::from_ref(&shared));
+    let b = create(&store, "共享 B", std::slice::from_ref(&shared));
+
+    let report = store
+        .delete_project(&a.id, &["s-shared-auto".to_string()])
+        .expect("delete");
+    assert_eq!(
+        report.affected_session_ids,
+        vec!["s-shared-auto".to_string()],
+        "the entry-less auto member under the shared root is expelled"
+    );
+    assert_eq!(
+        store.assignment_of("s-shared-auto"),
+        Some(None),
+        "the tombstone is global: surviving B still listing the shared root must not re-adopt the session through tier-②"
+    );
+    assert!(
+        store.list().iter().any(|project| project.id == b.id),
+        "the surviving project is untouched"
+    );
+}
+
+/// review #484 round-5 M3: delete_project persists BEFORE committing the
+/// in-memory state. A persist failure must leave memory identical to disk —
+/// the project still listed, no tombstones written — so an in-process retry
+/// succeeds; the previous commit-first order dropped the project from memory
+/// and the retry failed with "project not found". Same obstruction idiom as
+/// update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn delete_project_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "待删", &[abs("pd-x")]);
+    store
+        .move_session_to_project("s-member", Some(&project.id), None)
+        .expect("assign member");
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .delete_project(&project.id, &["s-auto".to_string()])
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        store.get(&project.id).is_some(),
+        "memory rolls back: the project is still there"
+    );
+    assert_eq!(
+        store.assignment_of("s-member"),
+        Some(Some(project.id.clone())),
+        "explicit membership is untouched"
+    );
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        None,
+        "no expel tombstone is committed"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let report = store
+        .delete_project(&project.id, &["s-auto".to_string()])
+        .expect("retry deletes");
+    assert!(store.get(&project.id).is_none());
+    assert!(
+        report
+            .affected_session_ids
+            .contains(&"s-member".to_string())
+    );
+    assert!(report.affected_session_ids.contains(&"s-auto".to_string()));
+    assert_eq!(store.assignment_of("s-member"), Some(None));
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+}
+
+/// review #484 round-8 m5: the never-materialize exclusion table moves with
+/// its directories. A rebind used to translate project roots and the
+/// remembered primary only, so a moved excluded folder re-materialized under
+/// the NEW path on the next ensure — the ghost the user excluded came back,
+/// minted by the very command that repairs broken links.
+#[test]
+fn rebind_roots_translates_never_materialize_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("rbx-excl-from");
+    let to = temp.path().join("rbx-excl-moved");
+    let nested = display(&from).join("keep-out");
+    store
+        .set_never_materialize(&nested, true)
+        .expect("exclude nested folder");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "搬家排除", std::slice::from_ref(&from));
+    let affected = store.rebind_roots(&from, &to).expect("rebind");
+    assert_eq!(affected, vec![project.id.clone()]);
+
+    // The table exposes folded identity keys, not display paths (Windows
+    // folds case/separators): build the expectation through the same
+    // platform folding, or the assertion only holds on POSIX.
+    assert_eq!(
+        store.never_materialize_roots(),
+        vec![crate::platform::os::filesystem_path_identity_key(
+            &display(&to).join("keep-out").to_string_lossy(),
+        )],
+        "the exclusion key must translate onto the new path"
+    );
+
+    // And the translated key still gates: ensure at the new path skips
+    // silently instead of materializing the excluded folder's project.
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&to.join("keep-out")))
+        .expect("ensure at the new path");
+    assert!(
+        outcomes.is_empty(),
+        "the moved exclusion must still suppress ensure, got {outcomes:?}"
+    );
+    assert_eq!(
+        store.list().len(),
+        1,
+        "no project materialized for the excluded folder; the rebind project remains"
+    );
+}
+
+#[test]
+fn load_dedupes_never_materialize_roots() {
+    // review #484 n4: StoreState documents the exclusion table as deduplicated
+    // (writes dedupe via set_never_materialize), but a hand-edited file could
+    // carry duplicates; load re-pins the invariant.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("projects.json");
+    std::fs::write(
+        &path,
+        r#"{"schema_version":1,"projects":[],"assignments":{},"never_materialize_roots":["/a","/b","/a","/c","/b"]}"#,
+    )
+    .expect("write file with duplicate keys");
+    let store = ProjectStore::from_paths(path);
+    assert_eq!(
+        store.never_materialize_roots(),
+        vec!["/a".to_string(), "/b".to_string(), "/c".to_string()],
+        "duplicates collapse on load, first occurrence wins, order kept"
+    );
+}
+
+/// review #484 round-8 M1: set_never_materialize persists BEFORE committing
+/// the in-memory state. Its idempotent early-return reads that same memory,
+/// so a commit-first persist failure would make every in-process retry
+/// return `Ok` over a disk still missing the entry — the exclusion existed
+/// only in memory and silently vanished on restart. Same obstruction idiom
+/// as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn set_never_materialize_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("nm-fail-folder");
+    // 一次成功落盘,让 store 文件存在(阻塞手段要把最终路径换成目录)。
+    create(&store, "占位", &[abs("nm-fail-anchor")]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .set_never_materialize(&folder, true)
+        .expect_err("persist failure surfaces as an error");
+    assert!(
+        store.never_materialize_roots().is_empty(),
+        "memory must roll back to the on-disk (empty) exclusion table"
+    );
+
+    // The retry must actually write, not false-succeed through the
+    // idempotent early-return over advanced memory.
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let registered = store
+        .set_never_materialize(&folder, true)
+        .expect("retry persists");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(store.never_materialize_roots(), registered);
+}
+
+/// review #484 round-8 M1: set_last_primary_root persists BEFORE committing
+/// the in-memory state; the idempotent early-return reads the same memory, so
+/// a commit-first persist failure let the retry return the remembered root
+/// from memory without ever writing it — lost on restart. Same obstruction
+/// idiom as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn set_last_primary_root_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let root = abs("primary-fail-root");
+    let project = create(&store, "记忆", std::slice::from_ref(&root));
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .set_last_primary_root(&project.id, &root)
+        .expect_err("persist failure surfaces as an error");
+    assert_eq!(
+        store.get(&project.id).unwrap().last_primary_root,
+        None,
+        "memory must roll back: no remembered primary in memory either"
+    );
+
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let updated = store
+        .set_last_primary_root(&project.id, &root)
+        .expect("retry persists");
+    assert_eq!(updated.last_primary_root, Some(display(&root)));
+    assert_eq!(
+        store.get(&project.id).unwrap().last_primary_root,
+        Some(display(&root))
+    );
+}
+
+/// review #484 round-8 M1: ensure_folder_roots persists BEFORE committing
+/// the batch. The previous order pushed created projects into live memory
+/// before the write, so a failed persist let the retry hit the
+/// anchored-reuse branch and report `Covered` for a project that existed
+/// only in memory — a session's tier-① assignment then pointed at a project
+/// id that vanished on restart, blocking tier-② re-adoption. Same
+/// obstruction idiom as update_project_and_expel_rolls_back_memory_when_persist_fails.
+#[test]
+fn ensure_folder_roots_rolls_back_memory_when_persist_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let folder = abs("ensure-fail-folder");
+    // 一次成功落盘,让 store 文件存在(阻塞手段要把最终路径换成目录)。
+    create(&store, "占位", &[abs("ensure-fail-anchor")]);
+
+    let store_path = temp.path().join("projects.json");
+    std::fs::remove_file(&store_path).expect("remove store file");
+    std::fs::create_dir_all(&store_path).expect("recreate as dir");
+    std::fs::write(store_path.join("obstruction"), b"x").expect("make dir non-empty");
+
+    store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect_err("persist failure surfaces as an error");
+    assert_eq!(
+        store.list().len(),
+        1,
+        "memory must roll back: only the pre-existing anchor project remains"
+    );
+
+    // The retry re-materializes from the on-disk state and converges:
+    // it must report Created again — a Covered here would mean the previous
+    // batch leaked into memory (the defect this test pins).
+    std::fs::remove_dir_all(&store_path).expect("clear obstruction");
+    let outcomes = store
+        .ensure_folder_roots(std::slice::from_ref(&folder))
+        .expect("retry persists");
+    let super::EnsureFolderOutcome::Created { project } = &outcomes[0] else {
+        panic!("retry must re-create from rolled-back memory, got {outcomes:?}");
+    };
+    assert_eq!(store.list().len(), 2);
+    assert!(store.list().iter().any(|entry| entry.id == project.id));
 }
 
 #[test]
@@ -923,7 +1966,9 @@ fn alias_equal_paths_are_the_no_op_guard() {
     // so a regression to the raw `==` compare would bump `updated_at` and
     // persist a null rewrite for a case/spelling variant of the same
     // directory — unreachable through the command layer today, which is
-    // exactly why the helper needs its own pin.
+    // exactly why the helper needs its own pin. Kept through the §9.9
+    // rebase: orthogonal to the overlap ruling, the helper and both call
+    // sites survive.
     use crate::features::projects::store::paths_are_alias_equal;
     use std::path::Path;
     assert!(paths_are_alias_equal(
@@ -960,84 +2005,13 @@ fn alias_no_op_guards_are_wired_at_both_store_entries() {
 }
 
 #[test]
-fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
-    // review #463 round-22 E1: the round-18 touched-touched exemption had no
-    // pin — stubbing `legacy_overlap_pairs` to empty left `features::projects`
-    // fully green. This fixture makes the exemption LOAD-BEARING: two touched
-    // projects whose PRE-translation roots are nested under `from` translate
-    // to a still-nested pair at `to`; without the exemption the cross-pair
-    // check rejects the rebind with a conflict no re-pick can fix. The safe
-    // direction is structural (round-22 E2): a NEW cross nest between two
-    // touched members always implies a within-project nest that fires first.
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let from = abs("legacy");
-    let to = temp.path().join("moved");
-    std::fs::create_dir_all(&from).expect("create from");
-    let sub = from.join("sub");
-    std::fs::create_dir_all(&sub).expect("create sub");
-
-    let outer = create(&store, "外层", std::slice::from_ref(&from));
-    let inner = create(
-        &store,
-        "内层",
-        std::slice::from_ref(&abs("legacy-inner-original")),
-    );
-    // The injected spelling is derived from the STORED root's display form
-    // (round-22 CI: canonicalized spellings differ per platform — matching
-    // happens in the stored domain, so the injected root must live there).
-    let inner_stored_root = store.get(&outer.id).unwrap().roots[0].join("sub");
-    // create_project validates, so the legacy nested overlap is introduced
-    // AFTER the fact by editing the persisted file directly — the legacy-data
-    // shape load_state accepts without revalidation.
-    let store_path = temp.path().join("projects.json");
-    let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
-            .expect("parse store");
-    file["projects"]
-        .as_array_mut()
-        .expect("projects array")
-        .iter_mut()
-        .find(|project| project["id"].as_str() == Some(inner.id.as_str()))
-        .expect("find inner")["roots"][0] =
-        serde_json::Value::String(inner_stored_root.display().to_string());
-    std::fs::write(
-        &store_path,
-        serde_json::to_vec(&file).expect("serialize store"),
-    )
-    .expect("write store");
-    drop(store);
-    let store = store_in(&temp);
-
-    let affected = store
-        .rebind_roots(&from, &to)
-        .expect("the legacy nested touched pair must translate, not conflict");
-    let mut ids = affected;
-    ids.sort();
-    let mut expected = vec![outer.id.clone(), inner.id.clone()];
-    expected.sort();
-    assert_eq!(ids, expected, "both legacy-overlapped projects translate");
-
-    // The translated pair keeps the legacy nesting verbatim.
-    assert!(
-        store
-            .get(&inner.id)
-            .unwrap()
-            .roots
-            .contains(&display(&to.join("sub"))),
-        "the inner project's translated root must keep its nesting shape",
-    );
-}
-
-/// Round-24 minor 7: the preflight REBIND_ROOTS_CONFLICT partition
-/// string-matches the validator's root-cause prefixes, so a wording change
-/// in `validate_roots` would silently degrade the dialog's conflict copy.
-/// The prefixes are now single-sourced with the bail! texts; this pin drives
-/// every overlap class through the real validator and requires its
-/// root cause to carry exactly one of the partition's prefixes. Red-verified
-/// by rewording a bail! without touching the const.
-#[test]
 fn roots_conflict_partition_prefixes_match_production_wording() {
+    // Adapted to §9.9 (rebase of the merged base's round-24 minor 23 pin):
+    // cross-project overlap is legal and no longer produces a rejection, so
+    // the overlap leg of the original three-class pin is gone; the overlap
+    // constant stays in the partition list defensively (a regression that
+    // re-legalizes nesting must still land in the retry dialog, and the
+    // command layer's union match is unchanged).
     use crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES;
 
     let temp = tempfile::tempdir().expect("tempdir");
@@ -1059,20 +2033,11 @@ fn roots_conflict_partition_prefixes_match_production_wording() {
             .expect_err("nested roots must be rejected")
             .root_cause()
             .to_string(),
-        // overlap: the new root collides with an existing project's root.
-        {
-            let _peer = create(&store, "peer", &[abs("overlap-base")]);
-            store
-                .create_project("over".to_string(), vec![abs("overlap-base").join("kid")])
-                .expect_err("cross-project overlap must be rejected")
-                .root_cause()
-                .to_string()
-        },
     ];
-    assert_eq!(causes.len(), 3);
+    assert_eq!(causes.len(), 2);
     // Round-24 minor 23: any-of matching cannot catch a wrong-class const
     // swap — assert each class against its SPECIFIC prefix.
-    use super::store::{ROOTS_DUPLICATE_CONFLICT, ROOTS_NEST_CONFLICT, ROOTS_OVERLAP_CONFLICT};
+    use super::store::{ROOTS_DUPLICATE_CONFLICT, ROOTS_NEST_CONFLICT};
     assert!(
         causes[0].starts_with(ROOTS_DUPLICATE_CONFLICT),
         "the duplicate class must carry the duplicate prefix: {}",
@@ -1083,19 +2048,15 @@ fn roots_conflict_partition_prefixes_match_production_wording() {
         "the nest class must carry the nest prefix: {}",
         causes[1]
     );
-    assert!(
-        causes[2].starts_with(ROOTS_OVERLAP_CONFLICT),
-        "the overlap class must carry the overlap prefix: {}",
-        causes[2]
-    );
-    // The partition still accepts all three (the union the command layer
-    // matches on).
+    // The partition still accepts both producible classes (the union the
+    // command layer matches on).
     for cause in &causes {
         assert!(
             REBIND_ROOTS_CONFLICT_PREFIXES
                 .iter()
                 .any(|prefix| cause.starts_with(prefix)),
-            "validate_roots wording drifted off the partition prefixes: {cause}",
+            "cause must be partitioned as a rebind conflict: {}",
+            cause
         );
     }
 }

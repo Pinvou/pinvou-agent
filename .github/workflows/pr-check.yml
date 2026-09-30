@@ -733,6 +733,18 @@ jobs:
       # 正式入口按平台注入 RUSTC_WRAPPER(见 config.toml 注释);必须用
       # ${{ github.workspace }} 绝对路径,避免 Cargo 按进程 cwd 双拼解析。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      # PR #484 transition (drop when the gitlink re-pins past the upstream
+      # fix): the pinned CodeWhale head (#54, pre-merge) predates
+      # pinjou3-clean's targeted fetch_update allow (44921cf02), and
+      # codewhale-tui inherits CodeWhale's [workspace.lints] warnings = "deny",
+      # so the floated stable's deprecation of AtomicUsize::fetch_update
+      # hard-errors every compile of it, in every job below that builds the
+      # app graph. rust-toolchain.toml's policy routes API renames newer than
+      # the MSRV to a targeted allow at the call site; that call site is
+      # inside the submodule, so the parent repo applies the allow at the only
+      # seam it owns — CI flags. Only the deprecated lint is re-allowed;
+      # every other warnings-class lint stays denied everywhere.
+      RUSTFLAGS: -A deprecated
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -814,7 +826,11 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: |
-          cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings
+          # -A deprecated repeated after -D warnings: the `--` args land after
+          # the job-level RUSTFLAGS on the rustc command line, so without the
+          # repeat the late -D warnings would re-deny the lint (see the
+          # RUSTFLAGS env comment above for the transition rationale).
+          cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings -A deprecated
           cargo clippy --lib --bins --tests --no-deps --features dev-tools
 
       # pinvou-knowledge clippy hard gate lives in the knowledge-rust job: the
@@ -941,7 +957,13 @@ jobs:
       #     binary, limiting only ThinLTO backends still exhausted hosted-runner memory there.
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      # -A deprecated: PR #484 transition — the pinned CodeWhale head (#54,
+      # pre-merge) still uses fetch_update, deprecated by the floated stable,
+      # and codewhale-tui inherits CodeWhale's warnings = "deny" workspace
+      # lints. Targeted allow per rust-toolchain.toml's call-site policy (the
+      # call site is inside the submodule); drop when the PR re-pins past the
+      # upstream fix (see the rust-lint RUSTFLAGS comment for the full note).
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1 -A deprecated"
       # Cargo.toml [profile.dev] 固化 line-tables-only(本地调试体验);CI 改为完全
       # 关闭 DWARF:panic 的 file:line 由 Location(rodata)提供,不依赖 debuginfo。
       # 关掉后缩小目标文件与测试二进制体积,降低 ThinLTO link 内存峰值和 target
@@ -1128,6 +1150,13 @@ jobs:
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    env:
+      # -A deprecated: PR #484 transition — pinvou-product-backend path-depends
+      # on pinvou3-tauri, so this job compiles codewhale-tui, whose inherited
+      # CodeWhale warnings = "deny" turns the floated stable's fetch_update
+      # deprecation into a hard error. Same rationale as the rust-lint
+      # RUSTFLAGS env; drop when the PR re-pins past the upstream fix.
+      RUSTFLAGS: -A deprecated
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1390,8 +1419,14 @@ jobs:
             cat "$probe/a.err" "$probe/b.err" >&2 || true
             exit 1
           fi
-          echo "probed RUSTFLAGS=$flags"
-          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+          # -A deprecated: PR #484 transition — same rationale as the rust-lint
+          # RUSTFLAGS env (pinned CodeWhale head's fetch_update vs the floated
+          # stable, denied via codewhale-tui's inherited warnings = "deny").
+          # Baked into the exported value because GITHUB_ENV replaces the
+          # job-level RUSTFLAGS for every later step; drop when the PR
+          # re-pins past the upstream fix.
+          echo "probed RUSTFLAGS=$flags -A deprecated"
+          echo "RUSTFLAGS=$flags -A deprecated" >> "$GITHUB_ENV"
 
       # This job's cargo steps do not need frontend dependencies: under the
       # debug profile tauri's generate_context! uses devUrl, dist/ is never
@@ -1665,6 +1700,11 @@ jobs:
       # Must use the ${{ github.workspace }} absolute path so Cargo does not double-join
       # the per-process cwd when resolving it.
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      # -A deprecated: PR #484 transition — same rationale as the rust-lint
+      # RUSTFLAGS env (pinned CodeWhale head's fetch_update vs the floated
+      # stable, denied via codewhale-tui's inherited warnings = "deny"); drop
+      # when the PR re-pins past the upstream fix.
+      RUSTFLAGS: -A deprecated
     steps:
       - name: Checkout
         uses: actions/checkout@v7

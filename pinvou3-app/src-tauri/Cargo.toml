@@ -101,6 +101,10 @@ deepseek-tui = { path = "../../CodeWhale/crates/tui", package = "codewhale-tui" 
 # 不再在 app 层自建 keyring 封装;headless/无 D-Bus 服务器也能存凭证。
 codewhale-secrets = { path = "../../CodeWhale/crates/secrets" }
 
+# 复用底座 codewhale-core 的 MAX_WORKSPACE_ROOTS 常量(评审 #484 round-21 M8):
+# 项目 roots 的容量上限与底座 intake/delivery 同源,底座改值时不会再静默漂移。
+codewhale-core = { path = "../../CodeWhale/crates/core" }
+
 # 复用底座 codewhale-config 的 RouteLimits 类型(填 active_route_limits.context_tokens,
 # 把 vLLM 探测的窗口喂给底座压缩阈值推导)。facade(deepseek-tui)不 re-export 该类型,
 # 直接引 crate;它已在依赖图内,Cargo.lock 几乎不动。

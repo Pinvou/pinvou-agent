@@ -1050,6 +1050,90 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn validate_workspace_roots_rechecks_the_canonical_target() {
+    // Round-18 M1a: the canonical target REPLACES the stored entry, so the
+    // fs-root and primary-ancestor rejections must run on it too — a
+    // symlink whose canonical form is `/` or the primary's parent passed
+    // the lexical checks on its own spelling and was persisted wide.
+    use super::validators::validate_workspace_roots;
+
+    let base = unique_temp_dir("validate-roots-canonical");
+    let primary = base.join("home");
+    let shared = base.join("shared");
+    std::fs::create_dir_all(primary.join("files")).expect("primary files");
+    std::fs::create_dir_all(&shared).expect("shared dir");
+    // macOS resolves temp paths under /private/var while the raw
+    // temp_dir() spelling stays /var/... — every prefix comparison below
+    // must run on the canonical base (the projects-tests D2 fixture
+    // convention) or the widening links are admitted and the expect_err
+    // legs panic on every macOS dev machine (round-21 M5).
+    let base = base.canonicalize().expect("canonicalize fixture base");
+    let primary = base.join("home");
+    let shared = base.join("shared");
+
+    // Symlink whose target is the filesystem root.
+    let root_link = base.join("root-link");
+    std::os::unix::fs::symlink("/", &root_link).expect("root symlink");
+    let err = validate_workspace_roots(
+        vec![root_link.to_string_lossy().into_owned()],
+        Some(&primary),
+    )
+    .expect_err("a symlink to / must be rejected on its canonical form");
+    assert!(err.contains("filesystem root"), "{err}");
+
+    // Symlink whose canonical form is a proper ancestor of the primary.
+    let ancestor_link = primary.join("files").join("up");
+    std::os::unix::fs::symlink(&base, &ancestor_link).expect("ancestor symlink");
+    let err = validate_workspace_roots(
+        vec![ancestor_link.to_string_lossy().into_owned()],
+        Some(&primary),
+    )
+    .expect_err("a symlink to the primary's parent must be rejected on its canonical form");
+    assert!(err.contains("contains the primary workspace"), "{err}");
+
+    // A benign nested symlink keeps the old behavior: canonical form stored.
+    let target = shared.join("real");
+    std::fs::create_dir_all(&target).expect("real dir");
+    let nested = primary.join("files").join("nested-link");
+    std::os::unix::fs::symlink(&target, &nested).expect("nested symlink");
+    let roots =
+        validate_workspace_roots(vec![nested.to_string_lossy().into_owned()], Some(&primary))
+            .expect("a benign nested symlink is admitted");
+    assert_eq!(roots, vec![target], "the canonical target is stored");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn validate_workspace_roots_rejects_an_over_cap_declaration() {
+    // Round-18 m1: the declared set carries the foundation's intake cap —
+    // every boundary consumer scales with the set length, and the delivery
+    // lane re-normalizes tolerantly, so an unbounded declaration would ride
+    // straight into writable_roots. A set at exactly the cap stays valid.
+    use super::validators::validate_workspace_roots;
+
+    let primary = std::env::temp_dir().join("pinvou3-validate-cap-primary");
+    // temp_dir-rooted spellings so the entries are `is_absolute()` on
+    // Windows too (round-21 B1) — they never need to exist (soft-kept).
+    let root_at = |index: usize| {
+        std::env::temp_dir()
+            .join(format!("pinvou3-cap-r{index}"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    let over_cap: Vec<String> = (0..65).map(|index| root_at(index)).collect();
+    let err = validate_workspace_roots(over_cap, Some(&primary))
+        .expect_err("an over-cap declaration must be rejected");
+    assert!(err.contains("intake cap"), "{err}");
+
+    let at_cap: Vec<String> = (0..64).map(|index| root_at(index)).collect();
+    assert!(
+        validate_workspace_roots(at_cap, Some(&primary)).is_ok(),
+        "a set at exactly the cap is admitted"
+    );
+}
+
 fn text_message(role: &str, text: &str) -> Message {
     Message {
         role: role.into(),
@@ -7559,6 +7643,205 @@ fn apply_rebind_workspace_bindings_skips_owner_deleted_after_plan() {
 /// re-parse (review #463 round-13 M2) treats the read failure exactly like the
 /// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
 /// with the CORRUPT marker.
+#[test]
+fn keychain_roots_round_trip_through_the_plain_binding_store() {
+    // Review #484 round-2 checklist: write the keychain at bind time,
+    // read it back, replace it wholesale (the align path), and read that
+    // back — the binding store is the snapshot's persistence contract.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let base = unique_temp_dir("keychain-roundtrip");
+    let primary = base.join("primary");
+    let extra = base.join("extra");
+    std::fs::create_dir_all(&primary).expect("create primary");
+    std::fs::create_dir_all(&extra).expect("create extra");
+
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            primary.clone(),
+            vec![primary.clone(), extra.clone()],
+        )
+        .expect("bind with keychain");
+    let snapshot = store.session_workspace_roots(&id);
+    assert_eq!(snapshot.len(), 2, "bind persists the full root set");
+    assert!(
+        snapshot.iter().any(|root| root.ends_with("primary")),
+        "the primary root rides in the snapshot: {snapshot:?}"
+    );
+    assert!(
+        snapshot.iter().any(|root| root.ends_with("extra")),
+        "the attached root rides in the snapshot: {snapshot:?}"
+    );
+
+    // Wholesale replacement (align §9.7 shape): primary first, project
+    // roots after.
+    let next = vec![primary.clone(), extra.clone(), base.join("third")];
+    std::fs::create_dir_all(base.join("third")).expect("create third");
+    store
+        .set_session_workspace_roots(&id, next.clone())
+        .expect("replace keychain");
+    assert_eq!(store.session_workspace_roots(&id), next);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn bind_persists_keychain_cwd_first_and_deduped() {
+    // Review #484 round-5 M2: the create channel hands over storage-order
+    // roots plus a separate cwd; the persist point must normalize to the
+    // base's `normalize_workspace_roots` shape (cwd first, the rest in
+    // order, duplicates removed) so the stored order matches the effective
+    // order and the chip marks the true primary root.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let base = unique_temp_dir("keychain-cwd-first");
+    let a = base.join("a");
+    let b = base.join("b");
+    std::fs::create_dir_all(&a).expect("create a");
+    std::fs::create_dir_all(&b).expect("create b");
+
+    // Storage order [a, b] with cwd = b persists as [b, a].
+    store
+        .bind_session_workspace_with_roots(&id, b.clone(), vec![a.clone(), b.clone()])
+        .expect("bind");
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![b.clone(), a.clone()],
+        "cwd is promoted to the primary slot, remaining roots keep order"
+    );
+
+    // cwd already in slot 0 stays unchanged; duplicate roots collapse.
+    let session2 = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session 2");
+    let id2 = session2.metadata.id.clone();
+    store
+        .bind_session_workspace_with_roots(
+            &id2,
+            b.clone(),
+            vec![b.clone(), a.clone(), a.clone(), b.clone()],
+        )
+        .expect("bind 2");
+    assert_eq!(
+        store.session_workspace_roots(&id2),
+        vec![b.clone(), a.clone()],
+        "cwd-first order is stable and duplicates are removed"
+    );
+
+    // Empty stays empty: the documented single-root contract, not [cwd].
+    let session3 = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session 3");
+    let id3 = session3.metadata.id.clone();
+    store
+        .bind_session_workspace_with_roots(&id3, b.clone(), Vec::new())
+        .expect("bind 3");
+    assert!(
+        store.session_workspace_roots(&id3).is_empty(),
+        "empty keychain keeps single-root semantics"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn rebind_workspace_bindings_translates_keychain_roots() {
+    // Review #484 M3 (plain lane): the keychain snapshot migrates with
+    // the binding — roots under the `from` prefix shift onto `to`, roots
+    // outside it stay.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let from = unique_temp_dir("keychain-rebind-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("keychain-rebind-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let elsewhere = unique_temp_dir("keychain-rebind-elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            from.clone(),
+            vec![from.clone(), from.join("extra"), elsewhere.clone()],
+        )
+        .expect("bind");
+
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert!(outcome.rebound.iter().any(|(sid, _)| sid == &id));
+
+    let snapshot = store.session_workspace_roots(&id);
+    assert_eq!(
+        snapshot,
+        vec![to.clone(), to.join("extra"), elsewhere.clone()],
+        "prefix roots shift onto `to`, outside roots stay"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn rebind_workspace_bindings_translates_keychain_against_the_prefix_not_the_binding() {
+    // Review #484 B1 regression: the binding sits in a SUBDIRECTORY of `from`,
+    // so its translated path `to/deep` differs from `to`. The keychain snapshot
+    // must still be translated against the rebind prefix (`from` → `to`) —
+    // joining the suffix onto the binding's new path would strand `from` and
+    // `from/x` at `to/deep` / `to/deep/x` and persist the skew.
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("model".to_string(), None, std::env::temp_dir())
+        .expect("create session");
+    let id = session.metadata.id.clone();
+    let from = unique_temp_dir("keychain-rebind-deep-from");
+    let deep = from.join("deep");
+    std::fs::create_dir_all(&deep).expect("create from/deep");
+    let to = unique_temp_dir("keychain-rebind-deep-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let elsewhere = unique_temp_dir("keychain-rebind-deep-elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+    // Keychain payload: the rebound root itself, a SIBLING root under `from`,
+    // and an unrelated root outside the prefix. Bind-time normalization
+    // (review #484 round-5 M2) promotes the session's own cwd to the primary
+    // slot, so the persisted snapshot is [from/deep, from, from/x, elsewhere]
+    // and the rebind translates all four against the `from` prefix.
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            deep.clone(),
+            vec![from.clone(), from.join("x"), elsewhere.clone()],
+        )
+        .expect("bind");
+
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+    assert_eq!(
+        outcome.rebound,
+        vec![(id.clone(), to.join("deep"))],
+        "the binding itself moves with its own suffix"
+    );
+    assert_eq!(store.session_workspace_binding(&id), Some(to.join("deep")));
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![to.join("deep"), to.clone(), to.join("x"), elsewhere.clone()],
+        "keychain roots translate against `from` → `to`, not against the binding's new path"
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
 #[test]
 fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     let (store, _g) = isolated_store();

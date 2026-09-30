@@ -1104,7 +1104,7 @@ fn timeline_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, TIMELINE_FILE)
 }
 
-fn state_path(session_id: &str) -> Result<PathBuf> {
+pub(crate) fn state_path(session_id: &str) -> Result<PathBuf> {
     session_file_path(session_id, STATE_FILE)
 }
 
@@ -1135,10 +1135,84 @@ pub fn persist_acp_state(session_id: &str, mut state: Value) -> Result<()> {
     Ok(())
 }
 
-pub fn patch_acp_state(session_id: &str, patch: Value) -> Result<()> {
+/// Round-20 SF1: an unparseable acp-state.json used to be silently reset to
+/// `{}` and the align convergence then reported `state_committed = true` — a
+/// plain-success toast while the durable artifact just lost its
+/// adapter/session/workspace sections. The reset still happens (the file is
+/// corrupt; recovering a writable state is right), but it is logged and
+/// surfaced to the align lane as a convergence failure (`sidecar_stale`),
+/// never as clean success.
+/// Concurrency residual (round-20 SF2, on record): the acp-state.json
+/// read-modify-write window is unlocked across its four writer classes
+/// (events lastStatus, operation_gate, align/spawn keychain patches). A
+/// milliseconds-wide interleave can drop one patch (e.g. the event lane's
+/// stale read landing after align's narrower workspace patch resurrects the
+/// wider pre-align root set — the over-grant direction, the exact scenario
+/// `sidecar_stale` exists to surface). The file self-heals at the next
+/// spawn (a full rewrite) and every writer persists atomically, so the
+/// residual is documented rather than fenced: a per-session write lock
+/// would serialize the event lane against align for a window the next
+/// spawn collapses anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpStatePatchOutcome {
+    /// The existing state parsed and the patch applied onto it.
+    Clean,
+    /// The existing state was unparseable and got reset before the patch —
+    /// the callers that treat the file as load-bearing (align) must report
+    /// a convergence failure.
+    ResetCorrupt,
+}
+
+/// The acp-state.json durable keychain roots (round-29 M1): the ACP lane's
+/// stale-delivery artifact — the align retry path compares this against the
+/// target shape exactly like the native lane compares its sidecar.
+/// `None` = no state file / unreadable / no workspace.roots array.
+pub fn acp_state_workspace_roots(session_id: &str) -> Option<Vec<PathBuf>> {
+    let path = state_path(session_id).ok()?;
+    let raw = fs::read(&path).ok()?;
+    let state: Value = serde_json::from_slice(&raw).ok()?;
+    let roots = state.get("workspace")?.get("roots")?.as_array()?;
+    Some(
+        roots
+            .iter()
+            .filter_map(|root| root.as_str())
+            .filter(|root| !root.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
+}
+
+pub fn patch_acp_state_with_outcome(
+    session_id: &str,
+    patch: Value,
+) -> Result<AcpStatePatchOutcome> {
     let path = state_path(session_id)?;
+    let mut outcome = AcpStatePatchOutcome::Clean;
     let mut state = if path.exists() {
-        serde_json::from_slice::<Value>(&fs::read(&path)?).unwrap_or_else(|_| json!({}))
+        // Round-26 minor 7: a session deleted between the exists() probe and
+        // this read is a benign race (the sibling translate lane treats the
+        // same NotFound this way) — report clean WITHOUT persisting, not an
+        // Err that would surface as a spurious sidecar_stale, and not a
+        // fresh write that would resurrect the artifact of a deleted session.
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AcpStatePatchOutcome::Clean);
+            }
+            Err(error) => return Err(anyhow::Error::new(error).context("read acp-state for patch")),
+        };
+        match serde_json::from_slice::<Value>(&raw) {
+            Ok(state) => state,
+            Err(error) => {
+                // Log hygiene (CodeQL cleartext-logging convention): the
+                // parse error never carries session ids or paths.
+                eprintln!(
+                    "[codex-acp] acp-state.json unparseable; resetting before patch: {error}"
+                );
+                outcome = AcpStatePatchOutcome::ResetCorrupt;
+                json!({})
+            }
+        }
     } else {
         json!({})
     };
@@ -1150,7 +1224,12 @@ pub fn patch_acp_state(session_id: &str, patch: Value) -> Result<()> {
             state_object.insert(key.clone(), value.clone());
         }
     }
-    persist_acp_state(session_id, state)
+    persist_acp_state(session_id, state)?;
+    Ok(outcome)
+}
+
+pub fn patch_acp_state(session_id: &str, patch: Value) -> Result<()> {
+    patch_acp_state_with_outcome(session_id, patch).map(|_| ())
 }
 
 /// Rebind support (review #463 round-14 B2): translate the persisted
@@ -1185,30 +1264,63 @@ pub fn translate_acp_state_workspace(
     };
     let mut state: Value = serde_json::from_slice(&raw)
         .with_context(|| "parse acp-state for workspace rebind".to_string())?;
-    let Some(current) = state["workspace"]["path"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    else {
-        return Ok(false);
-    };
-    let Some(next) = translate(&current) else {
-        return Ok(false);
-    };
-    if next == current {
+    // Round-21 #14: BOTH durable workspace fields translate. The old shape
+    // rewrote only `workspace.path`, leaving `workspace.roots` on its stale
+    // `/from` spellings in the one artifact the design declares the sole
+    // durable ACP survivor — after an index loss the boot recovery
+    // re-inserted the pre-rebind root set, compose soft-kept the
+    // now-unresolvable spellings and delivered them as additional roots
+    // outside `to`, and the next spawn re-persisted them verbatim
+    // (over-grant, self-perpetuating). The roots array now rides the same
+    // mapping, mirroring the align convergence.
+    //
+    // Wrong-shape guard (round-22 minor 5, scope note round-24 minor 7): a
+    // missing or non-object workspace carries nothing translatable and is
+    // converged (Ok(false)) — the previous index-through-Null arms behaved
+    // identically; an object workspace never panics through IndexMut.
+    let mut changed = false;
+    {
+        let Some(workspace) = state.get_mut("workspace").and_then(|w| w.as_object_mut()) else {
+            return Ok(false);
+        };
+        if let Some(current) = workspace
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        {
+            if let Some(next) = translate(&current) {
+                if next != current {
+                    workspace.insert(
+                        "path".to_string(),
+                        json!(next.to_string_lossy().to_string()),
+                    );
+                    changed = true;
+                }
+            }
+        }
+        if let Some(roots) = workspace.get_mut("roots").and_then(Value::as_array_mut) {
+            for root in roots.iter_mut() {
+                let Some(current) = root
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                else {
+                    continue;
+                };
+                let Some(next) = translate(&current) else {
+                    continue;
+                };
+                if next != current {
+                    *root = json!(next.to_string_lossy().to_string());
+                    changed = true;
+                }
+            }
+        }
+    }
+    if !changed {
         return Ok(false);
     }
-    // Round-22 minor 5: wrong-shape JSON (a non-object root or workspace)
-    // must degrade to a `failed` entry via the error path, not panic through
-    // IndexMut — same guard as the sibling patch_acp_state. Scope note
-    // (round-24 minor 7): the no-op-equals-converged arm above means a
-    // non-object ROOT returns Ok(false) (nothing to translate, treated as
-    // converged), not failed — the "must degrade to failed" promise holds
-    // for the workspace key, not for a non-object root.
-    let Some(workspace) = state.get_mut("workspace").and_then(|w| w.as_object_mut()) else {
-        return Err(anyhow::anyhow!("acp-state workspace is not an object"));
-    };
-    workspace["path"] = json!(next.to_string_lossy().to_string());
     persist_acp_state(session_id, state)?;
     Ok(true)
 }
@@ -2435,10 +2547,21 @@ mod tests {
         let unique = format!("pinvou3-acp-state-{}", std::process::id());
         let from = std::env::temp_dir().join(format!("{unique}-from"));
         let to = std::env::temp_dir().join(format!("{unique}-to"));
+        let unmapped = std::env::temp_dir().join(format!("{unique}-elsewhere"));
         persist_acp_state(
             session_id,
             json!({
-                "workspace": { "path": from.to_string_lossy() },
+                "workspace": {
+                    "path": from.to_string_lossy(),
+                    // Round-21 #14: the roots array must ride the same
+                    // translation — mapped entries rewrite, unmapped entries
+                    // stay verbatim, non-string entries pass through.
+                    "roots": [
+                        from.to_string_lossy().to_string(),
+                        unmapped.to_string_lossy().to_string(),
+                        1
+                    ]
+                },
                 "other": "untouched"
             }),
         )
@@ -2447,7 +2570,7 @@ mod tests {
         let translate = |path: &Path| -> Option<PathBuf> { (path == from).then(|| to.clone()) };
         assert!(
             translate_acp_state_workspace(session_id, &translate).expect("translate"),
-            "a mapped path reports the translation"
+            "a mapped path or root reports the translation"
         );
         let state: Value = serde_json::from_slice(
             &fs::read(state_path(session_id).expect("state path")).expect("read state"),
@@ -2456,6 +2579,15 @@ mod tests {
         assert_eq!(
             state["workspace"]["path"],
             json!(to.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            state["workspace"]["roots"],
+            json!([
+                to.to_string_lossy().to_string(),
+                unmapped.to_string_lossy().to_string(),
+                1
+            ]),
+            "mapped roots translate, unmapped and non-string roots stay verbatim"
         );
         assert_eq!(state["other"], json!("untouched"));
         // Already converged: persists nothing, reports false.

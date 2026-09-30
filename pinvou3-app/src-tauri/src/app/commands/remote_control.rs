@@ -327,10 +327,11 @@ pub fn web_access_list_host_files(
 pub async fn web_access_list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<Vec<super::sessions::SessionListItem>, String> {
     let mut sessions = web_session_result(
         WebSessionOperation::ListSessions,
-        super::sessions::list_sessions(store, acp_pool).await,
+        super::sessions::list_sessions(store, acp_pool, projects).await,
     )?;
     super::sessions::project_session_list_for_web(&mut sessions);
     Ok(sessions)
@@ -358,10 +359,13 @@ pub async fn web_access_create_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<WebSessionMetadata, String> {
     let metadata = web_session_result(
         WebSessionOperation::CreateSession,
-        super::sessions::create_session(Some(false), None, app, store, pool).await,
+        // Web 侧 P1 只有临时/单根会话(§9.8):无钥匙串、不写项目记忆。
+        super::sessions::create_session(Some(false), None, None, None, app, store, pool, projects)
+            .await,
     )?;
     let transcript_revision = crate::features::sessions::transcript_revision(&[])
         .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
@@ -892,6 +896,7 @@ pub async fn web_access_create_codex_acp_session(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
     acp_pool: State<'_, AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<deepseek_tui::session_manager::SessionMetadata, String> {
     let outcome = async {
         // Validate before consuming the one-shot workspace grant. A malformed
@@ -917,9 +922,13 @@ pub async fn web_access_create_codex_acp_session(
             super::codex::create_codex_acp_session_with_workspace_binding(
                 workspace_path,
                 Some(agent_id),
+                // Web 工作区授权通道:单根(授权目录本身),不写项目记忆。
+                None,
+                None,
                 store,
                 pool,
                 acp_pool,
+                projects,
                 workspace_verifier,
             )
             .await
@@ -1331,8 +1340,9 @@ fn project_acp_status_for_web(
 pub async fn web_access_list_codex_acp_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<Vec<crate::app::commands::codex::CodexAcpSessionListItem>, String> {
-    let outcome = super::codex::list_codex_acp_sessions_for_web(&store, &acp_pool).await;
+    let outcome = super::codex::list_codex_acp_sessions_for_web(&store, &acp_pool, &projects).await;
     web_acp_result(WebAcpOperation::ListSessions, outcome)
 }
 
