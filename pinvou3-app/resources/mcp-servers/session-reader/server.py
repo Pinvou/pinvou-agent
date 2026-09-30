@@ -27,9 +27,11 @@ Write semantics (send_message_to_session, contract §5 L1 / §6):
   saves whole-file snapshots and would clobber any external edit). It
   validates the request and spools it:
   ~/.pinvou3/messaging/spool/<name>.json — the name is the sha256 of
-  "<from_session>|<idempotency_key>" when a key is given (sender-scoped, so two
-  sessions reusing one key cannot clobber each other) (retries overwrite the same file, so a
-  retried tool call cannot duplicate a delivery) or a random uuid otherwise;
+  "<from_session>|<to_session>|<idempotency_key>" when a key is given
+  (sender+target-scoped, so two sessions reusing one key cannot clobber each
+  other; a key requires from_session so the namespace is never global; retries
+  overwrite the same file, so a retried tool call cannot duplicate a delivery)
+  or a random uuid otherwise;
 - An app-side Rust watcher picks the spool file up and performs the actual
   steer (target mid-turn) or new-turn dispatch (target idle), after the
   execpolicy approval gate the tool is bound to;
@@ -249,7 +251,7 @@ TOOL_DEFS = [
                 },
                 "idempotency_key": {
                     "type": "string",
-                    "description": "(optional) Opaque key (max 128 chars) making retries safe: resending with the same key replaces the pending message instead of duplicating it.",
+                    "description": "(optional) Opaque key (max 128 chars) making retries safe: resending with the same key replaces the pending message instead of duplicating it. Requires from_session, so the key is scoped to one sender; omit both when the sender is unknown.",
                 },
             },
             "required": ["to_session", "text"],
@@ -846,8 +848,9 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
     """Validates a cross-session message and spools it for the app-side watcher. Returns (payload, error); nothing else is written.
 
     Idempotency (contract §6): with an idempotency_key the spool file name is the
-    key's sha256, so a retried call overwrites the same pending file instead of
-    enqueuing a duplicate delivery.
+    sha256 of "<from_session>|<to_session>|<idempotency_key>", so a retried call
+    overwrites the same pending file instead of enqueuing a duplicate delivery;
+    a key without from_session is rejected so the namespace is never global.
     """
     to_session = str(to_session or "").strip()
     text = str(text or "").strip()
@@ -871,6 +874,13 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
         return None, "invalid text: message exceeds the %d character limit" % MAX_MESSAGE_TEXT_CHARS
     if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
         return None, "invalid idempotency_key: exceeds %d characters" % MAX_IDEMPOTENCY_KEY_CHARS
+    if idempotency_key is not None and from_session is None:
+        # Without a sender the key's namespace would degrade to global: two
+        # unattributed senders reusing one key would clobber each other.
+        return None, (
+            "invalid idempotency_key: requires from_session so the key is "
+            "scoped to one sender; omit idempotency_key when the sender is unknown"
+        )
 
     spool_dir = os.path.join(messaging_dir, "spool")
     try:
@@ -879,11 +889,12 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
         # Deliberately no raw OSError text: it embeds absolute host paths.
         return None, "message queue is not writable"
     if idempotency_key is not None:
-        # Sender-scoped namespace: two sessions reusing the same (guessable)
-        # key must not overwrite each other's pending message or hit each
-        # other's done-marker.
+        # Sender+target-scoped namespace: two sessions reusing the same
+        # (guessable) key must not overwrite each other's pending message or
+        # hit each other's done-marker. from_session is guaranteed non-None
+        # here by the validation above.
         spool_id = hashlib.sha256(
-            ("%s|%s" % (from_session or "", idempotency_key)).encode("utf-8")
+            ("%s|%s|%s" % (from_session, to_session, idempotency_key)).encode("utf-8")
         ).hexdigest()
     else:
         spool_id = uuid.uuid4().hex

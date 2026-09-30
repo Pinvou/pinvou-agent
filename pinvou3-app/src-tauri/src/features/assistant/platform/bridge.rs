@@ -4213,7 +4213,7 @@ mod tests {
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
             [MESSAGING_SEND_TOOL],
-            "plain 默认只有跨会话发送的 Ask 规则"
+            "plain defaults to only the cross-session messaging Ask rule"
         );
 
         // plain disables feishu → only the lark-cli deny (bare name + one .exe

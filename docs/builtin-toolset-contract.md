@@ -163,8 +163,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
   idempotency key or be naturally idempotent. `send_message_to_session` takes an
-  optional `idempotency_key`; the spool file is named by the sender-scoped
-  sha256 of `"<from_session>|<key>"`, so a retried call replaces its own
+  optional `idempotency_key` (requires `from_session`, so the namespace is
+  never global); the spool file is named by the sender+target-scoped sha256 of
+  `"<from_session>|<to_session>|<key>"`, so a retried call replaces its own
   pending message and can never clobber another session's (transient delivery
   failures retry with backoff; poison files are quarantined under
   `messaging/spool/failed/`).
