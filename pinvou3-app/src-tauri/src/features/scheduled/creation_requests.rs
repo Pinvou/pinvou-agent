@@ -698,12 +698,12 @@ fn audit_request(
         .map(|(label, _)| label)
         .collect();
         detail["changed"] = serde_json::json!(changed);
-        if let Some(target) = request.target_session.as_deref() {
-            // A retarget redirects where every future prompt fires — the
-            // audit line must say where it now goes (same for a create with
-            // a delivery target).
-            detail["target_session"] = serde_json::json!(target);
-        }
+    }
+    if let Some(target) = request.target_session.as_deref() {
+        // A delivery target — set at create or moved by a retarget —
+        // redirects where every future prompt fires: the audit line must say
+        // where it goes either way.
+        detail["target_session"] = serde_json::json!(target);
     }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
@@ -1602,6 +1602,7 @@ mod tests {
         let state = watcher_state().await;
         // A real ordinary session file so the domain's existence probe passes.
         let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(sessions_dir.join("reqsrc01").join("workspace")).unwrap();
         std::fs::create_dir_all(&sessions_dir).unwrap();
         std::fs::write(
             sessions_dir.join("target001.json"),
@@ -1647,6 +1648,16 @@ mod tests {
         .unwrap();
         assert_eq!(marker["kind"], "create");
         assert_eq!(marker["task_id"], records[0].id);
+        // The audit line names the delivery target: it redirects where every
+        // future prompt of this task fires.
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("audit record");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_create");
+        assert_eq!(line["detail"]["target_session"], "target001");
     }
 
     #[tokio::test]

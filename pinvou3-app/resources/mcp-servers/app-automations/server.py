@@ -1018,7 +1018,12 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     # return the OLD error while this fresh apply is still in flight: unlink a
     # not-ok marker right after re-spooling (success markers stay — they are
     # the recorded result the duplicate path returns). The watcher drops its
-    # own stale copy too, so either side alone closes the window.
+    # own stale copy too, so either side alone closes the window. The
+    # read-then-unlink is not atomic: in the narrow window where the watcher
+    # publishes a fresh marker between our read and unlink, that fresh marker
+    # is deleted and this call degrades to the pending-timeout result —
+    # self-healing on the next retry, inside the documented at-least-once
+    # window (accepted race).
     try:
         with open(done_marker, "r", encoding="utf-8") as handle:
             stale = json.load(handle)
