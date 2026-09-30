@@ -2873,12 +2873,17 @@ impl EnginePool {
             Ok(deleted) => deleted,
             // Same failed-delete backstop as the stub twin: the in-memory
             // entry must not linger on a failed delete, and the late sweep
-            // retries the disk cleanup.
+            // retries the disk cleanup. The sweep is adoption-aware: the
+            // record SURVIVED the failed delete, so a GUI rename landing
+            // inside the sweep window turns the directory into a live
+            // session's workspace that must not be destroyed.
             Err(error) => {
                 self.forget_session(session_id);
-                Self::schedule_late_sweep(
+                Self::schedule_late_sweep_unless_adopted(
                     crate::platform::paths::sessions_root().join(session_id),
                     "late sweep of failed one-shot delete",
+                    self.store.clone(),
+                    session_id.to_string(),
                 );
                 return Err(error);
             }
@@ -2919,6 +2924,18 @@ impl EnginePool {
         );
     }
 
+    /// Adoption guard for the failed-delete backstop sweep: the record
+    /// survived the failed delete, so sweep the directory only while it is
+    /// still ours — an absent record means the delete converged (the sweep
+    /// then cleans the resurrected-orphan directory as before), a record
+    /// still reading factory-titled means the session was never adopted,
+    /// and a renamed (adopted) or unreadable record keeps the directory
+    /// (unknown keeps — the same rule the delete gate applies).
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    fn sweep_may_remove_session_dir(store: &SessionStore, session_id: &str) -> bool {
+        !store.chat_session_record_exists(session_id) || record_is_factory_titled(store, session_id)
+    }
+
     /// Delayed sweep after deletion: after the foundation cancels sub-agents
     /// it writes the worker ledger asynchronously on a background thread
     /// (write_json_atomic recreates the parent directory), so a just-deleted
@@ -2929,6 +2946,34 @@ impl EnginePool {
         tauri::async_runtime::spawn(async move {
             for delay_ms in [2000u64, 6000] {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
+                    }
+                }
+            }
+        });
+    }
+
+    /// [`Self::schedule_late_sweep`] for the failed-delete backstop, gated on
+    /// the adoption state at each attempt: a GUI adoption landing inside the
+    /// sweep window must not lose the session directory under its surviving
+    /// record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    fn schedule_late_sweep_unless_adopted(
+        dir: std::path::PathBuf,
+        label: &'static str,
+        store: SessionStore,
+        session_id: String,
+    ) {
+        tauri::async_runtime::spawn(async move {
+            for delay_ms in [2000u64, 6000] {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if !Self::sweep_may_remove_session_dir(&store, &session_id) {
+                    continue;
+                }
                 match std::fs::remove_dir_all(&dir) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -6373,6 +6418,70 @@ mod scheduled_model_tests {
 
         assert_eq!(observed_count.load(Ordering::SeqCst), 0);
         assert_eq!(error.to_string(), "sentinel delete failure");
+    }
+
+    /// The failed-delete backstop sweep must be adoption-aware: it arms on a
+    /// delete that FAILED (the record survives), so a GUI rename landing in
+    /// the sweep window must stop the directory removal — while an absent
+    /// record (delete converged) and a still-factory-titled record (never
+    /// adopted) both stay sweepable. `NEW_CHAT_TITLE` is the factory title
+    /// the adoption probe compares against.
+    #[test]
+    fn failed_delete_sweep_skips_adopted_records_but_keeps_converged_and_fresh_ones() {
+        use super::EnginePool;
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-sweep-guard-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new(
+                "wire-model".to_string(),
+                Some(crate::features::sessions::NEW_CHAT_TITLE.to_string()),
+                home.join("workspace"),
+            )
+            .expect("chat session")
+            .metadata
+            .id;
+
+        // Factory-titled record (never adopted) → sweepable.
+        assert!(EnginePool::sweep_may_remove_session_dir(
+            &store,
+            &session_id
+        ));
+
+        // Adopted (renamed out of the factory title) inside the window → keep.
+        store
+            .set_title(&session_id, "user renamed me".to_string())
+            .expect("adopting rename");
+        assert!(!EnginePool::sweep_may_remove_session_dir(
+            &store,
+            &session_id
+        ));
+
+        // Record deleted after all (the retried store delete converged) →
+        // the sweep still cleans the resurrected-orphan directory.
+        store.delete(&session_id).expect("record delete");
+        assert!(EnginePool::sweep_may_remove_session_dir(
+            &store,
+            &session_id
+        ));
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[tokio::test]

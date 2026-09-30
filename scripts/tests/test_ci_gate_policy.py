@@ -499,6 +499,25 @@ class CiGatePolicyTests(unittest.TestCase):
             "windows-rust-test AND macos-cli-check and required-gate passes "
             "on 'skipped'",
         )
+        # Round-28: the CLI's remaining build inputs are routed like its
+        # sources. .cargo/config.toml feeds EVERY CLI build (a resolver,
+        # target, or rustflags change compiles differently everywhere), and
+        # build.rs embeds the exe manifest into the Windows binary.
+        self.assertIn(
+            "- 'pinvou-cli/.cargo/**'",
+            cli_paths,
+            "cli_rust must route pinvou-cli/.cargo: config.toml changes what "
+            "every CLI leg compiles; without this entry such a PR skips "
+            "cli-test, cli-lint, windows-rust-test AND macos-cli-check on "
+            "'skipped'",
+        )
+        self.assertIn(
+            "- 'pinvou-cli/**/*.manifest'",
+            cli_paths,
+            "cli_rust must route the exe manifest: build.rs embeds it into "
+            "the Windows binary, and without this entry a manifest-only PR "
+            "runs no CLI leg at all",
+        )
         self.assertIn("- 'CodeWhale'", cli_paths)
         # The connector lock tables are compiled into the CLI with include_str!
         # from src-tauri/src/platform/connector_lock.rs, so editing or
@@ -798,6 +817,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # Substring asserts above cannot see an appended tail, so pin the
         # absence of the known bypasses explicitly.
         self.assertNotIn("-A clippy", cli_lint)
+        self.assertNotIn("-Aclippy", cli_lint)
         self.assertNotIn("--allow clippy", cli_lint)
         self.assertNotIn("--cap-lints", cli_lint)
         self.assertNotIn("RUSTFLAGS", cli_lint)
@@ -838,6 +858,33 @@ class CiGatePolicyTests(unittest.TestCase):
             "(success|skipped accepted so path-filtered skips do not "
             "false-fail)",
         )
+
+    def test_required_gate_accepts_only_success_or_skipped(self):
+        # Round-28: the `case "$result" in success|skipped) ;;` line is the
+        # ONE predicate deciding whether a failed leg blocks the gate — the
+        # membership assertions above only pin loop ENTRIES. Widening the
+        # pattern to a catch-all (`*) ;;` without failed=1, or adding
+        # `failure` to the accepted set) would accept every failed gate
+        # while every other test here stays green, so pin the exact
+        # accepted set and forbid a bare catch-all accept.
+        body = _without_yaml_comments(self.pr_workflow)
+        required_gate = body.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn(
+            "success|skipped) ;;",
+            required_gate,
+            "the accepted set must stay exactly success|skipped",
+        )
+        self.assertNotIn(
+            "*) ;;",
+            required_gate,
+            "a catch-all case arm would accept every failed gate result",
+        )
+        for soft in ("failure) ;;", "cancelled) ;;"):
+            self.assertNotIn(
+                soft,
+                required_gate,
+                f"{soft} in the accepted set would let a failed leg pass",
+            )
 
     def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
         # The workflow header states this policy in prose (no gate job
