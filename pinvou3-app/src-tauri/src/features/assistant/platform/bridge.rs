@@ -4251,7 +4251,7 @@ mod tests {
                 SCHEDULED_TASK_UPDATE_TOOL,
                 SCHEDULED_TASK_DELETE_TOOL,
             ],
-            "plain 默认只有跨会话发送与定时任务增改删的 Ask 规则"
+            "plain defaults to the cross-session messaging and scheduled-task write Ask rules"
         );
 
         // plain disables feishu → only the lark-cli deny (bare name + one .exe

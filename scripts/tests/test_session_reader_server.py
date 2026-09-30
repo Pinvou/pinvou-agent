@@ -922,14 +922,15 @@ class SendMessageTests(unittest.TestCase):
         self.assertEqual(record["from_title"], "源会话")
         self.assertEqual(record["text"], "跨会话交接")
         self.assertEqual(record["idempotency_key"], "k1")
-        # Cross-language contract: the file name is the sender-scoped sha256
-        # of "<from_session>|<key>" — the Rust watcher keys its done-marker on
-        # this stem, so the naming scheme must not drift.
+        # Cross-language contract: the file name is the sender+target-scoped
+        # sha256 of "<from_session>|<to_session>|<key>" — the Rust watcher
+        # keys its done-marker on this stem, so the naming scheme must not
+        # drift.
         import hashlib as _hashlib
 
         self.assertEqual(
             files[0].stem,
-            _hashlib.sha256(b"src0001|k1").hexdigest(),
+            _hashlib.sha256(b"src0001|tgt0001|k1").hexdigest(),
         )
 
     def test_same_idempotency_key_overwrites_one_spool_file(self):
@@ -937,6 +938,22 @@ class SendMessageTests(unittest.TestCase):
         second, _ = self._send(from_session="src0001", idempotency_key="k1")
         self.assertTrue(second["duplicate"])
         self.assertEqual(len(self._spooled()), 1)
+
+    def test_same_key_from_different_senders_gets_two_files(self):
+        _write_session(self.sessions, "src0002", [], title="第二源会话")
+        first, first_error = self._send(from_session="src0001", idempotency_key="shared")
+        second, second_error = self._send(from_session="src0002", idempotency_key="shared")
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertFalse(first["duplicate"])
+        self.assertFalse(second["duplicate"])
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_idempotency_key_without_from_session_is_rejected(self):
+        payload, error = self._send(idempotency_key="anon-key")
+        self.assertIsNone(payload)
+        self.assertIn("from_session", error)
+        self.assertEqual(len(self._spooled()), 0)
 
     def test_missing_key_uses_unique_file_names(self):
         self._send()

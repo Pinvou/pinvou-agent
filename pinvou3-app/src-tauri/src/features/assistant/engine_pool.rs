@@ -2982,35 +2982,46 @@ impl EnginePool {
         // persona card body once via take_pending_turn_injections (the
         // per-turn light anchor in send_reserved_user_message is not enough
         // on its own); a session whose first-ever turn is a delivered
-        // cross-session message must get the same treatment.
-        let mut content = content;
-        if let Some(body) = self
-            .store
-            .take_pending_turn_injections(session_id)
-            .persona_body()
-        {
-            content = format!("{body}\n\n---\n\n{content}");
+        // cross-session message must get the same treatment. The checkout is
+        // bound across submission and committed on success — dropping it
+        // uncommitted would restore the body and re-inject the full card on
+        // the next normal turn (same transactional pattern as
+        // app/commands/chat.rs).
+        let pending_injections = self.store.take_pending_turn_injections(session_id);
+        let mut engine_content = content.clone();
+        if let Some(body) = pending_injections.persona_body() {
+            engine_content = format!("{body}\n\n---\n\n{engine_content}");
         }
-        let display_message = user_display_message(content.clone());
+        // The transcript item keeps the delivered block text: the sender-card
+        // renderer requires the cross-session header at the very start.
+        let display_message = user_display_message(content);
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
         let expert_candidates = expert_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.available_role_lines(&content))
+            .map(|snapshot| snapshot.available_role_lines(&engine_content))
             .unwrap_or_default();
         let mode = self.store.mode_state(session_id).mode.to_app_mode();
-        self.send_reserved_user_message(
-            session_id,
-            content,
-            display_message,
-            mode,
-            false,
-            expert_snapshot,
-            expert_candidates,
-            reservation,
-        )
-        .await
+        match self
+            .send_reserved_user_message(
+                session_id,
+                engine_content,
+                display_message,
+                mode,
+                false,
+                expert_snapshot,
+                expert_candidates,
+                reservation,
+            )
+            .await
+        {
+            Ok(()) => {
+                pending_injections.commit();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Execute the initial turn for a pre-created scheduled session and wait
