@@ -48,10 +48,16 @@ export { removeAuxQuote } from './aux-quote.mjs';
  *   which serializes against the turn the accepted dispatch started — so
  *   the delete strictly follows the delivery and destroys it with the old
  *   transcript → the draft stays as recovery material.
- * - A SUCCESSFUL ack landing after the reset completed is unreachable: the
- *   backend send path holds the same turn gate, so a dispatch queued behind
- *   the delete finds the session gone and rejects (the gate's "no queued
- *   sender resurrects the session" property).
+ * - A SUCCESSFUL ack landing after the reset completed is unreachable for a
+ *   dispatch already queued on the turn gate: its under-gate store load
+ *   then finds the session gone and rejects (the gate's "no queued sender
+ *   resurrects the session" property). A dispatch stalled BEFORE the gate —
+ *   the reserve, title write and baseline load all run ungated — while the
+ *   entire reset completes can still submit into the fresh record the
+ *   create half published at the same derived path and succeed. That
+ *   residual is bounded and visible (the net rule below keeps the text in
+ *   the composer); closing it completely needs the registered backend
+ *   epoch/idempotency token.
  * - Reset rejects (delete half OR create half failed): the folded backend
  *   error cannot say which half ran, so the old transcript — and a delivery
  *   in it — MAY have survived. The controller deliberately keeps the draft

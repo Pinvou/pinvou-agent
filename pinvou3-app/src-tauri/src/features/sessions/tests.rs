@@ -5640,6 +5640,68 @@ fn create_aux_session_rejects_scheduled_parent() {
     );
 }
 
+/// Executing truth table for the alias-defeating `sched-` predicate
+/// (round-38 MAJOR-1): the case-insensitive prefix is load-bearing for four
+/// gates (send gates, list filter, retention candidacy, delete refusal), so
+/// reverting it to an exact `starts_with("sched-")` must turn this test
+/// red. The comment-stripped shape pins cannot do that — they bind call
+/// sites, not the predicate's own body, which is exactly the branch the
+/// mutation sweep found unpinned.
+#[test]
+fn sched_predicate_is_case_insensitive_and_rejects_non_prefixes() {
+    for id in [
+        "sched-1",
+        "SCHED-1",
+        "Sched-1",
+        "sChEd-abcdef",
+        "sched-日本語",
+    ] {
+        assert!(
+            super::validators::is_sched_session_id(id),
+            "{id} must classify as a scheduled session id: the prefix is matched case-insensitively"
+        );
+    }
+    for id in [
+        "sched",
+        "schedX",
+        "xsched-1",
+        "aux-1",
+        "session-1",
+        "",
+        // Shorter than the prefix with the boundary cut mid-character: the
+        // boundary-safe `get(..6)` yields None rather than panicking or
+        // partially matching.
+        "sched日本語",
+    ] {
+        assert!(
+            !super::validators::is_sched_session_id(id),
+            "{id} must NOT classify as a scheduled session id"
+        );
+    }
+}
+
+/// The case-variant leg of the delete-refusal gate (round-36 minor 2,
+/// executing pin per round-38 MAJOR-1): a `SCHED-` id must be refused as
+/// the automation's record even when no such session exists — the refusal
+/// precedes the ordinary NotFound, so a hand-copied alias file on a
+/// case-insensitive filesystem is never deletable out-of-band and a
+/// nonexistent case-variant id does not read as an ordinary miss.
+#[test]
+fn delete_refuses_case_variant_sched_ids_without_a_record() {
+    let (store, _g) = isolated_store();
+    for id in ["SCHED-ghost", "Sched-ghost", "sCHed-ghost"] {
+        let error = store
+            .delete(id)
+            .expect_err("a case-variant sched- id must be refused, not treated as a miss");
+        assert!(
+            error
+                .to_string()
+                .contains("Scheduled-run sessions are deleted through their automation"),
+            "the refusal must be the automation-ownership error, not NotFound: {error:#}"
+        );
+    }
+}
+
 /// get-or-create must fail closed on a load error that is not NotFound: a
 /// transient IO failure must never be conflated with "the record is gone" —
 /// with a derived id the creation leg would overwrite the record at the same
