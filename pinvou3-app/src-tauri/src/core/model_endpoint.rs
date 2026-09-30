@@ -1095,6 +1095,12 @@ impl StatusWithBodyError {
             body_snippet,
         }
     }
+
+    /// The HTTP status, for callers that classify errors without the body
+    /// (the voice lane's frontend-diagnosis redaction).
+    pub(crate) fn status(&self) -> reqwest::StatusCode {
+        self.status
+    }
 }
 
 impl std::fmt::Display for StatusWithBodyError {

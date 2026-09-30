@@ -752,12 +752,18 @@ fn strip_leading_thinking_block(text: &str) -> &str {
 }
 
 /// Frontend-facing error summary: a reqwest error's Display carries the full
-/// URL (possibly an intranet address or embedded credentials), and passing it
-/// through rawMessage would land it in frontend diagnostics persisted to
-/// localStorage. Keep only the error class and HTTP status here; the full
+/// URL (possibly an intranet address or embedded credentials), and a
+/// status-with-body error carries the endpoint's response body; passing
+/// either through rawMessage would land it in frontend diagnostics persisted
+/// to localStorage. Keep only the error class and HTTP status here; the full
 /// error chain goes to the local log only.
 fn summarize_voice_postprocess_error(error: &anyhow::Error) -> String {
     for cause in error.chain() {
+        if let Some(status_error) =
+            cause.downcast_ref::<crate::core::model_endpoint::StatusWithBodyError>()
+        {
+            return format!("model endpoint http {}", status_error.status());
+        }
         let Some(request_error) = cause.downcast_ref::<reqwest::Error>() else {
             continue;
         };
@@ -1324,6 +1330,37 @@ sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());
 #[cfg(test)]
 mod voice_postprocess_tests {
     use super::*;
+
+    #[test]
+    fn summarize_reduces_status_with_body_error_to_class_and_status() {
+        // error_for_status_with_body errors carry the endpoint's response
+        // body; the frontend-facing summary must keep only the class and
+        // status (same contract as the reqwest-error branch below), because
+        // the raw string is persisted to localStorage diagnostics.
+        // Mirrors the production chain exactly: the status error reaches
+        // this summarizer unwrapped, so the fallthrough would surface the
+        // endpoint body verbatim.
+        let error = anyhow::Error::new(crate::core::model_endpoint::StatusWithBodyError::new(
+            "voice postprocess chat/completions status",
+            reqwest::StatusCode::BAD_REQUEST,
+            Some("invalid temperature: only 1 is allowed for this model".to_string()),
+        ));
+        let summary = summarize_voice_postprocess_error(&error);
+        assert_eq!(summary, "model endpoint http 400 Bad Request");
+        assert!(
+            !summary.contains("temperature"),
+            "endpoint body must not reach the frontend-facing string: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_passes_non_http_errors_through() {
+        let error = anyhow::Error::msg("model not configured");
+        assert_eq!(
+            summarize_voice_postprocess_error(&error),
+            "model not configured"
+        );
+    }
 
     #[test]
     fn voice_postprocess_body_mirrors_engine_wire_no_temperature() {
