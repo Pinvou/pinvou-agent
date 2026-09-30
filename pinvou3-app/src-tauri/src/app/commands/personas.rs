@@ -362,12 +362,25 @@ mod tests {
             Some(summary.id.as_str())
         );
 
+        // A torn or hand-broken external write must not read as a deletion
+        // either: the temporarily unparsable card keeps its cached entry and
+        // stays equipped until a complete enumeration confirms the file is
+        // really gone.
+        let card_path =
+            crate::platform::paths::user_personas_dir().join(format!("{}.json", summary.id));
+        std::fs::write(&card_path, b"{\"id\": \"torn\", \"nam").expect("corrupt card file");
+        assert!(
+            clear_persona_deleted_elsewhere(&store, session_id).is_empty(),
+            "a temporarily unparsable card must stay equipped"
+        );
+        assert_eq!(
+            store.active_persona_id(session_id).as_deref(),
+            Some(summary.id.as_str())
+        );
+
         // Another process removes the card file; nothing in this process ran
         // the in-app delete.
-        std::fs::remove_file(
-            crate::platform::paths::user_personas_dir().join(format!("{}.json", summary.id)),
-        )
-        .expect("remove card file");
+        std::fs::remove_file(&card_path).expect("remove card file");
 
         assert_eq!(
             clear_persona_deleted_elsewhere(&store, session_id),

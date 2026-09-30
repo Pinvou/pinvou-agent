@@ -101,13 +101,23 @@ static USER_STAMP: Mutex<Option<UserDirStamp>> = Mutex::new(None);
 /// path plus every `*.json` entry's name, size and mtime. A card created or
 /// deleted by another process always changes the name set; an in-place
 /// rewrite is caught by size or mtime. `entries: None` marks a directory
-/// that could not be read at all, which is distinct from "readable and
+/// that could not be enumerated, which is distinct from "readable and
 /// empty": a transient fault must never be mistaken for "every card
 /// deleted".
 #[derive(Debug, PartialEq, Eq)]
 struct UserDirStamp {
     dir: PathBuf,
     entries: Option<Vec<(std::ffi::OsString, u64, Option<SystemTime>)>>,
+}
+
+/// A missing card directory reads as "no cards" only while its parent is
+/// still there: deleting the personas directory itself is the deletion
+/// signal this app can act on. A missing parent — and with it the whole
+/// namespace below, the way an unmounted or not-yet-mounted volume
+/// presents — cannot be told apart from an unavailable volume, so it is a
+/// fault, not a deletion.
+fn personas_dir_parent_intact(dir: &std::path::Path) -> bool {
+    dir.parent().is_some_and(|parent| parent.is_dir())
 }
 
 fn user_dir_stamp() -> UserDirStamp {
@@ -125,10 +135,17 @@ fn user_dir_stamp() -> UserDirStamp {
                 )
             })
             .collect(),
-        // A missing directory legitimately means "no cards": the directory
-        // is gone and its cards are gone with it. Any other read failure is
-        // a transient fault (permissions, IO error), not a pool change.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        // A missing directory next to an intact parent legitimately means
+        // "no cards": the directory is gone and its cards are gone with it.
+        // Any other outcome — a read failure, or a missing parent (an
+        // unmounted volume) — is a transient fault, not a pool change.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if personas_dir_parent_intact(&dir) {
+                Vec::new()
+            } else {
+                return UserDirStamp { dir, entries: None };
+            }
+        }
         Err(_) => return UserDirStamp { dir, entries: None },
     };
     entries.sort();
@@ -185,9 +202,14 @@ fn user_lock() -> &'static RwLock<Vec<PersonaCard>> {
         // Stamp before loading: a change that lands in between leaves the
         // stamp stale, so the next reader reloads instead of missing it.
         let stamp = user_dir_stamp();
-        let cards = load_user_cards();
-        set_user_stamp(stamp);
-        RwLock::new(cards)
+        let load = load_user_cards();
+        // A fault on the very first load has no pool to keep, but it must
+        // not freeze its empty result either: leaving the stamp unset makes
+        // every later sync retry the enumeration instead.
+        if load.complete {
+            set_user_stamp(stamp);
+        }
+        RwLock::new(load.cards)
     })
 }
 
@@ -195,36 +217,92 @@ fn user_operations() -> &'static RwLock<()> {
     USER_OPERATIONS.get_or_init(|| RwLock::new(()))
 }
 
+/// One enumeration of the user-card directory.
+struct UserCardsLoad {
+    cards: Vec<PersonaCard>,
+    /// False when the directory could not be enumerated (read fault, or the
+    /// path is missing together with its parent — an unavailable volume
+    /// presents exactly like that). A caller that publishes the pool must
+    /// then treat `cards` as "unknown", never as "empty".
+    complete: bool,
+    /// Ids the directory lists but that could not be read or parsed this
+    /// pass. Publishers keep the current pool's card for these, so a torn
+    /// or corrupt file can never masquerade as a deletion; the card leaves
+    /// the pool only when a complete enumeration no longer lists it.
+    degraded: Vec<String>,
+}
+
 /// 扫 `~/.pinvou3/user/personas/<id>.json`,解析成卡(source 强制 "user")。
-fn load_user_cards() -> Vec<PersonaCard> {
+/// 单张卡读不出或解析失败只把该卡记入 degraded,由调用方沿用旧缓存;
+/// 整个目录枚举失败才返回 incomplete。
+fn load_user_cards() -> UserCardsLoad {
     let dir = crate::platform::paths::user_personas_dir();
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
+    let mut load = UserCardsLoad {
+        cards: Vec::new(),
+        complete: true,
+        degraded: Vec::new(),
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            load.complete = personas_dir_parent_intact(&dir);
+            return load;
+        }
+        Err(_) => {
+            load.complete = false;
+            return load;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
+        let degraded_id = || {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
         match std::fs::read_to_string(&path) {
             Ok(txt) => match serde_json::from_str::<PersonaCard>(&txt) {
                 Ok(mut c) => {
                     c.source = "user".to_string();
-                    out.push(c);
+                    load.cards.push(c);
                 }
-                Err(e) => eprintln!("[pinvou3-app] 用户卡 {} 解析失败: {e}", path.display()),
+                Err(e) => {
+                    eprintln!(
+                        "[pinvou3-app] 用户卡 {} 解析失败,本轮沿用缓存: {e}",
+                        path.display()
+                    );
+                    load.degraded.push(degraded_id());
+                }
             },
-            Err(e) => eprintln!("[pinvou3-app] 读用户卡 {} 失败: {e}", path.display()),
+            Err(e) => {
+                eprintln!(
+                    "[pinvou3-app] 读用户卡 {} 失败,本轮沿用缓存: {e}",
+                    path.display()
+                );
+                load.degraded.push(degraded_id());
+            }
         }
     }
-    out
+    load
 }
 
 /// 重新从磁盘加载用户卡（create/update/delete 后调，让 list/get 立即看到）。
 pub fn reload_user() {
     let stamp = user_dir_stamp();
-    let cards = load_user_cards();
+    let load = load_user_cards();
+    if !load.complete {
+        // The directory could not be enumerated. Publishing the empty
+        // result would read as "every card deleted" and permanently unequip
+        // the card in every session holding it, so keep both the
+        // last-known-good pool and the published stamp: the next reader
+        // retries this reload instead.
+        return;
+    }
+    let mut cards = load.cards;
     // The card pool is replaced wholesale with no partial writes; a panic while
     // holding the lock must not take down sessions: keep the repo-wide lock
     // poisoning recovery convention. The stamp is published under the same
@@ -233,6 +311,18 @@ pub fn reload_user() {
     let mut pool = user_lock()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Degraded ids keep their entry from the current pool. Merging against
+    // the pool as it is now (not against this pass's snapshot) also
+    // converges when a concurrent reload published fresher content between
+    // the enumeration and this lock.
+    for degraded in &load.degraded {
+        if cards.iter().any(|card| &card.id == degraded) {
+            continue;
+        }
+        if let Some(cached) = pool.iter().find(|card| &card.id == degraded) {
+            cards.push(cached.clone());
+        }
+    }
     *pool = cards;
     set_user_stamp(stamp);
     drop(pool);
@@ -835,6 +925,197 @@ mod tests {
         assert!(
             get(&card.id).is_none(),
             "a readable empty directory must reload as empty"
+        );
+
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        reload_user();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn corrupt_card_keeps_last_known_good_until_enumeration_confirms() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-persona-corrupt-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        reload_user();
+
+        let dir = crate::platform::paths::user_personas_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = PersonaCard {
+            id: "user-corrupt-1".to_string(),
+            dept: "specialized".to_string(),
+            name: "Corrupt".to_string(),
+            description: String::new(),
+            emoji: "C".to_string(),
+            color: "#000000".to_string(),
+            body: "body".to_string(),
+            source: "user".to_string(),
+            conversational_only: false,
+        };
+        let path = dir.join("user-corrupt-1.json");
+        std::fs::write(&path, serde_json::to_string(&card).unwrap()).unwrap();
+        assert!(get(&card.id).is_some(), "card must load before the fault");
+
+        // A torn or hand-broken external write (raw std::fs::write, not the
+        // app's atomic publisher) must not read as a deletion: the cached
+        // card stays in the pool until a complete enumeration no longer
+        // lists the id.
+        std::fs::write(&path, b"{\"id\": \"user-corrupt-1\", \"nam").unwrap();
+        assert!(
+            get(&card.id).is_some(),
+            "a corrupt card file must keep its last-known-good entry"
+        );
+        assert!(all_summaries().iter().any(|s| s.id == card.id));
+
+        // Once the file is valid again, the fresh content becomes visible.
+        let renamed = PersonaCard {
+            name: "Corrupt Renamed".to_string(),
+            ..card.clone()
+        };
+        std::fs::write(&path, serde_json::to_string(&renamed).unwrap()).unwrap();
+        assert_eq!(
+            get(&card.id).as_ref().map(|c| c.name.as_str()),
+            Some("Corrupt Renamed"),
+            "a repaired card must reload with its fresh content"
+        );
+
+        // And only a confirmed absence (file gone from a complete
+        // enumeration) removes the card.
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            get(&card.id).is_none(),
+            "a card whose file is gone must leave the pool"
+        );
+
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        reload_user();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn reload_user_keeps_the_pool_when_the_dir_cannot_be_enumerated() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-persona-reload-fault-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        reload_user();
+
+        let dir = crate::platform::paths::user_personas_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = PersonaCard {
+            id: "user-reload-fault-1".to_string(),
+            dept: "specialized".to_string(),
+            name: "ReloadFault".to_string(),
+            description: String::new(),
+            emoji: "R".to_string(),
+            color: "#000000".to_string(),
+            body: "body".to_string(),
+            source: "user".to_string(),
+            conversational_only: false,
+        };
+        let path = dir.join("user-reload-fault-1.json");
+        std::fs::write(&path, serde_json::to_string(&card).unwrap()).unwrap();
+        assert!(get(&card.id).is_some(), "card must load before the fault");
+
+        // reload_user() is a published API: an external caller must be able
+        // to invoke it while the directory is unreadable without wiping the
+        // pool the running app still serves.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        reload_user();
+        assert!(
+            get(&card.id).is_some(),
+            "reload_user must not publish an enumeration failure"
+        );
+
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        reload_user();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn missing_personas_dir_only_empties_when_its_parent_survives() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-persona-unmounted-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        reload_user();
+
+        let dir = crate::platform::paths::user_personas_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = PersonaCard {
+            id: "user-unmounted-1".to_string(),
+            dept: "specialized".to_string(),
+            name: "Unmounted".to_string(),
+            description: String::new(),
+            emoji: "U".to_string(),
+            color: "#000000".to_string(),
+            body: "body".to_string(),
+            source: "user".to_string(),
+            conversational_only: false,
+        };
+        let path = dir.join("user-unmounted-1.json");
+        std::fs::write(&path, serde_json::to_string(&card).unwrap()).unwrap();
+        assert!(get(&card.id).is_some(), "card must load before the fault");
+
+        // The whole home subtree gone — how an unmounted or not-yet-mounted
+        // volume presents (NotFound with the parent missing too) — is a
+        // fault, not a deletion.
+        std::fs::remove_dir_all(&tmp).unwrap();
+        assert!(
+            get(&card.id).is_some(),
+            "a missing parent directory must keep the last-known-good pool"
+        );
+
+        // Parent restored but the personas directory still absent: now the
+        // deletion is confirmed by a complete enumeration.
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        assert!(
+            get(&card.id).is_none(),
+            "a missing directory next to an intact parent is a deletion"
         );
 
         match prev {
