@@ -412,8 +412,9 @@ pub(crate) mod turn_tool_restrict {
         /// The restriction to apply on the engine that owns `engine_session_id`.
         ///
         /// The `aux-` test runs again against the engine's own id, so a token
-        /// minted with an unrelated (or empty — the headless harness uses `""`)
-        /// session id can never hand an aux session a full-tool turn.
+        /// minted with an unrelated (or empty) session id can never hand an
+        /// aux session a full-tool turn — the headless wrapper mints with the
+        /// engine's own id through [`forward_forced_turn_restrict`].
         pub(crate) fn restricts_tools_for(self, engine_session_id: &str) -> bool {
             self.restricts_tools()
                 || crate::features::sessions::is_aux_session_id(engine_session_id)
