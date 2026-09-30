@@ -665,7 +665,8 @@ dictEn.uiBuiltinPlugins = {
   sectionTitle:'Built-in Plugins',
   kindLabel:'Type',
   pageIntro:'Plugins shipped with the app and updated together with it. This page only shows what they can do and what data they access — they cannot be uninstalled or turned off here.',
-  readonlyBadge:'Built-in · Always on',
+  readonlyBadge:'Built-in · Always on', readonlyModeBadge:'Built-in · Mode-controlled',
+
 
   toolsLabel:'Tools',
   securityLabel:'Security level',
