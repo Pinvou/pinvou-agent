@@ -1081,7 +1081,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (sessionDropDepthRef.current === 0) setSessionDropActive(false);
       };
       const handleComposerSessionDragOver = (e) => {
-        if (!isSessionRowDrag(e)) return;
+        // Gate mirrors dragEnter (round-8 minor 3): with the feature off the
+        // drop can never land, so offering the droppable cursor only to
+        // no-op the drop was a false affordance.
+        if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
         e.preventDefault(); // allow the drop
       };
       const handleComposerSessionDrop = (e) => {
@@ -1091,6 +1094,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         setSessionDropActive(false);
         const sessionId = e.dataTransfer.getData(PROJECT_SESSION_DRAG_TYPE);
         if (!sessionId || sessionId === activeSessionId) return;
+        // Codex/ACP sidebar rows put their session id on the same drag type
+        // but never appear in bs.sessions (round-8 M4): a chip built from one
+        // renders a dead "Session deleted" card that read_session can never
+        // resolve. Only ids the @ panel could produce are droppable.
+        if (!knownSessionMentionIds.has(sessionId)) return;
         if (sessionRefs.some(ref => ref.sessionId === sessionId)) return;
         const title = ((((bs && bs.sessions) || []).find(s => s.id === sessionId)) || {}).title || '';
         handleSelectMentionCandidate({ sessionId, title });
@@ -1872,7 +1880,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           if (meta && meta.pinvouPayloadText && mentionSplit.refs.length) {
             meta = {
               ...meta,
-              pinvouPayloadText: buildSessionMentionBlock(mentionSplit.refs) + meta.pinvouPayloadText,
+              // dedupe + cap: a hand-forged block in history can carry far more
+              // refs than the composer allows into a live chip strip.
+              pinvouPayloadText: buildSessionMentionBlock(dedupeSessionRefs(mentionSplit.refs)) + meta.pinvouPayloadText,
             };
           }
         }
@@ -2453,20 +2463,39 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // append-style prefill (newline separator, re-review #4) that does not
         // interrupt typing.
         setInputText('');
-        // Scope guard for the post-await chip clear below: switching sessions
-        // mid-send must not wipe the target scope's freshly picked chips.
+        // Refs-only double-send race (round-8 M5): canSend stays true through
+        // the send await via hasSessionRefs, so a second Enter inside the
+        // window re-dispatched the same refs as a second, body-empty message.
+        // Clear the chips at dispatch, not post-await; non-acceptance puts the
+        // snapshot back (merged with any chips picked meanwhile). This also
+        // fixes the unmount-mid-send resurrect (round-8 minor 2): the scope
+        // cleanup stashes the post-dispatch (empty) refs instead of the
+        // pre-send ones whose block already went out.
+        const refsAtSend = sessionMentionEnabled ? sessionRefs : [];
+        if (refsAtSend.length) setSessionRefs([]);
+        // Scope guard for the chip restore below: switching sessions mid-send
+        // must not wipe the target scope's freshly picked chips.
         const draftKeyAtSend = mentionDraftKeyRef.current;
+        const restoreRefsOnFailure = () => {
+          if (mentionDraftKeyRef.current === draftKeyAtSend) {
+            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          } else {
+            stashSessionMentionDraft(draftKeyAtSend, refsAtSend);
+          }
+        };
         try {
           const accepted = await sendChatMessage(outgoingText);
           // Clear chips once the send is accepted, even when the feature gate
           // suppressed the block (stale chips from before the toggle must not linger).
           if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
           else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
+          else restoreRefsOnFailure();
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
           }
         } catch (error) {
+          restoreRefsOnFailure();
           if (inputTextRef.current === '') setInputText(text);
           else if (text) bridge.chat.prefillComposer(text, true);
           // Swallow here: the bridge already surfaced the failure (notice +
@@ -2688,12 +2717,23 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setInputText('');
           // Same mention semantics as handleSend: picked refs serialize into
           // the prepended injection block (suppressed when the feature is off)
-          // — a voice send must not drop refs the user explicitly picked.
-          const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+          // — a voice send must not drop refs the user explicitly picked. The
+          // chips clear at dispatch and go back on non-acceptance, mirroring
+          // handleSend's double-send/resurrect protections.
+          const refsAtSend = sessionMentionEnabled ? sessionRefs : [];
+          if (refsAtSend.length) setSessionRefs([]);
+          const mentionBlock = refsAtSend.length ? buildSessionMentionBlock(refsAtSend) : '';
           const outgoingText = mentionBlock ? mentionBlock + constrained.text : constrained.text;
           // Scope guard: a session switch during the await moves the draft key;
           // the new scope's chips must not be wiped by this send's cleanup.
           const draftKeyAtSend = mentionDraftKeyRef.current;
+          const restoreRefsOnVoiceFailure = () => {
+            if (mentionDraftKeyRef.current === draftKeyAtSend) {
+              setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+            } else {
+              stashSessionMentionDraft(draftKeyAtSend, refsAtSend);
+            }
+          };
           try {
             const result = await sendChatMessage(outgoingText, { ...context, draftOwner: owner });
             if (result === true) {
@@ -2704,6 +2744,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               // user typed during the await is newer input and stays.
               personalWorkbenchTemplateIdRef.current = null;
               setPersonalWorkbenchTemplateId(null);
+              // The voice send consumed the chips at dispatch; the scope guard
+              // keeps a mid-send switch from wiping the target scope's chips.
+              if (mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
+              else stashSessionMentionDraft(draftKeyAtSend, []);
+            } else {
+              restoreRefsOnVoiceFailure();
             }
             if (result === false && bridge.chat.restoreTaskDraft) {
               bridge.chat.restoreTaskDraft(constrained.text, owner);
@@ -2712,6 +2758,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // is back, not sent); ordinary callers map it through to false.
             return result === 'restored' ? false : result;
           } catch (error) {
+            restoreRefsOnVoiceFailure();
             if (bridge.chat.restoreTaskDraft) bridge.chat.restoreTaskDraft(constrained.text, owner);
             console.warn('[voice-input] task send failed after writeback', error);
             return false;
@@ -3264,7 +3311,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onRemove={handleRemoveMentionRef}
               copy={t.uiSessionMention}
               disabled={!sessionMentionEnabled}
-              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
+              disabledNotice={t.uiSessionMention.disabledNotice}
             />
             {imageInputWarning && (
               <div data-testid="image-capability-warning"
@@ -3978,7 +4025,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               onOpenSession={onOpenSessionMention}
               copy={t.uiSessionMention}
               disabled={sessionMentionDisabled}
-              disabledNotice={t.uiBuiltinFeatures.disabledNotice}
+              disabledNotice={t.uiSessionMention.disabledNotice}
             />
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>

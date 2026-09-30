@@ -46,23 +46,9 @@ function pinvouSharedtauriChat() {
 function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDraft(value); }
 
   // Composer restores (steer-failure, session-switch mid-send, materialize
-  // abort) hand text back to the user: the session-mention injection block is
-  // a machine contract and the chips were consumed by the send attempt, so
-  // the block is stripped on restore instead of leaking raw JSON into the
-  // input. The contract parser is shared via the window global published by
-  // features/chat/session-mention.js (classic-script bridges do not import
-  // features back — same pattern as the auto-title strip in bridge.js).
-  function stripMentionBlockForComposerRestore(text) {
-    const raw = String(text || "");
-    const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
-    if (!splitMention) return raw;
-    const split = splitMention(raw);
-    // Gate on `matched`, not refs.length: a structurally valid block that
-    // parses to zero refs is still a block (the Rust titler and the bubble
-    // strip both treat it as one) — the restores must not hand the raw JSON
-    // contract back for it.
-    return split.matched ? split.text.trim() : raw;
-  }
+  // abort) strip the injection block on restore; one shared implementation in
+  // bridge-shared-helpers.js now serves both platform lanes (round-8 minor 10).
+  function stripMentionBlockForComposerRestore(text) { return pinvouSharedtauriChat().stripMentionBlockForComposerRestore(text); }
 
   // Single observable, session-scoped path for restoring dropped/failed steer
   // text (self-review P0 + re-review #1) and send text abandoned by a session
@@ -176,6 +162,30 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     }
     owner.restored = true;
     return true;
+  }
+
+  // Shared tail of the steer-loss branches (review round-8 M1): attempt the
+  // session-scoped restore, then emit the notice variant that tells the
+  // truth about what happened. restoreSteerText returns false for a
+  // refs-only message (it strips to "" — nothing goes back to the input), so
+  // the generic "your text was restored to the input" would lie; each call
+  // site passes the refs-only variant that matches its delivery semantics:
+  //   steerFailedQueued       — the chip is kept as a degraded plain entry
+  //                             (delivery proven not to have happened);
+  //   steerFailedUnconfirmed  — the engine copy's fate is unproven
+  //                             (timeout / not_pending / unreachable): the
+  //                             message is NOT re-queued, a late commit
+  //                             still renders through the withdrawn
+  //                             registration;
+  //   steerFailedLost         — non-delivery is proven but nothing is left
+  //                             to keep (the chip was consumed by a zap/×).
+  function restoreSteerWithNotice(sid, text, refsOnlyKey) {
+    const restored = restoreSteerText(sid, text);
+    runSyncOnSession(sid, function () {
+      addSystemItem("⚠️ " + bt(restored ? "steerFailed" : refsOnlyKey));
+    });
+    notify();
+    return restored;
   }
 
   // Per-session in-flight interrupt flag: while an interrupt is in flight,
@@ -726,24 +736,27 @@ function pinvouSharedtauriChatN31666() {
       });
       notify();
     }
+    // Navigation interrupted the send: the prepared attachments are released
+    // and the text goes back to the session it was typed in (buffer draft),
+    // never into the session now on screen — "restored" keeps the caller
+    // from prefilling it there (#406). A refs-only message restores nothing:
+    // resolve false so the caller's non-dispatch recovery keeps its chips
+    // armed (round-8 M1).
+    function abandonToOwnSession() {
+      abandonPreparedAttachments();
+      return restoreSteerText(sid, text) ? "restored" : false;
+    }
     try {
       await adoptManagedAttachments(readyAttachments, sid);
     } catch (error) {
       if (state.activeSessionId !== sid) {
-        abandonPreparedAttachments();
-        // The user navigated away during the await: the text goes back to the
-        // session it was typed in (buffer draft), never into the session now
-        // on screen — "restored" keeps the caller from prefilling it there.
-        restoreSteerText(sid, text);
-        return "restored";
+        return abandonToOwnSession();
       }
       addSystemItem(bt("deviceUploadFailed") + String(error && error.message ? error.message : error));
       return false;
     }
     if (state.activeSessionId !== sid) {
-      abandonPreparedAttachments();
-      restoreSteerText(sid, text);
-      return "restored";
+      return abandonToOwnSession();
     }
     const activeTurnBuffer = getBuffer(sid);
     // 展示文本：把附件 chip 名附在用户消息末尾
@@ -889,9 +902,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
         !(await reconcileRemoteTurn(sid))) {
       if (state.activeSessionId !== sid) {
-        abandonPreparedAttachments();
-        restoreSteerText(sid, text);
-        return "restored";
+        return abandonToOwnSession();
       }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
@@ -900,9 +911,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
       return false;
     }
     if (state.activeSessionId !== sid) {
-      abandonPreparedAttachments();
-      restoreSteerText(sid, text);
-      return "restored";
+      return abandonToOwnSession();
     }
     if (isBusyFor(sid) || state.queued.length > 0) {
       const racedQueuePreparation = consumeUiTurnState();
@@ -991,6 +1000,28 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
     delete item.zapGate;
   }
 
+  // Tail of detachQueuedForMutation's dropped-terminal branch (round-8 M1):
+  // a dropped terminal racing an uncertain command response prevents loss,
+  // but it does not turn an edit into a silent resend — the original text is
+  // handed back explicitly and the user can retry the change. A refs-only
+  // message has nothing to hand back; the dropped terminal proves
+  // non-delivery, so the chip returns to its slot as a degraded plain entry
+  // (flushQueued re-sends it) with the queued-variant notice instead of
+  // being silently lost. Returns null (mutation abandoned).
+  function settleDroppedTerminalForMutation(sid, item, index, withdrawnText) {
+    const restoredText = restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
+    if (!restoredText) {
+      makeQueuedItemLocal(item);
+      const currentQueue = steeredQueueFor(sid);
+      if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
+    }
+    runSyncOnSession(sid, function () {
+      addSystemItem("⚠️ " + bt(restoredText ? "steerFailed" : "steerFailedQueued"));
+    });
+    notify();
+    return null;
+  }
+
   // Detach a queued item only after its engine-side copy is known to be safe
   // to mutate. Plain local items are immediate. A steered item requires an
   // explicit `retired` outcome; uncertain outcomes keep the old content under
@@ -1044,11 +1075,10 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
         makeQueuedItemLocal(item);
         return { item, index };
       } else if (settled && !settled.ok && settled.timedOut) {
-        runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + bt("steerFailed"));
-        });
-        restoreSteerText(sid, item.text);
-        notify();
+        // Delivery state unproven: the detached chip stays dropped (never
+        // degraded into an auto-resend); a refs-only message restores
+        // nothing and the notice reports the unconfirmed variant.
+        restoreSteerWithNotice(sid, item.text, "steerFailedUnconfirmed");
         return null;
       } else {
         // A legacy successful steer without an engine id cannot be withdrawn
@@ -1072,13 +1102,7 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
       // A dropped terminal racing an uncertain command response prevents
       // loss, but it does not turn an edit into a silent resend. Hand the
       // original user text back explicitly; the user can retry the change.
-      const withdrawnText = takeWithdrawn(sid, item.steerId);
-      runSyncOnSession(sid, function () {
-        addSystemItem("⚠️ " + bt("steerFailed"));
-      });
-      restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
-      notify();
-      return null;
+      return settleDroppedTerminalForMutation(sid, item, index, takeWithdrawn(sid, item.steerId));
     }
     if (terminal === "committed") return null;
     if (outcome !== "retired") {
@@ -1443,13 +1467,12 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       // text (same takeover guard as onSteerFailure).
       if (!q.includes(item)) return;
       if ([WITHDRAW_TIMEOUT, WITHDRAW_ERR, "not_pending"].includes(outcome)) {
+        // Removal only — the withdrawal state is unproven, so the chip must
+        // not degrade into an auto-resend; a refs-only message restores
+        // nothing, and restoreSteerWithNotice then emits the unconfirmed
+        // variant instead of claiming a restoration (round-8 M1).
         q.splice(q.indexOf(item), 1);
-        notify();
-        runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + bt("steerFailed"));
-        });
-        restoreSteerText(sid, item.text);
-        notify();
+        restoreSteerWithNotice(sid, item.text, "steerFailedUnconfirmed");
         return;
       }
       item.steered = false;
@@ -1475,13 +1498,11 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
   const outcomeReconcileWatchdog = createSteerWatchdog(function (sid, steerId) {
     const text = takeWithdrawn(sid, steerId);
     if (text === undefined) return; // already reconciled (a settle consumed the registration)
-    runSyncOnSession(sid, function () {
-      addSystemItem("⚠️ " + bt("steerFailed"));
-    });
     // Session-scoped restore (draftEpoch bump for the owning session when
-    // active) instead of a global prefill that overwrites other restores.
-    restoreSteerText(sid, text);
-    notify();
+    // active) instead of a global prefill that overwrites other restores;
+    // the notice routes on the restore verdict — a refs-only message
+    // restores nothing and reports the unconfirmed variant (round-8 M1).
+    restoreSteerWithNotice(sid, text, "steerFailedUnconfirmed");
   });
   function clearOutcomeReconcileWatchdog(sid, steerId) {
     outcomeReconcileWatchdog.clear(sid, steerId);
@@ -1755,12 +1776,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
         if (zapReconciling) {
           // Same recovery as the reconcile watchdog expiry: the dropped
           // event just made the expiry unnecessary by proving
-          // non-delivery.
-          runSyncOnSession(sid, function () {
-            addSystemItem("⚠️ " + bt("steerFailed"));
-          });
-          restoreSteerText(sid, withdrawnText);
-          notify();
+          // non-delivery. The chip is already gone, so a refs-only message
+          // has nothing left to keep — the notice names that honestly
+          // instead of claiming a restoration (round-8 M1).
+          restoreSteerWithNotice(sid, withdrawnText, "steerFailedLost");
         }
         return;
       }
@@ -2128,13 +2147,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       // watchdog would wait a full window for. Settle now with the same
       // recovery semantics as the watchdog expiry and settleSteerDropped's
       // zap-reconciling branch (failure notice + session-scoped restore);
-      // the chip itself was already removed by the zap.
+      // the chip itself was already removed by the zap, so a refs-only
+      // message has nothing left to keep — the notice says so (round-8 M1).
       const withdrawnText = takeWithdrawn(sid, item.steerId);
-      runSyncOnSession(sid, function () {
-        addSystemItem("⚠️ " + bt("steerFailed"));
-      });
-      restoreSteerText(sid, withdrawnText === undefined ? item.text : withdrawnText);
-      notify();
+      restoreSteerWithNotice(sid, withdrawnText === undefined ? item.text : withdrawnText, "steerFailedLost");
       return;
     }
     armOutcomeReconcileWatchdog(sid, item);
@@ -2208,11 +2224,11 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
         const outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
         skipResend = withdrawOutcomeForbidsResend(outcome);
       } else if (settled && !settled.ok && settled.timedOut) {
-        runSyncOnSession(sid, function () {
-          addSystemItem("⚠️ " + bt("steerFailed"));
-        });
-        restoreSteerText(sid, item.text);
-        notify();
+        // Transport timeout: delivery state unproven — never blindly send;
+        // restore the text (steer()'s late-success compensating withdrawal
+        // covers the registered-late case). A refs-only message restores
+        // nothing and the notice reports the unconfirmed variant.
+        restoreSteerWithNotice(sid, item.text, "steerFailedUnconfirmed");
         return true;
       }
       // settled.ok && !settled.steerId (legacy backend, no engine-side
@@ -2354,6 +2370,7 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       steer,
       settleSteerCommitted,
       settleSteerDropped,
+      onSteerFailure,
       captureSteerPositions,
       purgeSteerState,
     };
