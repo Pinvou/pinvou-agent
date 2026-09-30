@@ -1331,6 +1331,15 @@ where
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
         .setup(move |app| {
+            // Same order as the GUI host (the lib.rs
+            // `disabled_bundles_migration` marks): the fresh-vs-upgrade
+            // verdict must be read and frozen before first-startup writes
+            // such as SessionStore boot / engine spawn (sessions/, default
+            // settings.json) — otherwise a brand-new home directory first
+            // touched by a windowless host freezes a polluted "upgrade"
+            // verdict, plain flips back to fully open, and later GUI starts
+            // respect the already-frozen marker (review #455 blocking item 3).
+            let _ = crate::features::marketplace::scope::load_disabled_bundles();
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }

@@ -105,6 +105,11 @@ impl SessionStore {
     /// legacy-table-only entries (round-8 review B1). Secondary stores opened
     /// later via [`Self::boot`] must not repeat it.
     pub fn boot_for_process_startup() -> Result<Self> {
+        // Order constraint (review #455): this boot creates sessions/
+        // directory entries (a first-boot self-write trace), so the
+        // disabled_bundles migration verdict must complete before it —
+        // lib.rs `startup_order_contract` pins the order via source-position
+        // assertions.
         let store = Self::boot_inner(true)?;
         store.migrate_legacy_session_workspaces();
         Ok(store)

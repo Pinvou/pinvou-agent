@@ -69,7 +69,18 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
+            // Fail-visible persist (review #455 R13-B3, preserved through the
+            // round-19 merge): swallowing the error would let the connector go
+            // live with zero consent; the error text carries recovery guidance.
+            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
+                |e| {
+                    log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
+                    format!(
+                        "{} connected, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
+                        self.id
+                    )
+                },
+            )?;
         }
         Ok(json!({ "visible": show }))
     }
@@ -96,6 +107,38 @@ impl ConnectorGate {
         let show = self.skills_should_show();
         (self.apply_bundle_skills)(show)
             .map_err(|e| format!("刷新{}技能门控失败: {e}", self.display_name))?;
+        if show {
+            // Round-30 m1 (review #455): materialization must not outrun the
+            // consent rows — a connector connected pre-PR whose fire-and-forget
+            // consent sync silently failed stays live-by-absence in its
+            // initialized scope forever (the stored list is the sole truth
+            // there). Round-31 BLOCKER (review #455): a plain membership push
+            // here re-added the row a user enable had removed at EVERY boot
+            // (`show` is always true for a connected connector — the legacy
+            // disable flags are read-only), silently reverting explicit
+            // enables. The startup refresh therefore uses the LEDGER-GATED
+            // variant (`sync_deny_all_scopes_refresh`): it only pushes rows
+            // for packs never synced before; a user enable removes the row
+            // while the ledger entry survives, and teardown clears the ledger
+            // so a fresh install / reconnect re-syncs. The connect command's
+            // own sync stays un-gated (fresh-install semantics: connecting is
+            // a user action and legitimately re-arms default-off). Failures
+            // propagate like the connect path, but this function's startup
+            // caller surfaces them only via a frontend console.warn — the
+            // failure is additionally marked on the startup timeline where it
+            // is observable.
+            crate::features::marketplace::sync_deny_all_scopes_refresh(self.id).map_err(|e| {
+                crate::platform::startup::mark_with_detail(
+                    "rust",
+                    "connector_consent_sync:failed",
+                    &format!("{}: {e}", self.id),
+                );
+                format!(
+                    "{}技能门控刷新后的默认关同意同步失败: {e}",
+                    self.display_name
+                )
+            })?;
+        }
         Ok(show)
     }
 }
@@ -178,5 +221,83 @@ mod tests {
                 "{gate_id} 的停用标志文件名应与其 id 对应"
             );
         }
+    }
+
+    /// Round-31 BLOCKER negative control (review #455): an initialized scope,
+    /// a connected connector EXPLICITLY ENABLED by the user, then
+    /// `refresh_step` — the stored list must still lack the id. This is the
+    /// test that fails on the round-30 form (the plain membership push
+    /// re-added the row at every boot, silently reverting explicit enables):
+    /// the ledger-gated sync is what makes the enable sticky. Also pins the
+    /// reconnect direction — teardown (exact removal) clears the ledger
+    /// entry, so a fresh install / reconnect re-syncs default-off.
+    #[test]
+    fn refresh_step_does_not_revert_explicit_enable_but_reconnect_resyncs() {
+        use crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact;
+        use crate::features::marketplace::{
+            ConnectorScope, load_disabled_bundles_for, save_disabled_bundles_for,
+            sync_deny_all_scopes_after_install,
+        };
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-skillgate-ledger", || {
+            // Initialize plain via the raw store shape (the migration's own
+            // verdict write; the composer's first write seeds the same).
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+
+            // First sync (install/connect equivalent): the row lands and the
+            // pair is ledgered.
+            sync_deny_all_scopes_after_install("connector-x").unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"connector-x".to_string()),
+                "the first sync must persist the install-default row"
+            );
+
+            // The user enables the pack: the composer whole-list write drops
+            // the row + marker while the ledger entry survives.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"connector-x".to_string()),
+                "fixture: the enable removed the row"
+            );
+
+            // The startup refresh runs for the connected connector (probe
+            // true, no disable flag): the LEDGER must keep it from re-adding.
+            let gate = ConnectorGate {
+                id: "connector-x",
+                disabled_filename: "connector-x_disabled",
+                display_name: "测试连接器",
+                ready_probe: || true,
+                apply_bundle_skills: |_| Ok(()),
+            };
+            let visible = gate.refresh_step().unwrap();
+            assert!(
+                visible,
+                "fixture: the connector is connected and not disabled"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"connector-x".to_string()),
+                "the startup refresh must NOT revert an explicit user enable (the round-30 form fails here)"
+            );
+
+            // Reconnect direction: teardown (exact removal) clears the
+            // ledger entry, so the next sync re-syncs default-off.
+            remove_bundle_from_disabled_scopes_exact("connector-x").unwrap();
+            sync_deny_all_scopes_after_install("connector-x").unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"connector-x".to_string()),
+                "a fresh install / reconnect must re-sync default-off after teardown"
+            );
+        });
     }
 }
