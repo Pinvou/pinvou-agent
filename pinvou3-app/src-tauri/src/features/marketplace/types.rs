@@ -244,8 +244,9 @@ mod tests {
     /// The builtin manifest (session-reader embedded snapshot) parses its 5
     /// contract fields correctly, and the tool_features keys match the
     /// mcp_tools full names exactly (a shared-contract hard constraint).
-    /// The send tool maps to its own feature (session-messaging) — the
-    /// union-semantics counterpart of the two read tools.
+    /// The send and create tools each map to their own feature
+    /// (session-messaging / session-creation) — the union-semantics
+    /// counterpart of the two read tools.
     #[test]
     fn session_reader_manifest_carries_builtin_contract_fields() {
         let manifest =
@@ -259,7 +260,7 @@ mod tests {
             manifest.data_access,
             ["sessions.read".to_string(), "sessions.write".to_string()]
         );
-        assert_eq!(manifest.tool_features.len(), 3);
+        assert_eq!(manifest.tool_features.len(), 4);
         for tool in [
             "mcp_session-reader_read_session",
             "mcp_session-reader_list_sessions",
@@ -280,6 +281,14 @@ mod tests {
                 .map(|features| features.as_slice()),
             Some(&["session-messaging".to_string()][..]),
             "the send tool serves only the messaging feature"
+        );
+        assert_eq!(
+            manifest
+                .tool_features
+                .get("mcp_session-reader_create_session")
+                .map(|features| features.as_slice()),
+            Some(&["session-creation".to_string()][..]),
+            "the create tool serves only the session-creation feature"
         );
     }
 

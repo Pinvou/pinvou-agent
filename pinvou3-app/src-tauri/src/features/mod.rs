@@ -25,6 +25,7 @@ pub(crate) mod retirement;
 pub(crate) mod review;
 pub(crate) mod runtime_bundle;
 pub(crate) mod scheduled;
+pub(crate) mod session_creation;
 pub mod sessions;
 pub(crate) mod shared_knowledge_host;
 pub(crate) mod updater;
