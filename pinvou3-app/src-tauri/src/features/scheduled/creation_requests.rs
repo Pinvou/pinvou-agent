@@ -700,7 +700,8 @@ fn audit_request(
         detail["changed"] = serde_json::json!(changed);
         if let Some(target) = request.target_session.as_deref() {
             // A retarget redirects where every future prompt fires — the
-            // audit line must say where it now goes.
+            // audit line must say where it now goes (same for a create with
+            // a delivery target).
             detail["target_session"] = serde_json::json!(target);
         }
     }

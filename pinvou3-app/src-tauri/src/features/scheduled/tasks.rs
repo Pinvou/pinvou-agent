@@ -521,7 +521,7 @@ impl ScheduledTaskState {
         // The 32k message-body cap also guards the panel/update path: a
         // session-message task must never persist a body the delivery belt
         // would then reject on every fire (same bound as create).
-        if let Some(prompt) = input.prompt.as_deref() {
+        if let Some(prompt) = input.prompt.as_deref().map(str::trim) {
             if self.task_kinds.kind_for(&id).as_deref() == Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE)
                 && prompt.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS
             {
@@ -4107,6 +4107,31 @@ mod tests {
             .await
             .expect_err("conversion must be rejected");
         assert!(error.contains("only scheduled-message tasks"), "{error}");
+
+        // The 32k message-body cap also guards the update path: a
+        // session-message task cannot persist a body the delivery belt would
+        // reject on every fire (same bound as create).
+        let oversized = state
+            .update_for_test(
+                created.id.clone(),
+                UpdateScheduledTaskInput {
+                    name: None,
+                    prompt: Some("x".repeat(SCHEDULED_MESSAGE_MAX_CHARS + 1)),
+                    rrule: None,
+                    cwds: None,
+                    model: None,
+                    model_id: None,
+                    target_session: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: None,
+                },
+            )
+            .await
+            .expect_err("oversized scheduled message must be rejected");
+        assert!(oversized.contains("character limit"), "{oversized}");
 
         // Retargeting re-validates existence: an unknown target fails, a real
         // one lands in the sidecar and the DTO.
