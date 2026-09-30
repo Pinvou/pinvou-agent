@@ -1567,10 +1567,6 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     })
 }
 
-pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
-    load_preferences()
-}
-
 fn preference_stale_paths_unlocked(
     dir: &Path,
     new_path: &Path,
@@ -1699,6 +1695,14 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// The CLI-facing preference read: the same self-heal-on-read reconcile as
+/// the GUI command, without its `cleanup_warning` (the warning surfaces
+/// through [`list_preferences_with_cleanup`], which the CLI's list/doctor
+/// lanes use directly).
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
+    load_preferences()
 }
 
 pub(super) fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
