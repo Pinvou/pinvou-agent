@@ -433,9 +433,11 @@ fn redact_known_credentials(mut text: String, client_id: &str, api_key: &str) ->
 /// keys its actionable-guidance branch on (ToolStoreView's `consentFailure`
 /// substring check). A backend rewording would silently degrade the en/ja
 /// guidance to the generic copy — the pin below forces the two sides to move
-/// together, so reword this ONLY together with the frontend matcher.
+/// together. Round-33 MAJOR 2 (review #455): the string now lives once, in
+/// `scope::CONSENT_SYNC_FAILURE_MARKER`, shared by every consent-sync
+/// emitter (skill_gate included).
 pub(crate) const IMA_CONSENT_SYNC_FAILURE_MARKER: &str =
-    "persisting their default-off consent state failed";
+    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER;
 
 #[cfg(test)]
 mod tests {

@@ -512,11 +512,16 @@ pub(crate) fn recycle_upload_package(
 ///
 /// Concurrency contract: holds the per-id `import_lock_for` for the whole
 /// restore (the same lock as import/display editing; lock order
-/// import → recycle → store), serializing the entire restore chain (take_back
-/// → registration rebuild → supply) against concurrent same-id
-/// re-imports/uninstalls — the lock is taken before take_back so a concurrent
-/// import's "rename → backup re-baseline" cannot interleave; `install_upload`
+/// import → recycle → store), serializing the restore chain (take_back
+/// → registration rebuild → supply) against concurrent same-id **skill-channel**
+/// imports — the lock is taken before take_back so a concurrent import's
+/// "rename → backup re-baseline" cannot interleave; `install_upload`
 /// takes only the global transaction lock and does not re-enter this one.
+/// Round-33 minor 2 (review #455), stated the honest way (same style as
+/// mod.rs's boundary note): the **MCP channel's uninstall holds only the
+/// transaction lock** and its consent cleanup takes no per-id lock, so the two
+/// registered interleavings (consent-undo; record/dir divergence) remain
+/// reachable — the lock narrows, it does not close, that race.
 /// Symmetric with the uninstall side's recycle preflight: lock first, then
 /// touch directories.
 /// Boundary note (review R14-minor #9, stated honestly): this function holds

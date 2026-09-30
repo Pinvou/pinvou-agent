@@ -88,8 +88,9 @@ impl ConnectorGate {
                 |e| {
                     log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
                     format!(
-                        "{} connected, but persisting its default-off consent state failed: new sessions will enable it by default — turn it off in the tools list: {e}",
-                        self.id
+                        "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                        self.id,
+                        crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
                     )
                 },
             )?;
@@ -311,6 +312,24 @@ mod tests {
                 "a fresh install / reconnect must re-sync default-off after teardown"
             );
         });
+    }
+
+    /// Round-33 MAJOR 2 (review #455): the connect-path consent-persist
+    /// failure copy carries the ONE shared frontend marker
+    /// (`scope::CONSENT_SYNC_FAILURE_MARKER`) — the localized template on the
+    /// store cards keys on exactly this string, so a rewording here must move
+    /// the frontend matcher in the same commit.
+    #[test]
+    fn skill_gate_consent_failure_message_keeps_the_frontend_marker() {
+        let message = format!(
+            "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: store down",
+            "wecom",
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        );
+        assert!(
+            message.contains(crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER),
+            "the shipped message must carry the frontend-matched marker: {message}"
+        );
     }
 
     /// Round-32 MAJOR 1 (review #455) twin negative control: the connect

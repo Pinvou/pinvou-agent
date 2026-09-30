@@ -98,7 +98,11 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 `initialized` 集合取代原 `code_initialized` 布尔。`default_off_scopes`（评审
 R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）的条目：安装
 同步写 stored+本表，用户 disable 只写 stored，composer 整表写只保留本次
-**未触碰**（写前写后都在 off）条目的标记（`previous ∩ new`），随真正被切换的
+**未触碰**（写前写后都在 off）条目的标记：已初始化 scope 按
+`previous ∩ new`；**首次写**（uninitialized DenyAll scope，`previous` 为空）
+按 round-13 B1 从**写前有效扩集 ∩ 新列表**播种——照字面执行
+`previous ∩ new` 会把每个首次默认都变成显式 opt-out、重新打破 round-13 B1
+cohort（round-33 minor 7 勘误）。随真正被切换的
 条目一起丢弃——它无法区分"谁关的"，只对能归因的条目不越权（round-12 自审）；
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
@@ -347,12 +351,13 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   丢失存储恢复——该分支**刻意跳过 legacy 迁移**，兄弟证据证明统一期存储存在过，
   其搁置的判定不可知，宁全关不翻全开）。收敛方向：NotFound 时从 `mcp.json` 重建
   id，或在此登记为外部破坏下的已知限制（现按后者登记）。§7 清单同时补记
-  **companion 技能同意同步吞错**（round-31 m9，round-32 minor 12 更正定位）：
-  **install 流的 post-install companion 腿**（`commands/marketplace.rs:323-331`）
-  对同意同步失败按 log-only 继续——已披露的 companion-loop 例外，失败方向为
-  残留禁用（fail-closed），与 #515 家族同簿；**uninstall 事务内的 companion
-  循环不属此例外**（exact 清理以 `?` 传播；round-32 minor 12 勘误 round-31 m9
-  把该循环误定位在 uninstall 侧）。
+  **companion 技能同意同步失败**（round-31 m9 登记、round-33 MAJOR 1 关闭）：
+  install 流的 post-install companion 腿曾按 log-only 吞掉同步失败
+  （round-32 minor 12 更正过定位）；round-33 MAJOR 1 后该例外**已关闭**——
+  仅当伴随 id 归一化等于工具自身包 id（可证明已被工具级同步覆盖）才跳过，
+  其余（known-pack-shield 边缘的真实写入）以 `?` 传播、命令失败且错误文案
+  携带前端共享标记 `CONSENT_SYNC_FAILURE_MARKER`；**uninstall 事务内的
+  companion 循环自始以 `?` 传播**。
 - 会话中关闭的上下文不可撤回边界（§3.3 末）、
   CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
 

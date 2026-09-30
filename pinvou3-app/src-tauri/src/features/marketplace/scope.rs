@@ -561,7 +561,21 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// bin-side skill-dir scan), and an undeclared nested skill must resolve to
 /// its physical owner pack — otherwise it enters every scope with zero
 /// consent and no composer row to turn it off.
-fn to_package_id(raw: &str) -> String {
+/// Round-33 MAJOR 1 (review #455): caller-visible normalization — the install
+/// path compares a companion's normalized id against the tool's own to tell
+/// "the tool-level sync provably covered this companion" from "this sync is
+/// a real write for a different pack" (the known-pack-shield edge).
+/// Round-33 MAJOR 2 (review #455): the ONE consent-sync failure marker the
+/// frontend keys its actionable-guidance template on (ToolStoreView's
+/// consentFailure matcher; pinned per emitter by
+/// `consent_failure_message_keeps_the_frontend_marker` in ima.rs and
+/// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
+/// skill_gate.rs). Every connector shares the exact string so a backend
+/// rewording cannot silently degrade the localized guidance to generic copy.
+pub(crate) const CONSENT_SYNC_FAILURE_MARKER: &str =
+    "persisting their default-off consent state failed";
+
+pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
 

@@ -222,8 +222,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   由读时迁移锁定升级前状态，见 `docs/capability-governance.md`）。一旦用户
   改过该 scope 开关（进入 `initialized`），以落盘列表为准。
 - 安装连接器后：DenyAll 且已初始化的 scope 中新装连接器默认仍关闭（自动加入
-  禁用集）；未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载
-  连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
+  禁用集）；未初始化 scope 的读取兜底照旧（按「默认全禁已装连接器」现算），
+  但**同意同步仍会对每个观察到的 DenyAll scope × 连接器对记账落盘**
+  （`install_default_synced`，round-32 MAJOR 1 修复——未初始化臂不记账会让
+  用户的首次启用在下次启动被回填覆盖，见 `docs/capability-governance.md`
+  §3.2）。卸载连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
 - 连接器开关（`set_disabled_connectors`）按 scope 整表重写落盘禁用列表并初始化
   该 scope；两个方向都不动 hidden——被 `set_bundle_visibility` 显式隐藏的包，
   开关开回后仍不可见。批量开启入口（`enable_packages_in_scope`，欢迎卡/场景的

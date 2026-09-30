@@ -35,6 +35,11 @@ MANIFEST = os.path.join("pinvou3-app", "src-tauri", "Cargo.toml")
 # pin's `#[test]` attribute was lost to an edit — the exact failure this
 # guard exists for (PR #455 rounds 26 and 28).
 REQUIRED_PINS = [
+    # commands/tests.rs: the install-path consent rollback pair (round-33
+    # minor 6, review #455) — exactly the consent/rollback class this guard
+    # exists to protect from attribute theft.
+    "install_validation_failure_rollback_leaves_no_consent_rows",
+    "install_consent_sync_persist_failure_is_honest_and_keeps_pack",
     # scope.rs: exact-cleanup hijack pin (round-26 MAJOR 1) and the
     # state_changed hot-refresh gate pin (round-28 MINOR 3) — the pair whose
     # attributes were swapped by the round-28 insertion.

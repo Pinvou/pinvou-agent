@@ -929,6 +929,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
     auth_start_failed:'无法启动登录，请重试',
     registration_failed:'应用注册未完成，请重新连接',
     auth_failed:'登录授权未完成，请重新连接',
+    consent_persist_failed:'授权已完成，但默认关同意状态落盘失败。请在创作间的工具列表中关闭该连接器后重新连接。',
     skills_enable_failed:'已完成授权，但启用技能失败，请重试',
     cli_data_access_disabled:'钉钉组织未开启 CLI 数据访问，请联系组织主管理员在钉钉开放平台开发者设置中开启“Allow members to access their personal data via CLI”后重新登录',
     unknown:'连接失败，请稍后重试',

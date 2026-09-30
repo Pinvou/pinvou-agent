@@ -311,22 +311,29 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             }
             // A newly installed companion skill joins the DenyAll scope disabled
             // sets by default (external capabilities are explicit opt-in, same
-            // semantics as the standalone install_marketplace_skill_sync). The
-            // companion's owner pack is this tool, whose consent state the sync
-            // above already covered, so a failure here is logged and the loop
-            // continues (it must not block the remaining companions, nor fail
-            // the whole command). Scope note (round-25 minor 4): this is a
-            // no-op in the normal case, but NOT provably one — via the
-            // known-pack-shield edge (a standalone pack dir named exactly like
-            // the companion) the normalized id can differ from the tool id and
-            // the sync becomes a real write whose failure is swallowed here;
-            // renaming such a companion or failing loud is a follow-up
-            // candidate, not the steady state.
+            // semantics as the standalone install_marketplace_skill_sync).
+            // Round-33 MAJOR 1 (review #455): the sync is PROVABLY redundant —
+            // the arm the old comment's "must not fail the whole command"
+            // stance relied on — only when the companion normalizes to the
+            // tool's own package id (the tool-level sync above stored exactly
+            // that id). On the known-pack-shield edge (a standalone pack dir
+            // named like the companion) the normalized id differs and the
+            // sync is a real consent write for a different pack; a lost write
+            // there leaves the pack live with zero consent in initialized
+            // scopes with no boot reconciliation (the ledger-gated startup
+            // refresh covers only the four CLI connector gates). That edge
+            // therefore fails the command, exactly like the tool-level
+            // sync's fail-visible persist above.
+            let normalized = crate::features::marketplace::scope::to_package_id(&sid);
+            if normalized == crate::features::marketplace::scope::to_package_id(&tool_id) {
+                continue;
+            }
             if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
-                eprintln!(
-                    "[marketplace] persisting the default-off state for companion skill '{sid}' failed (its owner pack is already covered by the tool sync): {e}"
-                );
+                return Err(format!(
+                    "companion skill '{sid}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+                    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+                ));
             }
         }
         Ok::<(), String>(())

@@ -690,7 +690,15 @@ fn mark_landing(id: &str) {
             return;
         }
     }
-    let _ = std::fs::write(&path, "pending\n");
+    // Round-33 minor 3 (review #455): a failed mark write degrades crash
+    // recovery exactly like the create_dir_all failure above — it must be
+    // just as loud instead of silently re-opening the live-by-absence window
+    // the journal exists to close.
+    if let Err(e) = std::fs::write(&path, "pending\n") {
+        log::warn!(
+            "[plugin-import] writing the landing journal mark failed (crash recovery for {id} degraded to live-by-absence): {e}"
+        );
+    }
 }
 
 fn clear_landing(id: &str) {

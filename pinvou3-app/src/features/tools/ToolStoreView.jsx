@@ -354,7 +354,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // writing would resurrect a zombie "done" card.
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
           // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
-          invokeTauri(cfg.commands.applySkills).catch(() => {});
+          // Round-33 MAJOR 2 (review #455): the fire-and-forget write is consent-critical — a lost row leaves the
+          // connector live with zero consent until the next boot's ledger-gated backfill, silently. The failure is
+          // surfaced on the card: the backend message carries the shared consent marker (scope::CONSENT_SYNC_FAILURE_MARKER,
+          // pinned on both sides — ima-pattern substring match) → the dedicated consent_persist_failed copy; anything
+          // else keeps the step's localized copy.
+          invokeTauri(cfg.commands.applySkills).catch((e) => {
+            const msg = String(e && e.message ? e.message : e);
+            const failure = msg.includes('persisting their default-off consent state failed')
+              ? { code: 'consent_persist_failed' }
+              : { code: 'skills_enable_failed' };
+            reportConnectorFailure(cfg.key, failure, 'cli');
+          });
           // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived connection state).
           // The collapse must only close a card that already reached 'done': a
           // stale timer from the previous round must not destroy a card the

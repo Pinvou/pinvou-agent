@@ -173,9 +173,32 @@ pub(crate) fn skill_gating_owner_with(tools: &[super::ToolManifest], skill_name:
     if claimed != skill_name {
         return claimed;
     }
-    if let Ok(rd) = std::fs::read_dir(crate::platform::paths::bundles_root()) {
+    // Round-33 minor 4 (review #455): both swallow points below are
+    // consent-load-bearing (a degraded scan silently fails open to the
+    // standalone shape); they are logged loudly, and the full propagation
+    // refactor (a degraded flag mirroring `installed_skill_ids_strict`) is
+    // registered for the next wave — the signature change ripples through
+    // the materialization hot path and does not belong in a merge wave.
+    let rd = match std::fs::read_dir(crate::platform::paths::bundles_root()) {
+        Ok(rd) => rd,
+        Err(e) => {
+            log::warn!(
+                "[bundle] gating-owner fallback cannot read bundles_root; failing open to the standalone owner for '{skill_name}' (consent-critical, refactor registered): {e}"
+            );
+            return skill_name.to_string();
+        }
+    };
+    {
         let mut owners: Vec<String> = rd
-            .flatten()
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    log::warn!(
+                        "[bundle] gating-owner fallback skipped an unreadable bundles_root entry (consent-critical, refactor registered): {e}"
+                    );
+                    None
+                }
+            })
             // Round-27 m4 (review #455): skip import staging (`<id>.tmp`) and
             // landing backup (`<id>.old`) dirs — the same exclusion the two
             // lenses this fallback shares with (materialization's
