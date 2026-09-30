@@ -16,6 +16,13 @@ pub mod path_policy;
 pub mod paths;
 pub mod prefs;
 pub(crate) mod process;
+// Targeted re-export: the module itself stays crate-private, but the CLI's
+// Windows kill tree needs the hardened resolution of `external_command`
+// across the crate boundary (`pinvoy3_lib::platform::external_command`).
+// Item-level `pub` inside a `pub(crate)` module is capped at crate
+// visibility, so without this re-export the external consumer cannot name
+// the path.
+pub use process::external_command;
 pub(crate) mod startup;
 pub(crate) mod strings;
 pub mod super_permission;

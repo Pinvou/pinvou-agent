@@ -911,12 +911,16 @@ async fn restore_pre_run_pins(
 /// Whether a failed submit may have durably admitted the user message: the
 /// caller-provided session's pins must then stay (the turn owns the session,
 /// like the timeout arm past `submit_entered`), and only a provably
-/// pre-append failure restores them. Decided from record facts — the
-/// transcript revision snapshotted just before the submit against the record
-/// read after the error — because the submit boundary itself is not atomic
-/// with the append: the engine lazily spawns on submit and appends the user
-/// message before several later fallible steps (reservation liveness, engine
-/// spawn, the send itself). A missing snapshot or an unloadable record means
+/// pre-append failure restores them. A failure before `submit_entered` was
+/// set (attachment staging, session roots — the slow, commonly failing setup
+/// steps) provably never polled the submit, so nothing can have been
+/// admitted and the pins restore even though no pre-submit snapshot exists
+/// yet. Past that gate the decision comes from record facts — the transcript
+/// revision snapshotted just before the submit against the record read after
+/// the error — because the submit boundary itself is not atomic with the
+/// append: the engine lazily spawns on submit and appends the user message
+/// before several later fallible steps (reservation liveness, engine spawn,
+/// the send itself). A missing snapshot or an unloadable record means
 /// unknown, and unknown keeps the pins: restoring over an admitted turn is
 /// the unsafe direction.
 ///
@@ -927,8 +931,14 @@ async fn restore_pre_run_pins(
 fn submit_err_admitted_turn(
     store: &SessionStore,
     session_id: &str,
+    submit_entered: bool,
     pre_submit_revision: Option<&str>,
 ) -> bool {
+    if !submit_entered {
+        // The setup failed before the submit was ever polled, so no turn can
+        // have been admitted — regardless of the missing snapshot.
+        return false;
+    }
     let Some(pre) = pre_submit_revision else {
         return true;
     };
@@ -1506,11 +1516,18 @@ async fn run_turn(
                 // caller-provided session's pins back over an admitted
                 // transcript would reopen it in the run's transient
                 // mode/model — the exact unsafe divergence the timeout arm
-                // gates on `submit_entered`. Decide from record facts instead:
-                // the pins restore only when the transcript revision is
-                // unchanged since the pre-submit snapshot (nothing landed);
-                // unknown keeps them.
-                if !submit_err_admitted_turn(store, session_id, pre_submit_revision.as_deref()) {
+                // gates on `submit_entered`. Failures before that flag was
+                // set (staging) provably never polled the submit, so they
+                // restore without a snapshot; past the flag, decide from
+                // record facts instead: the pins restore only when the
+                // transcript revision is unchanged since the pre-submit
+                // snapshot (nothing landed); unknown keeps them.
+                if !submit_err_admitted_turn(
+                    store,
+                    session_id,
+                    submit_entered.load(Ordering::SeqCst),
+                    pre_submit_revision.as_deref(),
+                ) {
                     restore_pre_run_pins(
                         runtime,
                         store,
@@ -3488,11 +3505,13 @@ mod tests {
         }
     }
 
-    /// The Err-arm admission decision, pinned against a real store: only an
-    /// unchanged transcript revision (nothing landed) is restore-eligible; a
-    /// landed append (the late-fault submit), a missing pre-submit snapshot,
-    /// or an unreadable record all count as admitted — restoring pins over a
-    /// possibly admitted turn is the unsafe direction.
+    /// The Err-arm admission decision, pinned against a real store: a
+    /// pre-`submit_entered` failure restores even without a snapshot; only
+    /// an unchanged transcript revision (nothing landed) is otherwise
+    /// restore-eligible; a landed append (the late-fault submit), a missing
+    /// pre-submit snapshot past the gate, or an unreadable record all count
+    /// as admitted — restoring pins over a possibly admitted turn is the
+    /// unsafe direction.
     #[test]
     fn submit_err_admission_decides_from_the_transcript_revision() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3501,11 +3520,21 @@ mod tests {
         seed_record(&store, "adm_probe", &[user_text("first")]);
         let pre = super::transcript_revision(&store.load("adm_probe").unwrap().messages).unwrap();
 
+        // Failure before the submit was polled (staging/roots — no snapshot
+        // exists yet) → provably nothing admitted, the pins restore.
+        assert!(!super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            false,
+            None
+        ));
+
         // Submit failed before the durable append (nothing landed) → the
         // caller-provided session's pins restore.
         assert!(!super::submit_err_admitted_turn(
             &store,
             "adm_probe",
+            true,
             Some(&pre)
         ));
 
@@ -3519,12 +3548,18 @@ mod tests {
         assert!(super::submit_err_admitted_turn(
             &store,
             "adm_probe",
+            true,
             Some(&pre)
         ));
 
         // No pre-submit snapshot (fresh session, or the snapshot read
-        // failed) → assume admission.
-        assert!(super::submit_err_admitted_turn(&store, "adm_probe", None));
+        // failed) past the gate → assume admission.
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            None
+        ));
 
         // Record unreadable after the error → unknown ⇒ keep.
         seed_record(&store, "adm_probe", &[user_text("first")]);
@@ -3532,6 +3567,7 @@ mod tests {
         assert!(super::submit_err_admitted_turn(
             &store,
             "adm_probe",
+            true,
             Some(&pre)
         ));
     }
