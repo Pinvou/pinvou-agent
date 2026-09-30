@@ -434,9 +434,16 @@ fn ollama_display_window_adoptable(configured: Option<&str>, served: Option<&str
 /// monitor snapshot polls at 1 Hz and `/api/show` re-reads GGUF metadata
 /// per call, so only the fresh `/api/ps` effective value is fetched every
 /// poll (one small local GET; it follows load state and server config).
-/// Only positive hits are cached; misses re-try after the TTL window.
+/// Hits and misses are cached alike for the TTL: a `num_ctx`-less show
+/// response (the default for a downloaded-but-never-loaded model) is as
+/// stable as a declaration, and without negative caching the 1 Hz poll
+/// would re-read GGUF metadata every second until the first load. A
+/// declaration added (or a transport failure recovered) mid-session is
+/// picked up within 60 s.
 static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<(String, String), (std::time::Instant, u32)>>,
+    std::sync::Mutex<
+        std::collections::HashMap<(String, String), (std::time::Instant, Option<u32>)>,
+    >,
 > = std::sync::OnceLock::new();
 
 const OLLAMA_SHOW_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -451,25 +458,25 @@ async fn cached_ollama_show_context(
         let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((at, ctx)) = guard.get(&(upstream.to_string(), name.to_string())) {
             if at.elapsed() < OLLAMA_SHOW_CACHE_TTL {
-                return Some(*ctx);
+                return *ctx;
             }
         }
     }
     let ctx =
-        crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await?;
+        crate::core::model_endpoint::fetch_ollama_show_context(upstream, api_key, name).await;
     cache.lock().unwrap_or_else(|p| p.into_inner()).insert(
         (upstream.to_string(), name.to_string()),
         (std::time::Instant::now(), ctx),
     );
-    Some(ctx)
+    ctx
 }
 
 /// Native window fact for a local target whose `/v1/models` listing carried
 /// none (Ollama is the local engine that never lists one): `/api/ps`
 /// effective context first (fresh; the deployment truth for loaded models),
-/// then `/api/show` (Modelfile `num_ctx` declaration, 60s cached — a show
-/// response without one yields no fact: the GGUF trained cap is a
-/// capability ceiling, not the served window). A non-Ollama-shaped
+/// then `/api/show` (Modelfile `num_ctx` declaration, 60s cached, misses
+/// included — a show response without one yields no fact: the GGUF trained
+/// cap is a capability ceiling, not the served window). A non-Ollama-shaped
 /// `/api/ps` (404/other servers) ends the
 /// lookup, so non-Ollama locals pay one extra small GET per poll. The
 /// queried entry is gated by `ollama_display_window_adoptable` — a window
@@ -902,9 +909,11 @@ mod tests {
 
     /// The display follow-up on a local Ollama endpoint: /api/ps effective
     /// value wins (fresh, loaded ground truth); an Ollama-shaped ps with no
-    /// entry for the model falls through to /api/show; a non-Ollama-shaped
+    /// entry for the model falls through to /api/show (positively cached for
+    /// the TTL, and misses — no `num_ctx` — cached alike); a non-Ollama-shaped
     /// ps (404 — vLLM/LM Studio/generic locals) ends the lookup with no
-    /// native follow-up at all.
+    /// native follow-up at all. Each segment uses its own model name so the
+    /// shared static cache cannot collide even if the OS reuses a mock port.
     #[tokio::test]
     async fn ollama_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;
@@ -913,12 +922,12 @@ mod tests {
             (
                 "/api/ps",
                 200,
-                r#"{"models":[{"name":"m","context_length":131072}]}"#.into(),
+                r#"{"models":[{"name":"loaded-a","context_length":131072}]}"#.into(),
             ),
             ("/api/show", 200, r#"{"model_info":{}}"#.into()),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            ollama_display_window(&mock.base_url, None, Some("loaded-a"), Some("loaded-a")).await,
             Some(131_072)
         );
         assert_eq!(mock.hits_for("/api/show"), 0);
@@ -933,7 +942,8 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            ollama_display_window(&mock.base_url, None, Some("declared-b"), Some("declared-b"))
+                .await,
             Some(32_768)
         );
         assert_eq!(
@@ -942,7 +952,8 @@ mod tests {
             "first poll pays one /api/show"
         );
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            ollama_display_window(&mock.base_url, None, Some("declared-b"), Some("declared-b"))
+                .await,
             Some(32_768)
         );
         assert_eq!(
@@ -953,7 +964,8 @@ mod tests {
         // Not loaded and no num_ctx declaration: the show response only has
         // the GGUF trained cap (a capability ceiling, not the served
         // window) — the display stays without a native fact instead of
-        // adopting it.
+        // adopting it, and the miss is cached for the TTL: the 1 Hz poll
+        // must not re-read GGUF metadata every second until the first load.
         let mock = models_mock::spawn(&[
             ("/api/ps", 200, r#"{"models":[]}"#.into()),
             (
@@ -963,14 +975,31 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            ollama_display_window(&mock.base_url, None, Some("cap-only-c"), Some("cap-only-c"))
+                .await,
             None,
             "the trained cap must not become the display window"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "first poll pays one /api/show for the miss"
+        );
+        assert_eq!(
+            ollama_display_window(&mock.base_url, None, Some("cap-only-c"), Some("cap-only-c"))
+                .await,
+            None
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "misses are cached for the TTL too — no per-poll /api/show repeat"
         );
         // Non-Ollama local (ps 404): lookup stops, no show request.
         let mock = models_mock::spawn(&[("/api/ps", 404, "{}".into())]);
         assert_eq!(
-            ollama_display_window(&mock.base_url, None, Some("m"), Some("m")).await,
+            ollama_display_window(&mock.base_url, None, Some("stopped-d"), Some("stopped-d"))
+                .await,
             None
         );
         assert_eq!(mock.hits_for("/api/show"), 0);
@@ -978,7 +1007,7 @@ mod tests {
         let mock = models_mock::spawn(&[(
             "/api/ps",
             200,
-            r#"{"models":[{"name":"m","context_length":8}]}"#.into(),
+            r#"{"models":[{"name":"roster-e","context_length":8}]}"#.into(),
         )]);
         assert_eq!(
             ollama_display_window(
