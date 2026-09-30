@@ -288,6 +288,40 @@ fn write_code_session_sidecar(
     }
 }
 
+/// Rebind retry variant of [`write_code_session_sidecar`] (review #464
+/// follow-up nit): a rebind moves an existing binding rather than creating
+/// one, so the original `bound_at` first-bind timestamp is carried over
+/// instead of being re-stamped with now. A missing or unreadable sidecar
+/// yields None — the timestamp is unknown and must not be fabricated.
+fn rewrite_code_session_sidecar_preserving_bound_at(
+    store_path: &Path,
+    session_id: &str,
+    workspace_path: PathBuf,
+) -> bool {
+    let path = code_session_sidecar_path(store_path, session_id);
+    let sidecar = CodeSessionSidecar {
+        version: CODE_SESSION_SIDECAR_VERSION,
+        workspace_kind: CodexWorkspaceKind::Project,
+        workspace_path: Some(workspace_path),
+        bound_at: read_code_session_sidecar(store_path, session_id)
+            .and_then(|sidecar| sidecar.bound_at),
+    };
+    match persist_code_session_sidecar(&path, &sidecar) {
+        Ok(()) => true,
+        Err(error) => {
+            // Rebind path: the module's rebind log-hygiene rule applies (the
+            // error chain embeds sessions/<id>/ paths), so log the root cause
+            // only — never the path or the session id — matching the rebind
+            // rewrite loop below. The bind-path writer above is exempt.
+            eprintln!(
+                "[pinvou3-app] rebind retry rewrite of the native code session sidecar failed: {}",
+                error.root_cause()
+            );
+            false
+        }
+    }
+}
+
 /// 读取原生代码会话 sidecar；不存在、解析失败或 schema 版本高于当前支持版本时
 /// 返回 None（按缺失处理，走恢复/回填路径），异常均记日志。
 pub(super) fn read_code_session_sidecar(
@@ -832,14 +866,16 @@ impl SessionAgentStore {
             }
         }
         // Rewrite-retry pass for indexed native code sessions already
-        // rebound. Sessions rewritten above are skipped: that pass preserved
-        // the original bound_at, and rewriting here with now would double
-        // write + lose the first-bind timestamp (review #463 minor). A failed
-        // retry = finally stale: backfill self-healing only rewrites
-        // *missing* sidecars, and boot restore skips sidecars while the index
-        // is intact, so nothing would ever rewrite this stale record — it
-        // stays in the list for the command layer to count as failed; a
-        // successful retry removes it (review #463 Major 2).
+        // rebound. Sessions rewritten above are skipped: that pass already
+        // carried the original bound_at over, and rewriting again would be a
+        // double write (review #463 minor). The retry writer preserves the
+        // original bound_at too (review #464 follow-up nit) — a rebind is a
+        // move, not a new bind. A failed retry = finally stale: backfill
+        // self-healing only rewrites *missing* sidecars, and boot restore
+        // skips sidecars while the index is intact, so nothing would ever
+        // rewrite this stale record — it stays in the list for the command
+        // layer to count as failed; a successful retry removes it (review
+        // #463 Major 2).
         {
             let records = self.records.read();
             for (session_id, path) in &affected {
@@ -850,11 +886,10 @@ impl SessionAgentStore {
                     .get(session_id)
                     .is_some_and(|record| record.mode.is_code())
                 {
-                    if write_code_session_sidecar(
+                    if rewrite_code_session_sidecar_preserving_bound_at(
                         &self.path,
                         session_id,
-                        CodexWorkspaceKind::Project,
-                        Some(path.clone()),
+                        path.clone(),
                     ) {
                         sidecar_final_stale.retain(|sid| sid != session_id);
                     } else if !sidecar_final_stale.iter().any(|sid| sid == session_id) {
@@ -1300,6 +1335,70 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         assert_eq!(store.backend("missing"), AgentBackend::Deepseek);
+    }
+
+    #[test]
+    fn rebind_retry_sidecar_write_preserves_first_bind_timestamp() {
+        // review #464 follow-up nit: write_code_session_sidecar stamps
+        // bound_at with now (it is the bind-time writer); the rebind retry
+        // pass must carry the original timestamp over instead of resetting it.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-agent-store-rebind-bound-at-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The sidecar root derives as <store_path parent>/sessions, so pass
+        // the conventional session-agents.json path INSIDE the nonce'd dir —
+        // passing the dir itself would write into the shared, non-nonce'd
+        // $TMPDIR/sessions/ (litter plus a cross-process flake window) and
+        // the cleanup below would remove only the empty nonce'd dir.
+        let store_path = dir.join("session-agents.json");
+
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store_path, "s1"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(PathBuf::from("/old/root")),
+                bound_at: Some(42),
+            },
+        )
+        .unwrap();
+        assert!(rewrite_code_session_sidecar_preserving_bound_at(
+            &store_path,
+            "s1",
+            PathBuf::from("/new/root")
+        ));
+        let sidecar = read_code_session_sidecar(&store_path, "s1").unwrap();
+        assert_eq!(
+            sidecar.workspace_path.as_deref(),
+            Some(std::path::Path::new("/new/root"))
+        );
+        assert_eq!(
+            sidecar.bound_at,
+            Some(42),
+            "the retry pass preserves the first-bind timestamp"
+        );
+
+        // No prior sidecar: the timestamp stays unknown instead of being
+        // fabricated with now.
+        assert!(rewrite_code_session_sidecar_preserving_bound_at(
+            &store_path,
+            "s2",
+            PathBuf::from("/new/root")
+        ));
+        assert_eq!(
+            read_code_session_sidecar(&store_path, "s2")
+                .unwrap()
+                .bound_at,
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -52,11 +52,28 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
 /// [`path_identity_is_same_or_nested`] on the folded identity keys, and the
 /// suffix is cut by `base`'s component count so a nested path keeps its
 /// original casing. `None` = not under `base`; an empty suffix = the path IS
-/// `base`. Single source of truth for the three rebind lanes' suffix cut
-/// (round-8 review should-fix 9): codex/ACP index records, plain-chat
-/// binding sidecars and project roots all translate `from`-prefixed paths
-/// the same way.
+/// `base`. An empty base or a `..`-bearing argument is also `None`: the
+/// former would return the full absolute path as the "suffix" (and
+/// `to.join(suffix)` with an absolute suffix REPLACES `to`), the latter would
+/// cut an escaping suffix. Single source of truth for the three rebind
+/// lanes' suffix cut (round-8 review should-fix 9): codex/ACP index records,
+/// plain-chat binding sidecars and project roots all translate
+/// `from`-prefixed paths the same way.
 pub fn path_relative_suffix_under(path: &Path, base: &Path) -> Option<PathBuf> {
+    // Sharp edges (review #464 follow-up, unreachable from today's callers):
+    // an empty base passes the string gate (the empty key nests every
+    // absolute path) and would return the full absolute path as the "suffix"
+    // — and `to.join(suffix)` with an absolute suffix REPLACES `to`
+    // downstream. A `..`-bearing argument passes the string gate too, but the
+    // component cut then yields an escaping suffix. Refuse both.
+    let escapes = |candidate: &Path| {
+        candidate
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    };
+    if base.as_os_str().is_empty() || escapes(path) || escapes(base) {
+        return None;
+    }
     let path_key = filesystem_path_identity_key(&path.to_string_lossy());
     let base_key = filesystem_path_identity_key(&base.to_string_lossy());
     if !path_identity_is_same_or_nested(
@@ -180,6 +197,38 @@ mod tests {
             path_relative_suffix_under(std::path::Path::new("/work/alpha-beta"), base),
             None,
             "sibling prefix must not count as under"
+        );
+    }
+
+    #[test]
+    fn path_relative_suffix_under_refuses_empty_base_and_parent_components() {
+        // review #464 follow-up: an empty base passes the string gate (the
+        // empty key nests every absolute path) and would return the full
+        // absolute path as the "suffix" — and `to.join(suffix)` with an
+        // absolute suffix REPLACES `to` downstream. A `..`-bearing argument
+        // passes the string gate too, but the component cut yields an
+        // escaping suffix. Both must be None.
+        let base = std::path::Path::new("/work/alpha");
+        assert_eq!(
+            path_relative_suffix_under(
+                std::path::Path::new("/work/alpha/sub"),
+                std::path::Path::new("")
+            ),
+            None,
+            "empty base"
+        );
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/alpha/../beta"), base),
+            None,
+            "a `..`-bearing path would cut an escaping suffix"
+        );
+        assert_eq!(
+            path_relative_suffix_under(
+                std::path::Path::new("/work/alpha/sub"),
+                std::path::Path::new("/work/../work/alpha")
+            ),
+            None,
+            "a `..`-bearing base is not a stable prefix to cut by"
         );
     }
 }

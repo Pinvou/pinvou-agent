@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, '..');
-const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8');
+// Core.autocrlf=true gives a CRLF working tree on Windows while the repo holds
+// LF; normalizing here keeps every pattern below platform-deterministic
+// (multi-line anchors would otherwise silently match nothing on one platform).
+const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8').replace(/\r\n/g, '\n');
 
 const DIALOG = read('src', 'features', 'projects', 'MoveToProjectDialog.jsx');
 const MAIN = read('src', 'app', 'main.jsx');

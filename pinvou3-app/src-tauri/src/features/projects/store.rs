@@ -740,7 +740,11 @@ impl ProjectStore {
     /// returns the project ids it would affect; nothing is written or
     /// persisted. `rebind_roots` revalidates under its write lock, so a
     /// concurrent project mutation cannot slip past the invariant.
-    pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+    pub fn plan_rebind_roots(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<String>, RebindRootsError> {
         if from == to {
             return Ok(Vec::new());
         }
@@ -751,9 +755,15 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
+        // Typed like `rebind_roots` (round-9 review minor 10): only a genuine
+        // overlap carries the conflict classification — laundering a future
+        // infrastructure failure into it would re-introduce the M3 bug shape.
         for project in &candidate {
-            validate_roots(&candidate, Some(&project.id), &project.roots)
-                .context("rebind produced overlapping project roots")?;
+            validate_roots(&candidate, Some(&project.id), &project.roots).map_err(|error| {
+                RebindRootsError::Overlap(
+                    error.context("rebind produced overlapping project roots"),
+                )
+            })?;
         }
         Ok(affected_projects)
     }
