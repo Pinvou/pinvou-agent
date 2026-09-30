@@ -221,6 +221,18 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
 const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(e);
 
+// Chips that survive a truly-accepted send: exactly the refs the send
+// serialized are consumed; chips picked during the send await were never sent
+// and stay armed (mirroring the failure path's merge). When the feature gate
+// suppressed the block, stale pre-toggle chips are cleared instead — they can
+// never ride a send while the feature is off (round-9: the previous
+// setSessionRefs([]) wiped mid-await picks on every accepted send).
+const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) => {
+  if (!featureOn) return [];
+  const sentIds = new Set(refsAtSend.map((ref) => ref && ref.sessionId));
+  return currentRefs.filter((ref) => ref && !sentIds.has(ref.sessionId));
+};
+
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
 // lane-independent; scene cards render below the empty-state greeting
@@ -2116,6 +2128,37 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           throw error;
         }
       }, [activeSessionId, dispatchChatMessage]);
+      // Secondary send surfaces (welcome-card queries, plan-card option
+      // answers) share the composer's mention semantics: picked refs ride the
+      // message as the prepended injection block and are consumed once the
+      // send is truly accepted — otherwise refs picked before such a send
+      // would go out unreferenced yet stay armed for the next plain composer
+      // send (the same bug class the design lane fixed). Never rejects: the
+      // bridge surfaces failures itself (notice + restore).
+      const sendWithSessionRefs = useCallback((text) => {
+        const body = String(text || '');
+        const refsAtSend = sessionMentionEnabled ? sessionRefs : [];
+        const mentionBlock = refsAtSend.length ? buildSessionMentionBlock(refsAtSend) : '';
+        const outgoingText = mentionBlock ? mentionBlock + body : body;
+        const draftKeyAtSend = mentionDraftKeyRef.current;
+        return Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
+          // A non-true verdict (false / "restored" / undefined) keeps the
+          // chips armed: the text is back in the composer or queued, never
+          // silently dropped with its references consumed.
+          if (accepted === true) {
+            if (mentionDraftKeyRef.current === draftKeyAtSend) {
+              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
+            } else {
+              stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
+                refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
+            }
+          }
+          return accepted;
+        }, (error) => {
+          console.warn('[pinvou3][chat-ui] referenced send failed', error);
+          return false;
+        });
+      }, [sessionMentionEnabled, sessionRefs, sendChatMessage]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
       // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
@@ -2150,7 +2193,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             theme={theme}
             t={t}
             onPrefill={setInputText}
-            onSend={sendChatMessage}
+            onSend={sendWithSessionRefs}
             onOpenEditor={onOpenEditor}
             onPlanStuckGo={handlePlanStuckGo}
             isLatestArtifact={latestArtifactIdsRef.current.has(item.legacyItem.id)}
@@ -2158,7 +2201,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           />
         );
       // eslint-disable-next-line react-hooks/exhaustive-deps -- latestArtifactIdsKey is an intentional extra dep: a content-keyed proxy for the artifact-id Set (read fresh via latestArtifactIdsRef) so the callback identity only changes when the set contents change
-      }, [activeSessionId, isScheduledTaskCreationChat, latestArtifactIdsKey, onOpenEditor, sendChatMessage, setInputText, t, theme, handlePlanStuckGo]);
+      }, [activeSessionId, isScheduledTaskCreationChat, latestArtifactIdsKey, onOpenEditor, sendWithSessionRefs, setInputText, t, theme, handlePlanStuckGo]);
       const handleTimelineRenderToolItem = useCallback((item) => (item.legacyItem
         && !isSearchTool(item.tool)
         && !isFetchTool(item.tool)
@@ -2189,15 +2232,26 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // the chips are consumed once the send is accepted — otherwise refs
         // picked before a design submit would go out unreferenced yet stay
         // armed for the next plain composer send.
-        const mentionBlock = sessionMentionEnabled ? buildSessionMentionBlock(sessionRefs) : '';
+        const refsAtSend = sessionMentionEnabled ? sessionRefs : [];
+        const mentionBlock = refsAtSend.length ? buildSessionMentionBlock(refsAtSend) : '';
         const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
         // Scope guard: the clear races a session switch during the await —
         // chips picked in the NEW scope must survive (they restore from the
         // per-scope draft store on return).
         const draftKeyAtSend = mentionDraftKeyRef.current;
         void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
-          if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
-          else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
+          // Same acceptance semantics as handleSend: "restored" is a
+          // non-dispatch (truthy, but the text is back — not sent), and only
+          // the serialized refs are consumed. This lane does not clear at
+          // dispatch, so a non-acceptance leaves the chips armed as they were.
+          if (accepted === true) {
+            if (mentionDraftKeyRef.current === draftKeyAtSend) {
+              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
+            } else {
+              stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
+                refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
+            }
+          }
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
       }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
@@ -2640,11 +2694,26 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         };
         try {
           const accepted = await sendChatMessage(outgoingText);
-          // Clear chips once the send is accepted, even when the feature gate
-          // suppressed the block (stale chips from before the toggle must not linger).
-          if (accepted && mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
-          else if (accepted) stashSessionMentionDraft(draftKeyAtSend, []);
-          else restoreRefsOnFailure();
+          // Consume chips once the send is TRULY accepted, even when the
+          // feature gate suppressed the block (stale chips from before the
+          // toggle must not linger). "restored" is a non-dispatch (the text
+          // is back in the composer, not sent — the voice lane maps it to
+          // false): its chips must survive like any other failure. Only the
+          // serialized refsAtSend are dropped; chips picked during the await
+          // were never sent and stay armed.
+          if (accepted === true) {
+            if (mentionDraftKeyRef.current === draftKeyAtSend) {
+              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
+            } else {
+              // Scope changed mid-send: the cleanup stashed the outgoing
+              // scope's live chips (any picked during the await); consume
+              // only the serialized set from that stash.
+              stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
+                refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
+            }
+          } else {
+            restoreRefsOnFailure();
+          }
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2899,10 +2968,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               // user typed during the await is newer input and stays.
               personalWorkbenchTemplateIdRef.current = null;
               setPersonalWorkbenchTemplateId(null);
-              // The voice send consumed the chips at dispatch; the scope guard
-              // keeps a mid-send switch from wiping the target scope's chips.
-              if (mentionDraftKeyRef.current === draftKeyAtSend) setSessionRefs([]);
-              else stashSessionMentionDraft(draftKeyAtSend, []);
+              // The voice send consumed the serialized chips at dispatch; the
+              // scope guard keeps a mid-send switch from wiping the target
+              // scope's chips, and chips picked during the await were never
+              // sent — they stay armed (round-9, same semantics as
+              // handleSend's acceptance tail).
+              if (mentionDraftKeyRef.current === draftKeyAtSend) {
+                setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
+              } else {
+                stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
+                  refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
+              }
             } else {
               restoreRefsOnVoiceFailure();
             }
@@ -3195,7 +3271,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     // (round-25 minor 7): unlike handleSend, the chip path does
                     // NOT restore the blocked-abort draft — that gap is the
                     // registered chip-prefill item, not an intended match.
-                    Promise.resolve(sendChatMessage(q)).catch((err) => {
+                    // References picked in the composer ride welcome-card
+                    // sends too (sendWithSessionRefs never rejects: the
+                    // bridge surfaces failures itself).
+                    Promise.resolve(sendWithSessionRefs(q)).catch((err) => {
                       console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
                     });
                   }}
@@ -3273,7 +3352,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={setInputText} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} onPlanStuckGo={handlePlanStuckGo} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={setInputText} onSend={sendWithSessionRefs} editable={false} onOpenEditor={onOpenEditor} onPlanStuckGo={handlePlanStuckGo} isLatestArtifact={false} />
                     </div>
                 ))}
               </div>

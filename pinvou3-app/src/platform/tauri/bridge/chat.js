@@ -1846,22 +1846,36 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       stashSteerEvent(sid, steerId, "dropped");
       return;
     }
-    let restoredText = null;
-    runSyncOnSession(sid, function () {
-      const q = steeredQueueFor(sid);
-      const index = findSteerChipIndex(sid, steerId);
-      if (!q || index < 0) return;
-      const item = q[index];
-      q.splice(index, 1);
-      addSystemItem("⚠️ " + bt("steerDropped"));
-      restoredText = item.text;
-    });
-    // Restore the text to the draft (sixth review round P2): every other
-    // failure path (steer failure / watchdog / zap degrade) hands the text
-    // back; an engine-side drop (including ⏹ stop clearing) must not be the
-    // only branch that makes the user retype. Session-scoped restore (append
-    // + draftEpoch), not a global prefill.
-    if (restoredText !== null) restoreSteerText(sid, restoredText);
+    // Restore FIRST, splice only on success (the onSteerFailure round-6 M1
+    // pattern, engine-drop edition): a refs-only message strips to nothing
+    // and restores nothing — splicing it unconditionally would consume the
+    // chip while the composer chips were already consumed at dispatch,
+    // losing the message entirely (nothing queued, nothing restored). The
+    // not-restored chip degrades to a plain queued entry re-sent by
+    // flushQueued, and the notice says that honestly.
+    const dropQueue = steeredQueueFor(sid);
+    const dropIndex = dropQueue ? findSteerChipIndex(sid, steerId) : -1;
+    if (dropIndex >= 0) {
+      const item = dropQueue[dropIndex];
+      const restored = restoreSteerText(sid, item.text);
+      runSyncOnSession(sid, function () {
+        const q = steeredQueueFor(sid);
+        const index = q ? findSteerChipIndex(sid, steerId) : -1;
+        if (!q || index < 0) return;
+        if (restored) {
+          q.splice(index, 1);
+          addSystemItem("⚠️ " + bt("steerDropped"));
+        } else {
+          q[index].steered = false;
+          q[index].steerId = null;
+          addSystemItem("⚠️ " + bt("steerDroppedQueued"));
+        }
+      });
+      // The turn already ended (that is what "dropped" means here): nothing
+      // will retrigger the flush for the degraded entry — compensate like
+      // onSteerFailure does.
+      if (!restored && !isBusyFor(sid)) flushQueued(sid);
+    }
     notify();
   }
   // Mid-turn INTERRUPT: break the current AI step and start a new turn
