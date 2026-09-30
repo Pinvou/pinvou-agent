@@ -8944,6 +8944,71 @@ mod tests {
         });
     }
 
+    /// Round-32 minor 8 (review #455): the rebuild's warn-skip arm treats an
+    /// EMPTY stored value exactly like a miss when the OS keyring is
+    /// unreachable — the resolve-side doctrine classifies `Some("")` and
+    /// `None` identically, so both shapes skip with a warn instead of one of
+    /// them staying silent; the skip never aborts the rebuild (the healthy
+    /// sibling still lands). The round-31 pins fault the other arms (real
+    /// read fault / write fault); this pins the Ok-but-unusable arm itself.
+    #[test]
+    fn rebuild_skips_empty_and_missing_values_under_unreachable_keyring() {
+        with_temp_home(|| {
+            let manifest = serde_json::json!({
+                "id":"empty-kr","name":"empty-kr","description":"d","version":"1","icon":"x","category":"c",
+                "mcp_tools":[],"command":"","args":[],
+                "servers":[{"name":"empty-kr-remote","url":"https://empty-kr.example.com/mcp"}],
+                "secret_env":[
+                    {"key":"EMPTY_KR_KEY","provider":"builtin","required":true},
+                    {"key":"MISS_KR_KEY","provider":"builtin","required":true},
+                    {"key":"GOOD_KR_KEY","provider":"builtin","required":true}
+                ]
+            });
+            write_tool_manifest("empty-kr", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_installed_ids(&["empty-kr".to_string()]);
+            let store = FallbackActiveFaultStore {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: false,
+                fail_write_values: &[],
+            };
+            // The two shapes the arm must treat identically: an empty stored
+            // value and a plain miss (GOOD lands normally). Whitespace-only
+            // counts as empty by the same trim rule the happy arm applies.
+            store
+                .set(
+                    &mcp_secret_reference("empty-kr", "env", "EMPTY_KR_KEY"),
+                    "   ",
+                )
+                .unwrap();
+            store
+                .set(
+                    &mcp_secret_reference("empty-kr", "env", "GOOD_KR_KEY"),
+                    "good-value",
+                )
+                .unwrap();
+            let manager = MarketplaceManager::with_store(store);
+
+            manager.sync_secret_values().unwrap();
+            assert!(
+                !snapshot_secret_values()
+                    .contains_key(&mcp_secret_env_var("EMPTY_KR_KEY")),
+                "an empty stored value under an unreachable keyring must be skipped, not materialized"
+            );
+            assert!(
+                !snapshot_secret_values()
+                    .contains_key(&mcp_secret_env_var("MISS_KR_KEY")),
+                "a plain miss under an unreachable keyring must be skipped the same way"
+            );
+            assert_eq!(
+                snapshot_secret_values()
+                    .get(&mcp_secret_env_var("GOOD_KR_KEY"))
+                    .map(String::as_str),
+                Some("good-value"),
+                "the skips must not abort the rebuild: the healthy sibling still lands"
+            );
+        });
+    }
+
     /// A non-secret install-time env config field is dropped by the startup
     /// rebuild just like a secret one (the rebuild has no user input), so the
     /// honesty note must name it too — the note's reproducible set must match

@@ -13,6 +13,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
+import { maskedConnectorFlow } from './connector_flow_mask.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -168,15 +169,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const EMPTY_STEPS = [];
     const EMPTY_COPY = {};
     const NOOP = () => {};
-    // Round-31 m6 (review #455): mask raw backend error text on the connector
-    // flow cards exactly like the tmeet site did — en/ja (showRawErrors=false)
-    // get the localized generic instead of untranslated diagnostics, zh keeps
-    // them. The raw text stays in flow state; masking happens at render.
-    const maskedConnectorFlow = (flow, detailCopy) => (
-      flow && flow.phase === 'error' && !detailCopy.showRawErrors
-        ? { ...flow, err: detailCopy.actions.operationFailed }
-        : flow
-    );
     const FeishuFlowCard = ({ flow, onRetry, onCancel, name = '', twoStep = true, browserAuth = false, steps = EMPTY_STEPS, copy = EMPTY_COPY, onBrowserOpenError = NOOP }) => {
       if (!flow) return null;
       const isErr = flow.phase === 'error';

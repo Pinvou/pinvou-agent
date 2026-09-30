@@ -8,7 +8,7 @@
 
 > **落地状态**（2026-09-18）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（门控侧解析用 `bundle::skill_gating_owner`，
 > 物理嵌套感知，round-26 minor 11 精确化）。§3.1 的
@@ -91,7 +91,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"] }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -102,13 +102,25 @@ R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）
 条目一起丢弃——它无法区分"谁关的"，只对能归因的条目不越权（round-12 自审）；
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
-不可。首个版本读取时把旧的
+不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
+同步账本：install/connect/startup 三个同步变体对观察到的每个 DenyAll
+scope × 包对各记一行，**scope 仍处于未初始化时同样记账**（round-32 MAJOR
+1：fresh home 上的连接发生在 plain 物化之前，不记账则用户的**首次**启用会
+在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填默认关行；用户
+enable 移除 stored 行但**保留**账本条目（使 enable 对 refresh 粘滞）；teardown
+（`remove_bundle_from_disabled_scopes_exact`）按 scope 键**精确匹配**清除该包
+全部条目（round-32 minor 1），重装/重连因此重新同步默认关。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
 （`to_package_id` → `skill_gating_owner`：manifest 认领优先，物理嵌套回退；
 已知包 id 由盾牌直通——评审 #455 round-23 MINOR 1，避免同名技能目录劫持
 stored 包行）映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），
 `skill:` 前缀跨文件借道残留统一剥除。旧文件本版本内保留为惰性历史（只读新文件），下个版本周期随旧布局退役。
+升级时点的 legacy cohort 有一个**已披露的不对称**（评审 #455 round-32
+minor 7）：升级时在线的内置 CLI 连接器在首次启动由账本化 refresh 回填为
+默认关（连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原地保留
+live**——零 stored 行、零账本条目，也没有任何启动回填臂；同一"升级时在线"
+cohort 得到相反的默认姿态，此句即为二者的登记。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
@@ -331,9 +343,12 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   丢失存储恢复——该分支**刻意跳过 legacy 迁移**，兄弟证据证明统一期存储存在过，
   其搁置的判定不可知，宁全关不翻全开）。收敛方向：NotFound 时从 `mcp.json` 重建
   id，或在此登记为外部破坏下的已知限制（现按后者登记）。§7 清单同时补记
-  **companion 技能同意同步吞错**（round-31 m9）：uninstall 事务内的 companion
-  循环对同步失败按 log-only 继续（commands/marketplace.rs），已披露的
-  companion-loop 例外——失败方向为残留禁用（fail-closed），与 #515 家族同簿。
+  **companion 技能同意同步吞错**（round-31 m9，round-32 minor 12 更正定位）：
+  **install 流的 post-install companion 腿**（`commands/marketplace.rs:323-331`）
+  对同意同步失败按 log-only 继续——已披露的 companion-loop 例外，失败方向为
+  残留禁用（fail-closed），与 #515 家族同簿；**uninstall 事务内的 companion
+  循环不属此例外**（exact 清理以 `?` 传播；round-32 minor 12 勘误 round-31 m9
+  把该循环误定位在 uninstall 侧）。
 - 会话中关闭的上下文不可撤回边界（§3.3 末）、
   CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
 

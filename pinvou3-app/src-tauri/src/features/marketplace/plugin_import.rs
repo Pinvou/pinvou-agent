@@ -657,6 +657,141 @@ fn synthesized_manifest(det: &ComponentDetection) -> PluginManifest {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Round-32 minor 6 (review #455): import landing journal.
+//
+// A crash between the landing rename and the registry upsert leaves
+// `bundles/<id>/` live with no record — "live-by-absence" in initialized
+// scopes, zero consent, invisible to the round-24 in-process rollback. The
+// journal closes it precisely: the import marks its id before the landing and
+// clears the mark on any in-process exit (guard drop), so a leftover mark is
+// proof of a crash in that exact window. The startup reconciliation acts ONLY
+// on journaled ids (never a blind scan — zero misclassification surface): it
+// moves the landed dir out of `bundles_root` into a recoverable holding dir,
+// loudly logged and marked on the startup timeline.
+
+fn landing_journal_dir() -> std::path::PathBuf {
+    crate::platform::paths::pinvou3_home()
+        .join("marketplace")
+        .join("import_journal")
+}
+
+fn landing_mark_path(id: &str) -> std::path::PathBuf {
+    landing_journal_dir().join(format!("{id}.pending"))
+}
+
+fn mark_landing(id: &str) {
+    let path = landing_mark_path(id);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("[plugin-import] writing the landing journal failed (crash recovery for {id} degraded to live-by-absence): {e}");
+            return;
+        }
+    }
+    let _ = std::fs::write(&path, "pending\n");
+}
+
+fn clear_landing(id: &str) {
+    let _ = std::fs::remove_file(landing_mark_path(id));
+}
+
+/// Clears the landing mark on any in-process exit; a crash skips the drop and
+/// leaves the mark for the startup reconciliation.
+struct LandingJournalGuard(String);
+
+impl Drop for LandingJournalGuard {
+    fn drop(&mut self) {
+        clear_landing(&self.0);
+    }
+}
+
+/// Round-32 minor 6 (review #455): resolve leftover landing marks from crashed
+/// imports. For each journaled id: missing pack dir → the import never landed
+/// or rolled back (clear); registry record present → the import completed and
+/// only the mark-clear crashed (clear); landed dir with no record → crash
+/// residue: move it out of `bundles_root` into a recoverable holding dir so no
+/// scan admits it live-by-absence. Store-read failures keep the entry (retry
+/// next boot, fail-closed). Actively holds the id's import lock per entry so a
+/// concurrent import cannot interleave with the inspection/move.
+pub fn reconcile_import_journal() -> Result<(), String> {
+    let dir = landing_journal_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("reading the import journal failed: {e}")),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => return Err(format!("reading an import journal entry failed: {e}")),
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".pending") else {
+            // Not ours (or a residue dir from a previous reconcile) — leave it.
+            continue;
+        };
+        if !is_safe_component_id(id) {
+            // A journaled id must always be safe (the import validated it);
+            // an unsafe name means the file is not a journal mark. Leave it.
+            continue;
+        }
+        let lock = import_lock_for(id);
+        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let pkg_dir = crate::platform::paths::bundles_root().join(id);
+        if !pkg_dir.exists() {
+            // Never landed, or the in-process rollback already undid it.
+            clear_landing(id);
+            continue;
+        }
+        let record = super::store::BundleStore::new().get(id);
+        match record {
+            Err(e) => {
+                // The store truth is unknowable — keep the mark and retry on
+                // the next boot (fail-closed: the dir may be crash residue,
+                // but deleting on an unreadable registry is how user packs
+                // get eaten).
+                log::warn!(
+                    "[plugin-import] import journal: the store read for '{id}' failed, deferring crash recovery to the next startup: {e}"
+                );
+            }
+            Ok(Some(_)) => {
+                // The import completed; only the mark-clear crashed.
+                clear_landing(id);
+            }
+            Ok(None) => {
+                // Landed live-by-absence: quarantine out of bundles_root so
+                // no scan admits it, recoverable by hand from the holding
+                // dir.
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let holding = landing_journal_dir().join(format!("{id}.crash-{stamp}"));
+                match std::fs::rename(&pkg_dir, &holding) {
+                    Ok(()) => {
+                        log::warn!(
+                            "[plugin-import] import journal: '{id}' landed without a registry record (crash between landing and registration); moved to {} — restore by hand if it is yours",
+                            holding.display()
+                        );
+                        crate::platform::startup::mark_with_detail(
+                            "rust",
+                            "import_journal:crash_residue_quarantined",
+                            id,
+                        );
+                        clear_landing(id);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[plugin-import] import journal: moving crashed landing '{id}' aside failed, deferring to the next startup: {e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 统一导入：解压插件包（mcp / skill / 组合）→ 安全校验 → 识别 → 落盘
 /// `bundles/<id>/`（mcp/ + skills/ + 图标）→ 登记 BundleStore。
 pub fn import_plugin_package(
@@ -1010,6 +1145,17 @@ pub fn import_plugin_package(
 
     // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘。
 
+    // Round-32 minor 6 (review #455): mark the landing in the import journal
+    // BEFORE the directory goes live, clear it when this call exits (any
+    // in-process outcome — success, supply-failure rollback, or rename
+    // failure). Only a process death between the mark and the exit leaves the
+    // mark behind, which is exactly the window the round-24 rollback cannot
+    // cover: the pack dir is live on disk with no registry record, admitted
+    // live-by-absence in initialized scopes with zero consent. The startup
+    // reconciliation ([`reconcile_import_journal`]) resolves the leftover.
+    mark_landing(&id);
+    let _landing_guard = LandingJournalGuard(id.clone());
+
     // 原子落盘：先把旧目录挪到 .old 备份，rename 成功后再删 .old；rename 失败则
     // 把 .old 复原回去，保证「旧包不丢、新包不入」——避免既往版本 `remove+rename`
     // 任一环节失败导致新旧双丢的窗期。
@@ -1147,6 +1293,178 @@ pub fn import_plugin_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-32 minor 6 (review #455): a leftover landing mark with a landed
+    /// dir but no registry record is crash residue — the reconcile moves it
+    /// out of `bundles_root` into a recoverable holding dir and clears the
+    /// mark.
+    #[test]
+    fn reconcile_quarantines_landed_dir_without_registry_record() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou-import-journal-crash-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = crate::platform::paths::bundles_root().join("crash-pkg");
+        std::fs::create_dir_all(pkg.join("skills/crash-pkg")).unwrap();
+        std::fs::write(
+            pkg.join("skills/crash-pkg/SKILL.md"),
+            "---\nname: crash-pkg\n---\n",
+        )
+        .unwrap();
+        mark_landing("crash-pkg");
+        assert!(landing_mark_path("crash-pkg").exists(), "fixture: mark present");
+
+        reconcile_import_journal().unwrap();
+
+        assert!(
+            !pkg.exists(),
+            "crash residue must not stay live-by-absence in bundles_root"
+        );
+        let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("crash-pkg.crash-"))
+            .collect();
+        assert_eq!(
+            moved.len(),
+            1,
+            "the landed dir moves to exactly one recoverable holding dir: {moved:?}"
+        );
+        assert!(
+            landing_journal_dir().join(&moved[0]).join("plugin.json").is_file()
+                || landing_journal_dir().join(&moved[0]).join("skills").is_dir(),
+            "the holding dir keeps the pack contents for manual recovery"
+        );
+        assert!(
+            !landing_mark_path("crash-pkg").exists(),
+            "the resolved entry is cleared"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-32 minor 6 (review #455): a leftover mark over a COMPLETED import
+    /// (registry record present — crash hit after the upsert, before the
+    /// guard drop) keeps the pack and just clears the stale mark.
+    #[test]
+    fn reconcile_keeps_completed_import_and_clears_stale_mark() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou-import-journal-done-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let pkg = crate::platform::paths::bundles_root().join("done-pkg");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
+                "done-pkg",
+                crate::features::marketplace::store::BundleSource::Upload(
+                    "done.zip".to_string(),
+                ),
+            ))
+            .unwrap();
+        mark_landing("done-pkg");
+
+        reconcile_import_journal().unwrap();
+
+        assert!(
+            pkg.join("plugin.json").is_file(),
+            "a registered pack is never quarantined"
+        );
+        assert!(
+            !landing_mark_path("done-pkg").exists(),
+            "the stale mark is cleared"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-32 minor 6 (review #455): a mark with no landed dir (crash before
+    /// the landing rename, or after an in-process rollback that had already
+    /// cleared the dir) resolves to a cleared mark and zero side effects.
+    #[test]
+    fn reconcile_clears_mark_without_landed_dir() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou-import-journal-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        mark_landing("ghost-pkg");
+        reconcile_import_journal().unwrap();
+        assert!(
+            !landing_mark_path("ghost-pkg").exists(),
+            "a mark without a landed dir clears"
+        );
+        assert!(
+            !crate::platform::paths::bundles_root().join("ghost-pkg").exists(),
+            "nothing may be materialized by the reconcile"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn icon_ext_whitelist() {

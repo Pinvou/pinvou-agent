@@ -146,6 +146,25 @@ async function runDenyAllOptInScenarios() {
     assert.deepStrictEqual(state.enableCalls, [['gongwen', 'government-writing']]);
   }
 
+  // Round-32 minor 11 (review #455): the data-visualization scene gets the
+  // same prepare-invocation coverage as its siblings (the .js→.mjs port had
+  // dropped it, leaving only the capability-mapping assertions above) — a
+  // skills-only scene: the skill pack alone must move out of the disabled
+  // set, unrelated packs stay.
+  {
+    const { invoke, state } = makeInvoke({
+      skills: ['visualizer'],
+      disabled: ['visualizer', 'feishu'],
+    });
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'design:data-visualization' }, invoke);
+    assert.strictEqual(prepared.ok, true);
+    assert.strictEqual(prepared.installed, false, 'the skill pack is already on disk');
+    assert.strictEqual(prepared.optedIn, true, 'scene packages must be opted in');
+    assert.strictEqual(state.disabled.has('visualizer'), false);
+    assert.strictEqual(state.disabled.has('feishu'), true, 'unrelated packs stay disabled');
+    assert.deepStrictEqual(state.enableCalls, [['visualizer']]);
+  }
+
   // Not installed + scope uninitialized (DenyAll default-off): the explicit opt-in is still required after install.
   {
     const { invoke, state } = makeInvoke({ disabled: ['pptx'] });

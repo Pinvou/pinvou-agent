@@ -2112,6 +2112,110 @@ mod tests {
         );
         cleanup(&tmp);
     }
+
+    /// Round-32 minor 4 (review #455): an Upload record present BEFORE the
+    /// cleanup skips the whole retired-id decision (top probe) — no uninstall,
+    /// no delete, the user's uploaded pack and its registration stay put.
+    #[test]
+    fn cleanup_removed_marketplace_tools_skips_when_upload_record_present() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+
+        // Residue that would normally trigger the cleanup…
+        let pkg_dir = paths::bundles_root().join("data_analysis");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+        // …but the id is a user upload: the retired-id protection must win.
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(crate::features::marketplace::store::BundleRecord {
+                id: "data_analysis".to_string(),
+                source: crate::features::marketplace::store::BundleSource::Upload(
+                    "data_analysis.zip".to_string(),
+                ),
+                installed: true,
+                content_fingerprint: Some("fp".to_string()),
+                installed_at: "2026-09-30T00:00:00+00:00".to_string(),
+                degraded: None,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+
+        bundle.cleanup_removed_marketplace_tools().unwrap();
+
+        assert!(
+            pkg_dir.join("plugin.json").is_file(),
+            "an uploaded pack must never be swept by the retired-tool cleanup"
+        );
+        assert!(
+            !paths::pinvou3_home().join("marketplace").join("installed.json").exists(),
+            "the top-probe skip must not run the uninstall (uninstall unconditionally rewrites installed.json)"
+        );
+        cleanup(&tmp);
+    }
+
+    /// Round-32 minor 4 (review #455): an Upload import landing while the
+    /// cleanup waits on the id's import lock must survive — the lock now
+    /// spans the DECISION (top probe + uninstall + re-probe + delete), so the
+    /// post-lock top probe re-evaluates and defers before any destructive
+    /// step runs. Observable discriminator: the uninstall never runs
+    /// (installed.json never appears), which the round-31 placement (lock
+    /// only around the final delete, uninstall outside) failed.
+    #[test]
+    fn cleanup_upload_landing_under_import_lock_defers_the_whole_decision() {
+        use crate::features::marketplace::plugin_import::import_lock_for;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+
+        // Residue so the cleanup would run once it gets the lock.
+        let pkg_dir = paths::bundles_root().join("data_analysis");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+
+        // An import for the same id is mid-flight: it holds the id's import
+        // lock (its landing is serialized under exactly this lock).
+        let gate = import_lock_for("data_analysis");
+        let held = gate.lock().unwrap_or_else(|p| p.into_inner());
+
+        let cleaner = std::thread::spawn(move || bundle.cleanup_removed_marketplace_tools());
+        // The cleaner can only sit blocked on the import lock — it cannot
+        // have passed the top probe yet (the lock is acquired before it).
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // The import lands while the cleanup waits.
+        crate::features::marketplace::store::BundleStore::new()
+            .upsert(crate::features::marketplace::store::BundleRecord {
+                id: "data_analysis".to_string(),
+                source: crate::features::marketplace::store::BundleSource::Upload(
+                    "data_analysis.zip".to_string(),
+                ),
+                installed: true,
+                content_fingerprint: Some("fp".to_string()),
+                installed_at: "2026-09-30T00:00:00+00:00".to_string(),
+                degraded: None,
+                extra: serde_json::Map::new(),
+            })
+            .unwrap();
+        drop(held);
+
+        cleaner.join().unwrap().unwrap();
+
+        assert!(
+            pkg_dir.join("plugin.json").is_file(),
+            "an upload landing under the import lock must never be swept"
+        );
+        assert!(
+            !paths::pinvou3_home().join("marketplace").join("installed.json").exists(),
+            "the post-lock top probe must defer BEFORE the uninstall (old placement ran the uninstall outside the lock)"
+        );
+        cleanup(&tmp);
+    }
     /// Session Longevity/Efficient Approvals/taxonomy 不得再进 prompt,
     /// pinvou3 自有的 mode 块 + 瘦身 compact 模板必须在。上游 sync 后此测试
     /// 失败 = set_static_prompt_composer_override fork patch 被合丢。

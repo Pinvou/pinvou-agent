@@ -4,6 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
+import { sceneStatusKey } from './scene_status_key.js';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
@@ -679,6 +680,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [designCommand, setDesignCommand] = useState(null);
       const [designAiState, setDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
       const [sceneCapabilityStatus, setSceneCapabilityStatus] = useState(null);
+      // Round-32 minor 10 (review #455): per-toast epoch — the session key
+      // above discriminates sessions/drafts, not two sends in ONE session, so
+      // a stale auto-clear timeout could shorten a newer send's ready toast.
+      // Each ready toast stamps the next epoch; its closer only clears the
+      // exact epoch it scheduled.
+      const sceneReadyToastEpochRef = useRef(0);
       const designAiSessionRef = useRef(null);
       const updateDesignAiState = useCallback((valueOrUpdater) => {
         setDesignAiState((prev) => {
@@ -1587,9 +1594,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // in flight from draft D1 could otherwise still paint into fresh
         // draft D2 (a new-chat click bumps the epoch while the session id
         // stays null→null).
-        const sceneStatusSession = `${activeSessionIdRef.current || 'draft'}:${draftEpochRef.current}`;
+        const sceneStatusSession = sceneStatusKey(activeSessionIdRef.current, draftEpochRef.current);
         const sceneStatusKeyNow = () =>
-          `${activeSessionIdRef.current || 'draft'}:${draftEpochRef.current}`;
+          sceneStatusKey(activeSessionIdRef.current, draftEpochRef.current);
         const setSceneStatusForSession = (status) => {
           if (sceneStatusKeyNow() === sceneStatusSession) {
             setSceneCapabilityStatus(status);
@@ -1688,7 +1695,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               // in: a pack gated off by default completes its opt-in here and
               // gets the same enabled toast (#455 R5-B3).
               if (prepared.installed || prepared.optedIn) {
-                sceneStatus = { kind: 'ready', text: sceneCopy.ready };
+                sceneStatus = {
+                  kind: 'ready',
+                  text: sceneCopy.ready,
+                  toastEpoch: (sceneReadyToastEpochRef.current += 1),
+                };
                 readyAutoClear = true;
               }
               // else: leave the local null — nothing to show.
@@ -1717,7 +1728,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // The session guard inside the timeout keeps this stale closer
           // from clearing a NEWER session's fresh ready toast.
           window.setTimeout(() => setSceneCapabilityStatus((current) => (
-            current && current.kind === 'ready' && sceneStatusKeyNow() === sceneStatusSession
+            current && current.kind === 'ready'
+              && current.toastEpoch === sceneStatus.toastEpoch
+              && sceneStatusKeyNow() === sceneStatusSession
               ? null
               : current
           )), 1800);
@@ -1860,7 +1873,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // via useOutsidePointerClose (passed in via onCloseAsrPopover); the view no longer
       // attaches duplicate listeners.
       useEffect(() => {
-        const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
+        const sessionKey = sceneStatusKey(activeSessionId, draftEpoch);
         if (justInstalledTool) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);

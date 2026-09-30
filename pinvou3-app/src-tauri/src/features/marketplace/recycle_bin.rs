@@ -589,7 +589,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         }
         skill_names.sort();
         for name in &skill_names {
-            super::skill_marketplace::ensure_skill_restorable(name)?;
+            super::skill_marketplace::ensure_skill_restorable(pkg_id, name)?;
         }
     }
     // Consent gate BEFORE take_back (round-11 M3): if its persist fails, the
@@ -1292,6 +1292,19 @@ mod tests {
         let tmp = fresh_dir("restore-orphan");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
+        // Round-32 minor 3 (review #455): seed an INITIALIZED plain scope so
+        // the consent gate has state to persist — without this the pin was
+        // vacuous (uninitialized scopes write nothing, so deleting the
+        // orphan guard still left "no phantom consent" true and the
+        // downstream take_back refusal byte-identical). With the seed, a
+        // deleted guard lets the gate persist phantom `my-skill` rows before
+        // take_back refuses, which the content assertion below catches.
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &[],
+        )
+        .unwrap();
+
         let pkg = paths::bundles_root().join("my-skill");
         std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
         std::fs::write(
@@ -1325,10 +1338,32 @@ mod tests {
             err.contains("不在回收站"),
             "the orphaned dir must hit the manifest-entry guard: {err}"
         );
-        assert!(
-            !tmp.join("disabled_bundles.json").exists(),
-            "the consent gate must not have run — no phantom consent state"
-        );
+        {
+            // The consent gate must not have run — no phantom consent state
+            // for the orphaned pack in ANY of the four sets (round-32 minor
+            // 3: content assertion, not file absence — the scope is now
+            // initialized, so the store legitimately exists).
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            let all_rows: Vec<String> = file
+                .scopes
+                .values()
+                .chain(file.hidden_scopes.values())
+                .chain(file.default_off_scopes.values())
+                .flatten()
+                .cloned()
+                .collect();
+            assert!(
+                !all_rows.iter().any(|id| id == "my-skill"),
+                "the consent gate must not persist phantom rows for the orphan: {all_rows:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .all(|entry| !entry.ends_with(":my-skill")),
+                "the consent gate must not persist phantom ledger entries for the orphan: {:?}",
+                file.install_default_synced
+            );
+        }
         assert!(
             bin.root.join("my-skill").is_dir(),
             "the bin dir stays in place"
@@ -1340,6 +1375,83 @@ mod tests {
         assert!(
             store.get("my-skill").unwrap().is_none(),
             "no registration may be rebuilt"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-32 minor 5 (review #455): the restore collision preflight must
+    /// anchor "own" on the pack BEING RESTORED, not on the skill name. A
+    /// single-skill pack imported under the recycled skill's exact name
+    /// (bundles/S/skills/S/ live) used to pass the owner fallback (it returns
+    /// the S-named pack == the skill name) and the foreign-copy scan (its own
+    /// dir is excluded as "own"), so restoring P double-materialized
+    /// bundles/P/skills/S/ beside live bundles/S/ — the exact shape the
+    /// preflight's own comment classifies as leading to unique-copy deletion
+    /// later. The restore must be refused before any move, bin entry intact.
+    #[test]
+    fn restore_refuses_collision_with_live_same_named_skill_pack() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = fresh_dir("restore-collision");
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Recycle pack P carrying skill S.
+        let pkg = paths::bundles_root().join("pack-p");
+        std::fs::create_dir_all(pkg.join("skills/skill-s")).unwrap();
+        std::fs::write(
+            pkg.join("skills/skill-s/SKILL.md"),
+            "---\nname: skill-s\n---\n",
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record("pack-p")).unwrap();
+        let record = store.get("pack-p").unwrap().unwrap();
+        store.remove("pack-p").unwrap();
+        RecycleBin::new()
+            .recycle_package("pack-p", KIND_SKILL, "pack-p.zip", record)
+            .unwrap();
+
+        // A single-skill pack imported under the recycled skill's name goes
+        // live while P sits in the bin: bundles/S/skills/S/.
+        let live = paths::bundles_root().join("skill-s");
+        std::fs::create_dir_all(live.join("skills/skill-s")).unwrap();
+        std::fs::write(
+            live.join("skills/skill-s/SKILL.md"),
+            "---\nname: skill-s\n---\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(live.join("mcp")).unwrap();
+        std::fs::write(
+            live.join("mcp/manifest.json"),
+            r#"{"id":"skill-s","name":"skill-s","description":"d","version":"1","icon":"x","category":"c","companion_skills":["skill-s"]}"#,
+        )
+        .unwrap();
+        store.upsert(upload_record("skill-s")).unwrap();
+
+        let err = restore_plugin("pack-p").unwrap_err();
+        assert!(
+            err.contains("skill-s") && (err.contains("占用") || err.contains("已存在")),
+            "the collision must be refused by the preflight: {err}"
+        );
+        assert!(
+            !paths::bundles_root().join("pack-p").exists(),
+            "nothing may be restored beside the live same-named pack"
+        );
+        let bin = RecycleBin::new();
+        assert!(
+            bin.root.join("pack-p").is_dir() && bin.contains("pack-p").unwrap(),
+            "a refused restore keeps the bin entry: retry after uninstalling the collider stays real"
+        );
+        assert!(
+            store.get("pack-p").unwrap().is_none(),
+            "no registration may be rebuilt for the refused restore"
         );
 
         match prev {

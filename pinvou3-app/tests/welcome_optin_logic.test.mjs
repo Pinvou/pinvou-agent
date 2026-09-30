@@ -42,7 +42,7 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn 
     consume: () => calls.push('consume'),
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
-      return { enabled: true, blocked: [] };
+      return { enabled: true, blocked: [], not_applied: [] };
     },
   });
   assert.strictEqual(result.attempted, true);
@@ -74,7 +74,7 @@ const { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn 
   const result = await consumeWelcomeOptIn({
     getToolId: () => 'gongwen',
     consume: () => {},
-    invoke: async () => ({ enabled: false, blocked: ['gongwen'] }),
+    invoke: async () => ({ enabled: false, blocked: ['gongwen'], not_applied: [] }),
   });
   assert.strictEqual(result.attempted, true);
   assert.deepStrictEqual([...result.blocked], ['gongwen']);

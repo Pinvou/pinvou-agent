@@ -417,10 +417,12 @@ jobs:
       - name: fork-guard 指纹层 (秒级,不编译)
         run: ./scripts/fork-guard.sh --fast
 
-      # 合并 authored 标识符审计（round-30 m10 接线）：枚举分支上每个 merge
-      # commit 的 resolution-authored 标识符并打印（信息披露型，恒 0 退出）——
-      # 让"解决内容进树"在每条 PR 上可见，而非依赖逐轮人工跑。
-      - name: 合并 authored 审计 (秒级)
+      # Merge authored-identifier audit (round-30 m10 wiring): enumerate the
+      # resolution-authored identifiers of every merge commit on the branch
+      # and print them (disclosure-only, always exits 0) — makes
+      # "resolution content reached the tree" visible on every PR instead of
+      # relying on a per-round manual run.
+      - name: Merge authored audit (seconds)
         if: ${{ github.event_name != 'push' }}
         run: |
           base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
@@ -1060,11 +1062,14 @@ jobs:
         if: ${{ github.event_name != 'push' }}
         run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
 
-      # 测试注册表守卫：重复 #[test] 会把一个用例注册两次并吞掉相邻用例的
-      # 属性（PR #455 round-26/28 两次发生），且对运行总数不可见（膨胀与
-      # 缩水相消）。复用上一步编译产物，秒级完成：断言无重复注册路径 +
-      # consent 关键 pin 全部在册（scripts/test-registry-guard.py）。
-      - name: test-registry guard（重复注册 + 必备 pin）
+      # Test registry guard: a duplicated #[test] registers one case twice
+      # and swallows the adjacent case's attributes (happened twice on PR
+      # #455, rounds 26/28), and is invisible to the total run count
+      # (inflation and shrinkage cancel out). Reuses the previous step's
+      # build artifacts, done in seconds: assert no duplicated registration
+      # paths + every consent-critical pin is present
+      # (scripts/test-registry-guard.py).
+      - name: test-registry guard (duplicates + required pins)
         if: ${{ github.event_name != 'push' }}
         run: python3 scripts/test-registry-guard.py
 

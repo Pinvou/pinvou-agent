@@ -2600,12 +2600,19 @@ fn disabled_file_ids() -> (Vec<String>, Vec<String>, Vec<String>) {
     )
 }
 
-/// Pin 1: a validation failure's rollback uninstall must leave NO rows or
-/// markers for the pack anywhere in `disabled_bundles.json` — the consent
-/// sync ran before validation and wrote rows; the rollback's teardown
-/// (`remove_bundle_from_disabled_scopes`) removes them again, so the
+fn disabled_file_ledger() -> Vec<String> {
+    crate::features::marketplace::scope::load_disabled_bundles_file().install_default_synced
+}
+
+/// Pin 1: a validation failure's rollback uninstall must leave NO rows,
+/// markers, or ledger entries for the pack anywhere in
+/// `disabled_bundles.json` — the consent sync ran before validation and
+/// wrote rows; the rollback's teardown (the exact form,
+/// `remove_bundle_from_disabled_scopes_exact`, required because the pack
+/// directory is already gone when it runs) removes them again, so the
 /// pack ends up neither installed nor consent-stranded. Fails if the
-/// teardown is dropped from the rollback path.
+/// teardown is dropped from the rollback path (round-32 minor 2: the pin
+/// now reads all four sets the teardown clears, ledger included).
 #[tokio::test]
 async fn install_validation_failure_rollback_leaves_no_consent_rows() {
     let _g = crate::platform::paths::tests::ENV_LOCK
@@ -2663,6 +2670,15 @@ async fn install_validation_failure_rollback_leaves_no_consent_rows() {
         !def.contains(&"yuandian-mcp".to_string()),
         "rollback teardown must remove install-default markers too: {def:?}"
     );
+    // Round-32 minor 2 (review #455): the ledger is the fourth set the exact
+    // teardown clears — a stranded `plain:yuandian-mcp` entry would keep the
+    // startup refresh from ever re-syncing default-off for a same-id
+    // reinstall.
+    let ledger = disabled_file_ledger();
+    assert!(
+        ledger.iter().all(|entry| !entry.ends_with(":yuandian-mcp")),
+        "rollback teardown must clear the pack's ledger entries too: {ledger:?}"
+    );
 }
 
 /// Pin 2: a consent-sync persist failure fails the install with the honest
@@ -2709,10 +2725,15 @@ async fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
         mcp["servers"].get("yuandian-syncfail-test").is_some(),
         "the mcp.json server must survive the consent-sync failure"
     );
-    // And the failed write persisted nothing.
+    // And the failed write persisted nothing — ledger included (round-32
+    // minor 2).
     let (dis, hid, def) = disabled_file_ids();
     assert!(
         dis.is_empty() && hid.is_empty() && def.is_empty(),
         "a failed consent persist must not strand rows: {dis:?} {hid:?} {def:?}"
+    );
+    assert!(
+        disabled_file_ledger().is_empty(),
+        "a failed consent persist must not strand ledger entries either"
     );
 }

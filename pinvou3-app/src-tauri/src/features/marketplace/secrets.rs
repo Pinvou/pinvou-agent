@@ -331,11 +331,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // nothing stored while the OS keyring is unreachable
                         // is the UndeterminableMiss classification (the
                         // credential may sit in the keyring) — the
-                        // SecretResolveError doctrine's own words. A hard Err
-                        // would fail every boot rehydration on a keyring-less
-                        // host, so: warn and skip; the placeholder resolves
-                        // empty until the keyring returns.
-                        if value.is_none()
+                        // SecretResolveError doctrine's own words. The
+                        // resolve side classifies `Some("")` and `None`
+                        // identically, so the skip must not stay silent for
+                        // an empty stored value either (round-32 minor 8).
+                        // A hard Err would fail every boot rehydration on a
+                        // keyring-less host, so: warn and skip; the
+                        // placeholder resolves empty until the keyring
+                        // returns.
+                        if value
+                            .as_deref()
+                            .map_or(true, |stored| stored.trim().is_empty())
                             && self.credential_store.os_keyring_unreachable(&reference)
                         {
                             log::warn!(

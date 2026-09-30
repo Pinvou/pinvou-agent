@@ -344,7 +344,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
                 // The frontend fire-and-forget call may swallow this Err (review #455 R16-MAJOR2), so it must be logged here.
                 log::warn!("[ima] persisting the skills' default-off consent state failed: {e}");
                 format!(
-                    "ima skills installed, but persisting their default-off consent state failed: new sessions will enable them by default — turn them off in the tools list: {e}"
+                    "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}: new sessions will enable them by default — turn them off in the tools list: {e}"
                 )
             })?;
             Ok(())
@@ -430,7 +430,36 @@ fn redact_known_credentials(mut text: String, client_id: &str, api_key: &str) ->
 }
 
 #[cfg(test)]
+/// Round-32 minor 10 (review #455): the stable marker the frontend ima card
+/// keys its actionable-guidance branch on (ToolStoreView's `consentFailure`
+/// substring check). A backend rewording would silently degrade the en/ja
+/// guidance to the generic copy — the pin below forces the two sides to move
+/// together, so reword this ONLY together with the frontend matcher.
+pub(crate) const IMA_CONSENT_SYNC_FAILURE_MARKER: &str =
+    "persisting their default-off consent state failed";
+
+#[cfg(test)]
 mod tests {
+    /// Round-32 minor 10 (review #455): the consent-failure copy carries the
+    /// exact marker the frontend matches (ToolStoreView `consentFailure`);
+    /// rewording it without updating the frontend matcher would silently
+    /// degrade the en/ja guidance to the generic copy.
+    #[test]
+    fn consent_failure_message_keeps_the_frontend_marker() {
+        let message = format!(
+            "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}: new sessions will enable them by default — turn them off in the tools list: store down"
+        );
+        assert!(
+            message.contains(IMA_CONSENT_SYNC_FAILURE_MARKER),
+            "the shipped message must carry the frontend-matched marker: {message}"
+        );
+        assert_eq!(
+            IMA_CONSENT_SYNC_FAILURE_MARKER,
+            "persisting their default-off consent state failed",
+            "the marker value is the frontend contract (ToolStoreView consentFailure) — update both sides together"
+        );
+    }
+
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 

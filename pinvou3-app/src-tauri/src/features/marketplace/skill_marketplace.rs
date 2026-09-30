@@ -2537,17 +2537,21 @@ pub(crate) fn foreign_skill_copies_under(
 /// 期间市场状态可能已变（例如导入了把同名技能作为 companion 的包），碰撞状态
 /// 下恢复会造出同技能的双份物理副本，此后技能卸载的候选目录清理会把唯一副本
 /// 连他包副本一起删掉。与上传通道（`install_upload_skill`）同三查：预置名占用 /
-/// 属主认领 / 他包物理副本。仅读盘与登记，不动任何状态；碰撞对象的建包不持同
-/// id 锁，极端并发交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站
-/// `restore_plugin` 在取回目录前应用同一检查。
-pub(crate) fn ensure_skill_restorable(skill_name: &str) -> Result<(), String> {
+/// 属主认领 / 他包物理副本。属主认领与他包副本两查都以 `restoring_pkg`（被恢复
+/// 的包 id）为"自己"的锚 —— round-32 minor 5（评审 #455）：按技能名锚定会在
+/// "单技能包恰好以该技能名建包"时把 live 的 S 包误判为自身（owner 回退返回
+/// S 包名 == 技能名），恢复 P 的 skills/S/ 便在 live 的 bundles/S/ 旁再造一份
+/// 双副本。仅读盘与登记，不动任何状态；碰撞对象的建包不持同 id 锁，极端并发
+/// 交错由技能卸载的 fail-closed 拒绝兜底。`pub(crate)`：回收站 `restore_plugin`
+/// 在取回目录前应用同一检查。
+pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> Result<(), String> {
     if is_preset_skill_name(skill_name) {
         return Err(format!(
             "技能名 '{skill_name}' 与市场预置技能冲突，无法恢复；请先卸载同名预置技能，或从回收站彻底删除后改名重新导入"
         ));
     }
     let owner = super::bundle::skill_owner_package(skill_name);
-    if owner != skill_name {
+    if owner != restoring_pkg {
         return Err(format!(
             "技能名 '{skill_name}' 已被已安装包 '{owner}' 的配套技能占用，无法恢复；请先卸载该包再从回收站恢复"
         ));
@@ -2555,7 +2559,7 @@ pub(crate) fn ensure_skill_restorable(skill_name: &str) -> Result<(), String> {
     if let Some(other) = foreign_skill_copies_under(
         &SkillMarketplaceManager::new().packages_root,
         skill_name,
-        skill_name,
+        restoring_pkg,
     )
     .into_iter()
     .next()

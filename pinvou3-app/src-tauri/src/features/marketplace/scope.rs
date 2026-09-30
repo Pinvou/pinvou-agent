@@ -74,15 +74,19 @@ pub struct DisabledBundlesFile {
     pub plain_defaults_migrated: bool,
     /// Round-31 BLOCKER (review #455): ledger of `"<scope>:<pack>"` pairs whose
     /// install-default row the install/connect/startup sync has successfully
-    /// persisted in an initialized DenyAll scope. The startup connector-gate
-    /// refresh pushes rows only for pairs **absent** here: "user enabled" and
-    /// "never synced" are observably identical on current state alone (both =
-    /// skills materialized + row absent), so a plain membership push re-added
-    /// the row at every boot and silently reverted explicit enables. A later
-    /// user enable removes the stored row while this entry survives — its
-    /// presence is exactly the "sync already ran once" fact. Teardown
-    /// ([`remove_bundle_from_disabled_scopes_exact`]) clears the pack's
-    /// entries so a fresh install / reconnect re-syncs default-off.
+    /// persisted — or that a sync observed while the scope was still
+    /// uninitialized (round-32 MAJOR 1, review #455). The startup
+    /// connector-gate refresh pushes rows only for pairs **absent** here:
+    /// "user enabled" and "never synced" are observably identical on current
+    /// state alone (both = skills materialized + row absent), so a plain
+    /// membership push re-added the row at every boot and silently reverted
+    /// explicit enables. A later user enable removes the stored row while this
+    /// entry survives — its presence is exactly the "sync already ran once"
+    /// fact. Recording in the uninitialized arm closes the second cohort: a
+    /// connect on a fresh home (plain uninitialized by design) used to record
+    /// nothing, so the user's first enable was backfilled over at the next
+    /// boot. Teardown ([`remove_bundle_from_disabled_scopes_exact`]) clears
+    /// the pack's entries so a fresh install / reconnect re-syncs default-off.
     #[serde(default)]
     pub install_default_synced: Vec<String>,
     /// 未知键原样保留（前向兼容）。
@@ -1254,8 +1258,10 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
 /// ledger absence is exactly the never-synced cohort the backfill targets.
 /// The install/connect variant stays deliberately un-gated: connecting is a
 /// user action with fresh-install semantics ("等同新装") and re-arms the
-/// default-off — both variants record the ledger pair, so this refresh
-/// never undoes what either of them wrote.
+/// default-off — both variants record the ledger pair **even when the scope is
+/// still uninitialized** (round-32 MAJOR 1, review #455), so this refresh
+/// never undoes what either of them wrote, nor an enable made between a
+/// pre-initialization sync and the scope's materialization.
 pub fn sync_deny_all_scopes_refresh(raw_id: &str) -> Result<(), String> {
     sync_deny_all_scopes_inner(raw_id, true)
 }
@@ -1273,6 +1279,21 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
         }
         let key = mode.as_str();
         if !file.initialized.contains(key) {
+            // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
+            // record the pair. A connect/install sync on a fresh home runs
+            // exactly here — plain is uninitialized by design until the
+            // user's first composer/welcome/scene write materializes it — so
+            // skipping the ledger made the user's FIRST enable observably
+            // identical to "never synced": the next boot's refresh backfilled
+            // the default-off row over it. Recording (without pushing any
+            // row — the uninitialized scope is covered by the on-the-fly
+            // expansion) marks the pair as seen, so the post-materialization
+            // refresh leaves the enable in place.
+            let ledger_key = format!("{key}:{package_id}");
+            if !file.install_default_synced.contains(&ledger_key) {
+                file.install_default_synced.push(ledger_key);
+                changed = true;
+            }
             continue;
         }
         let ledger_key = format!("{key}:{package_id}");
@@ -1394,10 +1415,18 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
     // enable path rewrites the scope lists wholesale and deliberately does
     // NOT come through here — a user enable must keep the ledger entry
     // (that is what makes the enable sticky against the startup refresh).
-    let ledger_prefix = format!(":{package_id}");
+    // Round-32 minor 1 (review #455): the entries are `"<scope>:<pack>"`, so
+    // the clear matches them EXACTLY per scope key — a suffix match would let
+    // a pack id whose tail equals another pack id (`a:b` vs `b`) lose its
+    // ledger entry on the other pack's teardown (spurious default-off re-push
+    // at the next refresh).
+    let mut ledger_keys: Vec<String> = Vec::new();
+    for mode in SessionMode::ALL {
+        ledger_keys.push(format!("{}:{package_id}", mode.as_str()));
+    }
     let before_ledger = file.install_default_synced.len();
     file.install_default_synced
-        .retain(|entry| !entry.ends_with(&ledger_prefix));
+        .retain(|entry| !ledger_keys.contains(entry));
     changed |= file.install_default_synced.len() != before_ledger;
     if changed {
         try_save_disabled_bundles_file(&file)?;
@@ -2467,6 +2496,35 @@ mod tests {
                     .map(|d| d.is_empty())
                     .unwrap_or(true),
                 "the marker goes with the victim entry only: {file:?}"
+            );
+        });
+    }
+
+    /// Round-32 minor 1 (review #455): the teardown ledger-clear matches the
+    /// `"<scope>:<pack>"` entries EXACTLY per scope key, not by suffix — a
+    /// pack id containing `:` whose tail equals another pack id must keep its
+    /// own ledger entry when the other pack is torn down (a suffix match
+    /// would clear it and the next refresh would re-push a spurious
+    /// default-off row for it).
+    #[test]
+    fn teardown_ledger_clear_is_exact_not_suffix_based() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-ledger-exact", || {
+            let path = disabled_bundles_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"scopes":{},"install_default_synced":["plain:good","plain:evil:good"]}"#,
+            )
+            .unwrap();
+
+            remove_bundle_from_disabled_scopes_exact("good").unwrap();
+            let file = load_disabled_bundles_file();
+            assert_eq!(
+                file.install_default_synced,
+                vec!["plain:evil:good".to_string()],
+                "tearing down `good` must not clear `evil:good`'s ledger entry"
             );
         });
     }
