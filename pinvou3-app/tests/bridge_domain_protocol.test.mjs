@@ -238,7 +238,9 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  // Recomputed for the sidecar read-failure surfacing: the persona/review
+  // Recomputed for the merge of the landed builtin-plugin framework
+  // (#585's sidecar read-failure surfacing and builtin toggles) with the
+  // session-mention/aux-chat and cross-session messaging chain: the persona/review
   // reads moved into local loadPersonaEventsForSession /
   // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
   // before degrading to []; same two commands, no new invoke or listen
@@ -308,7 +310,7 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // Recomputed for M7: the auxChat cluster joined the shared base (the
 // get_or_create_aux_session / discard_aux_session / reset_aux_session invokes
 // moved here from the per-lane aux bridge copies).
-const expectedSharedBaseHash = 'ceeb3d03d8c8713d65ec1dedb907849db410bd2d8802372332c361342ea07485';
+const expectedSharedBaseHash = '0f3ace8d7d7d0021a4cbaac894a228185e4af2e9e8bf09d2d9bfe50a9b5d41a1';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

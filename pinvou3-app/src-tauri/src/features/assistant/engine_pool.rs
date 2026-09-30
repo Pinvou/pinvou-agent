@@ -626,6 +626,7 @@ where
         turn_locks,
         store,
         &aux_id,
+        false,
         || evict_locked(evict_id),
         || forget(aux_id.as_str()),
     )
@@ -2365,26 +2366,30 @@ impl EnginePool {
     /// reclaim the aux engine instead of orphaning it. Never substitute a bare
     /// `store.delete` for this method on a chat session.
     pub(crate) async fn delete_chat_session(&self, session_id: &str) -> Result<()> {
-        let mut primary_deleted = false;
-        delete_chat_session_with_aux_cascade(&self.store, session_id, |id| {
-            let id = id.to_string();
-            let is_primary = id == *session_id;
-            async move {
-                let deleted = delete_chat_session_with_gate(
+        // Aux cascade: an owned aux session is deleted through the same gate
+        // before the main session (never cascading out of an aux id itself).
+        if !crate::features::sessions::is_aux_session_id(session_id) {
+            if let Some(aux_id) = self.store.aux_session_id(session_id) {
+                delete_chat_session_with_gate(
                     &self.turn_locks,
                     &self.store,
-                    &id,
+                    &aux_id,
                     false,
-                    || self.evict_locked(&id),
-                    || self.forget_session(&id),
+                    || self.evict_locked(&aux_id),
+                    || self.forget_session(&aux_id),
                 )
-                .await?;
-                if is_primary && deleted {
-                    primary_deleted = true;
-                }
-                Ok(())
+                .await
+                .context("delete the aux session before its main session")?;
             }
-        })
+        }
+        let primary_deleted = delete_chat_session_with_gate(
+            &self.turn_locks,
+            &self.store,
+            session_id,
+            false,
+            || self.evict_locked(session_id),
+            || self.forget_session(session_id),
+        )
         .await?;
         // The bare `agent` is available to **all** sessions (not only those
         // with the multi-agent toggle on), and the background ledger write
@@ -6187,6 +6192,7 @@ mod scheduled_model_tests {
                 &locks,
                 &store,
                 &resolved_aux,
+                false,
                 || async move {
                     engine.store(false, Ordering::Release);
                     steps.lock().unwrap().push("evict-aux");
@@ -6203,6 +6209,7 @@ mod scheduled_model_tests {
                 &locks,
                 &store,
                 &main_id,
+                false,
                 || async move {
                     engine.store(false, Ordering::Release);
                     steps.lock().unwrap().push("evict-main");

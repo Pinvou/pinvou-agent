@@ -141,11 +141,11 @@ impl SessionStore {
         // below — the one derived-id (round-30 B8) consumer that needs
         // `updated_at`; the orphan reclaim reads the raw directory instead
         // (see below), and the eviction cascade probes each record directly.
-        let aux_freshness: std::collections::HashMap<&str, chrono::DateTime<chrono::Utc>> =
+        let aux_freshness: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>> =
             sessions
                 .iter()
                 .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
-                .map(|metadata| (metadata.id.as_str(), metadata.updated_at))
+                .map(|metadata| (metadata.id.clone(), metadata.updated_at))
                 .collect();
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;

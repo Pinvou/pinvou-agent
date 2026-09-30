@@ -1847,16 +1847,18 @@ impl AppEngine {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
-        self.send_reserved_user_message(
+        // The headless harness hands the caller's raw bool straight to the op
+        // builder: the harness session is never an aux session, and the token
+        // type's forced policy lives behind the pool's send path.
+        let op = self.build_interactive_send_message_op(
             content,
             mode,
             persona_reminder,
             restrict_tools,
             expert_snapshot,
             expert_candidates,
-            reservation,
-        )
-        .await
+        )?;
+        self.send_reserved_turn_op(op, reservation).await
     }
 
     #[allow(clippy::too_many_arguments)]

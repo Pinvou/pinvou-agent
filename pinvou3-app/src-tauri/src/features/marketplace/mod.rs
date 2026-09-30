@@ -463,11 +463,7 @@ pub async fn apply_disabled_connectors_for(
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
-<<<<<<< HEAD
-    // §3.3 defense in depth): the write fails loudly instead of silently
-=======
     // §3.1 defense in depth): the write fails loudly instead of silently
->>>>>>> origin/main
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
     tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
@@ -511,11 +507,7 @@ pub fn install_mcp_secret_resolver() {
 /// Default-installed preset MCP tools: peripheral capabilities ship as
 /// plugins so features like session mention work out of the box. Builtin
 /// plugins cannot be uninstalled or disabled — the attempt is rejected
-<<<<<<< HEAD
-/// server-side (docs/builtin-toolset-contract.md §3.3) — so a missing
-=======
 /// server-side (docs/builtin-toolset-contract.md §3.1) — so a missing
->>>>>>> origin/main
 /// BundleStore record only ever means "not seeded yet".
 pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
 
@@ -893,10 +885,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // 'system'` entries from the store flow and pins them on the
                 // read-only page, so honoring a poisoned claim would strip a
                 // normal plugin of every management action.
-<<<<<<< HEAD
-                let is_builtin = builtin::is_builtin_tool(&m.id);
-=======
->>>>>>> origin/main
                 MarketplaceToolInfo {
                     source: source_by_id
                         .get(m.id.as_str())
@@ -912,27 +900,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     // the frontend contract clean. mcp_tools passes through
                     // in full (the builtin section lists a plugin's tools);
                     // visibility mirrors security_level; bundle_version marks
-<<<<<<< HEAD
-                    // the bundle version a builtin plugin ships with.
-                    security_level: if is_builtin && !m.security_level.is_empty() {
-                        Some(m.security_level.clone())
-                    } else {
-                        None
-                    },
-                    data_access: if is_builtin {
-                        m.data_access.clone()
-                    } else {
-                        Vec::new()
-                    },
-                    mcp_tools: m.mcp_tools.clone(),
-                    // visibility passthrough mirrors security_level: filled
-                    // only for builtin plugins, omitted otherwise.
-                    visibility: if is_builtin && !m.visibility.is_empty() {
-                        Some(m.visibility.clone())
-                    } else {
-                        None
-                    },
-=======
                     // the bundle version a builtin plugin ships with. The
                     // values themselves are sourced above (embedded catalog
                     // for builtin ids).
@@ -940,7 +907,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     data_access,
                     mcp_tools,
                     visibility,
->>>>>>> origin/main
                     // bundle_version is filled at the command layer
                     // (commands::marketplace::list_marketplace_tools): a
                     // marketplace -> runtime_bundle dependency would be a
@@ -982,25 +948,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                             "[marketplace] reseeding '{id}': installed=false preset record is unreachable since builtin uninstall is rejected"
                         );
                         if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-<<<<<<< HEAD
-                            log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
-=======
                             log::warn!(
                                 "[marketplace] default install of '{id}' failed (non-blocking): {e}"
                             );
->>>>>>> origin/main
                         }
                     }
                 }
                 Ok(None) => {
                     if let Err(e) = self.install(id, &std::collections::HashMap::new()) {
-<<<<<<< HEAD
-                        log::warn!("[marketplace] 默认安装 '{id}' 失败(不阻塞启动): {e}");
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[marketplace] 读取 BundleStore 失败,跳过默认安装 '{id}': {e}")
-=======
                         log::warn!(
                             "[marketplace] default install of '{id}' failed (non-blocking): {e}"
                         );
@@ -1010,7 +965,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     log::warn!(
                         "[marketplace] failed to read the BundleStore, skipping default install of '{id}': {e}"
                     )
->>>>>>> origin/main
                 }
             }
         }
@@ -4609,8 +4563,6 @@ mod tests {
         });
     }
 
-<<<<<<< HEAD
-=======
     /// Round-9 review: `is_builtin` folds case but the audit-source lookup
     /// used the exact `embedded_manifest`, so a case-variant builtin row fell
     /// back to its own on-disk manifest values — reopening the tamper vector
@@ -4650,7 +4602,6 @@ mod tests {
         });
     }
 
->>>>>>> origin/main
     /// §3.2 contract pin: `list_tools.installed` shares the readiness card's
     /// store-first source of truth — the BundleStore record wins, a missing
     /// record means not-installed (standalone installed.json writes don't
