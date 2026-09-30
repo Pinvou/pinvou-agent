@@ -111,10 +111,12 @@ pub use self::transcript::transcript_revision;
 /// (alias-defeating, round-34 minor 4) and the tests that pin the
 /// predicate itself.
 pub(crate) use self::validators::is_sched_session_id;
-/// Re-export the crate-visible session-id validator (used by commands). It is
-/// `pub(crate)` so it stays out of the crate's public API surface.
+/// Re-export the crate-visible session-id validator (used by commands); the
+/// session-id half is `pub` (the underlying fn is too) for the pinvou-cli
+/// `projects` family's orphan probe, the rest stays out of the public API.
+pub use self::validators::validate_session_id;
 pub(crate) use self::validators::{
-    aux_side_effect_exclusion, is_aux_session_id, validate_scheduled_task_id, validate_session_id,
+    aux_side_effect_exclusion, is_aux_session_id, validate_scheduled_task_id,
     validate_user_workspace_path,
 };
 /// Re-export the rebind outcome (public rebind docs link into it; the module

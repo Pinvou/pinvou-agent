@@ -12,7 +12,7 @@ pub(crate) mod filesystem;
 pub(crate) mod hashing;
 pub(crate) mod notifications;
 pub(crate) mod os;
-pub(crate) mod path_policy;
+pub mod path_policy;
 pub mod paths;
 pub mod prefs;
 pub(crate) mod process;

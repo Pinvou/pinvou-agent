@@ -10,6 +10,29 @@ fn usage_error(args: [&str; 2]) -> String {
 }
 
 #[test]
+fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
+    // `pinvou --output json sessions list` misplaces a GLOBAL flag; the
+    // refusal must say so (round-27 review: the bare usage line gives no
+    // hint which token is wrong).
+    let error = parse_args(vec_string(&["pinvou", "--instal", "sessions", "list"]))
+        .expect_err("an unknown flag in the family position must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown family --instal"),
+        "the offending token must be named: {message}"
+    );
+    assert!(
+        message.contains("before the family or after the subcommand"),
+        "the placement remedy must be stated: {message}"
+    );
+}
+
+fn vec_string(arguments: &[&str]) -> Vec<String> {
+    arguments.iter().map(|a| (*a).to_owned()).collect()
+}
+
+#[test]
 fn every_family_token_dispatches_to_its_module() {
     // One representative valid subcommand per family: the parse layer must
     // route the family token even when the subcommand-specific validation

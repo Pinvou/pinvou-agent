@@ -1358,40 +1358,66 @@ where
     // _EMBED_INFO_PLIST (embed_plist) link errors on macOS.
     let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
-    let app = tauri::Builder::default()
-        .setup(move |app| {
-            // Same order as the GUI host (the lib.rs
-            // `disabled_bundles_migration` marks): the fresh-vs-upgrade
-            // verdict must be read and frozen before first-startup writes
-            // such as SessionStore boot / engine spawn (sessions/, default
-            // settings.json) — otherwise a brand-new home directory first
-            // touched by a windowless host freezes a polluted "upgrade"
-            // verdict, plain flips back to fully open, and later GUI starts
-            // respect the already-frozen marker (review #455 blocking item 3).
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                crate::platform::paths::set_runtime_resource_dir(resource_dir);
-            }
-            let store = SessionStore::boot().context("boot headless session store")?;
-            store.load_session_models();
-            store.load_pinned_sessions();
-            store.load_hidden_sessions();
-            app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store.clone())?;
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let result = work(pool, store).await;
-                let _ = result_tx.send(result);
-                handle.exit(0);
-            });
-            Ok(())
-        })
-        .build(context)
-        .context("build windowless Pinvou host")?;
-    app.run_return(|_, _| {});
-    result_rx
-        .blocking_recv()
-        .context("headless host exited before work completed")?
+    // The bootstrap and the event loop run on the caller's MAIN thread. In
+    // embedded environments where tauri's EventLoop refuses a non-main
+    // thread — and on any other bootstrap fault — the unwind used to take
+    // the whole process down with exit 101, outside the 0/1/2 exit-code
+    // contract every pinvou-cli family documents. Contained here at the
+    // single shared bootstrap, so EVERY host lane (monitor, knowledge,
+    // voice, agent task, benchmarks, the organize lanes) degrades to an
+    // ordinary Err; the catch_unwind wraps two CLI call sites used to carry
+    // covered only their own lanes and are gone.
+    let host_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<T> {
+        let app = tauri::Builder::default()
+            .setup(move |app| {
+                // Same order as the GUI host (the lib.rs
+                // `disabled_bundles_migration` marks): the fresh-vs-upgrade
+                // verdict must be read and frozen before first-startup writes
+                // such as SessionStore boot / engine spawn (sessions/, default
+                // settings.json) — otherwise a brand-new home directory first
+                // touched by a windowless host freezes a polluted "upgrade"
+                // verdict, plain flips back to fully open, and later GUI starts
+                // respect the already-frozen marker (review #455 blocking item 3).
+                let _ = crate::features::marketplace::scope::load_disabled_bundles();
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    crate::platform::paths::set_runtime_resource_dir(resource_dir);
+                }
+                let store = SessionStore::boot().context("boot headless session store")?;
+                store.load_session_models();
+                store.load_pinned_sessions();
+                store.load_hidden_sessions();
+                app.manage(store.clone());
+                let pool = build_pool(app.handle().clone(), store.clone())?;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = work(pool, store).await;
+                    let _ = result_tx.send(result);
+                    handle.exit(0);
+                });
+                Ok(())
+            })
+            .build(context)
+            .context("build windowless Pinvou host")?;
+        app.run_return(|_, _| {});
+        Ok(result_rx
+            .blocking_recv()
+            .context("headless host exited before work completed")??)
+    }));
+    match host_outcome {
+        Ok(result) => result,
+        Err(panic) => {
+            let detail = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|reason| (*reason).to_owned())
+                })
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            Err(anyhow::anyhow!("windowless host panicked: {detail}"))
+        }
+    }
 }
 
 pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>

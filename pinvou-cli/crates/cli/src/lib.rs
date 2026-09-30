@@ -411,6 +411,17 @@ where
         Some("monitor") => CliCommand::Monitor(monitor::parse(&values)?),
         Some("artifacts") => CliCommand::Artifacts(artifacts::parse(&values)?),
         Some("projects") => CliCommand::Projects(projects::parse(&values)?),
+        Some(other) if other.starts_with("--") => {
+            // A flag-looking token in the family position is almost always a
+            // misplaced global flag (`pinvou --output json sessions list`):
+            // name it instead of the bare usage line, so the fix is obvious
+            // rather than "which of these words is wrong".
+            return Err(CliError::usage(format!(
+                "pinvou: unknown family {other}; global options go before the family or after \
+                 the subcommand (see usage below)\n\n{}",
+                support::TOP_LEVEL_USAGE
+            )));
+        }
         _ => {
             return Err(CliError::usage(support::TOP_LEVEL_USAGE));
         }

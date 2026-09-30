@@ -271,6 +271,15 @@ pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
     /// [`Self::reload_if_changed`] to skip a re-read that cannot teach it
     /// anything. `None` means "unknown", which always forces a read.
     seen: Arc<RwLock<Option<FileStamp>>>,
+    /// Set when a read QUARANTINED (renamed aside) this store's file under
+    /// the Rename strategy: the canonical path is now absent while this
+    /// handle's memory may be the only healthy copy left. A later absent-file
+    /// read must then answer "keep memory", not "empty registry" — otherwise
+    /// the next reload after a quarantine would install `T::default()` over
+    /// the healthy registry and the next persist would write the emptying
+    /// through. Cleared by a successful persist (the file is healthy again)
+    /// and by a successful read of a present file.
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Cheap change detector for the registry file: a `stat` is orders of
@@ -343,8 +352,11 @@ enum DiskRead<T> {
     /// [`VersionedJsonStore::open`] fails open to an empty registry there
     /// (existing startup behaviour), while [`VersionedJsonStore::reload`]
     /// keeps its previous state so the next check retries once the file is
-    /// repaired.
-    Failed,
+    /// repaired. `quarantined`: the unusable payload was RENAMED aside, so
+    /// the canonical path is absent after this read — a later absent-file
+    /// read must not read as an empty registry while memory may hold the
+    /// only healthy copy.
+    Failed { quarantined: bool },
 }
 
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
@@ -356,17 +368,23 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     /// reload path exists precisely because a foreign process may have
     /// rewritten the file, so it must honour the same version, migration and
     /// quarantine rules the initial read applies.
-    fn read_from_disk(path: &Path) -> DiskRead<T> {
+    fn read_from_disk(
+        path: &Path,
+        quarantined_flag: &std::sync::atomic::AtomicBool,
+    ) -> DiskRead<T> {
+        use std::sync::atomic::Ordering as AtomicOrdering;
         match std::fs::read_to_string(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
                 Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => {
+                    quarantined_flag.store(false, AtomicOrdering::Release);
                     DiskRead::Loaded(registry)
                 }
                 Ok(registry) if registry.schema_version() < T::SUPPORTED_VERSION => {
+                    quarantined_flag.store(false, AtomicOrdering::Release);
                     DiskRead::Migrated(registry.migrate())
                 }
                 Ok(registry) => {
-                    Self::handle_invalid(
+                    let quarantined = Self::handle_invalid(
                         path,
                         &format!(
                             "schema v{} is newer than supported v{}",
@@ -374,15 +392,32 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                             T::SUPPORTED_VERSION
                         ),
                     );
-                    DiskRead::Failed
+                    if quarantined {
+                        quarantined_flag.store(true, AtomicOrdering::Release);
+                    }
+                    DiskRead::Failed { quarantined }
                 }
                 Err(error) => {
-                    Self::handle_invalid(path, &format!("invalid JSON: {error}"));
-                    DiskRead::Failed
+                    let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
+                    if quarantined {
+                        quarantined_flag.store(true, AtomicOrdering::Release);
+                    }
+                    DiskRead::Failed { quarantined }
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                DiskRead::Loaded(T::default())
+                // An absent file is an empty registry EXCEPT when a previous
+                // read quarantined this store's file away: then memory may be
+                // the only healthy copy, and installing the default over it
+                // (and writing that through on the next persist) would
+                // silently empty the store. Keep memory instead; the next
+                // mutator's persist rewrites the healthy registry and heals
+                // the file (which also clears the flag).
+                if quarantined_flag.load(AtomicOrdering::Acquire) {
+                    DiskRead::Failed { quarantined: true }
+                } else {
+                    DiskRead::Loaded(T::default())
+                }
             }
             Err(error) => {
                 log::warn!(
@@ -391,7 +426,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     path.display(),
                     T::WARN_SUFFIX
                 );
-                DiskRead::Failed
+                DiskRead::Failed { quarantined: false }
             }
         }
     }
@@ -402,17 +437,21 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // extra read later — never the reverse (memory stale under a stamp
         // that matches).
         let stamp = FileStamp::of(&path);
-        let (registry, migrated) = match Self::read_from_disk(&path) {
+        let quarantined_flag = std::sync::atomic::AtomicBool::new(false);
+        let (registry, migrated) = match Self::read_from_disk(&path, &quarantined_flag) {
             // Fail open to an empty registry as before: existing startup
             // behaviour kept (there is no previous state to preserve here).
             DiskRead::Loaded(registry) => (registry, false),
             DiskRead::Migrated(registry) => (registry, true),
-            DiskRead::Failed => (T::default(), false),
+            DiskRead::Failed { .. } => (T::default(), false),
         };
         let store = Self {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             seen: Arc::new(RwLock::new(stamp)),
+            quarantined: Arc::new(std::sync::atomic::AtomicBool::new(
+                quarantined_flag.load(std::sync::atomic::Ordering::Acquire),
+            )),
         };
         if migrated {
             // persist() refreshes `seen` from the file it just wrote; on a
@@ -432,6 +471,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             seen: Arc::new(RwLock::new(None)),
+            quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -455,7 +495,8 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // memory behind the file while the stamp matched — which made
         // `reload_if_changed` skip the re-read that would have fixed it.
         let stamp = FileStamp::of(self.path.as_ref());
-        let (registry, migrated) = match Self::read_from_disk(self.path.as_ref()) {
+        let (registry, migrated) = match Self::read_from_disk(self.path.as_ref(), &self.quarantined)
+        {
             DiskRead::Loaded(registry) => (registry, false),
             DiskRead::Migrated(registry) => (registry, true),
             // Unusable payload: keep the previous in-memory registry and do
@@ -463,7 +504,17 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             // pre-fix behaviour) resolved every miss to a plain chat task and
             // recorded the stamp so the damage never healed; with the stamp
             // unchanged, a later check re-reads once the file is repaired.
-            DiskRead::Failed => return,
+            DiskRead::Failed { quarantined } => {
+                if quarantined {
+                    // The canonical file was renamed away: until a persist
+                    // (or a repaired external write) makes the path exist
+                    // again, an absent-file read must keep this memory, not
+                    // install the empty default over it.
+                    self.quarantined
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                return;
+            }
         };
         gap();
         {
@@ -490,6 +541,8 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             }
             *state = registry;
             *self.seen.write() = stamp;
+            self.quarantined
+                .store(false, std::sync::atomic::Ordering::Release);
         }
         if migrated {
             self.persist_migrated();
@@ -544,11 +597,17 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // anything else stays "unknown" and forces the next check to
         // re-read, which merges the foreign payload in — never drops it.
         *self.seen.write() = stamp_of_our_write(self.path.as_ref(), &payload);
+        self.quarantined
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
     /// Apply this store's quarantine policy to an invalid payload at `path`.
-    pub(crate) fn handle_invalid(path: &Path, reason: &str) {
+    /// Applies this store's quarantine policy and reports whether the
+    /// canonical file was renamed AWAY (Rename strategy, rename succeeded) —
+    /// the fact the absent-file read arm needs to keep memory over an empty
+    /// default.
+    pub(crate) fn handle_invalid(path: &Path, reason: &str) -> bool {
         match T::QUARANTINE {
             QuarantineStrategy::LogInPlace => {
                 log::warn!(
@@ -556,6 +615,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     T::LABEL,
                     path.display()
                 );
+                false
             }
             QuarantineStrategy::Rename => {
                 let timestamp = std::time::SystemTime::now()
@@ -569,19 +629,25 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 let quarantine_path =
                     path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
                 match std::fs::rename(path, &quarantine_path) {
-                    Ok(()) => log::warn!(
-                        "Quarantined {} {} to {} ({reason}){}",
-                        T::LABEL,
-                        path.display(),
-                        quarantine_path.display(),
-                        T::WARN_SUFFIX
-                    ),
-                    Err(error) => log::warn!(
-                        "Invalid {} {} ({reason}) could not be quarantined: {error}{}",
-                        T::LABEL,
-                        path.display(),
-                        T::WARN_SUFFIX
-                    ),
+                    Ok(()) => {
+                        log::warn!(
+                            "Quarantined {} {} to {} ({reason}){}",
+                            T::LABEL,
+                            path.display(),
+                            quarantine_path.display(),
+                            T::WARN_SUFFIX
+                        );
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Invalid {} {} ({reason}) could not be quarantined: {error}{}",
+                            T::LABEL,
+                            path.display(),
+                            T::WARN_SUFFIX
+                        );
+                        false
+                    }
                 }
             }
         }
@@ -1271,6 +1337,67 @@ mod foreign_writer_tests {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
     }
 
+    /// (g) A quarantined store must not degrade to the empty default once
+    /// the file is gone: the rename-aside quarantine leaves the canonical
+    /// path ABSENT while this handle's memory may be the only healthy copy.
+    /// A later reload seeing the absent file must keep memory (the pre-fix
+    /// behaviour installed `T::default()` over the healthy registry, and the
+    /// next persist wrote that emptying through); the next mutator's persist
+    /// rewrites the healthy registry and heals the file.
+    #[test]
+    fn quarantined_store_keeps_memory_after_the_file_is_gone() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Corrupt on disk, then reload: the quarantine renames the file away
+        // and memory keeps the healthy registry.
+        std::fs::write(&path, b"{not json").unwrap();
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a corrupt file must not empty a healthy memory"
+        );
+        assert!(
+            !path.exists(),
+            "the Rename strategy must have removed the canonical file"
+        );
+
+        // The absent-file reload: the pre-fix behaviour answered
+        // Loaded(default) here and swapped the empty registry in.
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "an absent file after a quarantine must keep memory, not the \
+             empty default"
+        );
+
+        // The next mutator's persist rewrites the healthy registry: the file
+        // is healed and a fresh handle reads the same content.
+        store
+            .set_kind("t2", Some(memory_organize()))
+            .expect("healing persist");
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the healed file carries the healthy registry, not the default"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// (a) Two store instances share one file: a resident handle's writes
     /// (compact / set_kind / remove) must not erase changes a foreign
     /// handle has already written.
@@ -1424,11 +1551,12 @@ mod foreign_writer_tests {
             serde_json::json!({ "t1": kind_entry_json(), "t2": kind_entry_json() }),
         );
         // Step 3 — reload's read of v2, then the swap, in reload's order.
-        match VersionedJsonStore::<ScheduledTaskKindRegistry>::read_from_disk(&path) {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        match VersionedJsonStore::<ScheduledTaskKindRegistry>::read_from_disk(&path, &flag) {
             DiskRead::Loaded(registry) | DiskRead::Migrated(registry) => {
                 *store.registry.write() = registry;
             }
-            DiskRead::Failed => panic!("v2 must be readable"),
+            DiskRead::Failed { .. } => panic!("v2 must be readable"),
         }
         *store.seen.write() = Some(stamp);
 

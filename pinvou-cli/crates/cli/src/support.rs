@@ -284,6 +284,19 @@ pub fn collapse_control_characters(value: &str) -> String {
 /// response injection), CR (redraws the current line), BEL, and the
 /// remaining C0/DEL noise, from content the model or a tool wrote.
 ///
+/// What the block sanitizer neutralises beyond `char::is_control`: the same
+/// bidi-override/isolate and zero-width set [`is_row_unsafe_char`] carries.
+/// The round-27 review found blocks kept those intact — a hostile
+/// `.md`/diff rendered by `artifacts read`, `code workspace preview/diff`,
+/// `agent run` or `personas show` could still visually reorder its own
+/// multi-line block (Trojan-Source-style) even though the ROW sanitizer
+/// already neutralised the identical set, because a row is just as
+/// reorderable as a block. Newline and tab still survive: they are layout,
+/// not spoofing.
+fn is_block_unsafe_char(ch: char) -> bool {
+    ch.is_control() || is_row_unsafe_char(ch)
+}
+
 /// JSON mode needs no equivalent — `serde_json` escapes everything below
 /// 0x20 — so this stays strictly a human-rendering choice and the stored
 /// file and the JSON payload keep the verbatim bytes.
@@ -292,7 +305,7 @@ pub fn collapse_block_control_characters(value: &str) -> String {
         .chars()
         .map(|ch| match ch {
             '\n' | '\t' => ch,
-            _ if ch.is_control() => ' ',
+            _ if is_block_unsafe_char(ch) => ' ',
             _ => ch,
         })
         .collect()
@@ -620,21 +633,24 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     }
     #[cfg(target_os = "windows")]
     {
-        // The app's `platform::process::kill_process_tree` resolves
-        // `taskkill` through its hardened `external_command` PATH helper,
-        // which stays `pub(crate)` in the app crate; the 2s budget is the
-        // part that matters here and is reproduced directly. A wedged
-        // WMI/RPC must not stall the caller's own timeout path, so
-        // taskkill itself is killed when its budget expires. Null stdio
-        // keeps the helper's streams off ours (a bare spawn would inherit
-        // them), like the app's detached spawn.
+        // Resolved through the app's hardened `external_command` (now `pub`,
+        // shared like the other widened platform items): a planted
+        // `taskkill.exe` in the working directory must not win PATH
+        // resolution on a platform where exe search historically includes
+        // it, and the hidden-window wrapping matches the app's own
+        // kill_process_tree. The 2s budget is the part that matters here and
+        // is reproduced directly. A wedged WMI/RPC must not stall the
+        // caller's own timeout path, so taskkill itself is killed when its
+        // budget expires. Null stdio keeps the helper's streams off ours
+        // (a bare spawn would inherit them), like the app's detached spawn.
         const TASKKILL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-        let spawned = std::process::Command::new("taskkill")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let spawned =
+            pinvou3_lib::platform::process::external_command(std::path::Path::new("taskkill"))
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
         if let Ok(mut taskkill) = spawned {
             let deadline = std::time::Instant::now() + TASKKILL_BUDGET;
             loop {
@@ -702,9 +718,23 @@ fn json_failure_payload(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn block_sanitizer_neutralizes_bidi_and_zero_width_like_rows() {
+        // The row set (bidi overrides/isolates, zero-width, soft hyphen,
+        // BOM) applies to blocks too: a hostile document can visually
+        // reorder its own multi-line block exactly like it reorders a row.
+        let hostile = "line\u{202E}spoof\u{202C}mid\u{2066}iso\u{2069}\u{200B}\u{FEFF}";
+        let cleaned = collapse_block_control_characters(hostile);
+        assert_eq!(cleaned, "line spoof mid iso   ");
+        // Layout survives: newline and tab are structure, not spoofing.
+        assert_eq!(collapse_block_control_characters("a\n\tb"), "a\n\tb");
+        // The row sanitizer keeps flattening layout, as before.
+        assert_eq!(collapse_control_characters("a\nb"), "a b");
+    }
     use super::{
-        collapse_control_characters, decode_arguments, emit_report, json_failure_payload,
-        resolve_secret, validate_sandbox_home,
+        collapse_block_control_characters, collapse_control_characters, decode_arguments,
+        emit_report, json_failure_payload, resolve_secret, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};

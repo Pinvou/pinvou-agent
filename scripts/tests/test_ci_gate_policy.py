@@ -792,6 +792,15 @@ class CiGatePolicyTests(unittest.TestCase):
         # --all-targets: tests are linted too; --no-deps: dependencies and the
         # CodeWhale submodule are never linted; --locked like every CLI build.
         self.assertIn("--workspace --all-targets --no-deps --locked", cli_lint)
+        # Round-27 review: the warn-visible clippy policy can be defeated by
+        # APPENDING lint suppressions after the pinned prefix (`-- -A
+        # clippy::all`, `--cap-lints`, a RUSTFLAGS export in the same step).
+        # Substring asserts above cannot see an appended tail, so pin the
+        # absence of the known bypasses explicitly.
+        self.assertNotIn("-A clippy", cli_lint)
+        self.assertNotIn("--allow clippy", cli_lint)
+        self.assertNotIn("--cap-lints", cli_lint)
+        self.assertNotIn("RUSTFLAGS", cli_lint)
         # The featureless build (product-backend off) is exercised nowhere
         # else — cargo test always runs default features — so without this
         # check step the `#[cfg(not(feature = "product-backend"))]` refusal
