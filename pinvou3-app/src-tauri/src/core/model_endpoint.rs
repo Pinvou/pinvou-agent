@@ -1068,6 +1068,15 @@ pub struct AnthropicCompletion {
 /// enough for a one-line toast.
 const ERROR_BODY_SNIPPET_CHARS: usize = 400;
 
+/// Wire-read cap for an error body: the endpoint is user-configurable and
+/// the body it returns with an error is endpoint-controlled, so the read
+/// itself — not just the surfaced snippet — must be bounded; a broken or
+/// hostile 4xx/5xx body can be arbitrarily large or stream forever. Four
+/// bytes per char covers the snippet's worst-case UTF-8 width, and +4
+/// guarantees at least one byte past the snippet cap's chars whenever the
+/// body continues, so "there is more" is decidable without a further read.
+const ERROR_BODY_READ_CAP_BYTES: usize = ERROR_BODY_SNIPPET_CHARS * 4 + 4;
+
 /// Error raised by [`error_for_status_with_body`]: the HTTP status plus a
 /// trimmed snippet of the body the endpoint returned with it. `Display`
 /// carries the full diagnostic message (label, status, snippet); downcast to
@@ -1119,9 +1128,9 @@ impl std::error::Error for StatusWithBodyError {}
 /// endpoint rejected — the Kimi Coding Plan temperature 400 named the exact
 /// field and allowed value in its body ("invalid temperature: only 1 is
 /// allowed for this model"), and the one-shot aux callers discarded it, so a
-/// one-line toast gave nothing to act on. Read the error body and surface a
-/// trimmed snippet via [`StatusWithBodyError`]; success responses pass
-/// through untouched.
+/// one-line toast gave nothing to act on. Read a bounded prefix of the error
+/// body and surface a trimmed snippet via [`StatusWithBodyError`]; success
+/// responses pass through untouched.
 pub async fn error_for_status_with_body(
     resp: reqwest::Response,
     label: &str,
@@ -1130,9 +1139,9 @@ pub async fn error_for_status_with_body(
     if !status.is_client_error() && !status.is_server_error() {
         return Ok(resp);
     }
-    let body = resp.text().await.unwrap_or_default();
+    let (body, body_continues) = read_error_body_bounded(resp).await;
     let mut snippet: String = body.chars().take(ERROR_BODY_SNIPPET_CHARS).collect();
-    if body.chars().skip(ERROR_BODY_SNIPPET_CHARS).next().is_some() {
+    if body_continues || body.chars().skip(ERROR_BODY_SNIPPET_CHARS).next().is_some() {
         snippet.push('…');
     }
     let snippet = if snippet.trim().is_empty() {
@@ -1141,6 +1150,27 @@ pub async fn error_for_status_with_body(
         Some(snippet)
     };
     Err(StatusWithBodyError::new(label, status, snippet).into())
+}
+
+/// Bounded error-body read: stop at [`ERROR_BODY_READ_CAP_BYTES`] bytes or
+/// end of stream, whichever comes first, and drop the response — the rest of
+/// the body is abandoned and the connection closed, never drained. Decoding
+/// is lossy UTF-8, the tolerance the wire text read it replaces had for
+/// off-charset bytes. The bool reports that the cap was reached, i.e. the
+/// body certainly carries more than [`ERROR_BODY_SNIPPET_CHARS`] chars.
+async fn read_error_body_bounded(mut resp: reqwest::Response) -> (String, bool) {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < ERROR_BODY_READ_CAP_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = chunk.len().min(ERROR_BODY_READ_CAP_BYTES - buf.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let hit_cap = buf.len() >= ERROR_BODY_READ_CAP_BYTES;
+    (String::from_utf8_lossy(&buf).into_owned(), hit_cap)
 }
 
 /// Anthropic Messages 协议直连：x-api-key + anthropic-version 鉴权（官方端点不接受
@@ -2917,6 +2947,121 @@ mod tests {
         assert!(
             !msg.contains("TAIL_MARKER"),
             "body past the cap must not leak into the message: {msg}"
+        );
+        server.await.unwrap();
+    }
+
+    /// The wire read itself must be bounded, not just the surfaced snippet:
+    /// the endpoint is user-configurable and the error body is
+    /// endpoint-controlled, so a broken or hostile 4xx/5xx may declare a
+    /// huge body. The server writes far more than the snippet cap needs; the
+    /// helper must stop reading early enough that the server's writes fail
+    /// behind the closed socket. An unbounded read would drain the whole
+    /// body, the write loop would run to completion, and the final assert
+    /// would go red.
+    #[tokio::test]
+    async fn status_error_read_stops_well_before_oversized_body_ends() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        const TOTAL_BYTES: usize = 64 * 1024 * 1024;
+        const CHUNK_BYTES: usize = 64 * 1024;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\
+                 Content-Length: {TOTAL_BYTES}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let chunk = vec![b'a'; CHUNK_BYTES];
+            let mut client_went_away = false;
+            for _ in 0..TOTAL_BYTES / CHUNK_BYTES {
+                if stream.write_all(&chunk).await.is_err() {
+                    client_went_away = true;
+                    break;
+                }
+            }
+            client_went_away
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let err = tokio::time::timeout(
+            Duration::from_secs(30),
+            error_for_status_with_body(resp, "chat/completions status"),
+        )
+        .await
+        .expect("helper must not wait out the oversized body")
+        .expect_err("500 must error");
+        let snippet = err
+            .to_string()
+            .strip_prefix("chat/completions status: HTTP 500 Internal Server Error: ")
+            .expect("message keeps the label/status prefix")
+            .to_string();
+        assert_eq!(snippet.chars().count(), 401, "snippet stays at the cap");
+        let client_went_away = tokio::time::timeout(Duration::from_secs(30), server)
+            .await
+            .expect("server finishes instead of blocking on a full body")
+            .expect("server task joins");
+        assert!(
+            client_went_away,
+            "client must stop reading well before the declared body ends"
+        );
+    }
+
+    /// Same bound for the undeclared-length case: a chunked error body that
+    /// never ends must not hang the helper or keep the read going past the
+    /// snippet cap. The server keeps chunking until its writes fail, so a
+    /// client that drains the body would hang until the helper's timeout
+    /// below and the test would go red there.
+    #[tokio::test]
+    async fn status_error_read_is_bounded_on_endless_chunked_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let head = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\
+                        Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(head.as_bytes()).await;
+            let chunk_body = vec![b'b'; 64 * 1024];
+            let mut frame = format!("{:x}\r\n", chunk_body.len()).into_bytes();
+            frame.extend_from_slice(&chunk_body);
+            frame.extend_from_slice(b"\r\n");
+            loop {
+                if stream.write_all(&frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let err = tokio::time::timeout(
+            Duration::from_secs(30),
+            error_for_status_with_body(resp, "chat/completions status"),
+        )
+        .await
+        .expect("helper must not wait out the endless body")
+        .expect_err("500 must error");
+        let msg = err.to_string();
+        assert!(
+            msg.ends_with('…'),
+            "capped snippet must carry the ellipsis: {msg}"
         );
         server.await.unwrap();
     }
