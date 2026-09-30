@@ -1062,13 +1062,60 @@ pub struct AnthropicCompletion {
     pub stop_reason: Option<String>,
 }
 
+/// Characters of an error response body kept in the surfaced message before
+/// the ellipsis: large enough to carry a gateway's field-level reason (the
+/// Kimi Coding Plan 400 named the exact field and allowed value), small
+/// enough for a one-line toast.
+const ERROR_BODY_SNIPPET_CHARS: usize = 400;
+
+/// Error raised by [`error_for_status_with_body`]: the HTTP status plus a
+/// trimmed snippet of the body the endpoint returned with it. `Display`
+/// carries the full diagnostic message (label, status, snippet); downcast to
+/// this type when a call site needs the bare status without the body — e.g.
+/// the voice lane reduces frontend-facing diagnostics to error class and
+/// status and must not persist endpoint-controlled text.
+#[derive(Debug)]
+pub struct StatusWithBodyError {
+    label: String,
+    status: reqwest::StatusCode,
+    /// First [`ERROR_BODY_SNIPPET_CHARS`] chars of the error body; `None`
+    /// when the body was blank or unreadable.
+    body_snippet: Option<String>,
+}
+
+impl StatusWithBodyError {
+    pub(crate) fn new(
+        label: &str,
+        status: reqwest::StatusCode,
+        body_snippet: Option<String>,
+    ) -> Self {
+        Self {
+            label: label.to_string(),
+            status,
+            body_snippet,
+        }
+    }
+}
+
+impl std::fmt::Display for StatusWithBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.body_snippet {
+            Some(snippet) => write!(f, "{}: HTTP {}: {}", self.label, self.status, snippet),
+            None => write!(f, "{}: HTTP {}", self.label, self.status),
+        }
+    }
+}
+
+impl std::error::Error for StatusWithBodyError {}
+
 /// `error_for_status` that keeps the server's reason. A bare
 /// "HTTP status client error (400 Bad Request)" hides which field the
 /// endpoint rejected — the Kimi Coding Plan temperature 400 named the exact
 /// field and allowed value in its body ("invalid temperature: only 1 is
 /// allowed for this model"), and the one-shot aux callers discarded it, so a
 /// one-line toast gave nothing to act on. Read the error body and surface a
-/// trimmed snippet; success responses pass through untouched.
+/// trimmed snippet via [`StatusWithBodyError`]; success responses pass
+/// through untouched.
 pub async fn error_for_status_with_body(
     resp: reqwest::Response,
     label: &str,
@@ -1078,15 +1125,16 @@ pub async fn error_for_status_with_body(
         return Ok(resp);
     }
     let body = resp.text().await.unwrap_or_default();
-    let chars: Vec<char> = body.chars().collect();
-    let mut snippet: String = chars.iter().take(400).collect();
-    if chars.len() > 400 {
+    let mut snippet: String = body.chars().take(ERROR_BODY_SNIPPET_CHARS).collect();
+    if body.chars().skip(ERROR_BODY_SNIPPET_CHARS).next().is_some() {
         snippet.push('…');
     }
-    if snippet.trim().is_empty() {
-        anyhow::bail!("{label}: HTTP {status}");
-    }
-    anyhow::bail!("{label}: HTTP {status}: {snippet}");
+    let snippet = if snippet.trim().is_empty() {
+        None
+    } else {
+        Some(snippet)
+    };
+    Err(StatusWithBodyError::new(label, status, snippet).into())
 }
 
 /// Anthropic Messages 协议直连：x-api-key + anthropic-version 鉴权（官方端点不接受
@@ -2782,6 +2830,60 @@ mod tests {
         assert_eq!(
             msg,
             "anthropic messages status: HTTP 500 Internal Server Error"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_error_snippet_is_capped_with_ellipsis() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        // The tail marker sits past the snippet cap, so surfacing it (or
+        // dropping the ellipsis) means the cap or its branch regressed.
+        let payload = format!("{}TAIL_MARKER", "x".repeat(ERROR_BODY_SNIPPET_CHARS + 100));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/chat/completions"))
+            .json(&serde_json::json!({"model": "k3"}))
+            .send()
+            .await
+            .expect("request sends");
+        let err = error_for_status_with_body(resp, "chat/completions status")
+            .await
+            .expect_err("400 must error");
+        let msg = err.to_string();
+        let snippet = msg
+            .strip_prefix("chat/completions status: HTTP 400 Bad Request: ")
+            .expect("message keeps the label/status prefix");
+        assert!(
+            snippet.ends_with('…'),
+            "capped snippet must carry the ellipsis: {snippet}"
+        );
+        assert_eq!(
+            snippet.chars().count(),
+            // Literal, not ERROR_BODY_SNIPPET_CHARS + 1: this pin exists to
+            // make the snippet cap's value a reviewed change, so the test
+            // must not inherit whatever the constant currently says.
+            401,
+            "snippet = 400 body chars + ellipsis"
+        );
+        assert!(
+            !msg.contains("TAIL_MARKER"),
+            "body past the cap must not leak into the message: {msg}"
         );
         server.await.unwrap();
     }
