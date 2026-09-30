@@ -1707,10 +1707,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               // in: a pack gated off by default completes its opt-in here and
               // gets the same enabled toast (#455 R5-B3).
               if (prepared.installed || prepared.optedIn) {
+                sceneReadyToastEpochRef.current += 1;
                 sceneStatus = {
                   kind: 'ready',
                   text: sceneCopy.ready,
-                  toastEpoch: (sceneReadyToastEpochRef.current += 1),
+                  toastEpoch: sceneReadyToastEpochRef.current,
                 };
                 readyAutoClear = true;
               }

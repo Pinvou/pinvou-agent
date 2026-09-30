@@ -572,12 +572,13 @@ test('macOS system surface follows the product gate without claiming CDP', () =>
   assert.doesNotMatch(macos, /reqwest|std::process::Command|remote-debugging-port/);
 });
 
-test('macOS browser release is atomic and fail-closed outside explicit preview builds', () => {
-  const defaults = cargo.match(/^default\s*=\s*\[[^\n]*\]/m)?.[0] || '';
-  assert.match(cargo, /^browser-macos-preview\s*=\s*\[\]/m);
-  assert.doesNotMatch(defaults, /browser-macos-preview/);
-  assert.match(capabilities, /const MACOS_BROWSER_RELEASED: bool = false;/);
-  assert.match(capabilities, /cfg!\(feature = "browser-macos-preview"\)/);
+test('macOS browser release is atomic and ships in normal builds', () => {
+  // The preview feature was removed when macOS BrowserCore released: normal
+  // development and packaging commands ship the browser, and no build may
+  // re-enter a preview-only lane.
+  assert.doesNotMatch(cargo, /browser-macos-preview/);
+  assert.match(capabilities, /matches!\(os, "windows" \| "linux" \| "macos"\)/);
+  assert.doesNotMatch(capabilities, /MACOS_BROWSER_RELEASED|browser-macos-preview/);
   assert.match(
     capabilities,
     /browser_native_display: browser_product_enabled\(\)[\s\S]{0,120}browser_agent_automation: browser_product_enabled\(\)/,
@@ -587,7 +588,7 @@ test('macOS browser release is atomic and fail-closed outside explicit preview b
     assert.doesNotMatch(
       consumer,
       /cfg!\(feature = "browser-macos-preview"\)/,
-      'only the central semantic capability helper may inspect the Cargo feature',
+      'browser availability must not branch on Cargo features outside the central semantic helper',
     );
   }
 
@@ -637,6 +638,6 @@ test('macOS browser release is atomic and fail-closed outside explicit preview b
   assert.doesNotMatch(
     normalMacBuildEntrypoints,
     /browser-macos-preview/,
-    'normal development and packaging commands must not opt into the preview backend',
+    'the removed preview feature must not reappear in normal build entrypoints',
   );
 });

@@ -429,7 +429,6 @@ fn redact_known_credentials(mut text: String, client_id: &str, api_key: &str) ->
     text
 }
 
-#[cfg(test)]
 /// Round-32 minor 10 (review #455): the stable marker the frontend ima card
 /// keys its actionable-guidance branch on (ToolStoreView's `consentFailure`
 /// substring check). A backend rewording would silently degrade the en/ja

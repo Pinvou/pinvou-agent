@@ -449,19 +449,19 @@ assert.deepEqual(
   "macOS dev must receive the platform overlay (native titlebar) to match packaged output",
 );
 assert.deepEqual(
-  prepareTauriArgs(["dev", "--features", "browser-macos-preview"], { platform: "darwin" }),
+  prepareTauriArgs(["dev", "--features", "benchmark-hooks"], { platform: "darwin" }),
   [
     "dev",
     "--config",
     platformConfigPath("darwin"),
     "--features",
-    "browser-macos-preview",
+    "benchmark-hooks",
   ],
-  "the isolated macOS BrowserCore preview feature must reach the Tauri Cargo build unchanged",
+  "opt-in Cargo features must reach the Tauri Cargo build unchanged",
 );
 assert.deepEqual(
   prepareTauriArgs(
-    ["build", "--features", "browser-macos-preview", "--target", "universal-apple-darwin"],
+    ["build", "--features", "benchmark-hooks", "--target", "universal-apple-darwin"],
     { platform: "darwin" },
   ),
   [
@@ -469,11 +469,11 @@ assert.deepEqual(
     "--config",
     platformConfigPath("darwin"),
     "--features",
-    "browser-macos-preview",
+    "benchmark-hooks",
     "--target",
     "universal-apple-darwin",
   ],
-  "preview packaging must remain an explicit opt-in instead of changing normal macOS builds",
+  "opt-in features must stay caller-supplied instead of being baked into normal macOS builds",
 );
 assert.deepEqual(
   configSpecs(prepareTauriArgs(["dev", "-c", explicitOverlay], { platform: "darwin" })),
