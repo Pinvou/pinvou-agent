@@ -16,6 +16,9 @@ function pinvouSharedtauriChat() {
     const notify = context.notify;
     const TAURI = context.TAURI;
     const sessionStates = context.sessionStates;
+    // Lazy accessor to the voice feature (chat is installed before voice in
+    // bridge.js, so the reference is resolved lazily on first call).
+    const voice = context.voice || function () { return {}; };
     const turnUsageDirty = context.turnUsageDirty;
     const safeConsoleInfo = context.safeConsoleInfo;
     const recordAuthoritySyncDiagnostic = context.recordAuthoritySyncDiagnostic || function () {};
@@ -40,7 +43,6 @@ function pinvouSharedtauriChat() {
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
   // 整个 chat slice 并触发 App 重渲染。会话切换本身会 notify，ChatView 会在
   // activeSessionId 变化后主动读取目标 working set 的草稿。
-function getComposerDraft() { return pinvouSharedtauriChat().getComposerDraft(); }
 function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDraft(value); }
 
   // Single observable, session-scoped path for restoring dropped/failed steer
@@ -70,6 +72,87 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     if (!buffer) return;
     const current = String(buffer.composerDraft || "");
     buffer.composerDraft = current ? current + "\n" + value : value;
+  }
+
+  // Retained recovery for a task draft whose send was abandoned mid-await:
+  // when the user moved on to another session (or the session creation
+  // failed), the text cannot go into the unrelated active composer, so it is
+  // kept in this single in-memory slot. Returning to the draft consumes it
+  // once (append-only); the slot is not keyed by draft identity — the next
+  // draft return is the one chance to hand the text back before it is lost.
+  const pendingTaskDraftRecovery = { buffer: null };
+  function readComposerDraftWithRecovery() {
+    // Consumed once on returning to the draft, never while an unrelated
+    // session is open. No epoch gate: re-entering the draft always allocates
+    // a new epoch (enterDraft increments unconditionally), so an epoch match
+    // could never fire and the retained text would be silently dropped.
+    if (pendingTaskDraftRecovery.buffer && !state.activeSessionId) {
+      state.composerDraft = [state.composerDraft, pendingTaskDraftRecovery.buffer.text].filter(Boolean).join("\n");
+      // The text is visibly back in the live draft: the voice association
+      // follows it, or a manual retry would be orphaned in the dead
+      // recording-time epoch.
+      if (pendingTaskDraftRecovery.buffer.operationId) {
+        voice().rebindVoiceOperationToDraft(pendingTaskDraftRecovery.buffer.operationId, state.draftEpoch);
+      }
+      pendingTaskDraftRecovery.buffer = null;
+    }
+    return String(state.composerDraft || "");
+  }
+
+  // Settles the voice operation of a dispatched send: acceptance ends the
+  // operation (the next recording sweeps it). A false/"restored" return keeps
+  // the retryable association and is settled by the ChatView funnel and
+  // restoreTaskDraft instead.
+  function settleAcceptedVoiceSubmission(meta, sessionId) {
+    const operationId = meta && meta.voiceOperationId;
+    if (operationId) voice().completeVoiceSubmission(operationId, sessionId || null, true);
+  }
+
+  // Scoped task-draft restore: resolves by the original ownership (session,
+  // created-but-abandoned session, or the operation's voice binding), never
+  // into the unrelated active session. A proven same-draft rollback (see
+  // sessions.js ensureSession) rebinds the voice association so a manual
+  // retry keeps it. Returns whether the restore landed.
+  function restoreTaskDraft(text, owner) {
+    if (!owner || owner.restored) return false;
+    if (owner.operationId && owner.rollbackFromDraftEpoch !== undefined) {
+      voice().rebindVoiceDraftAfterRollback(owner.operationId, owner.rollbackFromDraftEpoch, owner.draftEpoch);
+    }
+    const sid = owner.sessionId || owner.createdSessionId
+      || (owner.operationId && voice().voiceOperationSessionId(owner.operationId));
+    // Every restore branch settles the submission (un-park + consume a
+    // queued dismiss); without it a rejected send would leave the operation
+    // parked forever and never adoptable by a retry.
+    if (sid) {
+      if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, sid, false);
+      restoreSteerText(sid, text);
+    } else if (state.activeSessionId) {
+      // Retain one departed draft in memory, never in the unrelated active session.
+      if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, null, false);
+      const retained = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.text : "";
+      const retainedOperationId = pendingTaskDraftRecovery.buffer ? pendingTaskDraftRecovery.buffer.operationId : null;
+      pendingTaskDraftRecovery.buffer = {
+        text: [retained, text].filter(Boolean).join("\n"),
+        // The newest operation wins: the rebind on draft return adopts the
+        // most recent stranded send (one operation per manual send).
+        operationId: owner.operationId || retainedOperationId || null,
+      };
+    } else {
+      // Back in the draft — any epoch, because re-entering the draft
+      // allocates a new one (enterDraft increments unconditionally).
+      if (owner.operationId) {
+        voice().completeVoiceSubmission(owner.operationId, null, false);
+        // The text is visibly back in the live draft: rebind the operation to
+        // the new epoch so a manual retry adopts it instead of orphaning the
+        // association in the dead recording-time epoch (the complete above
+        // may already have terminalized it via a queued cancel; the rebind
+        // refuses terminal operations).
+        voice().rebindVoiceOperationToDraft(owner.operationId, state.draftEpoch);
+      }
+      prefillComposer(text, true);
+    }
+    owner.restored = true;
+    return true;
   }
 
   // Per-session in-flight interrupt flag: while an interrupt is in flight,
@@ -541,13 +624,20 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
   //                draft back (handleSend's empty-vs-typed restore).
   // Main-path send failures still throw (surfaceFailure) and the caller
   // restores through its catch.
-  async function sendMessage(text, meta) {let pinvouSharedtauriChatN31666Cache = null;
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- single send state machine (ownership guard + first-turn materialization + busy steer); split tracked separately
+  async function sendMessage(text, meta, voiceOwner) {let pinvouSharedtauriChatN31666Cache = null;
 function pinvouSharedtauriChatN31666() {
   if (!pinvouSharedtauriChatN31666Cache) pinvouSharedtauriChatN31666Cache = window.PinvouBridgeShared.create("tauriChat:31666", { state, sid: { get value() { return sid; } } });
   return pinvouSharedtauriChatN31666Cache;
 }
 
 
+    // Ownership guard: capability preparation or first-turn materialization can
+    // outlive the originating voice composer (the user switched sessions or
+    // re-entered a draft meanwhile); a send whose original ownership is gone
+    // must not be admitted into whichever session is active now.
+    if (voiceOwner && ((state.activeSessionId || null) !== voiceOwner.sessionId
+      || (!voiceOwner.sessionId && Number(state.draftEpoch || 0) !== voiceOwner.draftEpoch))) return false;
     text = (text || "").trim();
     const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return false;
@@ -562,20 +652,23 @@ function pinvouSharedtauriChatN31666() {
       // 必须用返回值判空：切走场景 ensureSession 返回 null 但 activeSessionId
       // 非空（用户已切到别的会话），按 activeSessionId 继续会把本条消息发进
       // 错误会话（审计 #257）。
-      const materialized = await ensureSession();
-      if (!materialized) {
-        // 物化中止（如草稿态多智能体开关落盘失败 / await 期间切走）：把输入放回
-        // 输入框，不静默丢字；错误提示由 ensureSession 内如实给出（复核 P1）。
-        // append=true: failure-recovery semantics — the user may have started
-        // the next message during the await; replacing would clobber it.
-        prefillComposer(text, true);
-        // The prefill IS the restore; "restored" stops the caller from doing
-        // it a second time (the prefill lands asynchronously and would then
-        // append a duplicate).
+      const draftOwner = { sessionId: null, draftEpoch: Number(state.draftEpoch || 0),
+        operationId: meta && meta.voiceOperationId, restored: false };
+      const materialized = await ensureSession(draftOwner);
+      if (!materialized || state.activeSessionId !== materialized) {
+        if (materialized) draftOwner.createdSessionId = materialized;
+        // Recover in the created session or the original draft epoch, never in
+        // the unrelated active composer; "restored" stops the caller from doing
+        // it a second time, including when recovery stays in a background buffer.
+        restoreTaskDraft(text, draftOwner);
         return "restored";
       }
     }
     const sid = state.activeSessionId;
+    // An async writeback/task send explicitly carries its operationId: hand it
+    // to the submission gate before the bridge resolves the current session
+    // (the first turn's backend admission associates the real session).
+    if (meta && meta.voiceOperationId) voice().beginVoiceSubmission(meta.voiceOperationId, sid);
     function abandonPreparedAttachments() {
       state.attachments = state.attachments.filter(function (attachment) {
         return !readyAttachments.includes(attachment);
@@ -733,6 +826,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
 
     if (isBusyFor(sid)) {
       busySteerBranch();
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
     // Legacy behavior: with state.queued non-empty, still go through
@@ -741,6 +835,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       flushQueued(sid);
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
     if (activeTurnBuffer && activeTurnBuffer.remoteTurnActive &&
@@ -765,6 +860,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
+      settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
 
@@ -798,6 +894,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedtauriChatN31666().res
       return !readyAttachments.includes(attachment);
     });
     notify();
+    settleAcceptedVoiceSubmission(meta, sid);
     return true;
   }
   // WebUI 草稿首条消息失败时的专用重试入口。桌面端没有远程草稿，
@@ -2189,10 +2286,11 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       flushQueued,
       sendMessageToSession,
       sendMessage,
-      getComposerDraft,
+      getComposerDraft: function () { return readComposerDraftWithRecovery(); },
       setComposerDraft,
       retryFirstTurn,
       prefillComposer,
+      restoreTaskDraft,
       removeQueued,
       prioritizeQueued,
       editQueued,

@@ -37,6 +37,7 @@
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
     "test:startup-window": "node tests/startup_window_logic.test.mjs",
+    "perf:engine-startup": "node scripts/engine-startup-report.mjs",
     "test:connector-online-install": "node tests/connector_online_install_contract.test.js && node tests/connector_skills_contract.test.js",
     "test:mcp-python-dependencies": "node tests/mcp_python_dependencies_contract.test.js",
     "test:macos-phase2": "node tests/macos_phase2_contract.test.js",
@@ -58,6 +59,7 @@
     "test:codex-checkpoints": "node tests/codex_checkpoints_logic.test.mjs",
     "test:codex-workspace-tree": "node tests/codex_workspace_tree_logic.test.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
+    "test:conversation-virtualization": "node tests/conversation_timeline_virtualization_smoke.mjs",
     "test:codex-acp-macos-runtime": "node tests/codex_acp_macos_runtime_smoke.js",
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",
@@ -69,7 +71,7 @@
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
     "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs && node tests/acp_native_attachment_client.test.mjs && node tests/attachment_bubble_logic.test.mjs",
-    "test:voice-input": "node tests/voice_input_error_logic.test.js && node tests/voice_shortcut_state.test.mjs && node tests/voice_shortcut_router.test.mjs && node tests/voice_shortcut_settings.test.mjs && node tests/voice_target_registry.test.mjs && node tests/voice_entry_policy.test.mjs && node tests/voice_pill_animation.test.mjs",
+    "test:voice-input": "node tests/voice_input_error_logic.test.js && node tests/voice_shortcut_state.test.mjs && node tests/voice_shortcut_router.test.mjs && node tests/voice_shortcut_settings.test.mjs && node tests/voice_target_registry.test.mjs && node tests/voice_entry_policy.test.mjs && node tests/voice_pill_animation.test.mjs && node tests/voice_operation_lifecycle.test.mjs",
     "eval:voice-normalize": "node scripts/voice-normalize-eval.mjs",
     "test:voice-asr-cancel": "node tests/voice_asr_cancel_logic.test.js",
     "test:bridge-protocol": "node tests/bridge_domain_protocol.test.mjs && node tests/web_bridge_domain_contract.test.mjs && node tests/monitor_bridge_format.test.mjs",
@@ -163,6 +165,7 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.13",
     "dompurify": "^3.4.14",
     "highlight.js": "^11.11.1",
     "marked": "^14.1.4",

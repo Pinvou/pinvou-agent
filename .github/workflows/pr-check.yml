@@ -303,6 +303,10 @@ jobs:
               - 'pinvou3-app/src-tauri/src/app/commands/remote_control.rs'
               - 'pinvou3-app/src-tauri/src/app/commands/personas.rs'
               - 'pinvou3-app/src-tauri/src/lib.rs'
+              # The atomic-write helper has staging+rename contract assertions;
+              # leaving the file out of this list means Rust-only changes to it
+              # silently skip the node gate (same locking mechanism as above).
+              - 'pinvou3-app/src-tauri/src/platform/filesystem.rs'
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'

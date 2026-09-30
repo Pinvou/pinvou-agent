@@ -21,16 +21,39 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::MAX_SESSIONS_PER_KIND;
+use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
 use super::validators::generate_session_id;
 
-/// Borrows the paths module's process-level env lock — avoiding parallel
-/// races with other tests that mutate PINVOU3_HOME. Returns the store with
-/// the guard; the lock is released only when the guard drops.
-fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+/// RAII teardown for `isolated_store`. Field order is drop order: env is
+/// restored while the lock is still held → ENV_LOCK is released → the
+/// temporary home is deleted last (the store leaves the tuple before the
+/// guard does).
+struct TestHomeGuard {
+    _env: crate::platform::test_support::EnvRestore,
+    _lock: std::sync::MutexGuard<'static, ()>,
+    home: std::path::PathBuf,
+}
+
+impl Drop for TestHomeGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+/// Use `platform::test_support::locked_env` to take ENV_LOCK and snapshot the
+/// env in one step — avoids racing tests that mutate PINVOU3_HOME in
+/// parallel. Returns the store plus a guard; only after the guard drops are
+/// the lock released, the env restored, and the temporary home deleted: the
+/// test neither leaks a whole seeded repo into /tmp nor leaves PINVOU3_HOME
+/// dangling on a deleted directory.
+fn isolated_store() -> (SessionStore, TestHomeGuard) {
+    let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+    // pid + nanos: ENV_LOCK only serializes within this process, so two
+    // concurrent cargo test processes can still collide on the same nanosecond
+    // (paths::tests' unique_suffix is not reachable here; assemble pid directly).
     let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-sessions-test-{}",
+        "pinvou3-sessions-test-{}-{}",
+        std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -39,9 +62,32 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
-    // Note: no remove_var — the lock has not dropped yet, and the assertions
-    // below need PINVOU3_HOME to still be this value.
-    (store, guard)
+    // The lock is held in the guard until the test ends: the assertions below
+    // need PINVOU3_HOME to still be this value for their whole run.
+    (
+        store,
+        TestHomeGuard {
+            _env: env,
+            _lock: lock,
+            home: tmp,
+        },
+    )
+}
+
+/// Assert that the sessions root contains a quarantine evidence file whose
+/// name contains `needle` and whose bytes are preserved verbatim. Shared by
+/// the three quarantine-refusal tests: quarantine naming changes only here.
+fn assert_quarantine_evidence(needle: &str, expected: &[u8]) {
+    let evidence = std::fs::read_dir(crate::platform::paths::sessions_root())
+        .expect("list sessions root")
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.file_name().to_string_lossy().contains(needle))
+        .unwrap_or_else(|| panic!("quarantine evidence file matching {needle}"));
+    assert_eq!(
+        std::fs::read(evidence.path()).expect("read quarantine evidence"),
+        expected,
+        "the quarantined bytes must be preserved verbatim"
+    );
 }
 
 fn record_session_deletions(store: &SessionStore) -> Arc<std::sync::Mutex<Vec<String>>> {
@@ -193,6 +239,7 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
     }
     *store.list_cache.write() = Some((
         generation_now.wrapping_sub(1),
+        None,
         std::sync::Arc::new(poisoned),
     ));
     let after = store
@@ -206,6 +253,64 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
         title.as_deref(),
         Some("OLD-STALE"),
         "a stale-generation snapshot must never be served"
+    );
+}
+
+#[test]
+fn foreign_write_invalidates_the_list_cache() {
+    // Cross-process motivation (the reason headless persistence works at
+    // all): headless `agent run` and the GUI share one PINVOU3_HOME, and a
+    // create/delete by the other process does not move this process's
+    // list_cache generation counter — only the second-dimension token of the
+    // sessions directory entry-name set (sorted entry names, see
+    // `sessions_dir_change_token`) can pierce the cache; the mtime shape was
+    // already replaced (a create+delete within one tick would miss the
+    // invalidation). A second store instance simulates the "other process"
+    // write path.
+    let (store_a, _g) = isolated_store();
+    let s1 = store_a
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create in process A");
+    // Warm process A's cache.
+    let warm = store_a.list_sessions_cached().expect("warm cache");
+    assert!(warm.iter().any(|m| m.id == s1.metadata.id));
+
+    // Another process boots the same sessions directory and creates a new
+    // session (this process performs no writes).
+    let store_b = SessionStore::boot_with_scheduled_root(
+        crate::platform::paths::sessions_root()
+            .parent()
+            .expect("sessions root has a parent")
+            .join("scheduled"),
+    )
+    .expect("boot process B");
+    let s2 = store_b
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("foreign create");
+
+    let after_create = store_a
+        .list_sessions_cached()
+        .expect("read after foreign create");
+    assert!(
+        after_create.iter().any(|m| m.id == s2.metadata.id),
+        "a foreign create must invalidate the list cache: the headless run's \
+         session has to appear in the GUI list"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&warm, &after_create),
+        "the foreign write must not be served from the warm snapshot"
+    );
+
+    // External deletes must be visible too: an evicted/deleted session must
+    // not linger in the list.
+    store_b.delete(&s2.metadata.id).expect("foreign delete");
+    let after_delete = store_a
+        .list_sessions_cached()
+        .expect("read after foreign delete");
+    assert!(
+        !after_delete.iter().any(|m| m.id == s2.metadata.id),
+        "a foreign delete must invalidate the list cache: an evicted session \
+         must disappear from the GUI list"
     );
 }
 
@@ -398,6 +503,166 @@ fn session_workspace_binding_survives_reload() {
     assert_eq!(roots.execution, bound_dir);
 
     let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+/// Round-12 review: the binding sidecars carry the user's workspace absolute
+/// paths, so every production write path must land 0600 like the transcript
+/// beside them (89f621e42's stated intent). Covers all three: the first
+/// bind, the rebind phase-3 sidecar rewrite, and the legacy-table rewrite
+/// (seeded 0644 the way an old build wrote it — the rewrite must replace the
+/// file, not keep its loose mode).
+#[cfg(unix)]
+#[test]
+fn workspace_binding_writes_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let from = unique_temp_dir("binding-private-from");
+    std::fs::create_dir_all(&from).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, from.clone())
+        .expect("bind");
+
+    let sessions_dir = store.manager.sessions_dir();
+    let sidecar = sessions_dir
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
+    let mode = std::fs::metadata(&sidecar)
+        .expect("binding sidecar exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "binding sidecar must be 0600");
+
+    // Seed the legacy table the way a pre-sidecar build left it (umask
+    // 0644), so the rebind's legacy-table rewrite fires and must land
+    // private too.
+    let legacy = sessions_dir.join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            s.metadata.id.clone(): from.display().to_string()
+        }))
+        .expect("serialize legacy table"),
+    )
+    .expect("seed legacy table");
+
+    let to = unique_temp_dir("binding-private-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+    // The legacy-table rewrite failure aborts the whole rebind on this
+    // branch (REBIND_LEGACY_TABLE_UNWRITABLE, round-12 B1) instead of
+    // reporting a `legacy_sync_failed` flag, so the successful return below
+    // already proves the rewrite landed and the mode checks are meaningful.
+    store.rebind_workspace_bindings(&from, &to).expect("rebind");
+
+    let mode = std::fs::metadata(&sidecar)
+        .expect("rewritten sidecar exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "rewritten sidecar must stay 0600");
+    let mode = std::fs::metadata(&legacy)
+        .expect("rewritten legacy table exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "rewritten legacy table must be 0600");
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Every session sidecar carries user data (which sessions exist, which are
+/// pinned, which model and mode each uses) and must be written 0600 like the
+/// transcript beside it — on creation AND when rewriting a world-readable
+/// file an older build left behind (the rename must replace the inode, not
+/// inherit its mode).
+///
+/// Table-driven over all five: the binding sidecar above had assertions, the
+/// other five had none, so reverting any one of them to a non-private write
+/// helper left the suite green.
+#[cfg(unix)]
+#[test]
+fn every_session_sidecar_is_written_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _g) = isolated_store();
+    let sessions_dir = store.manager.sessions_dir();
+
+    // (file name, first write, second write). The two writes must differ:
+    // every mutator short-circuits when the map is unchanged, so repeating
+    // one write would skip the rewrite this test is here to observe.
+    type Write<'a> = Box<dyn Fn() + 'a>;
+    let writes: Vec<(&str, Write<'_>, Write<'_>)> = vec![
+        (
+            "_pinned_sessions.json",
+            Box::new(|| store.set_pinned("perm-a", true).expect("pin a")),
+            Box::new(|| store.set_pinned("perm-b", true).expect("pin b")),
+        ),
+        (
+            "_hidden_sessions.json",
+            Box::new(|| store.set_hidden("perm-a", true).expect("archive a")),
+            Box::new(|| store.set_hidden("perm-b", true).expect("archive b")),
+        ),
+        (
+            "_session_mode_states.json",
+            Box::new(|| {
+                store
+                    .set_mode_and_persist("perm-a", SerializableMode::Plan)
+                    .expect("mode plan")
+            }),
+            Box::new(|| {
+                store
+                    .set_mode_and_persist("perm-a", SerializableMode::Yolo)
+                    .expect("mode yolo")
+            }),
+        ),
+        (
+            "_session_models.json",
+            Box::new(|| {
+                store
+                    .set_session_model_id("perm-a", Some("gpt-x".to_string()))
+                    .expect("model x")
+            }),
+            Box::new(|| {
+                store
+                    .set_session_model_id("perm-a", Some("gpt-y".to_string()))
+                    .expect("model y")
+            }),
+        ),
+        (
+            "_multi_agent.json",
+            Box::new(|| {
+                store
+                    .set_multi_agent("perm-a", true)
+                    .expect("multi-agent a")
+            }),
+            Box::new(|| {
+                store
+                    .set_multi_agent("perm-b", true)
+                    .expect("multi-agent b")
+            }),
+        ),
+    ];
+
+    for (name, first, second) in &writes {
+        let path = sessions_dir.join(name);
+        first();
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("{name} must exist after its write: {e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{name} must be created private");
+
+        // Now the upgrade shape: an old build's world-readable file, which a
+        // later write must replace rather than inherit the mode of.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .unwrap_or_else(|e| panic!("loosen {name}: {e}"));
+        second();
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("{name} must exist after the rewrite: {e}"))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{name} must be tightened on rewrite");
+    }
 }
 
 /// Directory rebind candidate scan for the plain-chat lane (review #463
@@ -879,6 +1144,131 @@ fn create_empty_with_id_preserves_requested_identity() {
     assert_eq!(
         store.load(requested_id).expect("load session").metadata.id,
         requested_id
+    );
+}
+
+/// Headless session ids persist for good now, so a second create with the
+/// same caller-chosen id must fail loud instead of silently replacing the
+/// kept record (transcript loss, and the old pin would transfer to the new
+/// stub).
+#[test]
+fn create_empty_with_id_refuses_to_overwrite_an_existing_record() {
+    let (store, _g) = isolated_store();
+    let requested_id = "eval_collision_guard";
+
+    store
+        .create_empty_with_id(
+            requested_id.to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("first create");
+
+    assert!(store.chat_session_record_exists(requested_id));
+    assert!(
+        !store
+            .chat_session_has_messages(requested_id)
+            .expect("classify the fresh stub"),
+        "a freshly created session is a zero-message stub"
+    );
+
+    let second = store.create_empty_with_id(
+        requested_id.to_string(),
+        "/model".into(),
+        None,
+        std::env::temp_dir(),
+    );
+    assert!(
+        second.is_err(),
+        "a second create with the same id must not overwrite the record"
+    );
+    assert!(store.chat_session_record_exists(requested_id));
+}
+
+#[test]
+fn create_empty_with_id_refusal_leaves_the_retained_transcript_and_pin_untouched() {
+    let (store, _g) = isolated_store();
+    let retained = "eval_collision_survivor";
+
+    // Seed the record a PID-reused fresh id would collide with: a started
+    // transcript plus a durable pin — exactly what a silent overwrite would
+    // destroy or inherit onto the new stub.
+    store
+        .create_empty_with_id(
+            retained.to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("seed the retained record");
+    store
+        .update_messages(&retained, vec![user_text("real work")])
+        .expect("start the transcript");
+    store.set_pinned(retained, true).expect("pin the session");
+    let pin_file = paths::sessions_root().join("_pinned_sessions.json");
+
+    let colliding = store.create_empty_with_id(
+        retained.to_string(),
+        "/model".into(),
+        None,
+        std::env::temp_dir(),
+    );
+    assert!(
+        colliding.is_err(),
+        "the collision must be refused instead of replacing the record"
+    );
+
+    // The retained transcript survives verbatim, asserted against a reopened
+    // store so the check reads the durable record rather than this process's
+    // caches; the pin file is parsed for the same reason.
+    let reopened = reopen_store(&store).expect("reopen the store");
+    let survived = reopened
+        .load(&retained)
+        .expect("the retained record must survive the refused create");
+    assert_eq!(
+        survived.messages,
+        vec![user_text("real work")],
+        "the refused create must not truncate or replace the transcript"
+    );
+    let durable = parse_pin_file(&pin_file);
+    assert!(
+        durable.contains_key(retained),
+        "the refused create must not drop the retained session's pin: {durable:?}"
+    );
+}
+
+#[test]
+fn chat_session_has_messages_reflects_the_durable_transcript() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    assert!(
+        !store
+            .chat_session_has_messages(&session.metadata.id)
+            .expect("classify the empty transcript"),
+        "a session without messages is a stub"
+    );
+
+    store
+        .update_messages(&session.metadata.id, vec![user_text("hello")])
+        .expect("append the first message");
+    assert!(
+        store
+            .chat_session_has_messages(&session.metadata.id)
+            .expect("classify the started transcript"),
+        "a session with admitted messages has started"
+    );
+    // The classifier's promise is the DURABLE transcript: a fresh store over
+    // the same home must read the same classification from disk, not from
+    // this process's caches.
+    let reopened = reopen_store(&store).expect("reopen the store");
+    assert!(
+        reopened
+            .chat_session_has_messages(&session.metadata.id)
+            .expect("classify the reopened transcript"),
+        "a session with admitted messages is still started after a reopen"
     );
 }
 
@@ -1573,8 +1963,8 @@ fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
     store
         .set_session_model_id(&id, Some("override-model".to_string()))
         .expect("scheduled conversation model override");
-    store.set_hidden(&id, true);
-    store.set_pinned(&id, true);
+    store.set_hidden(&id, true).expect("archive");
+    store.set_pinned(&id, true).expect("pin");
 
     let err = store
         .delete(&id)
@@ -1629,8 +2019,8 @@ fn scheduled_delete_notifies_hook_when_record_commit_precedes_cleanup_error() {
     store
         .set_session_model_id(&id, Some("partial-delete-model".to_string()))
         .expect("set scheduled model override");
-    store.set_hidden(&id, true);
-    store.set_pinned(&id, true);
+    store.set_hidden(&id, true).expect("archive");
+    store.set_pinned(&id, true).expect("pin");
     let deletions = record_session_deletions(&store);
     store
         .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
@@ -1685,8 +2075,8 @@ fn scheduled_delete_retry_finishes_runtime_cleanup_after_profile_removal() {
     store
         .set_session_model_id(&id, Some("stale-model".to_string()))
         .expect("set scheduled model override");
-    store.set_hidden(&id, true);
-    store.set_pinned(&id, true);
+    store.set_hidden(&id, true).expect("archive");
+    store.set_pinned(&id, true).expect("pin");
     store
         .inject_post_record_delete_fault(&id, ErrorKind::PermissionDenied)
         .expect("leave the runtime directory after durable record deletion");
@@ -1860,6 +2250,7 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     phantom.title = "Scheduled run".into();
     *store.list_cache.write() = Some((
         generation_before.wrapping_add(1),
+        None,
         std::sync::Arc::new(vec![phantom]),
     ));
     let cached = store
@@ -2008,6 +2399,503 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
         store.load(&pruned).is_err(),
         "retention event must name the deleted chat"
     );
+}
+
+/// Pinned sessions are the user's explicit "keep forever" mark: excluded from
+/// the 50 cap and from eviction. A headless `agent run` shares the same store
+/// by default; without the exemption a single batch run would silently delete
+/// the user's pinned GUI sessions.
+#[test]
+fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("pinned-exempt-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+    // updated_at decreases with index: ids[MAX-1] is the oldest. Pinning it
+    // moves it out of the budget; two fresh unpinned sessions then push the
+    // unpinned count to 51, and eviction must skip the pinned oldest session
+    // and land on the oldest unpinned one (ids[MAX-2]).
+    let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
+    store.set_pinned(&pinned_id, true).expect("pin");
+    for suffix in ["fresh-a", "fresh-b"] {
+        let fresh = create_saved_session_with_id_and_mode(
+            format!("pinned-exempt-{suffix}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store.save(&fresh).expect("persist fresh session");
+    }
+
+    assert!(
+        store.load(&pinned_id).is_ok(),
+        "pinned sessions must survive retention eviction"
+    );
+    assert!(
+        store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
+        "the oldest unpinned session is evicted first"
+    );
+    assert!(store.is_pinned(&pinned_id));
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND + 1,
+        "unpinned stays capped at 50 while the pinned session adds one extra"
+    );
+}
+
+/// With every session pinned, retention must fully disengage: pinned sessions
+/// neither count nor serve as eviction candidates (the sweep continues past
+/// each pinned entry), and an over-cap save must not delete anything.
+#[test]
+fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("all-pinned-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        store.set_pinned(&session.metadata.id, true).expect("pin");
+    }
+    // The 51st session is unpinned: the unpinned count 1 <= 50, so the whole
+    // sweep must produce no deletion.
+    let extra = create_saved_session_with_id_and_mode(
+        "all-pinned-extra".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    store.save(&extra).expect("persist the over-cap session");
+
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND + 1,
+        "all-pinned stores are exempt from the cap: nothing may be deleted"
+    );
+}
+
+/// A pin written to the durable pin file after this process booted (the
+/// cross-process GUI case: the user pins a session while a headless batch run
+/// is live) must still protect the session — the sweep consults the file, not
+/// the boot-time map.
+#[test]
+fn chat_retention_honors_pins_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("durable-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+    // Simulate the GUI process pinning the oldest session through the durable
+    // file only: this store's in-memory map never learns about it.
+    let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    let payload = format!(r#"[{{"id":"{pinned_id}","pinned_at":"2026-09-17T00:00:00+00:00"}}]"#);
+    std::fs::write(&pin_file, payload).expect("write the durable pin");
+
+    // updated_at decreases with index, so the two fresh 51st/52nd sessions
+    // push the sweep past the cap with the externally pinned session as the
+    // natural (oldest) victim.
+    for suffix in ["fresh-a", "fresh-b"] {
+        let fresh = create_saved_session_with_id_and_mode(
+            format!("durable-pin-{suffix}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store.save(&fresh).expect("persist the over-cap session");
+    }
+
+    assert!(
+        store.load(&pinned_id).is_ok(),
+        "a pin written after boot must protect the session from this sweep"
+    );
+    assert!(
+        store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
+        "the oldest unpinned session is evicted instead"
+    );
+    assert!(
+        !store.is_pinned(&pinned_id),
+        "the sweep reads the durable file without adopting it into the boot-time map"
+    );
+}
+
+/// A torn or unreadable pin file must not widen the eviction set: the sweep
+/// falls back to the boot-time map, which still protects the pinned session.
+#[test]
+fn chat_retention_falls_back_to_boot_pins_when_pin_file_is_unreadable() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("torn-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+    let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
+    store.set_pinned(&pinned_id, true).expect("pin");
+    // Corrupt the durable file (a torn write shape): parsing fails, so the
+    // sweep must keep the boot-time map instead of treating every session as
+    // unpinned.
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+
+    // updated_at decreases with index, so the two fresh 51st/52nd sessions
+    // push the sweep past the cap with the pinned session as the natural
+    // (oldest) victim.
+    for suffix in ["fresh-a", "fresh-b"] {
+        let fresh = create_saved_session_with_id_and_mode(
+            format!("torn-pin-{suffix}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store.save(&fresh).expect("persist the over-cap session");
+    }
+
+    assert!(
+        store.load(&pinned_id).is_ok(),
+        "a torn pin file must not widen the eviction set"
+    );
+    assert!(
+        store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
+        "the oldest unpinned session is evicted instead"
+    );
+}
+
+/// A pin file that is ALREADY corrupt when the process boots must stop the
+/// sweep, not run it with an empty exemption set.
+///
+/// The sibling test above seeds the boot map through `set_pinned` *before*
+/// corrupting the file, so the in-memory fallback is populated and the sweep
+/// is safe. The dangerous ordering is the reverse: `load_pinned_sessions` is a
+/// no-op on a parse failure, so the boot map ends up empty for exactly the
+/// same reason the file is unusable — and `SessionStore::boot` sweeps
+/// immediately afterwards, which would delete every pinned session.
+#[test]
+fn a_pin_file_corrupt_at_boot_stops_the_sweep_instead_of_evicting() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    // Exactly at the cap, so seeding itself evicts nothing.
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("boot-corrupt-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+
+    // Corrupt the file, then boot a second store over the same home: its load
+    // fails and leaves the in-memory map empty — the state the old fallback
+    // could not tell apart from "there are no pins".
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+    let rebooted = SessionStore::boot_with_scheduled_root(
+        crate::platform::paths::pinvou3_home().join("scheduled"),
+    )
+    .expect("re-boot against the corrupt pin file");
+
+    // Push past the cap through the rebooted store: this save runs the sweep,
+    // which is where an empty exemption set does its damage.
+    let mut overflow = create_saved_session_with_id_and_mode(
+        "boot-corrupt-pin-overflow".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    overflow.metadata.updated_at = now + chrono::Duration::seconds(1);
+    rebooted.save(&overflow).expect("push past the cap");
+
+    for id in &ids {
+        assert!(
+            rebooted.load(id).is_ok(),
+            "{id} was deleted while the keep-forever set was unknown; sitting over the cap is \
+             recoverable, deleting a session the user may have pinned is not"
+        );
+    }
+}
+
+/// A pin mutation against a corrupt pin file quarantines the file, and the
+/// quarantine must NOT disarm the sweep's fail-safe.
+///
+/// The save path deletes the pin file exactly when the in-memory map empties,
+/// so "no file" used to be read as authoritative "no pins" — but quarantine
+/// is a second remover: after the boot load failed on a corrupt file, the
+/// first mutation moves that file aside and returns `Err`, and the next sweep
+/// then saw a legitimately-looking absence and evicted every session whose
+/// keep-forever mark sat in the quarantined bytes. This is the sweep-side
+/// twin of `a_pin_file_corrupt_at_boot_stops_the_sweep_instead_of_evicting`:
+/// that test stops at the corrupt file, this one joins the mutation that
+/// quarantines it.
+#[test]
+fn a_quarantined_pin_file_keeps_the_sweep_refusing() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    // Exactly at the cap, so seeding itself evicts nothing.
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("quarantined-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+
+    // Corrupt the file, then boot a second store over the same home: its load
+    // fails and leaves both the boot map empty and the loaded flag unset.
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+    let rebooted = SessionStore::boot_with_scheduled_root(
+        crate::platform::paths::pinvou3_home().join("scheduled"),
+    )
+    .expect("re-boot against the corrupt pin file");
+
+    // The first mutation refuses AND quarantines the corrupt bytes aside.
+    let refusal = rebooted
+        .set_pinned("quarantined-pin-0", true)
+        .expect_err("a mutation over a corrupt pin file is refused");
+    assert!(
+        format!("{refusal:#}").contains("_pinned_sessions.json"),
+        "the refusal must name the sidecar it protected: {refusal:#}"
+    );
+    assert!(
+        !pin_file.exists(),
+        "the corrupt file is quarantined aside, so the sweep now sees an absence"
+    );
+
+    // Push past the cap through the same store: this save runs the sweep over
+    // a pin file that is now ABSENT while the boot load had failed — the
+    // sweep must still refuse, because the quarantined bytes may have held
+    // pins no surviving map knows about.
+    let mut overflow = create_saved_session_with_id_and_mode(
+        "quarantined-pin-overflow".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    overflow.metadata.updated_at = now + chrono::Duration::seconds(1);
+    rebooted.save(&overflow).expect("push past the cap");
+
+    for id in &ids {
+        assert!(
+            rebooted.load(id).is_ok(),
+            "{id} was deleted after its pin file was merely quarantined; an unknown \
+             keep-forever set must stop the sweep, not widen it to everything"
+        );
+    }
+}
+
+/// Quarantine falls back to the boot pin map when the boot load succeeded.
+///
+/// The corrupting order matters: the boot map is populated through
+/// `set_pinned` BEFORE the file corrupts, so the fallback is the honest boot
+/// truth. The mutation that quarantines the corrupt file must not cost the
+/// session its protection, and the sweep must still run — protection must not
+/// wedge retention.
+#[test]
+fn a_quarantine_falls_back_to_the_boot_pin_map() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+
+    // The pinned session is the OLDEST record, so under the old
+    // absence-is-authoritative reading it was the first eviction victim.
+    let mut pinned_session = create_saved_session_with_id_and_mode(
+        "quarantine-fallback-pinned".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    pinned_session.metadata.updated_at = now - chrono::Duration::seconds(100);
+    store
+        .save(&pinned_session)
+        .expect("seed the pinned session");
+    store
+        .set_pinned("quarantine-fallback-pinned", true)
+        .expect("pin the oldest session");
+
+    let mut next_ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("quarantine-fallback-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        next_ids.push(session.metadata.id);
+    }
+
+    // Corrupt the file, then attempt one more pin: the mutation refuses and
+    // quarantines the corrupt bytes aside, leaving an absence the sweep must
+    // read through the boot map, not as "no pins".
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+    store
+        .set_pinned("quarantine-fallback-not-pinned", true)
+        .expect_err("a mutation over a corrupt pin file is refused");
+    assert!(
+        !pin_file.exists(),
+        "the corrupt file is quarantined aside, so the sweep now sees an absence"
+    );
+
+    // Push past the cap: the sweep runs, protects the pinned oldest session
+    // out of the boot map, and evicts the next-oldest instead — the fallback
+    // must protect without wedging retention.
+    let mut overflow = create_saved_session_with_id_and_mode(
+        "quarantine-fallback-overflow".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    overflow.metadata.updated_at = now + chrono::Duration::seconds(1);
+    store.save(&overflow).expect("push past the cap");
+
+    assert!(
+        store.load("quarantine-fallback-pinned").is_ok(),
+        "the pinned session was evicted even though the boot map holds its pin; a \
+         quarantine must not cost the session its protection"
+    );
+    // Newest-first sweep: with the pinned oldest protected, the victim is the
+    // oldest UNPINNED record, not the newest.
+    assert!(
+        store.load(&next_ids[MAX_SESSIONS_PER_KIND - 1]).is_err(),
+        "the sweep must still run after a quarantine: the oldest unpinned over-cap \
+         session should have been evicted"
+    );
+}
+
+/// Headless `agent run` sessions are evicted against their own budget.
+///
+/// Sharing the chat budget made every default-keep run permanently consume one
+/// of the user's 50 slots and delete their oldest conversation — transcript,
+/// workspace and checkpoints — with the only notice going to a stderr the
+/// desktop user never reads.
+#[test]
+fn headless_sessions_do_not_evict_gui_chats() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut chat_ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("gui-chat-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        // Oldest first, so a shared budget would take `gui-chat-0` next.
+        session.metadata.updated_at = now - chrono::Duration::seconds(1_000 - index as i64);
+        store.save(&session).expect("seed chat session");
+        chat_ids.push(session.metadata.id);
+    }
+
+    // Two headless runs against a chat store sitting exactly at the cap.
+    for index in 0..2 {
+        let mut headless = create_saved_session_with_id_and_mode(
+            format!("{HEADLESS_SESSION_PREFIX}4242_{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        headless.metadata.updated_at = now + chrono::Duration::seconds(index as i64);
+        store.save(&headless).expect("persist the headless session");
+    }
+
+    for id in &chat_ids {
+        assert!(
+            store.load(id).is_ok(),
+            "{id} was evicted by a headless run; a CLI invocation must not be a destructive \
+             operation on the desktop user's conversations"
+        );
+    }
 }
 
 #[test]
@@ -2708,7 +3596,7 @@ fn delete_missing_session_file_is_idempotent() {
     std::fs::create_dir_all(&session_dir).expect("session dir");
     std::fs::remove_file(&session_file).expect("remove session file");
     store.set_active(Some(s.metadata.id.clone()));
-    store.set_pinned(&s.metadata.id, true);
+    store.set_pinned(&s.metadata.id, true).expect("pin");
 
     store.delete(&s.metadata.id).expect("delete missing file");
 
@@ -2728,7 +3616,7 @@ fn pinned_sessions_persist_and_delete_cleans() {
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
 
-    store.set_pinned(&s.metadata.id, true);
+    store.set_pinned(&s.metadata.id, true).expect("pin");
     assert!(store.is_pinned(&s.metadata.id));
     assert!(
         store.pinned_at(&s.metadata.id).is_some(),
@@ -2771,7 +3659,7 @@ fn hidden_sessions_persist_restore_and_delete_cleans() {
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
 
-    store.set_hidden(&s.metadata.id, true);
+    store.set_hidden(&s.metadata.id, true).expect("archive");
     assert!(store.is_hidden(&s.metadata.id));
     assert!(
         store.hidden_at(&s.metadata.id).is_some(),
@@ -2786,11 +3674,11 @@ fn hidden_sessions_persist_restore_and_delete_cleans() {
         "hidden_at survives reload"
     );
 
-    reloaded.set_hidden(&s.metadata.id, false);
+    reloaded.set_hidden(&s.metadata.id, false).expect("archive");
     assert!(!reloaded.is_hidden(&s.metadata.id));
     assert!(reloaded.hidden_at(&s.metadata.id).is_none());
 
-    reloaded.set_hidden(&s.metadata.id, true);
+    reloaded.set_hidden(&s.metadata.id, true).expect("archive");
     reloaded.delete(&s.metadata.id).expect("delete");
     assert!(!reloaded.is_hidden(&s.metadata.id));
     assert!(reloaded.hidden_at(&s.metadata.id).is_none());
@@ -2819,10 +3707,10 @@ fn hiding_session_clears_pinned_state() {
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
 
-    store.set_pinned(&s.metadata.id, true);
+    store.set_pinned(&s.metadata.id, true).expect("pin");
     assert!(store.is_pinned(&s.metadata.id));
 
-    store.set_hidden(&s.metadata.id, true);
+    store.set_hidden(&s.metadata.id, true).expect("archive");
     assert!(store.is_hidden(&s.metadata.id));
     assert!(!store.is_pinned(&s.metadata.id));
     assert!(store.pinned_at(&s.metadata.id).is_none());
@@ -3861,6 +4749,61 @@ fn legacy_code_mode_states_file_is_loaded_as_fallback() {
     .expect("write legacy sidecar");
     store.load_session_mode_states();
     assert_eq!(store.mode_state("code-legacy").mode, SerializableMode::Yolo);
+    let _ = std::fs::remove_file(&legacy);
+}
+
+/// Loading the legacy file must MATERIALIZE it into the new one, not just
+/// read it into memory.
+///
+/// Every durable mode write is an id-level read-modify-write against
+/// `_session_mode_states.json`, and an absent file starts that RMW from an
+/// empty map. So a boot that only reads the legacy file leaves the first
+/// later mode switch writing a single-entry file — after which the legacy
+/// fallback (keyed on the new file being absent) is never consulted again and
+/// every pre-upgrade per-session mode is gone. A session the user had pinned
+/// to Plan then reopens under the resolved default.
+#[test]
+fn legacy_mode_states_survive_a_later_unrelated_mode_write() {
+    let (store, _g) = isolated_store();
+    let legacy = paths::sessions_root().join("_code_mode_states.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&HashMap::from([
+            ("legacy-plan".to_string(), SerializableMode::Plan),
+            ("legacy-yolo".to_string(), SerializableMode::Yolo),
+        ]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy sidecar");
+
+    store.load_session_mode_states();
+    // A mode write for a DIFFERENT session, the way any later GUI toggle
+    // would arrive.
+    store
+        .set_mode_and_persist("fresh-session", SerializableMode::Plan)
+        .expect("persist an unrelated mode");
+
+    let durable: HashMap<String, SerializableMode> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_mode_states.json"))
+            .expect("the migrated file must exist"),
+    )
+    .expect("parse migrated file");
+    assert_eq!(
+        durable.get("legacy-plan"),
+        Some(&SerializableMode::Plan),
+        "the legacy Plan entry must survive the migration, got {durable:?}"
+    );
+    assert_eq!(durable.get("legacy-yolo"), Some(&SerializableMode::Yolo));
+    assert_eq!(durable.get("fresh-session"), Some(&SerializableMode::Plan));
+
+    // And it survives the reboot that the lost-migration bug made fatal.
+    let reopened = reopen_store(&store).expect("reboot");
+    reopened.load_session_mode_states();
+    assert_eq!(
+        reopened.durable_mode_entry("legacy-plan"),
+        Some(SerializableMode::Plan),
+        "a session explicitly pinned to Plan must not reopen on the resolved default"
+    );
     let _ = std::fs::remove_file(&legacy);
 }
 
@@ -5859,4 +6802,825 @@ fn rebind_translates_an_entry_absent_from_both_disk_shapes() {
 
     let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
+}
+// ---------------------------------------------------------------------------
+// Cross-process sidecar persistence: a pin/mode/model write from this process
+// must never rewrite entries another process persisted after this one booted
+// (the in-memory maps are boot-time snapshots, not live shared state).
+// ---------------------------------------------------------------------------
+
+fn seed_session(store: &SessionStore, id: &str, older_by_seconds: i64) {
+    let mut session = create_saved_session_with_id_and_mode(
+        id.to_string(),
+        &[],
+        "/sidecar-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    session.metadata.updated_at = Utc::now() - chrono::Duration::seconds(older_by_seconds);
+    store
+        .save_session_atomic(&session)
+        .expect("seed session without eager retention");
+}
+
+/// Parse the durable pin file into an id → timestamp map (the file is a JSON
+/// array of `{id, pinned_at}` entries). Parsing (instead of substring
+/// matching) makes value corruption and dropped entries visible to the tests.
+fn parse_pin_file(file: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    parse_timestamped_sidecar(file, "pinned_at")
+}
+
+/// Same shape as [`parse_pin_file`] for the other timestamped id sidecars —
+/// the ts key is the only difference between the pin and hidden files.
+fn parse_timestamped_sidecar(
+    file: &std::path::Path,
+    ts_key: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(file).expect("read sidecar file"))
+            .expect("durable sidecar file must stay valid JSON");
+    entries
+        .into_iter()
+        .map(|entry| {
+            let id = entry["id"].as_str().expect("sidecar entry id").to_string();
+            let ts = entry[ts_key]
+                .as_str()
+                .expect("sidecar entry timestamp")
+                .to_string();
+            (id, ts)
+        })
+        .collect()
+}
+
+#[test]
+fn hidden_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_hidden_sessions.json");
+    // Simulate a GUI process archiving two sessions after this process booted
+    // with an empty hidden map. `set_hidden` shares the pins'
+    // `apply_timestamped_id_mutation_locked` machinery — the pin merge test
+    // covers the mechanism, this one covers the hidden file as its own
+    // sidecar, so a revert of any one file cannot hide behind the others.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "hidden_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "hidden_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent hidden file");
+    store.set_hidden("headless-c", true).expect("hide");
+    let durable = parse_timestamped_sidecar(&file, "hidden_at");
+    assert_eq!(
+        durable.len(),
+        3,
+        "all three entries must survive: {durable:?}"
+    );
+    assert_eq!(
+        durable.get("gui-a").map(String::as_str),
+        Some("2026-09-20T00:00:00Z"),
+        "an archive from this process must not revert entries persisted after boot"
+    );
+    assert_eq!(
+        durable.get("gui-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z")
+    );
+    assert!(durable.contains_key("headless-c"));
+}
+
+#[test]
+fn pin_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    // Simulate a GUI process pinning two sessions after this process booted
+    // with an empty pin map.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.set_pinned("headless-c", true).expect("pin");
+    // Parse the durable map instead of substring-matching: a save that kept
+    // the keys but corrupted timestamps or dropped entries must go red.
+    let durable = parse_pin_file(&file);
+    assert_eq!(durable.len(), 3, "all three pins must survive: {durable:?}");
+    assert_eq!(
+        durable.get("gui-a").map(String::as_str),
+        Some("2026-09-20T00:00:00Z"),
+        "a pin from this process must not revert pins persisted after boot"
+    );
+    assert_eq!(
+        durable.get("gui-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z")
+    );
+    assert!(durable.contains_key("headless-c"));
+}
+
+#[test]
+fn unpin_persist_removes_only_the_target_id() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "gui-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "gui-b", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.set_pinned("gui-a", false).expect("pin");
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable,
+        std::collections::BTreeMap::from([(
+            "gui-b".to_string(),
+            "2026-09-20T00:00:01Z".to_string()
+        )]),
+        "the unpinned id must leave the durable file and the untouched pin must survive"
+    );
+}
+
+#[test]
+fn retention_purge_keeps_pins_written_by_other_processes() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "purge-a", 10);
+    seed_session(&store, "purge-b", 20);
+    store.set_pinned("purge-a", true).expect("pin");
+    store.set_pinned("purge-b", true).expect("pin");
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    // A concurrent GUI process pins an unrelated session after this one
+    // booted; the purge below runs with a map that never saw it.
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "purge-a", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "purge-b", "pinned_at": "2026-09-20T00:00:01Z"},
+  {"id": "foreign-x", "pinned_at": "2026-09-20T00:00:02Z"}
+]"#,
+    )
+    .expect("seed concurrent pin file");
+    store.delete("purge-a").expect("delete purged session");
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable.len(),
+        2,
+        "exactly the purged id must leave: {durable:?}"
+    );
+    assert!(!durable.contains_key("purge-a"));
+    assert_eq!(
+        durable.get("purge-b").map(String::as_str),
+        Some("2026-09-20T00:00:01Z"),
+        "the purge must not rewrite entries it does not own"
+    );
+    assert_eq!(
+        durable.get("foreign-x").map(String::as_str),
+        Some("2026-09-20T00:00:02Z")
+    );
+}
+
+#[test]
+fn mode_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    // A GUI process switched gui-a to Plan after this process booted; the
+    // headless Plan persist below must not flip it back (Plan → Yolo is the
+    // unsafe reopen divergence).
+    std::fs::write(&file, r#"{"gui-a": "plan"}"#).expect("seed concurrent mode file");
+    store
+        .set_mode_and_persist("headless-c", SerializableMode::Yolo)
+        .expect("persist headless mode");
+    // Parsed full-map assertion: the motivating regression (a headless Plan
+    // persist flipping a just-GUI-set Plan session back to Yolo) keeps the
+    // KEY and corrupts the VALUE, which a substring check cannot see.
+    let durable: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read mode file"))
+            .expect("durable mode file must stay valid JSON");
+    assert_eq!(
+        durable,
+        std::collections::HashMap::from([
+            ("gui-a".to_string(), "plan".to_string()),
+            ("headless-c".to_string(), "yolo".to_string()),
+        ]),
+        "a mode persist from this process must not revert modes persisted after boot"
+    );
+}
+
+#[test]
+fn model_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_models.json");
+    // A GUI process set gui-a's model after this process booted; the
+    // headless model pin below must preserve it (value included).
+    std::fs::write(&file, r#"{"gui-a": "gui-model"}"#).expect("seed concurrent model file");
+    store
+        .set_session_model_id("headless-c", Some("headless-model".to_string()))
+        .expect("persist headless model");
+    let durable: std::collections::HashMap<String, String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read model file"))
+            .expect("durable model file must stay valid JSON");
+    assert_eq!(
+        durable,
+        std::collections::HashMap::from([
+            ("gui-a".to_string(), "gui-model".to_string()),
+            ("headless-c".to_string(), "headless-model".to_string()),
+        ]),
+        "a model persist from this process must not revert entries persisted after boot"
+    );
+}
+
+#[test]
+fn multi_agent_persist_keeps_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_multi_agent.json");
+    // A GUI process enabled multi-agent on gui-a after this process booted;
+    // the headless enable below must not revert it.
+    std::fs::write(&file, r#"["gui-a"]"#).expect("seed concurrent multi-agent file");
+    store
+        .set_multi_agent("headless-c", true)
+        .expect("persist headless multi-agent flag");
+    let durable: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read multi-agent file"))
+            .expect("durable multi-agent file must stay valid JSON");
+    assert_eq!(
+        durable.len(),
+        2,
+        "both flags must survive the durable rewrite: {durable:?}"
+    );
+    assert!(durable.contains(&"gui-a".to_string()));
+    assert!(durable.contains(&"headless-c".to_string()));
+}
+
+#[test]
+fn retention_purge_removes_durable_only_pins_of_evicted_sessions() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "ghost-victim", 10);
+    seed_session(&store, "survivor", 20);
+    // A pin another process persisted after this one booted: the boot-time
+    // pin map never sees it, but the durable purge must still remove it when
+    // its session is evicted — a surviving ghost pin would re-arm the
+    // retention exemption if the id is ever reused.
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(
+        &file,
+        r#"[
+  {"id": "ghost-victim", "pinned_at": "2026-09-20T00:00:00Z"},
+  {"id": "survivor", "pinned_at": "2026-09-20T00:00:01Z"}
+]"#,
+    )
+    .expect("seed durable-only pins");
+    assert!(
+        !store.is_pinned("ghost-victim"),
+        "precondition: the pin is durable-only, not in the boot map"
+    );
+    store
+        .delete("ghost-victim")
+        .expect("delete evicted session");
+    let durable = parse_pin_file(&file);
+    assert_eq!(
+        durable,
+        std::collections::BTreeMap::from([(
+            "survivor".to_string(),
+            "2026-09-20T00:00:01Z".to_string()
+        )]),
+        "the evicted session's durable-only pin must not survive as a ghost"
+    );
+}
+
+#[test]
+fn retention_purge_removes_durable_only_multi_agent_ghosts() {
+    let (store, _g) = isolated_store();
+    seed_session(&store, "ghost-victim", 10);
+    seed_session(&store, "survivor", 20);
+    // A multi-agent flag another process persisted after this one booted: the
+    // boot-time map never sees it, but the durable purge must still remove it
+    // when its session is evicted — a surviving ghost flag would re-arm
+    // multi-agent for the id on reuse. The pin and mode maps each have this
+    // coverage; `_multi_agent.json` is its own file, so a purge that skips it
+    // cannot hide behind the others.
+    let file = paths::sessions_root().join("_multi_agent.json");
+    std::fs::write(
+        &file,
+        serde_json::to_string_pretty(&["ghost-victim", "survivor"]).expect("seed flags"),
+    )
+    .expect("seed durable-only multi-agent flags");
+    store
+        .delete("ghost-victim")
+        .expect("delete evicted session");
+    let durable: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read flags file"))
+            .expect("durable flags file must stay valid JSON");
+    assert_eq!(
+        durable,
+        vec!["survivor".to_string()],
+        "the evicted session's durable-only flag must not survive as a ghost"
+    );
+}
+
+#[test]
+fn pin_mutation_refuses_to_rewrite_a_corrupt_file() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&file, "{\"ids\": [").expect("seed a corrupt pin file");
+    let refusal = store
+        .set_pinned("headless-c", true)
+        .expect_err("a refused persist must reach the caller, not only the log");
+    assert!(
+        format!("{refusal:#}").contains("_pinned_sessions.json"),
+        "the refusal must name the sidecar it protected: {refusal:#}"
+    );
+    // The mutation must refuse: rewriting from an empty parse would destroy
+    // every entry the unreadable file still holds and the next sweep would
+    // enforce the narrowed file. The corrupt bytes are quarantined aside
+    // verbatim (evidence, not destroyed), the canonical file is gone, and
+    // the refused pin must NOT stay in the in-memory cache (the file is the
+    // durable truth; a cache claiming a pin the file does not hold would
+    // diverge until reload).
+    assert!(
+        !file.exists(),
+        "the canonical corrupt file is quarantined aside, not left in place"
+    );
+    assert_quarantine_evidence("_pinned_sessions.json.corrupt-", b"{\"ids\": [");
+    assert!(
+        !store.is_pinned("headless-c"),
+        "a refused persist must roll the in-memory cache back"
+    );
+    // The next mutation starts from "absent" instead of staying bricked by
+    // the corrupt bytes until someone deletes the file by hand.
+    store.set_pinned("headless-c", true).expect("pin");
+    let durable = std::fs::read_to_string(&file).expect("read rebuilt pin file");
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&durable).expect("valid JSON");
+    assert_eq!(
+        parsed.len(),
+        1,
+        "the rebuilt file carries exactly the new pin"
+    );
+}
+
+#[test]
+fn retention_rechecks_a_pin_that_lands_mid_sweep() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Seed exactly the cap via save() (no sweep can fire at or under it),
+    // oldest first.
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("midpin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    // Four candidates past the cap, written DIRECTLY to the store directory
+    // (a save() at 51+ would sweep per save and delete the candidates before
+    // the single-sweep window this test pins). All four are OLDER than every
+    // seeded session, so under the sweep's newest-first iteration
+    // (`updated_at` descending) they are the candidates evicted, in the
+    // order victims[3] → victims[2] → victims[1] → victims[0].
+    let mut victims = Vec::new();
+    for index in 0..4 {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("midpin-victim-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(2000 - index as i64);
+        let record = serde_json::to_vec(&session).expect("serialize candidate");
+        std::fs::write(
+            crate::platform::paths::sessions_root().join(format!("{}.json", session.metadata.id)),
+            record,
+        )
+        .expect("write candidate record");
+        victims.push(session.metadata.id.clone());
+    }
+    store.invalidate_list_cache();
+
+    // On the sweep's FIRST deletion (victims[3], the newest of the four), a
+    // pin for victims[2] lands in the durable file (the GUI user pinned it
+    // mid-sweep). victims[2] is the very next candidate in the sweep's
+    // newest-first order, so the per-delete re-check must protect it; the
+    // pre-recheck code deleted it and the side-map purge then erased the
+    // fresh pin with it.
+    let pinned_mid_sweep = victims[2].clone();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_armed = armed.clone();
+    store.register_session_deleted_hook(Arc::new(move |deleted: &str| {
+        let _ = deleted;
+        if !hook_armed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+            let payload = serde_json::json!([
+                { "id": pinned_mid_sweep, "pinned_at": "2026-09-21T00:00:00+00:00" }
+            ]);
+            std::fs::write(&pin_file, payload.to_string())
+                .expect("write the mid-sweep pin from the hook");
+        }
+    }));
+
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+
+    assert!(
+        store.load(&victims[0]).is_err(),
+        "victims[0] (deleted last, unpinned) is still evicted"
+    );
+    assert!(
+        store.load(&victims[1]).is_err(),
+        "victims[1] stays evicted: the mid-sweep pin names victims[2] only"
+    );
+    assert!(
+        store.load(&victims[2]).is_ok(),
+        "a pin landing mid-sweep must protect its session from the running sweep"
+    );
+    assert!(
+        store.load(&victims[3]).is_err(),
+        "later unpinned candidates keep getting evicted"
+    );
+    // The protected session's fresh pin survives the side-map purge too.
+    let pins = store.durable_pinned_sessions();
+    assert!(
+        pins.expect("a readable pin file yields a known set")
+            .contains(&victims[2])
+    );
+}
+
+#[test]
+fn retention_pin_seen_by_an_earlier_reread_survives_a_later_pin_file_fault() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Same shape as `retention_rechecks_a_pin_that_lands_mid_sweep`: the cap
+    // seeded via save(), four older candidates written directly so the single
+    // sweep evicts them newest-first: victims[3] → victims[2] → victims[1] →
+    // victims[0].
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("pinfault-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    let mut victims = Vec::new();
+    for index in 0..4 {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("pinfault-victim-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(2000 - index as i64);
+        let record = serde_json::to_vec(&session).expect("serialize candidate");
+        std::fs::write(
+            crate::platform::paths::sessions_root().join(format!("{}.json", session.metadata.id)),
+            record,
+        )
+        .expect("write candidate record");
+        victims.push(session.metadata.id.clone());
+    }
+    store.invalidate_list_cache();
+
+    // The pin for victims[1] lands mid-sweep and IS seen: victims[2]'s
+    // re-read reads it successfully and must record it. The file then breaks
+    // before victims[1]'s own re-read — so that re-read falls back to the
+    // boot map, which never held the pin. The exemption set every successful
+    // read fed must still protect victims[1]: evicting a session a re-read
+    // protected is the exact loss the fail-safe exists to prevent.
+    let pinned_victim = victims[1].clone();
+    let deletions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_deletions = deletions.clone();
+    store.register_session_deleted_hook(Arc::new(move |_deleted: &str| {
+        let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+        match hook_deletions.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            // After the first delete: the GUI pins victims[1]; the file is
+            // readable here, so the NEXT candidate's re-read sees it.
+            0 => {
+                let payload = serde_json::json!([
+                    { "id": pinned_victim, "pinned_at": "2026-09-21T00:00:00+00:00" }
+                ]);
+                std::fs::write(&pin_file, payload.to_string())
+                    .expect("write the mid-sweep pin from the hook");
+            }
+            // After the second delete: the file breaks before victims[1]'s
+            // own re-read.
+            1 => {
+                std::fs::write(&pin_file, "{\"ids\": [").expect("corrupt the pin file");
+            }
+            _ => {}
+        }
+    }));
+
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+
+    assert!(
+        store.load(&victims[1]).is_ok(),
+        "a pin a successful re-read saw must survive a later pin-file fault"
+    );
+    assert!(
+        store.load(&victims[0]).is_err(),
+        "victims[0] (deleted last, never pinned) is still evicted"
+    );
+    assert!(
+        store.load(&victims[2]).is_err(),
+        "victims[2] stays evicted: the pin names victims[1] only"
+    );
+    assert!(
+        store.load(&victims[3]).is_err(),
+        "victims[3] (deleted first) stays evicted"
+    );
+}
+
+#[test]
+fn retention_purge_removes_durable_mode_entries_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    // Seed exactly the cap via save() (no sweep can fire at or under it).
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("modeghost-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(1000 - index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id.clone());
+    }
+    // One oldest candidate written DIRECTLY to the store directory (51st
+    // record, so the next sweep takes exactly it).
+    let mut session = create_saved_session_with_id_and_mode(
+        "modeghost-victim".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    session.metadata.updated_at = now - chrono::Duration::seconds(2000);
+    let record = serde_json::to_vec(&session).expect("serialize candidate");
+    std::fs::write(
+        crate::platform::paths::sessions_root().join("modeghost-victim.json"),
+        record,
+    )
+    .expect("write candidate record");
+    // A mode entry another process persisted after this store booted: the
+    // in-memory map has never seen it, so a purge keyed on the map would
+    // leave it behind — and the mode sidecar has no boot-time ghost cleanup,
+    // so the ghost would survive forever and re-arm on id reuse.
+    let mode_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+    let payload = serde_json::json!({ "modeghost-victim": "plan" });
+    std::fs::write(&mode_file, payload.to_string()).expect("write ghost mode entry");
+
+    store.invalidate_list_cache();
+    store
+        .enforce_session_retention_locked()
+        .expect("sweep must succeed");
+    assert!(
+        store.load("modeghost-victim").is_err(),
+        "the victim session itself must be evicted"
+    );
+
+    // An empty post-purge map deletes the file entirely (NotFound = clean).
+    let ghost_gone = match std::fs::read_to_string(&mode_file) {
+        Ok(durable) => {
+            let parsed: std::collections::HashMap<String, String> =
+                serde_json::from_str(&durable).expect("valid JSON mode map");
+            !parsed.contains_key("modeghost-victim")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => panic!("read mode file failed: {error}"),
+    };
+    assert!(
+        ghost_gone,
+        "the durable mode entry of an evicted session must not survive the purge"
+    );
+}
+
+#[test]
+fn pin_mutation_refuses_a_semantically_corrupt_zero_id_file() {
+    // Both file handles resolve INSIDE the env guard: sessions_root() reads
+    // PINVOU3_HOME, and a path taken before isolated_store() points at the
+    // real home instead of the isolated one.
+    {
+        let (store, _g) = isolated_store();
+        let file = paths::sessions_root().join("_pinned_sessions.json");
+        // JSON-valid, but every entry lacks a usable `id`: reading it as "no
+        // pins" would refuse the mutation-path protection and widen the sweep's
+        // eviction set on the fallback path.
+        let seeded = r#"[{"nope": 1}, 42]"#;
+        std::fs::write(&file, seeded).expect("seed a zero-id pin file");
+        store
+            .set_pinned("headless-c", true)
+            .expect_err("the mutation over a zero-id array is refused");
+        assert!(
+            !store.is_pinned("headless-c"),
+            "a refused persist must roll the in-memory cache back"
+        );
+        assert!(
+            !file.exists(),
+            "the semantically corrupt file is quarantined aside"
+        );
+        assert_quarantine_evidence("_pinned_sessions.json.corrupt-", seeded.as_bytes());
+    }
+
+    // Sweep side: a JSON-valid-but-id-less array must fall back to the
+    // boot-time map instead of parsing as "nobody is pinned".
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    store.set_pinned("boot-pin", true).expect("pin");
+    std::fs::write(&file, r#"[{"nope": 1}]"#).expect("re-seed a zero-id pin file");
+    let durable_pins = store.durable_pinned_sessions();
+    assert!(
+        durable_pins
+            .expect("an unreadable file with a loaded boot map falls back, not to unknown")
+            .contains("boot-pin"),
+        "the zero-id file must fall back to the boot map, not parse as no pins"
+    );
+}
+
+#[test]
+fn literal_empty_array_pin_file_is_refused_as_corrupt() {
+    // `[]` is JSON-valid and semantically "no pins", but the save path never
+    // writes it (an empty map deletes the file) — a `[]` on disk means a hand
+    // edit or a foreign writer. The zero-id refusal stays total: the file is
+    // quarantined, the mutation is refused once, and the next mutation
+    // rebuilds from scratch.
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&file, "[]").expect("seed a literal empty-array pin file");
+    store
+        .set_pinned("headless-empty", true)
+        .expect_err("the mutation over a literal `[]` is refused");
+    assert!(
+        !store.is_pinned("headless-empty"),
+        "the mutation over a literal `[]` is refused"
+    );
+    assert!(
+        !file.exists(),
+        "the `[]` file is quarantined like any zero-id array"
+    );
+}
+
+#[test]
+fn durable_mode_entry_reflects_the_durable_state_not_the_fallback() {
+    let (store, _g) = isolated_store();
+    // No durable entry: `mode_state` still resolves a default, but the
+    // restore capture must see absence — the resolved fallback is
+    // process-relative (a headless process cannot see the GUI's code-session
+    // predicate) and pinning it would freeze a borrowed value.
+    assert_eq!(store.durable_mode_entry("restore-a"), None);
+    assert_ne!(store.mode_state("restore-a").mode, SerializableMode::Plan);
+    store
+        .set_mode_and_persist("restore-a", SerializableMode::Plan)
+        .expect("persist plan");
+    assert_eq!(
+        store.durable_mode_entry("restore-a"),
+        Some(SerializableMode::Plan)
+    );
+}
+
+#[test]
+fn clear_mode_and_persist_restores_entry_absence() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    store
+        .set_mode_and_persist("restore-b", SerializableMode::Plan)
+        .expect("persist plan");
+    assert!(file.exists(), "the plan persist created the sidecar");
+    store
+        .clear_mode_and_persist("restore-b")
+        .expect("clear the mode entry");
+    assert_eq!(
+        store.durable_mode_entry("restore-b"),
+        None,
+        "the durable entry the failed run added must be gone"
+    );
+    assert!(
+        !file.exists(),
+        "the sidecar goes away with its last entry instead of keeping a shell map"
+    );
+    // The in-memory caches follow: mode_state falls back to the resolved
+    // default again instead of serving the failed run's Plan.
+    assert_ne!(store.mode_state("restore-b").mode, SerializableMode::Plan);
+    // And the sidecar keeps working for other sessions afterwards.
+    store
+        .set_mode_and_persist("restore-c", SerializableMode::Yolo)
+        .expect("persist another mode after the clear");
+    assert_eq!(
+        store.durable_mode_entry("restore-c"),
+        Some(SerializableMode::Yolo)
+    );
+}
+
+#[test]
+fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    std::fs::write(&file, "{ not json").expect("seed a corrupt mode file");
+    // The headless contract: a failed durable persist is a failed run —
+    // reporting success while the session would reopen in the stale mode is
+    // the unsafe divergence (Plan → Yolo).
+    let result = store.set_mode_and_persist("headless-c", SerializableMode::Plan);
+    assert!(
+        result.is_err(),
+        "a corrupt mode sidecar must fail the durable persist loudly"
+    );
+    assert!(
+        !file.exists(),
+        "the corrupt mode file is quarantined aside, not left in place"
+    );
+    assert_quarantine_evidence("_session_mode_states.json.corrupt-", b"{ not json");
+    // The interactive GUI keeps the lenient path: the switch still applies
+    // in memory even though the durable write was refused. Asserting
+    // `is_ok()` would prove nothing — `set_mode` has no fallible branch and
+    // ends in an unconditional `Ok(())` — so assert the property the comment
+    // is actually about.
+    store
+        .set_mode("headless-d", SerializableMode::Yolo)
+        .expect("the lenient path never reports the persist failure");
+    assert_eq!(
+        store.mode_state("headless-d").mode,
+        SerializableMode::Yolo,
+        "the lenient path must still switch the in-memory mode"
+    );
+}
+
+/// `SessionStore::delete` runs under `scheduled_mutation` (the round-12
+/// serialization fix): without the guard, a persist that loaded its snapshot
+/// before the delete commits would rename the stale transcript back over the
+/// deletion, resurrecting a session whose sidecar entries were already
+/// purged. The deleted-hook fires inside the delete's guard window, so a
+/// same-thread `try_lock` on the guard from the hook observing the lock as
+/// held is the structural pin: reverting `delete` to an unguarded
+/// `delete_locked` call makes the probe see the lock free and the test red.
+#[test]
+fn delete_holds_the_scheduled_mutation_guard() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = session.metadata.id.clone();
+    store
+        .update_messages(&id, vec![user_text("first")])
+        .expect("seed one message");
+
+    let probe_store = store.clone();
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed_guard_held = observed.clone();
+    let hook_id = id.clone();
+    store.register_session_deleted_hook(std::sync::Arc::new(move |deleted_id: &str| {
+        if deleted_id != hook_id {
+            return;
+        }
+        // Same thread as the delete: a free lock would be observable here,
+        // an held one (the current, fixed behavior) not.
+        let held = probe_store.scheduled_mutation.try_lock().is_none();
+        *observed_guard_held.lock().unwrap() = Some(held);
+    }));
+
+    store.delete(&id).expect("delete the session");
+    let held = observed
+        .lock()
+        .unwrap()
+        .expect("the hook must have run for the deleted id");
+    assert!(
+        held,
+        "delete must serialize against the transcript writers by holding \
+         scheduled_mutation across the record removal"
+    );
+    assert!(
+        store.load(&id).is_err(),
+        "the deleted session must stay deleted"
+    );
 }

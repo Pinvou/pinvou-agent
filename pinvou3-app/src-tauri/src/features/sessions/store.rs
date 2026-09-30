@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -28,6 +28,10 @@ use crate::platform::paths;
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
 use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
+// Only the benchmark-gated helper below consults the record path, so the
+// import must share its cfg to stay unused-warning-clean in plain builds.
+#[cfg(any(feature = "benchmark-hooks", test))]
+use super::validators::chat_session_file;
 use super::{
     CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
     SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
@@ -42,6 +46,37 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+
+/// Id prefix minted by the headless `agent run` path (`agentic_{pid}_{n}`).
+///
+/// Retention keys the headless budget on it, so the prefix is a durable
+/// contract between the runner and the sweep rather than a formatting detail;
+/// `features::assistant::product_runtime::agentic_task::fresh_session_id`
+/// builds ids from it and a unit test pins the two together.
+pub(crate) const HEADLESS_SESSION_PREFIX: &str = "agentic_";
+
+/// Cap on retained headless `agent run` sessions, counted and evicted
+/// independently of the chat budget.
+///
+/// A CLI invocation must never be a destructive operation on the desktop
+/// user's conversations: sharing one budget meant each default-keep run
+/// evicted the oldest GUI chat (with its workspace and checkpoints), and the
+/// only notice went to a stderr the desktop user never reads. Sized like the
+/// chat budget — a headless batch is exactly the workload that benefits from
+/// keeping recent runs inspectable.
+pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
+
+/// Placeholder title for a fresh chat session. One of the trilingual
+/// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
+/// it per UI language and the first send triggers the auto-rename. Sessions
+/// created headlessly share the same sentinel so they behave identically in
+/// the history list.
+pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
+
+/// Marker file the code-session feature writes inside a session's directory
+/// (`sessions/<id>/code-session.json`). Named here because the probe below
+/// lives here; the writer and the format stay owned by that feature.
+const CODE_SESSION_MARKER_FILE: &str = "code-session.json";
 
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
@@ -205,10 +240,15 @@ impl SessionStore {
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             multi_agent_flags_io: Arc::new(Mutex::new(())),
+            pinned_sessions_io: Arc::new(Mutex::new(())),
+            hidden_sessions_io: Arc::new(Mutex::new(())),
+            session_models_io: Arc::new(Mutex::new(())),
+            session_mode_states_io: Arc::new(Mutex::new(())),
             list_cache: Arc::new(RwLock::new(None)),
             list_cache_generation: Arc::new(AtomicU64::new(0)),
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
+            pinned_sessions_loaded: Arc::new(AtomicBool::new(false)),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
@@ -218,6 +258,8 @@ impl SessionStore {
             mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "benchmark-hooks")]
+            retention_eviction_observer: Arc::new(Mutex::new(None)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -237,9 +279,10 @@ impl SessionStore {
     /// benign (idempotent reads), not worth adding a loading mutex.
     pub(crate) fn list_sessions_cached(&self) -> std::io::Result<Arc<Vec<SessionMetadata>>> {
         let generation_now = self.list_cache_generation.load(Ordering::Acquire);
+        let foreign_now = self.sessions_dir_change_token();
         loop {
-            if let Some((generation, cached)) = self.list_cache.read().clone() {
-                if generation == generation_now {
+            if let Some((generation, token, cached)) = self.list_cache.read().clone() {
+                if generation == generation_now && token == foreign_now {
                     return Ok(cached);
                 }
                 // Stale-generation entry: it can be persisted while the waiting writer has
@@ -247,12 +290,15 @@ impl SessionStore {
                 // the rescan — the pre-write view must not be returned as a valid snapshot.
             }
             let generation_at_scan = self.list_cache_generation.load(Ordering::Acquire);
+            let token_at_scan = self.sessions_dir_change_token();
             let fresh = Arc::new(self.manager.list_sessions()?);
             let mut slot = self.list_cache.write();
             if self.list_cache_generation.load(Ordering::Acquire) == generation_at_scan {
-                // No writes during the scan: safe to backfill. The write lock guarantees only one miss contender persists;
-                // latecomers reaching the top already hit the cache (or rescan with the newer generation).
-                *slot = Some((generation_at_scan, Arc::clone(&fresh)));
+                // No writes during the scan: safe to backfill. The write lock
+                // guarantees only one miss contender lands the entry; latecomers
+                // reaching the top already hit the cache (or rescan with the
+                // newer generation).
+                *slot = Some((generation_at_scan, token_at_scan, Arc::clone(&fresh)));
                 return Ok(fresh);
             }
             // A write occurred during the scan: discard this result and rescan. Under sustained write activity it rescans at most
@@ -263,6 +309,40 @@ impl SessionStore {
     pub(crate) fn invalidate_list_cache(&self) {
         *self.list_cache.write() = None;
         self.list_cache_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Cheap staleness token for session records written by ANOTHER process.
+    ///
+    /// The generation counter above only moves on this process's own writes,
+    /// which was sound while `SessionStore` was the single writer. It is not
+    /// any more: a headless `agent run` sharing `PINVOU3_HOME` creates and
+    /// evicts records under a live GUI, and with a generation-only guard the
+    /// GUI keeps serving its boot-time snapshot indefinitely — evicted
+    /// sessions stay listed and reject the click that opens them, and the
+    /// run's own session never appears. Pairing the generation with the
+    /// sessions directory's entry-name set makes a foreign create or delete
+    /// invalidate the cache the same way a local write does.
+    ///
+    /// The token is the sorted set of directory entry names, not the
+    /// directory's mtime: a create or delete changes the name set on every
+    /// filesystem, while an mtime can stay identical when two mutations land
+    /// inside one timestamp tick (CI runners and coarse-granularity mounts
+    /// turned exactly that into a missed foreign delete), and delayed mtime
+    /// visibility on network mounts would miss it outright. A foreign
+    /// in-place rewrite of one record (an atomic temp+rename) leaves the
+    /// steady-state name set unchanged and still needs the owning process's
+    /// own invalidation. The cost is one getdents per call — the same order
+    /// as the stat it replaces at retention-bounded directory sizes.
+    /// `None` on a read failure compares equal to itself, so an unreadable
+    /// directory degrades to the previous generation-only behaviour rather
+    /// than rescanning on every call.
+    fn sessions_dir_change_token(&self) -> Option<Vec<std::ffi::OsString>> {
+        let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(self.manager.sessions_dir())
+            .ok()?
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        names.sort_unstable();
+        Some(names)
     }
 
     pub fn list(&self) -> Result<Vec<SessionMetadata>> {
@@ -350,7 +430,24 @@ impl SessionStore {
         self.persist_then_reconcile(session, "session save")
     }
 
+    /// Deleting races with the read-modify-write persist paths
+    /// (`set_title`/`update_messages`/`save`): without the same
+    /// `scheduled_mutation` guard, a persist that loaded its snapshot before
+    /// the delete would rename a stale transcript back over the deletion and
+    /// resurrect the session (sidecar entries already purged). Take the same
+    /// guard the persist paths hold so the load→persist pair cannot straddle
+    /// a delete. Cross-process delete races remain unguarded (no flock here,
+    /// consistent with the other sidecar writers).
     pub fn delete(&self, id: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        self.delete_locked(id)
+    }
+
+    /// Locking contract of [`Self::delete`]: the caller holds
+    /// `scheduled_mutation`. The internal create-rollback paths call the
+    /// public [`Self::delete`], which acquires the guard — neither rollback
+    /// site runs while a persist's guard is still held.
+    fn delete_locked(&self, id: &str) -> Result<()> {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
@@ -471,6 +568,30 @@ impl SessionStore {
         }
     }
 
+    /// Whether the session directory carries the native code-session marker.
+    ///
+    /// Durable, host-independent counterpart of the registered code-session
+    /// predicate: that predicate answers from an index the host has loaded,
+    /// so a host which never registers one (the headless runner) reads every
+    /// code session as an ordinary plain chat — and then resolves it to the
+    /// wrong consent scope and the wrong instruction layer. The marker file
+    /// is written beside the transcript precisely for index-less recovery,
+    /// and both live under this store's session directory, so the probe
+    /// belongs here rather than reaching across into the code-session
+    /// feature (which would close a dependency cycle).
+    pub fn has_code_session_marker(&self, id: &str) -> bool {
+        // Validate before the join, like every other path out of this store:
+        // an id such as `../outside` must not turn the probe into an escaping
+        // path read.
+        validate_session_id(id).is_ok()
+            && self
+                .manager
+                .sessions_dir()
+                .join(id)
+                .join(CODE_SESSION_MARKER_FILE)
+                .is_file()
+    }
+
     pub fn set_execution_root_resolver(&self, resolver: ExecutionRootResolver) {
         *self.execution_root_resolver.write() = Some(resolver);
     }
@@ -500,8 +621,16 @@ impl SessionStore {
     /// store ([`SessionStore::delete`] and deep paths without an app handle
     /// such as retention policy/scheduled cleanup). Failures are silent
     /// (hook implementations own their idempotency) and must not block the
-    /// deletion path; callers must fire this only after all store-side
-    /// locks are released.
+    /// deletion path.
+    ///
+    /// Locking contract, stated precisely because it is narrower than "all
+    /// store-side locks are released": every sidecar io mutex IS released
+    /// before this fires (the purge scopes each guard for exactly that
+    /// reason), but `delete` holds `scheduled_mutation` across the whole
+    /// path, so a hook runs with that one held. `parking_lot::Mutex` is not
+    /// reentrant, so a hook that calls back into `delete`, or into any other
+    /// entry point that takes `scheduled_mutation`, self-deadlocks. Hooks
+    /// must treat the store as read-only.
     pub(crate) fn notify_session_purged(&self, id: &str) {
         let hooks = self.session_purged_hooks.read().clone();
         for hook in hooks {
@@ -667,9 +796,11 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "新对话".to_string();
-        // Per-session model: persist the sidecar first, then publish the Session JSON, to avoid a write failure leaving
-        // a session that appears created successfully yet falls back to another model after restart.
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
+        // Per-session model: persist the sidecar first, then publish the
+        // Session JSON, to avoid a write failure leaving a session that
+        // appears created successfully yet falls back to another model after
+        // restart.
         if let Some(mid) = model_id {
             self.set_session_model_id(&id, Some(mid))?;
         }
@@ -810,6 +941,33 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// Whether a durable chat record already exists for `id`. The headless
+    /// runner checks this before creating a fresh session, so a recycled pid
+    /// replaying the same fresh-id counter cannot silently overwrite a kept
+    /// session's record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_record_exists(&self, id: &str) -> bool {
+        validate_session_id(id).is_ok()
+            && chat_session_file(&self.manager, id)
+                .map(|path| path.exists())
+                .unwrap_or(false)
+    }
+
+    /// Whether the durable chat record for `id` carries any messages. The
+    /// headless runner uses this to tell a zero-message stub (safe to clean
+    /// up) from a ran-and-errored transcript (the only copy — keep it
+    /// inspectable). An unloadable record reports `Err`: callers must treat
+    /// unknown state as "keep".
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_has_messages(&self, id: &str) -> Result<bool> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load chat session {id} for stub classification"))?;
+        Ok(!session.messages.is_empty())
+    }
+
     /// Create an empty session with a caller-provided ID, for internal runtimes that need the isolation ID determined before startup.
     ///
     /// Ordinary GUI sessions still use [`Self::create_new`]'s random ID; this does not set the active session.
@@ -821,6 +979,14 @@ impl SessionStore {
         model_id: Option<String>,
         workspace: PathBuf,
     ) -> Result<SavedSession> {
+        // The id is caller-chosen and headless sessions persist by default,
+        // so an existing record must fail loud instead of being silently
+        // replaced: a recycled pid replaying the same fresh-id counter (or an
+        // eval rerun against a kept session) would otherwise destroy the kept
+        // transcript and inherit its pin onto the new stub.
+        if self.chat_session_record_exists(&id) {
+            bail!("session record {id} already exists; refusing to overwrite it");
+        }
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
             &[],
@@ -830,7 +996,13 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "临时评测".to_string();
+        // Headless sessions persist by default and surface in the GUI history,
+        // so they carry the same new-chat placeholder sentinel as GUI-created
+        // sessions (an eval-internal label would leak into every UI language).
+        // The stored value is the fixed zh sentinel, not a localized string:
+        // localization happens at render time, where the GUI maps any of the
+        // three per-language sentinels to the current UI language.
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;
         }

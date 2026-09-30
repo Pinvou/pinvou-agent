@@ -423,9 +423,13 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     /late sweep of deleted chat/,
     '普通会话删除一律延迟清扫（裸 agent 对所有会话可用，不只开关开启的）',
   );
+  // The gap spans the whole spawn + SyncSession block, so code and comment
+  // bytes ride along (engine cold-start phase timing is inserted between the
+  // declaration and the EngineEntry insert). Keep headroom: this pins
+  // "computed once at spawn and recorded", not byte distance.
   assert.match(
     poolSource,
-    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,3200}spawned_at_ms,/,
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,4800}spawned_at_ms,/,
     'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
   );
   assert.match(
@@ -500,12 +504,22 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(
     sessionsSource,
-    /deepseek_tui::utils::write_atomic\(&file, json\.as_bytes\(\)/,
-    '开关清单必须原子替换落盘（write_atomic：tmp+rename+fsync），进程中途退出不得留半个 JSON',
+    /fn save_multi_agent_flags_locked[\s\S]{0,800}atomic_write_private\(&file,/,
+    '开关清单落盘必须走私有 atomic_write_private 助手，进程中途退出不得留半个 JSON',
+  );
+  const filesystemSource = read('src-tauri', 'src', 'platform', 'filesystem.rs');
+  assert.match(
+    filesystemSource,
+    /create_new\(true\)[\s\S]{0,600}replace_file_atomically\(/,
+    '原子写助手必须先写 staging 临时文件再原子换名，任何时刻落盘的都是完整内容',
   );
   assert.match(
     sessionsSource,
-    /pub fn set_multi_agent\([\s\S]{0,420}multi_agent_flags_io\.lock\(\)/,
+    // The window spans the hoisted `resolved_default_mode` (resolved before
+    // the lock, per clear_mode_and_persist's deadlock rationale) plus its
+    // rationale comment, then the lock that must still wrap the whole
+    // 改内存→落盘→回滚 transaction.
+    /pub fn set_multi_agent\([\s\S]{0,620}multi_agent_flags_io\.lock\(\)/,
     '「改内存→落盘→回滚」整个事务必须持有互斥，回滚不得覆盖并发新状态',
   );
   assert.match(
@@ -784,17 +798,32 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     '澄清卡在 Web 只读会话呈现为锁定说明，不留"能点但必败"的按钮（复核 P2）',
   );
   const sessionsBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+  const rollbackStart = sessionsBridgeSource2.indexOf('catch (toggleError)');
+  const rollbackEnd = sessionsBridgeSource2.indexOf('await syncModeState();', rollbackStart);
+  assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart, '定位多智能体开关失败的物化回滚分支');
+  const rollback = sessionsBridgeSource2.slice(rollbackStart, rollbackEnd);
+  const cleanup = rollback.indexOf('await invoke("delete_session", { id: meta.id })');
+  const navigationGuard = rollback.indexOf('if (navToken !== sessionSwitchRequestToken || state.activeSessionId !== meta.id) return null;');
+  const reenterDraft = rollback.indexOf('enterDraft();');
+  const preserveIntent = rollback.indexOf('state.pendingDraftMultiAgent = true;');
+  assert.ok(cleanup >= 0 && navigationGuard > cleanup && reenterDraft > navigationGuard && preserveIntent > reenterDraft,
+    '必须先清理物化会话、确认没有真实导航，再回到同一草稿并保留多智能体意图');
   assert.match(
-    sessionsBridgeSource2,
-    /delete_session[\s\S]{0,400}enterDraft\(\)[\s\S]{0,200}pendingDraftMultiAgent = true/,
+    rollback.slice(preserveIntent),
+    /return null;/,
     '草稿开关落盘失败必须中止物化并保留意图——首条消息不得静默退化成普通对话（复核 P1）',
   );
   const chatBridgeSource2 = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
+  const materializationStart = chatBridgeSource2.indexOf('const materialized = await ensureSession(draftOwner);');
+  const materializationEnd = chatBridgeSource2.indexOf('const sid = state.activeSessionId;', materializationStart);
+  assert.ok(materializationStart >= 0 && materializationEnd > materializationStart, '定位首条消息的物化及恢复分支');
+  const materialization = chatBridgeSource2.slice(materializationStart, materializationEnd);
   assert.match(
-    chatBridgeSource2,
-    /prefillComposer\(text,\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
-    '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
+    materialization,
+    /restoreTaskDraft\(text, draftOwner\);[\s\S]*?return "restored";/,
+    '物化中止必须按原草稿或已创建会话恢复，返回 restored 阻止调用方二次恢复（issue #406）',
   );
+  assert.doesNotMatch(materialization, /prefillComposer\(/, '物化中止不得绕过归属校验直接向当前输入框追加');
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
     personasBridgeSource,

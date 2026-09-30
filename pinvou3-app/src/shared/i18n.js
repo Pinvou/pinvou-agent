@@ -34,10 +34,13 @@ function initialSystemLanguage() {
 }
 const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 
-// 后端三语「新会话」兜底标题(platform/{tauri,web}/bridge.js BT_TABLE 的
-// newChatFallbackTitle 同款字面量,后端按创建时的 UI 语言落盘其一)。显示层
-// 把任意一种哨兵映射成当前语言的「新对话」文案;集合与语言词典装载进度无关,
-// 不能从 dict 惰性派生(zh 主用户不会装载 en/ja chunk)。
+// Backend "new chat" sentinel title set. The backend (store.rs's
+// NEW_CHAT_TITLE) always persists the fixed zh sentinel「新对话」; the
+// trilingual set is a display-layer superset — at render time any sentinel
+// maps to the current language's "new chat" copy (covers sessions created
+// before the sentinels were unified). The set is independent of language
+// dictionary load progress and cannot be derived lazily from the dict
+// (zh-primary users never load the en/ja chunks).
 export const DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット']);
 
 // 惰性语言词典装载。模式对齐 shared/syntax-highlighter.js 的 LAZY_LANGUAGE_LOADERS:

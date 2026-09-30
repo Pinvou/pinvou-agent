@@ -285,7 +285,6 @@ function injectSource() {
             max_model_len: 262144,
           },
         ] });
-        case 'detect_local_vllm_setup': return Promise.resolve({ eligible: false, has_packages: false, vllm_online: false });
         case 'get_selected_pet': return Promise.resolve('lingling');
         case 'list_sessions': return Promise.resolve([]);
         case 'get_super_permission_status': return Promise.resolve(superPerm);

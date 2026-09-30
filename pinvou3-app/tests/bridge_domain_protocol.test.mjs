@@ -186,7 +186,12 @@ const expectedProtocolHashes = {
   // Retired with the behavior telemetry client: the trackSceneBehavior helper
   // (scene_triggered track_behavior_event invoke) was removed, so the chat
   // surface is one invoke smaller.
-  chat: '9ab23d7af0a04de15a622f4efa5e544f5ce4ef7306862b7ec777189220a57ef3',
+  // Recomputed for per-frame stream notification coalescing; event names and
+  // invoke shapes remain unchanged.
+  // Recomputed for the coalescing hardening: chat:done cancels its session's
+  // pending notify frame, frame publishes contain subscriber throws, and the
+  // flush helper documents its runSyncOnSession extent contract.
+  chat: '648ace4c24985c2cd1cb8def8e8b2a4078824586295ba7016682cd2bf733baca',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -238,8 +243,13 @@ const expectedProtocolHashes = {
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
-  settings: '6ec54b363e711927cb1ac65fbb9c468fa8255c89ad49e7c1e695acca131fcb3a',
-  // Recomputed for the audit dead-code cleanup: the never-emitted
+  // Recomputed against the #504 merge tree: the preinstalled-model startup
+  // removal (main) dropped the detect_local_vllm_setup /
+  // bootstrap_local_vllm / decline_local_vllm_setup invokes with the dead
+  // one-click setup chain; main's cleanup already covered the same wrapper
+  // removal, so the merged surface is main's.
+  settings: '2ceb4dabd59dc3c2eec0046915ccb04d7003035040511f961e15409fc4eb990a',
+  // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
   // machinery were deleted with it (the backend download loop no longer has a
@@ -250,9 +260,15 @@ const expectedProtocolHashes = {
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
-  // voice recomputed for retiring the behavior telemetry client: the
-  // voice_started track_behavior_event invoke was removed with the client.
-  voice: '28eb624f27450c7d72004cb4a65403bb5f29e77e012cd76e9d58b17d340a3bf9',
+  // Recomputed again for the recording-ownership port: the voice feature now
+  // owns an operation lifecycle (operationId submission gates) and claims the
+  // Rust recording ownership (set_voice_shortcut_recording with a token)
+  // before opening the microphone (command set unchanged; listener bodies and
+  // comment wording are part of the digest). The behavior-event emitter drop
+  // is not part of this PR: #616's telemetry-client retirement on main already
+  // removed the track_behavior_event call sites, while the terminal
+  // bookkeeping state machine stays (command set still unchanged).
+  voice: 'fe52e3a89d3f95932444d23eff68e8685d20e754fb402959388930093a34a10b',
   // Recomputed for the rebind carryover feed-back (review #463 F-Major):
   // rebind_workspace_root gains the optional previousPostBusySessionIds
   // payload — the dialog's previous report fed back on retry, honored by the

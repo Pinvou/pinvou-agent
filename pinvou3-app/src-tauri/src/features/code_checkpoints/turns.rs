@@ -20,6 +20,23 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
         .count() as u32
 }
 
+/// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
+/// do not link the foundation crate and only hold the JSON message array
+/// before deserialization; the CLI previously approximated the count from
+/// the role + tool_result shape, which over-counts messages the engine does
+/// not treat as prompts (image-only turns) and could wedge the
+/// `checkpoints rewind` precheck. Each message is deserialized and run
+/// through the exact same predicate as `count_user_turns`, so the two sides
+/// can no longer drift.
+pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, serde_json::Error> {
+    let mut total = 0u32;
+    for value in messages {
+        let message: Message = serde_json::from_value(value.clone())?;
+        total += count_user_turns(std::slice::from_ref(&message));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +64,17 @@ mod tests {
         }
     }
 
+    fn image_only_user_message() -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::ImageUrl {
+                image_url: deepseek_tui::models::ImageUrlContent {
+                    url: "file:///staged/attachments/shot.png".to_string(),
+                },
+            }],
+        }
+    }
+
     /// turn 计数口径（feat 分支 bug）：一轮带工具往返的对话只算 1 个 turn。
     #[test]
     fn count_user_turns_ignores_tool_results() {
@@ -60,5 +88,42 @@ mod tests {
             tool_result_message(),
         ];
         assert_eq!(count_user_turns(&messages), 2);
+    }
+
+    /// The JSON entry point and the in-memory slice must agree: after a
+    /// serde round-trip, the same messages give `count_user_turns_in_json`
+    /// the same value as `count_user_turns`. The "CLI and engine no longer
+    /// drift" promise lands exactly on this deserialization step.
+    #[test]
+    fn count_user_turns_in_json_matches_in_memory_counting() {
+        let messages = vec![
+            text_message("user", "第一轮"),
+            text_message("assistant", "调工具"),
+            tool_result_message(),
+            text_message("user", "第二轮"),
+            // The motivating drift case: an image-only user turn is not a
+            // prompt turn — the CLI's role-based approximation over-counted
+            // exactly this shape and wedged the `checkpoints rewind` precheck.
+            image_only_user_message(),
+        ];
+        let json: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect();
+        assert_eq!(
+            count_user_turns_in_json(&json).unwrap(),
+            count_user_turns(&messages)
+        );
+        assert_eq!(
+            count_user_turns_in_json(&json).unwrap(),
+            2,
+            "image-only turns must not count as user turns"
+        );
+
+        // Non-message payloads must error instead of silently counting 0,
+        // aligning with the engine's "session load failed" error model (the
+        // doc promises Err on deserialization failure).
+        let invalid = vec![serde_json::json!({ "role": 42 })];
+        assert!(count_user_turns_in_json(&invalid).is_err());
     }
 }
