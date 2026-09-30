@@ -3877,6 +3877,31 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
 
   // Return protocol (issue #406; mirrors the tauri bridge's sendMessage):
   // - true         dispatched: sent or queued for delivery.
+  // Web first turn (no session yet): a first turn already in flight blocks a
+  // duplicate admission; otherwise the first turn dispatches through its own
+  // pipeline. Returns the send verdict for the caller.
+  function maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
+    const existingFirstTurn = state.chatItems.some(function (item) {
+      return item && item.type === "user" && !!item.deliveryState;
+    });
+    if (existingFirstTurn) return false;
+    submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
+    return true;
+  }
+
+  // Materialization-abort recovery: the scoped restore owns the stripped body
+  // (the mention injection block never re-enters any composer or buffer); a
+  // refs-only message strips to "" (nothing restorable), so the caller
+  // resolves false and keeps its chips armed instead of claiming "restored"
+  // (round-8 M1). Mirrors the tauri lane's inline branch.
+  function restoreAbortedMaterialization(text, draftOwner) {
+    const restoredBody = stripMentionBlockForComposerRestore(text);
+    const restored = restoredBody
+      ? restoreTaskDraft(restoredBody, draftOwner)
+      : false;
+    return restored ? "restored" : false;
+  }
+
   // - "restored"   nothing dispatched, but the text is already back in the
   //                composer (bridge-side restore) — the caller must not
   //                restore again, it would duplicate the draft.
@@ -3912,12 +3937,7 @@ function pinvouSharedwebN247496() {
     const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
-      const existingFirstTurn = state.chatItems.some(function (item) {
-        return item && item.type === "user" && !!item.deliveryState;
-      });
-      if (existingFirstTurn) return false;
-      submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
-      return true;
+      return maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
     }
 
     if (!state.activeSessionId) {
@@ -3932,21 +3952,9 @@ function pinvouSharedwebN247496() {
       // await) → restore against the original draft ownership; never write
       // into whatever session is currently selected. (Mirrors the tauri lane,
       // round-2 finding F3; ensureSession itself reports the real reason.)
-      // append=true: failure-recovery semantics — the user may have started
-      // the next message during the await.
       if (!materialized || state.activeSessionId !== materialized) {
         if (materialized) draftOwner.createdSessionId = materialized;
-        // Scoped recovery owns the restore; the caller must not append again
-        // even when the text is retained in a background buffer or draft epoch.
-        // The mention injection block never re-enters any composer or buffer —
-        // restore the stripped body; a refs-only message strips to "" (nothing
-        // restorable), so resolve false and keep the caller's chips armed
-        // (round-8 M1).
-        const restoredBody = stripMentionBlockForComposerRestore(text);
-        const restored = restoredBody
-          ? restoreTaskDraft(restoredBody, draftOwner)
-          : false;
-        return restored ? "restored" : false;
+        return restoreAbortedMaterialization(text, draftOwner);
       }
     }
     const sid = state.activeSessionId;
@@ -3980,6 +3988,14 @@ function pinvouSharedwebN247496() {
       return { snapshot: consumed, payloadText, restrictTools };
     }
 function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreUiTurnState(consumed); }
+    // Navigation interrupted the send: the text goes back to the session it
+    // was typed in (buffer draft), never into the session now on screen —
+    // "restored" keeps the caller from prefilling it there (#406). A
+    // refs-only message restores nothing: resolve false so the caller's
+    // non-dispatch recovery keeps its chips armed (round-8 M1).
+    function abandonToOwnSession() {
+      return restoreComposerText(sid, text) ? "restored" : false;
+    }
     function queuePrepared(prepared) {
       state.queued.push(makeQueuedMessage(
         ++itemIdSeq,
@@ -4010,10 +4026,8 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       if (state.activeSessionId !== sid) {
         // The user navigated away during the hydrate: the text goes back to
         // the session it was typed in (buffer draft), never into the session
-        // now on screen — "restored" keeps the caller from prefilling it
-        // there (issue #406).
-        restoreComposerText(sid, text);
-        return "restored";
+        // now on screen (issue #406).
+        return abandonToOwnSession();
       }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
@@ -4024,8 +4038,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     // The authoritative hydrate above is asynchronous. Never let an input that
     // originated in Session A drift into Session B if the user navigated away.
     if (state.activeSessionId !== sid) {
-      restoreComposerText(sid, text);
-      return "restored";
+      return abandonToOwnSession();
     }
     if (isBusyFor(sid) || state.queued.length > 0) {
       const racedQueuePreparation = consumeUiTurnState();
@@ -4066,24 +4079,14 @@ function setComposerDraft(value) { return pinvouSharedweb().setComposerDraft(val
   // failure recovery passes append=true for separator-joined appending
   // (re-review #4 parity).
 function prefillComposer(text, append) { return pinvouSharedweb().prefillComposer(text, append); }
-  // Composer restores (steer-failure, session-switch mid-send, materialize
-  // abort) hand text back to the user: the session-mention injection block is
-  // a machine contract and the chips were consumed by the send attempt, so
-  // the block is stripped on restore instead of leaking raw JSON into the
-  // input (same window-global parser as the auto-title strip below).
-  function stripMentionBlockForComposerRestore(text) {
-    const raw = String(text || "");
-    const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
-    if (!splitMention) return raw;
-    const split = splitMention(raw);
-    // Gate on `matched`, not refs.length: a structurally valid block that
-    // parses to zero refs is still a block (the Rust titler and the bubble
-    // strip both treat it as one) — the restores must not hand the raw JSON
-    // contract back for it. (Mirrors the tauri bridge.)
-    return split.matched ? split.text.trim() : raw;
-  }
+  // Composer restores strip the injection block on restore — one shared
+  // implementation in bridge-shared-helpers.js now serves both platform
+  // lanes (round-8 minor 10).
+  function stripMentionBlockForComposerRestore(text) { return pinvouSharedweb().stripMentionBlockForComposerRestore(text); }
   // Session-scoped composer text restore for sends abandoned by a session
-  // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText).
+  // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText,
+  // including the boolean verdict: a refs-only message strips to "" and
+  // restores nothing, and the caller must not report "restored" then).
   // A bare setComposerDraft is invisible (the composer is React-local state
   // that only re-reads the store on [activeSessionId, draftEpoch]). Active
   // session: append at the store level with a "\n" separator and bump
@@ -4093,18 +4096,19 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // active draft.
   function restoreComposerText(sid, text) {
     const value = stripMentionBlockForComposerRestore(text);
-    if (!sid || !value) return;
+    if (!sid || !value) return false;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
       setComposerDraft(current ? current + "\n" + value : value);
       state.draftEpoch = (state.draftEpoch || 0) + 1;
       notify();
-      return;
+      return true;
     }
     const buffer = sessionStates[sid];
-    if (!buffer) return;
+    if (!buffer) return false;
     const current = String(buffer.composerDraft || "");
     buffer.composerDraft = current ? current + "\n" + value : value;
+    return true;
   }
 
   // Retained recovery for a task draft whose send was abandoned mid-await:

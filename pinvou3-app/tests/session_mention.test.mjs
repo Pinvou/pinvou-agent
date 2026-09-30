@@ -342,6 +342,7 @@ test('composer session drop invokes the guarded add path (behavioral)', () => {
       activeSessionId: 'current-session',
       sessionRefs: [],
       bs: { sessions: [{ id: 's1', title: '销量 PPT' }] },
+      knownSessionMentionIds: new Set(['s1', 'current-session']),
       handleSelectMentionCandidate: (candidate) => { calls.added.push(candidate); },
       ...overrides,
     };
@@ -369,6 +370,15 @@ test('composer session drop invokes the guarded add path (behavioral)', () => {
   const dup = make({ sessionRefs: [{ sessionId: 's1', title: '销量 PPT' }] });
   dup.sandbox.handleComposerSessionDrop(event('s1'));
   assert.equal(dup.calls.added.length, 0);
+  // A Codex/ACP row id (never in bs.sessions) is rejected before the add
+  // path — dropping one used to build a dead "Session deleted" chip
+  // (round-8 M4).
+  const codex = make();
+  codex.sandbox.handleComposerSessionDrop(event('codex-session-1'));
+  assert.equal(codex.calls.added.length, 0);
+  // The drop itself is still consumed (drag state reset), only the chip add
+  // is refused.
+  assert.equal(JSON.stringify(codex.calls.deactivated), JSON.stringify([false]));
 });
 
 test('mention-menu keydown: the IME guard precedes every preventDefault (behavioral)', () => {
@@ -471,18 +481,26 @@ test('registry refresh closure applies the host switch state and keeps state on 
 });
 
 test('voice sendTask assembles the block under the gate and consumes chips on acceptance (behavioral)', async () => {
-  const fn = extractChatViewFunction('sendTask: async outgoing =>');
-  const make = ({ enabled, truncated = false }) => {
-    const calls = { sent: [], clearedRefs: 0, inputReplaced: [] };
+  const fn = extractChatViewFunction('sendTask: async (outgoing, context) =>');
+  const make = ({ enabled, truncated = false, accepted = true } = {}) => {
+    const calls = { sent: [], clearedRefs: 0, inputReplaced: [], restoredDraft: [] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
       mentionSendScopeRef: { current: null },
+      inputTextRef: { current: '帮我把这份纪要排成 PPT' },
+      activeSessionIdRef: { current: 'sess-1' },
+      draftEpoch: 3,
       constrainChatInput: (value) => ({ text: value, truncated }),
       setInputText: (value) => { calls.inputReplaced.push(value); },
       sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: () => {},
       sessionRefs: REFS,
-      sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return true; },
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      bridge: { chat: { restoreTaskDraft: (text) => { calls.restoredDraft.push(text); } } },
+      sendChatMessage: async (outgoing) => { calls.sent.push(outgoing); return accepted; },
       setSessionRefs: () => { calls.clearedRefs += 1; },
       console,
     };
@@ -490,24 +508,33 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
     vm.runInNewContext(`const config = ({ ${fn} });\nthis.sendTask = config.sendTask;`, sandbox);
     return { sandbox, calls };
   };
-  // Gate on: the block rides ahead of the dictated task text, and an accepted
-  // send consumes the chips right in sendTask (composer drift during the
-  // await can skip onTaskAccepted's own clear).
+  // Gate on: the block rides ahead of the dictated task text, the chips clear
+  // at dispatch, and an accepted send consumes whatever a mid-send pick could
+  // have re-armed (the scope-guarded accepted-branch clear).
   {
     const { sandbox, calls } = make({ enabled: true });
     const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
     assert.equal(accepted, true);
     assert.equal(calls.sent.length, 1);
     assert.equal(calls.sent[0], buildSessionMentionBlock(REFS) + '帮我把这份纪要排成 PPT');
-    assert.equal(calls.clearedRefs, 1);
+    assert.ok(calls.clearedRefs >= 1, 'the chips clear at dispatch');
+    assert.deepEqual(calls.restoredDraft, []);
   }
-  // Gate off: the bare task text goes out (stale chips still clear).
+  // Gate off: the bare task text goes out (chips still clear at dispatch).
   {
     const { sandbox, calls } = make({ enabled: false });
     const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
     assert.equal(accepted, true);
     assert.deepEqual(calls.sent, ['帮我把这份纪要排成 PPT']);
-    assert.equal(calls.clearedRefs, 1);
+    assert.ok(calls.clearedRefs >= 1);
+  }
+  // Non-acceptance: the snapshot goes back to the same scope (nothing sent).
+  {
+    const { sandbox, calls } = make({ enabled: true, accepted: false });
+    const accepted = await sandbox.sendTask('帮我把这份纪要排成 PPT');
+    assert.equal(accepted, false);
+    assert.deepEqual(calls.sent, [buildSessionMentionBlock(REFS) + '帮我把这份纪要排成 PPT']);
+    assert.ok(calls.clearedRefs >= 2, 'dispatch clear + failure restore');
   }
   // Length overflow: no send, the constrained text is written back.
   {
@@ -665,7 +692,7 @@ test('cascade wiring contract: ChatView gates all four layers, stops the block w
   // and the shared degradation copy.
   assert.match(chatViewSource, /disabled=\{!sessionMentionEnabled\}/);
   assert.match(chatViewSource, /sessionMentionDisabled=\{!sessionMentionEnabled\}/);
-  assert.match(chatViewSource, /t\.uiBuiltinFeatures\.disabledNotice/);
+  assert.match(chatViewSource, /t\.uiSessionMention\.disabledNotice/);
   // Refs parsed from history pass the shared choke point before rendering
   // cards / rebuilding on edit (dirty data cannot flood the UI).
   assert.match(chatViewSource, /dedupeSessionRefs\(mentionSplit\.refs\)/);
@@ -856,4 +883,89 @@ test('@ trigger stays inert inside URL path segments (round-5 minor 7)', () => {
   // A @ after whitespace still triggers, including at the end of a URL-ish
   // text where the reference is intentional.
   assert.deepEqual(sessionMentionTriggerAt('参考 https://github.com/ @octocat', true), { start: 23, query: 'octocat', token: '23:octocat' });
+});
+
+// ── Round-8: restore verdict routing, sibling-site wiring, drop/send pins ──
+
+test('steer-loss branches route the notice on the restore verdict (round-8 M1)', () => {
+  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8');
+  // The shared tail: restoreSteerText's verdict picks the notice variant.
+  assert.match(chatSource, /function restoreSteerWithNotice\(sid, text, refsOnlyKey\)/);
+  assert.match(chatSource, /addSystemItem\("⚠️ " \+ bt\(restored \? "steerFailed" : refsOnlyKey\)\)/);
+  // Watchdog withdraw timeout/err/not_pending: chip dropped, never degraded
+  // into an auto-resend, refs-only reports the unconfirmed variant.
+  assert.match(chatSource, /q\.splice\(q\.indexOf\(item\), 1\);\s*\n\s*restoreSteerWithNotice\(sid, item\.text, "steerFailedUnconfirmed"\);/);
+  // Outcome-reconcile expiry routes through the same helper.
+  assert.match(chatSource, /restoreSteerWithNotice\(sid, text, "steerFailedUnconfirmed"\);\s*\}\);\s*function clearOutcomeReconcileWatchdog/);
+  // detachQueuedForMutation settlement timeout (limbo → unconfirmed) and
+  // dropped-terminal (proven non-delivery → degraded re-queue + queued variant).
+  assert.match(chatSource, /restoreSteerWithNotice\(sid, item\.text, "steerFailedUnconfirmed"\);\s*\n\s*return null;/);
+  assert.match(chatSource, /makeQueuedItemLocal\(item\);\s*\n\s*const currentQueue = steeredQueueFor\(sid\);\s*\n\s*if \(currentQueue\) currentQueue\.splice\(Math\.min\(index, currentQueue\.length\), 0, item\);/);
+  assert.match(chatSource, /bt\(restoredText \? "steerFailed" : "steerFailedQueued"\)/);
+  // settleSteerDropped zap-reconciling + settleZapSkipResend stashed-dropped:
+  // proven non-delivery with nothing left to keep → the lost variant.
+  assert.match(chatSource, /restoreSteerWithNotice\(sid, withdrawnText, "steerFailedLost"\);/);
+  assert.match(chatSource, /restoreSteerWithNotice\(sid, withdrawnText === undefined \? item\.text : withdrawnText, "steerFailedLost"\);/);
+  // runQueuedZap settlement timeout routes on the verdict too.
+  assert.match(chatSource, /restoreSteerWithNotice\(sid, item\.text, "steerFailedUnconfirmed"\);\s*\n\s*return true;/);
+  // No branch may emit the restored-claim unconditionally anymore.
+  assert.equal(chatSource.includes('addSystemItem("⚠️ " + bt("steerFailed"))'), false);
+});
+
+test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', () => {
+  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8');
+  const webSource = readFileSync(new URL('../src/platform/web/bridge.js', import.meta.url), 'utf8');
+  // Switch-path abandons: refs-only resolves false so the caller keeps the
+  // chips armed (four tauri sites, two web sites — each lane routes through
+  // one abandonToOwnSession helper that owns the verdict-shaped return).
+  assert.equal((chatSource.match(/return abandonToOwnSession\(\);/g) || []).length, 4);
+  assert.equal((webSource.match(/return abandonToOwnSession\(\);/g) || []).length, 2);
+  assert.match(chatSource, /function abandonToOwnSession\(\) \{\s*abandonPreparedAttachments\(\);\s*return restoreSteerText\(sid, text\) \? "restored" : false;/);
+  assert.match(webSource, /function abandonToOwnSession\(\) \{\s*return restoreComposerText\(sid, text\) \? "restored" : false;/);
+  // Materialize abort: the scoped recovery restores the stripped body only;
+  // refs-only falls to the non-dispatch recovery instead of claiming
+  // "restored" (both lanes route through restoreTaskDraft with the original
+  // draft ownership).
+  assert.match(chatSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*const restored = restoredBody[\s\S]*?return restored \? "restored" : false;/);
+  assert.match(webSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*const restored = restoredBody[\s\S]*?return restored \? "restored" : false;/);
+  // The voice task lane carries the same dispatch-time chip semantics as
+  // handleSend (refs-only double-send race / unmount resurrect).
+  const chatViewSourceAll = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const sendTaskSlice = chatViewSourceAll.slice(chatViewSourceAll.indexOf('sendTask: async (outgoing, context)'));
+  assert.match(sendTaskSlice, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
+  assert.match(sendTaskSlice, /restoreRefsOnVoiceFailure\(\);/);
+  // The strip-on-restore rule lives once, in the shared helpers (minor 10).
+  assert.match(chatSource, /function stripMentionBlockForComposerRestore\(text\) \{ return pinvouSharedtauriChat\(\)\.stripMentionBlockForComposerRestore\(text\); \}/);
+  assert.match(webSource, /function stripMentionBlockForComposerRestore\(text\) \{ return pinvouSharedweb\(\)\.stripMentionBlockForComposerRestore\(text\); \}/);
+  const sharedSource = readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8');
+  assert.match(sharedSource, /function stripMentionBlockForComposerRestore\(text\) \{/);
+  // web restoreComposerText mirrors the tauri boolean verdict.
+  assert.match(webSource, /function restoreComposerText\(sid, text\) \{[\s\S]*?if \(!sid \|\| !value\) return false;/);
+});
+
+test('composer drop validates the session id and dragOver gates on the switch (round-8 M4 + minor 3)', () => {
+  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  assert.match(chatViewSource, /if \(!knownSessionMentionIds\.has\(sessionId\)\) return;/);
+  assert.match(chatViewSource, /if \(!isSessionRowDrag\(e\) \|\| !sessionMentionEnabled\) return;\s*\n\s*e\.preventDefault\(\); \/\/ allow the drop/);
+});
+
+test('handleSend clears the refs at dispatch and restores them on non-acceptance (round-8 M5)', () => {
+  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  assert.match(chatViewSource, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
+  assert.match(chatViewSource, /if \(refsAtSend\.length\) setSessionRefs\(\[\]\);/);
+  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.refsAtSend, \.\.\.current\]\)\);/);
+});
+
+test('the scene-send block-prepend into meta.pinvouPayloadText is pinned (round-8 M3)', () => {
+  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  assert.match(chatViewSource, /pinvouPayloadText: buildSessionMentionBlock\(dedupeSessionRefs\(mentionSplit\.refs\)\) \+ meta\.pinvouPayloadText,/);
+});
+
+test('the disabledNotice copy lives in uiSessionMention in all three locales (round-8 B1)', () => {
+  for (const locale of ['en', 'ja', 'zh']) {
+    const source = readFileSync(new URL(`../src/shared/i18n/${locale}.js`, import.meta.url), 'utf8');
+    assert.match(source, /uiSessionMention = \{.*disabledNotice:/, `${locale} must ship uiSessionMention.disabledNotice`);
+  }
+  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  assert.equal(chatViewSource.includes('t.uiBuiltinFeatures.disabledNotice'), false);
 });
