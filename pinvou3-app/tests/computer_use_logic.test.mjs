@@ -220,10 +220,28 @@ const zhConfirmCopy = {
   confirmHoldKeyMasked: (chord, count, ms) => chord ? `按住 ${chord} + ${count} 个隐藏字符 ${ms} 毫秒` : `按住 ${count} 个隐藏字符 ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
   confirmMouseMove: (point) => `移动鼠标到 ${point}`,
-  confirmMouseDown: (button) => `按下${button}`,
+  confirmMouseDown: (button) => `按住${button}`,
   confirmMouseUp: (button) => `松开${button}`,
 };
 const structured = (fields) => ({ sessionId: 's1', confirmId: 'c1', summary: 'english fallback', actionName: null, button: null, clickCount: null, point: null, endPoint: null, textLength: null, textPreview: null, textPreviewTruncated: false, chord: null, holdMs: null, ...fields });
+
+// ── Shipped i18n hold copy ───────────────────────────────────────────────
+// The fixture above is a hand-copied dictionary; the round-5 fix (ja said
+// 押す "press", zh said 按下 "press down" for a multi-second HOLD) was pinned
+// nowhere, so a revert kept every suite green. These read the SHIPPED
+// dictionaries so the hold verbs cannot silently regress to press verbs.
+for (const [locale, holdKey, mouseDown] of [
+  ['zh', /confirmHoldKey:\(chord, ms\)=>`按住/, /confirmMouseDown:button=>`按住/],
+  ['ja', /confirmHoldKey:\(chord, ms\)=>`.*押し続ける/, /confirmMouseDown:button=>`.*押し続ける/],
+  ['en', /confirmHoldKey:\(chord, ms\)=>`Hold /, /confirmMouseDown:button=>`Press and hold /],
+]) {
+  const source = readFileSync(
+    fileURLToPath(new URL(`../src/shared/i18n/${locale}.js`, import.meta.url)),
+    'utf8',
+  );
+  assert.match(source, holdKey, `${locale} confirmHoldKey must say hold, not press`);
+  assert.match(source, mouseDown, `${locale} confirmMouseDown must say hold, not press`);
+}
 
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'left', clickCount: 1, point: { x: 5, y: 6 } })),
@@ -302,8 +320,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'left' })),
-  { description: '按下左键', preview: null, previewTooLong: false },
-  'a mouse down renders the button',
+  { description: '按住左键', preview: null, previewTooLong: false },
+  'a mouse down renders the button (hold copy, matching the shipped zh dictionary)',
 );
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'right' })),
