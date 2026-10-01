@@ -168,13 +168,28 @@ fn parse_ollama_ps_contexts(v: &serde_json::Value) -> std::collections::HashMap<
     out
 }
 
+/// Ollama 裸名的规范形：模型段（最后一个 `/` 之后）不含 tag（`:`）时为
+/// `{name}:latest`，否则原样返回（registry 形如 `host:port/ns/model` 的
+/// 主机端口不算 tag）。ps 键匹配（[`ollama_ps_context_lookup`]）与采纳 /
+/// 展示两侧的闸门（monitor 的 `adopts_probed_facts`、
+/// `native_display_window_adoptable`）必须共用同一口径：同一个裸名在引擎
+/// 预算与监控展示两侧都要解析到同一条目。
+pub(crate) fn ollama_canonical_name(name: &str) -> String {
+    let name_segment = name.rsplit('/').next().unwrap_or(name);
+    if name_segment.contains(':') {
+        name.to_string()
+    } else {
+        format!("{name}:latest")
+    }
+}
+
 /// `/api/ps` 表按配置名取生效上下文，容忍省略 tag 的裸名：Ollama 把裸名
 /// 规范化为 `name:latest`（`ollama run llama3` 在 `/api/ps` 里报
 /// `llama3:latest`），手敲配置名省略 tag 时按规范化形式补查一次——否则
 /// 全局 `OLLAMA_CONTEXT_LENGTH` 部署的真实窗口永远只挂在规范化键下，裸名
-/// 路由的首载自愈永远落空（2026-09-30 报告的手打名形态）。tag 只看最后
-/// 一个 `/` 之后的段（registry 形如 `host:port/ns/model` 的主机端口不算
-/// tag）。带 tag 的名字只做精确查找：tag 不同即不同模型，绝不跨条目借用。
+/// 路由的首载自愈永远落空（2026-09-30 报告的手打名形态）。tag 判定收敛在
+/// [`ollama_canonical_name`]。带 tag 的名字只做精确查找（其规范形即自身）
+/// ：tag 不同即不同模型，绝不跨条目借用。
 pub(crate) fn ollama_ps_context_lookup(
     contexts: &std::collections::HashMap<String, u32>,
     model: &str,
@@ -182,9 +197,9 @@ pub(crate) fn ollama_ps_context_lookup(
     if let Some(ctx) = contexts.get(model) {
         return Some(*ctx);
     }
-    let name_segment = model.rsplit('/').next().unwrap_or(model);
-    if !name_segment.contains(':') {
-        if let Some(ctx) = contexts.get(&format!("{model}:latest")) {
+    let canonical = ollama_canonical_name(model);
+    if canonical != model {
+        if let Some(ctx) = contexts.get(&canonical) {
             return Some(*ctx);
         }
     }

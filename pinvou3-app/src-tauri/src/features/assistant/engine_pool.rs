@@ -8685,6 +8685,49 @@ mod probed_facts_wiring_tests {
         );
     }
 
+    /// Same tagless shape on a single-model server (a fresh install with
+    /// one downloaded model): `resolve_served_model_from_entries` follows
+    /// the single listed id, so served is the canonical `llama3:latest`
+    /// while the route stays the hand-typed `llama3` — the adoption gate
+    /// must fold the Ollama canonical form. Without the fold the whole
+    /// native block is skipped (no adoption AND no arming, since the
+    /// fetch and the re-check marker share the gate) and the
+    /// 8192-fallback collapse survives the engine's whole lifetime with
+    /// no self-heal.
+    #[tokio::test]
+    async fn tagless_single_entry_roster_adopts_canonical_ps_window() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"llama3:latest"}]}"#.into()),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"llama3:latest","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "llama3", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "the tagless configured name adopts its canonical entry even on a single-entry roster"
+        );
+        assert!(
+            !bridge.native_window_recheck,
+            "a fact was adopted — the reuse re-check must not arm"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the ps fact wins; /api/show stays unqueried"
+        );
+    }
+
     /// Model downloaded but not loaded (no /api/ps entry) with a Modelfile
     /// num_ctx declaration: the declared value is the window fact (it is the
     /// effective value once the model loads).

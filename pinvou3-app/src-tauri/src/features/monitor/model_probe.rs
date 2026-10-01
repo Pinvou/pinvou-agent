@@ -761,10 +761,19 @@ pub async fn resolve_served_model(
 /// name actually sent to the endpoint: routes that follow the served name
 /// (vLLM, whose name is usually corrected to the entry itself) may always
 /// adopt; routes that do not rename adopt only when the configured name
-/// exactly hits the list — in the single-entry "borrowed name" scenario the
-/// returned served name is unrelated to the configured one and its facts
-/// belong to another model, so they must not tighten this route's
-/// window/output caps.
+/// exactly hits the list, or its Ollama canonical form does
+/// ([`ollama_canonical_name`]: a hand-typed tagless name on a
+/// single-entry Ollama roster *is* the listed model under Ollama's
+/// `name:latest` canonicalization, not a borrowed one — without the fold
+/// the whole native adoption is skipped there and the 8192-fallback
+/// collapse survives the engine's lifetime; the fold matches only
+/// `served == configured + ":latest"`, so a genuinely unrelated single
+/// entry still refuses). The ps lookup this gate feeds folds the same way
+/// (`ollama_ps_context_lookup`), so an adopted gate always resolves a fact.
+/// In the remaining single-entry "borrowed name" scenario the returned
+/// served name is unrelated to the configured one and its facts belong to
+/// another model, so they must not tighten this route's window/output
+/// caps.
 ///
 /// Known exception (intentional trade-off): with vLLM +
 /// `pins_scheduled_model` the served-name correction is suppressed and the
@@ -774,7 +783,9 @@ pub async fn resolve_served_model(
 /// strict one 404s on the configured name (facts have no effect), so no
 /// extra condition complexity is added for that corner.
 pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
-    follows_served_name || served == configured
+    follows_served_name
+        || served == configured
+        || served == crate::core::model_endpoint::ollama_canonical_name(configured)
 }
 
 #[cfg(test)]
