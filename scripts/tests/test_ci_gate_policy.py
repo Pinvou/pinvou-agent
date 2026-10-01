@@ -1103,6 +1103,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "windows_python_dependency_contract.ps1",
             windows_codex_filter,
         )
+        # The VC++ temp-preflight pins inside windows_runtime_packaging_contract.test.js
+        # target src-tauri/packaging/windows/nsis/vcredist-temp-preflight.ps1, so edits
+        # to that file must trigger the only job that runs the pins.
+        self.assertIn(
+            "pinvou3-app/src-tauri/packaging/windows/nsis/**",
+            windows_codex_filter,
+        )
 
         windows_job = self.pr_workflow.split(
             "\n  windows-codex-runtime-test:", maxsplit=1
@@ -1151,6 +1158,14 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js",
             job,
+        )
+        # The contract test must run before the smoke: it fails in seconds on
+        # engine drift, while the smoke pays a real toolchain download first.
+        self.assertLess(
+            job.index(
+                "node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js"
+            ),
+            job.index("npm --prefix pinvou3-app run test:windows-rustup-repair"),
         )
 
         # Same three-wiring rule as the other native legs: needs entry, env
