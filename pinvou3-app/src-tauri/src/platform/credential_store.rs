@@ -1041,6 +1041,38 @@ mod tests {
     }
 
     #[test]
+    fn fixed_prefix_token_shapes_are_redacted() {
+        // The fixed low-false-positive prefixes (GitHub/GitLab/AWS/Slack
+        // token shapes): a bare leaked token in an error chain is caught
+        // regardless of its length, unlike the length-plus-alnum heuristic.
+        // Bare tokens: the redactor tokenizes on whitespace, so a glued
+        // `token=…` prefix would take the length heuristic instead of the
+        // fixed-prefix rule this test owns. Tails are short on purpose —
+        // the rule is prefix-only (the <8-char floor is the only length
+        // gate) — and realistic full-length shapes would trip the secret
+        // scanner on synthetic values.
+        for token in [
+            "ghp_shortexample",
+            "github_pat_shortexample",
+            "glpat-shortexample",
+            "AKIAShortExample",
+            "xoxb-shortexample",
+        ] {
+            let redacted = super::redact_secret(token);
+            assert_ne!(
+                redacted, token,
+                "fixed-prefix token must be redacted: {redacted}"
+            );
+            assert!(redacted.contains("[REDACTED]"), "{redacted}");
+        }
+        // Ordinary words must not trip the fixed prefixes.
+        assert_eq!(
+            super::redact_secret("ghp is an abbreviation"),
+            "ghp is an abbreviation"
+        );
+    }
+
+    #[test]
     fn mcp_reference_uses_separate_service() {
         let reference = CredentialReference::for_mcp_secret("iwencai", "env", "IWENCAI_API_KEY");
         assert_eq!(reference.service, "pinvou3-mcp-secret");

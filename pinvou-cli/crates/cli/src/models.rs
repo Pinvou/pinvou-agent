@@ -3420,11 +3420,22 @@ fn run_bing_probe() -> SearchProbe {
             // with 2xx, so the HTTP status alone cannot prove searchability.
             // The body must at least carry a result-shaped element; a bare
             // 2xx page without one stays unverified.
+            // Bounded like every other probe body (`read_json_capped`): the
+            // 15s client timeout bounds time, not bytes, so a hostile or
+            // hijacked endpoint must not stream unbounded into memory before
+            // the shape check runs. Over-cap degrades to unshaped, same as a
+            // read failure.
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
             let body_is_result_shaped = status.is_success()
                 && response
-                    .text()
-                    .map(|body| body.contains(r#"<li class="b_algo""#))
-                    .unwrap_or(false);
+                    .take(PROBE_BODY_CAP_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .is_ok()
+                && bytes.len() <= PROBE_BODY_CAP_BYTES
+                && bytes
+                    .windows(17)
+                    .any(|window| window == b"<li class=\"b_algo\"");
             if body_is_result_shaped {
                 SearchProbe {
                     ok: true,

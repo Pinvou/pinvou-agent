@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-fn usage_error(args: [&str; 2]) -> String {
+fn usage_error(args: &[&str]) -> String {
     let error = parse_args(args).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
     error.to_string()
@@ -31,12 +31,16 @@ fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
 #[test]
 fn the_family_position_error_is_not_prefixed_twice() {
     // Round-28 review: main.rs already prepends `pinvou: ` to every CliError,
-    // so the round-27 message carrying its own prefix printed
-    // `pinvou: pinvou: unknown family …`.
-    let message = usage_error(["--instal", "sessions"]);
-    // The doubling happened at print time (main.rs prepends `pinvou: ` to
-    // the rendered error), so the invariant to pin is: the CliError TEXT
-    // itself is prefix-free.
+    // so a message carrying its own prefix prints
+    // `pinvou: pinvou: unknown family …`. argv must include the program slot
+    // or parse_args strips it as argv[0] and the flag-shaped arm is never
+    // reached (the previous form of this test did exactly that and could
+    // not fail while the bug was live).
+    let message = usage_error(&["pinvou", "--instal", "sessions"]);
+    assert!(
+        message.contains("unknown family --instal"),
+        "the flag-shaped token must be named by the family-position arm: {message}"
+    );
     assert!(
         !message.starts_with("pinvou:"),
         "CliError text must be prefix-free; main.rs adds the prefix when printing: {message}"
@@ -216,12 +220,12 @@ fn settings_alias_routes_into_the_models_family() {
 
 #[test]
 fn family_without_subcommand_is_a_usage_error_naming_the_family() {
-    let message = usage_error(["pinvou", "sessions"]);
+    let message = usage_error(&["pinvou", "sessions"]);
     assert!(
         message.contains("sessions"),
         "unexpected message: {message}"
     );
-    let message = usage_error(["pinvou", "memory"]);
+    let message = usage_error(&["pinvou", "memory"]);
     assert!(message.contains("memory"), "unexpected message: {message}");
 }
 
@@ -233,7 +237,7 @@ fn family_without_subcommand_is_a_usage_error_naming_the_family() {
 
 #[test]
 fn unknown_top_level_command_lists_the_full_surface() {
-    let message = usage_error(["pinvou", "nope"]);
+    let message = usage_error(&["pinvou", "nope"]);
     assert!(message.contains("benchmark"));
     assert!(message.contains("agent run"));
     assert!(message.contains("sessions"));

@@ -1365,8 +1365,8 @@ where
     // contract every pinvou-cli family documents. Contained here at the
     // single shared bootstrap, so EVERY host lane (monitor, knowledge,
     // voice, agent task, benchmarks, the organize lanes) degrades to an
-    // ordinary Err; the catch_unwind wraps two CLI call sites used to carry
-    // covered only their own lanes and are gone.
+    // ordinary Err; the two per-call-site catch_unwind wraps this replaces
+    // covered only their own lanes.
     let host_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<T> {
         let app = tauri::Builder::default()
             .setup(move |app| {
@@ -1390,7 +1390,21 @@ where
                 let pool = build_pool(app.handle().clone(), store.clone())?;
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let result = work(pool, store).await;
+                    // The work future runs on a nested task so a panic inside
+                    // it surfaces as a JoinError instead of being swallowed
+                    // by tokio: an unguarded panic would skip the send and
+                    // the exit below, and the caller would block on
+                    // `run_return`'s windowless event loop forever, outside
+                    // the 0/1/2 exit contract. The teardown's deliberate
+                    // re-raise after a pinned restore lands here too and
+                    // degrades to an ordinary Err like any other fault.
+                    let joined = tauri::async_runtime::spawn(work(pool, store));
+                    let result = match joined.await {
+                        Ok(result) => result,
+                        Err(join_error) => {
+                            Err(anyhow::anyhow!("windowless work failed: {join_error}"))
+                        }
+                    };
                     let _ = result_tx.send(result);
                     handle.exit(0);
                 });

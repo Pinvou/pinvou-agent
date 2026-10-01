@@ -168,12 +168,22 @@ where
 ///
 /// The copy is bounded by `features::files::file_ingest::MAX_FILE_BYTES`
 /// (the cap `file_ingest::ingest` enforces), which by value equals
-/// `headless_bridge::MAX_ATTACHMENT_BYTES` (the cap `validate_attachments`
-/// hard-fails on) — two independent constants that must stay equal for this
-/// bound never to reject a legitimate attachment. The bound exists because a
+/// `headless_bridge::MAX_STAGED_ATTACHMENT_BYTES` (the cap `validate_attachments`
+/// hard-fails on) — two independent constants pinned equal at compile time
+/// below: if only one were raised, `validate_attachments` would admit
+/// sources whose staging then fails at copy time and the attachment would
+/// be silently dropped. The bound exists because a
 /// caller-owned source can be swapped or grown between the size check and
 /// this copy (TOCTOU), and the oversized content must not land in the
 /// workspace.
+// The equality only has to hold where both caps exist together: the staged
+// attachment cap lives under the headless pipeline's cfg.
+#[cfg(feature = "benchmark-hooks")]
+const _: () = assert!(
+    crate::features::files::file_ingest::MAX_FILE_BYTES
+        == crate::features::assistant::product_runtime::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES
+);
+
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
