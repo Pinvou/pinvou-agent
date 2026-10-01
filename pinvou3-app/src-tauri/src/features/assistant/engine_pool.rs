@@ -2113,29 +2113,13 @@ impl EnginePool {
             // adopted value stays visible on the monitor card / progress
             // denominator.
             if max_len.is_none() && declared_window.is_none() {
-                use crate::core::model_endpoint::LocalServerKind;
-                // Outer Some = this kind has a native API to ask (Ollama /
-                // LM Studio only); inner = whether it served a fact. Kinds
-                // without one neither fetch nor arm.
-                let native = match bridge.probed_local_kind {
-                    Some(LocalServerKind::Ollama) => Some(
-                        crate::core::model_endpoint::fetch_ollama_model_context(
-                            &bridge.base_url(),
-                            Some(api_key.as_str()),
-                            &sent_name,
-                        )
-                        .await,
-                    ),
-                    Some(LocalServerKind::LmStudio) => Some(
-                        crate::core::model_endpoint::fetch_lmstudio_served_context(
-                            &bridge.base_url(),
-                            Some(api_key.as_str()),
-                            &sent_name,
-                        )
-                        .await,
-                    ),
-                    _ => None,
-                };
+                let native = crate::core::model_endpoint::fetch_native_served_context(
+                    bridge.probed_local_kind,
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &sent_name,
+                )
+                .await;
                 match native {
                     Some(Some(ctx)) => bridge.probed_context_tokens = Some(ctx),
                     Some(None) => {
@@ -2169,30 +2153,21 @@ impl EnginePool {
         bridge: &Pinvou3Bridge,
         pending: &PendingNativeWindow,
     ) -> Option<u32> {
-        use crate::core::model_endpoint::LocalServerKind;
         if !base_url_uses_local_or_private(&bridge.base_url()) {
             return None;
         }
         let api_key = bridge.api_key();
-        match pending.kind {
-            LocalServerKind::Ollama => {
-                crate::core::model_endpoint::fetch_ollama_model_context(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &pending.model_name,
-                )
-                .await
-            }
-            LocalServerKind::LmStudio => {
-                crate::core::model_endpoint::fetch_lmstudio_served_context(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &pending.model_name,
-                )
-                .await
-            }
-            _ => None,
-        }
+        // The marker only ever carries a native-probeable kind, so the
+        // helper's `None` outer arm is defensive only; flattening it to
+        // "no fact" matches the caller's keep semantics.
+        crate::core::model_endpoint::fetch_native_served_context(
+            Some(pending.kind),
+            &bridge.base_url(),
+            Some(api_key.as_str()),
+            &pending.model_name,
+        )
+        .await
+        .unwrap_or(None)
     }
 
     /// The reuse-path self-heal decision (see `EngineEntry::

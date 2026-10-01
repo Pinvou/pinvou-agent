@@ -542,6 +542,31 @@ pub async fn fetch_lmstudio_served_context(
         .max_model_len
 }
 
+/// 按 server kind 取原生 served window 的统一分发（引擎两处调用——spawn
+/// 采纳与复用重查——共用）：外层 `Some` = 该 kind 有原生 API 可问
+/// （Ollama / LM Studio），内层 = 它是否给出了事实；`None` = 该 kind 没有
+/// 原生 API（vLLM 等的窗口事实在 listing 里，原生跟进只会是每轮一次注定
+/// 404 的 `/api/ps`）。monitor 的展示跟进保留自己的分发：从未判别过的
+/// monitor-only 目标要求 `/api/ps` 应答非 Ollama 形状即止（不付 show
+/// 兜底 POST），与引擎的"已确认 Ollama kind"语义不同，见
+/// `features::monitor::model_probe::local_native_display_window`。
+pub(crate) async fn fetch_native_served_context(
+    kind: Option<LocalServerKind>,
+    base_url: &str,
+    bearer: Option<&str>,
+    model: &str,
+) -> Option<Option<u32>> {
+    match kind {
+        Some(LocalServerKind::Ollama) => {
+            Some(fetch_ollama_model_context(base_url, bearer, model).await)
+        }
+        Some(LocalServerKind::LmStudio) => {
+            Some(fetch_lmstudio_served_context(base_url, bearer, model).await)
+        }
+        _ => None,
+    }
+}
+
 /// 已缓存的本地服务判别（只读窥视，不发请求）：TTL 内的正向判别结果；
 /// 从未探测过（或上次探测失败——Generic 不入长缓存）返回 None。monitor
 /// 的原生窗口展示用它决定是否值得跟进：引擎已判别过的非 Ollama / 非
