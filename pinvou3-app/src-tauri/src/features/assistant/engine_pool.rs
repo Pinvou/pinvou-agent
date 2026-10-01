@@ -9169,6 +9169,8 @@ mod probed_facts_wiring_tests {
     /// wiring.
     #[tokio::test]
     async fn pending_native_window_marks_factless_native_routes() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
         // Ollama route, model never loaded, no num_ctx → pending.
         let mock = models_mock::spawn(&[
             ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),

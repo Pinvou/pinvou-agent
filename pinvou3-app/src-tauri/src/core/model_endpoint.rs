@@ -537,9 +537,8 @@ pub(crate) async fn cached_ollama_show_context(
 #[cfg(test)]
 pub(crate) fn clear_ollama_show_cache() {
     if let Some(cache) = OLLAMA_SHOW_CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            guard.clear();
-        }
+        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        guard.clear();
     }
 }
 
@@ -552,9 +551,7 @@ pub(crate) fn age_ollama_show_cache_beyond_ttl() {
     let Some(cache) = OLLAMA_SHOW_CACHE.get() else {
         return;
     };
-    let Ok(mut guard) = cache.lock() else {
-        return;
-    };
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     let past = std::time::Instant::now()
         .checked_sub(OLLAMA_SHOW_CACHE_TTL + Duration::from_secs(1))
         .expect("monotonic clock far enough past boot to backdate a 60s TTL");
