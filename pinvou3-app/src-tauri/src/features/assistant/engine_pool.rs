@@ -1341,8 +1341,6 @@ fn entry_is_fresh(
     !requires_model_rebuild && entry_mcp_config_revision == current_mcp_config_revision
 }
 
-/// A session's resident entry in the pool: the engine + its own event
-/// forwarder task.
 /// A reused engine's pending native-window re-check (see
 /// `EngineEntry::native_window_pending`): which server kind to ask and for
 /// which model name. No URL or credential — the re-probe runs against the
@@ -1394,6 +1392,8 @@ enum CachedEntryReuse {
     RebuildForWindowFact,
 }
 
+/// A session's resident entry in the pool: the engine + its own event
+/// forwarder task.
 struct EngineEntry {
     engine: AppEngine,
     /// This engine's event forwarder; aborted on evict so a zombie task does
@@ -1986,11 +1986,12 @@ impl EnginePool {
         // engine loads B" chain break; only follow the served name on a
         // single-model server that does not expose the configured name.
         // Non-vLLM operator-owned routes do no name correction and adopt
-        // facts only when the configured name exactly hits the list
-        // (`adopts_probed_facts`) — a single-entry "borrowed name" returns
-        // facts belonging to another model and must not be misattributed.
-        // Cloud presets and coding_plan are not operator-owned and are not
-        // probed.
+        // facts only when the sent name is the served one
+        // (`adopts_probed_facts`): a kept multi-entry name trivially is
+        // (served == configured), while a single-entry "borrowed name"
+        // returns facts belonging to another model and must not be
+        // misattributed. Cloud presets and coding_plan are not
+        // operator-owned and are not probed.
         let is_vllm_route = bridge.provider() == "vllm";
         if let Some(model) = bridge.effective_model_owned() {
             Self::adopt_probed_endpoint_facts(
@@ -2256,13 +2257,16 @@ impl EnginePool {
             // without a served-window fact — the shape of a model that was
             // never JIT-loaded yet — every reuse re-asks the native API once
             // (the `/api/show` leg is 60s-cached in core, `/api/ps` /
-            // `/api/v0/models` are one small local GET each; bounded by the
-            // shared 3s probe client). The first post-load check finds the
-            // real window and the entry is dropped for the rebuild below,
-            // which re-finalizes with the fact adopted — instead of the
-            // collapsed 8192-fallback budget surviving the whole first
-            // engine lifetime (2026-09-30 user report). Runs outside the
-            // entries lock.
+            // `/api/v0/models` are one small local GET each). Worst case
+            // while pending is ~6s inline on this send path (a 3s ps timeout
+            // plus, when ps answered Ollama-shaped-but-missing, an uncached
+            // 3s show — `Unreachable` is never cached), ending once the fact
+            // materializes or the entry is reclaimed. The first post-load
+            // check finds the real window and the entry is dropped for the
+            // rebuild below, which re-finalizes with the fact adopted —
+            // instead of the collapsed 8192-fallback budget surviving the
+            // whole first engine lifetime (2026-09-30 user report). Runs
+            // outside the entries lock.
             if matches!(
                 Self::cached_entry_reuse_decision(pending_window.as_ref(), &bridge).await,
                 CachedEntryReuse::Keep
