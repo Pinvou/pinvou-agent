@@ -160,7 +160,7 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
     async fn teardown_evict(&self, session_id: &str) {
         if !self
             .pool
-            .evict_bounded(session_id, Duration::from_secs(CANCEL_SETTLE_SECS))
+            .evict_bounded(session_id, Duration::from_secs(TEARDOWN_GATE_WAIT_SECS))
             .await
         {
             // No session id here (CodeQL cleartext-logging gate, same as the
@@ -170,7 +170,7 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
             // holds it too.
             super::note_stderr(&format!(
                 "[agent-task] engine reclaim skipped: the session's turn gate did not \
-                 free up within {CANCEL_SETTLE_SECS}s; the session stays inspectable"
+                 free up within {TEARDOWN_GATE_WAIT_SECS}s; the session stays inspectable"
             ));
         }
     }
@@ -184,6 +184,12 @@ pub const MAX_TIMEOUT_SECS: u64 = 7 * 24 * 60 * 60;
 /// Settle window after cancel: give the engine time to finish persisting;
 /// past the window, give up waiting for a full turn result.
 const CANCEL_SETTLE_SECS: u64 = 30;
+
+/// The teardown evict's turn-gate wait bound. Same value as
+/// `CANCEL_SETTLE_SECS`, but a distinct constant: one bounds how long an
+/// interrupt's settle path waits, the other how long a teardown's engine
+/// reclaim may hold the turn gate — they move independently.
+const TEARDOWN_GATE_WAIT_SECS: u64 = 30;
 /// Period of the stderr liveness heartbeat while the turn is running, so
 /// harnesses with an output-inactivity watchdog do not kill long tasks.
 const HEARTBEAT_SECS: u64 = 10;

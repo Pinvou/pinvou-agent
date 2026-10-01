@@ -1409,12 +1409,12 @@ mod tests {
             .collect();
         assert!(
             !cli_ids.is_empty(),
-            "the registry declares no CLI bundles; if the kind was retired,              retire the dispatch arm with it"
+            "the registry declares no CLI bundles; if the kind was retired, retire the dispatch arm with it"
         );
         for id in &cli_ids {
             assert!(
                 matches!(id.as_str(), "feishu" | "wecom" | "dingtalk" | "tmeet"),
-                "CLI bundle '{id}' has no arm in bundle_readiness_with_store's                  status dispatch; add one (or update this pin) — otherwise the                  readiness card falls to the conservative fallback"
+                "CLI bundle '{id}' has no arm in bundle_readiness_with_store's status dispatch; add one (or update this pin) — otherwise the readiness card falls to the conservative fallback"
             );
         }
     }
