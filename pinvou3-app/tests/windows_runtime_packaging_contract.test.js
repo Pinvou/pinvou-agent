@@ -332,6 +332,39 @@ assert.match(
   /S-1-5-32-544/,
   "Administrators must keep access to the repaired directories",
 );
+// SID constants alone are not a behavior pin: require the full grant chain
+// (both SIDs in the applied set, rule granted and written back, every ensured
+// directory running the grant) so deleting the ACL repair still fails here.
+assert.match(
+  vcRedistTempPreflight,
+  /\$requiredSids = @\(\$systemSid, \$administratorsSid\)/,
+  "SYSTEM and Administrators SIDs must form the required-access set",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /\[void\]\$acl\.AddAccessRule\(\$rule\)/,
+  "the required-access set must be granted through ACL access rules",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Set-Acl -LiteralPath \$Path -AclObject \$acl/,
+  "granted ACL rules must be written back to the repaired directory",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Add-RequiredAccess -Path \$Path/,
+  "every ensured system directory must receive the required ACL entries",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Ensure-SystemDirectory -Path \$windowsTempPath/,
+  "the Windows temp directory must run the ACL-preserving ensure",
+);
+assert.match(
+  vcRedistTempPreflight,
+  /Ensure-SystemDirectory -Path \$windowsInstallerPath -HiddenSystem/,
+  "the Windows Installer directory must run the ACL-preserving ensure",
+);
 assert.match(
   vcRedistTempPreflight,
   /SetEnvironmentVariable\(\$Name, \$FallbackPath, "Machine"\)/,
