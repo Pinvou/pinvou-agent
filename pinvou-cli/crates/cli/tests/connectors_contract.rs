@@ -435,7 +435,7 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
 // ── execute-level coverage (hermetic: temp PINVOU3_HOME, empty PATH) ───────
 
 #[test]
-fn connectors_status_zero_state_reports_every_connector_uninstalled_and_enabled() {
+fn connectors_status_zero_state_reports_every_connector_uninstalled_and_disabled_by_default() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("status-zero");
     let _path = VendorCliGuard::new();
@@ -452,7 +452,12 @@ fn connectors_status_zero_state_reports_every_connector_uninstalled_and_enabled(
         assert_eq!(columns[0], id);
         assert_eq!(columns[1], "installed=no", "{id}");
         assert_eq!(columns[2], "connected=no", "{id}");
-        assert_eq!(columns[3], "enabled=yes", "{id}");
+        // Plain scope converges to DenyAll (scope.rs): an uninitialized
+        // scope's effective disabled set is computed from the current claims
+        // and seeds every builtin connector id, so a fresh home reports all
+        // four vendor connectors switched off — the same effective view
+        // `get_disabled_connectors` feeds the GUI's switches.
+        assert_eq!(columns[3], "enabled=no", "{id}");
         assert_eq!(columns[4], "skills=no", "{id}");
     }
     assert_eq!(
@@ -477,7 +482,10 @@ fn connectors_status_zero_state_reports_every_connector_uninstalled_and_enabled(
             entry["connected"], false,
             "uninstalled entries report connected: false"
         );
-        assert_eq!(entry["enabled"], true, "catalog entries default to enabled");
+        assert_eq!(
+            entry["enabled"], false,
+            "an uninitialized plain DenyAll scope seeds the builtin ids into the effective disabled set (GUI parity)"
+        );
         assert_eq!(
             entry["skills_applied"], false,
             "uninstalled entries report skills_applied: false"

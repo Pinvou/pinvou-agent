@@ -914,7 +914,14 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
         "pinvoy", "plugins", "disable", "weather", "--scope", "plain",
     ]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(file["scopes"]["plain"], serde_json::json!(["weather"]));
+    // Plain scope converges to DenyAll too: the first toggle initializes the
+    // scope and freezes the computed expansion (the builtin connector ids)
+    // alongside the requested id — the same materialization the code scope
+    // assertion below pins.
+    assert_eq!(
+        file["scopes"]["plain"],
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet", "weather"])
+    );
 
     run_ok(&["pinvoy", "plugins", "disable", "weather", "--scope", "code"]);
     let file = disabled_bundles_json(home.path());
@@ -933,7 +940,14 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     // Default scope is `both`.
     run_ok(&["pinvoy", "plugins", "disable", "obsidian"]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(file["scopes"]["plain"].as_array().unwrap().len(), 2);
+    let plain = file["scopes"]["plain"].as_array().unwrap();
+    assert_eq!(
+        plain.len(),
+        6,
+        "the frozen expansion plus weather plus obsidian"
+    );
+    assert!(plain.contains(&serde_json::json!("obsidian")));
+    assert!(plain.contains(&serde_json::json!("weather")));
     let code = file["scopes"]["code"].as_array().unwrap();
     assert!(code.contains(&serde_json::json!("obsidian")));
 
@@ -975,9 +989,11 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
         serde_json::json!(true),
         "disable of a remapped id is exactly verifiable"
     );
+    // The owner id lands next to the DenyAll-seeded builtin ids the first
+    // toggle freezes into the initialized scope.
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
-        serde_json::json!(["ima"]),
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet", "ima"]),
         "the owner package id is what lands in the store"
     );
 
@@ -996,8 +1012,8 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
-        serde_json::json!([]),
-        "the owner package entry must actually be removed"
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet"]),
+        "the owner package entry must actually be removed, the frozen expansion remaining"
     );
 }
 
@@ -2259,11 +2275,30 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
         "the uninstall refusal must name the builtin rule: {message}"
     );
 
-    // Neither command may have created or modified the persisted toggle
-    // state: the file stays absent (a poisoned entry written here could
-    // never be removed through the guarded writers again).
+    // Neither command may modify the persisted toggle state. The file itself
+    // may appear: reading the scope persists the plain→DenyAll migration
+    // marker (GUI-shared read-time migration). What must never appear is a
+    // poisoned scopes/initialized entry for the refused id — such an entry
+    // could never be removed through the guarded writers again.
+    let file = disabled_bundles_json(home.path());
     assert!(
-        !home.path().join("disabled_bundles.json").exists(),
-        "a refused toggle must not leave persisted state behind"
+        file["scopes"]
+            .as_object()
+            .map(|scopes| scopes
+                .values()
+                .all(|ids| ids.as_array().unwrap().is_empty()))
+            .unwrap_or(true),
+        "a refused toggle must not persist a disabled list: {file}"
+    );
+    assert!(
+        file["initialized"]
+            .as_array()
+            .map(|ids| ids.is_empty())
+            .unwrap_or(true),
+        "a refused toggle must not initialize a scope: {file}"
+    );
+    assert!(
+        !file.to_string().contains("session-reader"),
+        "the refused builtin id must not appear anywhere in the persisted state: {file}"
     );
 }
