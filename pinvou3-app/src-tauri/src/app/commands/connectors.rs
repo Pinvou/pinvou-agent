@@ -249,8 +249,14 @@ pub async fn refresh_connector_auth_gates(
 }
 
 async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(
+    feishu_domain,
+    feishu_connect_begin(app: AppHandle) -> Result<Value, String>
+);
+async_command_passthrough!(
+    feishu_domain,
+    feishu_cancel(app: AppHandle) -> Result<Value, String>
+);
 async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
 /// Post-connect/disconnect skill-gating funnel: the domain layer writes or
 /// deletes skill files per `show`, and with show=true syncs every scope's
@@ -267,8 +273,14 @@ pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, S
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(wecom_domain, wecom_ensure_cli() -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(wecom_domain, wecom_cancel(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(
+    wecom_domain,
+    wecom_connect_begin(app: AppHandle) -> Result<Value, String>
+);
+async_command_passthrough!(
+    wecom_domain,
+    wecom_cancel(app: AppHandle) -> Result<Value, String>
+);
 async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>);
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
@@ -281,8 +293,14 @@ pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, St
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(dingtalk_domain, dingtalk_ensure_cli() -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(dingtalk_domain, dingtalk_cancel(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(
+    dingtalk_domain,
+    dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>
+);
+async_command_passthrough!(
+    dingtalk_domain,
+    dingtalk_cancel(app: AppHandle) -> Result<Value, String>
+);
 async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, String>);
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
@@ -295,8 +313,14 @@ pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value,
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
 
 async_command_passthrough!(tmeet_domain, tmeet_ensure_cli() -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_connect_begin(app: AppHandle) -> Result<Value, String>);
-async_command_passthrough!(tmeet_domain, tmeet_cancel(app: AppHandle) -> Result<Value, String>);
+async_command_passthrough!(
+    tmeet_domain,
+    tmeet_connect_begin(app: AppHandle) -> Result<Value, String>
+);
+async_command_passthrough!(
+    tmeet_domain,
+    tmeet_cancel(app: AppHandle) -> Result<Value, String>
+);
 async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>);
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
