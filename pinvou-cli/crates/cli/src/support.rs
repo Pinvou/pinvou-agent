@@ -649,19 +649,20 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Resolved through the app's hardened `external_command`, consumed
-        // via the targeted `pinvoy3_lib::platform::external_command`
-        // re-export (the `process` module itself stays crate-private): a
-        // planted `taskkill.exe` in the working directory must not win PATH
-        // resolution on a platform where exe search historically includes
-        // it, and the hidden-window wrapping matches the app's own
-        // kill_process_tree. The 2s budget is the part that matters here and
-        // is reproduced directly. A wedged WMI/RPC must not stall the
-        // caller's own timeout path, so taskkill itself is killed when its
-        // budget expires. Null stdio keeps the helper's streams off ours
-        // (a bare spawn would inherit them), like the app's detached spawn.
+        // Resolved through the app's own kill path, consumed via the
+        // targeted `pinvou3_lib::platform::external_command` re-export (the
+        // `process` module itself stays crate-private). The point is
+        // resolution parity: the same bare name resolves exactly as it does
+        // for the GUI's own kill_process_tree — this lane deliberately does
+        // not invent a stricter PATH policy the GUI does not have — and the
+        // hidden-window wrapping matches the app's detached spawn. The 2s
+        // budget is the part that matters here and is reproduced directly. A
+        // wedged WMI/RPC must not stall the caller's own timeout path, so
+        // taskkill itself is killed when its budget expires. Null stdio
+        // keeps the helper's streams off ours (a bare spawn would inherit
+        // them), like the app's detached spawn.
         const TASKKILL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-        let spawned = pinvoy3_lib::platform::external_command(std::path::Path::new("taskkill"))
+        let spawned = pinvou3_lib::platform::external_command(std::path::Path::new("taskkill"))
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

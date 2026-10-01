@@ -863,11 +863,16 @@ fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool 
     if walked > 0 {
         return true;
     }
-    // The read_dir probe follows symlinks while the walk does not: a
-    // symlinked root walks as zero entries, so authorizing via read_dir would
-    // sweep the TARGET's whole indexed slice off a walk that never entered
-    // it. A zero-walked root therefore authorizes only when it is a real
-    // (non-symlink) directory the probe can list.
+    // A symlinked root is followed for traversal (walkdir's follow_root_links
+    // defaults to true; only the root ENTRY itself reports is_symlink and is
+    // skipped by the recorder), so a non-empty target yields walked > 0 and
+    // is authorized before this probe — correctly, since `visited` really
+    // covers the target's children. The corner this probe owns is the EMPTY
+    // target: it walks as zero entries, and authorizing it via read_dir
+    // alone would let the sweep run against a root whose readable surface
+    // (the link target) was never the indexed directory. A zero-walked root
+    // therefore authorizes only when it is a real (non-symlink) directory
+    // the probe can list.
     let is_real_dir = std::fs::symlink_metadata(root)
         .map(|meta| meta.is_dir())
         .unwrap_or(false);

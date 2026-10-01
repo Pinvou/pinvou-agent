@@ -299,56 +299,50 @@ impl AcpProvidersStore {
     /// The GUI holds this store for the whole app lifetime, so a write the
     /// CLI made after boot would otherwise be silently reverted by the next
     /// whole-table persist — a delayed rollback minutes later, not a
-    /// same-instant race. Every mutator therefore re-reads the disk state
-    /// inside its own mutation critical section: mutations on both surfaces
-    /// persist immediately, so at any quiescent point the file is the latest
-    /// truth and re-reading it can only pull in the other surface's writes.
+    /// same-instant race. Every mutator therefore re-reads the disk state,
+    /// mutates, and persists inside ONE write-guard critical section (see
+    /// `persist_locked`): at any quiescent point the file is the latest
+    /// truth, and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        if let Some(existing) = state
+            .providers
+            .iter_mut()
+            .find(|candidate| candidate.id == record.id)
         {
-            let mut agents = self.agents.write();
-            Self::reload_into(&mut agents, &self.path);
-            let state = agents.entry(agent.to_string()).or_default();
-            if let Some(existing) = state
-                .providers
-                .iter_mut()
-                .find(|candidate| candidate.id == record.id)
-            {
-                *existing = record;
-            } else {
-                state.providers.push(record);
-            }
+            *existing = record;
+        } else {
+            state.providers.push(record);
         }
-        self.persist()
+        Self::persist_locked(&agents, &self.path)
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
-        let removed = {
-            let mut agents = self.agents.write();
-            Self::reload_into(&mut agents, &self.path);
-            let Some(state) = agents.get_mut(agent) else {
-                return Ok(None);
-            };
-            match state
-                .providers
-                .iter()
-                .position(|candidate| candidate.id == provider_id)
-            {
-                Some(index) => Some(state.providers.remove(index)),
-                None => None,
-            }
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let Some(state) = agents.get_mut(agent) else {
+            return Ok(None);
         };
-        self.persist()?;
+        let removed = match state
+            .providers
+            .iter()
+            .position(|candidate| candidate.id == provider_id)
+        {
+            Some(index) => Some(state.providers.remove(index)),
+            None => None,
+        };
+        Self::persist_locked(&agents, &self.path)?;
         Ok(removed)
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
-        {
-            let mut agents = self.agents.write();
-            Self::reload_into(&mut agents, &self.path);
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-        }
-        self.persist()
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        state.current_provider_id = provider_id.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
@@ -366,31 +360,27 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
-        {
-            let mut agents = self.agents.write();
-            Self::reload_into(&mut agents, &self.path);
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-            state.official_default_model = official_default_model.map(str::to_string);
-        }
-        self.persist()
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        state.current_provider_id = provider_id.map(str::to_string);
+        state.official_default_model = official_default_model.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
     }
 
     /// The GUI holds this store for the whole app lifetime, so a write the
     /// CLI made after boot would otherwise be silently reverted by the next
     /// whole-table persist — a delayed rollback minutes later, not a
-    /// same-instant race. Every mutator therefore re-reads the disk state
-    /// inside its own mutation critical section: mutations on both surfaces
-    /// persist immediately, so at any quiescent point the file is the latest
-    /// truth and re-reading it can only pull in the other surface's writes.
+    /// same-instant race. Every mutator therefore runs reload → mutate →
+    /// persist inside ONE write-guard critical section.
     /// Reload the disk state into an ALREADY-HELD write guard. Callers run
-    /// this inside the same critical section as their mutation: a peer
-    /// thread's mutate+persist can then no longer land between the read and
-    /// the swap, so an in-process mutator's committed write can never be
-    /// discarded by this snapshot (the pre-fix unlocked read→swap window
-    /// allowed exactly that). Best-effort: an unreadable or unparsable file
-    /// keeps the in-memory state (the same stance `load_or_empty` takes,
-    /// with its first-boot backup).
+    /// this inside the same critical section as their mutation AND their
+    /// persist, so a peer mutator (which needs the same guard) can neither
+    /// interleave between the read and the swap nor discard this thread's
+    /// committed-but-unpersisted change with a stale-disk reload — with the
+    /// persist outside the guard, that exact discard was possible. Best-
+    /// effort: an unreadable or unparsable file keeps the in-memory state
+    /// (the same stance `load_or_empty` takes, with its first-boot backup).
     fn reload_into(agents: &mut HashMap<String, AgentProvidersState>, path: &Path) {
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -401,17 +391,27 @@ impl AcpProvidersStore {
         *agents = file.agents;
     }
 
-    fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
+    /// Persist under the ALREADY-HELD write guard, so a mutator's committed
+    /// change is always part of its own persist: a peer mutator cannot run
+    /// between the mutation and the write (it needs the same guard), and its
+    /// later `reload_into` therefore always re-reads a file that already
+    /// contains every earlier commit. Persisting after the guard (the
+    /// previous shape) let a peer's reload replace the shared map from a
+    /// stale disk snapshot and discard the not-yet-persisted mutation
+    /// entirely. The file is small and mutations are human-frequency, so the
+    /// write under the lock costs readers (state()/get()) a sub-millisecond
+    /// wait on the paths that change anything.
+    fn persist_locked(agents: &HashMap<String, AgentProvidersState>, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        let tmp = path.with_extension("json.tmp");
         let value = AcpProvidersFile {
             version: STORE_VERSION,
-            agents: self.agents.read().clone(),
+            agents: agents.clone(),
         };
         fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
-        fs::rename(&tmp, &self.path)?;
+        fs::rename(&tmp, path)?;
         Ok(())
     }
 }
@@ -1307,6 +1307,87 @@ mod tests {
     /// fresh one per process; the long-lived side must pull the fresh
     /// side's write in before its next whole-table persist, or that persist
     /// silently reverts it minutes later.
+    /// Two in-process mutators racing through the same store: whichever
+    /// mutation commits, its own persist must carry it — the reload inside
+    /// the shared write guard can only see a file that already contains
+    /// every earlier commit, so no commit may vanish from the final disk
+    /// state (this is the discard the post-guard persist shape allowed).
+    #[test]
+    fn racing_mutators_never_lose_a_committed_write() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let store = std::sync::Arc::new(tmp_store(&dir));
+
+        let upserter = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .upsert("codex", record("pv-a", &format!("upsert-{round}")))
+                        .unwrap();
+                }
+            })
+        };
+        let switcher = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .set_current("codex", Some(if round % 2 == 0 { "pv-a" } else { "pv-b" }))
+                        .unwrap();
+                }
+            })
+        };
+        upserter.join().unwrap();
+        switcher.join().unwrap();
+
+        {
+            let committed = load_from_path(&dir.join("acp-providers.json"));
+            let names: Vec<String> = committed
+                .state("codex")
+                .providers
+                .iter()
+                .map(|r| r.name.clone())
+                .collect();
+            assert!(
+                names.contains(&"upsert-63".to_string()),
+                "the last committed upsert must be on disk: {names:?}"
+            );
+        }
+        store.upsert("codex", record("pv-b", "late")).unwrap();
+        let final_state = load_from_path(&dir.join("acp-providers.json"));
+        let state = final_state.state("codex");
+        let names: Vec<String> = state.providers.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.contains(&"late".to_string()),
+            "the last upsert must survive: {names:?}"
+        );
+        let current = state.current_provider_id.as_deref();
+        assert!(
+            current == Some("pv-a") || current == Some("pv-b"),
+            "a committed current must survive: {current:?}"
+        );
+    }
+
     #[test]
     fn mutators_reload_the_disk_state_the_other_surface_wrote() {
         fn record(id: &str, name: &str) -> ProviderRecord {

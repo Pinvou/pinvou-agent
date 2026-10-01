@@ -427,8 +427,11 @@ where
             // misplaced global flag (`pinvou --output json sessions list`):
             // name it instead of the bare usage line, so the fix is obvious
             // rather than "which of these words is wrong".
+            // No `pinvou: ` here: main.rs prepends the program prefix when
+            // printing, and an embedded one prints doubled (the exact
+            // regression the round-28 prefix fix removed).
             return Err(CliError::usage(format!(
-                "pinvou: unknown family {other}; global options go before the family or after \
+                "unknown family {other}; global options go before the family or after \
                  the subcommand (see usage below)\n\n{}",
                 support::TOP_LEVEL_USAGE
             )));
@@ -491,7 +494,19 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
         Some("verify") => parse_gaia_verify(&values)?,
         Some("score") => parse_gaia_score(&values)?,
         Some("submission") => parse_gaia_submission(&values)?,
-        _ => return Err(CliError::usage("unknown benchmark command")),
+        _ => {
+            // Benchmark takes no family-level `--output` (its files go to
+            // `--destination`; only the gaia run's legacy alias accepts one),
+            // so an `--output` on a rejected line is the global flag with a
+            // missing or invalid mode. Name the fix instead of "unknown
+            // benchmark command", which names nothing fixable.
+            if values.contains(&"--output".to_string()) {
+                return Err(CliError::usage(
+                    "--output requires human or json (submission files use --destination)",
+                ));
+            }
+            return Err(CliError::usage("unknown benchmark command"));
+        }
     };
     Ok(command)
 }

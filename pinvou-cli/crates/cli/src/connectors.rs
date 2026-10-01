@@ -1658,9 +1658,20 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = cli_connected(spec).unwrap_or(false);
     let visible = gui_skill_gate_shows(kind);
     if visible {
-        // Best-effort app-side (logs a failed write); the GUI's own
-        // `apply_skills` calls the same infallible entry point.
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
+        // The GUI's `apply_skills` (skill_gate) fails the command with the
+        // shared consent-failure marker instead of letting the connector go
+        // live with zero consent; the CLI mirrors that contract. The scope
+        // layer logs nothing on write failure, so the error carries it.
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
+            |error| {
+                CliError::failed(format!(
+                    "{} applied, but {}: new sessions will enable it by default — \
+turn it off in the tools list: {error}",
+                    spec.id,
+                    pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+                ))
+            },
+        )?;
     } else {
         hide_connector_skills(kind)?;
     }
@@ -2559,9 +2570,20 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // (code sessions default external capabilities off). Without this, a
     // fresh CLI connection would run code sessions with the connector ON
     // where the GUI (which also runs the follow-up after its connect) would
-    // have it OFF. Best-effort, exactly like that GUI entry point: a failed
-    // consent write is logged by the scope layer, not failed here.
-    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
+    // have it OFF. The GUI fails visibly on a failed consent write
+    // (skill_gate's marker contract); the CLI mirrors that instead of
+    // reporting a connection whose consent never landed — the scope layer
+    // logs nothing on write failure, so the error carries the reason.
+    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
+        |error| {
+            CliError::failed(format!(
+                "{} connected, but {}: new sessions will enable it by default — \
+turn it off in the tools list: {error}",
+                spec.id,
+                pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+            ))
+        },
+    )?;
     Ok(())
 }
 
@@ -3543,10 +3565,21 @@ fn ima_connect(
             .install(IMA_SKILL_ID)
             .map_err(|error| CliError::failed(format!("ima skill install failed: {error}")))?;
         // Same entry point the app's `ima_connect` uses (the skill id is
-        // normalized to its package id inside the scope layer). Best-effort
-        // app-side: a failed write is logged, and the credential rollback
-        // below is about the secrets, not this sync.
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(IMA_SKILL_ID);
+        // normalized to its package id inside the scope layer), with the
+        // app's fail-visible contract (review #455 R13-B3): a failed consent
+        // write ERRORS the closure — which rolls the just-stored secrets
+        // back below — so the reconnect never completes with credentials
+        // committed and consent state lost. The pack itself is not
+        // uninstalled (live-by-absence until the denied state applies on
+        // reconnect); that residual is what the marker message names.
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(IMA_SKILL_ID)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "ima skills installed, but {}: new sessions will enable them by \
+default — turn them off in the tools list: {error}",
+                    pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+                ))
+            })?;
         Ok(())
     })();
     if let Err(error) = result {

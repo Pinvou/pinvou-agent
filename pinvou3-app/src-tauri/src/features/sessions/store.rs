@@ -1236,6 +1236,25 @@ impl SessionStore {
                 .unwrap_or(false)
     }
 
+    /// Three-state record probe for callers whose wrong-"absent" answer is
+    /// destructive (the failed-delete backstop sweep): `Some(false)` is a
+    /// CONFIRMED absence (invalid id, no chat path, NotFound), `Some(true)` a
+    /// present record, and `None` an unreadable answer (metadata failed with
+    /// anything but NotFound) the caller must treat as "keep". The plain
+    /// `exists()` probe folds a permission fault or EIO into "absent", which
+    /// would sweep a live session's directory under its surviving record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_record_present(&self, id: &str) -> Option<bool> {
+        let path = validate_session_id(id)
+            .ok()
+            .and_then(|_| chat_session_file(&self.manager, id).ok())?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Some(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+            Err(_) => None,
+        }
+    }
+
     /// Whether the durable chat record for `id` carries any messages. The
     /// headless runner uses this to tell a zero-message stub (safe to clean
     /// up) from a ran-and-errored transcript (the only copy — keep it

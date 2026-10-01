@@ -983,8 +983,7 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
 /// skill_gate.rs). Every connector shares the exact string so a backend
 /// rewording cannot silently degrade the localized guidance to generic copy.
-pub(crate) const CONSENT_SYNC_FAILURE_MARKER: &str =
-    "persisting their default-off consent state failed";
+pub const CONSENT_SYNC_FAILURE_MARKER: &str = "persisting their default-off consent state failed";
 
 /// Single source of the post-landing consent-failure copy shared by the
 /// command layer and the connector gate (the frontend pin

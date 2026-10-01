@@ -7,7 +7,9 @@
 //!   `install` / `uninstall` plus the companion-skill and DenyAll-scope
 //!   follow-ups the GUI command layer performs (`companion_skills`,
 //!   `skill_marketplace::SkillMarketplaceManager::install`,
-//!   `sync_deny_all_scopes_after_install`, `remove_bundle_from_disabled_scopes`).
+//!   `sync_deny_all_scopes_after_install`,
+//!   `remove_bundle_from_disabled_scopes_exact`; both fail the command with
+//!   the GUI's consent-failure marker instead of being dropped).
 //!   The GUI's post-install `validate_remote_connection` handshake and the
 //!   OAuth token deletion on uninstall run inside the Tauri host on the
 //!   foundation's async MCP stack, which the CLI does not link; the CLI prints
@@ -121,7 +123,11 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
     bundle::{BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
-    package_export, plugin_import, recycle_bin, remove_bundle_from_disabled_scopes,
+    package_export, plugin_import, recycle_bin,
+    scope::{
+        CONSENT_SYNC_FAILURE_MARKER, remove_bundle_from_disabled_scopes_exact,
+        resolve_pack_owner_id,
+    },
     skill_marketplace::SkillMarketplaceManager,
     store::{BundleSource, BundleStore},
     sync_deny_all_scopes_after_install,
@@ -734,7 +740,6 @@ fn resolve_secrets(secrets: &[(String, String)]) -> Result<HashMap<String, Strin
                      takes KEY=ENV_VAR_NAME (the NAME of an environment variable, not the secret)"
                 )));
             }
-            Err(err) => return Err(CliError::failed(err.to_string())),
         };
         if value.trim().is_empty() {
             return Err(CliError::failed(format!(
@@ -752,6 +757,36 @@ fn resolve_secrets(secrets: &[(String, String)]) -> Result<HashMap<String, Strin
         config.insert(key.clone(), value.trim().to_owned());
     }
     Ok(config)
+}
+
+/// The DenyAll scope sync decides which new sessions consent to the pack, so
+/// a failed consent write must not read as success. The GUI fails visibly
+/// with the shared `CONSENT_SYNC_FAILURE_MARKER` and keeps the install; the
+/// CLI mirrors that shape. The scope layer logs nothing on write failure, so
+/// the error has to carry the reason and the residual: scopes the write
+/// never reached will enable the pack by default.
+fn sync_after_install_or_fail(operation: &str, id: &str) -> Result<(), CliError> {
+    sync_deny_all_scopes_after_install(id).map_err(|error| {
+        CliError::failed(format!(
+            "{operation}({id}) landed, but {CONSENT_SYNC_FAILURE_MARKER}: new sessions \
+will enable it by default — turn it off in the tools list: {error}"
+        ))
+    })
+}
+
+/// Stale consent rows keep a reinstalled pack switched off, so a failed
+/// cleanup must not read as success either (the GUI surfaces the same
+/// failure after its own success commit). `package_id` is the
+/// already-resolved owner id — callers snapshot it before any directory
+/// disappears, because the normalized lookup of a deleted id can be
+/// re-owned by a foreign pack's claim and erase the wrong rows.
+fn remove_scope_rows_or_fail(operation: &str, package_id: &str) -> Result<(), CliError> {
+    remove_bundle_from_disabled_scopes_exact(package_id).map_err(|error| {
+        CliError::failed(format!(
+            "{operation} landed, but stale consent rows for {package_id} remain in \
+disabled_bundles.json: {error}"
+        ))
+    })
 }
 
 fn tools_install(
@@ -773,7 +808,7 @@ fn tools_install(
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
-                sync_deny_all_scopes_after_install(&sid);
+                sync_after_install_or_fail("companion skills install", &sid)?;
                 companion_note.push(sid);
             }
             Err(error) => {
@@ -782,7 +817,7 @@ fn tools_install(
         }
     }
     // DenyAll scopes (e.g. code) keep newly installed packages off by default.
-    sync_deny_all_scopes_after_install(id);
+    sync_after_install_or_fail("tools install", id)?;
     // The GUI validates remote MCP connections right after install
     // (validate_on_install manifests) and, on a failed handshake, UNINSTALLS
     // the tool again. The handshake runs on the foundation's async MCP stack,
@@ -849,24 +884,34 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
             "cannot be disabled or hidden: builtin plugins can never be modified",
         ));
     }
-    for sid in &companions {
+    // Snapshot every scope-cleanup owner BEFORE any directory disappears
+    // (the GUI's round-26 MAJOR 1 rule): once the skill dir or the package
+    // is gone, the normalized lookup's gating fallback can re-own the id
+    // onto a foreign pack's claim, and the removal would erase THAT pack's
+    // consent rows while the stale ones survive.
+    let companion_owners: Vec<(String, String)> = companions
+        .iter()
+        .map(|sid| (sid.clone(), resolve_pack_owner_id(sid)))
+        .collect();
+    let pack_owner = resolve_pack_owner_id(id);
+    for (sid, owner) in &companion_owners {
         if recycles_with_package {
             continue; // companion is recycled with the whole package
         }
         SkillMarketplaceManager::new()
             .uninstall(sid)
             .map_err(|error| feature_error("tools uninstall", id, error))?;
-        remove_bundle_from_disabled_scopes(sid);
+        remove_scope_rows_or_fail("tools uninstall", owner)?;
     }
     mgr.uninstall(id)
         .map_err(|error| feature_error("tools uninstall", id, error))?;
     if recycles_with_package {
-        for sid in &companions {
-            remove_bundle_from_disabled_scopes(sid);
+        for (_, owner) in &companion_owners {
+            remove_scope_rows_or_fail("tools uninstall", owner)?;
         }
     }
     // Keep the disabled sets free of stale connector ids (GUI parity).
-    remove_bundle_from_disabled_scopes(id);
+    remove_scope_rows_or_fail("tools uninstall", &pack_owner)?;
     let action = if recycles_with_package {
         "uninstalled (moved to recycle bin)"
     } else {
@@ -1099,7 +1144,7 @@ fn tools_oauth_login(
             ))
         })?;
     let _ = configured;
-    let _ = timeout;
+    let _ = timeout; // accepted for argv compatibility; there is no login to time out
     Err(CliError::failed(
         "oauth_login_unavailable_in_cli: the MCP OAuth login flow (PKCE + local callback + token persistence) lives in the CodeWhale foundation crate, which the pinvou CLI does not link; complete the interactive grant in the desktop app, or configure the credential with 'pinvou plugins tools install --secret KEY=ENV_VAR_NAME'",
     ))
@@ -1169,7 +1214,7 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
     SkillMarketplaceManager::new()
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
-    sync_deny_all_scopes_after_install(id);
+    sync_after_install_or_fail("skills install", id)?;
     let value = serde_json::json!({ "id": id, "action": "installed" });
     Ok(success(render(output, format!("installed {id}"), &value)))
 }
@@ -1197,10 +1242,12 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
     require_yes(yes)?;
     // `uninstall_marketplace_skill_sync`: uninstall, then drop stale scope
     // entries so a still-listed id cannot silently re-enable anything.
+    // Owner snapshot before the skill dir disappears (see tools uninstall).
+    let owner = resolve_pack_owner_id(id);
     SkillMarketplaceManager::new()
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
-    remove_bundle_from_disabled_scopes(id);
+    remove_scope_rows_or_fail("skills uninstall", &owner)?;
     let value = serde_json::json!({ "id": id, "action": "uninstalled" });
     Ok(success(render(output, format!("uninstalled {id}"), &value)))
 }
@@ -1393,7 +1440,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     })?;
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
-    sync_deny_all_scopes_after_install(&report.id);
+    sync_after_install_or_fail("import", &report.id)?;
     let kind = serde_json::to_value(&report.kind)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))

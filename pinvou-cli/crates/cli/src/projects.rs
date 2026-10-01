@@ -1072,12 +1072,20 @@ fn rebind_report(
         human.push_str("; failed sessions (a rerun retries them): ");
         human.push_str(&failed_session_ids.join(", "));
     }
-    if legacy_sync_failed && failed_session_ids.is_empty() {
+    if legacy_sync_failed {
+        // Fire whenever the flag is set, not only when the failed list is
+        // empty: with resurrection ids folded into that list (the common
+        // case) a rerun does NOT retry them while the stale table persists,
+        // so suppressing the note here would leave "a rerun retries them"
+        // as the only guidance — which is false for exactly those ids.
         human.push_str(
             "; WARNING: the legacy binding table could not be synced and is still on disk in \
              the old format — fix or remove it and re-run, or the next boot migration will \
              move bindings back",
         );
+        if !failed_session_ids.is_empty() {
+            human.push_str(" (a rerun does not retry the ids the stale table would resurrect)");
+        }
     }
     let mut value = serde_json::json!({
         "rebound_session_ids": rebound_session_ids,

@@ -29,6 +29,14 @@ paths = [
 regexes = ['''sk-(?:test|legacy|custom|once)-secret-1234567890''']
 
 [[allowlists]]
+description = "CLI provider-slot tests use an explicit non-production test key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou-cli/crates/cli/tests/code_contract\.rs$''']
+regexes = ['''sk-test-slots-1234567890''']
+
+[[allowlists]]
 description = "File-ingest tests and detectors intentionally contain private-key header literals"
 targetRules = ["private-key"]
 condition = "AND"
