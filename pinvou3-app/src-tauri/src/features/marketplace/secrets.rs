@@ -265,22 +265,95 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // credential_store.get is a keyring/file short read with no long IO
         // or await).
         let mut values = secret_values_write();
-        values.clear();
-        for tool_id in self.installed_ids() {
-            let Some(manifest) = self.load_manifest(&tool_id) else {
-                continue;
+        // Round-13 m4: an unreadable installed.json must not clear the
+        // registry — every `${ENV}` placeholder would stay unresolved for the
+        // whole process lifetime after a transient permissions hiccup (the
+        // swallowing `installed_ids()` class). Keep the previous values on
+        // Err; the next bridge boot (or a successful write) rebuilds.
+        // Round-30 MAJOR: this contract now also covers a faulting
+        // rebuild — nothing is cleared until the whole rebuild succeeds.
+        let installed = match self.try_installed_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!(
+                    "[marketplace] {error}; keeping the previous secret registry instead of clearing it"
+                );
+                return Ok(());
+            }
+        };
+        // Round-30 MAJOR (review #455): the rebuild itself is fallible — a
+        // mid-loop keyring fault (locked keychain / EACCES during boot
+        // rehydration) must not leave the registry half-rebuilt: tools
+        // scanned before the fault are repopulated, tools after it are
+        // missing, and the only production caller (the bridge boot, which
+        // logs "MCP secret env sync skipped" and moves on) swallows the
+        // error — unresolved `${ENV}` placeholders for the whole process
+        // lifetime, the exact "silent 401s" harm this function's own doc
+        // names. Build into a local map and swap under the guard only on
+        // success; the previous values survive any Err, the same contract
+        // the unreadable-registry arm above keeps (and the twin pin
+        // `secret_values_resync_keyring_fault_keeps_previous_registry`
+        // holds).
+        let mut rebuilt: HashMap<String, String> = HashMap::new();
+        for tool_id in installed {
+            let manifest = match self.load_manifest(&tool_id) {
+                Some(manifest) => manifest,
+                None => {
+                    let manifest_path =
+                        super::mcp_catalog::package_mcp_dir(&tool_id).join("manifest.json");
+                    if manifest_path.exists() {
+                        // Round-31 m1 (review #455): the manifest EXISTS but
+                        // could not be loaded (AV lock / transient parse
+                        // failure — the codebase itself documents AV briefly
+                        // holding files). Returning Ok here would evict this
+                        // tool's secrets in the final swap (silent unresolved
+                        // `${ENV}` → silent 401s) while the contract above
+                        // claims nothing is cleared until the whole rebuild
+                        // succeeds. Fail the rebuild: the previous registry
+                        // stays intact and the next boot retries.
+                        return Err(format!(
+                            "manifest for installed tool '{tool_id}' exists but could not be loaded; keeping the previous secret registry"
+                        ));
+                    }
+                    // Genuinely absent (registry/dir skew): the tool is not
+                    // on disk — it has no secrets to rehydrate.
+                    continue;
+                }
             };
             for (target, key) in manifest_secret_targets(&manifest) {
                 let reference = mcp_secret_reference(&tool_id, &target, &key);
                 match self.credential_store.get(&reference) {
                     Ok(Some(value)) if !value.trim().is_empty() => {
-                        values.insert(mcp_secret_env_var(&key), value);
+                        rebuilt.insert(mcp_secret_env_var(&key), value);
                     }
-                    Ok(_) => {}
+                    Ok(value) => {
+                        // Round-31 m2 (review #455): a successful read with
+                        // nothing stored while the OS keyring is unreachable
+                        // is the UndeterminableMiss classification (the
+                        // credential may sit in the keyring) — the
+                        // SecretResolveError doctrine's own words. The
+                        // resolve side classifies `Some("")` and `None`
+                        // identically, so the skip must not stay silent for
+                        // an empty stored value either (round-32 minor 8).
+                        // A hard Err would fail every boot rehydration on a
+                        // keyring-less host, so: warn and skip; the
+                        // placeholder resolves empty until the keyring
+                        // returns.
+                        if value
+                            .as_deref()
+                            .map_or(true, |stored| stored.trim().is_empty())
+                            && self.credential_store.os_keyring_unreachable(&reference)
+                        {
+                            log::warn!(
+                                "[marketplace] MCP tool '{tool_id}' secret {key} was not found while the OS keyring is unreachable; the credential may live in the keyring — skipped this rehydration"
+                            );
+                        }
+                    }
                     Err(e) => return Err(mcp_secret_store_error(&tool_id, &key, e)),
                 }
             }
         }
+        *values = rebuilt;
         Ok(())
     }
 

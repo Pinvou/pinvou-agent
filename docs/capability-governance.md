@@ -1,14 +1,17 @@
 # 能力治理（Capability Governance）
 
 本文档描述 pinvou3 当前的能力治理架构：哪些能力存在、谁决定它们在某个会话
-中可用、运行时如何生效。它取代 v0.9.0 blocklist 时代的能力档案说明；
-canonical 工具族、白名单和执行安全细节以 `tool-governance.md` 为准。
+中可用、运行时如何生效。取代 `tool-governance.md`（v0.9.0 blocklist 时代；
+该文件内容尚未全部并入本文，迁移完成前以其为准的部分仍按原文件执行）与
+`skill-scope-governance-改动说明.md`（PR 验收记录，文件已随 #287 删除，
+内容已沉淀于此）。
 
-> **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
+> **落地状态**（2026-09-18）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
-> companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
+> companion 联动排除改由包模型现算（门控侧解析用 `bundle::skill_gating_owner`，
+> 物理嵌套感知，round-26 minor 11 精确化）。§3.1 的
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
@@ -60,7 +63,7 @@ canonical 工具族、白名单和执行安全细节以 `tool-governance.md` 为
 ### 3.1 数据模型：能力包（已定方向、未实施）
 
 > 现状：连接器与技能已收敛为单一 `disabled_bundles.json`（包 id × SessionMode，
-> §3.2），companion 技能按包模型归属（`bundle::skill_owner_package`）随所属包整体
+> §3.2），companion 技能按包模型归属（门控侧解析用 `bundle::skill_gating_owner`）随所属包整体
 > 上下线；下述统一「包」模型（含 `bundle_kind` 推导与「一个包 = 一个开关」）的其余
 > 部分（运行时工具名发现、内置 CLI 归并、统一失效入口）为目标设计，实施时以本节为准。
 
@@ -88,15 +91,44 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"] }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
-`initialized` 集合取代原 `code_initialized` 布尔。首个版本读取时把旧的
+`initialized` 集合取代原 `code_initialized` 布尔。`default_off_scopes`（评审
+R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）的条目：安装
+同步写 stored+本表，用户 disable 只写 stored，composer 整表写只保留本次
+**未触碰**（写前写后都在 off）条目的标记：已初始化 scope 按
+`previous ∩ new`；**首次写**（uninitialized DenyAll scope，`previous` 为空）
+按 round-13 B1 从**写前有效扩集 ∩ 新列表**播种——照字面执行
+`previous ∩ new` 会把每个首次默认都变成显式 opt-out、重新打破 round-13 B1
+cohort（round-33 minor 7 勘误）。随真正被切换的
+条目一起丢弃——它无法区分"谁关的"，只对能归因的条目不越权（round-12 自审）；
+批量 enable 的整批判拒只针对 stored 中**不在**本表
+的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
+不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
+同步账本：install/connect/startup 三个同步变体对观察到的每个 DenyAll
+scope × 包对各记一行，**scope 仍处于未初始化时同样记账**（round-32 MAJOR
+1：fresh home 上的连接发生在 plain 物化之前，不记账则用户的**首次**启用会
+在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填默认关行；用户
+enable 移除 stored 行但**保留**账本条目（使 enable 对 refresh 粘滞）；teardown
+（`remove_bundle_from_disabled_scopes_exact`）按 scope 键**精确匹配**清除该包
+全部条目（round-32 minor 1），重装/重连因此重新同步默认关。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
-连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 `bundle::skill_owner_package`
-映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），`skill:` 前缀跨文件借道
-残留统一剥除。旧文件本版本内保留为惰性历史（只读新文件），下个版本周期随旧布局退役。
+连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
+（`to_package_id` → `skill_gating_owner`：manifest 认领优先，物理嵌套回退；
+已知包 id 由盾牌直通——评审 #455 round-23 MINOR 1，避免同名技能目录劫持
+stored 包行）映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），
+`skill:` 前缀跨文件借道残留统一剥除。旧文件本版本内保留为惰性历史（只读新文件），下个版本周期随旧布局退役。
+旧文件**存在但不可消费**（读失败、损坏 JSON、形状非法/字段类型错误）时按严格解析判损坏而非
+「什么都没关」，走与统一文件损坏恢复同方向的 fail-closed：只冻结迁移标记、不初始化任何 scope
+（DenyAll 兜底保住丢失的显式禁用），旧文件原样保留供手工恢复——否则宽升级信号会把升级装机
+误初始化成 plain 空 = 全开并在首读永久冻结（评审 #455 round-34，恢复 main 严格解析语义）。
+升级时点的 legacy cohort 有一个**已披露的不对称**（评审 #455 round-32
+minor 7）：升级时在线的内置 CLI 连接器在首次启动由账本化 refresh 回填为
+默认关（连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原地保留
+live**——零 stored 行、零账本条目，也没有任何启动回填臂；同一"升级时在线"
+cohort 得到相反的默认姿态，此句即为二者的登记。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
@@ -110,27 +142,102 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   `marketplace-unification.md` §5.4）；
 - hidden 只决定包是否出现在 composer 列表，不决定 on/off；disabled 只决定
   开关态，不影响列表可见性；
-- 卸载走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden
+- 卸载清理走 **exact 形态** `remove_bundle_from_disabled_scopes_exact`（属主在拆除前快照，round-28 与实现对齐），同时清 disabled 与 hidden
   （防残留 hidden 误隐藏未来同名重装；ima 断开随技能卸载走同一入口）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
 - 连接器开关（`set_disabled_connectors`）复用同一写路径：按 scope 整表重写
   disabled 集（关闭写入、开启移除），两个方向都不动 hidden，也不经过卸载
-  清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见。
+  清理入口——被 `set_bundle_visibility` 显式隐藏的包，开关开回后仍不可见；
+  批量开启入口（`enable_packages_in_scope`，欢迎卡/场景的
+  `enable_marketplace_packages`）例外：未初始化 scope 物化「现算扩集 − 请求
+  id」，已初始化 scope 从落盘列表移除，并连带清 hidden（隐藏包即使开关打开也
+  看不到工具）；用户显式关掉的 id（非安装默认）整批拒绝、不改状态；
+- 回收站恢复过**恢复同意门**：恢复的包在已初始化 scope 重新落回默认禁用
+  （带安装默认标记，欢迎卡/场景 opt-in 可抬起）；**声明凭据的 MCP 包**
+  （manifest `secret_env`/`secret_headers` 任一非空、`config_fields` 含
+  `secret: true` 条目、或敏感命名的历史 `env` 键（`is_sensitive_key_name`，
+  round-28 补第四腿）——不限于技能组合包；bin 侧 manifest 副本不可读时同向
+  强制；与 recycle_bin 实现、marketplace-unification.md 对齐）在未初始化
+  scope 走强制变体物化同一门（防供给面零同意上线）；
+  门持久化失败
+  在消费回收站条目之前报错，恢复可重试。注意两个上报信号的方向（round-24
+  MAJOR 5 文档勘误，此前一句写反）：`blocked` 整批判拒只对**已初始化** scope
+  的落盘 opt-out 有定义（未初始化 scope 物化的是现算扩集，不存在可对抗的
+  落盘行）；`not_applied` 则**只由未初始化的现算扩集臂产生**——请求 id 不在
+  扩集中即上报；**已初始化** scope 没有等价信号，恒返回空（未知 id 视为
+  已开启且不上报——空 `not_applied` 在该状态下不是覆盖证明）。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
 
 | 模式 | 包默认策略 | 含义 |
 |---|---|---|
-| plain | AllowAll | 全开 |
+| plain | **DenyAll** | 全禁（工具开关全量收敛：外部能力一律显式开启） |
 | code | **DenyAll** | 全禁（外部能力显式开启，封泄露面/攻击面） |
+
+`PackDefaultPolicy::AllowAll` 变体已随收敛退役（仅保留枚举形态）。
+重新引入的判据：新模式必须在其模式文档中论证「默认放行外部能力」的
+同意模型（对齐本文件 §3.2 的显式开启原则），并给出该模式 DenyAll 化的
+迁移路径；未经此论证不得恢复任何模式的 AllowAll 默认。
+
+plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
+`scope.rs::load_disabled_bundles_file_locked`）：旧版文件（无
+`plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
+落盘列表——锁定升级前 AllowAll 语义下的真实开关状态（缺省空 = 全开），
+升级后用户无感；全新装机只置迁移标记不初始化，未初始化 plain 按 DenyAll
+兜底（默认全关）。「升级 vs 全新」的判定使用**宽口径升级信号**：三份开关
+相关文件皆无、但 `marketplace/installed.json` 或非空 `sessions/` 目录存在
+即视为升级装机——统一文件自 v0.8.6 起就存在且只在有内容可写时才落盘，
+老装机 + 从未动过开关的用户可能三者皆无。信号只检查这两条特定路径：家目录
+即使持有无关状态（`knowledge/`、`logs/` 等），只要二者皆无仍判全新。
+`settings.json` **不构成**信号（评审 #455 R8-3）：预置模板/跨机拷贝的
+settings.json 会把全新装机误判为升级（plain 全开，fail-open）。收窄**并非
+无遗漏**（评审 R11-M4）：真实老装机通常留有非空 `sessions/`，但被工具清空
+`sessions/`、又无 `installed.json` 与 legacy 文件的老装机会被误判全新——
+方向是 fail-closed（默认全关，可用性而非安全问题）；两类群体在无持久版本
+标记时不可区分（见 follow-up 注册表）。
+
+已知限制（进程内备忘的时效性，评审 #455 R9/R11）：freeze 落盘失败
+（`UNPERSISTED_VERDICT`）与损坏恢复覆盖写失败（`PENDING_CORRUPT_RECOVERY`）
+各有一个进程内备忘，命中即复用、不重复落盘尝试；任意一次成功落盘会清除
+对应备忘（文件回到合法 JSON）。备忘不跨进程持久——**重启后**若磁盘故障
+仍未恢复，首读会重新走对应分支。两个分支的重启方向**不同**（评审 R11-M4
+如实化）：损坏恢复的重跑是 fail-closed（重新隔离一次、内存全关兜底）；
+freeze 的重跑是 **fail-open**——重启后首读会用已存在的 `sessions/default`
+重新判定，全新装机被误判为升级 ⇒ plain 全开（正是 freeze 要防的翻转；
+进程内备忘只覆盖单次生命周期，跨重启的持久化即登记的
+crash-during-freeze durability follow-up，根治靠 settings 版本标记）。该信号会被应用自身首启行为污染（bridge
+boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
+上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
+早于一切首启自写），且判定在**首次读取时无条件落盘**（置
+`plain_defaults_migrated`）冻结——否则全新装机会被自己的首启痕迹误判为
+升级装机而翻回全开。文件损坏时不静默覆盖：先隔离为 `.corrupt.<ts>` 副本，
+再按 **fail-closed** 一次性恢复落盘——只置迁移标记（冻结为全新装机判定）、
+不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（宁可恢复全关，不把
+用户显式关过的状态恢复成全开）。隔离写失败时同样不覆盖，并布防
+unreadable-original 标记：后续任何写入先 rename-aside 保存仍未隔离的原始
+字节再落新状态（round-29 m1，评审 #455）——瞬时差分故障（隔离写失败、
+主写后成功）不再销毁唯一副本。
 
 用户数据语义（三条线一致）：
 
 - 某 scope 无记录 → 回落编译期默认（跟随产品演进）；
 - 用户首次 toggle 时物化整个 scope 列表落盘 → 此后冻结，默认调整不穿透
-  已做过选择的用户（`initialized` 集合标记初始化）；
+  已做过选择的用户（`initialized` 集合标记初始化）。**已知的权衡**：物化
+  的触发面比「显式开启」更宽——composer 开关**任一方向**的首次 toggle 都
+  走整表回写（纯关闭在语义上是 no-op，但同样固化当前扩集）；场景 opt-in /
+  欢迎卡批量开启（`enable_packages_in_scope`）也会物化其请求的那个 scope
+  （未初始化时落盘「现算扩集 − 请求 id」）。落盘的是当时的现算扩集（减去被
+  开启的 id）——此后应用更新新增的内置包不在落盘列表里，会在该 scope 默认
+  **开**。产品接受
+  此权衡：做过开关选择的用户视为已关注过该 scope 的外部能力面，新增包默认
+  开的暴露与旧 AllowAll 语义相当且范围更窄；若需反向收敛，走后续版本的全量
+  默认重置。边缘情形：
+  installed.json 读不出时，fail-closed 兜底扩集（全部可装包 ∪ 内置 CLI ∪
+  技能 owner 包）会在用户显式开启动作时被整体物化为该 scope 的落盘状态——
+  未来新增内置包同样默认开，属上述同一权衡的极端入口；
+
 - 未知条目（工具下架、上游改名残留）静默忽略，写回时清理。
 
 项目级技能（`.agents/skills` 等）保持**独立开关**、默认关：项目内文本是
@@ -222,20 +329,37 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 #279 遗留、按 `marketplace-unification.md` Phase 4 承诺登记于此：
 
 - **OAuth 远程包 readiness 恒 Ready**：远程 OAuth MCP 包（manifest `servers`
-  非空）没有必填凭据声明——`tool_credentials` 只收敛
-  `config_fields`/`secret_env`/`secret_headers`，不含 `servers`
-  （`bundle.rs`），而 `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
+  非空）没有必填凭据声明——`tool_credentials` 收敛全部三路声明
+  （`config_fields` 各条目按其 `required` 标记，`secret: false` 也计入；
+  `secret_env`；`secret_headers`），不含 `servers`（`bundle.rs`；round-28
+  MAJOR 2 勘误：round-27 m8 曾把「仅 secret:true」的 `manifest_secret_targets`
+  过滤误归到此函数——那是恢复同意门的凭据探测，另一条收敛路径），而
+  `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
   是否在系统凭据存储，因此远程包恒报 Ready。**无法用 readiness 门控 OAuth
   授权是否完成**；授权态由 `connect`（flow=oauth）流程自理，UI 只能依赖
   `oauth` 标记打徽标，不能给「未授权」态。
-- **`tool_credentials` / `tool_config_fields` 不按 (key, target) 去重**：
-  两个收敛函数把 `config_fields`、`secret_env`、`secret_headers` 三路声明
-  简单拼接（`bundle.rs`），同一 `(key, target)` 在多路重复声明时会重复出现在
-  `BundleInfo.credentials` / `config_fields` 中，凭据收集弹窗与缺失判定可能
-  重复处理同一凭据。
 
-另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
-CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
+另有三条限制已随文或在此登记：
+
+- **丢失存储臂（round-30 m4，评审 #455）**：`installed.json` 被**删除**（非损坏——损坏已
+  fail-closed）且 `mcp.json` 仍记有 server 条目时，`read_installed` 把 NotFound 判为
+  「确认空注册表」，registry 腿为空而磁盘腿对纯 MCP 包失明 ⇒ 未初始化 plain scope 中
+  该包工具被放行。**round-31 m9 更正：该开口与模式无关**（expansion 对
+  plain/code 同构，`session_mode.rs`）——未初始化 **code** scope 同样受影响，非
+  plain 独有。触发需外部破坏存储文件；与 `sessions/` 信号的丢失处置不对称
+  （后者有 `.corrupt.*`/`.unreadable.*` 兄弟证据的 fail-closed 恢复臂，scope.rs
+  丢失存储恢复——该分支**刻意跳过 legacy 迁移**，兄弟证据证明统一期存储存在过，
+  其搁置的判定不可知，宁全关不翻全开）。收敛方向：NotFound 时从 `mcp.json` 重建
+  id，或在此登记为外部破坏下的已知限制（现按后者登记）。§7 清单同时补记
+  **companion 技能同意同步失败**（round-31 m9 登记、round-33 MAJOR 1 关闭）：
+  install 流的 post-install companion 腿曾按 log-only 吞掉同步失败
+  （round-32 minor 12 更正过定位）；round-33 MAJOR 1 后该例外**已关闭**——
+  仅当伴随 id 归一化等于工具自身包 id（可证明已被工具级同步覆盖）才跳过，
+  其余（known-pack-shield 边缘的真实写入）以 `?` 传播、命令失败且错误文案
+  携带前端共享标记 `CONSENT_SYNC_FAILURE_MARKER`；**uninstall 事务内的
+  companion 循环自始以 `?` 传播**。
+- 会话中关闭的上下文不可撤回边界（§3.3 末）、
+  CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
 
 ## 8. 相关文件
 

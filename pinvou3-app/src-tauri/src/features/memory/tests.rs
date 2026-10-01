@@ -15,8 +15,9 @@ use crate::platform::prefs::ModelPreset;
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
     enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
-    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
-    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    pending_item_from_suggestion, recent_activity_path,
+    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -24,7 +25,7 @@ use super::llm_review::{
     LLM_REVIEW_PROMPT_TEMPLATE, append_memory_review_diagnostic_to, apply_llm_memory_review,
     apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
     has_explicit_remember_signal, has_memory_review_signal, memory_review_error_stage,
-    parse_llm_memory_review, sanitize_llm_memory_item,
+    memory_review_request_body, parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::{render_from_parts, render_memory_block};
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -1128,6 +1129,53 @@ fn llm_review_prompt_matches_supported_actions() {
     );
     assert!(!LLM_REVIEW_PROMPT_TEMPLATE.contains("archive"));
     assert!(!LLM_REVIEW_PROMPT_TEMPLATE.contains("must_create_recent_activity"));
+}
+
+/// The memory one-shot body must mirror the engine wire (no temperature): a
+/// hard-coded 0 400s on sampling-pinned gateways (Kimi Coding Plan, live
+/// 2026-09-30: only 1 is allowed for this model).
+#[test]
+fn memory_review_request_body_mirrors_engine_wire_no_temperature() {
+    let body = memory_review_request_body("k3", "sys prompt", "user content", 900);
+    assert!(
+        body.get("temperature").is_none(),
+        "aux memory body must mirror the engine wire (no temperature)"
+    );
+    assert_eq!(body["model"], "k3");
+    assert_eq!(body["max_tokens"], 900);
+    assert_eq!(body["stream"], false);
+    assert_eq!(body["response_format"]["type"], "json_object");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][0]["content"], "sys prompt");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], "user content");
+}
+
+/// Pin the call site, not just the builder: the pin above goes red when
+/// `memory_review_request_body` itself changes, but a re-inlined body inside
+/// `send_memory_llm_request` would bypass it silently. The request region
+/// must build through the shared builder and must not carry a sampling
+/// parameter (the Kimi Coding Plan gateway rejects client temperature).
+#[test]
+fn send_memory_llm_request_call_site_builds_body_through_builder() {
+    let source = include_str!("llm_review.rs");
+    let start = source
+        .find("async fn send_memory_llm_request")
+        .expect("send_memory_llm_request definition present");
+    let region = &source[start
+        ..source[start..]
+            .find("pub(super) fn memory_review_request_body")
+            .expect("memory_review_request_body definition present")
+            + start];
+    assert!(
+        region.contains("memory_review_request_body("),
+        "send_memory_llm_request must build its body via \
+         memory_review_request_body"
+    );
+    assert!(
+        !region.contains("\"temperature\""),
+        "the memory request region must not re-inline a temperature field"
+    );
 }
 
 /// The memory review prompt body carries no language constraint of its own; the
@@ -3527,4 +3575,101 @@ fn organize_report_serializes_snake_case_for_frontend() {
     let serialized = serde_json::to_string(&report).unwrap();
     assert!(serialized.contains("\"started_at\""));
     assert!(!serialized.contains("startedAt"));
+}
+
+/// `archive_recent_work` flips the status in place (the item survives), is
+/// idempotent, and reports `false` for an id it cannot find.
+#[test]
+fn archive_recent_work_archives_in_place_and_is_idempotent() {
+    let _home = IsolatedPinvouHome::new("recent-work-archive");
+    let now = Utc::now();
+    let item = RecentWorkItem {
+        id: "rw_fixture".to_string(),
+        title: "Refactor session store".to_string(),
+        summary: "split sidecars from the boot map".to_string(),
+        status: "active".to_string(),
+        source: "test".to_string(),
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+        last_hit: now.to_rfc3339(),
+        expires_at: (now + Duration::days(7)).to_rfc3339(),
+    };
+    {
+        let _guard = write_lock().lock();
+        write_recent_work_unlocked(std::slice::from_ref(&item)).unwrap();
+    }
+
+    assert!(archive_recent_work(&item.id).unwrap());
+    let items = load_recent_work().unwrap();
+    assert_eq!(items.len(), 1, "archiving keeps the item");
+    assert_eq!(items[0].status, "archived");
+    assert!(
+        !archive_recent_work(&item.id).unwrap(),
+        "re-archiving an already-archived item reports no change"
+    );
+    assert!(
+        !archive_recent_work("no-such-id").unwrap(),
+        "archiving an absent id reports no change"
+    );
+}
+
+/// `archive_recent_work` archives an id in every store it appears in: the
+/// legacy recent-work store and both timed stores. A match in one store must
+/// not short-circuit the others.
+#[test]
+fn archive_recent_work_archives_the_id_in_every_store() {
+    let _home = IsolatedPinvouHome::new("archive-every-store");
+    let now = Utc::now();
+    let timed = |kind: &str| super::types::TimedMemoryItem {
+        id: "shared-id".to_string(),
+        kind: kind.to_string(),
+        topic: "topic".to_string(),
+        text: "text".to_string(),
+        source: String::new(),
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+        last_hit: now.to_rfc3339(),
+        ttl_days: 21,
+        status: "active".to_string(),
+    };
+    let work = RecentWorkItem {
+        id: "shared-id".to_string(),
+        title: "title".to_string(),
+        summary: String::new(),
+        status: "active".to_string(),
+        source: "test".to_string(),
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+        last_hit: now.to_rfc3339(),
+        expires_at: (now + Duration::days(7)).to_rfc3339(),
+    };
+    {
+        let _guard = write_lock().lock();
+        write_recent_work_unlocked(std::slice::from_ref(&work)).unwrap();
+        write_timed_memory_file(
+            &current_focus_path(),
+            &[timed("current_focus")],
+            "current_focus",
+        )
+        .unwrap();
+        write_timed_memory_file(
+            &recent_activity_path(),
+            &[timed("recent_activity")],
+            "recent_activity",
+        )
+        .unwrap();
+    }
+
+    assert!(archive_recent_work("shared-id").unwrap());
+    assert_eq!(load_recent_work().unwrap()[0].status, "archived");
+    assert_eq!(
+        load_current_focus().unwrap()[0].status,
+        "archived",
+        "the current_focus copy must be archived even though recent work matched"
+    );
+    assert_eq!(
+        load_recent_activity().unwrap()[0].status,
+        "archived",
+        "the recent_activity copy must be archived too"
+    );
 }

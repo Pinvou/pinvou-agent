@@ -63,7 +63,8 @@
 
 - **存储层 `BundleRecord`**（bundles.json，唯一可写）：id / source
   （`preset` | `upload:<zip名>` | 内置快照 + 内容指纹）/ installed（资源缺失时置
-  `degraded` 并记原因）/ 内容指纹 / 安装时间。
+  `degraded` 并记原因）/ 内容指纹 / assets 引用（kind + name + version + sha256；
+  读不懂的条目原样保留，不致整文件加载失败）/ 安装时间。
 - **查询层 `BundleInfo`**（现算投影，不落盘）：在现有 `bundle.rs:215` 基础上演进：
   - `components: { mcp_servers, skills, cli }`，后续扩展 `commands` / `hooks`；
   - `kind` 由内容现算（沿用 `derive_bundle_kind`，防自报标签提权）；
@@ -130,8 +131,12 @@ disconnect / uninstall…），每个动作带可用性与原因；
    双份物理副本，后续技能卸载的候选目录清理会连唯一副本一起删；恢复供给
    （install_upload）失败则整体回滚到回收站（目录搬回 + 清单条目复原 + 登记
    移除），可修复后重试，不残留「记录已安装、无供给面、无从重试」的半恢复态；
-   恢复有意跳过新装的 DenyAll 默认禁用同意门（恢复是对既有安装的撤销回退，
-   回到卸载前启用态，而非新装的默认禁用）。「市场预置包
+   恢复过**恢复同意门**（review #455 R5-m5 / R9-M2，round-23 MAJOR 2 文档对齐）：
+   恢复的包在已初始化的 DenyAll scope 重新落回默认禁用（带安装默认标记，欢迎卡/
+   场景 opt-in 可抬起），任何声明凭据的包（含组合包与 bin 侧清单不可读的 MCP
+   条目）在未初始化 scope 走强制变体物化同一门（防供给面零同意上线）；门的
+   持久化失败在消费回收站条目**之前**报错，
+   恢复可重试，不残留半恢复态。「市场预置包
    不导出」由 `list_marketplace_tools.exportable=false` 下发，前端据此隐藏详情页
    导出按钮（与后端拒绝口径一致，避免必然报错的入口）；预置技能名同口径拒绝导出，
    组合包的伴随技能卡按所属包的 `exportable` 隐藏按钮（纯预置技能卡一律隐藏——

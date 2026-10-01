@@ -4,6 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
+import { sceneStatusKey } from './scene_status_key.js';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
@@ -160,6 +161,7 @@ import {
   pinvouSceneTag,
 } from './scene-registry.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
+import { consumeWelcomeOptIn, resolveSendCapabilityStatus, runSharedWelcomeOptIn } from './welcome-optin.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -310,7 +312,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  {t.uiChat.ready}
+                  {/* The install path deliberately keeps the switch off (DenyAll
+                      convergence), so "Ready" would be a lie; describe it truthfully
+                      and complete the opt-in on the first question (review #455 R7-M4). */}
+                  {t.uiChat.installedReady}
                 </div>
               </div>
             </div>
@@ -679,6 +684,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [designCommand, setDesignCommand] = useState(null);
       const [designAiState, setDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
       const [sceneCapabilityStatus, setSceneCapabilityStatus] = useState(null);
+      // Round-32 minor 10 (review #455): per-toast epoch — the session key
+      // above discriminates sessions/drafts, not two sends in ONE session, so
+      // a stale auto-clear timeout could shorten a newer send's ready toast.
+      // Each ready toast stamps the next epoch; its closer only clears the
+      // exact epoch it scheduled.
+      const sceneReadyToastEpochRef = useRef(0);
       const designAiSessionRef = useRef(null);
       const updateDesignAiState = useCallback((valueOrUpdater) => {
         setDesignAiState((prev) => {
@@ -1348,6 +1359,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      // sendChatMessage's useCallback must not depend on welcomeToolId (avoids
+      // identity-churn rebuilds); the free-input path consumes the current
+      // welcome pack through this ref (review #455 R8-2).
+      const welcomeToolIdRef = useRef(null);
+      // Round-16 minor 13: in-flight welcome opt-in attempt ({ toolId,
+      // promise } | null) shared across concurrent sends — a send arriving
+      // during the first enable's await window joins it instead of no-op'ing
+      // and later clearing the first send's failure banner.
+      const welcomeOptInAttemptRef = useRef(null);
       const welcomeSessionKeyRef = useRef(null);
       // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
@@ -1648,6 +1668,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return () => window.removeEventListener('pinvou:present-artifact', onPresentArtifact);
       }, [activeSessionId, showArtifactsPreview]);
       const draftEpoch = bs ? bs.draftEpoch : 0;
+      // Round-31 m5 (review #455): the async send-flow guards compare the
+      // CURRENT draft epoch at write time; the callback closure would go
+      // stale, so mirror the epoch in a ref (same pattern as
+      // activeSessionIdRef above).
       // Capability preparation and first-turn materialization can outlive the
       // originating voice composer; the dispatch guard compares the live epoch
       // at await boundaries (a ref, not the render value).
@@ -1679,6 +1703,54 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {
         if (!bridge.available) return false;
+        // Round-29 m8 (review #455): this flow awaits IPC between status
+        // writes — a slow welcome enable settling after a session switch
+        // must not render its banner (or ready toast) on the wrong
+        // session's composer. Capture the session at send start and let
+        // only same-session writes through; the switch effect clears the
+        // slot outright. Round-31 m5: the key is the FULL session identity
+        // (`session:draftEpoch`, the exact key the welcome-card reset
+        // builds) — drafts are both `null` for activeSessionId, so a send
+        // in flight from draft D1 could otherwise still paint into fresh
+        // draft D2 (a new-chat click bumps the epoch while the session id
+        // stays null→null).
+        const sceneStatusSession = sceneStatusKey(activeSessionIdRef.current, draftEpochRef.current);
+        const sceneStatusKeyNow = () =>
+          sceneStatusKey(activeSessionIdRef.current, draftEpochRef.current);
+        const setSceneStatusForSession = (status) => {
+          if (sceneStatusKeyNow() === sceneStatusSession) {
+            setSceneCapabilityStatus(status);
+          }
+        };
+        // Both welcome-card send paths (sample-question click / free input)
+        // complete the opt-in here (review #455 R8-2; logic extracted into
+        // welcome-optin.js for direct testing): failure must not block the
+        // send but must stay fail-visible — banner notice + console trace
+        // (review #455 R9-M4); the tool's absence is likewise visible in the reply.
+        const welcomeOptIn = await runSharedWelcomeOptIn(welcomeOptInAttemptRef, {
+          toolId: welcomeToolIdRef.current,
+          run: () => consumeWelcomeOptIn({
+            getToolId: () => welcomeToolIdRef.current,
+            consume: () => {
+              welcomeToolIdRef.current = null;
+              setWelcomeToolId(null);
+            },
+            invoke: invokeTauri,
+          }),
+        });
+        if (welcomeOptIn.failed) {
+          console.warn("[pinvou3][chat-ui] welcome-card opt-in failed:", welcomeOptIn.error);
+        }
+        if (welcomeOptIn.blocked && welcomeOptIn.blocked.length) {
+          // The welcome pack was explicitly switched off by the user: abort the
+          // send with guidance (same contract as the scene blocked path,
+          // round-10 Major 2) instead of sending a reply without the tool.
+          setSceneStatusForSession({
+            kind: 'error',
+            text: t.uiChatScenes.switchedOffPacks(welcomeOptIn.blocked.join(', ')),
+          });
+          return false;
+        }
         const outgoing = String(text || '').trim();
         const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
         const templateId = personalWorkbenchTemplateIdRef.current
@@ -1700,41 +1772,93 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // a dispatched send can never settle its operation as accepted.
         if (voiceMeta && voiceMeta.voiceOperationId != null) meta = Object.assign({}, meta, voiceMeta);
         const requirements = requiredCapabilitiesForMeta(meta);
+        // The scene block resolves its status into a local; the single
+        // setSceneCapabilityStatus below combines it with the welcome opt-in
+        // result — an earlier welcome-error set would be batched away by any
+        // later synchronous set in the same run (round-10 Major 1).
+        let sceneStatus = null;
+        let readyAutoClear = false;
         if (requirements) {
           const sceneCopy = t.uiChatScenes[requirements.key];
           if (canPrepareSceneCapabilities({ isWebHost: isWeb, dependencyInstallAvailable: can('dependencyInstall') })) {
-            setSceneCapabilityStatus({ kind: 'preparing', text: sceneCopy.preparing });
+            setSceneStatusForSession({ kind: 'preparing', text: sceneCopy.preparing });
             try {
               const prepared = await prepareSceneCapabilities(meta, invokeTauri);
               if (!prepared.ok) {
-                const missing = prepared.missing && prepared.missing.length
-                  ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
-                  : '';
-                throw new Error(missing || sceneCopy.failure);
+                // Round-11 m8: the banner carries translated copy only — raw
+                // backend/IPC error strings are diagnostics, traced to the
+                // console instead of rendered untranslated to the user.
+                if (prepared.error) {
+                  console.warn('[pinvou3][chat-ui] scene capability prepare failed:', prepared.error);
+                }
+                // Round-16 minor 13: notApplied (installed but matched no
+                // expansion entry) gets its own retry-inviting copy — the
+                // missingCapabilities branch would invite a reinstall that
+                // cannot help.
+                const detail = prepared.blocked && prepared.blocked.length
+                  ? t.uiChatScenes.switchedOffPacks(prepared.blocked.join(', '))
+                  : (prepared.notApplied && prepared.notApplied.length
+                    ? t.uiChatScenes.notAppliedPacks(prepared.notApplied.join(', '))
+                    : (prepared.missing && prepared.missing.length
+                      ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
+                      : ''));
+                // Round-13 m2: the welcome card is one-shot — if its opt-in
+                // failed, a later resend never re-attempts it, so the welcome
+                // failure must win over the scene failure copy here (the
+                // scene preflight re-runs and resurfaces on the next send;
+                // the welcome failure otherwise never surfaces at all).
+                setSceneStatusForSession({
+                  kind: 'error',
+                  text: welcomeOptIn.failed
+                    ? t.uiChat.welcomeOptInFailed
+                    : (detail || sceneCopy.failure),
+                });
+                return false;
               }
-              // 自动安装与自动就地开启（隐藏/禁用 → 可用）都是对用户治理状态
-              // 的变更：必须给 ready 提示，不得静默改写。
-              if (prepared.installed || prepared.reEnabled) {
-                setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
-                window.setTimeout(() => setSceneCapabilityStatus((current) => (
-                  current && current.kind === 'ready' ? null : current
-                )), 1800);
-              } else {
-                setSceneCapabilityStatus(null);
+              // Post-DenyAll, ready means installed or explicitly opted back
+              // in: a pack gated off by default completes its opt-in here and
+              // gets the same enabled toast (#455 R5-B3).
+              if (prepared.installed || prepared.optedIn) {
+                sceneReadyToastEpochRef.current += 1;
+                sceneStatus = {
+                  kind: 'ready',
+                  text: sceneCopy.ready,
+                  toastEpoch: sceneReadyToastEpochRef.current,
+                };
+                readyAutoClear = true;
               }
+              // else: leave the local null — nothing to show.
             } catch (error) {
-              const message = error && error.message ? error.message : String(error || '');
-              setSceneCapabilityStatus({
+              // Unexpected invoke/transport failure: same rule (m8) — the raw
+              // error goes to the console, the banner gets translated copy.
+              // Round-13 m2: welcome failure wins here too (same rationale as
+              // the prepared-not-ok branch above).
+              console.warn('[pinvou3][chat-ui] scene capability prepare raised:', error);
+              setSceneStatusForSession({
                 kind: 'error',
-                text: message ? `${sceneCopy.failure} ${message}` : sceneCopy.failure,
+                text: welcomeOptIn.failed
+                  ? t.uiChat.welcomeOptInFailed
+                  : sceneCopy.failure,
               });
               return false;
             }
-          } else {
-            setSceneCapabilityStatus(null);
           }
-        } else {
-          setSceneCapabilityStatus(null);
+        }
+        setSceneStatusForSession(resolveSendCapabilityStatus({
+          welcomeFailed: welcomeOptIn.failed,
+          welcomeText: t.uiChat.welcomeOptInFailed,
+          sceneStatus,
+        }));
+        if (readyAutoClear) {
+          // The session guard inside the timeout keeps this stale closer
+          // from clearing a NEWER session's fresh ready toast.
+          window.setTimeout(() => setSceneCapabilityStatus((current) => (
+            current && current.kind === 'ready'
+              && current.toastEpoch === sceneStatus.toastEpoch
+              && sceneStatusKeyNow() === sceneStatusSession
+              ? null
+              : current
+          )), 1800);
         }
         if (!activeSessionId) {
           pendingModeScopeMigrationRef.current = {
@@ -1908,22 +2032,46 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // via useOutsidePointerClose (passed in via onCloseAsrPopover); the view no longer
       // attaches duplicate listeners.
       useEffect(() => {
-        const sessionKey = `${activeSessionId || 'draft'}:${draftEpoch}`;
+        const sessionKey = sceneStatusKey(activeSessionId, draftEpoch);
         if (justInstalledTool) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);
+          welcomeToolIdRef.current = justInstalledTool;
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
         } else if (welcomeSessionKeyRef.current && welcomeSessionKeyRef.current !== sessionKey) {
           setWelcomeToolId(null);
+          welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
+          // Round-2 review: drop any in-flight opt-in attempt slot from the
+          // previous session — a send in a new card-less session must never
+          // join it (it would inherit the previous pack's failure banner).
+          welcomeOptInAttemptRef.current = null;
         }
-        // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
-        // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
-        // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
-        // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+        // justInstalledTool stays in the deps (a one-shot directive; parent
+        // rerenders do not retrigger: the effect clears it immediately via
+        // setJustInstalledTool(null), and re-entry takes the else branch, which
+        // only clears the card on session-key change). Deps: activeSessionId
+        // (session switch) + draftEpoch (incremented per "New chat" click) — the
+        // latter forces re-evaluation even when "New chat" is clicked again
+        // while already in draft state (activeSessionId stays null→null);
+        // otherwise a leftover tool card would displace the "Hello" greeting.
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: setJustInstalledTool is a parent one-shot directive callback; adding it would retrigger clearing on parent rerenders
       }, [justInstalledTool, activeSessionId, draftEpoch]);
+
+      // Round-29 m8 + round-30 m8 (review #455): clear the per-send
+      // scene-capability banner/toast on session switch AND on "New chat"
+      // while already in draft (draftEpoch increments on the click while
+      // activeSessionId stays null→null — the exact case the welcome-card
+      // reset above documents), so a settled banner never bleeds into the
+      // next conversation or the fresh draft. Async writers are additionally
+      // suppressed by their send-start session guard inside sendChatMessage
+      // (a slow welcome enable settling after the switch would otherwise
+      // re-render here).
+      useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the per-send banner/toast when the session or draft epoch changes (same reset family as the design-element and back-to-bottom resets)
+        setSceneCapabilityStatus(null);
+      }, [activeSessionId, draftEpoch]);
 
 
       // chip 显示当前会话绑定的模型:切会话/草稿时刷新 currentSessionModelId
@@ -2732,11 +2880,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   toolId={welcomeToolId}
                   t={t}
                   onSend={(q) => {
-                    setWelcomeToolId(null);
-                    // sendChatMessage's failure path re-throws (the current
-                    // implementation never rejects, but stay consistent with
-                    // handleSend's defense so it cannot become a floating
-                    // rejection later).
+                    // opt-in is unified inside sendChatMessage (R8-2: chip and
+                    // free input share one path); this handler only sends. Note
+                    // (round-25 minor 7): unlike handleSend, the chip path does
+                    // NOT restore the blocked-abort draft — that gap is the
+                    // registered chip-prefill item, not an intended match.
                     Promise.resolve(sendChatMessage(q)).catch((err) => {
                       console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
                     });
@@ -3089,7 +3237,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         ? 'bg-[#34A853]'
                         : 'bg-[#1A73E8] animate-pulse'
                   }`} />
-                  <span className="min-w-0 truncate">{sceneCapabilityStatus.text}</span>
+                  {/* Round-11 m14: no truncate — blocked id lists must stay
+                      fully readable (the actionable part was ellipsized). */}
+                  <span className="min-w-0 break-words">{sceneCapabilityStatus.text}</span>
                 </div>
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (

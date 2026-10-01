@@ -184,27 +184,42 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
     let project = create(&store, "待删", &[abs("x")]);
     let other = create(&store, "幸存", &[abs("y")]);
 
-    store
+    let assigned = store
         .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign s1");
     store
         .move_session_to_project("s2", Some(&project.id), None)
         .expect("assign s2");
+    // s10 用的 id 在字符串排序里落在 s2 前面,用来钉住汇报的确定性排序
+    // (跨进程消费者按其顺序回显,不能随 HashMap 迭代漂移)。
+    store
+        .move_session_to_project("s10", Some(&project.id), None)
+        .expect("assign s10");
     // s3 显式移出:语义是"不进任何项目",与目标项目存亡无关。
     store
         .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
-    store
+    let moved_out = store
         .move_session_to_project("s3", None, None)
         .expect("move s3 out");
     store
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
+    // 归属结果回显目标项目;显式移出回显 None——跨进程消费者按字段
+    // 原样回显,这里钉住取值,防止构造函数退化为恒 None 还全绿。
+    assert_eq!(assigned.project_id, Some(project.id.clone()));
+    assert_eq!(moved_out.project_id, None);
 
-    store.delete_project(&project.id).expect("delete project");
+    let report = store.delete_project(&project.id).expect("delete project");
+    // s3 已显式移出、s4 属于别的项目:受影响的只有 s1/s2/s10,且按字典序。
+    assert_eq!(
+        report.affected_session_ids,
+        vec!["s1".to_string(), "s10".to_string(), "s2".to_string()]
+    );
 
     assert_eq!(store.assignment_of("s1"), None);
     assert_eq!(store.assignment_of("s2"), None);
+    assert_eq!(store.assignment_of("s10"), None);
     // s3 的显式移出条目保留,不被删除项目连带清理。
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));

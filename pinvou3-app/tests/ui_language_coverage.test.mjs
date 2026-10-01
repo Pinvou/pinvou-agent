@@ -374,7 +374,7 @@ for (const language of ['zh', 'en', 'ja']) {
 // cli_data_access_disabled is dingtalk's org-level CLI block: only an org
 // admin can fix it, so the copy carries the remediation instead of the
 // generic retry advice.
-const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'cli_data_access_disabled', 'unknown'];
+const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'cli_data_access_disabled', 'consent_persist_failed', 'unknown'];
 for (const language of ['zh', 'en', 'ja']) {
   for (const code of connectorErrorCodes) {
     const copy = dict[language].uiToolStore.connectorErrors[code];
@@ -386,6 +386,20 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const retired of ['connFailed', 'dingtalkSkillsFailed', 'tmeetAuthIncomplete']) {
     assert.equal(dict[language].uiToolStore[retired], undefined, `${language}.uiToolStore.${retired} is replaced by connectorErrors`);
   }
+  // Round-37 F1 (review #455): presence guards for the keys whose deletion
+  // previously failed nothing — dropping one from a locale must fail now.
+  for (const key of ['installedReady', 'welcomeOptInFailed']) {
+    assert.equal(typeof dict[language].uiChat[key], 'string', `${language}.uiChat.${key} must exist and not be empty`);
+    assert.ok(dict[language].uiChat[key].length > 0, `${language}.uiChat.${key} must not be empty`);
+  }
+  for (const key of ['switchedOffPacks', 'notAppliedPacks']) {
+    assert.equal(typeof dict[language].uiChatScenes[key], 'function', `${language}.uiChatScenes.${key} must exist`);
+  }
+  assert.equal(
+    typeof dict[language].uiToolStore.connectorErrors.consent_persist_failed,
+    'string',
+    `${language}.uiToolStore.connectorErrors.consent_persist_failed must exist and not be empty`
+  );
 }
 // The render lookup must resolve own keys only: `constructor`/`toString` pass the
 // snake_case code pattern but would resolve to Object.prototype functions.

@@ -142,6 +142,14 @@ impl Pinvou3Bundle {
         // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
         // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
         self.cleanup_removed_marketplace_skills()?;
+        // Round-32 minor 6 (review #455): resolve import-crash residue BEFORE
+        // any other cleanup walks bundles_root — a crashed import's landed dir
+        // must be quarantined, not admitted live-by-absence with zero consent
+        // (nor swept by a later cleanup). Best-effort: a failure is logged and
+        // retried next boot.
+        if let Err(e) = crate::features::marketplace::plugin_import::reconcile_import_journal() {
+            log::warn!("[runtime-bundle] import-crash journal reconciliation failed: {e}");
+        }
         // 已从工具市场下架的预置 MCP 工具也要清理运行态残留;否则旧 manifest 仍会被
         // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
         self.cleanup_removed_marketplace_tools()?;
@@ -477,19 +485,38 @@ impl Pinvou3Bundle {
             // Fail-closed like the uninstall path's `source_may_be_upload`: an
             // unreadable store means "may be an upload" → skip the cleanup
             // entirely (its last step deletes `bundles/<id>` wholesale).
-            let user_uploaded = crate::features::marketplace::store::BundleStore::new()
-                .records()
-                .map(|records| {
-                    records.iter().any(|r| {
-                        r.id == tool_id
-                            && matches!(
-                                r.source,
-                                crate::features::marketplace::store::BundleSource::Upload(_)
-                            )
-                    })
-                })
-                .unwrap_or(true);
+            let user_uploaded = Self::user_upload_record_exists(tool_id);
             if !user_uploaded {
+                // Round-32 minor 4 (review #455): the id's import lock (the
+                // same lock the import path serializes its landing under) is
+                // held from here down — the top probe above is pre-lock and
+                // advisory only; the LOAD-BEARING piece is the under-lock
+                // re-check below (the round-31 m4 lock covered only the final
+                // re-probe + delete pair, so an Upload import completing
+                // between the top probe and the uninstall still got its
+                // just-landed pack recycled wholesale by that uninstall).
+                let import_lock =
+                    crate::features::marketplace::plugin_import::import_lock_for(tool_id);
+                let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+                // The pre-lock probe above may have read a no-record store
+                // while an import for the same id was mid-landing (it had not
+                // committed when the probe ran, and holds this very lock
+                // until it does). Re-check under the lock before any
+                // destructive step, same defer-with-retry contract as the
+                // deletion-point arm below.
+                if Self::user_upload_record_exists(tool_id) {
+                    log::warn!(
+                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id is \
+                         present under the import lock; keeping bundles/<id> and deferring the \
+                         residue sweep to the next startup"
+                    );
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "retired_tool_cleanup:deferred",
+                        "upload-record present under import lock",
+                    );
+                    return Ok(());
+                }
                 // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
                 // installed.json / mcp.json(manifest 声明 secret_targets 时还会清
                 // 系统 keyring),不值得每次启动都实例化 MarketplaceManager 跑一遍。
@@ -511,7 +538,28 @@ impl Pinvou3Bundle {
                 // 两段式同型)。uninstall 成功时其内部清理已覆盖本步,这次幂等复扫是
                 // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
                 // 留着会让未来同名重装被误隐藏(#522)。
-                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(tool_id);
+                //
+                // Fail-visible (round-17 minor 1): the helper propagates persist
+                // failures (#571) — a stale entry would resurrect the retired
+                // tool inside the scope. This cleanup segment as a whole stays
+                // best-effort (the outer signature is io::Error and the
+                // surroundings are `let _ =`), so a failure is logged loudly
+                // instead of aborting the retirement.
+                // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id, and
+                // on a retry boot its dir may already be gone (the previous
+                // boot uninstalled it but failed this cleanup persist) — the
+                // normalized form's gating fallback could re-own the absent id
+                // onto a foreign pack's claim and erase THAT pack's consent
+                // rows. Exact removal targets only the retired pack's rows.
+                if let Err(e) =
+                    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(
+                        tool_id,
+                    )
+                {
+                    log::warn!(
+                        "[runtime-bundle] persisting the post-retirement switch/visibility cleanup for {tool_id} failed (a stale entry would resurrect the retired tool in the scope): {e}"
+                    );
+                }
                 if let Some(error) = uninstall_error {
                     // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
                     // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。
@@ -534,10 +582,61 @@ impl Pinvou3Bundle {
                 // 搬进 bundles/<id>/mcp/，而 uninstall 的 can_redeliver=false 规则
                 // （非内嵌 id 不可重释放）保留包目录——不删则 manifest 存活、退役
                 // 工具以「自定义 MCP 卡」复活（G8a）。Upload 保护已在上方判定。
+                // Round-30 m5 (review #455): the top probe is checked ONCE, but
+                // a same-id Upload import can land in the window (the uninstall
+                // above is not instantaneous) — deleting wholesale at this
+                // point would destroy the user's unique uploaded copy, the
+                // exact loss the guard exists to prevent. Re-probe AT the
+                // deletion point, fail-closed on an unreadable store (same
+                // `source_may_be_upload` direction as the top probe): keep
+                // `bundles/<id>` and defer the residue sweep to the next
+                // startup, the same defer-with-retry contract as the
+                // uninstall-deferred arm above.
+                // Round-31 m4 (review #455), reworked by round-32 minor 4:
+                // the re-probe alone was check-then-act, and holding the
+                // import lock only here left the uninstall itself outside —
+                // an Upload import completing before this point still lost
+                // its just-landed pack to the uninstall above. The lock is
+                // now held from the decision top; this re-probe + defer arm
+                // stays as defense-in-depth for any path that ever reaches
+                // the delete without the full-span lock.
+                if Self::user_upload_record_exists(tool_id) {
+                    log::warn!(
+                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id \
+                         appeared during cleanup; keeping bundles/<id> and deferring the \
+                         residue sweep to the next startup"
+                    );
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "retired_tool_cleanup:deferred",
+                        "upload-record appeared mid-cleanup",
+                    );
+                    return Ok(());
+                }
                 let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
             }
         }
         Ok(())
+    }
+
+    /// Upload-record probe (shared verdict for the retired-id protection,
+    /// round-30 m5): an Upload record exists → true; the store is unreadable
+    /// → true (fail-closed, same direction as the uninstall path's
+    /// `source_may_be_upload`: when it cannot be read, treat it as a possible
+    /// upload).
+    fn user_upload_record_exists(tool_id: &str) -> bool {
+        crate::features::marketplace::store::BundleStore::new()
+            .records()
+            .map(|records| {
+                records.iter().any(|r| {
+                    r.id == tool_id
+                        && matches!(
+                            r.source,
+                            crate::features::marketplace::store::BundleSource::Upload(_)
+                        )
+                })
+            })
+            .unwrap_or(true)
     }
 
     /// 探测已下架 marketplace 工具是否还有任何残留清理面:安装目录、installed.json、

@@ -34,9 +34,8 @@
 //! `clean -fd` 删除快照后新建的文件；恢复前先自动打一个「回滚点」快照，回滚可反悔。
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -48,6 +47,15 @@ pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;
+/// Cap on the diff preview's patch text (truncated beyond it; the `changes`
+/// list is unaffected).
+///
+/// Module-private on purpose: the cap is applied where the patch is produced
+/// and the `patchTruncated` flag travels with the data, so a patch renderer
+/// never needs this constant. Keep it private unless a consumer actually
+/// imports it — a speculative `pub` here is how a surface the dead-code
+/// cleanups removed comes back without a reader.
+const DIFF_PATCH_LIMIT: usize = 512 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -144,12 +152,17 @@ pub struct CheckpointMeta {
     /// 第几个用户 turn（1-based）；计数失败时为 None，前端按顺序兜底对齐。
     pub turn: Option<u32>,
     pub kind: CheckpointKind,
+    /// Display label. Always present on the wire; write-side values go
+    /// through `normalize_checkpoint_label` (trim + 80-char cap counted by
+    /// chars so a CJK label never splits). Reads are `serde(default)` for
+    /// compatibility: main-era indexes carry no `label` key, and a missing
+    /// key would fail the whole index parse into the quarantine branch,
+    /// which rebuilds from an empty index — an upgrade that loses history.
+    #[serde(default)]
+    pub label: String,
     /// 影子仓库中的 commit sha（orphan commit，互不为父子）。
     pub commit: String,
     pub created_at: i64,
-    // 注：旧版 index.json 里的 `label` 字段（截断的展示标签，从未有读者）已被
-    // 移除；CheckpointMeta 反序列化不 deny_unknown_fields，旧索引里的残留键被
-    // serde 忽略，无需迁移。
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +187,10 @@ pub struct CheckpointDiff {
     pub checkpoint: CheckpointMeta,
     /// 从快照到当前执行根的变更清单（即「回滚将撤销的变更」）。
     pub changes: Vec<CheckpointChange>,
+    /// Unified diff text (possibly truncated; empty when the caller asked to
+    /// skip patch generation).
+    pub patch: String,
+    pub patch_truncated: bool,
 }
 
 fn checkpoints_dir(ledger_root: &Path) -> PathBuf {
@@ -490,6 +507,93 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Same bounded `git` invocation as [`git_ok`], but the command's stdout is
+/// redirected to a temp file via `diff --output` and only the first `cap`
+/// bytes (plus one probe byte) are read back into memory — a huge diff costs
+/// disk in the git child, never RSS in this process. Returns the output
+/// clamped to a `\n` boundary (a `diff --git` section header is therefore
+/// either fully present or fully absent, which the secret-path filter
+/// downstream relies on to drop a section wholesale) and whether the full
+/// output exceeded `cap`.
+fn git_diff_capped(
+    repo: &Path,
+    work_tree: &Path,
+    arguments: &[&str],
+    cap: usize,
+) -> Result<(String, bool)> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // The spill lives beside the shadow repo, not in the shared temp
+    // directory. The git child writes the UNFILTERED diff here, so on a crash
+    // or SIGKILL between the write and `TempDiffFile`'s drop the leftover is
+    // a full plaintext copy of the working tree's changes — including
+    // whatever the secret filter would have dropped. Under the ledger it is
+    // inside the same private tree as the snapshots themselves and goes away
+    // with the session; in `/tmp` it is a world-visible artifact with no
+    // reaper and an unbounded lifetime.
+    let spill_dir = repo.parent().unwrap_or(repo).to_path_buf();
+    let output_path = spill_dir.join(format!(
+        ".checkpoint-diff-{}-{nanos}.tmp",
+        std::process::id()
+    ));
+    let _cleanup = TempDiffFile(&output_path);
+    // Create the spill file ourselves with private permissions: a
+    // child-created file would follow the process umask. `git diff --output`
+    // truncates an existing file and keeps its mode, so pre-creating with
+    // 0600 is enough.
+    crate::platform::filesystem::create_secret_file(&output_path).with_context(|| {
+        format!(
+            "create private checkpoint diff spill file {}",
+            output_path.display()
+        )
+    })?;
+    use std::io::Read as _;
+    let mut arguments: Vec<String> = arguments
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect();
+    arguments.push(format!("--output={}", output_path.display()));
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let output = git(repo, work_tree, &arguments)?;
+    if !output.status.success() {
+        // Deliberately names no arguments: the argv carries the spill path
+        // (and this error reaches the frontend via the command layer), and
+        // the same privacy posture that keeps the quarantine path and serde
+        // message off stderr applies here.
+        bail!(
+            "git diff 预览生成失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let file_len = fs::metadata(&output_path)?.len();
+    let truncated = file_len > cap as u64;
+    let mut file = fs::File::open(&output_path)?;
+    let mut buf = Vec::new();
+    if truncated {
+        (&mut file).take(cap as u64 + 1).read_to_end(&mut buf)?;
+        let mut end = buf.len().min(cap);
+        while end > 0 && buf[end - 1] != b'\n' {
+            end -= 1;
+        }
+        buf.truncate(end);
+    } else {
+        file.read_to_end(&mut buf)?;
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
+}
+
+/// Best-effort removal of the `--output` spill file; the diff preview must
+/// not leave a full-diff copy behind in the shared temp directory.
+struct TempDiffFile<'a>(&'a Path);
+
+impl Drop for TempDiffFile<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.0);
+    }
+}
+
 /// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（无通配符，如 .env、
 /// id_rsa）在 git pathspec 里只命中仓库根部，自动派生 `**/` 前缀版本覆盖任意
 /// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
@@ -538,6 +642,38 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
     Ok(())
 }
 
+/// Crash-leftover reaper for diff spill files: `.checkpoint-diff-<pid>-<nanos>.tmp`
+/// holds the UNFILTERED diff until `TempDiffFile` drops it, and a hard kill
+/// leaves it behind with no in-process owner. Age-gated far past the 120 s
+/// git command timeout so a concurrently running diff (this or another
+/// process) is never reaped mid-flight. Best-effort: sweep failures are
+/// silent, the next ensure_repo retries.
+fn reap_stale_diff_spills(checkpoints_dir: &Path) {
+    const STALE_SPILL_AGE: Duration = Duration::from_secs(600);
+    let Ok(entries) = fs::read_dir(checkpoints_dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".checkpoint-diff-")
+        {
+            continue;
+        }
+        let is_stale = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_SPILL_AGE);
+        if is_stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// 初始化影子仓库（幂等）：git-dir 在账本根，work-tree 指向执行根。
 /// - `core.autocrlf false`：不受用户全局行尾配置影响，快照/恢复保持原字节；
 ///   执行根自己的 .gitattributes 仍会被尊重（与用户在项目内看到的行尾一致）。
@@ -554,6 +690,7 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 ///   闭合评审 B1 的事故链（`.ENV` 逃过 exclude 却被 icase purge 移出 index、
 ///   被 `clean -fd` 物理删除）。
 fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
+    reap_stale_diff_spills(&checkpoints_dir(ledger_root));
     let repo = repo_dir(ledger_root);
     let fresh = !repo.join("HEAD").is_file();
     if fresh {
@@ -644,22 +781,27 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
     };
     match serde_json::from_slice(&bytes) {
         Ok(index) => Ok(index),
-        Err(parse_error) => {
+        Err(_parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
-            // 保留现场（带时间戳，二次损坏不覆盖首次取证）后从空索引重建——与
-            // sidecar `_rewound_turns.json` 的损坏处理同款。代价：影子仓库里的
-            // 历史快照失去索引（不可列不可用，对象随 gc 回收），此后快照能力恢复。
-            let quarantine = path.with_extension(format!(
-                "json.corrupt-{}",
-                chrono::Utc::now().format("%Y%m%d%H%M%S")
-            ));
-            eprintln!(
-                "[checkpoints] checkpoint 索引损坏，隔离为 {} 后从空索引重建: {parse_error:#}",
-                quarantine.display()
-            );
-            if let Err(error) = fs::rename(&path, &quarantine) {
-                eprintln!("[checkpoints] 隔离损坏索引失败: {error:#}");
+            // 保留现场后从空索引重建——与 sidecar 的损坏处理同款，共用
+            // platform 的纳秒唯一名原语（秒级后缀在同一秒内的二次损坏会覆盖
+            // 首次取证）。代价：影子仓库里的历史快照失去索引（不可列不可用；
+            // 注意其 refs/checkpoints/* 引用并不被本路径清扫，对象因仍可达
+            // 不会被 gc 回收，属已披露的预存在限制），此后快照能力恢复。
+            // Neither the quarantine path (it lives inside the session
+            // directory) nor the serde message (it can quote the corrupt
+            // bytes) may reach stderr — same cleartext-logging surface as the
+            // sidecar persist logs. The ledger root in context already
+            // identifies the write, and the evidence stays in the quarantined
+            // file for inspection.
+            match crate::platform::filesystem::quarantine_corrupt_file(&path) {
+                Ok(_) => eprintln!(
+                    "[checkpoints] corrupt checkpoint index quarantined; rebuilt from an empty index"
+                ),
+                Err(_) => eprintln!(
+                    "[checkpoints] failed to quarantine the corrupt index (scene not preserved); rebuilt from an empty index"
+                ),
             }
             Ok(CheckpointIndex {
                 version: 1,
@@ -676,15 +818,13 @@ fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
             .with_context(|| format!("创建 checkpoint 目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(index).context("序列化 checkpoint 索引失败")?;
-    let temporary = path.with_extension("json.tmp");
-    {
-        let mut file = fs::File::create(&temporary)
-            .with_context(|| format!("创建 checkpoint 索引失败: {}", temporary.display()))?;
-        file.write_all(&payload)
-            .with_context(|| format!("写入 checkpoint 索引失败: {}", temporary.display()))?;
-        file.sync_all().ok();
-    }
-    fs::rename(&temporary, &path)
+    // The index lives next to the transcripts and its `label` field carries
+    // user-message prefixes, so it must match the transcripts' privacy
+    // (0600): private atomic write — a umask-default 0644 would expose every
+    // turn's input prefix to other local users. Atomic replace keeps the
+    // existing semantics: whatever lands on disk is always a complete index
+    // (corruption goes through quarantine).
+    crate::platform::filesystem::atomic_write_private(&path, &payload)
         .with_context(|| format!("保存 checkpoint 索引失败: {}", path.display()))?;
     Ok(())
 }
@@ -702,8 +842,16 @@ pub fn create_checkpoint(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
+    label: &str,
 ) -> Result<CheckpointMeta> {
-    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, &[])
+    create_checkpoint_preserving(ledger_root, execution_root, turn, kind, label, &[])
+}
+
+/// Display-label normalization before persisting: trims and caps at 80
+/// characters (by chars, never bytes — a CJK label is never split mid
+/// character). An empty label persists as-is.
+fn normalize_checkpoint_label(label: &str) -> String {
+    label.trim().chars().take(80).collect()
 }
 
 /// `create_checkpoint` 的保留变体：LRU/存储压力淘汰跳过 `preserve` 中的条目。
@@ -715,6 +863,7 @@ fn create_checkpoint_preserving(
     execution_root: &Path,
     turn: Option<u32>,
     kind: CheckpointKind,
+    label: &str,
     preserve: &[&str],
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
@@ -746,6 +895,7 @@ fn create_checkpoint_preserving(
         id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
         turn,
         kind,
+        label: normalize_checkpoint_label(label),
         commit,
         created_at: now_seconds(),
     };
@@ -939,11 +1089,144 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
+/// Secret check for a `--raw` status path. `parse_raw_status` hands the field
+/// through verbatim, and with `core.quotepath=false` git still C-quotes paths
+/// containing quotes/backslashes/tabs (`"my \"key.pem"`), whose trailing
+/// quote defeats a plain suffix match — while the patch filter (which parses
+/// the quoted shapes) drops that section, leaving the two preview surfaces
+/// inconsistent. Unquote before matching so both agree. Only the common
+/// quote/backslash escapes are handled: the secret patterns are plain ASCII
+/// names, so an exotic escape can at worst over-retain a list entry — never
+/// leak a patch section (that filter is independent and conservative).
+fn raw_status_path_is_secret(path: &str) -> bool {
+    if secret_path_matches(path) {
+        return true;
+    }
+    let unquoted = path
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(path);
+    secret_path_matches(&unquoted.replace("\\\"", "\""))
+}
+
+/// Whether a `diff --git` section header points at a secret file. For the
+/// C-quoted form (git emits `diff --git "a/x" "b/x"` when the path contains
+/// quotes/tabs/non-ASCII) the a/ and b/ paths are extracted by quoted
+/// segment; unquoted paths may contain spaces (plain spaces do not trigger
+/// C-quoting), so both paths are split at the LAST ` b/` occurrence (same
+/// trick git consumers use). A mis-split errs conservative — over-removing
+/// rather than leaking — except for exotic quoted-binary shapes, disclosed.
+/// Binary-file sections have no ---/+++ lines, so the header parse is their
+/// only predicate; the token scan is the final fallback.
+fn diff_section_is_secret(header: &str) -> bool {
+    if let Some(rest) = header.strip_prefix("diff --git \"") {
+        // C-quoted shape: extract the a/ and b/ paths by quoted segment
+        // (the paths may contain spaces).
+        if let Some(path) = rest.strip_prefix("a/").and_then(|s| s.split('"').next()) {
+            if secret_path_matches(path) {
+                return true;
+            }
+        }
+        if let Some(path) = rest
+            .split("\" \"")
+            .nth(1)
+            .and_then(|s| s.strip_prefix("b/"))
+            .and_then(|s| s.split('"').next())
+        {
+            if secret_path_matches(path) {
+                return true;
+            }
+        }
+    }
+    if let Some(rest) = header.strip_prefix("diff --git a/") {
+        if let Some(split) = rest.rfind(" b/") {
+            let old_path = &rest[..split];
+            let new_path = &rest[split + " b/".len()..];
+            if secret_path_matches(old_path) || secret_path_matches(new_path) {
+                return true;
+            }
+        }
+    }
+    header
+        .split_whitespace()
+        .map(|token| token.trim_matches('"'))
+        .filter_map(|token| {
+            token
+                .strip_prefix("a/")
+                .or_else(|| token.strip_prefix("b/"))
+        })
+        .any(|token| secret_path_matches(token))
+}
+
+/// Path predicate for `--- a/<path>` / `+++ b/<path>` marker lines (the
+/// rest of the line IS the path, spaces tolerated; a deleted file's marker
+/// line carries a trailing tab pad, stripped first; when the path contains
+/// tabs/quotes git C-quotes it as `--- "a/x"` — strip the outer quotes
+/// before matching; /dev/null honestly never matches).
+fn marker_line_is_secret(line: &str) -> bool {
+    let path = line
+        .strip_prefix("--- a/")
+        .or_else(|| line.strip_prefix("+++ b/"))
+        .or_else(|| line.strip_prefix("--- \"a/"))
+        .or_else(|| line.strip_prefix("+++ \"b/"));
+    match path {
+        Some(path) => secret_path_matches(path.trim_end().trim_matches('"')),
+        None => false,
+    }
+}
+
+/// Drops every whole per-file diff section whose path matches a secret
+/// pattern from a unified-diff text: old snapshots taken before a purge may
+/// still carry secret plaintext in their trees (the purge only clears the
+/// index), and the preview must not carry the plaintext into the UI.
+/// Sections are buffered then judged (a header OR marker-line match drops
+/// the whole section; binary sections rely purely on the header parse).
+/// Lines are kept verbatim, terminators included: `str::lines` would strip a
+/// trailing `\r`, silently turning a CRLF project's diff into an LF one that
+/// no longer applies, and would append a newline to a patch that ended
+/// without one.
+fn filter_secret_paths_from_patch(patch: &str) -> String {
+    let mut out = String::with_capacity(patch.len());
+    let mut section: Vec<&str> = Vec::new();
+    let mut section_secret = false;
+    let flush = |out: &mut String, section: &mut Vec<&str>, secret: &mut bool| {
+        if !*secret {
+            for line in section.drain(..) {
+                out.push_str(line);
+            }
+        } else {
+            section.clear();
+        }
+        *secret = false;
+    };
+    for raw_line in patch.split_inclusive('\n') {
+        // Judge on the content, emit the bytes: the predicates below match
+        // path prefixes and would not see through a trailing `\r\n`.
+        let line = raw_line.trim_end_matches('\n').trim_end_matches('\r');
+        if line.starts_with("diff --git ") {
+            flush(&mut out, &mut section, &mut section_secret);
+            section_secret = diff_section_is_secret(line);
+        } else if marker_line_is_secret(line) {
+            section_secret = true;
+        }
+        section.push(raw_line);
+    }
+    flush(&mut out, &mut section, &mut section_secret);
+    out
+}
+
 /// 快照与当前执行根的差异预览（即「回滚将撤销的变更」），供 UI 确认前展示。
+///
+/// `include_patch` gates the unified diff: the `changes` list is always
+/// computed, but the patch costs a full `git diff` whose generation is
+/// unbounded (only the read-back is capped), and the desktop preview renders
+/// only the list — it must pass `false`. The patch surface exists for the
+/// CLI. When `false`, `patch` is empty and `patch_truncated` is `false`.
 pub fn diff_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
     checkpoint_id: &str,
+    include_patch: bool,
 ) -> Result<CheckpointDiff> {
     let meta = find_checkpoint(ledger_root, checkpoint_id)?;
     let execution_root = canonical_execution_root(execution_root)?;
@@ -967,17 +1250,100 @@ pub fn diff_checkpoint(
             &meta.commit,
         ],
     )?;
-    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感
-    // 模式的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有
-    // 同名文件）。过滤恒大小写不敏感，与 exclude/purge 三层同向。UI 只渲染
-    // changes 清单，不上屏 patch 文本（见 RewindChip），unified diff 不再生成。
+    // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感模式
+    // 的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有同名
+    // 文件）。过滤恒大小写不敏感，与 exclude/purge 三层同向。
     let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
         .into_iter()
-        .filter(|change| !secret_path_matches(&change.path))
+        .filter(|change| !raw_status_path_is_secret(&change.path))
         .collect();
+    let (patch, patch_truncated) = if !include_patch {
+        // The desktop preview renders only the `changes` list. Generating the
+        // unified diff here cost a full `git diff` per preview open — main
+        // carried an explicit 「unified diff 不再生成」 decision for exactly
+        // that reason — and nothing in the webview reads `patch`.
+        (String::new(), false)
+    } else {
+        let (raw_patch, mut patch_truncated) = git_diff_capped(
+            &repo,
+            &execution_root,
+            // 与 --raw 同开 -M + quotepath：changes 清单标 renamed 时 patch
+            // 也是 rename 形态，中文路径在两处都是原文。
+            &[
+                "-c",
+                "core.quotepath=false",
+                "-c",
+                "diff.noprefix=false",
+                "-c",
+                "diff.mnemonicPrefix=false",
+                // The secret-path filter parses `diff --git a/<p> b/<p>` and the
+                // `--- a/` / `+++ b/` markers, so the prefixes are part of its
+                // contract, not cosmetics. They are configurable
+                // (diff.noprefix, diff.srcPrefix, diff.dstPrefix,
+                // diff.mnemonicPrefix), and `isolated_git_command` only
+                // neutralizes the system and global config — the shadow repo's
+                // OWN config still applies, and for an unbound session that repo
+                // sits inside the directory the agent's own tools can write
+                // (see the ledger note on `restore_checkpoint`). A single
+                // `diff.noprefix = true` line there makes every section
+                // unparseable to the filter and passes `.env` plaintext straight
+                // into the preview. Pin them on the command line, where repo
+                // config cannot reach.
+                "diff",
+                "--cached",
+                "-M",
+                "--no-color",
+                // Same threat model, second escape hatch: `--no-ext-diff` closes
+                // `diff.external` / `GIT_EXTERNAL_DIFF`, but textconv is a
+                // separate switch and defaults to ON. `[diff "x"] textconv = <cmd>`
+                // in the shadow repo's own config plus one `.gitattributes` line
+                // makes git run an arbitrary command per file and substitute its
+                // stdout as the diff body — arbitrary content reaching the preview
+                // under a path the filter permits, and arbitrary execution in this
+                // process's group.
+                "--no-textconv",
+                "--no-ext-diff",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                &meta.commit,
+            ],
+            DIFF_PATCH_LIMIT,
+        )?;
+        // Legacy snapshots (taken before the purge) may still carry secret
+        // plaintext in their trees: whole sections matching a secret pattern
+        // are dropped so the preview cannot leak it. The filter is always
+        // case-insensitive, aligned with the exclude/purge layers. raw_patch
+        // is already clamped to a line boundary, so a section header either
+        // fully participates in the filter's judgment or is absent entirely —
+        // truncation cannot leave half a secret-path header behind.
+        let mut patch = filter_secret_paths_from_patch(&raw_patch);
+        // Truncation signals through `patch_truncated` alone: consumers pin the
+        // flag (and the byte cap), not a locale-specific tail appended to the
+        // data — an embedded CJK string here would leak into CLI output and
+        // bypass the trilingual i18n surface. The flag reports the raw `git diff`
+        // output exceeding the cap (the filter only removes content, so a capped
+        // read implies the caller is not seeing the full diff). The clamp is a
+        // belt-and-braces for `from_utf8_lossy` expansion (one invalid byte
+        // becomes three replacement bytes): it can only move the end backwards
+        // to the previous line boundary, so a section header stays whole — and
+        // when it does fire, content was dropped without the raw read ever
+        // crossing the cap, so the flag must flip too.
+        if patch.len() > DIFF_PATCH_LIMIT {
+            let bytes = patch.as_bytes();
+            let mut end = DIFF_PATCH_LIMIT;
+            while end > 0 && bytes[end - 1] != b'\n' {
+                end -= 1;
+            }
+            patch.truncate(end);
+            patch_truncated = true;
+        }
+        (patch, patch_truncated)
+    };
     Ok(CheckpointDiff {
         checkpoint: meta,
         changes,
+        patch,
+        patch_truncated,
     })
 }
 
@@ -1002,6 +1368,10 @@ pub fn restore_checkpoint(
         &execution_root,
         None,
         CheckpointKind::PreRestore,
+        // Fixed zh label persisted as ledger fidelity data (byte-identical
+        // with the pre-cleanup surface) and printed verbatim by the CLI;
+        // localizing it is a consumer-side decision (PR #602).
+        &format!("回滚到 {} 前的自动快照", meta.id),
         &[&meta.id],
     )
     .context("回滚前自动快照失败，已中止回滚")?;
@@ -1143,16 +1513,123 @@ pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> 
 /// （`app/commands/checkpoints.rs`）共用：无 git 的环境里相关用例跳过而非报错。
 #[cfg(test)]
 pub(crate) fn git_available() -> bool {
-    crate::platform::process::HiddenCommand::new("git")
+    let available = crate::platform::process::HiddenCommand::new("git")
         .arg("--version")
         .output()
         .map(|output| output.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    // A silent skip would let security/parity regressions pass a git-less CI
+    // lane invisibly; say so when the coverage is skipped.
+    if !available {
+        eprintln!("[checkpoints] skipping git-dependent test coverage: git is unavailable");
+    }
+    available
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upgrade regression: index entries written before `CheckpointMeta.label`
+    /// was restored carry no `label` key. The field must deserialize with its
+    /// default instead of failing the whole index parse — a failed parse hits
+    /// the quarantine branch, which rebuilds from an empty index and leaves
+    /// every shadow-repo snapshot unlistable (user-visible history loss on
+    /// upgrade). Pure JSON: no git fixture needed.
+    #[test]
+    fn main_era_index_without_label_key_still_loads() {
+        let dir = TestDir::new("label-upgrade");
+        let path = index_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "entries": [
+    {"id": "c1-1758000000000000000", "turn": 1, "kind": "turn",
+     "commit": "0123456789abcdef0123456789abcdef01234567", "createdAt": 1758000000},
+    {"id": "c2-1758000000000000001", "turn": 2, "kind": "preRestore",
+     "label": "legacy value", "commit": "fedcba9876543210fedcba9876543210fedcba98",
+     "createdAt": 1758000060}
+  ]
+}"#,
+        )
+        .unwrap();
+        let index = load_index(dir.path()).expect("a main-era index must deserialize");
+        assert_eq!(index.entries.len(), 2, "both entries must survive the load");
+        assert_eq!(
+            index.entries[0].label, "",
+            "a missing label defaults to empty"
+        );
+        assert_eq!(
+            index.entries[1].label, "legacy value",
+            "a present label must still be read"
+        );
+        // No quarantine file may appear next to the index.
+        let corrupt: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| {
+                let p = entry.path();
+                p.to_str()
+                    .is_some_and(|s| s.contains(".corrupt-"))
+                    .then_some(p)
+            })
+            .collect();
+        assert!(
+            corrupt.is_empty(),
+            "the index must not be quarantined: {corrupt:?}"
+        );
+    }
+
+    /// Round-12 review: the label chain has no end-to-end pin — nothing
+    /// asserted that a caller-supplied label actually reaches the ledger
+    /// through normalize. The expected value is computed inline (trim +
+    /// first 80 chars) instead of via `normalize_checkpoint_label`, so a
+    /// silently dropped or un-normalized label both go red.
+    #[test]
+    fn checkpoint_label_lands_in_the_ledger_normalized() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("label-e2e-ledger");
+        let exec = TestDir::new("label-e2e-exec");
+        exec.write("a.txt", "v1\n");
+        let raw = format!("  {} tail", "深".repeat(100));
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            &raw,
+        )
+        .expect("checkpoint");
+        let listed = list_checkpoints(ledger.path()).expect("list");
+        assert_eq!(listed.len(), 1);
+        let expected: String = raw.trim().chars().take(80).collect();
+        assert_eq!(
+            listed[0].label, expected,
+            "label must be trimmed and capped at 80 chars"
+        );
+        assert_eq!(listed[0].label.chars().count(), 80);
+        assert!(
+            listed[0].label.ends_with('深'),
+            "CJK must not be split mid-character"
+        );
+    }
+
+    #[test]
+    fn normalize_checkpoint_label_trims_and_caps_by_chars() {
+        assert_eq!(normalize_checkpoint_label("  x  "), "x");
+        assert_eq!(normalize_checkpoint_label(""), "");
+        let cjk: String = "深".repeat(120);
+        let normalized = normalize_checkpoint_label(&cjk);
+        assert_eq!(normalized.chars().count(), 80);
+        assert!(
+            normalized.ends_with('深'),
+            "truncation must not split a character"
+        );
+    }
 
     struct TestDir(PathBuf);
 
@@ -1224,7 +1701,14 @@ mod tests {
         exec.write("id_rsa.pub", "PUBLIC\n");
         exec.write("SERVER.KEY", "SECRET=4\n");
         exec.write("src/a.rs", "a\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
@@ -1301,7 +1785,14 @@ mod tests {
         let ledger = TestDir::new("young-lock-ledger");
         let exec = TestDir::new("young-lock-exec");
         exec.write("a.rs", "v1\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let lock = repo.join("index.lock");
@@ -1327,8 +1818,14 @@ mod tests {
         let ledger = TestDir::new("ref-lock-ledger");
         let exec = TestDir::new("ref-lock-exec");
         exec.write("a.rs", "v1\n");
-        let checkpoint =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let checkpoint = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         let repo = repo_dir(ledger.path());
         let ref_name = format!("refs/checkpoints/{}", checkpoint.id);
@@ -1361,12 +1858,18 @@ mod tests {
         let ledger = TestDir::new("quotepath-ledger");
         let exec = TestDir::new("quotepath-exec");
         exec.write("文档/需求.md", "v1\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("文档/需求.md", "v2\n");
         exec.write("新建文件.rs", "fn main() {}\n");
 
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         assert!(
             diff.changes
                 .iter()
@@ -1378,6 +1881,20 @@ mod tests {
             diff.changes
                 .iter()
                 .any(|change| change.path == "新建文件.rs")
+        );
+        // The patch side carries the same pin: without the patch call's own
+        // `-c core.quotepath=false`, the header would render octal escapes,
+        // which both garbles the preview and blinds the secret filter's
+        // section-header parse.
+        assert!(
+            diff.patch.contains("文档/需求.md"),
+            "non-ASCII paths must reach the patch verbatim: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
+        );
+        assert!(
+            !diff.patch.contains("\\346"),
+            "the patch must not carry octal-escaped paths: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
         );
     }
 
@@ -1396,13 +1913,26 @@ mod tests {
         let exec = TestDir::new("icase-exec");
         exec.write("ok.txt", "v1\n");
         exec.write(".ENV", "SECRET=before\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
 
         // turn 1 同时改了普通文件和大写秘密文件。
         exec.write("ok.txt", "v2\n");
         exec.write(".ENV", "SECRET=after\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
 
         // 大写秘密从未进快照（exclude 的字符类模式恒大小写不敏感）。
         let repo = repo_dir(ledger.path());
@@ -1509,6 +2039,7 @@ mod tests {
             id: "c1-1".into(),
             turn: Some(1),
             kind: CheckpointKind::Turn,
+            label: String::new(),
             commit: commit.clone(),
             created_at: 0,
         };
@@ -1598,6 +2129,7 @@ mod tests {
                     id: "c1-1".into(),
                     turn: Some(1),
                     kind: CheckpointKind::Turn,
+                    label: String::new(),
                     commit,
                     created_at: 0,
                 }],
@@ -1607,13 +2139,140 @@ mod tests {
 
         exec.write("ok.txt", "v2\n");
         exec.write("my dir/.env", "SECRET=current\n");
-        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1", true).unwrap();
         assert!(
             diff.changes
                 .iter()
                 .all(|change| !change.path.ends_with(".env")),
             "含空格的秘密路径不得出现在清单: {:?}",
             diff.changes
+        );
+        // The patch must not carry the secret section either (the ---/+++
+        // strip covers paths containing spaces).
+        assert!(
+            !diff.patch.contains("SECRET") && !diff.patch.contains(".env"),
+            "secret section with spaces must not enter the patch: {:?}",
+            diff.patch
+        );
+    }
+
+    /// A binary file's diff section has no ---/+++ marker lines, so the
+    /// header parse is its only predicate; and a pure-space path does not
+    /// trigger git's C-quoting (`diff --git a/my key.pem b/my key.pem` is
+    /// emitted verbatim), so the header must split at the LAST ` b/` to
+    /// recover both full paths for `*.pem`-style patterns — a whitespace
+    /// token scan would sever `key.pem` from its prefix and miss, leaking
+    /// the secret path into the patch via the Binary line.
+    #[test]
+    fn binary_secret_section_with_spaced_path_is_dropped() {
+        let patch = concat!(
+            "diff --git a/ok.txt b/ok.txt\n",
+            "index 1111111..2222222 100644\n",
+            "--- a/ok.txt\n",
+            "+++ b/ok.txt\n",
+            "@@ -1 +1 @@\n",
+            "-a\n",
+            "+b\n",
+            "diff --git a/my key.pem b/my key.pem\n",
+            "Binary files a/my key.pem and b/my key.pem differ\n",
+        );
+        let filtered = filter_secret_paths_from_patch(patch);
+        assert!(
+            filtered.contains("diff --git a/ok.txt b/ok.txt"),
+            "the non-secret section must survive: {filtered:?}"
+        );
+        assert!(
+            !filtered.contains("key.pem"),
+            "the binary secret section must be dropped wholesale: {filtered:?}"
+        );
+    }
+
+    /// The C-quoted header shape (`diff --git "a/x" "b/x"`, emitted when a
+    /// path contains quotes or tabs — plain spaces do NOT trigger quoting) is
+    /// the only predicate a binary section has, and the first line of defense
+    /// for text sections. The quoted branch must extract whole path segments,
+    /// not split on whitespace.
+    #[test]
+    fn cquoted_secret_sections_are_dropped() {
+        let quoted = "diff --git \"a/.env\" \"b/.env\"\n-SECRET=1\n";
+        assert_eq!(
+            filter_secret_paths_from_patch(quoted),
+            "",
+            "a C-quoted secret section with content must be dropped"
+        );
+        // Spaces inside a quoted path.
+        let spaced = concat!(
+            "diff --git \"a/my key.pem\" \"b/my key.pem\"\n",
+            "Binary files a/my key.pem and b/my key.pem differ\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(spaced),
+            "",
+            "a C-quoted binary secret section must be dropped"
+        );
+        // A non-secret section around it must survive untouched.
+        let mut mixed = String::from(
+            "diff --git a/ok.txt b/ok.txt\n--- a/ok.txt\n+++ b/ok.txt\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        mixed.push_str("diff --git \"a/.env\" \"b/.env\"\n-SECRET=1\n");
+        let filtered = filter_secret_paths_from_patch(&mixed);
+        assert!(
+            filtered.contains("ok.txt"),
+            "clean section lost: {filtered:?}"
+        );
+        assert!(
+            !filtered.contains(".env") && !filtered.contains("SECRET"),
+            "quoted secret section survived: {filtered:?}"
+        );
+    }
+
+    /// The marker predicates must stand alone. Synthetic shape (git would not
+    /// emit a clean header with quoted markers): pins that the
+    /// `--- "a/` / `+++ "b/` strips work without any help from the header
+    /// parse, and that a space-bearing secret path matches through the
+    /// unquoted marker form too.
+    #[test]
+    fn marker_lines_drop_the_section_without_header_help() {
+        let quoted_markers = concat!(
+            "diff --git a/placeholder b/placeholder\n",
+            "--- \"a/.env\"\n+++ \"b/.env\"\n@@ -1 +1 @@\n-SECRET=1\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(quoted_markers),
+            "",
+            "quoted marker lines must drop the section on their own"
+        );
+        let spaced_marker = concat!(
+            "diff --git a/placeholder b/placeholder\n",
+            "--- a/my dir/.env\n+++ b/my dir/.env\n@@ -1 +1 @@\n-SECRET=1\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(spaced_marker),
+            "",
+            "space-bearing marker paths must drop the section on their own"
+        );
+    }
+
+    /// A removed line whose CONTENT starts with `-- a/x` is emitted by git as
+    /// `-` + content = `--- a/x`, indistinguishable from a real marker; the
+    /// same holds for added `++ b/x` lines. The filter errs conservative and
+    /// drops the whole (innocent) section. Pin that intent: a silent preview
+    /// loss must stay a deliberate, tested trade-off, never an accident.
+    #[test]
+    fn content_lines_shaped_like_markers_drop_the_section_conservatively() {
+        let patch = concat!(
+            "diff --git a/docs.md b/docs.md\n",
+            "--- a/docs.md\n",
+            "+++ b/docs.md\n",
+            "@@ -1,2 +1,2 @@\n",
+            " context\n",
+            "--- a/.env\n",
+            "+++ b/.env\n",
+        );
+        assert_eq!(
+            filter_secret_paths_from_patch(patch),
+            "",
+            "marker-shaped content lines must drop the section (conservative)"
         );
     }
 
@@ -1628,8 +2287,14 @@ mod tests {
         let ledger = TestDir::new("preserve-ledger");
         let exec = TestDir::new("preserve-exec");
         exec.write("a.txt", "0\n");
-        let target =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // 恰好打满 LRU 上限（target 是最老条目但尚未被淘汰）；restore 的
         // PreRestore 是第 MAX+1 条，溢出淘汰的第一顺位就是 target。
         for turn in 2..=MAX_CHECKPOINTS {
@@ -1639,6 +2304,7 @@ mod tests {
                 exec.path(),
                 Some(turn as u32),
                 CheckpointKind::Turn,
+                "t",
             )
             .unwrap();
         }
@@ -1682,7 +2348,14 @@ mod tests {
         assert!(quarantined);
         assert!(!index_path(ledger.path()).exists());
         // 快照能力恢复。
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 1);
     }
 
@@ -1696,8 +2369,14 @@ mod tests {
         let ledger = TestDir::new("gitlink-ledger");
         let exec = TestDir::new("gitlink-exec");
         exec.write("ok.txt", "v1\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // turn 1：在执行根内 clone 出一个嵌套仓库（git 以 gitlink 记录；
         // 需要真实 .git 子目录 + commit——--git-dir 指向目录本身只会产生普通文件，
         // unborn HEAD 的空仓库也不会进 index）。
@@ -1712,7 +2391,7 @@ mod tests {
         git_ok(&nested_git, &nested, &["add", "README.md"]).unwrap();
         git_ok(&nested_git, &nested, &["commit", "-m", "init"]).unwrap();
 
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         let gitlink = diff
             .changes
             .iter()
@@ -1778,6 +2457,7 @@ mod tests {
                     id: "c1-1".into(),
                     turn: Some(1),
                     kind: CheckpointKind::Turn,
+                    label: String::new(),
                     commit,
                     created_at: 0,
                 }],
@@ -1789,13 +2469,331 @@ mod tests {
         // 的原始 diff 会显示 D .env）。
         exec.write("ok.txt", "v2\n");
         exec.write(".env", "SECRET=current\n");
-        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1").unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1", true).unwrap();
         assert!(
             diff.changes.iter().all(|change| change.path != ".env"),
             "敏感条目不得出现在变更清单: {:?}",
             diff.changes
         );
         assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
+        // The patch renders straight to the CLI: the secret section (path
+        // and content) must be stripped wholesale, normal files kept.
+        assert!(
+            !diff.patch.contains("SECRET"),
+            "secret content must not enter the patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains(".env"),
+            "secret path must not enter the patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("ok.txt"),
+            "normal file diffs must survive in the patch: {:?}",
+            diff.patch
+        );
+    }
+
+    /// The secret filter parses `a/` / `b/` path prefixes, and those prefixes
+    /// are configurable. `isolated_git_command` neutralizes the system and
+    /// global config but not the shadow repo's own, which for an unbound
+    /// session lives inside the directory the agent's tools can write. A
+    /// single `diff.noprefix = true` there used to make every section
+    /// unparseable and pass `.env` plaintext straight into the preview.
+    #[test]
+    fn diff_preview_filters_secrets_even_when_the_repo_config_drops_diff_prefixes() {
+        // git_available() itself logs the skip; no inline copy needed.
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("noprefix-ledger");
+        let exec = TestDir::new("noprefix-exec");
+        exec.write("ok.txt", "v1\n");
+        exec.write(".env", "SECRET=old\n");
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        // The hostile bit: repo-local config that strips the prefixes.
+        git_ok(&repo, exec.path(), &["config", "diff.noprefix", "true"]).unwrap();
+        git_ok(&repo, exec.path(), &["add", "-f", "ok.txt", ".env"]).unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", "refs/checkpoints/np-1", &commit],
+        )
+        .unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 1,
+                entries: vec![CheckpointMeta {
+                    id: "np-1".into(),
+                    turn: Some(1),
+                    kind: CheckpointKind::Turn,
+                    label: String::new(),
+                    commit,
+                    created_at: 0,
+                }],
+            },
+        )
+        .unwrap();
+        exec.write("ok.txt", "v2\n");
+        exec.write(".env", "SECRET=current\n");
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "np-1", true).unwrap();
+        assert!(
+            !diff.patch.contains("SECRET"),
+            "repo-local diff.noprefix must not defeat the secret filter: {:?}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains(".env"),
+            "repo-local diff.noprefix must not leak the secret path: {:?}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("ok.txt"),
+            "the non-secret section must still be rendered: {:?}",
+            diff.patch
+        );
+    }
+
+    /// The filter rewrites the patch line by line, so it must not silently
+    /// normalize line endings: a CRLF project's diff that comes back LF-only
+    /// no longer applies, and a patch without a trailing newline must not
+    /// grow one.
+    #[test]
+    fn secret_filter_preserves_line_endings_verbatim() {
+        let crlf = "diff --git a/ok.txt b/ok.txt\r\n--- a/ok.txt\r\n+++ b/ok.txt\r\n-a\r\n+b\r\n";
+        assert_eq!(
+            filter_secret_paths_from_patch(crlf),
+            crlf,
+            "CR bytes must survive the filter"
+        );
+        let no_trailing_newline = "diff --git a/ok.txt b/ok.txt\n-a\n+b";
+        assert_eq!(
+            filter_secret_paths_from_patch(no_trailing_newline),
+            no_trailing_newline,
+            "the filter must not append a terminator the input did not have"
+        );
+        // Still filters, with CRLF input.
+        let secret = "diff --git a/.env b/.env\r\n-SECRET=1\r\n";
+        assert_eq!(filter_secret_paths_from_patch(secret), "");
+    }
+
+    /// The checkpoint index carries the first 80 characters of user messages
+    /// as labels, so it must be created private and STAY private when
+    /// rewritten over a world-readable file from an older build.
+    #[test]
+    fn checkpoint_index_is_written_private() {
+        use crate::platform::test_support::{loosen_to_world_readable_for_test, permission_bits};
+        let ledger = TestDir::new("index-perms");
+        let index = CheckpointIndex {
+            version: 1,
+            entries: Vec::new(),
+        };
+        save_index(ledger.path(), &index).unwrap();
+        let path = index_path(ledger.path());
+        let Some(mode) = permission_bits(&path) else {
+            return; // the platform has no POSIX mode bits
+        };
+        assert_eq!(mode, 0o600, "a fresh checkpoint index must be private");
+
+        // An index left behind by a build that used fs::File::create.
+        assert!(loosen_to_world_readable_for_test(&path));
+        save_index(ledger.path(), &index).unwrap();
+        assert_eq!(
+            permission_bits(&path),
+            Some(0o600),
+            "a rewritten index must be tightened to private"
+        );
+    }
+
+    /// Patch output beyond `DIFF_PATCH_LIMIT` must truncate and set the flag,
+    /// and truncation happens after the secret filter (the dropped tail can
+    /// never be unfiltered content).
+    #[test]
+    fn diff_patch_truncates_to_limit_with_flag() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("patchtrunc-ledger");
+        let exec = TestDir::new("patchtrunc-exec");
+        exec.write("big.txt", "v1\n");
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        exec.write(
+            "big.txt",
+            &format!("v2\n{}\n", "x".repeat(DIFF_PATCH_LIMIT)),
+        );
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id, true).unwrap();
+        assert!(
+            diff.patch_truncated,
+            "a patch over the cap must carry the truncation flag: len={}",
+            diff.patch.len()
+        );
+        // Truncation semantics: the body is clamped to DIFF_PATCH_LIMIT and
+        // the notice travels only through the `patch_truncated` flag — no
+        // (single-language) tail is embedded in the data.
+        assert!(
+            !diff.patch.contains("已截断"),
+            "the patch data must not embed a notice tail: {:?}",
+            &diff.patch[diff.patch.len().saturating_sub(64)..]
+        );
+        assert!(
+            diff.patch.len() <= DIFF_PATCH_LIMIT,
+            "the patch must be clamped to DIFF_PATCH_LIMIT: len={}",
+            diff.patch.len()
+        );
+        // Truncation lands on a line boundary (the `--output` file is read
+        // back line-clamped): the secret filter depends on whole
+        // `diff --git` headers to drop sections wholesale — a half header
+        // could both miss a section and leak fragments to the consumer.
+        assert!(
+            diff.patch.ends_with('\n') || diff.patch.is_empty(),
+            "the truncated patch must end on a whole line: {:?}",
+            &diff.patch[diff.patch.len().saturating_sub(64)..]
+        );
+        assert!(
+            diff.patch.contains("big.txt"),
+            "the retained head must still carry the file header: {:?}",
+            &diff.patch[..diff.patch.len().min(200)]
+        );
+        // The spill file must not outlive the call: `.checkpoint-diff-*.tmp`
+        // holds the UNFILTERED diff (secret sections included), so a leftover
+        // is plaintext residue beside the shadow repo. Guards both the
+        // TempDiffFile drop and the spill's placement under the ledger (a
+        // regression to a shared temp dir would also fail the read-dir here).
+        let spills: Vec<String> = fs::read_dir(ledger.path().join("checkpoints"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".checkpoint-diff-"))
+            .collect();
+        assert!(
+            spills.is_empty(),
+            "diff spill files must be reaped after the call: {spills:?}"
+        );
+    }
+
+    /// The post-filter clamp exists for `from_utf8_lossy` expansion: a raw
+    /// diff under the cap whose bytes are invalid UTF-8 grows threefold when
+    /// read back as a String and can cross the cap after filtering. The flag
+    /// must flip even though the raw read never truncated.
+    #[test]
+    fn lossy_expansion_crossing_the_cap_flips_the_truncated_flag() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("lossy-ledger");
+        let exec = TestDir::new("lossy-exec");
+        exec.write("blob.txt", "");
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // Lone continuation bytes (0x80..0x9F): invalid UTF-8, no NUL anywhere
+        // (so git still emits a TEXT diff), ~200 KB raw — under the cap.
+        let bytes: Vec<u8> = (0..200_000usize)
+            .map(|i| 0x80u8 + (i % 0x20) as u8)
+            .collect();
+        fs::write(exec.path().join("blob.txt"), &bytes).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &target.id, true).unwrap();
+        assert!(
+            diff.patch_truncated,
+            "lossy expansion past the cap must set the flag: len={}",
+            diff.patch.len()
+        );
+        assert!(
+            diff.patch.len() <= DIFF_PATCH_LIMIT,
+            "the post-filter clamp must hold: len={}",
+            diff.patch.len()
+        );
+        assert!(
+            diff.patch.ends_with('\n'),
+            "the clamp must end on a line boundary"
+        );
+    }
+
+    /// `--raw` C-quotes paths containing quotes/tabs even with
+    /// `core.quotepath=false`; the trailing quote defeats a plain suffix
+    /// match, so the changes list would keep an entry the patch filter drops.
+    #[test]
+    fn raw_status_quoted_secret_paths_still_match() {
+        assert!(raw_status_path_is_secret(".env"));
+        assert!(raw_status_path_is_secret("my key.pem"));
+        // The C-quoted form as `--raw` emits it, outer quotes and all.
+        assert!(raw_status_path_is_secret("\"my \\\"key.pem\""));
+        assert!(!raw_status_path_is_secret("ok.txt"));
+        assert!(!raw_status_path_is_secret("\"quoted but clean.txt\""));
+    }
+
+    /// A spill file left by a hard kill must be reaped by the next
+    /// ensure_repo once it is older than the safety window; a recent one (a
+    /// live diff in this or another process) must be left alone.
+    #[test]
+    fn stale_diff_spill_files_are_reaped() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("spill-reap-ledger");
+        let exec = TestDir::new("spill-reap-exec");
+        exec.write("a.txt", "v1\n");
+        let dir = ledger.path().join("checkpoints");
+        fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(".checkpoint-diff-1-100.tmp");
+        fs::write(&stale, b"stale unfiltered diff").unwrap();
+        let fresh = dir.join(".checkpoint-diff-1-200.tmp");
+        fs::write(&fresh, b"live diff").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        assert!(!stale.exists(), "a stale spill must be reaped");
+        assert!(fresh.exists(), "a recent spill must be kept");
     }
 
     /// 按 id 作废「未成活」快照：条目与 ref 都移除；不存在幂等 false；
@@ -1808,10 +2806,22 @@ mod tests {
         let ledger = TestDir::new("drop-ledger");
         let exec = TestDir::new("drop-exec");
         exec.write("a.txt", "0\n");
-        let kept =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
-        let unsent =
-            create_checkpoint(ledger.path(), exec.path(), None, CheckpointKind::Turn).unwrap();
+        let kept = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let unsent = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::Turn,
+            "unsent",
+        )
+        .unwrap();
 
         assert!(drop_checkpoint(ledger.path(), &unsent.id).unwrap());
         let listed = list_checkpoints(ledger.path()).unwrap();
@@ -1851,7 +2861,8 @@ mod tests {
         let ledger = TestDir::new("missing-ledger");
         let missing = TestDir::new("missing-exec");
         let ghost = missing.path().join("ghost");
-        let result = create_checkpoint(ledger.path(), &ghost, Some(1), CheckpointKind::Turn);
+        let result =
+            create_checkpoint(ledger.path(), &ghost, Some(1), CheckpointKind::Turn, "test");
         assert!(result.is_err());
         assert!(list_checkpoints(ledger.path()).unwrap().is_empty());
     }
@@ -1866,8 +2877,14 @@ mod tests {
         exec.write("src/main.rs", "fn main() {}\n");
         exec.write("README.md", "v1\n");
 
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "第一轮消息",
+        )
+        .unwrap();
         assert_eq!(first.turn, Some(1));
 
         // turn 1 的改动：修改既有文件、新建文件、子目录文件。
@@ -1875,8 +2892,14 @@ mod tests {
         exec.write("src/new.rs", "pub fn added() {}\n");
         std::fs::remove_file(exec.path().join("README.md")).unwrap();
 
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "第二轮消息",
+        )
+        .unwrap();
 
         let listed = list_checkpoints(ledger.path()).unwrap();
         assert_eq!(listed.len(), 2);
@@ -1884,7 +2907,7 @@ mod tests {
         assert_eq!(listed[1].id, second.id);
 
         // diff 预览：快照（第一轮前）→ 当前 = 3 个文件的变更。
-        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        let diff = diff_checkpoint(ledger.path(), exec.path(), &first.id, true).unwrap();
         assert_eq!(diff.checkpoint.id, first.id);
         assert_eq!(diff.changes.len(), 3);
         assert!(
@@ -1901,6 +2924,13 @@ mod tests {
             diff.changes
                 .iter()
                 .any(|change| change.path == "src/main.rs" && change.status == "modified")
+        );
+        // The patch must carry the round trip too: a fresh file's diff body is
+        // what the CLI renderer prints, not just the status line.
+        assert!(
+            diff.patch.contains("src/new.rs") && diff.patch.contains("pub fn added()"),
+            "added files must appear in the patch with content: {:?}",
+            &diff.patch[..diff.patch.len().min(400)]
         );
 
         // 回滚到第一轮前：文件内容还原、新建文件被删除；返回回滚点可反悔。
@@ -1934,11 +2964,23 @@ mod tests {
         let ledger = TestDir::new("empty-ledger");
         let exec = TestDir::new("empty-exec");
         exec.write("a.txt", "a\n");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         // 无变更的 turn：复用同一 commit，但 meta 仍登记（turn 对齐不漂移）。
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
         assert_eq!(first.commit, second.commit);
         assert_ne!(first.id, second.id);
         assert_eq!(list_checkpoints(ledger.path()).unwrap().len(), 2);
@@ -1959,6 +3001,7 @@ mod tests {
                 exec.path(),
                 Some(turn as u32),
                 CheckpointKind::Turn,
+                "t",
             )
             .unwrap();
         }
@@ -1991,7 +3034,7 @@ mod tests {
         let ledger = root.path().join("ledger-nested");
         fs::create_dir_all(&ledger).unwrap();
         root.write("code.txt", "v1\n");
-        create_checkpoint(&ledger, root.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(&ledger, root.path(), Some(1), CheckpointKind::Turn, "t1").unwrap();
         root.write("code.txt", "v2\n");
         let undo = restore_checkpoint(
             &ledger,
@@ -2018,8 +3061,14 @@ mod tests {
         exec.write("node_modules/pkg/index.js", "dep\n");
         // fs_is_case_insensitive 的探针文件：并发同根会话的 add -A 不得卷入。
         exec.write(".Pinvou-Icase-Probe-1234", "");
-        let first =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .unwrap();
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(
@@ -2030,8 +3079,14 @@ mod tests {
         );
         // node_modules 内的变化不产生新 commit（被 exclude，不进入快照）。
         exec.write("node_modules/pkg/index.js", "dep2\n");
-        let second =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .unwrap();
         assert_eq!(first.commit, second.commit);
         // restore 不删除 turn 中新建的 ignored 文件（已知限制，protect node_modules）。
         exec.write("node_modules/pkg/new.js", "new dep\n");
@@ -2049,16 +3104,40 @@ mod tests {
         let ledger = TestDir::new("inval-ledger");
         let exec = TestDir::new("inval-exec");
         exec.write("a.txt", "0\n");
-        let t1 =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("a.txt", "1\n");
-        let t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
         exec.write("a.txt", "2\n");
-        let t3 =
-            create_checkpoint(ledger.path(), exec.path(), Some(3), CheckpointKind::Turn).unwrap();
-        let pre = create_checkpoint(ledger.path(), exec.path(), None, CheckpointKind::PreRestore)
-            .unwrap();
+        let t3 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(3),
+            CheckpointKind::Turn,
+            "t3",
+        )
+        .unwrap();
+        let pre = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::PreRestore,
+            "回滚点",
+        )
+        .unwrap();
 
         // 回退到第 1 轮：turn 2/3 的 Turn 快照作废，turn 1 与 PreRestore 保留。
         let removed = invalidate_turn_checkpoints_after(ledger.path(), 1).unwrap();
@@ -2113,19 +3192,37 @@ mod tests {
         let ledger = TestDir::new("stale-ledger");
         let exec = TestDir::new("stale-exec");
         exec.write("a.txt", "0\n");
-        let t1 =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         exec.write("a.txt", "1\n");
-        let old_t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let old_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "old t2",
+        )
+        .unwrap();
         // 截断时刻。created_at 是秒级：睡过一秒边界，保证与前后快照可区分。
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let cutoff = now_seconds();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         // 回退后的新分支同号快照（创建于截断之后）。
         exec.write("a.txt", "1-new\n");
-        let new_t2 =
-            create_checkpoint(ledger.path(), exec.path(), Some(2), CheckpointKind::Turn).unwrap();
+        let new_t2 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "new t2",
+        )
+        .unwrap();
 
         let removed = invalidate_stale_turn_checkpoints(ledger.path(), 1, cutoff).unwrap();
         assert_eq!(removed, 1);
@@ -2159,7 +3256,14 @@ mod tests {
         let ledger = TestDir::new("env-ledger");
         let exec = TestDir::new("env-exec");
         exec.write("a.txt", "0\n");
-        create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
         let repo = repo_dir(ledger.path());
 
         // Assert the strip contract directly via `Command::get_envs` without

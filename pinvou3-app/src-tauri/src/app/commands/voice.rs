@@ -752,12 +752,18 @@ fn strip_leading_thinking_block(text: &str) -> &str {
 }
 
 /// Frontend-facing error summary: a reqwest error's Display carries the full
-/// URL (possibly an intranet address or embedded credentials), and passing it
-/// through rawMessage would land it in frontend diagnostics persisted to
-/// localStorage. Keep only the error class and HTTP status here; the full
+/// URL (possibly an intranet address or embedded credentials), and a
+/// status-with-body error carries the endpoint's response body; passing
+/// either through rawMessage would land it in frontend diagnostics persisted
+/// to localStorage. Keep only the error class and HTTP status here; the full
 /// error chain goes to the local log only.
 fn summarize_voice_postprocess_error(error: &anyhow::Error) -> String {
     for cause in error.chain() {
+        if let Some(status_error) =
+            cause.downcast_ref::<crate::core::model_endpoint::StatusWithBodyError>()
+        {
+            return format!("model endpoint http {}", status_error.status());
+        }
         let Some(request_error) = cause.downcast_ref::<reqwest::Error>() else {
             continue;
         };
@@ -1011,16 +1017,8 @@ async fn call_voice_postprocess_model(
         ));
     }
 
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": voice_postprocess_max_tokens(mode, retry),
-        "stream": false
-    });
+    let max_tokens = voice_postprocess_max_tokens(mode, retry);
+    let mut body = voice_postprocess_request_body(model_name, &system, &user, max_tokens);
     apply_voice_reasoning_controls(&mut body, preset, &bridge.provider(), &base_url, model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(format!(
@@ -1034,9 +1032,12 @@ async fn call_voice_postprocess_model(
     .json(&body)
     .send()
     .await
-    .context("post voice postprocess chat/completions")?
-    .error_for_status()
-    .context("voice postprocess chat/completions status")?;
+    .context("post voice postprocess chat/completions")?;
+    let resp = crate::core::model_endpoint::error_for_status_with_body(
+        resp,
+        "voice postprocess chat/completions status",
+    )
+    .await?;
     let value: Value = resp
         .json()
         .await
@@ -1050,6 +1051,25 @@ async fn call_voice_postprocess_model(
         .and_then(Value::as_str)
         == Some("length");
     Ok((sanitize_voice_postprocess_output(&content), truncated))
+}
+
+/// One-shot Chat Completions body for voice postprocess. Field set mirrors the
+/// main-session engine wire (`model`/`messages`/`max_tokens`/`stream`, and —
+/// pinned by foundation tests — **no `temperature`**): a hard-coded 0 400s on
+/// gateways that pin sampling server-side (Kimi Coding Plan, live-probed
+/// 2026-09-30: "invalid temperature: only 1 is allowed for this model"). No
+/// `response_format`: postprocess returns prose, not JSON. Single source so
+/// the wire-drift budget stays testable.
+fn voice_postprocess_request_body(model: &str, system: &str, user: &str, max_tokens: u32) -> Value {
+    json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "max_tokens": max_tokens,
+        "stream": false
+    })
 }
 
 /// At most one in-flight postprocess request at a time: this command calls a
@@ -1310,6 +1330,87 @@ sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());
 #[cfg(test)]
 mod voice_postprocess_tests {
     use super::*;
+
+    #[test]
+    fn summarize_reduces_status_with_body_error_to_class_and_status() {
+        // error_for_status_with_body errors carry the endpoint's response
+        // body; the frontend-facing summary must keep only the class and
+        // status (same contract as the reqwest-error branch below), because
+        // the raw string is persisted to localStorage diagnostics.
+        // Mirrors the production chain exactly: the status error reaches
+        // this summarizer unwrapped, so the fallthrough would surface the
+        // endpoint body verbatim.
+        let error = anyhow::Error::new(crate::core::model_endpoint::StatusWithBodyError::new(
+            "voice postprocess chat/completions status",
+            reqwest::StatusCode::BAD_REQUEST,
+            Some("invalid temperature: only 1 is allowed for this model".to_string()),
+        ));
+        let summary = summarize_voice_postprocess_error(&error);
+        assert_eq!(summary, "model endpoint http 400 Bad Request");
+        assert!(
+            !summary.contains("temperature"),
+            "endpoint body must not reach the frontend-facing string: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_passes_non_http_errors_through() {
+        let error = anyhow::Error::msg("model not configured");
+        assert_eq!(
+            summarize_voice_postprocess_error(&error),
+            "model not configured"
+        );
+    }
+
+    /// Pin the call site, not just the builder: the builder pin above goes
+    /// red when `voice_postprocess_request_body` itself changes, but a
+    /// re-inlined body inside `call_voice_postprocess_model` would bypass it
+    /// silently. The request region must build through the shared builder
+    /// and must not carry a sampling parameter.
+    #[test]
+    fn call_voice_postprocess_model_builds_body_through_builder() {
+        let source = include_str!("voice.rs");
+        let start = source
+            .find("async fn call_voice_postprocess_model")
+            .expect("call_voice_postprocess_model definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("fn voice_postprocess_request_body")
+                .expect("voice_postprocess_request_body definition present")
+                + start];
+        assert!(
+            region.contains("voice_postprocess_request_body("),
+            "call_voice_postprocess_model must build its body via \
+             voice_postprocess_request_body"
+        );
+        assert!(
+            !region.contains("\"temperature\""),
+            "the postprocess request region must not re-inline a temperature \
+             field"
+        );
+    }
+
+    #[test]
+    fn voice_postprocess_body_mirrors_engine_wire_no_temperature() {
+        let body = voice_postprocess_request_body("k3", "sys prompt", "user content", 512);
+        assert!(
+            body.get("temperature").is_none(),
+            "aux voice body must mirror the engine wire (no temperature): a \
+             hard-coded 0 400s on sampling-pinned gateways — Kimi Coding Plan \
+             live 2026-09-30: only 1 is allowed for this model"
+        );
+        assert_eq!(body["model"], "k3");
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["stream"], false);
+        assert!(
+            body.get("response_format").is_none(),
+            "postprocess returns prose; no json mode"
+        );
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "sys prompt");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "user content");
+    }
 
     #[test]
     fn sanitize_strips_one_wrapping_quote_pair_only() {

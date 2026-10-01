@@ -532,7 +532,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
+    // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
     assert!(
         !load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
@@ -540,11 +540,15 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         "卸载应从禁用集清除残留 id"
     );
     install_marketplace_skill_sync("visualizer").unwrap();
+    // With every mode DenyAll (tool switches default-off), a reinstall counts
+    // as a fresh install: initialized scopes keep it off by default until the
+    // user explicitly enables it (matching the connectors' fresh-install
+    // default-off semantics).
     assert!(
-        sm::enabled_skills_for(ConnectorScope::Plain, None)
+        crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
             .iter()
-            .any(|(n, _)| n == "visualizer"),
-        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
+            .any(|id| id == "visualizer"),
+        "after reinstall the plain scope is disabled by default (DenyAll convergence semantics)"
     );
 
     match previous {
@@ -2541,4 +2545,207 @@ fn e2e_build_llm_cases() {
         let prompt = build_message_with_attachments(q.to_string(), vec![r], &ws);
         std::fs::write(out, prompt).expect("写 prompt");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Round-23 MAJOR 1c (review #455): regression pins for the consent-sync /
+// validation ordering in the tool install. The behavior shipped inside merge
+// `de04d54a9` with zero test pins; `install_marketplace_tool_post_install`
+// (the verbatim extraction of the command's post-install legs) makes the
+// ordering drivable without a Tauri harness. The fixture pack requires remote
+// validation against an unparsable URL, so `validate_remote_connection` fails
+// fast offline.
+// ---------------------------------------------------------------------------
+
+/// Writes the yuandian-mcp fixture with `validate_on_install` enabled so the
+/// install's validation leg actually runs (and fails fast on the bad URL).
+fn write_test_validating_marketplace_files(server_name: &str) {
+    let manifest = serde_json::json!({
+        "id": "yuandian-mcp",
+        "name": "华宇元典法律数据",
+        "description": "test",
+        "version": "1.0.0",
+        "icon": "BookOpen",
+        "category": "kb",
+        "validate_on_install": true,
+        "mcp_tools": [],
+        "command": "",
+        "args": [],
+        "servers": [{
+            "name": server_name,
+            "url": "not-a-url",
+            "scopes": ["legal"],
+            "oauth": { "client_id": "test-client" }
+        }]
+    });
+    write_json(
+        &crate::features::marketplace::mcp_catalog::package_mcp_dir("yuandian-mcp")
+            .join("manifest.json"),
+        manifest,
+    );
+    write_json(
+        &crate::platform::paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json"),
+        serde_json::json!(["yuandian-mcp"]),
+    );
+    write_json(
+        &crate::platform::paths::mcp_config_path(),
+        serde_json::json!({ "servers": { server_name: {
+            "url": "not-a-url",
+            "scopes": ["legal"],
+            "oauth": { "client_id": "test-client" }
+        } } }),
+    );
+}
+
+fn disabled_file_ids() -> (Vec<String>, Vec<String>, Vec<String>) {
+    let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+    (
+        file.scopes.values().flatten().cloned().collect(),
+        file.hidden_scopes.values().flatten().cloned().collect(),
+        file.default_off_scopes
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+    )
+}
+
+fn disabled_file_ledger() -> Vec<String> {
+    crate::features::marketplace::scope::load_disabled_bundles_file().install_default_synced
+}
+
+/// Pin 1: a validation failure's rollback uninstall must leave NO rows,
+/// markers, or ledger entries for the pack anywhere in
+/// `disabled_bundles.json` — the consent sync ran before validation and
+/// wrote rows; the rollback's teardown (the exact form,
+/// `remove_bundle_from_disabled_scopes_exact`, required because the pack
+/// directory is already gone when it runs) removes them again, so the
+/// pack ends up neither installed nor consent-stranded. Fails if the
+/// teardown is dropped from the rollback path (round-32 minor 2: the pin
+/// now reads all four sets the teardown clears, ledger included).
+#[tokio::test]
+async fn install_validation_failure_rollback_leaves_no_consent_rows() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("install-validation-rollback");
+    write_test_validating_marketplace_files("yuandian-rollback-test");
+
+    // Seed consent rows exactly where the pre-validation sync writes them:
+    // `save_disabled_bundles_for` initializes both scopes with the pack
+    // stored-off (the same store, rows and teardown the sync/rollback pair
+    // exercises).
+    crate::features::marketplace::scope::save_disabled_bundles_for(
+        crate::features::marketplace::ConnectorScope::Plain,
+        &["yuandian-mcp".to_string()],
+    )
+    .unwrap();
+    crate::features::marketplace::scope::save_disabled_bundles_for(
+        crate::features::marketplace::ConnectorScope::Code,
+        &["yuandian-mcp".to_string()],
+    )
+    .unwrap();
+    let (dis, _hid, _def) = disabled_file_ids();
+    assert!(
+        dis.contains(&"yuandian-mcp".to_string()),
+        "fixture precondition: the pack is stored-off before the rollback"
+    );
+
+    let err = install_marketplace_tool_post_install("yuandian-mcp".to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        !err.contains("installed, but persisting their default-off consent state failed"),
+        "the failure is the validation leg, not the consent-sync leg: {err}"
+    );
+
+    // The rollback uninstall consumed the install...
+    assert!(
+        !crate::features::marketplace::MarketplaceManager::new()
+            .installed_ids()
+            .contains(&"yuandian-mcp".to_string()),
+        "the failed validation must roll the pack back out of installed.json"
+    );
+    // ...and its teardown must leave no consent rows or markers behind.
+    let (dis, hid, def) = disabled_file_ids();
+    assert!(
+        !dis.contains(&"yuandian-mcp".to_string()),
+        "rollback teardown must remove the disabled rows the sync wrote: {dis:?}"
+    );
+    assert!(
+        !hid.contains(&"yuandian-mcp".to_string()),
+        "rollback teardown must remove hidden rows too: {hid:?}"
+    );
+    assert!(
+        !def.contains(&"yuandian-mcp".to_string()),
+        "rollback teardown must remove install-default markers too: {def:?}"
+    );
+    // Round-32 minor 2 (review #455): the ledger is the fourth set the exact
+    // teardown clears — a stranded `plain:yuandian-mcp` entry would keep the
+    // startup refresh from ever re-syncing default-off for a same-id
+    // reinstall.
+    let ledger = disabled_file_ledger();
+    assert!(
+        ledger.iter().all(|entry| !entry.ends_with(":yuandian-mcp")),
+        "rollback teardown must clear the pack's ledger entries too: {ledger:?}"
+    );
+}
+
+/// Pin 2: a consent-sync persist failure fails the install with the honest
+/// no-rollback copy (round-22 MAJOR 1) while `installed.json` and mcp.json
+/// still hold the pack — no silent half-consented rollback on this arm.
+/// Order-sensitive: under the pre-round-21 ordering (validation first) the
+/// bad URL would produce the validation error instead, so this pin also
+/// guards the sync-before-validation reorder itself.
+#[tokio::test]
+async fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("install-sync-persist-fail");
+    write_test_validating_marketplace_files("yuandian-syncfail-test");
+    // Pre-warm the store so the first-boot freeze persist (inside the sync's
+    // read path) consumes nothing — the failpoint must be consumed by the
+    // sync's own write. The freeze's own failure mode is already memoized
+    // in-process (round-11 M4), which is exactly what the pre-warm settles.
+    let _ = crate::features::marketplace::scope::load_disabled_bundles_file();
+    let _failpoint =
+        crate::features::marketplace::scope::fail_next_disabled_bundles_write_for_test();
+
+    let err = install_marketplace_tool_post_install("yuandian-mcp".to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("installed, but persisting their default-off consent state failed"),
+        "the consent-sync persist failure must surface the honest sibling copy: {err}"
+    );
+
+    // No rollback runs on this arm: the pack stays installed and registered.
+    assert!(
+        crate::features::marketplace::MarketplaceManager::new()
+            .installed_ids()
+            .contains(&"yuandian-mcp".to_string()),
+        "the pack must stay in installed.json — the honest copy says so"
+    );
+    let mcp: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        mcp["servers"].get("yuandian-syncfail-test").is_some(),
+        "the mcp.json server must survive the consent-sync failure"
+    );
+    // And the failed write persisted nothing — ledger included (round-32
+    // minor 2).
+    let (dis, hid, def) = disabled_file_ids();
+    assert!(
+        dis.is_empty() && hid.is_empty() && def.is_empty(),
+        "a failed consent persist must not strand rows: {dis:?} {hid:?} {def:?}"
+    );
+    assert!(
+        disabled_file_ledger().is_empty(),
+        "a failed consent persist must not strand ledger entries either"
+    );
 }

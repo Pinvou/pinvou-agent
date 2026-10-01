@@ -38,7 +38,8 @@ use crate::features::codex_acp::{
 /// waiting) and far below a user-visible hang.
 const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 use crate::features::projects::{
-    MoveSessionOutcome, Project, ProjectStore, RebindRootsError, SessionAssignments,
+    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, RebindRootsError,
+    SessionAssignments,
 };
 use crate::features::sessions::{RebindBindingsOutcome, SessionStore};
 
@@ -177,12 +178,12 @@ pub async fn delete_project(
     project_id: String,
     app: AppHandle,
     store: State<'_, ProjectStore>,
-) -> Result<(), String> {
-    store
+) -> Result<DeleteProjectReport, String> {
+    let report = store
         .delete_project(&project_id)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
-    Ok(())
+    Ok(report)
 }
 
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。
@@ -1914,6 +1915,31 @@ mod tests {
         assert_eq!(roots[1]["available"], serde_json::json!(false));
 
         let _ = std::fs::remove_dir_all(&existing);
+    }
+
+    /// Wire-shape locks: the CLI consumes `delete_project`'s return value
+    /// and the move outcome's `project_id` verbatim; a serde rename or a
+    /// dropped field would silently change that cross-process contract.
+    #[test]
+    fn delete_project_report_wire_keys_are_stable() {
+        let value = serde_json::to_value(DeleteProjectReport {
+            affected_session_ids: vec!["s1".to_string()],
+        })
+        .expect("serialize DeleteProjectReport");
+        let object = value.as_object().expect("report serializes as an object");
+        assert!(object.contains_key("affected_session_ids"));
+    }
+
+    #[test]
+    fn move_session_outcome_wire_keys_are_stable() {
+        let value = serde_json::to_value(MoveSessionOutcome {
+            project_id: Some("p1".to_string()),
+            added_root: None,
+        })
+        .expect("serialize MoveSessionOutcome");
+        let object = value.as_object().expect("outcome serializes as an object");
+        assert!(object.contains_key("project_id"));
+        assert!(object.contains_key("added_root"));
     }
 
     #[test]
