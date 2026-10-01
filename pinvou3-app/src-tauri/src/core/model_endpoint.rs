@@ -388,9 +388,11 @@ pub async fn fetch_ollama_contexts(
 }
 
 /// `/api/show` 的探测结果三态：`Declared` —— `parameters` 带可采纳的
-/// `num_ctx`；`NoDeclaration` —— 2xx 且 JSON 合形但无 `num_ctx`（"未声明"
-/// 是与声明一样稳定的事实，可负缓存）；`Unreachable` —— 传输失败 / 非成功
-/// 状态 / 响应不合形（瞬态，不缓存，下轮重询）。
+/// `num_ctx`；`NoDeclaration` —— 2xx 且 JSON 合形但无 `num_ctx`，或 404
+/// （清单里没有这个名字：未下载 / 名称不符——与"未声明"一样是稳定的按名
+/// 事实，可负缓存，否则 monitor 1 Hz 轮询会对同一个不存在的名字每秒重发
+/// POST）；`Unreachable` —— 传输失败 / 其余非成功状态 / 响应不合形（瞬态，
+/// 不缓存，下轮重询）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OllamaShowProbe {
     Declared(u32),
@@ -414,6 +416,11 @@ pub async fn probe_ollama_show_context(
             .send()
             .await
             .ok()?;
+        // 404 是稳定的按名事实（清单里没有这个名字），按"未声明"负缓存；
+        // 其余非 2xx 视为瞬态。
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Some(None);
+        }
         if !resp.status().is_success() {
             return None;
         }
@@ -1985,12 +1992,18 @@ mod tests {
         };
         assert_eq!(window_of("loaded-131k"), Some(131_072));
         assert_eq!(window_of("jit-only"), None);
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the list probe reuses its own /api/ps response — no per-model /api/show fan-out"
+        );
     }
 
     /// The `/api/show` cache only caches well-formed responses: transport
     /// failures / non-success statuses are transient and must not pin "no
-    /// window" into the 60s TTL (each call re-tries), while a well-formed
-    /// miss is as stable as a declaration and caches for the TTL. Fresh
+    /// window" into the 60s TTL (each call re-tries; 404 excepted — a
+    /// stable per-name miss, see the next test), while a well-formed miss
+    /// is as stable as a declaration and caches for the TTL. Fresh
     /// names + fresh ports per segment keep the shared static cache from
     /// colliding with parallel tests.
     #[tokio::test]
@@ -2025,6 +2038,34 @@ mod tests {
             mock.hits_for("/api/show"),
             1,
             "well-formed misses cache for the TTL"
+        );
+        let _ = clear_ollama_show_cache();
+    }
+
+    /// A 404 `/api/show` is a stable per-name fact (the manifest does not
+    /// list this name): cached like a well-formed miss, so a permanently
+    /// wrong name does not re-POST once per monitor poll; other non-2xx
+    /// stay transient (the 500 segment above).
+    #[tokio::test]
+    async fn show_404_is_a_stable_per_name_miss_cached_for_ttl() {
+        let _ = clear_ollama_show_cache();
+        let mock = models_mock::spawn(&[(
+            "/api/show",
+            404,
+            r#"{"error":"model 'x' not found"}"#.into(),
+        )]);
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "absent-model-z").await,
+            None
+        );
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "absent-model-z").await,
+            None
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "a 404 is stable per name — served from the TTL cache, not re-POSTed per poll"
         );
         let _ = clear_ollama_show_cache();
     }
