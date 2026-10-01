@@ -35,8 +35,8 @@ order:
 
 1. Checkout (`submodules: false`), then
    `git submodule update --init --recursive -- CodeWhale`.
-2. `dtolnay/rust-toolchain@stable`, then `rustup default` aligned to the
-   `rust-toolchain.toml` pin (same toolchain as local development).
+2. `dtolnay/rust-toolchain@stable`, then `rustup default` aligned to whatever
+   the `rust-toolchain.toml` selects (same toolchain as local development).
 3. Compile `rustc-stack-wrapper.exe` (`rustc -O`) and export it as
    `RUSTC_WRAPPER`: compile-time-only `RUST_MIN_STACK=16MiB`; the `.exe` form
    avoids the cmd.exe 8191-character command-line limit.

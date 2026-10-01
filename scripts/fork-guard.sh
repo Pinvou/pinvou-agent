@@ -27,7 +27,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 34 个登记提交，r3 已收口）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 35 个登记提交，r3 收口后过渡期）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（gitlink=维护分支头；过渡期内领先钉在 r3 收口的 tag）"
@@ -44,7 +44,7 @@ else
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（r3 收口后 gitlink=分支头=tag）"
+  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（过渡期内 gitlink=分支头，领先钉在 r3 收口的 tag）"
 else
   red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，线性前进关系断裂"
   fail=1

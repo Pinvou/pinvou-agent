@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-23（r3 已收口：不可变 tag `pinvou-v0.9.12-r3` 切在 `61cb769be`，gitlink/维护分支/tag 三方相等）
+> 最后更新：2026-10-02（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 CodeWhale#80 前进至 `44921cf02`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 

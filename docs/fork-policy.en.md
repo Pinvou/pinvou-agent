@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-09-23. r3 closure complete: the immutable tag `pinvou-v0.9.12-r3` is cut at `61cb769be`, with the parent gitlink, the maintenance branch and the tag all pointing at the same commit.
+> Updated: 2026-10-02. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `44921cf02` with CodeWhale#80 — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
