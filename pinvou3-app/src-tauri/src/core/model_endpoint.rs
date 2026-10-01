@@ -543,6 +543,26 @@ pub(crate) fn clear_ollama_show_cache() {
     }
 }
 
+/// 仅测试用：把 show 缓存中的现有条目回拨到 TTL 之外，让"到期后必须真正
+/// 重查"可以在不 sleep 的情况下断言（删除 `elapsed < TTL` 检查 = 缓存
+/// 永不过期、改过的 `num_ctx` 到重启前都不再重读——该回归只能由本助手
+/// 揭红）。
+#[cfg(test)]
+pub(crate) fn age_ollama_show_cache_beyond_ttl() {
+    let Some(cache) = OLLAMA_SHOW_CACHE.get() else {
+        return;
+    };
+    let Ok(mut guard) = cache.lock() else {
+        return;
+    };
+    let past = std::time::Instant::now()
+        .checked_sub(OLLAMA_SHOW_CACHE_TTL + Duration::from_secs(1))
+        .expect("monotonic clock far enough past boot to backdate a 60s TTL");
+    for entry in guard.values_mut() {
+        entry.0 = past;
+    }
+}
+
 /// 单模型上下文事实，按可信度排序：`/api/ps` 的生效值（模型已加载时即部署
 /// 真相，[`ollama_ps_context_lookup`] 容忍裸名省略 tag）→ `/api/show` 的
 /// Modelfile `num_ctx` 显式声明（60s 缓存，monitor 与引擎共享；GGUF 重读是
@@ -2148,6 +2168,82 @@ mod tests {
             "a 404 is stable per name — served from the TTL cache, not re-POSTed per poll"
         );
         let _ = clear_ollama_show_cache();
+    }
+
+    /// TTL 到期必须真正重查：删掉 `elapsed < TTL` 检查（缓存永不过期，
+    /// 服务端改过的 `num_ctx` 到重启前都不再重读）时本测试必须变红。
+    /// Runs under ENV_LOCK for the same cross-test reason as the count
+    /// pins above; aging replaces a sleep so the assertion is exact.
+    #[tokio::test]
+    async fn cached_ollama_show_context_re_fetches_after_ttl() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = clear_ollama_show_cache();
+        let mock = models_mock::spawn(&[(
+            "/api/show",
+            200,
+            r#"{"parameters":"num_ctx 8192"}"#.into(),
+        )]);
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "ttl-expiry-x").await,
+            Some(8_192)
+        );
+        age_ollama_show_cache_beyond_ttl();
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "ttl-expiry-x").await,
+            Some(8_192),
+            "the value must come back fresh, not from the aged entry"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            2,
+            "an expired entry must re-fetch, not serve stale forever"
+        );
+        let _ = clear_ollama_show_cache();
+    }
+
+    /// 缓存键刻意不含凭证（同一服务端的部署事实；错误凭证得到 401 →
+    /// `Unreachable` → 不入缓存，跨凭证共享键不会投毒）：换凭证 / 去掉
+    /// 凭证都不得裂出第二个缓存条目。
+    #[tokio::test]
+    async fn cached_ollama_show_context_shares_key_across_credentials() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = clear_ollama_show_cache();
+        let mock = models_mock::spawn(&[(
+            "/api/show",
+            200,
+            r#"{"parameters":"num_ctx 4096"}"#.into(),
+        )]);
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, Some("k1"), "cred-share-x").await,
+            Some(4_096)
+        );
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "cred-share-x").await,
+            Some(4_096),
+            "the credential-free entry must serve the credential-less caller too"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "the cache key must not fork per credential"
+        );
+        let _ = clear_ollama_show_cache();
+    }
+
+    /// 裸名与规范化名同时在 `/api/ps` 表中（服务器同时加载了两个 ref）时
+    /// 必须精确命中配置名自己的条目——`:latest` 补查只是裸名的兜底，不是
+    /// 优先路径。
+    #[test]
+    fn ollama_ps_lookup_prefers_exact_over_canonical() {
+        let mut contexts = std::collections::HashMap::new();
+        contexts.insert("llama3".to_string(), 4_096);
+        contexts.insert("llama3:latest".to_string(), 131_072);
+        assert_eq!(
+            ollama_ps_context_lookup(&contexts, "llama3"),
+            Some(4_096),
+            "the exact configured-name entry wins over the canonical fallback"
+        );
+        assert_eq!(ollama_ps_context_lookup(&contexts, "llama3:latest"), Some(131_072));
     }
 
     /// Ollama canonicalizes a bare model name to `name:latest` in `/api/ps`

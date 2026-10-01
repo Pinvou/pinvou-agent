@@ -809,6 +809,7 @@ pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::paths::tests::ENV_LOCK;
     use crate::platform::prefs::ModelPreset;
 
     #[tokio::test]
@@ -1144,6 +1145,7 @@ mod tests {
     /// fetch entirely.
     #[tokio::test]
     async fn local_native_display_window_gates_locality_roster_and_kind() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         use crate::core::model_endpoint::models_mock;
         // Public base_url under a local preset (target_kind forced "local"
         // by the caller): the locality gate ends the lookup before any
@@ -1228,11 +1230,12 @@ mod tests {
             "a known vLLM kind takes its window from the listing, not a native follow-up"
         );
         assert_eq!(mock.hits_for("/api/ps"), 0);
-        // No clear_probe_kind_cache here: monitor tests run without the
-        // ENV_LOCK serializer engine tests use, and wiping the shared kind
-        // cache could race a concurrent finalize test. The one cached entry
-        // for this now-dead mock port is TTL-bounded and keyed by a URL no
-        // other test uses.
+        // The vLLM classification above seeded the shared kind cache with
+        // this mock's live port; clear it under the ENV_LOCK serializer (the
+        // same lock engine-side cache tests hold) so a later test whose mock
+        // reuses the port within the 60s kind TTL cannot inherit the stale
+        // classification and skip its own probe.
+        crate::core::model_endpoint::clear_probe_kind_cache();
     }
 
     /// A cached LM Studio kind routes the display follow-up to the v0
@@ -1241,6 +1244,7 @@ mod tests {
     /// served window (#726's 12918-vs-131072 shape) would never display.
     #[tokio::test]
     async fn local_native_display_window_uses_lmstudio_served_api() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         use crate::core::model_endpoint::models_mock;
         let mock = models_mock::spawn(&[
             (
@@ -1268,6 +1272,11 @@ mod tests {
             0,
             "the LmStudio arm must not fall through to the Ollama ps probe"
         );
+        // Same cross-test hygiene as the vLLM-kind gate test: the LM Studio
+        // classification seeded the shared kind cache with this mock's live
+        // port — clear it under ENV_LOCK so a port-reusing later test cannot
+        // inherit the stale kind.
+        crate::core::model_endpoint::clear_probe_kind_cache();
     }
 
     /// A hand-typed tagless configured name against a single-model Ollama
