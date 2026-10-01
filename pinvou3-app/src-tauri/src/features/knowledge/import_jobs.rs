@@ -309,17 +309,6 @@ impl ImportJobStore {
         tx.commit()
     }
 
-    pub fn is_cancelled(&self, job_id: &str) -> bool {
-        self.conn
-            .lock()
-            .query_row(
-                "SELECT state='cancelled' FROM knowledge_import_jobs WHERE id=?1",
-                params![job_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(true)
-    }
-
     /// Whether the job has LEFT its runnable states (`preparing`/`running`)
     /// — an external `interrupt` or `cancel` landed mid-import. The ingest
     /// loop stops on this, not just on its in-memory `cancel` flag: a thread
@@ -327,7 +316,7 @@ impl ImportJobStore {
     /// moved back to pending and end the job fully-ingested yet
     /// `interrupted`, which would force a no-op `index resume` purely to
     /// reconcile the state. A read error keeps the loop's fail-safe
-    /// direction (assume stopped — the same direction `is_cancelled` takes).
+    /// direction (assume stopped).
     pub fn is_stopped(&self, job_id: &str) -> bool {
         self.conn
             .lock()
