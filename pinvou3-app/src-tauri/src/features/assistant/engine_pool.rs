@@ -2260,8 +2260,16 @@ impl EnginePool {
             // `/api/v0/models` are one small local GET each). Worst case
             // while pending is ~6s inline on this send path (a 3s ps timeout
             // plus, when ps answered Ollama-shaped-but-missing, an uncached
-            // 3s show — `Unreachable` is never cached), ending once the fact
-            // materializes or the entry is reclaimed. The first post-load
+            // 3s show — `Unreachable` is never cached). The re-check ends
+            // once the fact materializes — and only then, not at the idle
+            // reap: an entry in active use never goes idle (every send
+            // refreshes `last_active`), so on a shape that can never prove
+            // a fact (the model unloads between turns on a keep_alive=0
+            // server, or a pre-0.6 Ollama whose `/api/ps` carries no
+            // `context_length`) the re-check rides each send for the
+            // engine's lifetime until an unrelated rebuild drops the
+            // marker (disclosed residual; healthy servers pay ~ms). The
+            // first post-load
             // check finds the real window and the entry is dropped for the
             // rebuild below, which re-finalizes with the fact adopted —
             // instead of the collapsed 8192-fallback budget surviving the
@@ -8699,7 +8707,11 @@ mod probed_facts_wiring_tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _env = isolate_model_env();
         let mock = models_mock::spawn(&[
-            ("/v1/models", 200, r#"{"data":[{"id":"llama3:latest"}]}"#.into()),
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"llama3:latest"}]}"#.into(),
+            ),
             (
                 "/api/ps",
                 200,

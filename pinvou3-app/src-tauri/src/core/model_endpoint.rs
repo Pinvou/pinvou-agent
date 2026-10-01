@@ -2178,11 +2178,8 @@ mod tests {
     async fn cached_ollama_show_context_re_fetches_after_ttl() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _ = clear_ollama_show_cache();
-        let mock = models_mock::spawn(&[(
-            "/api/show",
-            200,
-            r#"{"parameters":"num_ctx 8192"}"#.into(),
-        )]);
+        let mock =
+            models_mock::spawn(&[("/api/show", 200, r#"{"parameters":"num_ctx 8192"}"#.into())]);
         assert_eq!(
             cached_ollama_show_context(&mock.base_url, None, "ttl-expiry-x").await,
             Some(8_192)
@@ -2208,11 +2205,8 @@ mod tests {
     async fn cached_ollama_show_context_shares_key_across_credentials() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _ = clear_ollama_show_cache();
-        let mock = models_mock::spawn(&[(
-            "/api/show",
-            200,
-            r#"{"parameters":"num_ctx 4096"}"#.into(),
-        )]);
+        let mock =
+            models_mock::spawn(&[("/api/show", 200, r#"{"parameters":"num_ctx 4096"}"#.into())]);
         assert_eq!(
             cached_ollama_show_context(&mock.base_url, Some("k1"), "cred-share-x").await,
             Some(4_096)
@@ -2243,7 +2237,10 @@ mod tests {
             Some(4_096),
             "the exact configured-name entry wins over the canonical fallback"
         );
-        assert_eq!(ollama_ps_context_lookup(&contexts, "llama3:latest"), Some(131_072));
+        assert_eq!(
+            ollama_ps_context_lookup(&contexts, "llama3:latest"),
+            Some(131_072)
+        );
     }
 
     /// Ollama canonicalizes a bare model name to `name:latest` in `/api/ps`

@@ -463,9 +463,9 @@ fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str
     match configured.map(str::trim).filter(|name| !name.is_empty()) {
         Some(configured) => {
             served.eq_ignore_ascii_case(configured)
-                || served.eq_ignore_ascii_case(
-                    &crate::core::model_endpoint::ollama_canonical_name(configured),
-                )
+                || served.eq_ignore_ascii_case(&crate::core::model_endpoint::ollama_canonical_name(
+                    configured,
+                ))
         }
         None => true,
     }
@@ -491,13 +491,18 @@ fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str
 ///    window. An uncached kind (never probed — e.g. a monitor-only target
 ///    the engine never classified) still tries the Ollama-shaped `/api/ps`
 ///    probe, and a non-Ollama shape ends the lookup; a known other kind
-///    (vLLM / llama.cpp / …, whose listing carries the window) skips the
-///    fetch entirely — no per-poll doomed `/api/ps` for servers the engine
-///    already identified. That skip is TTL-scoped like every cached kind:
-///    60s after the last engine-side classification the monitor resumes
-///    the probe, so a never-classified (or stale-classified) target pays
-///    at most one small doomed 404 per poll — bounded by the shared 3s
-///    probe client. One honest exception: while `/api/show` itself
+///    skips the fetch entirely — no per-poll doomed `/api/ps` for servers
+///    the engine already identified. (vLLM listings carry `max_model_len`
+///    so there is nothing to follow up; llama.cpp-class listings usually
+///    don't — the engine also skips native for those kinds, so the display
+///    here shows the same preset fallback the engine's budget uses instead
+///    of a diverging native fact.) That skip is TTL-scoped like every
+///    cached kind: 60s after the last engine-side classification the
+///    monitor resumes the probe; a monitor-only target the engine never
+///    classified keeps paying one small doomed 404 per poll for as long
+///    as it stays unclassified (the monitor deliberately only reads the
+///    cache), bounded by the shared 3s probe client. One honest
+///    exception: while `/api/show` itself
 ///    persistently errors (5xx / hang), those responses are `Unreachable`
 ///    and deliberately uncached — a busy server must not be pinned to "no
 ///    window" — so the lookup re-POSTs show once per poll until the server
@@ -550,8 +555,11 @@ async fn local_native_display_window(
             }
             crate::core::model_endpoint::cached_ollama_show_context(upstream, api_key, name).await
         }
-        // A known other kind (vLLM / llama.cpp / …): its listing carries the
-        // window; a native follow-up would be a doomed per-poll request.
+        // A known other kind: the engine's own adoption also skips native
+        // for it, so the display must not dial a doomed per-poll request.
+        // vLLM listings carry `max_model_len` (nothing to follow up);
+        // llama.cpp-class listings usually don't, and the display then
+        // shows the same preset fallback the engine's budget uses.
         Some(_) => None,
     }
 }
