@@ -6020,6 +6020,14 @@ mod tests {
     #[test]
     fn rebind_acp_production_closures_read_prompt_pending() {
         let src = include_str!("mod.rs");
+        // Round-26 MAJOR-3: cut at the test module exactly like projects.rs's
+        // `production_source` (round-18) — an unanchored find over the WHOLE
+        // file lands on this probe's own string argument once the production
+        // function is deleted or renamed, and the span then contains the
+        // probe's own assertion text, which can never fail.
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
         let fence = production_body(src, "pub async fn rebind_blocking_sessions");
         assert!(
             fence.contains("prompt_pending"),

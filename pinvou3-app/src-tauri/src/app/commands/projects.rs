@@ -892,11 +892,43 @@ pub async fn rebind_workspace_root(
             .or_else(|| SessionAgentStore::rebind_target_path(bound_path, &from, &to_display))
         {
             Some(path) => {
-                if repaired_target.is_some() {
-                    per_session_from = sessions
-                        .load(session_id)
-                        .ok()
-                        .map(|session| session.metadata.workspace.clone());
+                // Round-26 MAJOR-1: the repair arm is not the only
+                // metadata-behind-binding shape. A prior run can move the
+                // binding lanes durably and still fail the metadata pass —
+                // artifacts, acp-state and metadata all stranded on THAT
+                // run's target. When a later run admits the session, the
+                // binding maps through the current geometry, but the
+                // stranded earlier-era artifact and acp-state paths match
+                // neither prefix: translating with the run-global map
+                // persists nothing, `set_workspace` moves the metadata to
+                // the new target, and the run claims Rebound over dead
+                // deliverable paths (the round-14 B2 resurrection class,
+                // reintroduced through the multi-run path). Load the
+                // pre-sync metadata for EVERY admitted session and key the
+                // per-session `from` on the actual condition — metadata
+                // identity ≠ the binding the scan admitted — instead of on
+                // the repair arm alone.
+                match sessions.load(session_id) {
+                    Ok(session) => {
+                        let pre_sync = session.metadata.workspace.clone();
+                        if metadata_behind_binding(&pre_sync, bound_path)
+                            || repaired_target.is_some()
+                        {
+                            per_session_from = Some(pre_sync);
+                        }
+                    }
+                    // Round-24 minor-1 class: no silent swallow (the error
+                    // chain embeds the session path — root cause only). A
+                    // failed pre-sync load leaves `per_session_from` None:
+                    // the global map still translates in-geometry lanes and
+                    // `set_workspace` below fails honestly on the same
+                    // unreadable record.
+                    Err(error) => {
+                        eprintln!(
+                            "[projects] rebind pre-sync metadata load failed: {}",
+                            error.root_cause()
+                        );
+                    }
                 }
                 Some(path)
             }
@@ -907,6 +939,18 @@ pub async fn rebind_workspace_root(
                 // than dropping the session from the run, but only when the
                 // metadata is actually behind (otherwise this is the
                 // healthy-eviction-candidate shape and `continue` is right).
+                // Reachability (round-26 minor 1): every feed into
+                // `metadata_rebind_targets` is provably under this run's
+                // from/to/repaired geometry, so this arm is structurally
+                // unreachable at this head — it stays as the late-arm
+                // backstop, with its known limits on record: a repaired
+                // session whose ARTIFACT rebase failed is invisible to a
+                // same-geometry rerun (index == sidecar at the repair target
+                // matches neither prefix scan), the shape this arm's
+                // failed_session_ids push was believed to cover; and the
+                // round-18 MAJOR-2 "additionally" wording described a
+                // convergence this arm cannot engage. Recorded, not
+                // re-fenced late-cycle.
                 match sessions.load(session_id) {
                     Ok(session) => {
                         let identity = |value: &str| {
@@ -1388,7 +1432,12 @@ pub async fn rebind_workspace_root(
     // workspace_rebound events carry the rebind geometry and cover every
     // session whose persisted artifact paths this PR's lanes rebased —
     // rebound, failed (lanes moved; something else did not finish), and
-    // post-busy (moved by this or an earlier run). The frontend marks those
+    // post-busy (moved by this or an earlier run). Wording scoped per
+    // round-26 minor 1: "dead ids are never REPORTED as rebound, hence
+    // never evented as one" — the failed/post-busy chains below carry ids
+    // verbatim and a mid-run delete can surface there transiently (the
+    // safe, self-healing direction this file documents at the loop head).
+    // The frontend marks those
     // sessions so their in-memory buffers stop re-persisting stale artifact
     // paths over the rebased JSON: a chat turn completed after the rebind
     // wholesale-saves the buffer's artifact list, and without the mark that
@@ -1540,12 +1589,12 @@ fn classify_absent_record_session(
 /// cannot drift from it. `None` = the record is still on disk; the caller
 /// proceeds normally.
 ///
-/// Round-21 SF-6 applies at every call site unchanged: the codex term is
-/// structurally dead here — `binding_artifacts_exist` now begins with
-/// `binding_owner_exists`, which stats the same sessions/<id>.json whose
-/// NotFound routed us into this arm, so only the plain term can ever be
-/// live. The owner-gate invariant makes the codex arm unreachable, not the
-/// plain one.
+/// The classification consults the PLAIN term only
+/// (`workspace_binding_artifacts_exist`: in-memory cache or sidecar file) —
+/// the codex-lane `binding_artifacts_exist` was removed as caller-less dead
+/// code (round-26 minor 1: the ghost helper is its only historical caller,
+/// and the codex record probe it began with is `binding_owner_exists`'s
+/// job, which the scan and write passes gate on directly).
 fn absent_record_outcome_if_ghost(
     sessions: &SessionStore,
     session_id: &str,
@@ -1803,6 +1852,18 @@ fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &m
 /// every plain chat — `set_workspace` twice and, worse, the id twice in
 /// `rebound_session_ids` (no dedup downstream), so the dialog would claim
 /// "Rebound 2N" for N plain chats (round-8 review finding 1).
+/// Whether a session's pre-sync metadata sits behind the binding the scan
+/// admitted (round-26 MAJOR-1): folded identity-key compare, same domain as
+/// the to-lane's `needs_metadata_sync` — a case/separator spelling drift is
+/// the same directory (not behind), a different target is (behind, carrying
+/// an earlier era's artifact and acp-state paths).
+fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
+    crate::platform::os::filesystem_path_identity_key(&pre_sync.to_string_lossy())
+        .trim_end_matches('/')
+        != crate::platform::os::filesystem_path_identity_key(&bound_path.to_string_lossy())
+            .trim_end_matches('/')
+}
+
 fn metadata_rebind_targets(
     affected: &[(String, PathBuf)],
     codex_rebound: &[(String, PathBuf)],
@@ -1826,8 +1887,12 @@ fn metadata_rebind_targets(
 /// blocking pool.
 const REBIND_BASELINE_RECAPTURE_CONCURRENCY: usize = 4;
 
-/// Baseline recaptures are best-effort (the fingerprint is derivable again):
-/// a failure is logged root-cause-only and never fails the run.
+/// Baseline recaptures are best-effort: a failure is logged root-cause-only
+/// and never fails the run. The earlier "the fingerprint is derivable again"
+/// absolute is retracted (round-26 minor 1, same scope as the retraction at
+/// `detect_stranded_index_records`): a failed recapture is never retried,
+/// and the stale baseline remains the boot-recovery fallback for a session
+/// whose acp-state workspace field is empty.
 fn log_baseline_result(result: Result<Result<(), anyhow::Error>, tokio::task::JoinError>) {
     match result {
         Ok(Ok(())) => {}
@@ -2337,6 +2402,104 @@ mod tests {
             ],
             "the report's wire field names drifted — the dialog reads snake_case",
         );
+    }
+
+    /// Round-26 MAJOR-1: the pre-sync metadata load must be keyed on the
+    /// ACTUAL condition — the metadata sitting behind the binding the scan
+    /// admitted (folded identity compare) — and must fire for every admitted
+    /// session, not only on the repair arm; a run-global-only translation
+    /// would claim Rebound over stranded A-era artifact/acp-state paths.
+    /// Source-level like the other command-layer probes. Mutation: deleting
+    /// the `metadata_behind_binding` disjunct (restoring the repair-arm-only
+    /// load) fails the first assert.
+    #[test]
+    fn metadata_loop_loads_pre_sync_from_for_metadata_behind_binding() {
+        let src = production_source();
+        let some_arm = src
+            .find("Round-26 MAJOR-1: the repair arm is not the only")
+            .expect("the pre-sync load comment must exist in the Some arm");
+        let tail = &src[some_arm..];
+        let behind_gate = tail
+            .find("metadata_behind_binding(&pre_sync, bound_path)")
+            .expect("the per-session from must key on metadata-behind-binding");
+        let repair_gate = tail
+            .find("repaired_target.is_some()")
+            .expect("the repair arm must keep its load");
+        assert!(
+            behind_gate < repair_gate,
+            "the metadata-behind-binding condition must precede the repair-arm fallback"
+        );
+        let set_ws = src
+            .find("sessions.set_workspace(session_id, new_path.clone())")
+            .expect("set_workspace must exist");
+        assert!(
+            set_ws > some_arm,
+            "the pre-sync load must run before set_workspace overwrites the metadata"
+        );
+        // The pure decision helper: folded identity compare.
+        assert!(metadata_behind_binding(
+            std::path::Path::new("/data/A"),
+            std::path::Path::new("/data/B"),
+        ));
+        assert!(!metadata_behind_binding(
+            std::path::Path::new("/data/A/"),
+            std::path::Path::new("/data/A"),
+        ));
+        // Case-only drift folds to the same directory on Windows (the
+        // platform identity-key implementation owns that behavior; not
+        // asserted here to keep the file free of target-cfg exceptions).
+    }
+
+    /// Round-26 MAJOR-4: the eviction-tail refusal glue — a refused or
+    /// timed-out reclaim becomes a post-busy report entry ONLY when this run
+    /// touched the session or a carryover post-busy id feeds back — is the
+    /// PR's stated core contract ("an unreported refusal would close the
+    /// dialog on a false full success") and was the one unpinned link
+    /// between two pinned halves. Mutation: deleting the guarded push keeps
+    /// every suite green without this pin.
+    #[test]
+    fn eviction_tail_refusal_glue_feeds_post_busy_is_wired() {
+        let src = production_source();
+        let refusal = src
+            .find("if !acp_idle || !engine_idle {")
+            .expect("the refusal condition must exist in the eviction tail");
+        let tail = &src[refusal..];
+        let touched = tail
+            .find("let touched_this_run = rebound_session_ids.iter().any(")
+            .expect("the touched-this-run gate must exist");
+        let push = tail
+            .find("post_busy_session_ids.push(session_id);")
+            .expect("the post-busy push must exist");
+        assert!(
+            touched < push,
+            "the touched/carryover gate must precede the post-busy push (deleting the glue must fail here)"
+        );
+        assert!(
+            tail.find("carryover_post_busy.contains(&session_id)")
+                .is_some(),
+            "the carryover feedback arm must gate the push beside touched_this_run",
+        );
+    }
+
+    /// Round-23 minor 2 (destination-validation cause logging): the
+    /// `map_err` replacement must log the validator's root cause before
+    /// swapping in the marker — the sibling arms all do, and the round-26
+    /// minor-5 audit found this pin missing. Source-level: the log lives
+    /// inside the closure.
+    #[test]
+    fn destination_validation_logs_the_cause_before_the_marker() {
+        let src = production_source();
+        let closure = src
+            .find("validate_codex_project_workspace(&to).map_err(|e| {")
+            .expect("the destination-validation closure must bind the error");
+        let tail = &src[closure..];
+        let log = tail
+            .find("rebind destination validation failed")
+            .expect("the cause must be logged before the marker replaces it");
+        let marker = tail
+            .find("REBIND_TO_UNUSABLE: the destination folder cannot be used")
+            .expect("the marker must exist");
+        assert!(log < marker, "the cause log must precede the marker swap");
     }
 
     #[test]

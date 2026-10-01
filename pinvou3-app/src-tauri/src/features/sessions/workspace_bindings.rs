@@ -535,7 +535,7 @@ impl SessionStore {
     /// `failed_session_ids` and the command layer merges them into the report.
     ///
     /// The candidate scan is the tolerant one shared with the command layer's
-    /// fence (`workspace_bindings_under`): an unreadable sessions root
+    /// fence (`try_workspace_bindings_under`): an unreadable sessions root
     /// is logged and yields the entries already found — the FENCE keeps this
     /// lossy form (it runs last, when aborting can no longer help); the
     /// snapshot and plan callers use the checked form and abort the run
@@ -563,7 +563,7 @@ impl SessionStore {
         to: &Path,
     ) -> Result<RebindBindingsPlan> {
         // Phase 1 — plan. Candidates = sidecar scan ∪ in-memory legacy table,
-        // via workspace_bindings_under (already the union — review #464 round-5
+        // via try_workspace_bindings_under (already the union — review #464 round-5
         // nit: a second in-memory union here duplicated it exactly). Nothing is
         // written yet: the plan is what the legacy-table rewrite must publish
         // BEFORE the sidecars move, and an invalid id is rejected here instead

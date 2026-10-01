@@ -743,22 +743,6 @@ impl SessionAgentStore {
         Self::rebind_relative_suffix(path, to).map(|_| path.to_path_buf())
     }
 
-    /// Whether ANY durable codex-lane binding artifact still references the
-    /// session: an index record or a code-session sidecar on disk (review
-    /// #463 round-10 minor 4). Session deletion removes both, so `false`
-    /// means the session died mid-rebind — the report and the event stream
-    /// must not count a dead id as rebound.
-    pub fn binding_artifacts_exist(&self, session_id: &str) -> bool {
-        // The index arm alone cannot vouch for the session: retention deletes
-        // purge the owner record WITHOUT touching this index (round-15 SF-B),
-        // so a stale record would classify a dead session as Rebound
-        // (review #463 round-18 minor 2). The record counts only while the
-        // owner exists — the same gate the scan and write passes apply.
-        self.binding_owner_exists(session_id)
-            && (self.records.read().contains_key(session_id)
-                || code_session_sidecar_path(&self.path, session_id).exists())
-    }
-
     /// Whether the session still owns a durable SavedSession record
     /// (`<id>.json` beside the session directories). Retention deletes purge
     /// the record and the session directory WITHOUT touching this index

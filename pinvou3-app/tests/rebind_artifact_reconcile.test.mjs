@@ -248,6 +248,31 @@ const MARK = { at: Date.now(), chain: [{ from: '/old/root', to: '/new/root' }] }
   );
 }
 
+// 3c-bis. Round-24 minor 14 behavioral pin (round-26 minor 5): the entry
+//     stored RAW at the NEW root (backslash separators — the transform
+//     returns normalized paths, so the old raw `!==` classified it stale and
+//     let a live same-basename scan file take it over). The normalized-
+//     domain compare must treat it as fresh. Red-verified by reverting to
+//     the raw compare.
+{
+  const state = {
+    activeSessionId: 's7',
+    reboundSessionIds: { s7: { ...MARK } },
+    artifacts: [{ path: 'C:\\new\\root\\report.html', basename: 'report.html' }],
+  };
+  const { tracker, invokes } = makeTracker(state, ['C:/new/root/report.html']);
+  await tracker.reconcileArtifacts('s7');
+  assert.deepEqual(
+    state.artifacts.map(a => a.path),
+    ['C:\\new\\root\\report.html'],
+    'a raw-spelling entry already at the new root must not classify stale',
+  );
+  assert.ok(
+    !invokes.some(([command]) => command === 'save_session_artifacts'),
+    'no repoint of an already-fresh raw entry',
+  );
+}
+
 // 4. Reconcile: an entry whose absolute path the scan reproduces verbatim
 //    stays put, and a scanned file with no tracked entry is added as before.
 {

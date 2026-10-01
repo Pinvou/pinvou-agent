@@ -8183,6 +8183,14 @@ mod scheduled_model_tests {
     #[test]
     fn rebind_engine_take_production_closure_reads_turn_and_scheduled_state() {
         let src = include_str!("engine_pool.rs");
+        // Round-26 MAJOR-3: cut at the test module exactly like projects.rs's
+        // `production_source` (round-18) — an unanchored find over the WHOLE
+        // file lands on this probe's own string argument once the production
+        // function is deleted or renamed, and the span then contains the
+        // probe's own assertion text, which can never fail.
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
         let body = production_body(src, "pub async fn evict_if_idle_for_rebind");
         assert!(
             body.contains("is_turn_active(session_id)"),
