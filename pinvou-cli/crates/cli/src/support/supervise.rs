@@ -281,7 +281,19 @@ mod imp {
             .name("pinvou-child-supervisor".to_owned())
             .spawn(move || watcher(read_end));
         if watcher.is_err() {
-            PIPE_WRITE.store(-1, Ordering::SeqCst);
+            // The failed spawn also never ran the closure that captured
+            // `read_end` (a Copy fd: the binding stays valid). Close both
+            // ends — resetting PIPE_WRITE alone leaks the descriptors for
+            // the process lifetime — and return to the pre-install state.
+            let write_end = PIPE_WRITE.swap(-1, Ordering::SeqCst);
+            // SAFETY: both are the pipe(2) fds this function created; the
+            // watcher thread owns neither (it never started).
+            unsafe {
+                libc::close(read_end);
+                if write_end >= 0 {
+                    libc::close(write_end);
+                }
+            }
             return;
         }
         // BSD-semantic `signal(2)`: SA_RESTART for the restarted calls.

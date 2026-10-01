@@ -1434,6 +1434,48 @@ where
     }
 }
 
+/// Bare async host for lanes that need the app crate's runtime environment
+/// (rustls, release env, the shared multi-thread tokio runtime with
+/// `tauri::async_runtime` wired) but touch neither the engine pool nor the
+/// session store: the remote-knowledge network lanes and the monitor
+/// probes. Booting the full windowless product host for these built a whole
+/// Tauri context and ran `SessionStore::boot` — whose retention sweep can
+/// evict the user's oldest sessions, a destructive side effect a status
+/// command must not carry — for closures that ignore both handles, and it
+/// made the lanes need a display on headless Linux (the Tauri event loop).
+/// No event loop and no app context here: the work future runs on the
+/// runtime directly, with the same nested-task panic containment as the
+/// product host's spawn site.
+pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce() -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    crate::install_rustls_provider();
+    crate::ensure_release_env();
+    crate::startup_process_env();
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .context("build headless async runtime")?;
+    tauri::async_runtime::set(async_runtime.handle().clone());
+    let joined = async_runtime.spawn(async move {
+        // Same shape as the product host's spawn site: the work future runs
+        // on a nested task so a panic inside it surfaces as a JoinError
+        // instead of being swallowed by tokio.
+        match tokio::task::spawn(work()).await {
+            Ok(result) => result,
+            Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
+        }
+    });
+    match async_runtime.block_on(joined) {
+        Ok(result) => result,
+        Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
+    }
+}
+
 pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,
