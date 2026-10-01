@@ -4332,9 +4332,29 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-lock")
                 .unwrap();
-            manager
-                .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
-                .unwrap();
+            // Marketplace-path (Preset) reinstall of untrusted dependencies has
+            // failed closed with an explicit error on Windows since PR #547
+            // (another way to honor "never execute": the downloader is never
+            // reached); other platforms keep the warn-skip, so install
+            // succeeds but must still never reach the downloader.
+            let reinstall = manager.install_with_python(
+                "upload-lock",
+                &std::collections::HashMap::new(),
+                &python,
+            );
+            // Runtime check (capabilities::is_windows): the test avoids
+            // cfg(target_os) because the architecture guard keeps the
+            // rust_target_cfg_outside_adapter baseline at zero.
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "untrusted wheel lock must never reach the downloader"
@@ -4359,9 +4379,20 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-pip")
                 .unwrap();
-            manager
-                .install("upload-pip", &std::collections::HashMap::new())
-                .unwrap();
+            // Same marketplace-path branch as upload-lock: Windows fails
+            // closed on untrusted pip declarations (PR #547); other platforms
+            // install successfully but pip must never run.
+            let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert_eq!(
                 connectors::take_pending_pip_install_result_for_test(),
                 1,
