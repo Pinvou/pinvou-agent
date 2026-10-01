@@ -1803,6 +1803,21 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
         "a failed status probe must fold to 'not yet' and keep polling, not abort the connect: {value}"
     );
 
+    // The phase-1 REGISTRATION URL must reach the user: it encodes the QR
+    // the whole app-registration step hangs on. (Pre-fix, the bare-label
+    // auth_domains could not match open.feishu.cn under host-suffix
+    // semantics and this line was silently dropped — the connect then timed
+    // out with "no login link within 40s".)
+    let notes = value["notes"]
+        .as_array()
+        .expect("connect notes are part of the JSON payload");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("login link: https://open.feishu.cn/app?ticket=reg")
+        })),
+        "the phase-1 register URL must be announced and recorded: {notes:?}"
+    );
+
     // The connect ran its side effects: the store mirror flipped to
     // connected and the DenyAll code-scope sync landed.
     let record = pinvou3_lib::features::marketplace::store::BundleStore::new()

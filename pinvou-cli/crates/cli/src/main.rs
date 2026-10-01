@@ -66,5 +66,10 @@ fn main() {
             error.exit_code().as_i32()
         }
     };
+    // A started interrupt cleanup owns the exit status: the watcher's phase-3
+    // re-raise gives scripts the conventional 128+N, and main must not win
+    // the race to `exit` with the family's own code. No-op unless cleanup
+    // started (returns immediately on the normal path).
+    pinvou_cli::support::supervise::park_while_interrupt_cleanup_concludes();
     std::process::exit(code);
 }

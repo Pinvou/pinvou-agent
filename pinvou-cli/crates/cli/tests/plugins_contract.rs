@@ -2217,3 +2217,53 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
         "the toggle must disclose that live engines keep the stale whitelist: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// builtin refusal (CLI surface)
+// ---------------------------------------------------------------------------
+
+/// The builtin-plugin framework (docs/builtin-toolset-contract.md §3.3) says
+/// builtins can never be disabled or uninstalled; the app-side guarded
+/// writers reject the ids, but nothing pinned the CLI's own wrappers until
+/// now. A refactor of `set_enabled` that pre-filtered ids before the save
+/// would otherwise turn the refusal into a false `persistence_verified`
+/// success with no failing test. Both refusals are hermetic: the embedded
+/// catalog makes `is_builtin_tool("session-reader")` deterministic in the
+/// test binary.
+#[test]
+fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("builtin-refusal");
+
+    let (message, code) = run_err(&["pinvoy", "plugins", "disable", "session-reader"]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("cannot be disabled or hidden"),
+        "the refusal must name the builtin rule: {message}"
+    );
+
+    // `--yes` on the uninstall clears the destructive-action gate so the
+    // BUILTIN refusal is what fires (without it, the --yes usage error would
+    // mask the rule; disable has no such gate).
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "uninstall",
+        "session-reader",
+        "--yes",
+    ]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("cannot be"),
+        "the uninstall refusal must name the builtin rule: {message}"
+    );
+
+    // Neither command may have created or modified the persisted toggle
+    // state: the file stays absent (a poisoned entry written here could
+    // never be removed through the guarded writers again).
+    assert!(
+        !home.path().join("disabled_bundles.json").exists(),
+        "a refused toggle must not leave persisted state behind"
+    );
+}

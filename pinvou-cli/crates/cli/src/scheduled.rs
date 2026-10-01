@@ -13,8 +13,16 @@
 //! `next_run_at: null` on create where the foundation resolves the
 //! slot eagerly, silently pausing past one-shots). What stays CLI-local:
 //! - atomic JSON writes with a per-pid/nanos-unique staging file
-//!   (`write_json_atomic`); the foundation writer still stages under a
-//!   fixed `.json.tmp` sibling name shared by all concurrent writers.
+//!   (`write_json_atomic`); the foundation writer stages under its own
+//!   unique temp name (`tempfile`-generated), so neither side can collide
+//!   with the other's staging path.
+//! - quarantine policy per store mirrors the GUI's `QuarantineStrategy`
+//!   (Rename for bindings/kinds/read-state/archive) with ONE divergence:
+//!   a corrupt `task-ui-metadata.json` is renamed aside here on every read
+//!   path, while the GUI logs that store's corruption in place — the
+//!   behavior stays safe (the mutation path then refuses; the app's next
+//!   persist heals the absent path), it just is not byte-identical to the
+//!   GUI's per-store choice.
 //! - run-record persistence for terminal CLI runs (`save_run` is private in
 //!   the foundation; the CLI stores the identical record shape under the
 //!   identical sortable file name, so the GUI's `list_runs` co-reads them).
@@ -968,8 +976,8 @@ fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
         // failure path announces for the same reason.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
         Err(error) => {
-            eprintln!(
-                "pinvou: warning: cannot read {}: {error}; continuing with the empty default                  (the next write replaces the unreadable file)",
+            crate::note!(
+                "warning: cannot read {}: {error}; continuing with the empty default (the next                  write replaces the unreadable file)",
                 path.display()
             );
             serde_json::Value::Null
@@ -1034,11 +1042,22 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(value) if registry_shape_valid(&value, keys) => Ok(value),
             _ => {
-                quarantine_unreadable(path);
-                Err(refuse(
-                    "was malformed and has been quarantined aside, so the healthy copy may \
-                     live only in the desktop app's memory",
-                ))
+                let removed = quarantine_unreadable(path);
+                Err(if removed {
+                    refuse(
+                        "was malformed and has been quarantined aside, so the healthy copy may \
+                         live only in the desktop app's memory",
+                    )
+                } else {
+                    // The rename AND the copy fallback both failed; the
+                    // malformed bytes are still in place (quarantine_unreadable
+                    // already announced it). Claiming otherwise would send a
+                    // user hunting for a `.invalid-*` file that does not exist.
+                    refuse(
+                        "is malformed and could not be quarantined (the malformed file is left \
+                         in place); delete or repair it before this command can run",
+                    )
+                })
             }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1064,13 +1083,13 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
 /// copy on every subsequent read. The degradation is announced on stderr
 /// whether or not the file could be moved aside — silently resetting e.g. the
 /// user's viewed-run state looks like success.
-fn quarantine_unreadable(path: &Path) {
+fn quarantine_unreadable(path: &Path) -> bool {
     let stamp = quarantine_stamp();
     let mut target = path.as_os_str().to_owned();
     target.push(format!(".invalid-{stamp}"));
     let target = PathBuf::from(target);
     if !path.is_file() {
-        return;
+        return false;
     }
     // Same-directory rename; fall back to copy+remove for exotic mounts
     // where rename cannot serve.
@@ -1092,16 +1111,22 @@ fn quarantine_unreadable(path: &Path) {
     // its default for this invocation, and silently resetting e.g. the user's
     // viewed-run state looks like success.
     match moved {
-        Ok(()) => note!(
-            "pinvou: warning: quarantined malformed registry {} to {}",
-            path.display(),
-            target.display()
-        ),
-        Err(error) => note!(
-            "pinvou: warning: malformed registry {} could not be quarantined ({error}); it is \
-             ignored for this command — fix or remove the file manually",
-            path.display()
-        ),
+        Ok(()) => {
+            note!(
+                "pinvou: warning: quarantined malformed registry {} to {}",
+                path.display(),
+                target.display()
+            );
+            true
+        }
+        Err(error) => {
+            note!(
+                "pinvou: warning: malformed registry {} could not be quarantined ({error}); it is \
+                 ignored for this command — fix or remove the file manually",
+                path.display()
+            );
+            false
+        }
     }
 }
 
@@ -1941,6 +1966,44 @@ enabled in settings",
     )))
 }
 
+/// Rolls back a committed `scheduled update` definition change whose paired
+/// write (model binding, workspace pin) failed: restores the captured
+/// pre-update definition, then re-resolves its slot through the foundation
+/// (a verbatim `next_run_at` could hand the sweep a past-due slot to fire
+/// late). Every restore step is best-effort and disclosed — the returned
+/// error is the ORIGINAL failure, with any rollback trouble surfaced on
+/// stderr.
+fn rollback_committed_update_definition(
+    store_holder: &TaskStore,
+    id: &str,
+    pre_update_def: &serde_json::Value,
+    error: CliError,
+) -> CliError {
+    if let Err(restore_error) = store_holder.write_def(pre_update_def) {
+        note!(
+            "warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
+        );
+    }
+    let status = pre_update_def
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active")
+        .to_owned();
+    let reresolved = store_holder.manager().and_then(|manager| {
+        match status.as_str() {
+            "active" => manager.resume_automation(id),
+            _ => manager.pause_automation(id),
+        }
+        .map_err(|restore_error| CliError::failed(format!("{restore_error:#}")))
+    });
+    if let Err(restore_error) = reresolved {
+        note!(
+            "warning: scheduled update: the rollback could not re-resolve the pre-update schedule: {restore_error}"
+        );
+    }
+    error
+}
+
 fn update(
     id: &str,
     name: Option<String>,
@@ -2021,46 +2084,32 @@ fn update(
     // pinning follows the GUI's ensure_automation_workspace, including its
     // persistence of a repaired cwd.
     let mut def = def_to_value(&updated);
-    ensure_workspace(&store_holder, &mut def)?;
+    if let Err(error) = ensure_workspace(&store_holder, &mut def) {
+        // A workspace-persistence failure lands AFTER the definition's new
+        // model wire name is committed — the same split-pair window the
+        // binding write below guards, so it rides the same rollback.
+        if validated_model_id.is_some() {
+            return Err(rollback_committed_update_definition(
+                &store_holder,
+                id,
+                &pre_update_def,
+                error,
+            ));
+        }
+        return Err(error);
+    }
     if validated_model_id.is_some() {
         if let Err(error) = write_model_binding(&store_holder, id, validated_model_id.as_deref()) {
             // The definition's new model wire name is already committed, so
             // propagating the failure as-is would leave the pair the executor
-            // resolves (definition model + pin) inconsistent. Restore the
-            // captured pre-update definition, mirroring create's rollback;
-            // the restore itself is best-effort like create's cleanup — and
-            // like every best-effort step here, a failure is disclosed
-            // instead of silently leaving the inconsistent pair in place.
-            if let Err(restore_error) = store_holder.write_def(&pre_update_def) {
-                note!(
-                    "warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
-                );
-            }
-            // `write_def` put the pre-update `next_run_at` back verbatim, and
-            // a binding failure landing after that slot passed would hand the
-            // sweep a past-due slot to fire late — the same rationale the
-            // delete rollback's manager-routed restore follows. Reinstate the
-            // pre-update status through the foundation instead: resume
-            // eagerly re-resolves a future slot, pause clears it. Best-effort
-            // like every restore here.
-            let status = pre_update_def
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("active")
-                .to_owned();
-            let reresolved = store_holder.manager().and_then(|manager| {
-                match status.as_str() {
-                    "active" => manager.resume_automation(id),
-                    _ => manager.pause_automation(id),
-                }
-                .map_err(|restore_error| CliError::failed(format!("{restore_error:#}")))
-            });
-            if let Err(restore_error) = reresolved {
-                note!(
-                    "warning: scheduled update: the rollback could not re-resolve the pre-update schedule: {restore_error}"
-                );
-            }
-            return Err(error);
+            // resolves (definition model + pin) inconsistent — the helper
+            // restores the pre-update definition and re-resolves its slot.
+            return Err(rollback_committed_update_definition(
+                &store_holder,
+                id,
+                &pre_update_def,
+                error,
+            ));
         }
     }
     // Enrichment is best-effort: the update is committed above, so a
@@ -3223,9 +3272,9 @@ mod tests {
     /// (`O_CREAT|O_TRUNC`, no `O_EXCL`). It is now aligned with that hardened
     /// writer — `create_new` staging, propagated `sync_all`, parent-directory
     /// fsync — while keeping the per-pid/nanos staging name: the foundation
-    /// writer stages under a fixed `.json.tmp` sibling shared by all concurrent
-    /// writers, and the CLI keeps the unique name so two CLI processes writing
-    /// the same registry never rename each other's content. The staging path's
+    /// writer stages under its own unique temp name, and the CLI keeps its
+    /// per-pid/nanos unique name so two CLI processes writing the same
+    /// registry never rename each other's content. The staging path's
     /// nanos token makes the occupied-path guarantee untestable through the
     /// plain entry point, so this pins the stage lane directly.
     #[test]

@@ -553,7 +553,7 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
         "usage: pinvou benchmark <command> | pinvou agent run | pinvou \
          sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
          projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou \
-         --version|version"
+         --help|--version|version"
     );
 }
 
