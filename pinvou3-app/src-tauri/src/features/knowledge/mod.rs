@@ -47,7 +47,7 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done / cancelled / interrupted (a scan-thread panic
+    /// idle / scanning / done / interrupted (a scan-thread panic
     /// is caught and contained; see `finish_scan_after_panic`). The frontend
     /// refreshes L0 only on `done`, so `interrupted` cannot read as
     /// "scanned".
@@ -69,7 +69,6 @@ pub struct KnowledgeService {
     /// validate-then-mount race without coupling either domain to the other.
     mount_mutation: Arc<tokio::sync::Mutex<()>>,
     scan_state: Arc<Mutex<ScanState>>,
-    cancel: Arc<AtomicBool>,
     imports: import_jobs::ImportJobStore,
     active_import: Arc<Mutex<Option<String>>>,
     index_cancel: Arc<AtomicBool>,
@@ -155,7 +154,6 @@ impl KnowledgeService {
                 ..Default::default()
             })),
             imports,
-            cancel: Arc::new(AtomicBool::new(false)),
             active_import: Arc::new(Mutex::new(None)),
             index_cancel: Arc::new(AtomicBool::new(false)),
             embedder_reaper: Arc::new(Mutex::new(None)),
@@ -637,7 +635,6 @@ impl KnowledgeService {
 
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
-        let cancel = self.cancel.clone();
         // The panic backstop needs its own state handle that the closure
         // cannot move away, otherwise there is no way to close out after a
         // panic.
@@ -673,7 +670,7 @@ impl KnowledgeService {
                 for root in &roots {
                     let base = scanned_total;
                     let (walked, walk_errors) =
-                        scanner::scan(root, &store, &ex, &cancel, &existing, &mut visited, |n| {
+                        scanner::scan(root, &store, &ex, &existing, &mut visited, |n| {
                             scan_state.lock().scanned = base + n;
                         });
                     scanned_total = base + walked;
@@ -681,33 +678,24 @@ impl KnowledgeService {
                     if root_authorizes_deletion(root, walked, walk_errors) {
                         swept_roots.push(root.clone());
                     }
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
                 }
 
                 // Clean up files that "disappeared" (indexed last time, not
-                // walked this time). Nothing is deleted when cancelled, so a
-                // partially-scanned run cannot destroy the unscanned remainder.
-                if !cancel.load(Ordering::Relaxed) {
-                    let stale = stale_entries(&existing, &visited, &swept_roots);
-                    if !stale.is_empty() {
-                        let _ = store.delete_many(&stale);
-                    }
+                // walked this time).
+                let stale = stale_entries(&existing, &visited, &swept_roots);
+                if !stale.is_empty() {
+                    let _ = store.delete_many(&stale);
                 }
 
                 // Deduplication (hashing) no longer runs inside the scan — it is
                 // disk-expensive, unbounded on million-file libraries and stalls
                 // slow devices. The dedup feature itself is retired.
-                let cancelled = cancel.load(Ordering::Relaxed);
                 let finished_at = now();
-                if !cancelled {
-                    let _ = store.set_last_scan_finished_at(finished_at);
-                }
+                let _ = store.set_last_scan_finished_at(finished_at);
                 let mut st = scan_state.lock();
                 st.running = false;
                 st.finished_at = finished_at;
-                st.phase = if cancelled { "cancelled" } else { "done" }.into();
+                st.phase = "done".into();
             }));
             if let Err(panic) = outcome {
                 // Same "never stall silently" rule as the idle patrol's
@@ -869,7 +857,21 @@ fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
 /// after device removal, permission revocation), and it is at least not
 /// silent — deletion only ever happens inside a root the user NAMED.
 fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool {
-    walk_errors == 0 && (walked > 0 || std::fs::read_dir(root).is_ok())
+    if walk_errors != 0 {
+        return false;
+    }
+    if walked > 0 {
+        return true;
+    }
+    // The read_dir probe follows symlinks while the walk does not: a
+    // symlinked root walks as zero entries, so authorizing via read_dir would
+    // sweep the TARGET's whole indexed slice off a walk that never entered
+    // it. A zero-walked root therefore authorizes only when it is a real
+    // (non-symlink) directory the probe can list.
+    let is_real_dir = std::fs::symlink_metadata(root)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    is_real_dir && std::fs::read_dir(root).is_ok()
 }
 
 /// Computes this round's "disappeared" entries: decided ONLY within the
@@ -910,10 +912,14 @@ fn stale_entries(
             (root.clone(), canonical)
         })
         .collect();
+    let mut canonical_cache: std::collections::HashMap<PathBuf, Option<PathBuf>> =
+        std::collections::HashMap::new();
     existing
         .keys()
         .filter(|path| !visited.contains(*path))
-        .filter(|path| within_scanned_roots(Path::new(path.as_str()), &bounds))
+        .filter(|path| {
+            within_scanned_roots(Path::new(path.as_str()), &bounds, &mut canonical_cache)
+        })
         .cloned()
         .collect()
 }
@@ -934,14 +940,41 @@ fn stale_entries(
 /// from disk (that is what stale means), so canonicalizing them necessarily
 /// fails — and failure answers "not inside a boundary": no deletion
 /// authority, the same semantics as the old version.
-fn within_scanned_roots(path: &Path, bounds: &[(PathBuf, PathBuf)]) -> bool {
+fn within_scanned_roots(
+    path: &Path,
+    bounds: &[(PathBuf, PathBuf)],
+    canonical_cache: &mut std::collections::HashMap<PathBuf, Option<PathBuf>>,
+) -> bool {
     if bounds.iter().any(|(raw_root, canonical_root)| {
         path.starts_with(raw_root) || path.starts_with(canonical_root)
     }) {
         return true;
     }
-    let Ok(canonical) = std::fs::canonicalize(path) else {
-        return false;
+    // The fallback normalizes a store key whose spelling diverges from the
+    // scanned roots (symlinked root, symlinked store key). Entries are
+    // sibling-dense, so canonicalization is cached per PARENT directory:
+    // one syscall per directory per round instead of one per file, and a
+    // gone file whose parent is also gone still answers from the cache.
+    let canonical: PathBuf = match path.parent() {
+        Some(parent) => {
+            let cached = canonical_cache
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| std::fs::canonicalize(parent).ok());
+            let Some(canonical_parent) = cached else {
+                // The parent itself does not exist, so the child cannot have
+                // an alternative readable spelling: same answer as
+                // canonicalize failing on the child.
+                return false;
+            };
+            match path.file_name() {
+                Some(name) => canonical_parent.join(name),
+                // A path with no file name is a root spelling; the
+                // raw/canonical bound check above already covered it.
+                None => return false,
+            }
+        }
+        // No parent: nothing left to normalize.
+        None => return false,
     };
     bounds.iter().any(|(raw_root, canonical_root)| {
         canonical.starts_with(raw_root) || canonical.starts_with(canonical_root)

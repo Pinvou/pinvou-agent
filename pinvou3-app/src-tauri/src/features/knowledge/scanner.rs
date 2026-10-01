@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use walkdir::{DirEntry, WalkDir};
@@ -43,12 +42,10 @@ pub(super) fn walk_pruned(
 /// 错误数交给调用方解读：任何一层读不了（权限/EIO）都意味着这个根的切片
 /// 去留不可判定，全盘扫描据此否决该根的陈旧删除授权（见
 /// `root_authorizes_deletion`），导入侧忽略。
-/// `on_progress(walked)` 周期回调；`cancel` 置位时尽快收尾。
 pub fn scan(
     root: &Path,
     store: &Store,
     ex: &Excluder,
-    cancel: &AtomicBool,
     existing: &HashMap<String, (i64, u64)>,
     visited: &mut HashSet<String>,
     mut on_progress: impl FnMut(u64),
@@ -62,9 +59,6 @@ pub fn scan(
             walk_errors += 1;
             continue;
         };
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
         let Some(rec) = to_record(&entry) else {
             continue;
         };
@@ -172,17 +166,8 @@ mod tests {
 
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
-        let cancel = AtomicBool::new(false);
         let mut visited = HashSet::new();
-        let (walked, errors) = scan(
-            &base,
-            &store,
-            &ex,
-            &cancel,
-            &HashMap::new(),
-            &mut visited,
-            |_| {},
-        );
+        let (walked, errors) = scan(&base, &store, &ex, &HashMap::new(), &mut visited, |_| {});
         assert!(walked >= 1, "the readable slice still walks");
         assert!(
             errors >= 1,
@@ -195,7 +180,6 @@ mod tests {
             &base,
             &store,
             &ex,
-            &cancel,
             &HashMap::new(),
             &mut visited_again,
             |_| {},
@@ -226,17 +210,8 @@ mod tests {
 
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
-        let cancel = AtomicBool::new(false);
         let mut visited = HashSet::new();
-        scan(
-            &base,
-            &store,
-            &ex,
-            &cancel,
-            &HashMap::new(),
-            &mut visited,
-            |_| {},
-        );
+        scan(&base, &store, &ex, &HashMap::new(), &mut visited, |_| {});
 
         // 能搜到 Documents 下的文件
         let pdf = store
