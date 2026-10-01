@@ -432,7 +432,7 @@ pub async fn fetch_ollama_contexts(
 /// POST）；`Unreachable` —— 传输失败 / 其余非成功状态 / 响应不合形（瞬态，
 /// 不缓存，下轮重询）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OllamaShowProbe {
+pub(crate) enum OllamaShowProbe {
     Declared(u32),
     NoDeclaration,
     Unreachable,
@@ -441,7 +441,7 @@ pub enum OllamaShowProbe {
 /// Ollama `/api/show` 单模型窗口探测（只读元数据查询，不触发模型加载）。
 /// 只读事实口径见 [`parse_ollama_show_context`]：仅 Modelfile `num_ctx`
 /// 声明，不采信 GGUF 训练上限。
-pub async fn probe_ollama_show_context(
+pub(crate) async fn probe_ollama_show_context(
     base_url: &str,
     bearer: Option<&str>,
     model: &str,
@@ -570,7 +570,7 @@ pub(crate) fn age_ollama_show_cache_beyond_ttl() {
 /// OpenAI 兼容 `/v1/models` 从不携带窗口事实，这是唯一的事实来源；缺失时
 /// foundation 对 unknown ollama 模型按 8192 兜底窗口推导预算（压缩阈值打到
 /// 4096 地板、压缩后输入预算只剩 1024，见 2026-09-30 用户报告）。
-pub async fn fetch_ollama_model_context(
+pub(crate) async fn fetch_ollama_model_context(
     base_url: &str,
     bearer: Option<&str>,
     model: &str,
