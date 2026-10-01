@@ -661,7 +661,6 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Cargo cache
