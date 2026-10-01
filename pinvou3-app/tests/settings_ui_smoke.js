@@ -1160,6 +1160,7 @@ async function modalWidth(page, headingText) {
     lmstudioAddClicked
       && savedLmstudioModel
       && savedLmstudioModel.preset === 'local_vllm'
+      && savedLmstudioModel.base_url === 'http://127.0.0.1:1234/v1'
       && savedLmstudioModel.model === 'gemma-3-12b'
       && savedLmstudioModel.context_window_tokens === null,
     JSON.stringify(savedLmstudioModel));
@@ -1186,6 +1187,7 @@ async function modalWidth(page, headingText) {
     vllmAddClicked
       && savedVllmModel
       && savedVllmModel.preset === 'local_vllm'
+      && savedVllmModel.base_url === 'http://127.0.0.1:8000/v1'
       && savedVllmModel.model === 'qwen36_35b_256k'
       && savedVllmModel.context_window_tokens === 262144,
     JSON.stringify(savedVllmModel));
