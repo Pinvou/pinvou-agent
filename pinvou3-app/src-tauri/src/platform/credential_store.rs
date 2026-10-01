@@ -649,6 +649,22 @@ fn is_secret_like(value: &str) -> bool {
         || lower.starts_with("bce-v3/")
         || lower.starts_with("tvly-")
         || lower.starts_with("mgp")
+        // Token shapes with fixed, low-false-positive prefixes (GitHub
+        // PATs/app tokens, GitLab PATs, AWS access keys, Slack tokens). A
+        // glued `?api_key=sk-...` in a URL is still missed — the tokenizer
+        // only splits on whitespace transitions — but a bare leaked token
+        // in an error chain is now caught regardless of length.
+        || lower.starts_with("ghp_")
+        || lower.starts_with("gho_")
+        || lower.starts_with("ghs_")
+        || lower.starts_with("ghu_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("glpat-")
+        || lower.starts_with("akia")
+        || lower.starts_with("xoxb-")
+        || lower.starts_with("xoxp-")
+        || lower.starts_with("xoxa-")
+        || lower.starts_with("xoxs-")
         || (trimmed.len() >= 24
             && trimmed.chars().any(|c| c.is_ascii_digit())
             && trimmed.chars().any(|c| c.is_ascii_alphabetic()))

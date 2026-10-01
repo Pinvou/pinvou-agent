@@ -302,6 +302,15 @@ fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliErr
             "projects {subcommand} requires an id"
         )));
     }
+    // A flag-shaped token in the id slot (`projects delete --yes` with the
+    // id forgotten) must name the real mistake here, not two steps later at
+    // `require_yes`, which would tell the user to pass the flag they just
+    // passed. Same discipline as `require_path` / `move`'s positional guard.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "projects {subcommand}: expected an id, got flag-shaped {id:?}"
+        )));
+    }
     Ok(id)
 }
 
@@ -1065,7 +1074,9 @@ fn rebind_report(
     }
     if legacy_sync_failed && failed_session_ids.is_empty() {
         human.push_str(
-            "; WARNING: the legacy binding table could not be synced and is still on disk in              the old format \u{2014} fix or remove it and re-run, or the next boot migration              will move bindings back",
+            "; WARNING: the legacy binding table could not be synced and is still on disk in \
+             the old format — fix or remove it and re-run, or the next boot migration will \
+             move bindings back",
         );
     }
     let mut value = serde_json::json!({

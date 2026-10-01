@@ -2435,8 +2435,9 @@ jobs:
       # fail over from an unreachable source to the next mirror in the chain.
       - name: Isolated toolchain repair and download-source fallback
         run: npm --prefix pinvou3-app run test:windows-rustup-repair
-  # pinvou-cli contains #[cfg(target_os = "macos")] code (connectors.rs, voice.rs,
-  # ...) that compiles nowhere else in CI: cli-test is ubuntu-only and the macOS
+  # pinvou-cli contains #[cfg(target_os = "macos")] code (support/supervise.rs,
+  # voice.rs's non-linux/non-windows arms, ...) that compiles nowhere else in CI:
+  # cli-test is ubuntu-only and the macOS
   # runner above only smokes the Node ACP bridge. This compile-only leg mirrors
   # the windows-rust-test "pinvou-cli Windows compile check" step for exactly
   # that risk class. No Tauri system packages are needed on macOS (system frameworks

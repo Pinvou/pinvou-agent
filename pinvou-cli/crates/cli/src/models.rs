@@ -500,13 +500,20 @@ impl Options {
     }
 
     fn exactly_one_positional(&self) -> Result<String, CliError> {
+        self.exactly_one_positional_named("an id")
+    }
+
+    /// Same gate with an explicit noun phrase (article included): the
+    /// search-test lane's positional is a provider name, and "takes one id"
+    /// read as self-contradicting there.
+    fn exactly_one_positional_named(&self, noun: &str) -> Result<String, CliError> {
         match self.positionals.len() {
             // `label` already names the subcommand ("pinvou models remove"),
             // so the message needs no extra noun.
             1 => Ok(self.positionals[0].clone()),
-            0 => Err(CliError::usage(format!("{} requires an id", self.label))),
+            0 => Err(CliError::usage(format!("{} requires {noun}", self.label))),
             n => Err(CliError::usage(format!(
-                "{} takes one id, got {n}",
+                "{} takes just {noun}, got {n}",
                 self.label
             ))),
         }
@@ -947,7 +954,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
         }
         "test" => {
             let options = parse_options("settings", "search test", rest, &[], &[])?;
-            let provider = options.exactly_one_positional()?;
+            let provider = options.exactly_one_positional_named("a provider id")?;
             Ok(ModelsCommand::SearchTest {
                 provider: parse_search_provider(&provider)?,
             })
@@ -1264,10 +1271,17 @@ fn add<S: CredentialStore>(
         credential_action: None,
     };
     let active_id = id.clone();
+    // Whether the keyring write actually happened inside the closure: a
+    // failure BEFORE it (the vision-model gate below) must not delete a
+    // reference nothing was stored under — a never-written reference errors
+    // on most keyrings, and the module's other rollback lanes gate on
+    // "written" for exactly that reason.
+    let credential_written = std::sync::atomic::AtomicBool::new(false);
     let transaction = UserPrefs::update_transaction(|prefs| {
         require_known_vision_model(prefs, saved.vision_model_id.as_deref())?;
         let stored = apply_new_model_credential(store, saved.clone())
             .map_err(|error| format!("credential store unavailable: {error}"))?;
+        credential_written.store(true, std::sync::atomic::Ordering::Release);
         prefs.upsert_model(stored);
         if set_active {
             prefs.advanced.active_model_id = Some(active_id.clone());
@@ -1277,7 +1291,7 @@ fn add<S: CredentialStore>(
     if let Err(error) = transaction {
         // The closure may have stored the keyring secret before the save
         // failed; roll it back so no orphaned entry outlives the model.
-        if stores_secret {
+        if stores_secret && credential_written.load(std::sync::atomic::Ordering::Acquire) {
             let reference = saved.credential_reference();
             let _ = store.delete(&reference);
         }
@@ -2981,8 +2995,10 @@ fn search_set<S: CredentialStore>(
 /// own search path accepts — the HTTP status AND, for the providers that
 /// report business errors in-band on a 200 (Metaso, Bocha, Baidu), the
 /// body's error code ([`search_body_error`], replicated from the
-/// web-search tool's per-provider checks) — and the `verified` field says
-/// which of the two was actually established.
+/// web-search tool's per-provider checks); Bing additionally requires a
+/// result-shaped body (a bare 2xx consent/captcha page stays `ok: false`)
+/// — and the `verified` field says which of the two was actually
+/// established.
 ///
 /// The four API lanes are built from the request shapes the product's own
 /// search tool sends (`CodeWhale/crates/tui/src/tools/web_search.rs`), not
@@ -3399,7 +3415,17 @@ fn run_bing_probe() -> SearchProbe {
     {
         Ok(response) => {
             let status = response.status();
-            if status.is_success() {
+            // Scope note for the module's "body its own search path accepts"
+            // contract: Bing needs no key and serves consent/captcha pages
+            // with 2xx, so the HTTP status alone cannot prove searchability.
+            // The body must at least carry a result-shaped element; a bare
+            // 2xx page without one stays unverified.
+            let body_is_result_shaped = status.is_success()
+                && response
+                    .text()
+                    .map(|body| body.contains(r#"<li class="b_algo""#))
+                    .unwrap_or(false);
+            if body_is_result_shaped {
                 SearchProbe {
                     ok: true,
                     code: "ok",
@@ -3459,8 +3485,13 @@ fn resolve_search_key<S: CredentialStore>(
     // settings.json on the way to a verdict. The prefs layer exposes no
     // read-only load that skips the migrations, only one that skips the
     // save — so the honest state is this disclosure, not a pretense.
-    let mut prefs = UserPrefs::load();
-    prefs.refresh_credential_states_with_store(store);
+    let prefs = UserPrefs::load();
+    // Deliberately NO refresh_credential_states_with_store here: it performs
+    // a keychain `get` per configured provider (double keychain I/O on the
+    // target, N pointless reads on the others) and this function re-reads
+    // the reference's value itself anyway — every refresh outcome yields the
+    // identical verdict on the path below (cleared ref -> None; kept ref ->
+    // the explicit get decides), so the extra round trips bought nothing.
     let Some(credential) = prefs.search.credentials.get(&provider) else {
         return Ok(None);
     };

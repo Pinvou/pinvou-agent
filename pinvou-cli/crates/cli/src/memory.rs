@@ -833,9 +833,13 @@ fn profile_set(
     };
     let profile =
         feature::update_profile(patch).map_err(|error| feature_error("profile_update", error))?;
+    // Same collapse discipline as the list rows and `profile get`: identity
+    // cells are user-reachable with control characters, and this is persisted
+    // store data (post-`normalize()`), not just the argv echo.
     let human = format!(
         "call_name: {}\nassistant_alias: {}",
-        profile.identity.call_name, profile.identity.assistant_alias
+        one_line(&profile.identity.call_name),
+        one_line(&profile.identity.assistant_alias)
     );
     let value = serde_json::to_value(&profile).unwrap_or_default();
     Ok(success(render(output, human, &value)))
@@ -1915,6 +1919,25 @@ fn organize_busy_error() -> CliError {
     )
 }
 
+/// Maps an already-redacted host-path organize failure to the documented
+/// CLI error. A lock held by another SURFACE (the GUI button or the
+/// scheduled executor) surfaces here, not at the CLI lock above: the feature
+/// layer's `.organize.lock` is taken inside `organize_memory_with_llm`, on
+/// the host path, and reaches this map as an error chain carrying
+/// [`ORGANIZE_LOCK_BUSY`]. That is the same "another organize is in flight"
+/// situation as the CLI-vs-CLI `WouldBlock`, so it must get the same
+/// documented `memory_organize_busy` refusal instead of a generic
+/// `memory_organize_failed` that reads like a crashed pass. Free fn (not a
+/// closure inside `organize`) so the marker-preserving mapping is unit-pinned
+/// without booting the windowless host.
+fn map_organize_error_detail(detail: &str) -> CliError {
+    if detail.contains(ORGANIZE_LOCK_BUSY) {
+        organize_busy_error()
+    } else {
+        CliError::failed(format!("memory_organize_failed: {detail}"))
+    }
+}
+
 /// Cross-process single-flight lock for `memory organize` — see [`organize`]
 /// for why the feature layer's in-memory guard is not enough for two CLI
 /// processes. Same `$PINVOU3_HOME/locks` directory and same fd-lock primitive
@@ -2011,20 +2034,7 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
         Err(error) => {
             let detail =
                 pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
-            // A lock held by another SURFACE (the GUI button or the scheduled
-            // executor) surfaces here, not at the CLI lock above: the feature
-            // layer's `.organize.lock` is taken inside `organize_memory_with_llm`,
-            // on the host path, and reaches this map as an anyhow error carrying
-            // [`ORGANIZE_LOCK_BUSY`]. That is the same "another organize is
-            // in flight" situation as the CLI-vs-CLI `WouldBlock`, so it must get
-            // the same documented `memory_organize_busy` refusal instead of a
-            // generic `memory_organize_failed` that reads like a crashed pass.
-            if detail.contains(ORGANIZE_LOCK_BUSY) {
-                return Err(organize_busy_error());
-            }
-            return Err(CliError::failed(format!(
-                "memory_organize_failed: {detail}"
-            )));
+            return Err(map_organize_error_detail(&detail));
         }
     };
     // Same post-organize refresh as the GUI command (app/commands/memory.rs
@@ -2314,4 +2324,50 @@ fn render_pending(item: &feature::PendingMemoryItem) -> String {
         one_line(item.kind.as_str()),
         one_line(&item.content)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The GUI-held `.organize.lock` surfaces as an error chain carrying
+    /// `ORGANIZE_LOCK_BUSY`; the mapping to `memory_organize_busy` must key
+    /// on the marker surviving `redact_secret` (which only rewrites
+    /// secret-shaped spans) and route everything else to
+    /// `memory_organize_failed`. This is the cross-surface busy contract the
+    /// docs promise; the mapping is extracted so it can be pinned without
+    /// booting the windowless host.
+    #[test]
+    fn organize_host_busy_marker_maps_to_the_busy_refusal() {
+        let detail = format!(
+            "memory organize pass failed: {} (held by pid 4242)",
+            ORGANIZE_LOCK_BUSY
+        );
+        let mapped = map_organize_error_detail(&detail);
+        assert!(
+            mapped.to_string().starts_with("memory_organize_busy:"),
+            "the busy marker must map to the documented busy refusal: {mapped}"
+        );
+
+        let mapped = map_organize_error_detail("the embedder failed to load: connection refused");
+        assert!(
+            mapped.to_string().starts_with("memory_organize_failed:"),
+            "a non-busy failure must keep the failed code: {mapped}"
+        );
+    }
+
+    /// `redact_secret` must not destroy the busy marker: the marker string
+    /// passes through the same redaction the host error chain gets before
+    /// the mapping sees it.
+    #[test]
+    fn redaction_keeps_the_busy_marker_visible() {
+        let detail = pinvou3_lib::platform::credential_store::redact_secret(&format!(
+            "pass failed: {}",
+            ORGANIZE_LOCK_BUSY
+        ));
+        assert!(
+            detail.contains(ORGANIZE_LOCK_BUSY),
+            "redaction rewrote the busy marker away: {detail}"
+        );
+    }
 }

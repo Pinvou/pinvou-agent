@@ -834,6 +834,21 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         .get(id)
         .map_err(|error| feature_error("tools uninstall", id, error))?
         .is_some_and(|record| matches!(record.source, BundleSource::Upload(_)));
+    // Builtin pre-gate BEFORE any companion teardown: today's only builtin
+    // declares no companion skills, so the guard inside `mgr.uninstall`
+    // refusing a builtin would leave nothing half-done — but a future
+    // builtin WITH companions would lose them here and then hit the
+    // refusal, the exact partial mutation the §3.1 server-side rejection
+    // exists to prevent. Refuse before touching anything.
+    if pinvou3_lib::features::marketplace::builtin::is_builtin_tool(
+        &pinvou3_lib::features::marketplace::scope::package_id_for(id),
+    ) {
+        return Err(feature_error(
+            "tools uninstall",
+            id,
+            "cannot be disabled or hidden: builtin plugins can never be modified",
+        ));
+    }
     for sid in &companions {
         if recycles_with_package {
             continue; // companion is recycled with the whole package
@@ -1400,7 +1415,14 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// tmp+persist write (a concurrent creator loses the create_new race instead
 /// of clobbering us). The caller removes the empty reservation when its
 /// export fails.
-fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(), CliError> {
+fn reserve_export_destination(
+    id: &str,
+    dest: &Path,
+    action: &str,
+) -> Result<Option<std::path::PathBuf>, CliError> {
+    // Some(parent) when THIS call created the parent directory (the
+    // NotFound recovery path) — the failure cleanup may then remove that
+    // self-created empty directory, never one the caller already had.
     let refuse = || {
         CliError::failed(format!(
             "{action}({id}): refusing to overwrite {}; choose a destination that does \
@@ -1421,9 +1443,10 @@ fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(),
     match std::fs::File::create_new(dest) {
         Ok(marker) => {
             drop(marker);
-            Ok(())
+            Ok(None)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut created_parent = None;
             if let Some(parent) = dest.parent() {
                 if !parent.as_os_str().is_empty() {
                     std::fs::create_dir_all(parent).map_err(|error| {
@@ -1432,12 +1455,13 @@ fn reserve_export_destination(id: &str, dest: &Path, action: &str) -> Result<(),
                             parent.display()
                         ))
                     })?;
+                    created_parent = Some(parent.to_path_buf());
                 }
             }
             match std::fs::File::create_new(dest) {
                 Ok(marker) => {
                     drop(marker);
-                    Ok(())
+                    Ok(created_parent)
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(refuse()),
                 Err(error) => Err(cannot_create(error)),
@@ -1475,13 +1499,21 @@ fn export(
     // is `<id>.zip` in the caller's cwd, so a silent overwrite could destroy
     // an unrelated file with exit 0 (the same policy as `sessions export`).
 
-    reserve_export_destination(id, &dest, "plugins export")?;
+    let created_parent = reserve_export_destination(id, &dest, "plugins export")?;
     let export_result = package_export::export_installed_plugin(id, &dest)
         .map_err(|error| feature_error("export", id, error));
     if export_result.is_err() {
         // The lib writes through a temp file and persists at the end, so a
-        // failure leaves our empty reservation behind — remove it.
+        // failure leaves our empty reservation behind — remove it. A
+        // preset/builtin refusal fires INSIDE the lib (after reserve's
+        // create_dir_all), so the self-created empty directory is debris the
+        // comment above promises not to leave. Only the directory THIS call
+        // created is removed (remove_dir cannot touch a non-empty one), so a
+        // destination directory the caller already had is never touched.
         let _ = std::fs::remove_file(&dest);
+        if let Some(parent) = created_parent {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
     export_result?;
     let value = serde_json::json!({
@@ -1531,12 +1563,19 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = entries
         .iter()
         .map(|entry| {
+            // Same no-forgeable-rows discipline as `tools list` / `skills list`:
+            // id/kind/display_name are user- or import-derived cells, so they
+            // go through the shared collapse before reaching the terminal
+            // (JSON keeps the originals, as everywhere else). The GUI's own
+            // display-name sanitizer drops only Cc controls plus slashes, so
+            // bidi/zero-width characters can legitimately sit in a stored
+            // name — collapse, don't trust.
             format!(
                 "{}\t{}\t{}\t{}\t{}",
-                entry.id,
-                entry.kind,
-                entry.display_name,
-                entry.recycled_at,
+                collapse_control_characters(&entry.id),
+                collapse_control_characters(&entry.kind),
+                collapse_control_characters(&entry.display_name),
+                collapse_control_characters(&entry.recycled_at),
                 if entry.package_missing {
                     "package-missing"
                 } else {
@@ -1593,13 +1632,17 @@ fn recycle_export(
         ));
     }
     // Same no-overwrite policy as `export` (the default is `<id>.zip` in the
-    // caller's cwd), with the same atomic reservation.
-    reserve_export_destination(id, &dest, "plugins recycle export")?;
+    // caller's cwd), with the same atomic reservation and the same
+    // self-created-directory cleanup on the failure path.
+    let created_parent = reserve_export_destination(id, &dest, "plugins recycle export")?;
     let export_result = recycle_bin::RecycleBin::new()
         .export_package(id, &dest)
         .map_err(|error| feature_error("recycle export", id, error));
     if export_result.is_err() {
         let _ = std::fs::remove_file(&dest);
+        if let Some(parent) = created_parent {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
     export_result?;
     let value = serde_json::json!({

@@ -167,7 +167,14 @@ impl ConnectorKind {
             display_name: "Feishu",
             cli_bin: "lark-cli",
             envs: &[("LARK_CLI_NO_PROXY", "1")],
-            auth_domains: &["feishu", "larksuite"],
+            // Registrable domains, NOT the GUI's bare labels: the GUI's
+            // `extract_url` matches by substring (`url.contains("feishu")`),
+            // while `url_host_matches_auth_domain` below matches by host
+            // suffix — under bare labels nothing can ever match
+            // (open.feishu.cn does not end in "feishu"), and the phase-1
+            // registration URL the connect flow depends on was silently
+            // dropped.
+            auth_domains: &["feishu.cn", "larksuite.com"],
             disabled_filename: "feishu_disabled",
             min_version: None,
             login_url_wait_secs: 40,
@@ -3262,11 +3269,16 @@ fn safe_auth_log_line(line: &str, redact_bare_token: bool) -> Option<String> {
     ))
 }
 
-/// Per-connector `redact_bare_token` setting for [`safe_auth_log_line`].
-/// dingtalk is the GUI's documented exception (`dingtalk.rs` passes `false`);
-/// every other connector takes the conservative tmeet setting.
+/// Per-connector `redact_bare_token` setting for [`safe_auth_log_line`],
+/// mirroring the GUI's per-drain choice exactly: the shared `drain_for_url`
+/// hard-codes `safe_auth_log_line(&line, false)` for every connector (its
+/// documented reason: feishu/wecom normal output lines carry `token`-shaped
+/// FIELD names, so bare-token redaction wholesale-replaces non-sensitive
+/// lines and the failure reason is lost); only tmeet's own drain passes
+/// `true`. Over-redaction here would reintroduce exactly the swallowed
+/// failure reasons the shared drain's comment warns about.
 fn redact_bare_token_for(spec: &VendorSpec) -> bool {
-    spec.id != "dingtalk"
+    spec.id == "tmeet"
 }
 
 /// Stream event collected while a login command runs.
@@ -3948,7 +3960,9 @@ mod tests {
 
     /// The tail must never carry credential material: the redaction mirrors
     /// `connector_cli::safe_auth_log_line`, including its per-connector
-    /// `redact_bare_token` split (dingtalk `false`, everyone else `true`).
+    /// `redact_bare_token` split — the GUI's shared drain passes `false` for
+    /// EVERY connector (feishu/wecom ordinary lines carry token-shaped FIELD
+    /// names), and only tmeet's own drain passes `true`.
     #[test]
     fn safe_auth_log_line_mirrors_the_gui_redaction() {
         assert_eq!(
@@ -3976,7 +3990,35 @@ mod tests {
             Some("[redacted credential line]")
         );
         assert!(!redact_bare_token_for(ConnectorKind::Dingtalk.spec()));
+        // feishu/wecom stay at `false` with the GUI's shared drain; only
+        // tmeet opts in.
+        assert!(!redact_bare_token_for(ConnectorKind::Feishu.spec()));
+        assert!(!redact_bare_token_for(ConnectorKind::Wecom.spec()));
         assert!(redact_bare_token_for(ConnectorKind::Tmeet.spec()));
+
+        // The auth-domain matcher is host-suffix based, so the feishu spec
+        // must carry REGISTRABLE domains: the GUI's bare labels ("feishu")
+        // can never suffix-match open.feishu.cn, and the phase-1 register
+        // URL was silently dropped (the BLOCKER this pins).
+        let domains = ConnectorKind::Feishu.spec().auth_domains;
+        assert!(url_host_matches_auth_domain(
+            "https://open.feishu.cn/app?ticket=reg",
+            domains
+        ));
+        assert!(url_host_matches_auth_domain(
+            "https://accounts.feishu.cn/authorize?x=1",
+            domains
+        ));
+        assert!(url_host_matches_auth_domain(
+            "https://open.larksuite.com/app?ticket=reg",
+            domains
+        ));
+        // A lookalike host is still rejected: suffix semantics, not substring.
+        assert!(!url_host_matches_auth_domain(
+            "https://evil.example.com/feishu-phish",
+            domains
+        ));
+
         // Truncation is by chars, not bytes: the vendor CLIs emit Chinese
         // diagnostics and a byte slice would split a code point.
         let long: String = "字".repeat(400);
