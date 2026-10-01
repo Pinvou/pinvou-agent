@@ -1,20 +1,49 @@
 fn command_names(source: &str) -> Vec<&str> {
     let mut commands = Vec::new();
     let mut command_attribute_seen = false;
+    // rustfmt 1.99 wraps long `passthrough!` invocations vertically, so the
+    // domain and the command name may live on the lines after the macro
+    // opens; hunt for the name across lines instead of assuming one line.
+    let mut in_passthrough = false;
+    let mut domain_seen = false;
     for line in source.lines() {
         let line = line.trim();
-        if line.starts_with("async_command_passthrough!(")
-            || line.starts_with("sync_command_passthrough!(")
+        if in_passthrough {
+            let rest = if domain_seen {
+                line
+            } else {
+                match line.split_once(',') {
+                    Some((_, after)) => {
+                        domain_seen = true;
+                        after.trim()
+                    }
+                    None => continue,
+                }
+            };
+            if let Some(name) = rest.split('(').next() {
+                if !name.is_empty() {
+                    commands.push(name);
+                    in_passthrough = false;
+                    domain_seen = false;
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line
+            .strip_prefix("async_command_passthrough!(")
+            .or_else(|| line.strip_prefix("sync_command_passthrough!("))
         {
-            let name = line
-                .split_once(',')
-                .expect("passthrough domain")
-                .1
-                .trim()
-                .split('(')
-                .next()
-                .expect("passthrough command name");
-            commands.push(name);
+            in_passthrough = true;
+            if let Some((_, after)) = rest.split_once(',') {
+                domain_seen = true;
+                if let Some(name) = after.trim().split('(').next() {
+                    if !name.is_empty() {
+                        commands.push(name);
+                        in_passthrough = false;
+                        domain_seen = false;
+                    }
+                }
+            }
             continue;
         }
         if line.starts_with("#[tauri::command") {
