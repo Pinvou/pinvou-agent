@@ -633,6 +633,38 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {} dir {}", T::LABEL, parent.display()))?;
         }
+        // Foreign-write collision guard: `seen` is the stamp this handle
+        // observed at its last reload or persist, and `registry` was mutated
+        // on top of that snapshot. Every mutator reloads first, so a stamp
+        // mismatch here means a foreign writer (the CLI or a second app
+        // instance) landed between that reload and this persist — renaming
+        // this whole-file payload now would silently destroy the foreign
+        // write, the exact lost update the reload discipline otherwise
+        // prevents. Refuse instead: the mutator's rollback keeps memory
+        // consistent, the error tells the caller to retry, and the retry's
+        // reload merges the foreign content before re-applying. (The
+        // Windows non-identity corner stays as disclosed: len+mtime stamps
+        // can alias a same-length same-tick write.)
+        let current = FileStamp::of(self.path.as_ref());
+        let seen = *self.seen.read();
+        let unchanged = match (current, seen) {
+            (Some(current), Some(seen)) => current == seen,
+            // Absence priced in explicitly (post-quarantine keep) or never
+            // seen at all (fresh open on a not-yet-created file): this
+            // handle may create. A file that APPEARED in the window is the
+            // (Some, _) arm below and still refuses.
+            (None, Some(seen)) => seen == FileStamp::ABSENT,
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            return Err(anyhow::anyhow!(
+                "{} changed on disk after this handle last read it (a concurrent \
+                 writer landed between the reload and this persist); refusing to \
+                 overwrite it — retry the operation to re-apply it on the merged state",
+                T::LABEL
+            ));
+        }
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
         crate::platform::filesystem::atomic_write_private(self.path.as_ref(), &payload)
@@ -957,10 +989,17 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
     }
 
     pub(crate) fn archived_tasks(&self) -> Vec<ArchivedScheduledTask> {
+        // Same stamp-gated read as the other cross-surface paths: a CLI
+        // `scheduled delete` archives runs into this file under its own
+        // lock, and without the reload a GUI sidebar would keep showing the
+        // pre-archive list until an unrelated GUI mutation happened to
+        // reload. Unchanged is one `stat`.
+        self.reload_if_changed();
         self.registry.read().tasks.values().cloned().collect()
     }
 
     pub(crate) fn runs_for(&self, automation_id: &str) -> Option<Vec<AutomationRunRecord>> {
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -973,6 +1012,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         automation_id: &str,
         session_id: &str,
     ) -> Option<AutomationRunRecord> {
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -1389,6 +1429,119 @@ mod foreign_writer_tests {
 
     fn memory_organize() -> String {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
+    }
+
+    /// A foreign write that lands between this handle's last read and its
+    /// persist must not be silently destroyed by the whole-file rename: the
+    /// persist re-checks the file's stamp and refuses. The refusal is
+    /// recoverable — the next mutation's reload merges the foreign content
+    /// and the re-applied write lands beside it.
+    #[test]
+    fn persist_refuses_when_a_foreign_write_landed_since_the_last_read() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // The foreign writer lands between our read and our persist.
+        write_kind_registry(
+            &path,
+            serde_json::json!({ "t1": kind_entry_json(), "t2": kind_entry_json() }),
+        );
+        let error = store
+            .persist(&store.registry.read())
+            .expect_err("a stale persist must refuse instead of clobbering");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("changed on disk"),
+            "the error must name the collision: {rendered}"
+        );
+
+        // The foreign content is intact on disk, and a retry (whose reload
+        // merges it) lands without destroying it.
+        store
+            .persist(&store.registry.read())
+            .expect_err("the stamp has not moved; the persist must still refuse");
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the lookup miss reloads and merges the foreign write"
+        );
+        store
+            .persist(&store.registry.read())
+            .expect("the merged persist must go through");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the merged persist must carry the foreign entry"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The absent corner: a handle that priced in the file's absence must
+    /// refuse to create it if a foreign writer created one in the window —
+    /// creating would install this handle's payload over foreign content.
+    #[test]
+    fn persist_refuses_when_a_file_appeared_in_the_absent_window() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+
+        let error = store
+            .persist(&store.registry.read())
+            .expect_err("creating over an appeared file must refuse");
+        assert!(
+            format!("{error:#}").contains("changed on disk"),
+            "{error:#}"
+        );
+
+        // The retry path merges the appeared content first.
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the lookup miss reloads the appeared file"
+        );
+        store
+            .persist(&store.registry.read())
+            .expect("the merged persist must go through");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the appeared content must survive the merge"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Own writes must not trip the collision guard: back-to-back mutations
+    /// on one handle (each persist advances `seen` to the stamp of the
+    /// payload it proved) go through without a reload in between.
+    #[test]
+    fn sequential_own_persists_pass_the_collision_guard() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind("t1", Some(memory_organize()))
+            .expect("first persist creates the file");
+        store
+            .set_kind("t2", Some(memory_organize()))
+            .expect("the second persist must not read as a collision");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// (g) A quarantined store must not degrade to the empty default once

@@ -1948,9 +1948,22 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
 }
 
 fn probe_all_agents() -> Vec<AgentProbe> {
+    // Each probe is a pair of vendor children with 15s timeouts (version +
+    // auth): sequentially, a cold or hung binary pair costs 60-90s before
+    // the first output line. The probes are independent, so run them
+    // concurrently and join in catalog order — the output stays
+    // deterministic, only the wall clock shrinks to the slowest probe.
     AcpPool::agent_catalog()
         .into_iter()
-        .map(|descriptor| probe_agent(descriptor.agent_id, descriptor.agent_name))
+        .map(|descriptor| {
+            std::thread::Builder::new()
+                .name(format!("agent-probe-{}", descriptor.agent_id))
+                .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name))
+                .expect("spawn agent probe thread")
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().expect("agent probe thread panicked"))
         .collect()
 }
 

@@ -66,10 +66,10 @@
 //!   sessions on the way to an answer that can never be anything else.
 //! - remote connections/collections/search → `RemoteKnowledgeService` over
 //!   `~/.pinvou3/knowledge/remote-connections.json`. These are async network
-//!   client calls, so they run through the windowless product host
-//!   (`pinvou3_lib::headless_bridge::run_windowless_host`, needs a display on
-//!   headless Linux like `agent run`); zero configured connections answers
-//!   offline without booting the host.
+//!   client calls, so they run on the bare async host
+//!   (`pinvou3_lib::headless_bridge::run_bare_host`: rustls/env/runtime, no
+//!   Tauri context, no session-store boot, no display — usable on headless
+//!   Linux); zero configured connections answers offline without even that.
 //! - remote probe → `features::remote_knowledge::probe_private_identity`
 //!   (the TLS-pinned identity handshake behind the GUI's
 //!   `remote_kb_probe_private_endpoint`, re-exported as a free function;
@@ -2101,11 +2101,10 @@ fn model_cancel(_output: OutputMode) -> Result<CliOutcome, CliError> {
 
 // ───────────────────────── remote / host ─────────────────────────
 //
-// The remote/host surfaces are async network client calls behind the
-// windowless product host (`run_windowless_host`, whose error type is
-// `anyhow`); both are product-backend-only, so the whole cluster is
-// cfg-gated with honest featureless refusals below (the `agent_task`
-// family's stub precedent).
+// The remote/host surfaces are async network client calls behind the bare
+// async host (`run_bare_host`, whose error type is `anyhow`); both are
+// product-backend-only, so the whole cluster is cfg-gated with honest
+// featureless refusals below (the `agent_task` family's stub precedent).
 
 /// Loads the persisted remote connections (offline file read; a missing
 /// file means no connections, like the GUI's fresh state).
@@ -2125,14 +2124,13 @@ fn remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
     if service.configured_connections().is_empty() {
         return empty_remote_connections(output);
     }
-    let statuses =
-        pinvou3_lib::headless_bridge::run_windowless_host(move |_pool, _store| async move {
-            service
-                .statuses()
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))
-        })
-        .map_err(|error| host_error("remote connections", error))?;
+    let statuses = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
+        service
+            .statuses()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    })
+    .map_err(|error| host_error("remote connections", error))?;
     let human = if statuses.is_empty() {
         "no remote knowledge connections".to_owned()
     } else {
@@ -2186,13 +2184,12 @@ fn empty_remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> 
 fn remote_probe(url: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let source = url.to_owned();
-    let probe =
-        pinvou3_lib::headless_bridge::run_windowless_host(move |_pool, _store| async move {
-            pinvou3_lib::features::remote_knowledge::probe_private_identity(&source)
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))
-        })
-        .map_err(|error| host_error("remote probe", error))?;
+    let probe = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
+        pinvou3_lib::features::remote_knowledge::probe_private_identity(&source)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    })
+    .map_err(|error| host_error("remote probe", error))?;
     // Collapsed like every other remote-derived cell in this family: the
     // probed endpoint controls these strings, and this is exactly the
     // output the user is told to confirm out-of-band, so a forged label
@@ -2229,20 +2226,19 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut lines = Vec::new();
     let mut results = Vec::new();
     let mut errors = Vec::new();
-    let pages =
-        pinvou3_lib::headless_bridge::run_windowless_host(move |_pool, _store| async move {
-            let mut pages = Vec::new();
-            for connection in connections {
-                match service.collections(&connection.server_id, false).await {
-                    Ok(collections) => {
-                        pages.push((connection.server_id, connection.name, Ok(collections)))
-                    }
-                    Err(error) => pages.push((connection.server_id, connection.name, Err(error))),
+    let pages = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
+        let mut pages = Vec::new();
+        for connection in connections {
+            match service.collections(&connection.server_id, false).await {
+                Ok(collections) => {
+                    pages.push((connection.server_id, connection.name, Ok(collections)))
                 }
+                Err(error) => pages.push((connection.server_id, connection.name, Err(error))),
             }
-            Ok(pages)
-        })
-        .map_err(|error| host_error("remote collections", error))?;
+        }
+        Ok(pages)
+    })
+    .map_err(|error| host_error("remote collections", error))?;
     for (server_id, name, page) in pages {
         match page {
             Ok(collections) => {
@@ -2317,30 +2313,29 @@ fn remote_search(
     let mut lines = Vec::new();
     let mut results = Vec::new();
     let mut errors = Vec::new();
-    let outcomes =
-        pinvou3_lib::headless_bridge::run_windowless_host(move |_pool, _store| async move {
-            let mut outcomes = Vec::new();
-            for connection in connections {
-                let server_id = connection.server_id.clone();
-                let outcome = match service.collections(&server_id, false).await {
-                    Ok(collections) => match collections.iter().find(|item| item.name == wanted) {
-                        Some(matched) => {
-                            let collection_id = matched.id;
-                            service
-                                .search(&server_id, vec![collection_id], remote_query.clone(), 8)
-                                .await
-                                .map(|hits| (Some(collection_id), Some(hits), None))
-                                .unwrap_or_else(|error| (Some(collection_id), None, Some(error)))
-                        }
-                        None => (None, None, Some(format!("collection {wanted} not found"))),
-                    },
-                    Err(error) => (None, None, Some(error)),
-                };
-                outcomes.push((server_id, outcome));
-            }
-            Ok(outcomes)
-        })
-        .map_err(|error| host_error("remote search", error))?;
+    let outcomes = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
+        let mut outcomes = Vec::new();
+        for connection in connections {
+            let server_id = connection.server_id.clone();
+            let outcome = match service.collections(&server_id, false).await {
+                Ok(collections) => match collections.iter().find(|item| item.name == wanted) {
+                    Some(matched) => {
+                        let collection_id = matched.id;
+                        service
+                            .search(&server_id, vec![collection_id], remote_query.clone(), 8)
+                            .await
+                            .map(|hits| (Some(collection_id), Some(hits), None))
+                            .unwrap_or_else(|error| (Some(collection_id), None, Some(error)))
+                    }
+                    None => (None, None, Some(format!("collection {wanted} not found"))),
+                },
+                Err(error) => (None, None, Some(error)),
+            };
+            outcomes.push((server_id, outcome));
+        }
+        Ok(outcomes)
+    })
+    .map_err(|error| host_error("remote search", error))?;
     for (server_id, (collection_id, hits, error)) in outcomes {
         match (hits, error) {
             (Some(hits), None) => {
@@ -2402,11 +2397,10 @@ fn remote_search(
 #[cfg(feature = "product-backend")]
 fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    let status =
-        pinvou3_lib::headless_bridge::run_windowless_host(move |_pool, _store| async move {
-            Ok::<_, anyhow::Error>(pinvou3_lib::features::shared_knowledge_host::status().await)
-        })
-        .map_err(|error| host_error("host status", error))?;
+    let status = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
+        Ok::<_, anyhow::Error>(pinvou3_lib::features::shared_knowledge_host::status().await)
+    })
+    .map_err(|error| host_error("host status", error))?;
     // Same collapse discipline as the probe block: the endpoint is
     // server-controlled and lands in a label the user reads; JSON keeps
     // the verbatim value.

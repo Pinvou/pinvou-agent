@@ -7,9 +7,10 @@
 //! standalone — they read prefs + the credential store and probe the
 //! configured model endpoint, and the sampler additionally runs local
 //! `nvidia-smi` / resource queries. None of it touches Tauri state, but the
-//! CLI crate has no async runtime of its own, so both subcommands run inside
-//! the windowless product host (`run_windowless_host`, the same wiring
-//! `memory organize` uses; requires a display — xvfb on headless Linux).
+//! CLI crate has no async runtime of its own, so both subcommands run on the
+//! bare async host (`run_bare_host`: rustls/env/runtime without a Tauri
+//! context or a session-store boot — no display needed, unlike the full
+//! windowless product host `memory organize` uses).
 //! Unlike the GUI, the CLI prints one-shot text instead of live gauges.
 //!
 //! Probes hit the configured model endpoint (default
@@ -74,7 +75,7 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // The host's work closure must resolve to `anyhow::Result`; the plain
     // probe value is lifted with `Ok(...)` so this module never names the
     // host's feature-gated error type.
-    let snapshot = pinvou3_lib::headless_bridge::run_windowless_host(|_pool, _store| {
+    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| {
         let work = async move { monitor::active_model_snapshot().await };
         async move { Ok(work.await) }
     })
@@ -187,7 +188,7 @@ fn status_payload(
 /// cannot tell "no tokens generated yet" from "this process does not and
 /// cannot count tokens".
 fn snapshot(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let snapshot = pinvou3_lib::headless_bridge::run_windowless_host(|_pool, _store| {
+    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| {
         let work = async move {
             let state = monitor::MonitorState::new();
             monitor::sample_all(&state).await

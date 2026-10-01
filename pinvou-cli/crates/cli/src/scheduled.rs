@@ -1598,6 +1598,13 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
             | ScheduledCommand::Run { .. }
             | ScheduledCommand::MarkViewed { .. }
     );
+    // Confirm destructive intent BEFORE the store lock: a delete without
+    // --yes is a usage error (exit 2) and must read as one even when another
+    // command holds the store lock — the busy refusal is a failure (exit 1)
+    // and would mask the usage error under contention.
+    if let ScheduledCommand::Delete { yes, .. } = &command {
+        require_yes(*yes)?;
+    }
     let mut store_lock = if mutating {
         sandbox_home()?;
         Some(scheduled_store_lock()?)
@@ -2546,16 +2553,19 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         // rewrite only skips its cleanup (the GUI compaction drops the stale
         // entry); failing the whole delete here would strand a live-less
         // task with sidecar entries and no definition.
-        if registry.is_object()
-            && registry
-                .get("schema_version")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                > 1
-        {
+        // The same conservatism `ensure_sidecar_schema` applies to the write
+        // paths, extended to the version this binary cannot even read as a
+        // number: rewriting a registry whose version we cannot vouch for is
+        // the default-based-rewrite hazard the write paths refuse on.
+        let schema_version = registry.get("schema_version");
+        let newer_or_unreadable_schema = schema_version
+            .is_some_and(|value| value.as_u64().is_none())
+            || schema_version.and_then(Value::as_u64).unwrap_or(0) > 1;
+        if registry.is_object() && newer_or_unreadable_schema {
             note!(
                 "pinvou: warning: scheduled task {id} was deleted, but a sidecar registry has \
-                 a newer schema; its stale entry is left for the desktop app to clean up"
+                 a newer or unreadable schema; its stale entry is left for the desktop app \
+                 to clean up"
             );
             continue;
         }

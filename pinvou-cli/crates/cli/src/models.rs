@@ -2274,6 +2274,11 @@ fn v1_models_owned_by_matches(value: &serde_json::Value, expected: &str) -> bool
 /// answer the classification must never give.
 const LOCAL_KIND_UNKNOWN_AUTHENTICATED: &str = "unknown_authenticated";
 
+/// The companion absence-of-a-classification: a probe thread PANICKED, so
+/// the round is incomplete and `generic` would be an answer the probe never
+/// earned (the auth sentinel's doctrine, one fault class over).
+const LOCAL_KIND_PROBE_FAILED: &str = "probe_failed";
+
 /// One round of candidate probes, as facts rather than as a decision.
 /// Mirrors `core/model_endpoint.rs`'s `ProbeCandidateHits` so the priority
 /// rule below can be exercised without a network.
@@ -2286,6 +2291,9 @@ struct ProbeCandidateHits {
     llamacpp: bool,
     sglang: bool,
     v1_models: V1ModelsProbe,
+    /// A probe thread panicked: the round did not complete, so a no-hit
+    /// decision is not a `generic` classification, it is an incomplete one.
+    panicked: bool,
 }
 
 /// Issues all seven candidate probes CONCURRENTLY, the way the GUI issues
@@ -2315,15 +2323,69 @@ fn probe_candidates(base_url: &str, bearer: Option<&str>) -> ProbeCandidateHits 
         let v1_models = scope.spawn(|| fetch_v1_models(base_url, bearer));
         // A panicking probe thread degrades to "no hit" rather than taking
         // the command down: the probes are best-effort facts, and one
-        // candidate's failure must not lose the other six.
+        // candidate's failure must not lose the other six. The panic itself
+        // is still a fact the decision owes the caller (`panicked`), so an
+        // all-miss round with a dead probe reports `probe_failed`, not
+        // `generic`.
+        let mut panicked = false;
+        let docker_mgmt_shape = match docker.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let ollama = match ollama.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let lmstudio_v0 = match lmstudio.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let koboldcpp = match koboldcpp.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let llamacpp = match llamacpp.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let sglang = match sglang.join() {
+            Ok(hit) => hit,
+            Err(_) => {
+                panicked = true;
+                false
+            }
+        };
+        let v1_models = match v1_models.join() {
+            Ok(probe) => probe,
+            Err(_) => {
+                panicked = true;
+                V1ModelsProbe::default()
+            }
+        };
         ProbeCandidateHits {
-            docker_mgmt_shape: docker.join().unwrap_or(false),
-            ollama: ollama.join().unwrap_or(false),
-            lmstudio_v0: lmstudio.join().unwrap_or(false),
-            koboldcpp: koboldcpp.join().unwrap_or(false),
-            llamacpp: llamacpp.join().unwrap_or(false),
-            sglang: sglang.join().unwrap_or(false),
-            v1_models: v1_models.join().unwrap_or_default(),
+            docker_mgmt_shape,
+            ollama,
+            lmstudio_v0,
+            koboldcpp,
+            llamacpp,
+            sglang,
+            v1_models,
+            panicked,
         }
     })
 }
@@ -2364,6 +2426,12 @@ fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str
     // classification the probe never earned.
     if hits.v1_models == V1ModelsProbe::AuthRequired {
         return LOCAL_KIND_UNKNOWN_AUTHENTICATED;
+    }
+    // An incomplete round must not read as a classification: with a probe
+    // thread dead and no signature matched, `generic` is an answer the
+    // probe never earned.
+    if hits.panicked {
+        return LOCAL_KIND_PROBE_FAILED;
     }
     "generic"
 }
@@ -2515,6 +2583,22 @@ fn probe_local<S: CredentialStore>(
     // so with exit 1 keeps a script from reading a kind the probe never
     // earned, and the detail names the flag that would let the next run
     // actually classify it.
+    if kind == LOCAL_KIND_PROBE_FAILED {
+        let detail = "a local-server probe failed unexpectedly, so the round was              incomplete; rerun the probe (if it repeats, the server's behavior on one              of the probed endpoints is crashing the probe)";
+        let text = render(
+            output,
+            format!("url: {target}\nkind: {kind}\ndetail: {detail}"),
+            &serde_json::json!({
+                "url": target,
+                "kind": kind,
+                "detail": detail,
+            }),
+        );
+        return Ok(CliOutcome {
+            exit_code: ExitCode::Failed,
+            stdout: text,
+        });
+    }
     if kind == LOCAL_KIND_UNKNOWN_AUTHENTICATED {
         let detail = if authenticated {
             "the endpoint rejected the credential that was presented (401/403), so no server \
@@ -3816,6 +3900,7 @@ mod tests {
             llamacpp: true,
             sglang: true,
             v1_models: vllm_body(),
+            panicked: false,
         };
         assert_eq!(
             select_local_server_kind_from_hits(&all),
@@ -3933,6 +4018,34 @@ mod tests {
                 ..Default::default()
             }),
             "ollama",
+        );
+    }
+
+    /// A round whose probe thread panicked is incomplete: with no signature
+    /// matched it must answer the probe-failed sentinel, not `generic`, and
+    /// a signature that DID match still wins over the panic (the identified
+    /// server is a fact the dead probe does not take away).
+    #[test]
+    fn local_server_kind_reports_probe_failed_when_the_round_is_incomplete() {
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                panicked: true,
+                ..Default::default()
+            }),
+            LOCAL_KIND_PROBE_FAILED,
+        );
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                ollama: true,
+                panicked: true,
+                ..Default::default()
+            }),
+            "ollama",
+        );
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits::default()),
+            "generic",
+            "a complete all-miss round is still a legitimate generic"
         );
     }
 
