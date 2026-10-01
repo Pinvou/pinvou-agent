@@ -1359,8 +1359,9 @@ impl PendingNativeWindow {
     /// (`bridge.native_window_recheck` — true exactly when that route's own
     /// native fetch ran and served no fact). Arming is part of the
     /// construction so a fact the route can never adopt (a borrowed roster
-    /// name, a non-operator-owned endpoint) or a user declaration (which
-    /// min-clamps any adopted fact anyway) can never mark the entry: an
+    /// name, a non-operator-owned endpoint) or a declared route (whose own
+    /// fetch is skipped, so it never produces a fact to re-check) can never
+    /// mark the entry: an
     /// armed re-probe that keeps serving a fact the rebuild path refuses to
     /// adopt would drop and respawn the engine on every send, forever. A
     /// fact present at spawn means the normal frozen-until-rebuild
@@ -2040,8 +2041,11 @@ impl EnginePool {
     /// or not operator-owned) never runs the fetch and never arms — the
     /// re-probe would keep serving a fact the rebuild refuses to adopt and
     /// respawn the engine on every send; a declared route skips the fetch
-    /// entirely because its declaration min-clamps any adopted fact, so
-    /// nothing the native API returns can change the route.
+    /// entirely — its budget is the declaration by construction, and the
+    /// per-turn re-check plus an adopting rebuild must not second-guess an
+    /// explicit declaration (the monitor display still shows the smaller
+    /// native fact where one exists; a stale declaration is the user's to
+    /// fix).
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,

@@ -241,7 +241,8 @@ pub struct Pinvou3Bridge {
     /// this route's own native fetch ran and served no fact. Written by
     /// `EnginePool::adopt_probed_endpoint_facts`; a route whose fact can
     /// never be adopted (borrowed roster name, not operator-owned) or a
-    /// declared route (its declaration min-clamps any adopted fact) never
+    /// declared route (its native fetch is skipped — the budget stays the
+    /// declaration) never
     /// arms — a served fact the rebuild refuses to adopt must not respawn
     /// the engine on every send.
     pub native_window_recheck: bool,
