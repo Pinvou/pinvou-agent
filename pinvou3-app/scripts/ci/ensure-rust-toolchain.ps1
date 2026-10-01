@@ -230,7 +230,13 @@ try {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
         if ($timedOut) {
-          $process.Kill()
+          # rustup can exit inside the window between the timed-out wait and
+          # the kill; .NET Kill() then throws InvalidOperationException. That
+          # race must count as a failed attempt, not abort the whole repair.
+          try {
+            $process.Kill()
+          } catch [System.InvalidOperationException] {
+          }
         }
         $process.WaitForExit()
 
@@ -294,13 +300,14 @@ try {
     if (-not (Test-Path -LiteralPath $toolchainsRoot)) {
       return $false
     }
-    $matches = @(Get-ChildItem -LiteralPath $toolchainsRoot -Directory | Where-Object {
+    # $matches is a PowerShell automatic variable; use a distinct name.
+    $managedToolchainDirs = @(Get-ChildItem -LiteralPath $toolchainsRoot -Directory | Where-Object {
       $_.Name -eq $toolchain -or $_.Name.StartsWith(
         "$toolchain-",
         [StringComparison]::OrdinalIgnoreCase
       )
     })
-    return $matches.Count -gt 0
+    return $managedToolchainDirs.Count -gt 0
   }
 
   $requiredCommands = @("cargo", "rustc", "clippy-driver", "rustfmt")
@@ -322,6 +329,11 @@ try {
         Write-Host (
           "[rustup] Repair attempt $attempt/$RepairAttemptsPerSource using $($source.Name)."
         )
+        # --force only overrides rustup's component-completeness check. Over a
+        # partially-installed directory it can exit 0 as "unchanged" without
+        # restoring missing binaries, so the post-install probe below is the
+        # real success gate and the uninstall reset after a failed attempt is
+        # what actually reinstalls a broken directory.
         $repairExitCode = Invoke-Rustup -Arguments @(
           "toolchain", "install", $toolchain,
           "--profile", "minimal",
