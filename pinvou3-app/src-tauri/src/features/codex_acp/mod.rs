@@ -1596,13 +1596,13 @@ impl AcpPool {
     /// the subset of `session_ids` that must block a directory rebind,
     /// decided under ONE bounded acquisition of the pool's sessions lock.
     /// `None` means the state could not be read inside
-    /// [`REBIND_ACP_LOCK_TIMEOUT`] — a concurrent cold spawn holds that lock
+    /// `REBIND_ACP_LOCK_TIMEOUT` — a concurrent cold spawn holds that lock
     /// across its handshake — and the caller must refuse the run instead of
     /// stalling. One lock for the whole set rather than one per session: a
     /// per-session bound would multiply the same stall by the number of
     /// affected sessions.
     ///
-    /// The busy predicate is the shared [`rebind_busy_flags`] (round-13): like
+    /// The busy predicate is the shared `rebind_busy_flags` (round-13): like
     /// [`Self::is_turn_active`] and the rebind eviction it counts a prompt
     /// that has been resolved but not yet admitted (`prompt_pending`), which
     /// closes the pre-admission window the eviction already guards against
