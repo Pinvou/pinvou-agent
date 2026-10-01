@@ -1373,6 +1373,19 @@ impl PendingNativeWindow {
     }
 }
 
+/// The reuse-vs-self-heal outcome for a fresh cached entry (see
+/// `EngineEntry::native_window_pending`). Standalone so the decision is
+/// unit-testable without an AppHandle-backed pool (same idiom as
+/// `require_live_engine_for_steer` / `delegate_steer_withdrawal`).
+#[derive(Debug, PartialEq, Eq)]
+enum CachedEntryReuse {
+    /// Keep the cached engine for this turn.
+    Keep,
+    /// The pending window fact materialized since spawn: reclaim the entry
+    /// and fall through to the rebuild path so the fact is adopted.
+    RebuildForWindowFact,
+}
+
 struct EngineEntry {
     engine: AppEngine,
     /// This engine's event forwarder; aborted on evict so a zombie task does
@@ -1919,17 +1932,18 @@ impl EnginePool {
         bridge.session_model = Some(prepared.model.clone());
         // Local endpoints (OpenAI-compatible presets and LocalVllm presets
         // pointing at local/intranet services): probe the service type
-        // (Ollama / vLLM / LM Studio / generic) so thinking control follows
-        // the corresponding foundation wire protocol, and so the native
-        // served-window follow-up below knows which API to ask. LocalVllm
-        // presets must probe too: discovery saves Ollama/LM Studio endpoints
-        // under that preset, and `/v1/models` there never carries a window
-        // fact — without the kind probe the native fetch below can never
-        // fire and the route keeps the 128K fallback while the monitor shows
-        // the real window. The probe result cannot flip the wire route for
-        // these presets (`provider()` resolves LocalVllm to "vllm" from the
-        // preset arm before ever consulting the probed kind), so a real vLLM
-        // classified `Vllm` is inert here.
+        // (Ollama / vLLM / LM Studio / generic). An OpenaiCompatible route's
+        // thinking control follows the detected foundation wire protocol; a
+        // LocalVllm preset resolves provider from the preset arm instead, so
+        // for those routes the kind feeds only the native served-window
+        // follow-up below. LocalVllm presets must probe too: discovery saves
+        // Ollama/LM Studio endpoints under that preset, and `/v1/models`
+        // there never carries a window fact — without the kind probe the
+        // native fetch below can never fire and the route keeps the 128K
+        // fallback while the monitor shows the real window. The probe result
+        // cannot flip the wire route for these presets (`provider()` resolves
+        // LocalVllm to "vllm" from the preset arm before ever consulting the
+        // probed kind), so a real vLLM classified `Vllm` is inert here.
         // A probe failure (service not started/timeout/auth failure) is
         // classified as generic, keeping the existing openai wire route. The
         // probe request carries a credential from the same origin as real
@@ -2063,7 +2077,18 @@ impl EnginePool {
             // exact-name match; on a case-mismatched multi-entry list the
             // native fetch still fires with the configured name and safely
             // misses the exact-keyed native maps (conservative, already a
-            // Mismatch display state).
+            // Mismatch display state). Adopted native values carry no
+            // sanity band — deliberately the same trust class as user
+            // declarations and vLLM `max_model_len`: a tiny honest value
+            // (a Modelfile `num_ctx 512` typo, a small global default) is
+            // adopted as-is and preflight fails per turn with the visible
+            // context-recovery error — loud-and-true instead of the
+            // 8192-pretense silently truncating upstream. There is no
+            // in-app override for local presets (the declaration field is
+            // hidden and declarations only min-clamp), so the escape is
+            // the real fix — the server-side context configuration; the
+            // adopted value stays visible on the monitor card / progress
+            // denominator.
             if max_len.is_none() {
                 use crate::core::model_endpoint::LocalServerKind;
                 let native = match bridge.probed_local_kind {
@@ -2128,6 +2153,27 @@ impl EnginePool {
         }
     }
 
+    /// The reuse-path self-heal decision (see `EngineEntry::
+    /// native_window_pending`): no pending marker → keep without probing;
+    /// pending but the native API still serves no fact → keep (the engine
+    /// stays, the next turn re-asks); pending and the fact materialized →
+    /// rebuild so the fact is adopted. Extracted from `get_or_spawn_with_policy`
+    /// verbatim so the decision — dropping it would let the collapsed
+    /// 8192-fallback budget survive the engine's whole lifetime — is pinned
+    /// by `pending_window_reuse_decision_rebuilds_once_fact_materializes`.
+    async fn cached_entry_reuse_decision(
+        pending: Option<&PendingNativeWindow>,
+        bridge: &Pinvou3Bridge,
+    ) -> CachedEntryReuse {
+        match pending {
+            None => CachedEntryReuse::Keep,
+            Some(pending) => match Self::reprobe_missing_native_window(bridge, pending).await {
+                Some(_) => CachedEntryReuse::RebuildForWindowFact,
+                None => CachedEntryReuse::Keep,
+            },
+        }
+    }
+
     /// Get the session's engine, spawning one if absent. After spawn, if the
     /// session has on-disk history, hydrate the historical messages into the
     /// new engine with a one-shot `SyncSession` (the scenario of a cold start
@@ -2184,6 +2230,7 @@ impl EnginePool {
                 (None, None, None)
             }
         };
+        let mut self_healed = false;
         if let Some(engine) = fresh_engine {
             // Missing-native-window re-adoption (see
             // `EngineEntry::native_window_pending`): while the spawn ended
@@ -2192,17 +2239,15 @@ impl EnginePool {
             // (the `/api/show` leg is 60s-cached in core, `/api/ps` /
             // `/api/v0/models` are one small local GET each; bounded by the
             // shared 3s probe client). The first post-load check finds the
-            // real window; the entry is dropped and the rebuild below
-            // re-finalizes with the fact adopted, instead of the collapsed
-            // 8192-fallback budget surviving the whole first engine lifetime
-            // (2026-09-30 user report). Runs outside the entries lock.
-            let loaded_since_spawn = match pending_window.as_ref() {
-                Some(pending) => Self::reprobe_missing_native_window(&bridge, pending)
-                    .await
-                    .is_some(),
-                None => false,
-            };
-            if !loaded_since_spawn {
+            // real window and the entry is dropped for the rebuild below,
+            // which re-finalizes with the fact adopted — instead of the
+            // collapsed 8192-fallback budget surviving the whole first
+            // engine lifetime (2026-09-30 user report). Runs outside the
+            // entries lock.
+            if matches!(
+                Self::cached_entry_reuse_decision(pending_window.as_ref(), &bridge).await,
+                CachedEntryReuse::Keep
+            ) {
                 crate::features::assistant::timing::record_engine_ready(
                     session_id,
                     crate::features::assistant::timing::EngineAcquireTiming {
@@ -2225,12 +2270,19 @@ impl EnginePool {
             // through to the rebuild path (mirrors the revision-mismatch
             // reclaim; a mid-session rebuild is the same path a model edit
             // takes, including history hydration).
+            self_healed = true;
             let removed = self.entries.lock().await.remove(session_id);
             if let Some(entry) = removed {
                 self.reclaim_engine_entry(session_id, entry).await;
             }
         }
-        let acquire_kind = if stale.is_some() { "rebuilt" } else { "cold" };
+        // A pending-window self-heal drops the entry inline above (so
+        // `stale` is None) but is a mid-session rebuild, not a cold spawn.
+        let acquire_kind = if stale.is_some() || self_healed {
+            "rebuilt"
+        } else {
+            "cold"
+        };
         let reclaim_started = Instant::now();
         if let Some(entry) = stale {
             self.reclaim_engine_entry(session_id, entry).await;
@@ -8428,7 +8480,9 @@ mod scheduled_model_tests {
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod probed_facts_wiring_tests {
-    use super::{EnginePool, PendingNativeWindow, Pinvou3Bridge, PreparedRuntimeModel};
+    use super::{
+        CachedEntryReuse, EnginePool, PendingNativeWindow, Pinvou3Bridge, PreparedRuntimeModel,
+    };
     use crate::core::model_endpoint::{LocalServerKind, models_mock};
     use crate::platform::credential_store::CredentialState;
     use crate::platform::paths::tests::ENV_LOCK;
@@ -8952,10 +9006,13 @@ mod probed_facts_wiring_tests {
     /// frozen-until-rebuild discipline applies; non-native kinds never
     /// re-check); `reprobe_missing_native_window` returns the window once
     /// the server can actually serve it (model JIT-loaded since) and None
-    /// while it can't. The get_or_spawn glue (drop the entry, reclaim, let
-    /// the rebuild path re-finalize and adopt) mirrors the
-    /// revision-mismatch reclaim verbatim and needs a real pool — the same
-    /// unit-test boundary as the rest of the spawn wiring.
+    /// while it can't. The get_or_spawn glue applies the extracted
+    /// `cached_entry_reuse_decision` to drop the entry, reclaim, and let
+    /// the rebuild path re-finalize and adopt — the decision itself is
+    /// pinned by `pending_window_reuse_decision_rebuilds_once_fact_
+    /// materializes`; the surrounding pool plumbing (EnginePool needs an
+    /// AppHandle) stays the unit-test boundary of the rest of the spawn
+    /// wiring.
     #[tokio::test]
     async fn pending_native_window_marks_factless_native_routes() {
         // Ollama route, model never loaded, no num_ctx → pending.
@@ -9053,6 +9110,111 @@ mod probed_facts_wiring_tests {
             PendingNativeWindow::from_finalized(&generic_bridge),
             None,
             "non-native kinds have no native API to re-check"
+        );
+    }
+
+    /// The reuse-path self-heal decision (`cached_entry_reuse_decision`,
+    /// extracted verbatim from the `get_or_spawn_with_policy` glue —
+    /// EnginePool itself needs an AppHandle, the same unit-test boundary as
+    /// `require_live_engine_for_steer`): no pending marker → keep without
+    /// probing; pending but still no fact → keep (re-ask next turn); the
+    /// fact materialized → rebuild so it is adopted. A mutation that always
+    /// keeps the entry would let the collapsed 8192-fallback budget survive
+    /// the engine's whole lifetime — the reported fatality — and must turn
+    /// this red.
+    #[tokio::test]
+    async fn pending_window_reuse_decision_rebuilds_once_fact_materializes() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        // No pending marker: keep, without dialing anything (the bridge has
+        // no base_url to reach).
+        let no_pending_bridge = wiring_bridge(saved_model(
+            ModelPreset::OpenaiCompatible,
+            "my-model",
+            Some("custom"),
+        ));
+        assert_eq!(
+            EnginePool::cached_entry_reuse_decision(None, &no_pending_bridge).await,
+            CachedEntryReuse::Keep,
+            "a factless non-pending route must keep its engine without any re-probe"
+        );
+        let pending = PendingNativeWindow {
+            model_name: "my-model".into(),
+            kind: LocalServerKind::Ollama,
+        };
+        // Pending, model still unloaded: keep (the next turn re-asks).
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let unloaded_bridge = wiring_bridge(model);
+        assert_eq!(
+            EnginePool::cached_entry_reuse_decision(Some(&pending), &unloaded_bridge).await,
+            CachedEntryReuse::Keep,
+            "no post-load fact yet — the engine stays and the next turn re-asks"
+        );
+        // The model loaded since spawn: the decision must demand a rebuild
+        // so the rebuild path adopts the fact.
+        let loaded = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut loaded_model =
+            saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        loaded_model.base_url = loaded.base_url.clone();
+        let loaded_bridge = wiring_bridge(loaded_model);
+        assert_eq!(
+            EnginePool::cached_entry_reuse_decision(Some(&pending), &loaded_bridge).await,
+            CachedEntryReuse::RebuildForWindowFact,
+            "the post-load fact must drop the entry for the adopting rebuild"
+        );
+    }
+
+    /// The finalize kind probe is locality-gated. Pinned without touching
+    /// the network via a v4-mapped loopback URL: `::ffff:127.0.0.1`
+    /// classifies as a non-local IPv6 literal (the conservative arm of
+    /// `base_url_uses_local_or_private`) while still routing to the same
+    /// loopback mock — so a hit on the mock proves the gate ran, and
+    /// deleting the gate turns both assertions red (the battery classifies
+    /// the live `/api/tags` signature and `probed_local_kind` stops being
+    /// None).
+    #[tokio::test]
+    async fn finalize_skips_kind_probe_for_public_host() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
+        ]);
+        let port = mock
+            .base_url
+            .rsplit(':')
+            .next()
+            .expect("mock base_url carries a port")
+            .to_string();
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = format!("http://[::ffff:127.0.0.1]:{port}");
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind, None,
+            "a non-local base_url must not be kind-probed"
+        );
+        assert_eq!(
+            mock.hits_for("/api/tags"),
+            0,
+            "the signature battery must not reach the host the gate refuses"
         );
     }
 

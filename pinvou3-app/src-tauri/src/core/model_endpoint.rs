@@ -526,15 +526,11 @@ pub async fn fetch_lmstudio_served_context(
     bearer: Option<&str>,
     model: &str,
 ) -> Option<u32> {
-    let host = strip_v1_suffix(base_url)?;
-    let client = shared_probe_client()?;
-    let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .ok()?;
-    let v = resp.json::<serde_json::Value>().await.ok()?;
-    parse_lmstudio_v0_models(&v)?
+    // 与判别探测共用同一 v0 取数路径（同一 URL / bearer / 合形口径），
+    // 避免两处实现漂移后"判别是 LM Studio、取数却不认"的分歧。
+    probe_lmstudio_v0_only(base_url, bearer)
+        .await?
+        .models
         .into_iter()
         .find(|entry| entry.id == model)?
         .max_model_len
@@ -1898,6 +1894,11 @@ mod tests {
         let overflow_then_good: serde_json::Value =
             serde_json::from_str(r#"{"parameters":"num_ctx 99999999999\nnum_ctx 4096"}"#).unwrap();
         assert_eq!(parse_ollama_show_context(overflow_then_good), None);
+        // Two valid lines: the first one decides (a mutation taking the
+        // last / max valid line must turn this red).
+        let good_then_good: serde_json::Value =
+            serde_json::from_str(r#"{"parameters":"num_ctx 4096\nnum_ctx 131072"}"#).unwrap();
+        assert_eq!(parse_ollama_show_context(good_then_good), Some(4_096));
         // Absent / invalid shapes → None.
         assert_eq!(parse_ollama_show_context(serde_json::json!({})), None);
         assert_eq!(

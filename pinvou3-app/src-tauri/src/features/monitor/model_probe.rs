@@ -436,7 +436,12 @@ fn parse_models_response(
 /// case-insensitively: a case-mismatched route is already a Mismatch
 /// display state, and there the display may adopt a window the engine
 /// route keeps its fallback for — accepted, since loosening the engine
-/// gate would change pre-existing vLLM adoption semantics.
+/// gate would change pre-existing vLLM adoption semantics. One further
+/// asymmetry: on a multi-entry list whose configured name matches only
+/// case-insensitively this gate passes while the `/api/ps` map stays
+/// exact-keyed, so the follow-up recovers at most the server-side-resolved
+/// `/api/show` declaration — and the engine route's exact gate never
+/// adopts in that shape at all.
 fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
     let Some(served) = served else {
         return false;
@@ -469,7 +474,11 @@ fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str
 ///    probe, and a non-Ollama shape ends the lookup; a known other kind
 ///    (vLLM / llama.cpp / …, whose listing carries the window) skips the
 ///    fetch entirely — no per-poll doomed `/api/ps` for servers the engine
-///    already identified.
+///    already identified. That skip is TTL-scoped like every cached kind:
+///    60s after the last engine-side classification the monitor resumes
+///    the probe, so a never-classified (or stale-classified) target pays
+///    at most one small doomed 404 per poll — bounded by the shared 3s
+///    probe client, never a per-poll GGUF re-read.
 async fn local_native_display_window(
     upstream: &str,
     api_key: Option<&str>,
@@ -1088,11 +1097,31 @@ mod tests {
         use crate::core::model_endpoint::models_mock;
         // Public base_url under a local preset (target_kind forced "local"
         // by the caller): the locality gate ends the lookup before any
-        // request — deliberately no mock, nothing may be contacted.
-        let public_host = "http://example.com:11434";
+        // request. Pinned without touching the network: the mock is
+        // loopback-bound, but `::ffff:127.0.0.1` classifies as a non-local
+        // IPv6 literal (the conservative arm of `base_url_uses_local_or_
+        // private`) while still routing to the mock — a hit on the mock
+        // proves the gate ran, so deleting the gate turns both assertions
+        // red (the ps fact would come back and the hit counter moves).
+        let mock = models_mock::spawn(&[(
+            "/api/ps",
+            200,
+            r#"{"models":[{"name":"a","context_length":8}]}"#.into(),
+        )]);
+        let port = mock
+            .base_url
+            .rsplit(':')
+            .next()
+            .expect("mock base_url carries a port");
+        let v4mapped = format!("http://[::ffff:127.0.0.1]:{port}");
         assert_eq!(
-            local_native_display_window(public_host, None, Some("a"), Some("a"), Some(1)).await,
+            local_native_display_window(&v4mapped, None, Some("a"), Some("a"), Some(1)).await,
             None
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "the locality gate must end the lookup before any request"
         );
         // configured=None with a multi-model roster: first-entry attribution
         // would borrow an unrelated model's window — declined before any
@@ -1154,6 +1183,41 @@ mod tests {
         // cache could race a concurrent finalize test. The one cached entry
         // for this now-dead mock port is TTL-bounded and keyed by a URL no
         // other test uses.
+    }
+
+    /// A cached LM Studio kind routes the display follow-up to the v0
+    /// served-window API, not the Ollama ps probe: dropping the dispatch
+    /// arm would send LM Studio targets to a doomed 404 `/api/ps` and the
+    /// served window (#726's 12918-vs-131072 shape) would never display.
+    #[tokio::test]
+    async fn local_native_display_window_uses_lmstudio_served_api() {
+        use crate::core::model_endpoint::models_mock;
+        let mock = models_mock::spawn(&[
+            (
+                "/api/v0/models",
+                200,
+                r#"{"data":[{"id":"m","state":"loaded","max_context_length":131072,"loaded_context_length":12918}]}"#
+                    .into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"m","context_length":8}]}"#.into(),
+            ),
+        ]);
+        // Seed the kind cache through the real classification (the v0
+        // signature is LM Studio's; the battery never dials /api/ps).
+        crate::core::model_endpoint::probe_local_server_kind(&mock.base_url, None).await;
+        assert_eq!(
+            local_native_display_window(&mock.base_url, None, Some("m"), Some("m"), Some(1)).await,
+            Some(12_918),
+            "the served window, fetched from the v0 API the kind selects"
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "the LmStudio arm must not fall through to the Ollama ps probe"
+        );
     }
 
     /// A user-declared window (cloud; probe value 131072 from a gateway list):
