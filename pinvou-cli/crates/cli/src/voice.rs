@@ -1021,6 +1021,14 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         let mut reader = response.take(MAX_DOWNLOAD_BYTES + 1);
         std::io::copy(&mut reader, &mut file)
             .map_err(|error| CliError::failed(format!("voice asr-install: write: {error}")))?;
+        // Same pre-verify `sync_all` as the app's `download_to_part_with_verify`
+        // ("下载流完成（sync_all 后）…"): without it a crash between the rename
+        // and the writeback can leave a garbage model at the canonical path —
+        // the sha256 gate would catch it, but only after a full 182-254 MiB
+        // re-download. Closing the gap keeps the drift-guard mirror literally
+        // true.
+        file.sync_all()
+            .map_err(|error| CliError::failed(format!("voice asr-install: sync: {error}")))?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -1271,7 +1279,14 @@ fn transcribe_with(
     let _ = std::fs::remove_file(&wav);
     let (text, source) = result?;
     let value = serde_json::json!({ "text": text, "source": source });
-    let human = format!("Source: {source}\nText: {text}");
+    // The transcript is engine output parsing an untrusted audio file: the
+    // recognized text can embed ESC sequences just like a session transcript
+    // can. Multi-line block content, same sanitizer as `sessions show`/`code
+    // workspace preview`; JSON keeps the verbatim bytes.
+    let human = format!(
+        "Source: {source}\nText: {}",
+        crate::support::collapse_block_control_characters(&text)
+    );
     Ok(success(render(output, human, &value)))
 }
 

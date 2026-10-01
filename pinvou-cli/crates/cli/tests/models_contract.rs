@@ -202,7 +202,7 @@ fn models_rejects_unknown_subcommands_and_options() {
     assert!(usage_error(&["pinvou", "models", "list", "extra"]).contains("no arguments"));
     assert!(usage_error(&["pinvou", "models", "list", "--json"]).contains("unknown option"));
     assert!(usage_error(&["pinvou", "models", "use"]).contains("requires an id"));
-    assert!(usage_error(&["pinvou", "models", "show", "a", "b"]).contains("one id"));
+    assert!(usage_error(&["pinvou", "models", "show", "a", "b"]).contains("just an id"));
 }
 
 /// Duplicate boolean flags exit 2 like duplicate value flags and like every

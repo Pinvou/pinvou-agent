@@ -195,10 +195,14 @@ fn snapshot(output: OutputMode) -> Result<CliOutcome, CliError> {
         async move { Ok(work.await) }
     })
     .map_err(|error| CliError::failed(format!("monitor snapshot failed: {}", redact(&error))))?;
+    // Same stance as the `status` lane's `last_check_ms`: zero is a
+    // well-formed timestamp (1970-01-01), so an unreadable host clock must
+    // surface as null/`-`, not as a fake epoch reading a freshness check
+    // cannot tell apart from a real one.
     let generated_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+        .ok()
+        .map(|elapsed| elapsed.as_millis() as u64);
     let (human, value) = snapshot_payload(&snapshot, generated_at_ms)?;
     Ok(success(render(output, human, &value)))
 }
@@ -249,7 +253,7 @@ const SNAPSHOT_KEYS: &[&str] = &[
 ///   modes mirror each other field for field.
 fn snapshot_payload(
     snapshot: &MonitorSnapshot,
-    generated_at_ms: u64,
+    generated_at_ms: Option<u64>,
 ) -> Result<(String, serde_json::Value), CliError> {
     // Vendor-reported hardware names are remote-sourced cells: collapsed like
     // every other family's human tab rows, so a control character in a
@@ -362,12 +366,15 @@ fn snapshot_payload(
                 .collect(),
         ),
     );
+    let generated_at_human = generated_at_ms
+        .map(|millis| millis.to_string())
+        .unwrap_or_else(|| "-".to_owned());
     let human = format!(
         "GeneratedAt: {}\n{gpu_line}\n{cpu_line}\n{ram_line}\n{vllm_line}\n\
          SelfPerf: n/a (headless; per-turn token/TTFT counters accumulate inside the running desktop app)\n\
          SessionUptime: n/a (headless; one process per invocation)\n\
          AppVersion: {}",
-        generated_at_ms, snapshot.app.pinvou3_version,
+        generated_at_human, snapshot.app.pinvou3_version,
     );
     Ok((human, value))
 }
@@ -438,6 +445,25 @@ mod tests {
 
     /// A clock that cannot be read has no timestamp to publish. Reporting `0`
     /// made "the host clock is broken" indistinguishable from a genuine
+    /// The snapshot lane answers an unreadable host clock the same way the
+    /// `status` lane does: null in JSON, `-` in human output — never a
+    /// synthetic epoch zero a freshness check would read as real.
+    #[test]
+    fn snapshot_reports_an_unreadable_clock_as_unknown_rather_than_epoch_zero() {
+        let (human, value) = snapshot_payload(&MonitorSnapshot::default(), None)
+            .expect("a default sample must render");
+        assert!(
+            value["generated_at_ms"].is_null(),
+            "an unknown capture time must be null, not 0: {value}"
+        );
+        assert!(human.contains("GeneratedAt: -"), "{human}");
+        assert_eq!(
+            keys(&value),
+            SNAPSHOT_KEYS,
+            "the key set does not move with the clock"
+        );
+    }
+
     /// 1970-01-01 reading, which a consumer checking freshness cannot detect.
     #[test]
     fn status_reports_an_unreadable_clock_as_unknown_rather_than_epoch_zero() {
@@ -536,8 +562,8 @@ mod tests {
     #[test]
     fn snapshot_marks_process_local_accumulators_as_not_applicable() {
         let sample = MonitorSnapshot::default();
-        let (human, value) =
-            snapshot_payload(&sample, 1_700_000_000_000).expect("a default sample must render");
+        let (human, value) = snapshot_payload(&sample, Some(1_700_000_000_000))
+            .expect("a default sample must render");
         assert!(value["self_perf"].is_null(), "{value}");
         assert!(value["app"]["session_uptime_secs"].is_null(), "{value}");
         assert_eq!(
@@ -571,8 +597,9 @@ mod tests {
             }),
             ..MonitorSnapshot::default()
         };
-        let (human_without, value_without) = snapshot_payload(&without_cpu, 1).expect("renders");
-        let (human_with, value_with) = snapshot_payload(&with_cpu, 1).expect("renders");
+        let (human_without, value_without) =
+            snapshot_payload(&without_cpu, Some(1)).expect("renders");
+        let (human_with, value_with) = snapshot_payload(&with_cpu, Some(1)).expect("renders");
         assert_eq!(keys(&value_without), keys(&value_with));
         assert_eq!(
             keys(&value_with),

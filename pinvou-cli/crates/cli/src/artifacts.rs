@@ -470,6 +470,17 @@ fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_owned();
+        // Aux side-chat sessions stay outside the deliverable boundary, same
+        // as the GUI index this module mirrors
+        // (`features::deliverables::list_deliverable_index_impl` skips aux
+        // stems before parsing): an aux transcript tracking a deliverable
+        // must not surface its paths outside the aux session.
+        if stem
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("aux-"))
+        {
+            continue;
+        }
         if only_session.is_some_and(|session| session != stem.as_str()) {
             continue;
         }

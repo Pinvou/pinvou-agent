@@ -296,10 +296,17 @@ impl AcpProvidersStore {
             .cloned()
     }
 
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore re-reads the disk state
+    /// inside its own mutation critical section: mutations on both surfaces
+    /// persist immediately, so at any quiescent point the file is the latest
+    /// truth and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
-        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
+            Self::reload_into(&mut agents, &self.path);
             let state = agents.entry(agent.to_string()).or_default();
             if let Some(existing) = state
                 .providers
@@ -315,9 +322,9 @@ impl AcpProvidersStore {
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
-        self.reload_from_disk();
         let removed = {
             let mut agents = self.agents.write();
+            Self::reload_into(&mut agents, &self.path);
             let Some(state) = agents.get_mut(agent) else {
                 return Ok(None);
             };
@@ -335,9 +342,9 @@ impl AcpProvidersStore {
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
-        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
+            Self::reload_into(&mut agents, &self.path);
             let state = agents.entry(agent.to_string()).or_default();
             state.current_provider_id = provider_id.map(str::to_string);
         }
@@ -359,9 +366,9 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
-        self.reload_from_disk();
         {
             let mut agents = self.agents.write();
+            Self::reload_into(&mut agents, &self.path);
             let state = agents.entry(agent.to_string()).or_default();
             state.current_provider_id = provider_id.map(str::to_string);
             state.official_default_model = official_default_model.map(str::to_string);
@@ -373,19 +380,25 @@ impl AcpProvidersStore {
     /// CLI made after boot would otherwise be silently reverted by the next
     /// whole-table persist — a delayed rollback minutes later, not a
     /// same-instant race. Every mutator therefore re-reads the disk state
-    /// first: mutations on both surfaces persist immediately, so at any
-    /// quiescent point the file is the latest truth and re-reading it can
-    /// only pull in the other surface's writes. Best-effort: an unreadable
-    /// or unparsable file keeps the in-memory state (the same stance
-    /// `load_or_empty` takes, with its first-boot backup).
-    fn reload_from_disk(&self) {
-        let Ok(raw) = fs::read_to_string(&self.path) else {
+    /// inside its own mutation critical section: mutations on both surfaces
+    /// persist immediately, so at any quiescent point the file is the latest
+    /// truth and re-reading it can only pull in the other surface's writes.
+    /// Reload the disk state into an ALREADY-HELD write guard. Callers run
+    /// this inside the same critical section as their mutation: a peer
+    /// thread's mutate+persist can then no longer land between the read and
+    /// the swap, so an in-process mutator's committed write can never be
+    /// discarded by this snapshot (the pre-fix unlocked read→swap window
+    /// allowed exactly that). Best-effort: an unreadable or unparsable file
+    /// keeps the in-memory state (the same stance `load_or_empty` takes,
+    /// with its first-boot backup).
+    fn reload_into(agents: &mut HashMap<String, AgentProvidersState>, path: &Path) {
+        let Ok(raw) = fs::read_to_string(path) else {
             return;
         };
         let Ok(file) = serde_json::from_str::<AcpProvidersFile>(&raw) else {
             return;
         };
-        *self.agents.write() = file.agents;
+        *agents = file.agents;
     }
 
     fn persist(&self) -> Result<()> {

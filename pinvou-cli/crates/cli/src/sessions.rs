@@ -43,38 +43,6 @@ use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 
 const SHOW_PREVIEW_CHARS: usize = 200;
 
-/// Human-mode sanitizer for MODEL-authored text rendered as a BLOCK
-/// (transcript bodies, the markdown export on stdout) rather than as one
-/// cell of a tab-separated row.
-///
-/// Why not `support::collapse_control_characters` here: that one flattens
-/// every control character including `\n` and `\t`, which is right for a
-/// single-line column but would destroy the layout of the very transcript
-/// the caller asked to read — a full dump legitimately spans many lines and
-/// indents code blocks. So newline and tab survive, and everything else in
-/// the C0/C1 control range collapses to a space. The characters that matter
-/// are the ones this keeps out: ESC (terminal escape sequences — cursor
-/// moves, colour, window-title rewrites, and on some terminals clipboard or
-/// response injection), CR (redraws the current line, so earlier output can
-/// be silently overwritten), BEL, and the remaining C0/DEL noise. Those are
-/// attacker-controlled in a way the layout is not: the text comes from the
-/// model and from tool results the model saw.
-///
-/// JSON mode needs no equivalent — `serde_json` escapes everything below
-/// 0x20 — so this stays strictly a human-rendering choice and the stored
-/// transcript, the `--output PATH` file, and the JSON payload keep the
-/// verbatim bytes.
-fn collapse_display_control_characters(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '\n' | '\t' => ch,
-            _ if ch.is_control() => ' ',
-            _ => ch,
-        })
-        .collect()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionsCommand {
     List {
@@ -609,7 +577,7 @@ fn show(
     // byte is model-authored (or tool output the model echoed back) and it is
     // printed straight to a terminal. Block sanitizer, not the column one —
     // a transcript is meant to keep its lines and indentation; see
-    // [`collapse_display_control_characters`]. The JSON payload below is
+    // [`crate::support::collapse_block_control_characters`]. The JSON payload below is
     // untouched, so a consumer that wants the verbatim bytes asks for JSON.
     for (index, message) in rendered.iter().enumerate() {
         human.push_str(&format!(
@@ -625,7 +593,9 @@ fn show(
             crate::support::collapse_control_characters(
                 message["role"].as_str().unwrap_or("unknown")
             ),
-            collapse_display_control_characters(message["text"].as_str().unwrap_or("")),
+            crate::support::collapse_block_control_characters(
+                message["text"].as_str().unwrap_or("")
+            ),
         ));
     }
     let json = serde_json::json!({
@@ -928,7 +898,7 @@ fn export(
             // be a worse bug than the one being fixed.
             Ok(success(render(
                 output,
-                collapse_display_control_characters(&content),
+                crate::support::collapse_block_control_characters(&content),
                 &value,
             )))
         }
@@ -1473,21 +1443,31 @@ mod tests {
     #[test]
     fn transcript_sanitizer_keeps_layout_and_drops_escapes() {
         assert_eq!(
-            collapse_display_control_characters("line1\n\tindented\n"),
+            crate::support::collapse_block_control_characters("line1\n\tindented\n"),
             "line1\n\tindented\n"
         );
         assert_eq!(
-            collapse_display_control_characters("safe\x1b[2J\x1b]0;pwned\x07done"),
+            crate::support::collapse_block_control_characters("safe\x1b[2J\x1b]0;pwned\x07done"),
             "safe [2J ]0;pwned done"
         );
         assert_eq!(
-            collapse_display_control_characters("visible\rhidden"),
+            crate::support::collapse_block_control_characters("visible\rhidden"),
             "visible hidden"
         );
         // Non-control text, including multi-byte characters, is untouched.
         assert_eq!(
-            collapse_display_control_characters("已完成 — ok"),
+            crate::support::collapse_block_control_characters("已完成 — ok"),
             "已完成 — ok"
+        );
+        // Bidi overrides/isolates and zero-width joiners are invisible but
+        // reorder or glue text (Trojan-Source class): the shared block
+        // sanitizer must drop them, not just C0/C1 — this is the exact hole
+        // the pre-fix local copy had.
+        assert_eq!(
+            crate::support::collapse_block_control_characters(
+                "safe\u{202E}txt\u{2066}x\u{2069}\u{200D}end"
+            ),
+            "safe txt x  end"
         );
     }
 }

@@ -166,12 +166,14 @@ where
 /// name; shared by the GUI attachment commands and the headless eval
 /// attachment staging path.
 ///
-/// The copy is bounded by `features::files::file_ingest::MAX_FILE_BYTES`, the
-/// same 20 MiB per-file cap `file_ingest::ingest` and `validate_attachments`
-/// hard-fail on before anything is staged — so the bound can never reject a
-/// legitimate attachment; it exists because a caller-owned source can be
-/// swapped or grown between the size check and this copy (TOCTOU), and the
-/// oversized content must not land in the workspace.
+/// The copy is bounded by `features::files::file_ingest::MAX_FILE_BYTES`
+/// (the cap `file_ingest::ingest` enforces), which by value equals
+/// `headless_bridge::MAX_ATTACHMENT_BYTES` (the cap `validate_attachments`
+/// hard-fails on) — two independent constants that must stay equal for this
+/// bound never to reject a legitimate attachment. The bound exists because a
+/// caller-owned source can be swapped or grown between the size check and
+/// this copy (TOCTOU), and the oversized content must not land in the
+/// workspace.
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,

@@ -914,7 +914,14 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
         "pinvoy", "plugins", "disable", "weather", "--scope", "plain",
     ]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(file["scopes"]["plain"], serde_json::json!(["weather"]));
+    // Plain scope converges to DenyAll too: the first toggle initializes the
+    // scope and freezes the computed expansion (the builtin connector ids)
+    // alongside the requested id — the same materialization the code scope
+    // assertion below pins.
+    assert_eq!(
+        file["scopes"]["plain"],
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet", "weather"])
+    );
 
     run_ok(&["pinvoy", "plugins", "disable", "weather", "--scope", "code"]);
     let file = disabled_bundles_json(home.path());
@@ -933,7 +940,14 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     // Default scope is `both`.
     run_ok(&["pinvoy", "plugins", "disable", "obsidian"]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(file["scopes"]["plain"].as_array().unwrap().len(), 2);
+    let plain = file["scopes"]["plain"].as_array().unwrap();
+    assert_eq!(
+        plain.len(),
+        6,
+        "the frozen expansion plus weather plus obsidian"
+    );
+    assert!(plain.contains(&serde_json::json!("obsidian")));
+    assert!(plain.contains(&serde_json::json!("weather")));
     let code = file["scopes"]["code"].as_array().unwrap();
     assert!(code.contains(&serde_json::json!("obsidian")));
 
@@ -975,9 +989,11 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
         serde_json::json!(true),
         "disable of a remapped id is exactly verifiable"
     );
+    // The owner id lands next to the DenyAll-seeded builtin ids the first
+    // toggle freezes into the initialized scope.
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
-        serde_json::json!(["ima"]),
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet", "ima"]),
         "the owner package id is what lands in the store"
     );
 
@@ -996,8 +1012,8 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
-        serde_json::json!([]),
-        "the owner package entry must actually be removed"
+        serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet"]),
+        "the owner package entry must actually be removed, the frozen expansion remaining"
     );
 }
 
@@ -2215,5 +2231,74 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
     assert!(
         stdout.contains("no hot-refresh broadcast"),
         "the toggle must disclose that live engines keep the stale whitelist: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// builtin refusal (CLI surface)
+// ---------------------------------------------------------------------------
+
+/// The builtin-plugin framework (docs/builtin-toolset-contract.md §3.3) says
+/// builtins can never be disabled or uninstalled; the app-side guarded
+/// writers reject the ids, but nothing pinned the CLI's own wrappers until
+/// now. A refactor of `set_enabled` that pre-filtered ids before the save
+/// would otherwise turn the refusal into a false `persistence_verified`
+/// success with no failing test. Both refusals are hermetic: the embedded
+/// catalog makes `is_builtin_tool("session-reader")` deterministic in the
+/// test binary.
+#[test]
+fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("builtin-refusal");
+
+    let (message, code) = run_err(&["pinvoy", "plugins", "disable", "session-reader"]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("cannot be disabled or hidden"),
+        "the refusal must name the builtin rule: {message}"
+    );
+
+    // `--yes` on the uninstall clears the destructive-action gate so the
+    // BUILTIN refusal is what fires (without it, the --yes usage error would
+    // mask the rule; disable has no such gate).
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "tools",
+        "uninstall",
+        "session-reader",
+        "--yes",
+    ]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("cannot be"),
+        "the uninstall refusal must name the builtin rule: {message}"
+    );
+
+    // Neither command may modify the persisted toggle state. The file itself
+    // may appear: reading the scope persists the plain→DenyAll migration
+    // marker (GUI-shared read-time migration). What must never appear is a
+    // poisoned scopes/initialized entry for the refused id — such an entry
+    // could never be removed through the guarded writers again.
+    let file = disabled_bundles_json(home.path());
+    assert!(
+        file["scopes"]
+            .as_object()
+            .map(|scopes| scopes
+                .values()
+                .all(|ids| ids.as_array().unwrap().is_empty()))
+            .unwrap_or(true),
+        "a refused toggle must not persist a disabled list: {file}"
+    );
+    assert!(
+        file["initialized"]
+            .as_array()
+            .map(|ids| ids.is_empty())
+            .unwrap_or(true),
+        "a refused toggle must not initialize a scope: {file}"
+    );
+    assert!(
+        !file.to_string().contains("session-reader"),
+        "the refused builtin id must not appear anywhere in the persisted state: {file}"
     );
 }

@@ -77,14 +77,15 @@ pub fn install_signal_cleanup() {
 /// a future worker-thread caller must route through the main thread's
 /// supervision instead.
 ///
-/// Std semantics this relies on (assumption stated per the round-25
-/// review): a child created while the spawning thread's signal mask blocks
-/// the interrupt family inherits that mask only until `exec`, which std
-/// resets to an empty mask for the child (guaranteed by std's posix spawn
-/// path since Rust 1.61; this crate pins rust-version ≥ 1.89). If that
-/// ever regressed, a forwarded SIGTERM would pend in the vendor child
-/// until this module's 5 s SIGKILL escalation — the fast path would
-/// degrade, the safety net would hold.
+/// The spawn→register window blocks the interrupt family on the spawning
+/// thread, and the child would inherit that mask across fork. Std does NOT
+/// guarantee an empty child mask at exec: on macOS (verified by probe,
+/// rustc 1.98) even the posix-spawn path keeps the blocked INT/TERM/HUP
+/// mask alive in the child, so a forwarded SIGTERM would pend forever and
+/// every Ctrl-C cleanup would ride the 5 s SIGKILL escalation — exactly the
+/// vendor-CLI-flushes-state case the grace window exists for. The child's
+/// mask is therefore reset EXPLICITLY, via a `pre_exec` closure running
+/// between fork and exec.
 ///
 /// Every supervised spawn site goes through this instead of a bare `spawn`.
 pub fn spawn_supervised(
@@ -92,6 +93,21 @@ pub fn spawn_supervised(
 ) -> std::io::Result<std::process::Child> {
     #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the closure runs in the forked child before exec; it only
+        // calls sigprocmask with a zeroed-and-emptied set (no allocation, no
+        // locks held) and propagates the raw errno via the io::Result
+        // contract `pre_exec` requires.
+        unsafe {
+            command.pre_exec(|| {
+                let mut empty: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty);
+                if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         let saved = imp::block_interrupt_signals();
         let spawned = command.spawn();
         if let Ok(child) = &spawned {
@@ -118,6 +134,25 @@ pub fn register_child_group(pgid: u32) {
     #[cfg(not(unix))]
     {
         let _ = pgid;
+    }
+}
+
+/// Main's exit path calls this right before `std::process::exit`: once an
+/// interrupt cleanup has STARTED, the conventional 128+N exit belongs to the
+/// watcher's phase-3 re-raise, not to main's own exit code. Without this
+/// park, a vendor child that dies promptly on the forwarded SIGTERM lets
+/// main render and exit sub-millisecond — the watcher's re-raise usually
+/// loses that race and scripts observe the family's exit 1 instead of
+/// 128+N. Once cleanup has started the watcher is GUARANTEED to terminate
+/// the process (the grace loop is bounded and phase 3 reinstalls SIG_DFL
+/// and kills), so parking here cannot hang. No cleanup started: returns
+/// immediately, the normal path.
+pub fn park_while_interrupt_cleanup_concludes() {
+    #[cfg(unix)]
+    imp::park_while_cleanup_concludes();
+    #[cfg(not(unix))]
+    {
+        // No watcher on this platform; nothing to conclude.
     }
 }
 
@@ -191,6 +226,12 @@ mod imp {
     static CHILD_GROUPS: OnceLock<Mutex<Vec<libc::pid_t>>> = OnceLock::new();
 
     static INSTALL: Once = Once::new();
+    /// Set by the watcher the moment cleanup starts. Main's exit path parks
+    /// forever once this is set: the watcher's phase 3 always terminates the
+    /// process (bounded by the grace + escalation), so the park cannot hang —
+    /// it only stops main from winning the race to `std::process::exit` and
+    /// robbing the 128+N re-raise of its conventional exit status.
+    static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
     /// Bounded grace in a test-free zone: `Once` guards double installs from
     /// repeated `main` calls in tests; every install failure degrades to the
@@ -360,6 +401,7 @@ mod imp {
         let Some(first) = read_terminated(read_fd) else {
             return;
         };
+        CLEANUP_STARTED.store(true, Ordering::Release);
         note_seen();
 
         // Phase 1 — ask every registered group to stop.
@@ -446,6 +488,15 @@ mod imp {
         // SAFETY: the mask came from block_interrupt_signals on this thread.
         unsafe {
             libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        }
+    }
+
+    /// See [`super::park_while_interrupt_cleanup_concludes`]. A plain
+    /// sleep-loop: this runs at most once per process lifetime, on a path
+    /// whose only exit is the watcher killing the process.
+    pub(super) fn park_while_cleanup_concludes() {
+        while CLEANUP_STARTED.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
@@ -644,6 +695,56 @@ mod tests {
         }
     }
     use super::imp;
+    use super::{forget_child_group, spawn_supervised};
+
+    /// The grace value itself is load-bearing (a vendor CLI that traps
+    /// SIGTERM to flush state gets this long); the decision tests above pin
+    /// precedence relative to whatever the constant is, so drift of the
+    /// VALUE itself must fail loudly here.
+    #[test]
+    #[cfg(unix)]
+    fn grace_window_value_is_pinned() {
+        assert_eq!(imp::GRACE_MS, 5_000);
+    }
+
+    /// The `pre_exec` mask reset in `spawn_supervised` is load-bearing: std
+    /// does not guarantee an empty child mask at exec, and on macOS the
+    /// blocked INT/TERM/HUP mask verifiably survives into the child, which
+    /// would make every forwarded SIGTERM undeliverable (all cleanups would
+    /// ride the SIGKILL escalation, destroying the flush-on-TERM case the
+    /// grace exists for). A child spawned while the spawner's mask blocks
+    /// the family must therefore still die on a plain SIGTERM.
+    #[test]
+    #[cfg(unix)]
+    fn spawned_children_receive_signals_the_spawner_blocks() {
+        let saved = imp::block_interrupt_signals();
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        let mut child = spawn_supervised(&mut command).expect("spawn under a blocked mask");
+        imp::restore_interrupt_signals(saved);
+        forget_child_group(child.id());
+
+        // SAFETY: kill to this test's own fresh child; sleep installs no
+        // TERM handler, so delivery means immediate default-disposition death.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let exited = loop {
+            match child.try_wait().expect("waitable child") {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => break None,
+                None => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        };
+        // Reap regardless so the sleeper never outlives the test.
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            exited.is_some(),
+            "SIGTERM must reach a child spawned under a blocked spawner mask;              the pre_exec reset regressed"
+        );
+    }
 
     /// Decision precedence: no survivors ends the wait no matter how much
     /// grace is left — even at t=0, even with a second signal pending.

@@ -53,11 +53,15 @@ pub use self::io::{
     take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
 };
 
+// ---- cross-process organize busy marker (io) ----
+// The CLI maps this marker BY VALUE to `memory_organize_busy`; a local copy
+// would let the two surfaces' busy codes drift apart.
+pub use self::io::ORGANIZE_LOCK_BUSY;
+
 // ---- Stored text length cap (io) ----
 // The CLI's `memory add` validation must use the same cap constant as the
 // write side; a local copy would reintroduce a spurious
 // `memory_add_not_materialized` failure whenever the cap changes.
-pub use self::io::ORGANIZE_LOCK_BUSY;
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 
 // ---- stored-text normalization (util) ----

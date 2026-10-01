@@ -1186,6 +1186,7 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     );
 }
 
+#[test]
 fn projects_rebind_preserves_legacy_table_only_bindings() {
     // Round-23 review MAJOR: the rebind path opened the session store with
     // plain `SessionStore::boot()`, which deliberately skips the legacy

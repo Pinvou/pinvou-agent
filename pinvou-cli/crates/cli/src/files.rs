@@ -144,7 +144,19 @@ fn write_file(
     };
     #[cfg(not(unix))]
     let destination_perms: Option<std::fs::Permissions> = None;
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new();
+    // The 0600 mode is applied at CREATE time, not by a post-create chmod:
+    // a post-create chmod leaves a window where the file exists world- or
+    // group-readable with user-derived content already inside it (the same
+    // gap voice.rs documents and closes for its staged files).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if destination_perms.is_some() {
+            file.mode(0o600);
+        }
+    }
+    let mut file = file
         .write(true)
         .create_new(true)
         .open(destination)

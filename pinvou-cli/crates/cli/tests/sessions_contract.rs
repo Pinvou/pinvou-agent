@@ -921,6 +921,35 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     // one truncated by the per-record scan cap.
     assert_eq!(value["skipped_sessions"], serde_json::json!([]));
 
+    // An aux side-chat session's deliverable stays inside the aux boundary,
+    // same as the GUI index this command mirrors (its upstream skips aux
+    // stems before parsing): an aux transcript tracking a deliverable must
+    // not surface its paths outside the aux session.
+    let aux_store = SessionStore::boot().expect("boot session store for aux");
+    let aux = aux_store
+        .create_new("test-model".to_owned(), None, std::env::temp_dir())
+        .expect("create aux session");
+    aux_store
+        .update_artifacts(&aux.metadata.id, vec![report.to_string_lossy().to_string()])
+        .expect("track artifact on aux session");
+    drop(aux_store);
+    let aux_from = home
+        .sessions_root()
+        .join(format!("{}.json", aux.metadata.id));
+    let aux_to = home
+        .sessions_root()
+        .join(format!("aux-{}.json", aux.metadata.id));
+    std::fs::rename(&aux_from, &aux_to).expect("rename aux record to the aux- stem");
+
+    let value = run_json(&["pinvou", "artifacts", "list"]);
+    let rows = value["artifacts"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "an aux-session deliverable must not surface in the index: {rows:?}"
+    );
+    assert_eq!(rows[0]["session_id"], id);
+
     // read returns the validated text content
     let value = run_json(&["pinvou", "artifacts", "read", &id, "report.md"]);
     assert_eq!(value["content"], "# Report\n\nfirst version\n");
