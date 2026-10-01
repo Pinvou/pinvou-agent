@@ -114,7 +114,7 @@ exercises this path natively on Windows. While Tauri runs, `build.js` logs the
 CLI PID, phase and a heartbeat every minute.
 
 For every Windows `dev`, `build` and `bundle`, `build.js` also compiles (or
-reuses, while it is newer than its source) `src-tauri/scripts/rustc-stack-wrapper.exe`
+reuses, while it is not older than its source) `src-tauri/scripts/rustc-stack-wrapper.exe`
 and passes it to the Tauri CLI through `RUSTC_WRAPPER`, so `npm run dev` from
 PowerShell gets the same 16 MiB compiler stack as `run-dev.sh` and CI without
 leaking `RUST_MIN_STACK` into the app. An explicit `RUSTC_WRAPPER` is kept; a
