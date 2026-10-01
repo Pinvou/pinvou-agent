@@ -17,12 +17,15 @@
 //!   unique temp name (`tempfile`-generated), so neither side can collide
 //!   with the other's staging path.
 //! - quarantine policy per store mirrors the GUI's `QuarantineStrategy`
-//!   (Rename for bindings/kinds/read-state/archive) with ONE divergence:
+//!   (Rename for bindings/kinds/read-state/archive) with TWO divergences:
 //!   a corrupt `task-ui-metadata.json` is renamed aside here on every read
 //!   path, while the GUI logs that store's corruption in place — the
 //!   behavior stays safe (the mutation path then refuses; the app's next
 //!   persist heals the absent path), it just is not byte-identical to the
-//!   GUI's per-store choice.
+//!   GUI's per-store choice; and a NEWER-schema sidecar is refused on the
+//!   CLI's write paths (`ensure_sidecar_schema`) where the GUI renames it
+//!   aside and later overwrites the canonical path from its booted memory —
+//!   the CLI's refusal leaves the newer payload in place untouched.
 //! - run-record persistence for terminal CLI runs (`save_run` is private in
 //!   the foundation; the CLI stores the identical record shape under the
 //!   identical sortable file name, so the GUI's `list_runs` co-reads them).
@@ -977,7 +980,7 @@ fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
         Err(error) => {
             crate::note!(
-                "warning: cannot read {}: {error}; continuing with the empty default (the next                  write replaces the unreadable file)",
+                "warning: cannot read {}: {error}; continuing with the empty default (the next successful write replaces the unreadable file)",
                 path.display()
             );
             serde_json::Value::Null
@@ -2113,9 +2116,21 @@ fn update(
         }
     }
     // Enrichment is best-effort: the update is committed above, so a
-    // sessions store boot failure must not report the update as failed.
+    // sessions store boot failure must not report the update as failed —
+    // the same applies to the run records, whose read failure must not
+    // disown an already-committed mutation.
     let sessions = open_sessions_for_enrichment();
-    let runs = store_holder.list_runs(id, None)?;
+    let runs = match store_holder.list_runs(id, None) {
+        Ok(runs) => runs,
+        Err(error) => {
+            crate::note!(
+                "warning: run history for {id} could not be read ({}); \
+the update itself is committed",
+                error
+            );
+            Vec::new()
+        }
+    };
     let value = map_task(
         &def,
         &runs,
@@ -2266,9 +2281,21 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
         ensure_workspace(&store_holder, &mut def)?;
     }
     // Enrichment is best-effort: the status flip is committed above, so a
-    // sessions store boot failure must not report the command as failed.
+    // sessions store boot failure must not report the command as failed —
+    // the same applies to the run records, whose read failure must not
+    // disown an already-committed mutation.
     let sessions = open_sessions_for_enrichment();
-    let runs = store_holder.list_runs(id, None)?;
+    let runs = match store_holder.list_runs(id, None) {
+        Ok(runs) => runs,
+        Err(error) => {
+            crate::note!(
+                "warning: run history for {id} could not be read ({}); \
+the status change itself is committed",
+                error
+            );
+            Vec::new()
+        }
+    };
     let value = map_task(
         &def,
         &runs,

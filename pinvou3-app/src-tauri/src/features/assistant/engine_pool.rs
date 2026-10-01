@@ -2942,7 +2942,14 @@ impl EnginePool {
     /// (unknown keeps — the same rule the delete gate applies).
     #[cfg(any(feature = "benchmark-hooks", test))]
     fn sweep_may_remove_session_dir(store: &SessionStore, session_id: &str) -> bool {
-        !store.chat_session_record_exists(session_id) || record_is_factory_titled(store, session_id)
+        match store.chat_session_record_present(session_id) {
+            Some(false) => true,
+            Some(true) => record_is_factory_titled(store, session_id),
+            // Unreadable record: keep the directory (the doc contract and
+            // the delete gate's unknown-keeps rule); the next sweep attempt
+            // re-probes.
+            None => false,
+        }
     }
 
     /// Delayed sweep after deletion: after the foundation cancels sub-agents

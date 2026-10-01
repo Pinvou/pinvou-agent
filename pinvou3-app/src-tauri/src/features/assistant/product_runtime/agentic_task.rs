@@ -3446,11 +3446,13 @@ mod tests {
             &self,
             session_id: &str,
         ) -> anyhow::Result<()> {
-            // Mirrors the production guard in
-            // `EnginePool::delete_chat_session_if_still_empty`: the stub
-            // delete fires only for a record that is still message-free; a
-            // record with messages (or an unloadable one) is kept with just
-            // the engine reclaimed.
+            // Covers the message-free half of the production guard in
+            // `EnginePool::delete_chat_session_if_still_empty`; the
+            // production DeleteGateRecheck also requires the record to still
+            // read factory-titled, which this test double deliberately does
+            // not reproduce — production is strictly more conservative, so
+            // every directory this double deletes is one production may
+            // delete too.
             let store = self.store.lock().as_ref().expect("store present").clone();
             if !matches!(store.chat_session_has_messages(session_id), Ok(false)) {
                 self.evictions.lock().push(session_id.to_owned());
