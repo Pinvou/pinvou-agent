@@ -507,6 +507,13 @@ fn rebind_roots_rolls_back_memory_when_persist_fails() {
         ),
         "a persist failure must not be classified as an overlap conflict (round-8 M3)"
     );
+    assert!(
+        matches!(
+            error,
+            crate::features::projects::RebindRootsError::Persist(_)
+        ),
+        "positive classification (round-17 SF-6): a Persist→Other regression would drop the disk-failure copy for raw error prose and pass this suite"
+    );
     assert_eq!(
         store.get(&project.id).unwrap(),
         before,
@@ -856,4 +863,239 @@ fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
     );
     drop(gate);
     let _gate = store.begin_rebind().expect("gate released on drop");
+}
+
+#[test]
+fn rebind_roots_ignores_pre_existing_overlap_between_untouched_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let outer = abs("legacy-outer");
+    let inner = abs("legacy-outer").join("nested");
+    let from = abs("unrelated-from");
+    let to = temp.path().join("unrelated-to");
+    std::fs::create_dir_all(&to).expect("create target dir");
+
+    let mover = create(&store, "to-move", std::slice::from_ref(&from));
+    create(&store, "legacy-outer", std::slice::from_ref(&outer));
+    let legacy_inner = create(
+        &store,
+        "legacy-inner",
+        std::slice::from_ref(&abs("legacy-inner-original")),
+    );
+    // create_project validates, so the overlap is introduced AFTER the fact by
+    // editing the persisted file directly — the legacy-data shape load_state
+    // accepts without revalidation.
+    let store_path = temp.path().join("projects.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
+            .expect("parse store");
+    file["projects"]
+        .as_array_mut()
+        .expect("projects array")
+        .iter_mut()
+        .find(|project| project["id"].as_str() == Some(legacy_inner.id.as_str()))
+        .expect("find legacy-inner")["roots"][0] =
+        serde_json::json!(display(&inner).to_string_lossy().into_owned());
+    // `outer` folds to the parent of `inner`: the two now overlap on disk.
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec_pretty(&file).expect("serialize"),
+    )
+    .expect("write store");
+    let store = store_in(&temp);
+    assert!(
+        store.rebind_roots(&from, &to).is_ok(),
+        "an overlap between two untouched legacy projects must not block an unrelated rebind"
+    );
+    assert_eq!(store.get(&mover.id).unwrap().roots, vec![display(&to)]);
+
+    // A conflict the rebind itself introduces still rejects: moving `mover`
+    // back under a legacy project's territory.
+    let error = store
+        .rebind_roots(&to, &outer)
+        .expect_err("a NEW overlap with a legacy project still rejects");
+    assert!(error.to_string().contains("overlap"));
+}
+
+#[test]
+fn alias_equal_paths_are_the_no_op_guard() {
+    // review #463 round-19 SF-5: the round-18 minor-8 guard had zero pins,
+    // so a regression to the raw `==` compare would bump `updated_at` and
+    // persist a null rewrite for a case/spelling variant of the same
+    // directory — unreachable through the command layer today, which is
+    // exactly why the helper needs its own pin.
+    use crate::features::projects::store::paths_are_alias_equal;
+    use std::path::Path;
+    assert!(paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/alpha")
+    ));
+    assert!(paths_are_alias_equal(
+        Path::new("/vault/alpha/"),
+        Path::new("/vault/alpha")
+    ));
+    // The fold is platform-dependent for CASE; trailing separators and raw
+    // equality are the cross-platform arms.
+    assert!(!paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/beta")
+    ));
+    assert!(!paths_are_alias_equal(
+        Path::new("/vault/alpha"),
+        Path::new("/vault/alphabet")
+    ));
+}
+
+#[test]
+fn alias_no_op_guards_are_wired_at_both_store_entries() {
+    // review #463 round-20 minor 15: the round-18 minor-8 guard was pinned
+    // only as a pure helper; reverting either call site to the raw compare
+    // stayed green.
+    let src = include_str!("store.rs");
+    let calls = src.matches("paths_are_alias_equal(from, to)").count();
+    assert_eq!(
+        calls, 2,
+        "plan_rebind_roots and rebind_roots must both guard on alias equality"
+    );
+}
+
+#[test]
+fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
+    // review #463 round-22 E1: the round-18 touched-touched exemption had no
+    // pin — stubbing `legacy_overlap_pairs` to empty left `features::projects`
+    // fully green. This fixture makes the exemption LOAD-BEARING: two touched
+    // projects whose PRE-translation roots are nested under `from` translate
+    // to a still-nested pair at `to`; without the exemption the cross-pair
+    // check rejects the rebind with a conflict no re-pick can fix. The safe
+    // direction is structural (round-22 E2): a NEW cross nest between two
+    // touched members always implies a within-project nest that fires first.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("legacy");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&from).expect("create from");
+    let sub = from.join("sub");
+    std::fs::create_dir_all(&sub).expect("create sub");
+
+    let outer = create(&store, "外层", std::slice::from_ref(&from));
+    let inner = create(
+        &store,
+        "内层",
+        std::slice::from_ref(&abs("legacy-inner-original")),
+    );
+    // The injected spelling is derived from the STORED root's display form
+    // (round-22 CI: canonicalized spellings differ per platform — matching
+    // happens in the stored domain, so the injected root must live there).
+    let inner_stored_root = store.get(&outer.id).unwrap().roots[0].join("sub");
+    // create_project validates, so the legacy nested overlap is introduced
+    // AFTER the fact by editing the persisted file directly — the legacy-data
+    // shape load_state accepts without revalidation.
+    let store_path = temp.path().join("projects.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).expect("read store"))
+            .expect("parse store");
+    file["projects"]
+        .as_array_mut()
+        .expect("projects array")
+        .iter_mut()
+        .find(|project| project["id"].as_str() == Some(inner.id.as_str()))
+        .expect("find inner")["roots"][0] =
+        serde_json::Value::String(inner_stored_root.display().to_string());
+    std::fs::write(
+        &store_path,
+        serde_json::to_vec(&file).expect("serialize store"),
+    )
+    .expect("write store");
+    drop(store);
+    let store = store_in(&temp);
+
+    let affected = store
+        .rebind_roots(&from, &to)
+        .expect("the legacy nested touched pair must translate, not conflict");
+    let mut ids = affected;
+    ids.sort();
+    let mut expected = vec![outer.id.clone(), inner.id.clone()];
+    expected.sort();
+    assert_eq!(ids, expected, "both legacy-overlapped projects translate");
+
+    // The translated pair keeps the legacy nesting verbatim.
+    assert!(
+        store
+            .get(&inner.id)
+            .unwrap()
+            .roots
+            .contains(&display(&to.join("sub"))),
+        "the inner project's translated root must keep its nesting shape",
+    );
+}
+
+/// Round-24 minor 7: the preflight REBIND_ROOTS_CONFLICT partition
+/// string-matches the validator's root-cause prefixes, so a wording change
+/// in `validate_roots` would silently degrade the dialog's conflict copy.
+/// The prefixes are now single-sourced with the bail! texts; this pin drives
+/// every overlap class through the real validator and requires its
+/// root cause to carry exactly one of the partition's prefixes. Red-verified
+/// by rewording a bail! without touching the const.
+#[test]
+fn roots_conflict_partition_prefixes_match_production_wording() {
+    use crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let causes: Vec<String> = vec![
+        // duplicate: the same root twice in one set.
+        store
+            .create_project("dup".to_string(), vec![abs("dup-root"), abs("dup-root")])
+            .expect_err("duplicate roots must be rejected")
+            .root_cause()
+            .to_string(),
+        // nest: two roots of one set inside each other.
+        store
+            .create_project(
+                "nest".to_string(),
+                vec![abs("nest-root"), abs("nest-root").join("child")],
+            )
+            .expect_err("nested roots must be rejected")
+            .root_cause()
+            .to_string(),
+        // overlap: the new root collides with an existing project's root.
+        {
+            let _peer = create(&store, "peer", &[abs("overlap-base")]);
+            store
+                .create_project("over".to_string(), vec![abs("overlap-base").join("kid")])
+                .expect_err("cross-project overlap must be rejected")
+                .root_cause()
+                .to_string()
+        },
+    ];
+    assert_eq!(causes.len(), 3);
+    // Round-24 minor 23: any-of matching cannot catch a wrong-class const
+    // swap — assert each class against its SPECIFIC prefix.
+    use super::store::{ROOTS_DUPLICATE_CONFLICT, ROOTS_NEST_CONFLICT, ROOTS_OVERLAP_CONFLICT};
+    assert!(
+        causes[0].starts_with(ROOTS_DUPLICATE_CONFLICT),
+        "the duplicate class must carry the duplicate prefix: {}",
+        causes[0]
+    );
+    assert!(
+        causes[1].starts_with(ROOTS_NEST_CONFLICT),
+        "the nest class must carry the nest prefix: {}",
+        causes[1]
+    );
+    assert!(
+        causes[2].starts_with(ROOTS_OVERLAP_CONFLICT),
+        "the overlap class must carry the overlap prefix: {}",
+        causes[2]
+    );
+    // The partition still accepts all three (the union the command layer
+    // matches on).
+    for cause in &causes {
+        assert!(
+            REBIND_ROOTS_CONFLICT_PREFIXES
+                .iter()
+                .any(|prefix| cause.starts_with(prefix)),
+            "validate_roots wording drifted off the partition prefixes: {cause}",
+        );
+    }
 }

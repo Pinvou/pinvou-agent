@@ -127,19 +127,25 @@ const expectedProtocolHashes = {
   // inside the listener callback spans (no invoke/listen call-set change).
   computerUse: '9d0bad5bab784eb784a92b8df52ff7e83adef94cc0f6cb7bdbb99f913217e5b8',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
+  // Recomputed for the shared-helper dedup combined with the rebind wave's
+  // workspace_binding redaction and retry-payload changes (see batch note
+  // above; recomputed against the merged tree). Verified unchanged by the
+  // #576 merge: the dead-code cleanup's markResolved removal lives in the
+  // shared payload, not in bridge.js's invoke/listen surface.
+  orchestration: 'fb61de464f7670ac7d42c88e1907360a1ca094058196e4f5d3ab9c7508677ab2',
   // Recomputed for the shared-helper dedup (see batch note above).
-  orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
   // Recomputed for the dead-code cleanup: the caller-less openInSystem /
   // openExternalUrl wrappers (open_in_system / open_external_url invokes) were
   // removed; artifact external-open traffic goes through openArtifactExternal
   // (open_artifact_window / open_in_system) and the whitelisted
   // openUserExternalUrl, so the runtime command surface is unchanged.
-  // Recomputed again for the Linux clipboard-image paste fallback:
-  // artifacts.js gains the addPasteImageFromClipboard invoke wrapping the
-  // paste_clipboard_image command (the native layer reads the
-  // WebKitGTK-invisible clipboard image and saves it server-side; web lane
-  // intentionally has no such backend).
-  artifacts: '38965b8774b590e32a586c5d734ae83148fdc59be19db9a57d237576ce604332',
+  // Recomputed against the #463-merge tree (the rebind wave's artifact-path
+  // redaction composes with the cleanup). Recomputed again for the Linux
+  // clipboard-image paste fallback: artifacts.js gains the
+  // addPasteImageFromClipboard invoke wrapping the paste_clipboard_image
+  // command (the native layer reads the WebKitGTK-invisible clipboard image
+  // and saves it server-side; web lane intentionally has no such backend).
+  artifacts: '550566a1213eca4d379c2ffe48a0e09c5a60128dd7c7cc8d432f9c7e817974e1',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -238,27 +244,34 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  // Recomputed for the sidecar read-failure surfacing: the persona/review
-  // reads moved into local loadPersonaEventsForSession /
+  // Recomputed again for review #463 round-13: the workspace_rebound
+  // mark-stamp block moved verbatim into the shared
+  // applyWorkspaceReboundMark (it was byte-duplicated with the web lane),
+  // so the session:list_changed listener body shrinks to the delegation —
+  // no new invoke or listen entries (the extractor scans raw source, so
+  // body/comment text is part of the digest).
+  // Recomputed for the sidecar read-failure surfacing (main #596): the
+  // persona/review reads moved into local loadPersonaEventsForSession /
   // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
   // before degrading to []; same two commands, no new invoke or listen
   // entries (the switch-path occurrences now pass sessionId: sid like the
   // hydration ones).
-  sessions: '301b55cae8e44ab76baf0941263bf3818d70f2c7bcf47129e453013f559d9765',
+  sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
-  // Recomputed for the preinstalled-model startup removal: the
-  // detect_local_vllm_setup / bootstrap_local_vllm / decline_local_vllm_setup
-  // invokes left with the dead one-click setup chain.
-  // Recomputed for the built-in feature toggles hook: settings.js gains the
-  // list_builtin_features / set_builtin_feature_enabled invoke wrappers
-  // (list_builtin_features is consumed by ChatView's session-mention gate,
-  // PR #586; the setter is the contract hook for future feature settings
-  // pages). Recomputed again for the review fix: set_builtin_feature_enabled
-  // sends `{ featureId: id, enabled }` — the Rust command's parameter is
-  // `feature_id` (app/commands/builtin.rs) and Tauri v2 maps camelCase JS
-  // keys to snake_case.
+  // Recomputed for the preinstalled-model startup removal (the #504 merge
+  // tree): the detect_local_vllm_setup / bootstrap_local_vllm /
+  // decline_local_vllm_setup invokes left with the dead one-click setup
+  // chain; main's cleanup already covered the same wrapper removal.
+  // Recomputed for the built-in feature toggles hook (#585 merge tree):
+  // settings.js gains the list_builtin_features / set_builtin_feature_enabled
+  // invoke wrappers (list_builtin_features is consumed by ChatView's
+  // session-mention gate, PR #586; the setter is the contract hook for future
+  // feature settings pages). Recomputed again for the review fix:
+  // set_builtin_feature_enabled sends `{ featureId: id, enabled }` — the Rust
+  // command's parameter is `feature_id` (app/commands/builtin.rs) and Tauri
+  // v2 maps camelCase JS keys to snake_case. The merged surface is main's.
   settings: '42190e3dd08e197f0b7a862a1b365dd5f2b8acdd64ec68fbb0b030fa7ae47e93',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were

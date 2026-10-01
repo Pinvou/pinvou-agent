@@ -65,6 +65,19 @@ pub fn path_relative_suffix_under(path: &Path, base: &Path) -> Option<PathBuf> {
     ) {
         return None;
     }
+    // Round-26 minor 4 (path safety): a `..`-bearing stored binding must not
+    // translate into a target that lexically escapes `<to>` — a crafted
+    // `/base/../../escape` passes the textual nest test above but its suffix
+    // would carry the parent segments into the destination. Mirror the
+    // scheduled-workspace gate (`validate_scheduled_workspace_path`) and
+    // refuse: `None` leaves the lane's candidate untranslatable instead of
+    // persisting an escaping path.
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
     Some(path.components().skip(base.components().count()).collect())
 }
 
@@ -180,6 +193,24 @@ mod tests {
             path_relative_suffix_under(std::path::Path::new("/work/alpha-beta"), base),
             None,
             "sibling prefix must not count as under"
+        );
+    }
+
+    #[test]
+    fn path_relative_suffix_under_refuses_parent_segments() {
+        // Round-26 minor 4: a `..`-bearing stored binding passes the textual
+        // nest test but must not translate — its suffix would carry the
+        // parent segments into the destination and lexically escape it.
+        let base = std::path::Path::new("/work/alpha");
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/alpha/../../escape"), base),
+            None,
+            "parent segments must refuse the translation"
+        );
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/../work/alpha/sub"), base),
+            None,
+            "any parent segment refuses — the same blanket rule the scheduled-workspace gate applies"
         );
     }
 }

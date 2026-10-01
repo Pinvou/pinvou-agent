@@ -2331,9 +2331,10 @@ impl EnginePool {
     /// The take yields `Some(None)` for an idle session with no resident
     /// engine: there is nothing to reclaim, but the shell state may still
     /// exist from an earlier turn and must be reset. Returns false when the
-    /// session was busy at recheck OR when its turn gate could not be
-    /// acquired within [`REBIND_EVICT_GATE_TIMEOUT`] — in both cases nothing
-    /// was touched and the command reports the session as post-busy.
+    /// session was busy at recheck, when its turn gate could not be
+    /// acquired within [`REBIND_EVICT_GATE_TIMEOUT`], or when the runtime
+    /// lock itself timed out (the bounded-take third arm) — in every case
+    /// nothing was touched and the command reports the session as post-busy.
     pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
         rebind_evict_with_gates(
             &self.turn_locks,
@@ -5092,6 +5093,66 @@ mod scheduled_model_tests {
         assert!(
             turn_shell_tasks.has_registry(sid),
             "turn-scope registry survives a timed-out eviction"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebind_eviction_runtime_lock_timeout_leaves_session_untouched() {
+        // Round-24 minor 6 (the previously untested sibling arm): the
+        // runtime lock is held across a cold spawn for many seconds — far
+        // beyond any turn-gate wait — so it carries its own bounded
+        // timeout. A runtime lock held past REBIND_EVICT_GATE_TIMEOUT must
+        // give the eviction up exactly like the turn-gate arm: not idle
+        // (post-busy), no take, no reclaim, no shell-state reset.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let turn_shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-rebind-evict-runtime-timeout";
+        let manager = shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+        turn_shell_tasks.for_session(sid, manager);
+
+        // The turn gate is free (the eviction acquires it immediately); a
+        // cold spawn holds the runtime lock for its whole duration.
+        let runtime = runtime_locks.for_session(sid).await;
+        let _cold_spawn = runtime.lock().await;
+
+        let take_ran = Arc::new(AtomicBool::new(false));
+        let probe_take = take_ran.clone();
+        let started = tokio::time::Instant::now();
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            &turn_shell_tasks,
+            sid,
+            move || {
+                probe_take.store(true, Ordering::Release);
+                async { Some(()) }
+            },
+            |_| async {},
+        )
+        .await;
+
+        assert!(
+            !evicted,
+            "a runtime lock held past the timeout counts as not idle (reported post-busy)"
+        );
+        assert!(
+            started.elapsed() >= REBIND_EVICT_GATE_TIMEOUT,
+            "the eviction waited the bounded timeout on the runtime lock"
+        );
+        assert!(
+            !take_ran.load(Ordering::Acquire),
+            "the take closure must not run without the runtime lock"
+        );
+        assert!(
+            shell_managers.get(sid).is_some(),
+            "shell state survives a runtime-lock timeout"
+        );
+        assert!(
+            turn_shell_tasks.has_registry(sid),
+            "turn-scope registry survives a runtime-lock timeout"
         );
     }
 
@@ -8089,6 +8150,70 @@ mod scheduled_model_tests {
             );
             assert!(lifecycle.finish_once(|| {}).is_some());
         }
+    }
+
+    /// Production-wiring probe (review #463 round-14 R2): every behavioral
+    /// test of `rebind_evict_with_gates` injects a hand-copied take closure
+    /// that hard-codes the scheduled arm away (`rebind_evictable(active,
+    /// false)`), so deleting `scheduled_running_sessions` from the PRODUCTION
+    /// closure in `evict_if_idle_for_rebind` shipped green. The pool itself
+    /// needs an AppHandle and cannot be unit-constructed, so pin the reads
+    /// in the production body — the layer the pure-predicate tests cannot
+    /// cover.
+    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("production fn must exist");
+        let rest = &src[start + signature.len()..];
+        // End at the next fn ITEM, not the next `pub ` token (review #463
+        // round-17 SF-3): a `pub(crate)`/`pub(super)` item would otherwise
+        // extend the span past the function under test, silently diluting
+        // (and eventually neutralizing) the contains-assertions.
+        let end = [
+            "\n    pub ",
+            "\n    pub(crate) ",
+            "\n    pub(super) ",
+            "\n    ///",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
+        &src[start..end]
+    }
+
+    #[test]
+    fn rebind_engine_take_production_closure_reads_turn_and_scheduled_state() {
+        let src = include_str!("engine_pool.rs");
+        // Round-26 MAJOR-3: cut at the test module exactly like projects.rs's
+        // `production_source` (round-18) — an unanchored find over the WHOLE
+        // file lands on this probe's own string argument once the production
+        // function is deleted or renamed, and the span then contains the
+        // probe's own assertion text, which can never fail.
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(src, "pub async fn evict_if_idle_for_rebind");
+        assert!(
+            body.contains("is_turn_active(session_id)"),
+            "the take must recheck the turn state before reclaiming",
+        );
+        assert!(
+            body.contains("scheduled_running_sessions"),
+            "the take must refuse eviction while a scheduled turn is running",
+        );
+        // review #463 round-19 SF-4: contains-only is order-insensitive —
+        // moving the entry removal BEFORE the evictability recheck would
+        // evict a session that just turned busy. Pin the order: the
+        // rebind_evictable gate must precede the removal.
+        let gate_at = body
+            .find("rebind_evictable(")
+            .expect("the take must gate on rebind_evictable");
+        let remove_at = body
+            .find("entries.lock().await.remove(session_id)")
+            .expect("the take must remove the pool entry");
+        assert!(
+            gate_at < remove_at,
+            "the evictability recheck must precede the entry removal"
+        );
     }
 }
 
