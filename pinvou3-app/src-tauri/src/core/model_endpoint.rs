@@ -441,7 +441,13 @@ pub async fn probe_ollama_show_context(
 /// 模型的默认形态）与声明一样稳定，不缓存则每秒重读 GGUF 直到首次加载。
 /// 只缓存合形应答（[`OllamaShowProbe::Declared`] / [`OllamaShowProbe::
 /// NoDeclaration`]）；[`OllamaShowProbe::Unreachable`] 是瞬态，不缓存——
-/// "服务端正忙"不得在 TTL 内被钉成"无窗口"。声明中途新增 60s 内可见。
+/// "服务端正忙"不得在 TTL 内被钉成"无窗口"，代价是 show 持续 5xx/挂起期间
+/// 每次轮询都会重发一次 show（一次 GGUF 重读），直到服务端恢复。声明中途
+/// 新增 60s 内可见。
+///
+/// 缓存键刻意只含 URL 不含凭证（与 [`PROBE_KIND_CACHE`] 同一理由）：
+/// `num_ctx` 是同一服务端的部署事实，与调用方凭证无关；凭证错误的调用得到
+/// 401 → `Unreachable` → 不入缓存，因此跨凭证共享键不会投毒。
 static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
     std::sync::Mutex<
         std::collections::HashMap<(String, String), (std::time::Instant, Option<u32>)>,
