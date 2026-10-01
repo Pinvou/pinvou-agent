@@ -2065,9 +2065,12 @@ mod tests {
     /// stable per-name miss, see the next test), while a well-formed miss
     /// is as stable as a declaration and caches for the TTL. Fresh
     /// names + fresh ports per segment keep the shared static cache from
-    /// colliding with parallel tests.
+    /// colliding with parallel tests; the clears themselves run under the
+    /// crate ENV_LOCK so a concurrent cache-state test (same lock) can
+    /// never wipe an entry between this test's count-pinned calls.
     #[tokio::test]
     async fn cached_ollama_show_context_caches_only_well_formed() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _ = clear_ollama_show_cache();
         // Server error → Unreachable → not cached.
         let mock = models_mock::spawn(&[("/api/show", 500, "{}".into())]);
@@ -2105,9 +2108,11 @@ mod tests {
     /// A 404 `/api/show` is a stable per-name fact (the manifest does not
     /// list this name): cached like a well-formed miss, so a permanently
     /// wrong name does not re-POST once per monitor poll; other non-2xx
-    /// stay transient (the 500 segment above).
+    /// stay transient (the 500 segment above). Runs under ENV_LOCK for the
+    /// same cross-test reason as the previous test.
     #[tokio::test]
     async fn show_404_is_a_stable_per_name_miss_cached_for_ttl() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _ = clear_ollama_show_cache();
         let mock = models_mock::spawn(&[(
             "/api/show",
