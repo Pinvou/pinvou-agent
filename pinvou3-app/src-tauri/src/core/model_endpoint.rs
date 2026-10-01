@@ -470,7 +470,10 @@ pub async fn probe_ollama_show_context(
 ///
 /// 缓存键刻意只含 URL 不含凭证（与 [`PROBE_KIND_CACHE`] 同一理由）：
 /// `num_ctx` 是同一服务端的部署事实，与调用方凭证无关；凭证错误的调用得到
-/// 401 → `Unreachable` → 不入缓存，因此跨凭证共享键不会投毒。
+/// 401 → `Unreachable` → 不入缓存，因此跨凭证共享键不会投毒。键取
+/// `trim_end_matches('/')` 后的 upstream（与 [`probe_local_server_kind`]
+/// 同一口径）：同一 base_url 的带斜杠 / 不带斜杠拼写在请求层等价，不该
+/// 在缓存里裂成两个条目。
 static OLLAMA_SHOW_CACHE: std::sync::OnceLock<
     std::sync::Mutex<
         std::collections::HashMap<(String, String), (std::time::Instant, Option<u32>)>,
@@ -486,6 +489,7 @@ pub(crate) async fn cached_ollama_show_context(
     api_key: Option<&str>,
     name: &str,
 ) -> Option<u32> {
+    let upstream = upstream.trim_end_matches('/');
     let cache = OLLAMA_SHOW_CACHE.get_or_init(Default::default);
     {
         let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -1737,6 +1741,7 @@ pub(crate) mod models_mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::paths::tests::ENV_LOCK;
 
     #[test]
     fn parse_models_response_list_keeps_all_model_ids() {
@@ -2185,6 +2190,34 @@ mod tests {
             Some(40_960),
             "registry-path names canonicalize the model segment only"
         );
+    }
+
+    /// The show-cache key normalizes the upstream spelling
+    /// (`trim_end_matches('/')`, same as the kind cache): both spellings of
+    /// one base_url must share a single TTL entry instead of forking the
+    /// GGUF re-reads.
+    #[tokio::test]
+    async fn show_cache_key_ignores_trailing_slash() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = clear_ollama_show_cache();
+        let mock =
+            models_mock::spawn(&[("/api/show", 200, r#"{"parameters":"num_ctx 8192"}"#.into())]);
+        let slashed = format!("{}/", mock.base_url);
+        assert_eq!(
+            cached_ollama_show_context(&slashed, None, "slash-key-a").await,
+            Some(8_192)
+        );
+        assert_eq!(
+            cached_ollama_show_context(&mock.base_url, None, "slash-key-a").await,
+            Some(8_192),
+            "the bare spelling hits the entry the slashed spelling cached"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            1,
+            "both spellings of one base_url share one TTL entry"
+        );
+        let _ = clear_ollama_show_cache();
     }
 
     /// LM Studio served window (the `loaded_context_length` of the loaded
