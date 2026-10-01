@@ -140,6 +140,12 @@ where
     let (mut destination, path, candidate) =
         reserve_unique_staged_file(&directory, basename.to_string(), &stem, &suffix)?;
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The reservation created a zero-byte file; a rejected target must
+        // not leave it behind (the same cleanup the copier-error arm below
+        // runs — the doc contract covers every error return, not just the
+        // copy itself).
+        drop(destination);
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     if let Err(error) = copier(&mut source, &mut destination) {
