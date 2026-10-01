@@ -46,6 +46,51 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 try {
+  # The repair engine's refusal guards are the core safety contract: they must
+  # reject the shared account rustup, a filesystem root and a non-empty
+  # unmarked directory before touching anything. Exercise them for real here;
+  # every case below throws before rustup runs, so nothing is mutated.
+  $previousRustupHome = $env:RUSTUP_HOME
+  $env:PINVOU3_MANAGED_RUSTUP = "1"
+  $unmarkedHome = Join-Path $temporaryRoot "unmarked"
+  New-Item -ItemType Directory -Path $unmarkedHome -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $unmarkedHome "placeholder") `
+    -Value "not a rustup home" -Encoding Ascii
+  $guardRejections = @(
+    [pscustomobject]@{
+      Name = "the build account's shared rustup home"
+      Home = Join-Path $env:USERPROFILE ".rustup"
+      Message = "Refusing to modify the build account's shared RUSTUP_HOME"
+    },
+    [pscustomobject]@{
+      Name = "a filesystem root"
+      Home = [IO.Path]::GetPathRoot(([IO.Path]::GetFullPath($temporaryRoot)))
+      Message = "Refusing to use a filesystem root as RUSTUP_HOME"
+    },
+    [pscustomobject]@{
+      Name = "a non-empty unmarked directory"
+      Home = $unmarkedHome
+      Message = "Refusing to adopt a non-empty unmarked RUSTUP_HOME"
+    }
+  )
+  foreach ($guard in $guardRejections) {
+    $env:RUSTUP_HOME = $guard.Home
+    $rejectionMessage = $null
+    try {
+      & $repairScript
+    } catch {
+      $rejectionMessage = "$($_.Exception.Message)"
+    }
+    if ($null -eq $rejectionMessage -or -not $rejectionMessage.Contains($guard.Message)) {
+      throw (
+        "The repair guard did not reject {0} (got: {1}); RUSTUP_HOME={2}" -f
+        $guard.Name, $rejectionMessage, $guard.Home
+      )
+    }
+    Write-Host "[test] Guard rejected $($guard.Name): OK"
+  }
+  $env:RUSTUP_HOME = $previousRustupHome
+
   New-Item -ItemType Directory -Path $temporaryToolchains, $temporaryCargo -Force |
     Out-Null
   Set-Content -LiteralPath (Join-Path $temporaryRustup ".pinvou3-managed-rustup") `

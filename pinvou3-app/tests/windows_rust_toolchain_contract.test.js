@@ -65,6 +65,19 @@ test("the isolated RUSTUP_HOME is workspace scoped and marked as managed", () =>
   });
   assert.equal(custom.hostTriple, "aarch64-pc-windows-msvc");
   assert.equal(custom.rustupHome, path.join(APP_ROOT, "custom-rustup"));
+
+  const absoluteEnv = {
+    PINVOU3_RUSTUP_HOME: path.join(os.tmpdir(), "pinvou-absolute-rustup"),
+  };
+  const absolute = configureIsolatedWindowsRustToolchain({
+    env: absoluteEnv,
+    architecture: "x64",
+  });
+  assert.equal(
+    absolute.rustupHome,
+    path.join(os.tmpdir(), "pinvou-absolute-rustup"),
+    "an absolute override must not be nested under the app root",
+  );
 });
 
 test("a complete account toolchain is reused read-only", async () => {
@@ -129,6 +142,42 @@ test("unexpected probe or repair failures stop the build", async () => {
       spawnChild: scriptedRustToolchainSpawn([2, 1], []),
     }),
     /Isolated Rust toolchain repair failed with exit code 1/u,
+  );
+});
+
+test("a toolchain check that fails to spawn stops the build", async () => {
+  const failingSpawn = () => {
+    const child = new EventEmitter();
+    queueMicrotask(() =>
+      child.emit("error", new Error("spawn powershell.exe ENOENT")),
+    );
+    return child;
+  };
+  await assert.rejects(
+    ensureWindowsRustToolchain({
+      env: {},
+      architecture: "x64",
+      log: () => {},
+      spawnChild: failingSpawn,
+    }),
+    /spawn powershell.exe ENOENT/u,
+  );
+});
+
+test("a signalled toolchain check stops the build", async () => {
+  const signallingSpawn = () => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit("exit", null, "SIGTERM"));
+    return child;
+  };
+  await assert.rejects(
+    ensureWindowsRustToolchain({
+      env: {},
+      architecture: "x64",
+      log: () => {},
+      spawnChild: signallingSpawn,
+    }),
+    /stopped by signal: SIGTERM/u,
   );
 });
 
@@ -198,6 +247,14 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   assert.match(rustupRepairSmoke, /Refusing to corrupt a path outside the isolated test root/u);
   assert.match(rustupRepairSmoke, /Refusing to remove an unexpected test path/u);
   assert.match(rustupRepairSmoke, /Isolated inconsistent-toolchain repair: PASS/u);
+  // The smoke must exercise the refusal guards for real, not just the repair.
+  assert.match(
+    rustupRepairSmoke,
+    /Refusing to modify the build account's shared RUSTUP_HOME/u,
+  );
+  assert.match(rustupRepairSmoke, /Refusing to use a filesystem root as RUSTUP_HOME/u);
+  assert.match(rustupRepairSmoke, /Refusing to adopt a non-empty unmarked RUSTUP_HOME/u);
+  assert.match(rustupRepairSmoke, /Guard rejected/u);
   assert.match(
     packageJson.scripts["test:windows-rustup-repair"],
     /tests\/windows_rustup_repair_smoke\.ps1/u,
