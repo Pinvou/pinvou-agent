@@ -478,7 +478,13 @@ fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str
 ///    60s after the last engine-side classification the monitor resumes
 ///    the probe, so a never-classified (or stale-classified) target pays
 ///    at most one small doomed 404 per poll — bounded by the shared 3s
-///    probe client, never a per-poll GGUF re-read.
+///    probe client. One honest exception: while `/api/show` itself
+///    persistently errors (5xx / hang), those responses are `Unreachable`
+///    and deliberately uncached — a busy server must not be pinned to "no
+///    window" — so the lookup re-POSTs show once per poll until the server
+///    recovers, and each POST is a server-side GGUF re-read. Bounded at 1
+///    small request/s with the shared 3s timeout; the frontend in-flight
+///    guard keeps slow polls from piling up.
 async fn local_native_display_window(
     upstream: &str,
     api_key: Option<&str>,
@@ -1217,6 +1223,81 @@ mod tests {
             mock.hits_for("/api/ps"),
             0,
             "the LmStudio arm must not fall through to the Ollama ps probe"
+        );
+    }
+
+    /// The snapshot wiring end to end: a local (LocalVllm-preset) target
+    /// whose `/v1/models` listing carries no window must reach the native
+    /// follow-up through the real `snapshot_for_model_config` glue — the
+    /// `listed_entries` extraction, the served-vs-configured threading, and
+    /// the `target_kind == "local" && max_model_len.is_none()` trigger —
+    /// and land the `/api/ps` fact on the snapshot's display window. A
+    /// listing that already carries the window (a real vLLM) must never dial
+    /// the native API. Every gate test above calls
+    /// `local_native_display_window` directly; this one pins its call site.
+    #[tokio::test]
+    async fn snapshot_wiring_drives_native_display_window() {
+        use crate::core::model_endpoint::models_mock;
+        // The snapshot's listing leg requests `{base}/models`
+        // (`models_probe_url` deliberately never appends `/v1`).
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"wiring-e2e-model"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"wiring-e2e-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+            ("/metrics", 200, "".into()),
+        ]);
+        let snapshot = snapshot_for_model_config(
+            &mock.base_url,
+            Some("wiring-e2e-model".into()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot");
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            1,
+            "the follow-up must run exactly once per snapshot"
+        );
+        assert_eq!(
+            snapshot.max_model_len,
+            Some(131_072),
+            "the native fact must reach the display window through the snapshot wiring"
+        );
+        // A listing that already carries the window ends the lookup before
+        // the native follow-up (a real vLLM deployment must not be probed
+        // with the Ollama API).
+        let listed = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"wiring-e2e-listed","max_model_len":262144}]}"#.into(),
+            ),
+            ("/metrics", 200, "".into()),
+        ]);
+        let snapshot = snapshot_for_model_config(
+            &listed.base_url,
+            Some("wiring-e2e-listed".into()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot");
+        assert_eq!(snapshot.max_model_len, Some(262_144));
+        assert_eq!(
+            listed.hits_for("/api/ps"),
+            0,
+            "a listed window must skip the native follow-up entirely"
         );
     }
 
