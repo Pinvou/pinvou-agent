@@ -2137,14 +2137,27 @@ impl EnginePool {
     }
 
     /// Re-check for a reused engine whose spawn ended without a native
-    /// served-window fact (`EngineEntry::native_window_pending`): ask the
-    /// same native API the spawn adoption would have. Returns the window
-    /// once the server can actually serve it (model JIT-loaded since), None
-    /// while it still can't (unloaded / endpoint down / no declaration) —
-    /// the caller keeps the engine in that case. `bridge` is the freshly
-    /// prepared (unfinalized) bridge of this same model config; the fact is
-    /// deliberately not written here — adoption goes through the normal
-    /// finalize so the route limits derive in one place.
+    /// served-window fact (`EngineEntry::native_window_pending`):
+    /// re-classify the endpoint (cache-peeked; the battery re-runs at most
+    /// once per TTL) and ask the native API that classification selects.
+    /// Returns the window once the server can actually serve it (model
+    /// JIT-loaded since), None while it still can't (unloaded / endpoint
+    /// down / no declaration) — the caller keeps the engine in that case.
+    /// `bridge` is the freshly prepared (unfinalized) bridge of this same
+    /// model config; the fact is deliberately not written here — adoption
+    /// goes through the normal finalize so the route limits derive in one
+    /// place.
+    ///
+    /// The marker's frozen kind is deliberately not trusted for dispatch:
+    /// the stack behind the port can swap while the engine lives (dev
+    /// restart onto a different server class), and re-dialing the stale
+    /// kind's API would 404 on every send without ever arming a fact — the
+    /// 8192-fallback budget would persist past the point where the new
+    /// server could serve the real window. A re-classification to a
+    /// non-probeable kind lands on the helper's `None` arm and keeps (a
+    /// Generic result is never cached, so that shape re-runs the battery
+    /// per send — small local GETs, bounded, and the marker heals or drops
+    /// at the next rebuild).
     ///
     /// Native probes are local-only by construction (the marker is armed
     /// inside the locality-gated finalize block, and a config edit that
@@ -2160,11 +2173,13 @@ impl EnginePool {
             return None;
         }
         let api_key = bridge.api_key();
-        // The marker only ever carries a native-probeable kind, so the
-        // helper's `None` outer arm is defensive only; flattening it to
-        // "no fact" matches the caller's keep semantics.
+        let kind = crate::core::model_endpoint::probe_local_server_kind(
+            &bridge.base_url(),
+            Some(api_key.as_str()),
+        )
+        .await;
         crate::core::model_endpoint::fetch_native_served_context(
-            Some(pending.kind),
+            Some(kind),
             &bridge.base_url(),
             Some(api_key.as_str()),
             &pending.model_name,
@@ -2255,12 +2270,16 @@ impl EnginePool {
             // Missing-native-window re-adoption (see
             // `EngineEntry::native_window_pending`): while the spawn ended
             // without a served-window fact — the shape of a model that was
-            // never JIT-loaded yet — every reuse re-asks the native API once
-            // (the `/api/show` leg is 60s-cached in core, `/api/ps` /
+            // never JIT-loaded yet — every reuse re-classifies the endpoint
+            // (cache-peeked, so the 7-probe battery re-runs at most once per
+            // 60s TTL) and re-asks the selected native API once (the
+            // `/api/show` leg is 60s-cached in core, `/api/ps` /
             // `/api/v0/models` are one small local GET each). Worst case
-            // while pending is ~6s inline on this send path (a 3s ps timeout
-            // plus, when ps answered Ollama-shaped-but-missing, an uncached
-            // 3s show — `Unreachable` is never cached). The re-check ends
+            // while pending is ~9s inline on this send path — a cold kind
+            // cache against a hung-but-accepting server (3s battery + 3s ps
+            // timeout +, when ps answered Ollama-shaped-but-missing, an
+            // uncached 3s show; `Unreachable` is never cached); with the
+            // kind cached this is ~6s. The re-check ends
             // once the fact materializes — and only then, not at the idle
             // reap: an entry in active use never goes idle (every send
             // refreshes `last_active`), so on a shape that can never prove
@@ -9181,7 +9200,14 @@ mod probed_facts_wiring_tests {
             None
         );
         // After the model loads, the re-probe finds the effective window.
+        // The re-probe re-classifies the endpoint first, so the mock must
+        // carry the Ollama signature the battery looks for.
         let loaded = models_mock::spawn(&[
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
             (
                 "/api/ps",
                 200,
@@ -9271,6 +9297,11 @@ mod probed_facts_wiring_tests {
                 "/v1/models",
                 200,
                 r#"{"data":[{"id":"server-name"}]}"#.into(),
+            ),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"server-name"}]}"#.into(),
             ),
             (
                 "/api/ps",
@@ -9371,7 +9402,14 @@ mod probed_facts_wiring_tests {
             kind: LocalServerKind::Ollama,
         };
         // Pending, model still unloaded: keep (the next turn re-asks).
+        // The re-probe re-classifies first, so the mock carries the Ollama
+        // signature.
         let mock = models_mock::spawn(&[
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
             ("/api/ps", 200, r#"{"models":[]}"#.into()),
             ("/api/show", 200, r#"{"model_info":{}}"#.into()),
         ]);
@@ -9386,6 +9424,11 @@ mod probed_facts_wiring_tests {
         // The model loaded since spawn: the decision must demand a rebuild
         // so the rebuild path adopts the fact.
         let loaded = models_mock::spawn(&[
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"my-model"}]}"#.into(),
+            ),
             (
                 "/api/ps",
                 200,
@@ -9402,6 +9445,63 @@ mod probed_facts_wiring_tests {
             CachedEntryReuse::RebuildForWindowFact,
             "the post-load fact must drop the entry for the adopting rebuild"
         );
+    }
+
+    /// The marker's frozen kind must not drive the re-probe dispatch: the
+    /// stack behind the port can swap while the engine lives (dev restart
+    /// onto a different server class), and dispatching on the stale kind
+    /// would re-dial the wrong native API on every send — a 404 that never
+    /// arms a fact — so the real served window would never land until an
+    /// unrelated rebuild. The re-probe must re-classify (cache-peeked
+    /// battery) and follow the fresh kind. Deleting the re-classification
+    /// lands the frozen-Ollama dispatch on the doomed `/api/ps` (hits > 0,
+    /// window None) and turns both assertions red.
+    #[tokio::test]
+    async fn reprobe_reclassifies_swapped_server_kind() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        // The re-classification below runs the real battery and the
+        // hygiene clear at the end resets the shared probe state, both of
+        // which must run serially against the core probe tests (their
+        // in-flight registrations live in the same process-global registry;
+        // see PROBE_STATE_TEST_MUTEX's doc).
+        let _probe_state = crate::core::model_endpoint::tests::PROBE_STATE_TEST_MUTEX
+            .lock()
+            .await;
+        // The port now serves LM Studio's v0 API; the Ollama ps endpoint the
+        // stale marker would dial is a registered 404 so the miss is
+        // countable.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/v0/models",
+                200,
+                r#"{"data":[{"id":"my-model","state":"loaded","max_context_length":131072,"loaded_context_length":12918}]}"#
+                    .into(),
+            ),
+            ("/api/ps", 404, "not found".into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model);
+        // A marker frozen by the pre-swap spawn: kind Ollama.
+        let pending = PendingNativeWindow {
+            model_name: "my-model".into(),
+            kind: LocalServerKind::Ollama,
+        };
+        assert_eq!(
+            EnginePool::reprobe_missing_native_window(&bridge, &pending).await,
+            Some(12_918),
+            "the re-probe must follow the swapped-in LM Studio served window"
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "the frozen Ollama kind must not re-dial the doomed /api/ps"
+        );
+        // Cross-test hygiene: the re-classification cached this mock's live
+        // port for the TTL; clear it under ENV_LOCK so a port-reusing later
+        // test cannot inherit the stale kind.
+        crate::core::model_endpoint::clear_probe_kind_cache();
     }
 
     /// The reuse re-probe is locality-gated in its own right. Pinned without

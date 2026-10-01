@@ -1774,7 +1774,7 @@ pub(crate) mod models_mock {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
 
@@ -2583,8 +2583,12 @@ mod tests {
     /// PROBE_KIND_INFLIGHT) and each resets it via clear_probe_kind_cache():
     /// in parallel they would tear down each other's in-flight registrations
     /// (the merged run double-probes and the abort test's registration misses
-    /// its window). These tests must run serially.
-    static PROBE_STATE_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// its window). These tests must run serially. `pub(crate)` so the
+    /// engine-pool wiring tests that drive a real classification battery and
+    /// clear the state afterwards take the same serializer — their clear
+    /// lands mid-poll of the in-flight tests otherwise.
+    pub(crate) static PROBE_STATE_TEST_MUTEX: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
 
     /// 极简本地 HTTP server：按请求路径前缀返回固定 JSON，未注册路径返回 404。
     /// 给 probe_local_server_kind / fetch_v1_models 提供真实 HTTP 往返，
