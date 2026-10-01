@@ -264,26 +264,54 @@ function injectSource() {
           return new Promise(function (resolve) {
             setTimeout(function () { resolve(Object.assign({}, imageTestResponse)); }, imageTestDelay);
           });
-        case 'discover_local_vllm': return Promise.resolve({ candidates: [
-          {
-            provider: 'ollama',
-            label: 'Ollama',
-            base_url: 'http://127.0.0.1:11434/v1',
-            status: 'ready',
-            model: 'qwen2.5-coder:32b',
-            models: [{ id: 'qwen2.5-coder:32b', loaded: true }, { id: 'deepseek-r1:14b', loaded: false }],
-            max_model_len: 32768,
-          },
-          {
-            provider: 'vllm',
-            label: 'vLLM',
-            base_url: 'http://127.0.0.1:8000/v1',
-            status: 'ready',
-            model: 'qwen36_35b_256k',
-            models: ['qwen36_35b_256k'],
-            max_model_len: 262144,
-          },
-        ] });
+        case 'discover_local_vllm': {
+          // Port-routed alternate rosters: the candidates mapping keeps
+          // max_model_len on the first row only, so each provider's
+          // persistence arm in buildLocalModelPayload is pinned by
+          // detecting that provider on its own port and adding its
+          // index-0 row.
+          const alternates = {
+            1234: [{
+              provider: 'lm_studio',
+              label: 'LM Studio',
+              base_url: 'http://127.0.0.1:1234/v1',
+              status: 'ready',
+              model: 'gemma-3-12b',
+              models: [{ id: 'gemma-3-12b', loaded: true }],
+              max_model_len: 12918,
+            }],
+            8000: [{
+              provider: 'vllm',
+              label: 'vLLM',
+              base_url: 'http://127.0.0.1:8000/v1',
+              status: 'ready',
+              model: 'qwen36_35b_256k',
+              models: ['qwen36_35b_256k'],
+              max_model_len: 262144,
+            }],
+          };
+          const customPort = args && args.request && args.request.customPort;
+          return Promise.resolve({ candidates: alternates[customPort] || [
+            {
+              provider: 'ollama',
+              label: 'Ollama',
+              base_url: 'http://127.0.0.1:11434/v1',
+              status: 'ready',
+              model: 'qwen2.5-coder:32b',
+              models: [{ id: 'qwen2.5-coder:32b', loaded: true }, { id: 'deepseek-r1:14b', loaded: false }],
+              max_model_len: 32768,
+            },
+            {
+              provider: 'vllm',
+              label: 'vLLM',
+              base_url: 'http://127.0.0.1:8000/v1',
+              status: 'ready',
+              model: 'qwen36_35b_256k',
+              models: ['qwen36_35b_256k'],
+              max_model_len: 262144,
+            },
+          ] });
+        }
         case 'get_selected_pet': return Promise.resolve('lingling');
         case 'list_sessions': return Promise.resolve([]);
         case 'get_super_permission_status': return Promise.resolve(superPerm);
@@ -1104,6 +1132,64 @@ async function modalWidth(page, headingText) {
       && savedLocalModel.api_key === ''
       && savedLocalModel.credential_action === 'keep_existing',
     JSON.stringify(savedLocalModel));
+
+  // ⑥.5 The other two arms of the persistence ternary: LM Studio persists
+  // null too (its loaded_context_length is runtime-effective like Ollama's
+  // /api/ps), and a vLLM row keeps persisting its deployment max_model_len —
+  // an always-null mutation of buildLocalModelPayload must go red here.
+  await setPortDraft('1234');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const lmstudioAddClicked = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === 'gemma-3-12b');
+    let row = title;
+    while (row && ![...row.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '添加')) {
+      row = row.parentElement;
+    }
+    const button = row && [...row.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '添加');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await sleep(500);
+  const savedLmstudioModel = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5a LM Studio candidate persists a null window (runtime-effective served value)',
+    lmstudioAddClicked
+      && savedLmstudioModel
+      && savedLmstudioModel.preset === 'local_vllm'
+      && savedLmstudioModel.model === 'gemma-3-12b'
+      && savedLmstudioModel.context_window_tokens === null,
+    JSON.stringify(savedLmstudioModel));
+  await setPortDraft('8000');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const vllmAddClicked = await page.evaluate(() => {
+    const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === 'qwen36_35b_256k');
+    let row = title;
+    while (row && ![...row.querySelectorAll('button')].some(button => (button.textContent || '').trim() === '添加')) {
+      row = row.parentElement;
+    }
+    const button = row && [...row.querySelectorAll('button')].find(candidate => (candidate.textContent || '').trim() === '添加');
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await sleep(500);
+  const savedVllmModel = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5b vLLM candidate keeps persisting its deployment max_model_len',
+    vllmAddClicked
+      && savedVllmModel
+      && savedVllmModel.preset === 'local_vllm'
+      && savedVllmModel.model === 'qwen36_35b_256k'
+      && savedVllmModel.context_window_tokens === 262144,
+    JSON.stringify(savedVllmModel));
+  await setPortDraft('');
 
   await clickExact(page, '添加模型');
   await sleep(300);
