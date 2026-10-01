@@ -438,10 +438,12 @@ fn parse_models_response(
 /// route keeps its fallback for — accepted, since loosening the engine
 /// gate would change pre-existing vLLM adoption semantics. One further
 /// asymmetry: on a multi-entry list whose configured name matches only
-/// case-insensitively this gate passes while the `/api/ps` map stays
-/// exact-keyed, so the follow-up recovers at most the server-side-resolved
-/// `/api/show` declaration — and the engine route's exact gate never
-/// adopts in that shape at all.
+/// case-insensitively this gate passes while the engine's gate (and the
+/// keyed native maps, which match names exactly modulo Ollama's
+/// `name:latest` canonicalization in [`ollama_ps_context_lookup`]) never
+/// adopt that shape, so the follow-up recovers at most the
+/// server-side-resolved `/api/show` declaration — and the engine route's
+/// exact gate never adopts in that shape at all.
 fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
     let Some(served) = served else {
         return false;
@@ -514,12 +516,19 @@ async fn local_native_display_window(
                 .await
         }
         // Ollama, or never classified (monitor-only target): try the
-        // Ollama-shaped ps probe.
+        // Ollama-shaped ps probe. The lookup is the same tag-tolerant one
+        // the engine route uses, so display and engine budget resolve a
+        // tagless configured name to the same canonical `/api/ps` entry;
+        // unlike `fetch_ollama_model_context`, a non-Ollama-shaped ps
+        // response ends the lookup here (a never-classified target must not
+        // pay the show fallback POST).
         None | Some(LocalServerKind::Ollama) => {
             let contexts =
                 crate::core::model_endpoint::fetch_ollama_contexts(upstream, api_key).await?;
-            if let Some(ctx) = contexts.get(name) {
-                return Some(*ctx);
+            if let Some(ctx) =
+                crate::core::model_endpoint::ollama_ps_context_lookup(&contexts, name)
+            {
+                return Some(ctx);
             }
             crate::core::model_endpoint::cached_ollama_show_context(upstream, api_key, name).await
         }

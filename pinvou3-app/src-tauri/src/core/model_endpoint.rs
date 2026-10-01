@@ -168,6 +168,29 @@ fn parse_ollama_ps_contexts(v: &serde_json::Value) -> std::collections::HashMap<
     out
 }
 
+/// `/api/ps` 表按配置名取生效上下文，容忍省略 tag 的裸名：Ollama 把裸名
+/// 规范化为 `name:latest`（`ollama run llama3` 在 `/api/ps` 里报
+/// `llama3:latest`），手敲配置名省略 tag 时按规范化形式补查一次——否则
+/// 全局 `OLLAMA_CONTEXT_LENGTH` 部署的真实窗口永远只挂在规范化键下，裸名
+/// 路由的首载自愈永远落空（2026-09-30 报告的手打名形态）。tag 只看最后
+/// 一个 `/` 之后的段（registry 形如 `host:port/ns/model` 的主机端口不算
+/// tag）。带 tag 的名字只做精确查找：tag 不同即不同模型，绝不跨条目借用。
+pub(crate) fn ollama_ps_context_lookup(
+    contexts: &std::collections::HashMap<String, u32>,
+    model: &str,
+) -> Option<u32> {
+    if let Some(ctx) = contexts.get(model) {
+        return Some(*ctx);
+    }
+    let name_segment = model.rsplit('/').next().unwrap_or(model);
+    if !name_segment.contains(':') {
+        if let Some(ctx) = contexts.get(&format!("{model}:latest")) {
+            return Some(*ctx);
+        }
+    }
+    None
+}
+
 /// Ollama `/api/show` 单模型上下文事实：仅采信 `parameters` 中的 `num_ctx N`
 /// —— Modelfile 显式声明的运行配置，模型加载后即生效值。
 ///
@@ -502,12 +525,12 @@ pub(crate) fn clear_ollama_show_cache() {
 }
 
 /// 单模型上下文事实，按可信度排序：`/api/ps` 的生效值（模型已加载时即部署
-/// 真相）→ `/api/show` 的 Modelfile `num_ctx` 显式声明（60s 缓存，monitor
-/// 与引擎共享；GGUF 重读是缓存的全部理由）。全部失败返回 None，
-/// 调用方保留既有兜底。Ollama 的 OpenAI 兼容 `/v1/models` 从不
-/// 携带窗口事实，这是唯一的事实来源；缺失时 foundation 对 unknown ollama
-/// 模型按 8192 兜底窗口推导预算（压缩阈值打到 4096 地板、压缩后输入预算
-/// 只剩 1024，见 2026-09-30 用户报告）。
+/// 真相，[`ollama_ps_context_lookup`] 容忍裸名省略 tag）→ `/api/show` 的
+/// Modelfile `num_ctx` 显式声明（60s 缓存，monitor 与引擎共享；GGUF 重读是
+/// 缓存的全部理由）。全部失败返回 None，调用方保留既有兜底。Ollama 的
+/// OpenAI 兼容 `/v1/models` 从不携带窗口事实，这是唯一的事实来源；缺失时
+/// foundation 对 unknown ollama 模型按 8192 兜底窗口推导预算（压缩阈值打到
+/// 4096 地板、压缩后输入预算只剩 1024，见 2026-09-30 用户报告）。
 pub async fn fetch_ollama_model_context(
     base_url: &str,
     bearer: Option<&str>,
@@ -515,7 +538,7 @@ pub async fn fetch_ollama_model_context(
 ) -> Option<u32> {
     if let Some(ctx) = fetch_ollama_contexts(base_url, bearer)
         .await
-        .and_then(|contexts| contexts.get(model).copied())
+        .and_then(|contexts| ollama_ps_context_lookup(&contexts, model))
     {
         return Some(ctx);
     }
@@ -2100,6 +2123,68 @@ mod tests {
             "a 404 is stable per name — served from the TTL cache, not re-POSTed per poll"
         );
         let _ = clear_ollama_show_cache();
+    }
+
+    /// Ollama canonicalizes a bare model name to `name:latest` in `/api/ps`
+    /// (`ollama run llama3` reports `llama3:latest`), so a hand-typed
+    /// tagless configured name must still find its own entry — the exact
+    /// shape where a global `OLLAMA_CONTEXT_LENGTH` (the 2026-09-30
+    /// report's fatality) only ever shows up under the canonical key and
+    /// the first-load self-heal would otherwise never land. A tagged name
+    /// matches only itself (a different tag is a different model), and a
+    /// registry-path name canonicalizes its model segment only.
+    #[tokio::test]
+    async fn ollama_ps_lookup_tolerates_tagless_names() {
+        // Tagless configured name → canonical ps entry, no show fallback.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"llama3:latest","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "llama3").await,
+            Some(131_072),
+            "the canonical entry answers the tagless configured name"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the ps fact wins — no show fallback needed"
+        );
+        // A tagged configured name matches only itself: `llama3:8b` is not
+        // `llama3:latest`.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"llama3:latest","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "llama3:8b").await,
+            None,
+            "a different tag is a different model — no cross-entry borrow"
+        );
+        // Registry-style path: the model segment (after the last `/`) is
+        // what gets the `:latest` canonicalization, not the whole string.
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"example.com/library/qwen3:latest","context_length":40960}]}"#
+                    .into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            fetch_ollama_model_context(&mock.base_url, None, "example.com/library/qwen3").await,
+            Some(40_960),
+            "registry-path names canonicalize the model segment only"
+        );
     }
 
     /// LM Studio served window (the `loaded_context_length` of the loaded

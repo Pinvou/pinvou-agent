@@ -2097,21 +2097,23 @@ impl EnginePool {
             // missing fact once per turn (`native_window_pending`), so the
             // first load is picked up by the next send without waiting for
             // the idle reap. For non-vLLM routes the `adopts` gate is an
-            // exact-name match; on a case-mismatched multi-entry list the
-            // native fetch still fires with the configured name and safely
-            // misses the exact-keyed native maps (conservative, already a
-            // Mismatch display state). Adopted native values carry no
-            // sanity band — deliberately the same trust class as user
-            // declarations and vLLM `max_model_len`: a tiny honest value
-            // (a Modelfile `num_ctx 512` typo, a small global default) is
-            // adopted as-is and preflight fails per turn with the visible
-            // context-recovery error — loud-and-true instead of the
-            // 8192-pretense silently truncating upstream. There is no
-            // in-app override for local presets (the declaration field is
-            // hidden and declarations only min-clamp), so the escape is
-            // the real fix — the server-side context configuration; the
-            // adopted value stays visible on the monitor card / progress
-            // denominator.
+            // exact-name match on the sent name; a tagless configured name
+            // still resolves its own `/api/ps` entry via Ollama's
+            // `name:latest` canonicalization, while a genuinely different
+            // name (case- or tag-different) on a multi-entry list fires the
+            // native fetch and safely misses the keyed native maps
+            // (conservative, already a Mismatch display state). Adopted
+            // native values carry no sanity band — deliberately the same
+            // trust class as user declarations and vLLM `max_model_len`: a
+            // tiny honest value (a Modelfile `num_ctx 512` typo, a small
+            // global default) is adopted as-is and preflight fails per turn
+            // with the visible context-recovery error — loud-and-true
+            // instead of the 8192-pretense silently truncating upstream.
+            // There is no in-app override for local presets (the
+            // declaration field is hidden and declarations only min-clamp),
+            // so the escape is the real fix — the server-side context
+            // configuration; the adopted value stays visible on the monitor
+            // card / progress denominator.
             if max_len.is_none() && declared_window.is_none() {
                 let native = crate::core::model_endpoint::fetch_native_served_context(
                     bridge.probed_local_kind,
@@ -8630,6 +8632,53 @@ mod probed_facts_wiring_tests {
             "the /api/ps fact wins; /api/show stays unqueried"
         );
         assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    /// A hand-typed tagless configured name (`ollama run llama3` shape)
+    /// against a canonical roster: Ollama reports the entry as
+    /// `llama3:latest` in `/api/ps`, so the route's own native fetch must
+    /// still resolve it — otherwise the first-load self-heal never lands
+    /// and the 8192-fallback collapse (a global `OLLAMA_CONTEXT_LENGTH`,
+    /// the 2026-09-30 report's fatality) survives the engine's whole
+    /// lifetime with the marker armed forever. This is the pin whose
+    /// absence let that shape slip through round 5: dropping the
+    /// `:latest` fallback turns all three assertions red.
+    #[tokio::test]
+    async fn tagless_configured_name_adopts_canonical_ps_window() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"llama3:latest"},{"id":"deepseek-r1:14b"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"llama3:latest","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "llama3", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(131_072),
+            "the tagless configured name resolves its own canonical /api/ps entry"
+        );
+        assert!(
+            !bridge.native_window_recheck,
+            "a fact was adopted — the reuse re-check must not arm"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the ps fact wins; /api/show stays unqueried"
+        );
     }
 
     /// Model downloaded but not loaded (no /api/ps entry) with a Modelfile
