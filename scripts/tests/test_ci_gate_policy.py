@@ -1145,6 +1145,13 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.windows_rustup_repair == 'true'", job)
         self.assertIn("runs-on: windows-latest", job)
         self.assertIn("npm --prefix pinvou3-app run test:windows-rustup-repair", job)
+        # scripts/ci/** is in no node-test filter, so this job is the only
+        # gate that pins ensure-rust-toolchain.ps1 through the node contract
+        # test. Dropping the step would silently unpin the repair engine.
+        self.assertIn(
+            "node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js",
+            job,
+        )
 
         # Same three-wiring rule as the other native legs: needs entry, env
         # backfill, and summary-loop entry.
@@ -1152,7 +1159,11 @@ class CiGatePolicyTests(unittest.TestCase):
             "\n  required-gate:", maxsplit=1
         )[1]
         self.assertIn("- windows-rustup-repair-test", required_gate)
-        self.assertIn("WINDOWS_RUSTUP_REPAIR_RESULT", required_gate)
+        self.assertIn(
+            "WINDOWS_RUSTUP_REPAIR_RESULT: "
+            "${{ needs.windows-rustup-repair-test.result }}",
+            required_gate,
+        )
         self.assertIn(
             '"windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"',
             required_gate,

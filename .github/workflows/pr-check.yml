@@ -1817,6 +1817,15 @@ jobs:
           }
           rustup toolchain install $match.Groups[1].Value `
             --profile minimal --component clippy --component rustfmt --no-self-update
+          if ($LASTEXITCODE -ne 0) {
+            throw "rustup toolchain install failed with exit code $LASTEXITCODE."
+          }
+
+      # scripts/ci/** is not in the frontend filter, so this job is the only
+      # gate that runs the node contract test pinning ensure-rust-toolchain.ps1
+      # and the build.js toolchain state machine. Node built-ins only; no ci.
+      - name: Rust toolchain contract test
+        run: node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js
 
       # The smoke copies the account toolchain into a temporary RUSTUP_HOME,
       # deletes cargo.exe/rustc.exe there, and requires the repair script to
