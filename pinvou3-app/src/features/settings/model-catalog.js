@@ -35,17 +35,18 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // - xai: grok-4.7 holds the official "coding/agent recommended" slot since
 //   September 2026 (docs.x.ai models page: "For everything else, including
 //   code, use Grok 4.7"); grok-4.6 demotes to previous generation.
-// - openai: gpt-5.6-terra keeps the Chat-wire default. The gpt-6 family
-//   detail pages state verbatim "Chat Completions supports function calling
-//   only with reasoning_effort set to none" (developers.openai.com gpt-6-sol
-//   / gpt-6-luna model pages, 2026-09-28), so the gpt-6 rows cannot drive
-//   the agent tool loop on the Chat wire this preset uses (the engine sends
-//   no reasoning_effort for gpt-6 and the API default is medium). terra's
-//   page carries no such restriction ($2/$12 vs sol's $2/$10). gpt-6-sol /
-//   gpt-6-luna stay listed with the restriction in their descriptions;
-//   gpt-6-astra's tool calling remains Responses-only (Using GPT-6 Astra
-//   guide verbatim: "GPT-6 Astra supports Chat Completions, but its tool
-//   calling requires Responses", re-verified 2026-09-28).
+// - openai: gpt-6-sol takes the default (2026-09-29): the whole preset rides
+//   the OpenAI Responses wire now (bridge engine_route_provider), so the
+//   Chat-only restriction that kept terra in the slot is gone. Every catalog
+//   id lists `v1/responses` with function calling on its model page
+//   (developers.openai.com/api/docs/models/*, re-verified 2026-09-29): the
+//   gpt-6 pages' "Chat Completions supports function calling only with
+//   reasoning_effort set to none" and astra's "tool calling requires
+//   Responses" only constrained the Chat wire the preset used before. sol is
+//   the balanced flagship ($2/$10; effort ladder covers every tier the
+//   engine's Responses effort mapper sends). Off-tier note: the Responses
+//   effort mapper has no "none" on this route (off normalizes to low), so
+//   the picker exposes low/medium/high/max for the preset.
 // - anthropic: claude-opus-5-5 (2026-09-22) takes the default per the
 //   official models overview "start with Claude Opus 5.5 for most workloads".
 // - mimo: mimo-v2.6-pro (2026-09-22 release) replaces the default; the whole
@@ -62,7 +63,12 @@ const MODEL_PRESET_DEFS = {
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.6-pro' },
-  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
+  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6-sol' },
+  // Custom OpenAI Responses endpoints: protocol is /v1/responses (the bridge
+  // lands on the foundation's named-custom route with wire="responses"). The
+  // default URL/model prefill the official endpoint so it works out of the
+  // box; users aiming at an aggregator change the model along with the URL.
+  openai_responses: { baseUrl: 'https://api.openai.com/v1',         model: 'gpt-6-sol' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-opus-5-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
   xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.7' },
@@ -98,6 +104,7 @@ const PRESET_LABEL_KEY = {
   deepseek: 'modelPresetDeepseek',
   kimi: 'modelPresetKimi',
   openai_compatible: 'modelPresetOpenaiCompatible',
+  openai_responses: 'modelPresetOpenaiResponses',
   qwen: 'modelPresetQwen',
   doubao: 'modelPresetDoubao',
   minimax: 'modelPresetMinimax',
@@ -123,6 +130,7 @@ const BRAND_ICON_BY_PRESET = {
   mimo: mimoIcon,
   openai: openaiIcon,
   openai_compatible: openaiIcon,
+  openai_responses: openaiIcon,
   anthropic: claudeIcon,
   gemini: geminiIcon,
   xai: xaiIcon,
@@ -745,30 +753,32 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
-      // Official figures re-checked 2026-09-28 (developers.openai.com
-      // models/pricing/guides): the GPT-6 family expanded — gpt-6-sol
-      // ("built to power complex coding and agentic workflows", $2/$10) and
-      // gpt-6-luna ($0.10/$0.50) joined, but their model detail pages state
-      // verbatim "Chat Completions supports function calling only with
-      // reasoning_effort set to none" (the family-wide "Using GPT-6" guide
-      // states the same restriction explicitly).
-      // The engine sends no reasoning_effort for gpt-6 (outside the base
-      // reasoning-family predicate) and the API default is medium, so the
-      // gpt-6 rows cannot drive the agent tool loop on the Chat wire this
-      // preset uses — gpt-5.6-terra ($2/$12, no such restriction on its
-      // page) keeps the default. gpt-6-astra additionally has Responses-only
-      // tool calling ("GPT-6 Astra supports Chat Completions, but its tool
-      // calling requires Responses") and rejects effort "none". The 5.6
-      // family and gpt-5.5 / gpt-5.4-mini are on sale and not deprecated
-      // (5.6-sol promo pricing documented through at least 2026-11-21).
-      // gpt-5.3-codex remains Responses-only and is not listed.
-      // Note: the base's openai reasoning-family predicate does not cover
-      // the gpt-6 ids yet, so these rows get no effort-tier UI (mirroring
-      // the base; re-check when the base learns the 6 family).
+      // Official figures re-checked 2026-09-29 (developers.openai.com
+      // models/pricing/guides + per-model endpoint tables): the GPT-6 family
+      // expanded — gpt-6-sol ("built to power complex coding and agentic
+      // workflows", $2/$10) and gpt-6-luna ($0.10/$0.50) joined gpt-6-astra.
+      // The whole preset rides the OpenAI Responses wire since 2026-09-29
+      // (bridge engine_route_provider → foundation named-custom route with
+      // wire="responses"): every listed id's model page documents
+      // `v1/responses` as Supported with function calling, so the Chat-only
+      // restrictions that previously kept gpt-5.6-terra as the default
+      // ("Chat Completions supports function calling only with
+      // reasoning_effort set to none" on the gpt-6 pages; astra's "tool
+      // calling requires Responses") no longer bind this preset. gpt-6-sol
+      // is the default (balanced flagship; see the MODEL_PRESET_DEFS note
+      // for the effort-ladder caveat: the engine's Responses effort mapper
+      // has no "none" here, so the picker exposes low/medium/high/max).
+      // The 5.6 family and gpt-5.5 / gpt-5.4-mini are on sale and not
+      // deprecated (5.6-sol promo pricing documented through at least
+      // 2026-11-21). gpt-5.3-codex remains Responses-only and is not listed
+      // (its home is the Codex ACP lane). Hand-typed ids outside the
+      // catalog families keep the Chat wire (bridge
+      // openai_responses_wire_model), so legacy chat-only ids stay usable;
+      // force Responses via the dedicated openai_responses group instead.
       items: [
-        { model: 'gpt-6-sol', imageCapable: true, title: 'gpt-6-sol', desc: '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用' },
-        { model: 'gpt-6-luna', imageCapable: true, title: 'gpt-6-luna', desc: '低价高效；Chat 协议仅 effort=none 支持函数调用' },
-        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰；仅 Responses 协议支持函数调用' },
+        { model: 'gpt-6-sol', imageCapable: true, title: 'gpt-6-sol', desc: '编码与 Agent 新旗舰（默认）' },
+        { model: 'gpt-6-luna', imageCapable: true, title: 'gpt-6-luna', desc: '低价高效' },
+        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰' },
         { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
         { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
         { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },
@@ -969,6 +979,23 @@ const MODEL_CATALOG = {
         { model: '', title: '自定义兼容模型', desc: '手动填写模型 ID 和服务地址', custom: true },
       ],
     },
+    {
+      // Custom OpenAI Responses endpoints (/v1/responses protocol). The
+      // third custom protocol surface beside Chat Completions
+      // (openai_compatible) and Anthropic (Messages); the bridge lands on
+      // the foundation's named-custom route with wire="responses"
+      // (RESPONSES_ROUTE_PROVIDER), with no model-name matching for the
+      // endpoint identity.
+      key: 'openai_responses',
+      section: 'custom',
+      title: 'OpenAI Responses Compatible',
+      desc: '自定义 OpenAI Responses 兼容接口',
+      preset: 'openai_responses',
+      providerKind: PROVIDER_KIND_CUSTOM,
+      items: [
+        { model: '', title: '自定义 Responses 模型', desc: '手动填写模型 ID 和服务地址', custom: true },
+      ],
+    },
   ],
 };
 
@@ -1002,7 +1029,16 @@ function findCloudProviderForModel(model) {
     const urls = [providerBaseUrl(provider), ...(provider.endpointAliases || [])]
       .map(url => provider.endpointMode === 'full_chat_completions' ? normalizeEndpointUrl(url) : normalizeOpenAiBaseUrl(url));
     const compareBase = provider.endpointMode === 'full_chat_completions' ? base : normalizeOpenAiBaseUrl(base);
-    if (compareBase && urls.includes(compareBase)) return true;
+    // Custom-kind groups are explicit opt-ins: a saved record only matches the
+    // custom group whose preset it actually carries. URL-only matching would
+    // re-route a record to a sibling custom group that happens to share the
+    // default endpoint (e.g. an `openai_compatible` record at api.openai.com
+    // picked up by the `openai_responses` group) and silently re-stamp its
+    // preset — and wire — on save.
+    const customKindMatch = !provider.providerKind
+      || provider.providerKind !== PROVIDER_KIND_CUSTOM
+      || provider.preset === (model.preset || '');
+    if (compareBase && customKindMatch && urls.includes(compareBase)) return true;
     return !providerKind && !vendor && provider.preset === model.preset && provider.items.some(item => !item.custom && catalogItemMatchesModel(item, model.model));
   }) || null;
 }
@@ -1144,7 +1180,11 @@ function selectorSubLabel(m, t) {
   // 自定义:主=model -> 副=provider 归属
   if (m.preset === 'local_vllm') return localModelNameFn ? localModelNameFn(m.model) : m.model;
   const provider = findCloudProviderForModel(m);
-  return provider ? providerLabelForModel(m, t) : presetProviderLabel('openai_compatible', t);
+  if (provider) return providerLabelForModel(m, t);
+  // The custom Responses group is a custom cloud endpoint just like
+  // openai_compatible: attribute the sub-label to its own preset instead of
+  // labeling every Responses-protocol model as the Chat-compatible group.
+  return presetProviderLabel(m.preset === 'openai_responses' ? m.preset : 'openai_compatible', t);
 }
 
 // ── 思考深度（reasoning effort）档位 ─────────────────────────────
@@ -1189,6 +1229,14 @@ const REASONING_EFFORT_TIERS = {
   // openai_compatible_reasoning_effort); the frontend exposes one unified max
   // label.
   openai: ['off', 'low', 'medium', 'high', 'max'],
+  // OpenAI Responses wire (openai preset rows hit by GPT×Responses + the
+  // whole openai_responses group; bridge RESPONSES_ROUTE_PROVIDER). The
+  // foundation's Responses effort mapper (responses.rs
+  // responses_reasoning_effort, non-deepseek arm) has no "none": off
+  // normalizes to low, max/xhigh to xhigh, medium passes through. off is
+  // hidden because it equals low there (the "no lookalike tiers" rule); max
+  // is exposed under the unified label (the wire carries xhigh).
+  openai_responses: ['low', 'medium', 'high', 'max'],
   // xai: the base apply_xai_grok_4_6_reasoning_effort injects reasoning_effort
   // only for grok-4.6 / grok-4.5 on the exact api.x.ai/v1
   // endpoint; Grok reasoning cannot be turned off (off is normalized to
@@ -1208,6 +1256,24 @@ function isOpenaiReasoningFamilyModel(model) {
   return isOpenaiGpt55ApiModel(lower)
     || isOpenaiGpt56ApiModel(lower)
     || isOpenaiCodexModel(lower);
+}
+
+// Mirrors the model-id prefix half of bridge.rs `openai_responses_wire_model`:
+// GPT models for which the Responses API supports function calling under
+// OpenAI's official wording (Pinvou catalog ∩ Responses support, verified
+// 2026-09-29 against the per-model pages). A hit switches to the Responses
+// wire (bridge RESPONSES_ROUTE_PROVIDER); hand-typed ids outside the catalog
+// do not match and keep the Chat wire. Prefix set only: the bridge
+// additionally gates on the official endpoint host and the operator
+// DEEPSEEK_* env pins, which the tier UI does not re-check — a hand-edited
+// non-official record may show the Responses tier ladder while the engine
+// keeps the Chat wire. A mechanical test pins the two prefix sets equal.
+function isOpenaiResponsesWireModel(model) {
+  const lower = String((model && model.model) || '').trim().toLowerCase();
+  return lower.startsWith('gpt-6')
+    || lower.startsWith('gpt-5.6')
+    || lower.startsWith('gpt-5.5')
+    || lower.startsWith('gpt-5.4-mini');
 }
 
 // 对齐 models.rs `is_openai_gpt_55_api_model`：gpt-5.5 / gpt-5.5-pro 及其日期快照。
@@ -1370,7 +1436,14 @@ function vendorReasoningProvider(vendor, model) {
   if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
   if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
   if (vendor === 'xai' || vendor === 'grok') return 'xai'; // see reasoningEffortTiersForModel for exact-route tiers
-  if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+  // Official OpenAI vendor: a Responses wire hit (the GPT family) takes the
+  // openai_responses tier table; other reasoning families (codex etc. on the
+  // Chat route) keep the openai table; non-reasoning families get no tiers
+  // (null).
+  if (vendor === 'openai') {
+    if (isOpenaiResponsesWireModel(model)) return 'openai_responses';
+    return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+  }
   if (['qwen', 'tencent', 'gemini', 'google'].includes(vendor)) {
     return null; // 底座无档位
   }
@@ -1482,7 +1555,13 @@ function reasoningProviderForModel(model) {
     case 'doubao': return 'volcengine';
     case 'anthropic': return 'anthropic';
     case 'xai': return 'xai';
-    case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    case 'openai':
+      // Mirrors the bridge's engine_route_provider: a GPT×Responses hit takes
+      // the openai_responses tier table; other reasoning families keep the
+      // Chat-semantics openai table.
+      if (isOpenaiResponsesWireModel(model)) return 'openai_responses';
+      return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
+    case 'openai_responses': return 'openai_responses';
     case 'openai_compatible':
       // 本地/私网端点（loopback、RFC1918、host.docker.internal 等）：Rust
       // 探测后 Ollama/vLLM 思考控制真正生效（Ollama→think 开关、vLLM→档位）；
@@ -1688,6 +1767,16 @@ function normalizeStoredReasoningEffort(model, stored) {
   if (isAlwaysThinkingK3Route(model)) {
     if (canonical === 'off') canonical = 'low';
     else if (canonical === 'medium') canonical = 'high';
+  }
+  // OpenAI Responses wire (openai rows hit by GPT×Responses + the whole
+  // openai_responses group): the foundation's Responses effort mapper has no
+  // none (responses.rs codex_responses_reasoning_effort's off→low), so the
+  // route's wire-true equivalent of off is low — the same rule as the K3
+  // ladder above. A chat-era stored off falling back to the default high
+  // would silently invert the user's "minimal reasoning" intent into the
+  // most reasoning.
+  if (canonical === 'off' && reasoningProviderForModel(model) === 'openai_responses') {
+    canonical = 'low';
   }
   if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;

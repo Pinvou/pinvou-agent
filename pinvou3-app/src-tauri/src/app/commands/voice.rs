@@ -878,6 +878,12 @@ fn voice_reasoning_dialect(
         | crate::platform::prefs::ModelPreset::LocalVllm
         | crate::platform::prefs::ModelPreset::Deepseek
         | crate::platform::prefs::ModelPreset::Openai
+        // Custom Responses endpoints only switch the main-session engine
+        // route; the aux calls this wrapper serves (voice output etc.) stay
+        // single-shot Chat Completions (no tool calls; the gpt-6 family
+        // works plain-text on the Chat protocol), so resolution falls back
+        // to URL/model-name sniffing.
+        | crate::platform::prefs::ModelPreset::OpenaiResponses
         | crate::platform::prefs::ModelPreset::Anthropic
         | crate::platform::prefs::ModelPreset::Gemini
         | crate::platform::prefs::ModelPreset::Xai => {
@@ -1516,6 +1522,19 @@ mod voice_postprocess_tests {
                 "meta-llama-3"
             ),
             crate::core::reasoning_dialect::ReasoningDialect::None
+        );
+        // The custom Responses preset rides the same URL-sniff fallback:
+        // voice postprocess stays single-shot Chat (no tools), so the
+        // dialect follows the endpoint/model, not the preset (the compiler
+        // only pins arm exhaustiveness — this pins the semantics).
+        assert_eq!(
+            voice_reasoning_dialect(
+                ModelPreset::OpenaiResponses,
+                "openai",
+                "https://example.com/v1",
+                "qwen2.5-72b-instruct"
+            ),
+            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
         );
     }
 }

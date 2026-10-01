@@ -457,7 +457,7 @@ function hasStoredCredential(record) {
         const nextModel = item.custom ? '' : (item.model || defs.model);
         const nextBaseUrl = normalizedProviderBaseUrl(group) || defs.baseUrl;
         setProviderKey(group.key || '');
-        setProviderKind(group.providerKind || (p === 'openai_compatible' ? PROVIDER_KIND_CUSTOM : PROVIDER_KIND_OFFICIAL_API));
+        setProviderKind(group.providerKind || ((p === 'openai_compatible' || p === 'openai_responses') ? PROVIDER_KIND_CUSTOM : PROVIDER_KIND_OFFICIAL_API));
         setVendor(group.vendor || '');
         setEndpointMode(group.endpointMode || '');
         setBaseUrl(nextBaseUrl);
@@ -544,7 +544,8 @@ function hasStoredCredential(record) {
       const isLocalPreset = preset === 'local_vllm';
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
-      const showBaseUrlField = isLocalPreset || (customModel && preset === 'openai_compatible' && !isCodingPlan);
+      const showBaseUrlField = isLocalPreset
+        || (customModel && (preset === 'openai_compatible' || preset === 'openai_responses') && !isCodingPlan);
       const showCustomCloudKeyField = !isLocalPreset && customModel;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showDisplayNameField = isLocalPreset && !initial.__new;
@@ -802,7 +803,7 @@ function hasStoredCredential(record) {
                       <span className="min-w-0 flex-1">
                         <span className={`block text-[14px] leading-5 truncate ${active ? ('text-[#007AFF] dark:text-[#64B5F6]') : ('text-[#1C1C1E] dark:text-[#F2F2F7]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
                         {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate text-[#8A8A8E] dark:text-[#8E8E93]`}>{item.custom
-                          ? (activeProvider && activeProvider.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
+                          ? (activeProvider && activeProvider.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' || activeProvider.preset === 'openai_responses' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
                           : (settingsCopy.modelDescriptions[item.desc] || item.desc)}</span>}
                       </span>
                       {active && <Check size={17} strokeWidth={2.4} className={'text-[#007AFF] dark:text-[#64B5F6]'} />}
@@ -903,7 +904,7 @@ function hasStoredCredential(record) {
                   const active = preset === group.preset && !item.custom && catalogItemMatchesModel(item, model);
                   const itemTitle = item.custom ? (settingsCopy.customModelTitles[group.key] || settingsCopy.customModelTitle(presetProviderLabel(group.preset, t))) : item.title;
                   const itemDescription = item.custom
-                    ? (group.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
+                    ? (group.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' || group.preset === 'openai_responses' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
                     : (settingsCopy.modelDescriptions[item.desc] || item.desc);
                   return (
                     <button
