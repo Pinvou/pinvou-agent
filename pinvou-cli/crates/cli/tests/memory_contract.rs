@@ -1959,3 +1959,73 @@ fn memory_add_caps_multibyte_text_on_char_boundaries() {
         "byte-level truncation would split a code point and fail here"
     );
 }
+
+/// The timed stores' writer cap (180, `TIMED_TEXT_MAX_CHARS`) was disclosed
+/// in the docs and commented as pinned, but only the preferences lane had an
+/// over-cap execute test — a drifted literal in the timed writer would have
+/// failed nothing. Same body discipline as the preferences test: 190
+/// single-byte characters with no whitespace runs, so the only normalization
+/// that can move the length is the cap itself, and the store (not the CLI's
+/// report) is read back as the authority on where the cut fell.
+#[test]
+fn memory_update_current_focus_over_the_cap_truncates_at_the_timed_cap() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("timed-over-cap");
+
+    // Seed through the pending flow: a `recent_work` candidate folds into
+    // `current_focus` at the pending stage, so `pending confirm` materializes
+    // a real timed item whose id the CLI update below can address.
+    let gui = enqueue_fixture_with_topic("recent_work", "", "keep the answer concise");
+    run_ok(&["pinvou", "memory", "pending", "confirm", &gui.id]);
+    let seeded = pinvou3_lib::features::memory::load_current_focus().unwrap();
+    let seeded_item = seeded
+        .last()
+        .expect("the confirmed candidate must materialize in the timed store");
+    assert!(
+        seeded_item.text.chars().count() <= 180,
+        "the seed itself must be within the timed cap: {}",
+        seeded_item.text.chars().count()
+    );
+
+    // 190 chars: over the timed 180 cap, and also over preferences' 120, so
+    // a regression to the wrong constant cannot pass silently. No whitespace
+    // runs and no leading/trailing punctuation, so the only normalization
+    // that can change the text is the cap itself.
+    let content: String = std::iter::repeat_n("abcdefghij", 19).collect();
+    assert_eq!(content.chars().count(), 190);
+
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+        "pinvou",
+        "memory",
+        "update",
+        "current-focus",
+        &seeded_item.id,
+        "--content",
+        &content,
+        "--output",
+        "json",
+    ]))
+    .expect("single-line JSON output");
+    assert_eq!(
+        json["truncated"],
+        serde_json::json!(true),
+        "an over-cap timed update must disclose the truncation: {json}"
+    );
+    assert_eq!(json["stored_characters"], serde_json::json!(180), "{json}");
+
+    // The store is the authority on where the cut fell.
+    let stored = pinvou3_lib::features::memory::load_current_focus().unwrap();
+    let item = stored
+        .iter()
+        .find(|item| item.id == seeded_item.id)
+        .unwrap_or_else(|| panic!("the updated item must remain listed: {stored:?}"));
+    assert_eq!(
+        item.text.chars().count(),
+        180,
+        "the timed writer caps at 180 (TIMED_TEXT_MAX_CHARS)"
+    );
+    assert!(
+        content.starts_with(&item.text),
+        "the stored text must be a prefix of the submission"
+    );
+}

@@ -2777,12 +2777,18 @@ impl EnginePool {
             Ok(deleted) => deleted,
             // Same failed-delete backstop as `delete_eval_session`: the
             // in-memory entry must not linger on a failed delete, and the
-            // late sweep retries the disk cleanup.
+            // late sweep retries the disk cleanup. The sweep is
+            // adoption-aware, same as the one-shot twin: the record
+            // SURVIVED the failed delete, so a GUI rename landing inside
+            // the sweep window turns the directory into a live session's
+            // workspace that must not be destroyed.
             Err(error) => {
                 self.forget_session(session_id);
-                Self::schedule_late_sweep(
+                Self::schedule_late_sweep_unless_adopted(
                     crate::platform::paths::sessions_root().join(session_id),
                     "late sweep of failed stub cleanup",
+                    self.store.clone(),
+                    session_id.to_string(),
                 );
                 return Err(error);
             }

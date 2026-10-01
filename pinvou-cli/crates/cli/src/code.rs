@@ -3847,8 +3847,12 @@ fn lock_root_for_mutation<'a>(
                 root.display()
             ))
         } else {
+            // Same stable `_lock` code the session-level twin emits: a
+            // script keying on the busy/lock codes must not depend on which
+            // lock level refused (docs/pinvou-cli.md's code row promises
+            // `{action}_lock` when the lock file itself cannot be taken).
             CliError::failed(format!(
-                "code {action}: cannot lock the project directory of session {session}: {error}"
+                "{action}_lock: cannot lock the project directory of session {session}: {error}"
             ))
         }
     })
@@ -4390,41 +4394,11 @@ struct GitCapture {
 /// the cap is drained and discarded, so a writer that outproduces the cap
 /// still finishes instead of blocking on a full pipe.
 fn run_git_captured(
-    mut command: std::process::Command,
+    command: std::process::Command,
     arguments: &[&str],
 ) -> Result<GitCapture, CliError> {
-    crate::support::set_process_group(&mut command);
-    let mut child = crate::support::supervise::spawn_supervised(
-        command
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()),
-    )
-    .map_err(|error| {
-        CliError::failed(format!(
-            "code workspace: git {}: {error}",
-            arguments.join(" ")
-        ))
-    })?;
-    let stdout_pipe = child.stdout.take().expect("git stdout is piped");
-    let stderr_pipe = child.stderr.take().expect("git stderr is piped");
-    let stderr_thread =
-        std::thread::spawn(move || read_capped_to_eof(stderr_pipe, GIT_CAPTURE_CAP));
-    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, GIT_CAPTURE_CAP);
-    let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(error) => {
-            crate::support::kill_process_tree(&mut child);
-            crate::support::supervise::forget_child_group(child.id());
-            return Err(CliError::failed(format!(
-                "code workspace: git {}: {error}",
-                arguments.join(" ")
-            )));
-        }
-    };
-    // Reaped by the wait (or the kill above reaps before forgetting), so the
-    // registration must not outlive this call.
-    crate::support::supervise::forget_child_group(child.id());
+    let (status, stdout_bytes, stderr_bytes, stdout_total) =
+        run_git_captured_capped(command, arguments, GIT_CAPTURE_CAP)?;
     let truncated = stdout_total > GIT_CAPTURE_CAP;
     Ok(GitCapture {
         success: status.success(),
@@ -4434,28 +4408,17 @@ fn run_git_captured(
     })
 }
 
-/// Bounded capture for the tracked-diff lane: `Command::output()` would
-/// buffer a modified multi-gigabyte file whole just so the caller can
-/// truncate it right after. Both streams keep the first `cap + 1` bytes and
-/// then keep draining to EOF — stderr too, because a hostile repo hook could
-/// write arbitrarily much while the stdout side drains — and the second
-/// reader runs on a thread so the two pipes cannot deadlock. Draining past
-/// the cap is load-bearing: a reader that stopped at the cap would leave git
-/// blocked on a full pipe forever whenever the payload exceeds the cap by
-/// more than one pipe buffer, parking the `join()`/`wait()` below (this lane
-/// has no deadline). The boolean reports that the cut actually happened, so
-/// the caller's truncation marker stays exact even when the lossy decode
-/// lands just under the caller's own length check.
-fn git_output_capped(
-    root: &Path,
+/// Shared capture core for both git lanes: spawn supervised, drain both
+/// pipes under `cap` (stderr on a thread so the two pipes cannot deadlock),
+/// wait with the fate-unknown group kill, and release the registration.
+/// Returns the raw parts so the callers keep their distinct conventions
+/// (`run_git_capped` reports failure as `success: false`; `git_output_capped`
+/// turns it into a redacted error).
+fn run_git_captured_capped(
+    mut command: std::process::Command,
     arguments: &[&str],
     cap: u64,
-) -> Result<(String, bool), CliError> {
-    let mut command = git_command(root, arguments);
-    // Supervised like every other vendor child (see `run_git_captured`): the
-    // spawn→register window is closed, so an interrupt aimed at the CLI takes
-    // the diff — and any filter process or hook git is running on the user's
-    // real working tree — down with it.
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, u64), CliError> {
     crate::support::set_process_group(&mut command);
     let mut child = crate::support::supervise::spawn_supervised(
         command
@@ -4486,8 +4449,36 @@ fn git_output_capped(
             )));
         }
     };
-    // Reaped by the wait above: release the registration before returning.
+    // Reaped by the wait (or the kill above reaps before forgetting), so the
+    // registration must not outlive this call.
     crate::support::supervise::forget_child_group(child.id());
+    Ok((status, stdout_bytes, stderr_bytes, stdout_total))
+}
+
+/// Bounded capture for the tracked-diff lane: `Command::output()` would
+/// buffer a modified multi-gigabyte file whole just so the caller can
+/// truncate it right after. Both streams keep the first `cap + 1` bytes and
+/// then keep draining to EOF — stderr too, because a hostile repo hook could
+/// write arbitrarily much while the stdout side drains — and the second
+/// reader runs on a thread so the two pipes cannot deadlock. Draining past
+/// the cap is load-bearing: a reader that stopped at the cap would leave git
+/// blocked on a full pipe forever whenever the payload exceeds the cap by
+/// more than one pipe buffer, parking the `join()`/`wait()` below (this lane
+/// has no deadline). The boolean reports that the cut actually happened, so
+/// the caller's truncation marker stays exact even when the lossy decode
+/// lands just under the caller's own length check.
+fn git_output_capped(
+    root: &Path,
+    arguments: &[&str],
+    cap: u64,
+) -> Result<(String, bool), CliError> {
+    let command = git_command(root, arguments);
+    // Supervised like every other vendor child (see `run_git_captured_capped`):
+    // the spawn→register window is closed, so an interrupt aimed at the CLI
+    // takes the diff — and any filter process or hook git is running on the
+    // user's real working tree — down with it.
+    let (status, stdout_bytes, stderr_bytes, stdout_total) =
+        run_git_captured_capped(command, arguments, cap)?;
     if !status.success() {
         return Err(CliError::failed(format!(
             "code workspace: git {} failed: {}",

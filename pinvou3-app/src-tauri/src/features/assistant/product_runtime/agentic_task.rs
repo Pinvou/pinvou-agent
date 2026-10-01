@@ -3432,9 +3432,13 @@ mod tests {
         }
 
         async fn teardown_schedule_delete(&self, session_id: &str) -> anyhow::Result<()> {
-            // schedule_eval_cleanup only unregisters timing and schedules
-            // background sweeps in production; the durable delete is the
-            // awaited half, so mirroring it here is faithful.
+            // Covers the DISPOSITION half only (this double performs the
+            // unconditional store delete). Production `teardown_schedule_delete`
+            // routes the durable delete through the adoption-gated
+            // `delete_headless_session_unless_adopted` under the turn lock;
+            // that gate half is pinned by
+            // `one_shot_delete_gate_rechecks_the_adoption_marker` in
+            // engine_pool, not here.
             self.teardown_delete(session_id).await
         }
 

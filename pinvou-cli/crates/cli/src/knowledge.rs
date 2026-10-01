@@ -878,13 +878,13 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
         if state.scanned != last_scanned {
             last_scanned = state.scanned;
             last_progress = std::time::Instant::now();
-        } else if last_progress.elapsed() >= SCAN_NO_PROGRESS_TIMEOUT {
+        } else if last_progress.elapsed() >= scan_no_progress_timeout() {
             return Err(CliError::failed(format!(
                 "knowledge scan start: the scan is still flagged running but reported no \
-                 progress for {}s (scanned: {}); the scan thread is gone or wedged — \
+                 progress for {:?} (scanned: {}); the scan thread is gone or wedged — \
                  partial results may be indexed and the completion marker was not \
                  persisted",
-                SCAN_NO_PROGRESS_TIMEOUT.as_secs(),
+                last_progress.elapsed(),
                 state.scanned
             )));
         }
@@ -896,7 +896,18 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
 /// has stopped counting. Generous on purpose: the walker only reports every
 /// 5000 entries, and a cold spinning disk or a slow network mount can spend
 /// minutes between two reports without being stuck.
-const SCAN_NO_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// `PINVOU_KB_SCAN_STALL_MILLIS` (milliseconds, positive) overrides the
+/// default — the same override shape the import lane's
+/// `PINVOU_KB_IMPORT_STALL_MILLIS` has, so the timeout path stays
+/// automatable; an unusable value keeps the default.
+fn scan_no_progress_timeout() -> std::time::Duration {
+    std::env::var("PINVOU_KB_SCAN_STALL_MILLIS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_secs(300))
+}
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
@@ -1363,6 +1374,12 @@ fn collections_add_sources(
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
     let previous_job = preexisting.job_id;
+    // Disclosed residual (same sub-second race class the id-taking
+    // `cancel_index_job` documents): a job a desktop app starts on this
+    // collection between the pre-check above and `start_index` carries a
+    // fresh job id, passes the guards below, and this command then blocks
+    // on and reports the APP's import while its own sources were never
+    // enqueued. Re-running the command is the remedy.
     let state = service.start_index(id, paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
     // requested sources are silently dropped — a fresh job reports

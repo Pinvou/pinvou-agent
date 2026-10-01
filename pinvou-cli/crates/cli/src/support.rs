@@ -89,7 +89,7 @@ pub fn emit_report<W: std::io::Write>(mut out: W, outcome: &CliOutcome) -> i32 {
 
 pub const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
      pinvou sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
-projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --version|version";
+projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --help|--version|version";
 
 /// `$PINVOU3_HOME` when set (absolute), else `~/.pinvou3` — the same product
 /// data root the app uses, resolved by the app's own resolver.
@@ -327,18 +327,22 @@ fn is_row_unsafe_char(ch: char) -> bool {
             | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
             | '\u{2066}'..='\u{2069}' // bidi isolate controls
             | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+            // The remaining Bidi_Control members: invisible, forgeable, and
+            // reorder-capable in bidi-aware terminals. The GUI's set predates
+            // the CLI's terminal-rows threat model; the CLI closes it here
+            // (rows are fed by vendor/user titles).
+            | '\u{200E}' | '\u{200F}' // LRM / RLM
+            | '\u{061C}' // ARABIC LETTER MARK
         )
 }
 
-/// Mirrors `features::sessions::validate_session_id` (crate-private in the
-/// app): only `[A-Za-z0-9_-]`, so an id can never traverse out of the
-/// sessions root when it is joined onto a path. Shared by every family that
-/// accepts a session id so the usage-error contract is uniform.
+/// Only `[A-Za-z0-9_-]`, so an id can never traverse out of the sessions
+/// root when it is joined onto a path. Shared by every family that accepts a
+/// session id so the usage-error contract is uniform. Delegates to the app's
+/// own validator (widened `pub` by this PR) instead of keeping a
+/// second alphabet copy that could drift from it.
 pub fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    pinvou3_lib::features::sessions::validate_session_id(id).is_ok()
 }
 
 /// Usage error for an id outside the [`valid_session_id`] alphabet.
