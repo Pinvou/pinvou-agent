@@ -1292,14 +1292,19 @@ jobs:
     # after sccache removal (aws-lc-sys prebuilt NASM objects compile even
     # slower). Since 2026-09 several runs died at the 90-minute cap during
     # the link step while passing runs already took 85-87 minutes, so the
-    # cap is raised to 180 minutes. PR #478 additionally compiles the whole
+    # cap was raised to 180 minutes. PR #478 additionally compiles the whole
     # pinvou-cli workspace on this Windows-only leg, and lockfile changes
-    # miss the rust-cache key (full cold compile); a 90-minute run was
-    # cancelled mid-build (run 34802015051), so 180 minutes leaves headroom
-    # for two cold workspaces. Each independent leg can still compile cold on
-    # a cache miss, so the cap is kept per leg until the phase timings below
-    # justify a tighter one.
-    timeout-minutes: 180
+    # miss the rust-cache key (full cold compile). Floating stable rolled to
+    # 1.99.0 on 2026-10-01: the rust-cache key hashes the rustc version, so
+    # every PR leg recompiled both workspaces from scratch and the cold link
+    # step alone consumed the whole 180-minute budget before any regression
+    # ran (this PR's run 36919362322). PR legs never save the cache
+    # (save-if main-only), so the cap is raised to 240 minutes to keep one
+    # fully cold toolchain rollover per channel bump inside a single leg;
+    # each independent leg can still compile cold on a cache miss, so the
+    # cap is kept per leg until the phase timings below justify a tighter
+    # one.
+    timeout-minutes: 240
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
