@@ -1356,12 +1356,20 @@ struct PendingNativeWindow {
 
 impl PendingNativeWindow {
     /// Captured from the finalized spawn bridge: only routes that are
-    /// native-probeable (Ollama / LM Studio) and ended the spawn without a
-    /// served-window fact are pending. A fact present at spawn means the
-    /// normal frozen-until-rebuild discipline applies (no re-checking).
+    /// native-probeable (Ollama / LM Studio), ended the spawn without a
+    /// served-window fact, and had the adoption path arm the re-check
+    /// (`bridge.native_window_recheck` — true exactly when that route's own
+    /// native fetch ran and served no fact). Arming is part of the
+    /// construction so a fact the route can never adopt (a borrowed roster
+    /// name, a non-operator-owned endpoint) or a user declaration (which
+    /// min-clamps any adopted fact anyway) can never mark the entry: an
+    /// armed re-probe that keeps serving a fact the rebuild path refuses to
+    /// adopt would drop and respawn the engine on every send, forever. A
+    /// fact present at spawn means the normal frozen-until-rebuild
+    /// discipline applies (no re-checking).
     fn from_finalized(bridge: &Pinvou3Bridge) -> Option<Self> {
         use crate::core::model_endpoint::LocalServerKind;
-        if bridge.probed_context_tokens.is_some() {
+        if !bridge.native_window_recheck || bridge.probed_context_tokens.is_some() {
             return None;
         }
         let kind = bridge.probed_local_kind?;
@@ -2024,15 +2032,30 @@ impl EnginePool {
     /// report: Ollama actually serving 131072); engine reuse re-checks the
     /// missing fact (`native_window_pending`), so the first JIT load is
     /// picked up on the next send instead of at the idle reap.
+    ///
+    /// Arms the reuse re-check (`bridge.native_window_recheck`) exactly when
+    /// this route's own native fetch ran and served no fact. A route whose
+    /// fact can never be adopted (`adopts` false on a borrowed roster name,
+    /// or not operator-owned) never runs the fetch and never arms — the
+    /// re-probe would keep serving a fact the rebuild refuses to adopt and
+    /// respawn the engine on every send; a declared route skips the fetch
+    /// entirely because its declaration min-clamps any adopted fact, so
+    /// nothing the native API returns can change the route.
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,
         is_vllm_route: bool,
         pins_scheduled_model: bool,
     ) {
+        // Only the route's own missed native fetch sets this below; every
+        // other path (adopt-less, adopted, declared) leaves it cleared, so
+        // reusing a bridge never inherits a stale arming.
+        bridge.native_window_recheck = false;
         if !(is_vllm_route || model.is_operator_owned_endpoint()) {
             return;
         }
+        // Read before `renamed` below moves `model` into `session_model`.
+        let declared_window = model.context_window_tokens;
         // The probe carries the same credential as real inference
         // (authenticated endpoints 401 on `/v1/models` without credentials;
         // on probe failure the configured values are kept).
@@ -2089,29 +2112,38 @@ impl EnginePool {
             // the real fix — the server-side context configuration; the
             // adopted value stays visible on the monitor card / progress
             // denominator.
-            if max_len.is_none() {
+            if max_len.is_none() && declared_window.is_none() {
                 use crate::core::model_endpoint::LocalServerKind;
+                // Outer Some = this kind has a native API to ask (Ollama /
+                // LM Studio only); inner = whether it served a fact. Kinds
+                // without one neither fetch nor arm.
                 let native = match bridge.probed_local_kind {
-                    Some(LocalServerKind::Ollama) => {
+                    Some(LocalServerKind::Ollama) => Some(
                         crate::core::model_endpoint::fetch_ollama_model_context(
                             &bridge.base_url(),
                             Some(api_key.as_str()),
                             &sent_name,
                         )
-                        .await
-                    }
-                    Some(LocalServerKind::LmStudio) => {
+                        .await,
+                    ),
+                    Some(LocalServerKind::LmStudio) => Some(
                         crate::core::model_endpoint::fetch_lmstudio_served_context(
                             &bridge.base_url(),
                             Some(api_key.as_str()),
                             &sent_name,
                         )
-                        .await
-                    }
+                        .await,
+                    ),
                     _ => None,
                 };
-                if let Some(ctx) = native {
-                    bridge.probed_context_tokens = Some(ctx);
+                match native {
+                    Some(Some(ctx)) => bridge.probed_context_tokens = Some(ctx),
+                    Some(None) => {
+                        // The route asked its own native API and got no fact
+                        // — exactly the shape the reuse re-check exists for.
+                        bridge.native_window_recheck = true;
+                    }
+                    None => {}
                 }
             }
         }
@@ -2126,11 +2158,21 @@ impl EnginePool {
     /// prepared (unfinalized) bridge of this same model config; the fact is
     /// deliberately not written here — adoption goes through the normal
     /// finalize so the route limits derive in one place.
+    ///
+    /// Native probes are local-only by construction (the marker is armed
+    /// inside the locality-gated finalize block, and a config edit that
+    /// changes the base_url reclaims the entry via whole-struct equality).
+    /// The direct guard below keeps that property local to this function —
+    /// a weakening of the provenance chain upstream cannot silently turn
+    /// the reuse path into a native prober of remote endpoints.
     async fn reprobe_missing_native_window(
         bridge: &Pinvou3Bridge,
         pending: &PendingNativeWindow,
     ) -> Option<u32> {
         use crate::core::model_endpoint::LocalServerKind;
+        if !base_url_uses_local_or_private(&bridge.base_url()) {
+            return None;
+        }
         let api_key = bridge.api_key();
         match pending.kind {
             LocalServerKind::Ollama => {
@@ -2295,9 +2337,11 @@ impl EnginePool {
             Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
         let finalize_bridge_ms = elapsed_ms(finalize_bridge_started);
         // Pending re-adoption marker for engine reuse (see
-        // `EngineEntry::native_window_pending`): a native-probeable route
-        // that ended the spawn without a served-window fact re-checks on
-        // every reuse until the model loads and a rebuild adopts the fact.
+        // `EngineEntry::native_window_pending`): armed by the adoption inside
+        // finalize only when this route's native fetch actually ran and
+        // served no fact — adopt-less routes (`adopts` false / not
+        // operator-owned) and declared routes never arm, so a served fact
+        // that can never be adopted cannot trigger a rebuild on every send.
         let native_window_pending = PendingNativeWindow::from_finalized(&bridge);
         let tool_setup_started = Instant::now();
         // The shell execution directory and the engine cwd share one source:
@@ -9004,9 +9048,13 @@ mod probed_facts_wiring_tests {
     /// captures only native-probeable routes that ended the spawn without a
     /// served-window fact (a fact at spawn means the normal
     /// frozen-until-rebuild discipline applies; non-native kinds never
-    /// re-check); `reprobe_missing_native_window` returns the window once
-    /// the server can actually serve it (model JIT-loaded since) and None
-    /// while it can't. The get_or_spawn glue applies the extracted
+    /// re-check), and only when the adoption path armed the re-check (see
+    /// `pending_window_not_armed_when_fact_cannot_be_adopted` /
+    /// `pending_window_not_armed_for_declared_route` — a fact the route can
+    /// never adopt, or a declaration that min-clamps any fact, must never
+    /// mark the entry). `reprobe_missing_native_window` returns the window
+    /// once the server can actually serve it (model JIT-loaded since) and
+    /// None while it can't. The get_or_spawn glue applies the extracted
     /// `cached_entry_reuse_decision` to drop the entry, reclaim, and let
     /// the rebuild path re-finalize and adopt — the decision itself is
     /// pinned by `pending_window_reuse_decision_rebuilds_once_fact_
@@ -9034,6 +9082,15 @@ mod probed_facts_wiring_tests {
         let pending = PendingNativeWindow::from_finalized(&bridge)
             .expect("a factless Ollama route must be marked pending");
         assert_eq!(pending.model_name, "my-model");
+        // Arming is part of the construction: without it nothing is marked,
+        // so a route that never asked its native API can never mark itself.
+        let mut unarmed = bridge.clone();
+        unarmed.native_window_recheck = false;
+        assert_eq!(
+            PendingNativeWindow::from_finalized(&unarmed),
+            None,
+            "an unarmed spawn must never mark the entry, however factless it is"
+        );
         // The re-probe against the still-unloaded server: no fact (engine
         // stays).
         assert_eq!(
@@ -9113,6 +9170,94 @@ mod probed_facts_wiring_tests {
         );
     }
 
+    /// Round-5 MAJOR pin: a route whose fact can materialize but can never
+    /// be adopted must not arm the reuse re-check. The roster lists only
+    /// `server-name` while the route is configured `my-model`, so `adopts`
+    /// is false and the spawn never runs the native fetch — but `/api/show`
+    /// resolves the loose name server-side and would serve `num_ctx` on
+    /// every re-probe. Arming here would drop and respawn the engine on
+    /// every send, forever, with the window never landing (the rebuild hits
+    /// the same `adopts=false`); the arming flag is what keeps the
+    /// reuse path on `Keep`.
+    #[tokio::test]
+    async fn pending_window_not_armed_when_fact_cannot_be_adopted() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"server-name"}]}"#.into(),
+            ),
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"server-name","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"parameters":"num_ctx 4096"}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        // The kind probe lives in finalize (unit boundary, see the module
+        // doc); the direct adoption call hand-sets the classified kind like
+        // every sibling test.
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert!(
+            !bridge.native_window_recheck,
+            "a route whose native fact can never be adopted must not arm the re-check"
+        );
+        // The trap itself: the native API serves a fact for the configured
+        // name on every re-probe — which is exactly why an armed marker
+        // would have looped rebuilds (adoption refuses the borrowed roster
+        // name on the rebuild too).
+        let pending = PendingNativeWindow {
+            model_name: "my-model".into(),
+            kind: LocalServerKind::Ollama,
+        };
+        assert_eq!(
+            EnginePool::reprobe_missing_native_window(&bridge, &pending).await,
+            Some(4096),
+            "sanity: the server resolves the loose name — arming this shape is the bug"
+        );
+    }
+
+    /// A user declaration min-clamps any adopted fact, so the native leg
+    /// cannot change a declared route: it must not even run, and nothing
+    /// arms (otherwise the route would pay a per-turn native GET plus one
+    /// rebuild whose outcome the declaration clamps right back).
+    #[tokio::test]
+    async fn pending_window_not_armed_for_declared_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"my-model"}]}"#.into()),
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            ("/api/show", 200, r#"{"parameters":"num_ctx 4096"}"#.into()),
+        ]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        model.context_window_tokens = Some(8192);
+        let mut bridge = wiring_bridge(model.clone());
+        bridge.probed_local_kind = Some(LocalServerKind::Ollama);
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert!(
+            !bridge.native_window_recheck,
+            "a declared route never arms the reuse re-check"
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "the declaration min-clamps every adopted fact — the native leg must not even run"
+        );
+        assert_eq!(mock.hits_for("/api/show"), 0);
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "no fact is adopted over the declaration's head"
+        );
+    }
+
     /// The reuse-path self-heal decision (`cached_entry_reuse_decision`,
     /// extracted verbatim from the `get_or_spawn_with_policy` glue —
     /// EnginePool itself needs an AppHandle, the same unit-test boundary as
@@ -9173,6 +9318,48 @@ mod probed_facts_wiring_tests {
             EnginePool::cached_entry_reuse_decision(Some(&pending), &loaded_bridge).await,
             CachedEntryReuse::RebuildForWindowFact,
             "the post-load fact must drop the entry for the adopting rebuild"
+        );
+    }
+
+    /// The reuse re-probe is locality-gated in its own right. Pinned without
+    /// touching the network via the v4-mapped loopback trick: the URL
+    /// classifies non-local while routing to the same mock, so deleting the
+    /// guard lets the fetch land on the mock (which serves a loaded fact →
+    /// `RebuildForWindowFact`) and turns both assertions red.
+    #[tokio::test]
+    async fn reprobe_refuses_non_local_base_url() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"my-model","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"parameters":"num_ctx 4096"}"#.into()),
+        ]);
+        let port = mock
+            .base_url
+            .rsplit(':')
+            .next()
+            .expect("mock base_url carries a port")
+            .to_string();
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = format!("http://[::ffff:127.0.0.1]:{port}");
+        let bridge = wiring_bridge(model);
+        let pending = PendingNativeWindow {
+            model_name: "my-model".into(),
+            kind: LocalServerKind::Ollama,
+        };
+        assert_eq!(
+            EnginePool::cached_entry_reuse_decision(Some(&pending), &bridge).await,
+            CachedEntryReuse::Keep,
+            "a non-local base_url must not be natively re-probed"
+        );
+        assert_eq!(
+            mock.hits_for("/api/ps"),
+            0,
+            "the locality guard must run before any request"
         );
     }
 

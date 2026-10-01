@@ -236,6 +236,15 @@ pub struct Pinvou3Bridge {
     /// thinking control uses: Ollama → think toggle, vLLM → effort levels;
     /// LM Studio / generic stay on the openai wire (no thinking control).
     pub probed_local_kind: Option<LocalServerKind>,
+    /// Whether the spawn's native-window adoption armed the engine-reuse
+    /// re-check (`EngineEntry::native_window_pending`): true exactly when
+    /// this route's own native fetch ran and served no fact. Written by
+    /// `EnginePool::adopt_probed_endpoint_facts`; a route whose fact can
+    /// never be adopted (borrowed roster name, not operator-owned) or a
+    /// declared route (its declaration min-clamps any adopted fact) never
+    /// arms — a served fact the rebuild refuses to adopt must not respawn
+    /// the engine on every send.
+    pub native_window_recheck: bool,
     /// Execution-root (engine cwd / shell directory) resolver for native code
     /// sessions; None = no code-session project binding, every session uses
     /// its session-private directory. The ledger root (attachments/audits/
@@ -277,6 +286,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("probed_context_tokens", &self.probed_context_tokens)
             .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
+            .field("native_window_recheck", &self.native_window_recheck)
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
@@ -422,6 +432,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
+            native_window_recheck: false,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
@@ -3357,6 +3368,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
+            native_window_recheck: false,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
