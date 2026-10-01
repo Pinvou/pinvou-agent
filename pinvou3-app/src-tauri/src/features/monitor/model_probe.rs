@@ -405,11 +405,23 @@ fn parse_models_response(
     // only.
     let configured = configured.map(str::trim).filter(|name| !name.is_empty());
     let matched = configured.and_then(|name| {
-        entries.iter().find(|entry| entry.id == name).or_else(|| {
-            entries
-                .iter()
-                .find(|entry| entry.id.eq_ignore_ascii_case(name))
-        })
+        entries
+            .iter()
+            .find(|entry| entry.id == name)
+            .or_else(|| {
+                entries
+                    .iter()
+                    .find(|entry| entry.id.eq_ignore_ascii_case(name))
+            })
+            // Ollama lists the canonical `name:latest`; a hand-typed
+            // tagless configured name must still find its own entry (the
+            // same fold as `ollama_ps_context_lookup`) — without it served
+            // degrades to the first entry and the attribution gate below
+            // refuses the native follow-up in every roster shape.
+            .or_else(|| {
+                let canonical = crate::core::model_endpoint::ollama_canonical_name(name);
+                entries.iter().find(|entry| entry.id == canonical)
+            })
     });
     let entry = matched.or_else(|| entries.first())?;
     let window = if matched.is_some() || configured.is_none() {
@@ -436,20 +448,25 @@ fn parse_models_response(
 /// case-insensitively: a case-mismatched route is already a Mismatch
 /// display state, and there the display may adopt a window the engine
 /// route keeps its fallback for — accepted, since loosening the engine
-/// gate would change pre-existing vLLM adoption semantics. One further
-/// asymmetry: on a multi-entry list whose configured name matches only
-/// case-insensitively this gate passes while the engine's gate (and the
-/// keyed native maps, which match names exactly modulo Ollama's
-/// `name:latest` canonicalization in [`ollama_ps_context_lookup`]) never
-/// adopt that shape, so the follow-up recovers at most the
-/// server-side-resolved `/api/show` declaration — and the engine route's
-/// exact gate never adopts in that shape at all.
+/// gate would change pre-existing vLLM adoption semantics. Both gates
+/// fold Ollama's `name:latest` canonicalization ([`ollama_canonical_name`]
+/// — a hand-typed tagless configured name must resolve to its own entry
+/// on both sides), so the remaining asymmetry is the ASCII-case fold: on a
+/// list whose configured name matches only case-insensitively this gate
+/// passes while the engine's exact-plus-canonical gate never adopts that
+/// shape, and the keyed native maps (queried by the server-canonical
+/// served id) can hand back a ps fact the engine route does not adopt.
 fn native_display_window_adoptable(configured: Option<&str>, served: Option<&str>) -> bool {
     let Some(served) = served else {
         return false;
     };
     match configured.map(str::trim).filter(|name| !name.is_empty()) {
-        Some(configured) => served.eq_ignore_ascii_case(configured),
+        Some(configured) => {
+            served.eq_ignore_ascii_case(configured)
+                || served.eq_ignore_ascii_case(
+                    &crate::core::model_endpoint::ollama_canonical_name(configured),
+                )
+        }
         None => true,
     }
 }
@@ -517,8 +534,9 @@ async fn local_native_display_window(
         }
         // Ollama, or never classified (monitor-only target): try the
         // Ollama-shaped ps probe. The lookup is the same tag-tolerant one
-        // the engine route uses, so display and engine budget resolve a
-        // tagless configured name to the same canonical `/api/ps` entry;
+        // the engine route uses, and the attribution gate above folds the
+        // same canonical form, so a tagless configured name reaches its
+        // own canonical `/api/ps` entry exactly as the engine budget does;
         // unlike `fetch_ollama_model_context`, a non-Ollama-shaped ps
         // response ends the lookup here (a never-classified target must not
         // pay the show fallback POST).
@@ -1250,6 +1268,63 @@ mod tests {
             0,
             "the LmStudio arm must not fall through to the Ollama ps probe"
         );
+    }
+
+    /// A hand-typed tagless configured name against a single-model Ollama
+    /// roster: served is the canonical `llama3:latest`, so the attribution
+    /// gate must fold the same canonical form the engine's adoption gate
+    /// does — without the fold the display falls back to preset inference
+    /// while the engine adopts the ps truth (display/engine divergence in
+    /// exactly the motivating hand-typed-name shape).
+    #[tokio::test]
+    async fn local_native_display_window_follows_tagless_single_entry() {
+        use crate::core::model_endpoint::models_mock;
+        let mock = models_mock::spawn(&[
+            (
+                "/api/ps",
+                200,
+                r#"{"models":[{"name":"llama3:latest","context_length":131072}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"model_info":{}}"#.into()),
+        ]);
+        assert_eq!(
+            local_native_display_window(
+                &mock.base_url,
+                None,
+                Some("llama3"),
+                Some("llama3:latest"),
+                Some(1)
+            )
+            .await,
+            Some(131_072),
+            "the tagless configured name must follow its own canonical ps entry"
+        );
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "the ps fact wins; the show fallback stays unqueried"
+        );
+    }
+
+    /// The same fold at the listing-match level: a tagless configured name
+    /// must find its canonical entry wherever it sits in the roster —
+    /// served degrading to the first (unrelated) entry used to refuse the
+    /// whole follow-up even with a tag-tolerant attribution gate.
+    #[test]
+    fn parse_models_response_folds_ollama_tagless_names() {
+        let (served, window) = parse_models_response(
+            serde_json::json!({
+                "data": [{"id": "deepseek-r1:14b"}, {"id": "llama3:latest"}]
+            }),
+            Some("llama3"),
+        )
+        .expect("a well-formed listing parses");
+        assert_eq!(
+            served.as_deref(),
+            Some("llama3:latest"),
+            "the tagless configured name must match its canonical entry, not the first entry"
+        );
+        assert_eq!(window, None, "Ollama listings carry no window fact");
     }
 
     /// The snapshot wiring end to end: a local (LocalVllm-preset) target
