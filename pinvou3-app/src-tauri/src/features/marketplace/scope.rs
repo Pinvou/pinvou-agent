@@ -852,7 +852,7 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// Round-33 MAJOR 2 (review #455): the ONE consent-sync failure marker the
 /// frontend keys its actionable-guidance template on (ToolStoreView's
 /// consentFailure matcher; pinned per emitter by
-/// `consent_failure_message_keeps_the_frontend_marker` in ima.rs and
+/// `consent_failure_marker_matches_the_frontend_contract` in ima.rs and
 /// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
 /// skill_gate.rs). Every connector shares the exact string so a backend
 /// rewording cannot silently degrade the localized guidance to generic copy.

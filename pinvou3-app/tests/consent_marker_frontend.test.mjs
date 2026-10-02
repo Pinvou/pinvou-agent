@@ -1,7 +1,7 @@
 // Round-33 MAJOR 2 (review #455): the frontend's consent-failure matcher must
 // key on the exact shared marker string the Rust emitters pin
 // (scope::CONSENT_SYNC_FAILURE_MARKER — asserted on the Rust side by
-// consent_failure_message_keeps_the_frontend_marker in ima.rs and
+// consent_failure_marker_matches_the_frontend_contract in ima.rs and
 // skill_gate_consent_failure_message_keeps_the_frontend_marker in
 // skill_gate.rs). A backend or frontend rewording must move both sides in the
 // same commit; this source-text assertion is the frontend leg of that pin.
@@ -37,23 +37,30 @@ assert.ok(
   'ToolStoreView must key the consent-failure surfacing on the shared const',
 );
 
-// Round-35 minor 1 (review #455): the two Rust production templates must also
+// Round-35 minor 1 (review #455): the Rust production templates must also
 // carry the marker — a pin that only asserts the constant cannot catch a
-// deleted interpolation at an emit site.
+// deleted interpolation at an emit site. Round-16: the ima-local wrap site is
+// production-dead since deny-first (a refused gate aborts before anything
+// lands, so ima connect surfaces the raw refusal — see the comment on
+// consent_failure_marker_matches_the_frontend_contract in ima.rs), so the
+// ima leg pins the shared-constant reference only; skill_gate.rs keeps a
+// real production template and still pins its emit site.
 const rustDir = join(dirname(fileURLToPath(import.meta.url)), '../src-tauri/src/features');
 for (const [file, emitSite] of [
   ['connectors/skill_gate.rs', 'but {}: new sessions will enable it by default'],
-  ['connectors/ima.rs', "ima skills installed, but {IMA_CONSENT_SYNC_FAILURE_MARKER}:"],
+  ['connectors/ima.rs', null],
 ]) {
   const src = readFileSync(join(rustDir, file), 'utf8');
   assert.ok(
     src.includes('scope::CONSENT_SYNC_FAILURE_MARKER'),
-    `${file} must interpolate the shared consent marker constant in its production template`,
+    `${file} must reference the shared consent marker constant`,
   );
-  assert.ok(
-    src.includes(emitSite),
-    `${file} production emit site drifted — re-check the marker interpolation`,
-  );
+  if (emitSite) {
+    assert.ok(
+      src.includes(emitSite),
+      `${file} production emit site drifted — re-check the marker interpolation`,
+    );
+  }
 }
 
 console.log('consent_marker_frontend: ok');
