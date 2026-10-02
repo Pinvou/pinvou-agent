@@ -5,7 +5,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release-packages.yml"
 RUST_CACHE_ACTION = "uses: Swatinem/rust-cache@v2"
-MAIN_ONLY_SAVE = "save-if: ${{ github.ref == 'refs/heads/main' }}"
+NO_SAVE = "save-if: false"
 
 
 def _without_yaml_comments(block):
@@ -17,11 +17,14 @@ def _without_yaml_comments(block):
 
 
 class ReleaseCachePolicyTests(unittest.TestCase):
-    def test_release_rust_caches_are_read_only_outside_main(self):
-        # Release caches are 1-2 GB each. A manual release run on a branch
-        # may restore main's caches but must never write its own: branch
-        # copies would fill the repository's 10 GB cache quota and evict
-        # the warm caches the PR gates depend on.
+    def test_release_rust_caches_never_save(self):
+        # Release caches are 1-2 GB each. While they were main-save (the
+        # pre-2026-10 policy), every VERSION push landed 4-6 GB of cache at
+        # once and the 10 GB LRU flushed the PR-gate caches (windows/macos/
+        # rust-test/lint) in the same stroke — the eviction dynamic that left
+        # mac-build permanently cold. Releases are rare and have passed cold
+        # throughout, so they are now strictly read-only: restore if an entry
+        # exists, never write, keep the gate caches resident.
         workflow = _without_yaml_comments(
             RELEASE_WORKFLOW.read_text(encoding="utf-8")
         )
@@ -39,9 +42,14 @@ class ReleaseCachePolicyTests(unittest.TestCase):
         for step in cache_steps:
             with self.subTest(step=step.splitlines()[0].strip()):
                 self.assertIn(
-                    MAIN_ONLY_SAVE,
+                    NO_SAVE,
                     step,
-                    "release runs outside main may only restore caches, never save them",
+                    "release runs must never write caches (they burst-evict the PR-gate caches)",
+                )
+                self.assertNotIn(
+                    "save-if: ${{",
+                    step,
+                    "a release cache must not condition a save on any ref (save-if: false is the policy)",
                 )
 
 
