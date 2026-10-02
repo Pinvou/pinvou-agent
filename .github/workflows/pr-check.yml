@@ -1597,6 +1597,20 @@ jobs:
             'features::voice::platform::windows::tests::closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing' \
             'features::memory::tests::topic_migration_' \
             'connector_introspection_guard_matches_complete_names_only' \
+            'features::marketplace::scope::tests::' \
+            'before_landing' \
+            'before_anything_lands' \
+            'preserves_consent_state' \
+            'connector_gate_registers_only_when_shown' \
+            'command_bodies_register_deny_first' \
+            'vacuous_uninstall_keeps_fresh_consent_entries' \
+            'vacuous_skill_uninstall_keeps_fresh_consent_entries' \
+            'standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir' \
+            'restore_of_package_missing_entry_registers_no_deny_entry' \
+            'standalone_preset_install_never_folds_package_ids_on_save_or_remove' \
+            'owner_claimed' \
+            'import_rejects_case_variant_connector_ids' \
+            'strips_under_import_lock' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
