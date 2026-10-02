@@ -113,7 +113,7 @@ pub(crate) fn organize_lock_path() -> PathBuf {
 }
 
 /// Marker message carried on an `io::ErrorKind::WouldBlock` error from
-/// [`try_lock_organize_pass`], so the caller can distinguish "another pass
+/// `try_lock_organize_pass`, so the caller can distinguish "another pass
 /// is running" from real lock failures.
 /// Cross-surface busy marker: carried in the anyhow message
 /// `organize_memory_with_llm` fails with while `.organize.lock` is held, so
