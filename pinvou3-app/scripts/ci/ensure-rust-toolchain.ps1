@@ -12,6 +12,7 @@ param(
   # only mean a live, still-useful repair on the other side; a fixed 600s
   # deadline made a second build on the same checkout fail spuriously while
   # the holder was legitimately mid-repair.
+  [ValidateRange(1, 7200)]
   [int]$LockTimeoutSeconds = (
     $RepairTimeoutSeconds + $InstallAttemptTimeoutSeconds + 300
   )
@@ -64,7 +65,7 @@ if ($CheckOnly) {
     '(?m)^\s*channel\s*=\s*"([^"]+)"'
   )
   if (-not $accountChannelMatch.Success) {
-    throw "[rustup] Unable to read the pinned Rust channel from: $accountToolchainFile"
+    throw "[rustup] Unable to read the Rust channel from: $accountToolchainFile"
   }
   $accountToolchain = $accountChannelMatch.Groups[1].Value
   $accountRustupCommand = Get-Command rustup -ErrorAction SilentlyContinue
@@ -77,7 +78,9 @@ if ($CheckOnly) {
   $previousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    foreach ($command in @("cargo", "rustc", "clippy-driver", "rustfmt")) {
+    foreach ($command in @(
+      "cargo", "rustc", "clippy-driver", "rustfmt", "cargo-clippy", "cargo-fmt"
+    )) {
       & $accountRustupPath run $accountToolchain $command -V 2>&1 |
         ForEach-Object { Write-Host "[rustup] $_" }
       if ($LASTEXITCODE -ne 0) {
@@ -181,7 +184,7 @@ try {
     '(?m)^\s*channel\s*=\s*"([^"]+)"'
   )
   if (-not $channelMatch.Success) {
-    throw "[rustup] Unable to read the pinned Rust channel from: $toolchainFile"
+    throw "[rustup] Unable to read the Rust channel from: $toolchainFile"
   }
   $toolchain = $channelMatch.Groups[1].Value
 
@@ -209,10 +212,12 @@ try {
 
   # Mirror-first, matching the #619 runtime-download convention: this engine
   # exists for machines where the official source stalls, so the CN mirrors
-  # come first and the official source is the last resort. rsproxy serves the
-  # pinned dist manifests from its bare domain; USTC's rust-static carries
-  # both the dist manifests and the rustup update root. TUNA only mirrors the
-  # rolling channels and 404s on pinned manifests, so it is useless here.
+  # come first and the official source is the last resort. rsproxy and USTC
+  # each serve both the dist manifests and the rustup update root for rolling
+  # and version-pinned channels alike (verified live). TUNA is not in the
+  # chain: it 404s version-pinned manifests, so it only works while the
+  # configured channel happens to be rolling, and rsproxy + USTC already keep
+  # the chain channel-agnostic.
   $fallbackSources = @(
     [pscustomobject]@{
       Name = "rsproxy mirror"
@@ -322,10 +327,16 @@ try {
           return 124
         }
 
-        $nativeOutput = @(
-          $stdoutTask.GetAwaiter().GetResult(),
-          $stderrTask.GetAwaiter().GetResult()
-        ) -join "`n"
+        # Bounded drain on the success path too: a faulted read task must not
+        # throw past the exit-code classification, and an inherited pipe
+        # handle must not hang a completed process's output read.
+        $null = $stdoutTask.Wait(10000)
+        $null = $stderrTask.Wait(10000)
+        $stdoutText = ""
+        if ($stdoutTask.IsCompleted) { $stdoutText = $stdoutTask.Result }
+        $stderrText = ""
+        if ($stderrTask.IsCompleted) { $stderrText = $stderrTask.Result }
+        $nativeOutput = @($stdoutText, $stderrText) -join "`n"
         $nativeOutput -split '[\r\n]+' | ForEach-Object {
           if (-not [string]::IsNullOrWhiteSpace($_)) {
             Write-Host "[rustup] $_"
@@ -386,7 +397,12 @@ try {
     return $managedToolchainDirs.Count -gt 0
   }
 
-  $requiredCommands = @("cargo", "rustc", "clippy-driver", "rustfmt")
+  # cargo clippy / cargo fmt shell out to the cargo-clippy/cargo-fmt shims, so
+  # a toolchain missing them passes the driver probes and still breaks the
+  # lint gates later.
+  $requiredCommands = @(
+    "cargo", "rustc", "clippy-driver", "rustfmt", "cargo-clippy", "cargo-fmt"
+  )
   $invalidEntries = @($requiredCommands | Where-Object {
     -not (Test-RustComponent -Command $_)
   })
@@ -466,9 +482,12 @@ try {
         # reset. The build account's shared toolchain is never selected.
         if (Test-ManagedToolchainPresent) {
           Write-Host "[rustup] Resetting the incomplete isolated toolchain before retry."
+          # Bounded like the install: a reset stalled by AV scanning or a
+          # transiently locked binary must fail the attempt instead of
+          # outlasting the budget and the waiters' derived lock deadline.
           $resetExitCode = Invoke-Rustup -Arguments @(
             "toolchain", "uninstall", $toolchain
-          )
+          ) -TimeoutSeconds $InstallAttemptTimeoutSeconds
           if ($resetExitCode -ne 0) {
             throw (
               "[rustup] Failed to reset the isolated Rust toolchain: $toolchain. " +

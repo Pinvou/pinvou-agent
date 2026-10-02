@@ -12,7 +12,7 @@ if ([string]::IsNullOrWhiteSpace($Toolchain)) {
     '(?m)^\s*channel\s*=\s*"([^"]+)"'
   )
   if (-not $channelMatch.Success) {
-    throw "Unable to read the pinned Rust channel from: $toolchainFile"
+    throw "Unable to read the Rust channel from: $toolchainFile"
   }
   $Toolchain = $channelMatch.Groups[1].Value
 }
@@ -48,9 +48,10 @@ if ($LASTEXITCODE -ne 0) {
 try {
   # The repair engine's refusal guards are the core safety contract: they must
   # reject the shared account rustup, a filesystem root, a non-empty unmarked
-  # directory and a missing RUSTUP_HOME before touching anything. Exercise
-  # them for real here; every case below throws before rustup runs, so at
-  # most an empty lock file is created inside the throwaway test home.
+  # directory, a missing RUSTUP_HOME and a run without the managed flag before
+  # touching anything. Exercise them for real here; every case below throws
+  # before rustup runs, so at most an empty lock file is created inside the
+  # throwaway test home.
   $previousRustupHome = $env:RUSTUP_HOME
   $previousCargoHome = $env:CARGO_HOME
   $previousManagedFlag = $env:PINVOU3_MANAGED_RUSTUP
@@ -66,22 +67,32 @@ try {
     [pscustomobject]@{
       Name = "the build account's shared rustup home"
       Home = Join-Path $env:USERPROFILE ".rustup"
+      Managed = "1"
       Message = "Refusing to modify the build account's shared RUSTUP_HOME"
     },
     [pscustomobject]@{
       Name = "a filesystem root"
       Home = [IO.Path]::GetPathRoot(([IO.Path]::GetFullPath($temporaryRoot)))
+      Managed = "1"
       Message = "Refusing to use a filesystem root as RUSTUP_HOME"
     },
     [pscustomobject]@{
       Name = "a non-empty unmarked directory"
       Home = $unmarkedHome
+      Managed = "1"
       Message = "Refusing to adopt a non-empty unmarked RUSTUP_HOME"
     },
     [pscustomobject]@{
       Name = "a missing RUSTUP_HOME"
       Home = $null
+      Managed = "1"
       Message = "Refusing automatic repair without an isolated RUSTUP_HOME"
+    },
+    [pscustomobject]@{
+      Name = "a run without the managed flag"
+      Home = $temporaryRustup
+      Managed = $null
+      Message = "Refusing automatic repair without PINVOU3_MANAGED_RUSTUP=1"
     }
   )
   foreach ($guard in $guardRejections) {
@@ -89,6 +100,11 @@ try {
       Remove-Item Env:RUSTUP_HOME -ErrorAction SilentlyContinue
     } else {
       $env:RUSTUP_HOME = $guard.Home
+    }
+    if ($null -eq $guard.Managed) {
+      Remove-Item Env:PINVOU3_MANAGED_RUSTUP -ErrorAction SilentlyContinue
+    } else {
+      $env:PINVOU3_MANAGED_RUSTUP = $guard.Managed
     }
     $rejectionMessage = $null
     try {
@@ -104,6 +120,7 @@ try {
     }
     Write-Host "[test] Guard rejected $($guard.Name): OK"
   }
+  $env:PINVOU3_MANAGED_RUSTUP = "1"
 
   New-Item -ItemType Directory -Path $temporaryToolchains, $temporaryCargo -Force |
     Out-Null
