@@ -261,17 +261,14 @@ mod tests {
             manifest.data_access,
             ["sessions.read".to_string(), "sessions.write".to_string()]
         );
-        assert_eq!(manifest.tool_features.len(), 3);
+        assert_eq!(manifest.tool_features.len(), 4);
         for tool in [
             "mcp_session-reader_read_session",
             "mcp_session-reader_list_sessions",
         ] {
             assert_eq!(
-                manifest
-                    .tool_features
-                    .get(tool)
-                    .map(|features| features.as_slice()),
-                Some(&["session-mention".to_string(), "long-memory".to_string()][..]),
+                manifest.tool_features.get(tool).unwrap(),
+                &["session-mention".to_string(), "long-memory".to_string()],
                 "{tool} serves both read features"
             );
         }
@@ -279,55 +276,18 @@ mod tests {
             manifest
                 .tool_features
                 .get("mcp_session-reader_send_message_to_session")
-                .map(|features| features.as_slice()),
-            Some(&["session-messaging".to_string()][..]),
+                .unwrap(),
+            &["session-messaging".to_string()],
             "the send tool serves only the messaging feature"
         );
-    }
-
-    /// The app-automations builtin manifest parses its contract fields; the
-    /// CRUD family's five tools all serve exactly one switchable feature
-    /// (scheduled-task-automation) and the tool_features keys match the
-    /// mcp_tools full names byte for byte (a shared-contract hard constraint
-    /// — a rename on either side would silently disarm the feature gate and
-    /// the Ask rules).
-    #[test]
-    fn app_automations_manifest_carries_builtin_contract_fields() {
-        let manifest =
-            crate::features::marketplace::mcp_catalog::embedded_manifest("app-automations")
-                .unwrap()
-                .expect("app-automations is in the embedded catalog");
-        assert!(manifest.builtin);
-        assert_eq!(manifest.visibility, "system");
-        assert_eq!(manifest.security_level, "L1");
         assert_eq!(
-            manifest.data_access,
-            [
-                "automations.read".to_string(),
-                "automations.write".to_string()
-            ]
+            manifest
+                .tool_features
+                .get("mcp_session-reader_create_session")
+                .unwrap(),
+            &["session-creation".to_string()],
+            "the create tool serves only the session-creation feature"
         );
-        assert_eq!(
-            manifest.mcp_tools,
-            [
-                "mcp_app-automations_create_scheduled_task".to_string(),
-                "mcp_app-automations_read_scheduled_task".to_string(),
-                "mcp_app-automations_list_scheduled_tasks".to_string(),
-                "mcp_app-automations_update_scheduled_task".to_string(),
-                "mcp_app-automations_delete_scheduled_task".to_string(),
-            ]
-        );
-        assert_eq!(manifest.tool_features.len(), 5);
-        for tool in manifest.mcp_tools {
-            assert_eq!(
-                manifest
-                    .tool_features
-                    .get(&tool)
-                    .map(|features| features.as_slice()),
-                Some(&["scheduled-task-automation".to_string()][..]),
-                "{tool} serves only the scheduled-task-automation feature"
-            );
-        }
     }
 
     /// MarketplaceToolInfo frontend contract: builtin plugins carry

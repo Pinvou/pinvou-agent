@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -15,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::memory::MemoryOrganizeReport;
-use crate::features::scheduled::tasks::ScheduledTaskKindLookup;
+use crate::features::scheduled::tasks::{SCHEDULED_MESSAGE_MAX_CHARS, ScheduledTaskKindLookup};
+use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -52,6 +54,17 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
     /// not involved. See [`ScheduledChatExecutor::execute_memory_organize`] for
     /// cancellation semantics.
     async fn organize_memory(&self, cancel: CancellationToken) -> Result<MemoryOrganizeReport>;
+
+    /// Delivers one scheduled message into the target session (the run body of a
+    /// `session_message` kind task): steer into the current turn when the target is
+    /// mid-turn, otherwise dispatch a new turn — the same delivery semantics as
+    /// features::messaging. No session is created for the run itself.
+    async fn deliver_session_message(
+        &self,
+        target_session: &str,
+        message: String,
+        cancel: CancellationToken,
+    ) -> Result<()>;
 }
 
 /// Production implementation backed by the existing session store and engine
@@ -150,6 +163,85 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
         }
         Ok(report)
     }
+
+    /// Steer-first delivery with the messaging channel's semantics and bounds:
+    /// a steer error is the normal idle signal (no live engine / no turn
+    /// accepting) and falls back to a new-turn dispatch; both paths are
+    /// bounded so a wedged engine cannot hang the scheduled run. The isolated
+    /// prefixes are re-checked here (the kind sidecar is app-owned state, not
+    /// trusted): waking an unattended session on a schedule is the recursion
+    /// direction the creation path already rejects.
+    async fn deliver_session_message(
+        &self,
+        target_session: &str,
+        message: String,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        ensure_deliverable_target(&self.store, target_session)?;
+        tokio::time::timeout(SCHEDULED_MESSAGE_DELIVERY_TIMEOUT, async {
+            match self.pool.steer(target_session, message.clone()).await {
+                Ok(_) => Ok(()),
+                Err(steer_error) => {
+                    // The dispatch path re-checks deletion/lifecycle gates
+                    // itself (send_reserved_user_message loads the store under
+                    // the turn lock); a genuinely gone session fails the run
+                    // loudly instead of being retried forever.
+                    self.pool
+                        .deliver_messaging_turn(target_session, message)
+                        .await
+                        .map_err(|dispatch_error| {
+                            anyhow::anyhow!(dispatch_error)
+                                .context(format!("dispatch after steer failure ({steer_error:#})"))
+                        })
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "delivery timed out after {SCHEDULED_MESSAGE_DELIVERY_TIMEOUT:?} (engine wedged?)"
+            ))
+        })
+    }
+}
+
+/// Upper bound for one scheduled-message delivery attempt (same reasoning as
+/// features::messaging's delivery timeout: a wedged engine must not hang the
+/// scheduled run; the run is marked failed and the next fire retries).
+const SCHEDULED_MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run-time re-check for a scheduled-message target — the delivery-side twin
+/// of the messaging channel's `check_participant_id` gate (charset + length
+/// + isolation, case-insensitive on the prefixes): the kind sidecar is
+/// app-owned state, not trusted, so a hand-tampered target must fail here,
+/// before any engine is woken. Waking an unattended session on a schedule is
+/// the recursion direction the creation path already rejects. Split into a
+/// free function so tests can drive it with a real store without an
+/// EnginePool.
+pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &str) -> Result<()> {
+    const MAX_TARGET_SESSION_LEN: usize = 128;
+    if target_session.is_empty()
+        || target_session.len() > MAX_TARGET_SESSION_LEN
+        || !target_session
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!("invalid target session id");
+    }
+    if store.scheduled_profile(target_session).is_some() {
+        anyhow::bail!(
+            "target {target_session} is a scheduled-run session and cannot receive scheduled messages"
+        );
+    }
+    if is_sched_session_id(target_session)
+        || is_aux_session_id(target_session)
+        || target_session.to_ascii_lowercase().starts_with("eval_")
+    {
+        anyhow::bail!(
+            "target session {target_session} is isolated and cannot receive scheduled messages"
+        );
+    }
+    Ok(())
 }
 
 /// Host executor installed into CodeWhale's `TaskManager` for scheduled
@@ -194,6 +286,68 @@ impl ScheduledChatExecutor {
         match self.kind_resolver.as_ref() {
             Some(resolver) => resolver(automation_id),
             None => ScheduledTaskKindLookup::Chat,
+        }
+    }
+
+    /// One run of the `session_message` kind: no conversation is created for
+    /// the run itself — the stored prompt is delivered into the target session
+    /// (steer into its current turn, or a new turn when idle; the messaging
+    /// channel's delivery semantics). The run record stays thread-less like
+    /// memory organize: the target session is the thing to open, and the
+    /// result text names it. Cancellation mirrors
+    /// [`Self::execute_memory_organize`]: the select drops the in-flight
+    /// future so a mid-delivery cancel is recorded as canceled instead of
+    /// waiting out the delivery bound.
+    async fn execute_session_message(
+        &self,
+        automation_id: &str,
+        target_session: &str,
+        message: &str,
+        cancel: CancellationToken,
+    ) -> TaskExecutionResult {
+        let _ = automation_id;
+        let message = message.trim();
+        if message.is_empty() {
+            return failed("scheduled message body is empty");
+        }
+        // Belt re-check of the create/update cap: a body that slipped past
+        // domain validation (hand-edited sidecar, older store) must not be
+        // silently delivered oversized — same bound as the messaging channel.
+        if message.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS {
+            return failed(&format!(
+                "scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+            ));
+        }
+        let delivered = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            delivered = self.runtime.deliver_session_message(
+                target_session,
+                message.to_string(),
+                cancel.clone(),
+            ) => Some(delivered),
+        };
+        match delivered {
+            None => canceled(),
+            Some(Ok(())) => TaskExecutionResult {
+                status: TaskStatus::Completed,
+                result_text: Some(format!(
+                    "delivered the scheduled message to session {target_session}"
+                )),
+                error: None,
+                terminal_reason: TaskTerminalReason::Completed,
+            },
+            Some(Err(error)) => TaskExecutionResult {
+                status: TaskStatus::Failed,
+                result_text: None,
+                // Same redaction discipline as the memory-organize arm: app
+                // error chains can carry store paths and gate details.
+                error: Some(format!(
+                    "scheduled message delivery: {}",
+                    crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+                )),
+                terminal_reason: TaskTerminalReason::Failed,
+            },
         }
     }
 
@@ -287,6 +441,11 @@ impl TaskExecutor for ScheduledChatExecutor {
         match self.kind_for(&automation_id) {
             ScheduledTaskKindLookup::MemoryOrganize => {
                 return self.execute_memory_organize(cancel).await;
+            }
+            ScheduledTaskKindLookup::SessionMessage { target_session } => {
+                return self
+                    .execute_session_message(&automation_id, &target_session, task.prompt(), cancel)
+                    .await;
             }
             ScheduledTaskKindLookup::Unsupported(raw) => {
                 return TaskExecutionResult {
@@ -477,6 +636,8 @@ mod tests {
         organize_calls: AtomicUsize,
         organize_error: Mutex<Option<String>>,
         organize_hang_after_cancel: AtomicBool,
+        deliveries: Mutex<Vec<(String, String)>>,
+        delivery_error: Mutex<Option<String>>,
         started: Notify,
     }
 
@@ -513,6 +674,8 @@ mod tests {
                 organize_calls: AtomicUsize::new(0),
                 organize_error: Mutex::new(None),
                 organize_hang_after_cancel: AtomicBool::new(false),
+                deliveries: Mutex::new(Vec::new()),
+                delivery_error: Mutex::new(None),
                 started: Notify::new(),
             }
         }
@@ -532,6 +695,14 @@ mod tests {
 
         fn organize_call_count(&self) -> usize {
             self.organize_calls.load(Ordering::SeqCst)
+        }
+
+        fn set_delivery_error(&self, error: Option<String>) {
+            *self.delivery_error.lock().unwrap() = error;
+        }
+
+        fn deliveries(&self) -> Vec<(String, String)> {
+            self.deliveries.lock().unwrap().clone()
         }
 
         fn profiles(&self) -> Vec<(String, ScheduledRunProfile)> {
@@ -570,6 +741,22 @@ mod tests {
             let session_id = format!("sched-fake-{number}");
             profiles.push((session_id.clone(), profile));
             Ok(session_id)
+        }
+
+        async fn deliver_session_message(
+            &self,
+            target_session: &str,
+            message: String,
+            _cancel: CancellationToken,
+        ) -> Result<()> {
+            self.deliveries
+                .lock()
+                .unwrap()
+                .push((target_session.to_string(), message));
+            match self.delivery_error.lock().unwrap().clone() {
+                Some(error) => anyhow::bail!("{error}"),
+                None => Ok(()),
+            }
         }
 
         async fn run_turn(
@@ -866,6 +1053,79 @@ mod tests {
             }]
         );
         manager.shutdown();
+        Ok(())
+    }
+
+    /// A `session_message` run delivers the stored prompt into the target
+    /// session and completes WITHOUT creating a run session: no profile, no
+    /// run_turn call, and a thread-less run record (the delivery result names
+    /// the target).
+    #[tokio::test]
+    async fn session_message_run_delivers_without_creating_a_session() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                ScheduledTaskKindLookup::SessionMessage {
+                    target_session: "target001".to_string(),
+                }
+            })),
+        );
+        let (root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("每天早上问一下进展")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Completed);
+        assert_eq!(
+            finished.thread_id, None,
+            "a delivery run owns no conversation"
+        );
+        assert_eq!(
+            runtime.deliveries(),
+            vec![("target001".to_string(), "每天早上问一下进展".to_string())]
+        );
+        assert!(
+            runtime.profiles().is_empty() && runtime.calls().is_empty(),
+            "no run session may be created"
+        );
+        manager.shutdown();
+        drop(root);
+        Ok(())
+    }
+
+    /// A delivery failure (wedge / gone target) fails the run with the
+    /// sanitized reason instead of completing silently.
+    #[tokio::test]
+    async fn session_message_delivery_failure_fails_the_run() -> Result<()> {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_delivery_error(Some("delivery timed out (engine wedged?)".to_string()));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                ScheduledTaskKindLookup::SessionMessage {
+                    target_session: "target001".to_string(),
+                }
+            })),
+        );
+        let (root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("问一下")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        assert!(
+            finished
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("scheduled message delivery")),
+            "the failure names the delivery stage: {:?}",
+            finished.error
+        );
+        manager.shutdown();
+        drop(root);
         Ok(())
     }
 
@@ -1254,6 +1514,39 @@ mod tests {
             "cancel must not wait for the in-flight organize call"
         );
         manager.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_target_gate_rejects_isolated_and_hostile_ids() -> Result<()> {
+        let root = TestRoot::new()?;
+        let store = SessionStore::boot_at_test_dir(&root.0)?;
+        // A plain session id passes the gate (no profile registered).
+        assert!(ensure_deliverable_target(&store, "tgt0001").is_ok());
+        // Isolated prefixes — case variants included — are rejected before
+        // any engine is woken (the recursion direction; same discipline as
+        // the messaging channel's check_participant_id).
+        for hostile in [
+            "sched-run1",
+            "SCHED-run1",
+            "aux-side1",
+            "AUX-side1",
+            "eval_b1",
+            "EVAL_b1",
+        ] {
+            assert!(
+                ensure_deliverable_target(&store, hostile).is_err(),
+                "{hostile} must be rejected"
+            );
+        }
+        // Hostile charset/padding poisons at the gate instead of failing
+        // somewhere inside the delivery path.
+        for hostile in ["", "  ", "../escape", "with space"] {
+            assert!(
+                ensure_deliverable_target(&store, hostile).is_err(),
+                "{hostile:?} must be rejected"
+            );
+        }
         Ok(())
     }
 }

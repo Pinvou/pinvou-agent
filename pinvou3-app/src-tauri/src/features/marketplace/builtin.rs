@@ -426,10 +426,8 @@ mod tests {
 
     /// Feature registry: session-reader's tool_features aggregate into
     /// session-mention / long-memory (the two read tools) and
-    /// session-messaging (the send tool); app-automations' five tools
-    /// aggregate into scheduled-task-automation — the registry is the union
-    /// over all builtin manifests, so the new family must appear alongside
-    /// the session-reader features without disturbing them.
+    /// session-messaging (the send tool) with correct plugin and tool
+    /// ownership; everything is enabled by default.
     #[test]
     fn registry_aggregates_session_reader_features() {
         with_temp_home(|| {
@@ -440,20 +438,19 @@ mod tests {
                 [
                     "long-memory",
                     "scheduled-task-automation",
+                    "session-creation",
                     "session-mention",
-                    "session-messaging"
+                    "session-messaging",
                 ],
                 "sorted output"
             );
             for feature in &registry {
-                if feature.id != "scheduled-task-automation" {
-                    assert_eq!(
-                        feature.plugins,
-                        ["session-reader".to_string()],
-                        "{} is owned by session-reader",
-                        feature.id
-                    );
-                }
+                let expected_plugins = if feature.id == "scheduled-task-automation" {
+                    &["app-automations".to_string()][..]
+                } else {
+                    &["session-reader".to_string()][..]
+                };
+                assert_eq!(feature.plugins, expected_plugins);
                 assert!(feature.enabled, "default (no state) is all enabled");
             }
             let read_tools = [
@@ -472,23 +469,29 @@ mod tests {
                 messaging.tools,
                 ["mcp_session-reader_send_message_to_session".to_string()]
             );
-            // The app-automations family: all five tools under one feature,
-            // owned by the app-automations plugin only.
+            let creation = registry
+                .iter()
+                .find(|f| f.id == "session-creation")
+                .unwrap();
+            assert_eq!(
+                creation.tools,
+                ["mcp_session-reader_create_session".to_string()]
+            );
             let scheduled = registry
                 .iter()
                 .find(|f| f.id == "scheduled-task-automation")
                 .unwrap();
-            assert_eq!(scheduled.plugins, ["app-automations".to_string()]);
-            assert_eq!(
-                scheduled.tools,
-                [
-                    "mcp_app-automations_create_scheduled_task".to_string(),
-                    "mcp_app-automations_delete_scheduled_task".to_string(),
-                    "mcp_app-automations_list_scheduled_tasks".to_string(),
-                    "mcp_app-automations_read_scheduled_task".to_string(),
-                    "mcp_app-automations_update_scheduled_task".to_string(),
-                ]
-            );
+            let mut scheduled_expected = [
+                "mcp_app-automations_create_scheduled_task".to_string(),
+                "mcp_app-automations_read_scheduled_task".to_string(),
+                "mcp_app-automations_list_scheduled_tasks".to_string(),
+                "mcp_app-automations_update_scheduled_task".to_string(),
+                "mcp_app-automations_delete_scheduled_task".to_string(),
+            ];
+            scheduled_expected.sort();
+            let mut scheduled_actual = scheduled.tools.clone();
+            scheduled_actual.sort();
+            assert_eq!(scheduled_actual, scheduled_expected);
         });
     }
 
