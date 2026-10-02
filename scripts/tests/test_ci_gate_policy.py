@@ -969,8 +969,11 @@ class CiGatePolicyTests(unittest.TestCase):
             "github.event.pull_request.draft == false", windows_rust_test
         )
         # Cold Windows compile plus the lib link check recently died at the
-        # 90-minute cap while passing runs already took 85-87 minutes.
-        self.assertIn("timeout-minutes: 180", windows_rust_test)
+        # 90-minute cap while passing runs already took 85-87 minutes; the
+        # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
+        # so PR legs recompiled both workspaces cold and the link step alone
+        # consumed 180 minutes (run 36919362322).
+        self.assertIn("timeout-minutes: 240", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
             self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(

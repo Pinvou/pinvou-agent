@@ -10,8 +10,11 @@ PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r3"
 # 维护分支领先不可变 tag 前进。TRANSITION_BASELINE 非空即启用过渡期断言：
 # tag 必须钉在其收口 commit，gitlink 必须等于公开维护分支头（上方已断言）且领先 tag。
 # rN 收口时：把 TAG 更新为新 tag、删除 TRANSITION_BASELINE，恢复三方相等断言。
-TRANSITION_BASELINE=""
-# r3 已收口（2026-09-23，tag pinvou-v0.9.12-r3 切在 61cb769be）：三方相等断言生效，过渡期豁免未启用。
+TRANSITION_BASELINE="61cb769be5b33abc64f64da4272f5b39a8b6c1fd"
+# 2026-10-02 entered the transition window: the registered head advanced with
+# CodeWhale#80 (the stable 1.99 toolchain compile fix) while the immutable r3
+# tag stays pinned at its closure commit, so the three-way-equality assertion
+# gives way to the transition assertions above.
 MAX_ATTEMPTS=3
 
 if [[ $# -ne 0 ]]; then

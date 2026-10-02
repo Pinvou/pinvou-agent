@@ -246,6 +246,10 @@ impl Drop for PromptAdmissionGuard<'_> {
         // stuck above zero merely keeps the runtime un-evictable (the
         // conservative direction), while a wrap to usize::MAX would corrupt
         // the count for every later guard pair.
+        //
+        // Rust 1.99 deprecated fetch_update (renamed to try_update); the MSRV
+        // (1.89) predates the new name, so keep the old call.
+        #[allow(deprecated)]
         let _ = self
             .pending
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
