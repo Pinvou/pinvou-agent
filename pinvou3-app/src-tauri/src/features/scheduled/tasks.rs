@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex as SyncMutex, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -57,6 +57,8 @@ fn scheduled_execution_limits() -> TaskExecutionLimits {
     }
 }
 
+#[path = "creation_requests.rs"]
+pub(crate) mod creation_requests;
 #[path = "stores.rs"]
 mod stores;
 
@@ -88,6 +90,13 @@ impl ScheduledConversationDeleter for EnginePool {
     }
 }
 
+/// Clone: the creation-request watcher (features/scheduled/creation_requests)
+/// runs on a clone of the state while the panel-facing managed state stays the
+/// original. All heavy handles are Arc-shared; the two scheduler JoinHandles
+/// live in `Arc<SyncMutex<Option<_>>>` slots (EnginePool idle-reaper pattern)
+/// so Drop still owns the single abort, and the watcher guard sits in its own
+/// slot (`creation_watch`).
+#[derive(Clone)]
 pub struct ScheduledTaskState {
     automations: SharedAutomationManager,
     task_manager: Option<SharedTaskManager>,
@@ -97,15 +106,17 @@ pub struct ScheduledTaskState {
     task_kinds: ScheduledTaskKindStore,
     ui_metadata: ScheduledTaskUiMetadataStore,
     history_archive: ScheduledHistoryArchiveStore,
-    operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    operation_locks: Arc<ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
     #[allow(dead_code)]
     scheduler_cancel: Option<CancellationToken>,
     #[allow(dead_code)]
-    scheduler_handle: Option<tokio::task::JoinHandle<()>>,
+    scheduler_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
     #[allow(dead_code)]
-    retention_handle: Option<tokio::task::JoinHandle<()>>,
+    retention_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
+    #[allow(dead_code)]
+    creation_watch: Arc<SyncMutex<Option<creation_requests::CreationWatchGuard>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -279,6 +290,7 @@ impl ScheduledTaskState {
         bridge: &Pinvou3Bridge,
         pool: EnginePool,
         sessions: SessionStore,
+        app: &tauri::AppHandle,
     ) -> Result<Self> {
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
@@ -337,7 +349,7 @@ impl ScheduledTaskState {
             read_state.clone(),
             cancel.clone(),
         );
-        Ok(Self {
+        let mut state = Self {
             automations,
             task_manager: Some(task_manager),
             sessions,
@@ -346,13 +358,18 @@ impl ScheduledTaskState {
             task_kinds,
             ui_metadata,
             history_archive,
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: Some(pool),
             fallback_model,
             scheduler_cancel: Some(cancel),
-            scheduler_handle: Some(scheduler_handle),
-            retention_handle: Some(retention_handle),
-        })
+            scheduler_handle: Arc::new(SyncMutex::new(Some(scheduler_handle))),
+            retention_handle: Arc::new(SyncMutex::new(Some(retention_handle))),
+            creation_watch: Arc::new(SyncMutex::new(None)),
+        };
+        // 会话创建定时任务的 spool 排水（features/scheduled/creation_requests）：
+        // 随运行时启动一次，生命周期跟随 state（Drop 取消）。
+        state.start_creation_watcher(app.clone());
+        Ok(state)
     }
 
     fn operation_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -458,11 +475,24 @@ impl ScheduledTaskState {
         let updated = ensure_automation_workspace(&manager, updated)
             .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
         if requested_model_update.is_some() || requested_model_id.is_some() {
+            let previous_binding = self.model_bindings.binding_for(&id);
             if let Err(error) =
                 self.model_bindings
                     .set(&id, requested_model_id, updated.model.clone())
             {
                 if requires_model_binding {
+                    // Roll the binding back so the reported failure is not a
+                    // half-applied state that a retried update would stack on
+                    // top of (same discipline as create's rollback).
+                    let rollback = match previous_binding {
+                        Some((model_id, model)) => self.model_bindings.set(&id, model_id, model),
+                        None => self.model_bindings.remove(&id),
+                    };
+                    if let Err(rollback_error) = rollback {
+                        log::warn!(
+                            "Failed to roll back the model binding of scheduled task {id}: {rollback_error:#}"
+                        );
+                    }
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
@@ -1005,12 +1035,27 @@ impl Drop for ScheduledTaskState {
         if let Some(cancel) = &self.scheduler_cancel {
             cancel.cancel();
         }
-        if let Some(handle) = self.scheduler_handle.take() {
+        if let Some(handle) = self
+            .scheduler_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
-        if let Some(handle) = self.retention_handle.take() {
+        if let Some(handle) = self
+            .retention_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
+        // CreationWatchGuard's own Drop cancels the token and aborts the task.
+        self.creation_watch
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
 }
 
@@ -2453,12 +2498,13 @@ mod tests {
                     scheduled_history_archive_path(),
                 )
                 .expect("history archive"),
-                operation_locks: ParkingMutex::new(HashMap::new()),
+                operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
                 pool: None,
                 fallback_model: "cascade-model".to_string(),
                 scheduler_cancel: None,
-                scheduler_handle: None,
-                retention_handle: None,
+                scheduler_handle: Arc::new(SyncMutex::new(None)),
+                retention_handle: Arc::new(SyncMutex::new(None)),
+                creation_watch: Arc::new(SyncMutex::new(None)),
             },
             task_manager,
             automation_id: automation.id,
@@ -2978,12 +3024,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -3059,12 +3106,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
@@ -3157,12 +3205,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let created = state
@@ -3293,12 +3342,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         // Junk kind: the rejection error matches the mode-check style, and nothing is
@@ -3445,12 +3495,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let created = state
@@ -3551,12 +3602,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let expected_allow_shell = current_yolo_allow_shell();
 
@@ -3803,12 +3855,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let error = state
@@ -3881,12 +3934,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -4288,12 +4342,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -4376,12 +4431,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -4472,12 +4528,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let input = |kind: Option<String>| CreateScheduledTaskInput {
             name: "记忆整理".to_string(),
