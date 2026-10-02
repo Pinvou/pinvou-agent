@@ -38,9 +38,20 @@ permissions:
   contents: read
   pull-requests: read
 
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner
+# minutes. Only PR runs may cancel each other (cancel-and-replace per
+# refs/pull/N/merge). Merge-queue entries and main pushes must never cancel:
+# queue entries carry the required-check contexts the merge queue waits on,
+# and letting a main push cancel an in-flight entry kills a context the
+# queue is gating on. The gate keys on the event name — the repo-standard
+# pattern — rather than on ref parsing, because merge_group ref semantics
+# are not stable across GitHub releases (fixed 2026-10 after the audit found
+# this file was the last merge_group/push-triggered workflow violating the
+# event-gated cancel pattern; pr-title-check.yml's unconditional cancel is
+# PR-only by design and stays).
 concurrency:
-  group: rustc-wrapper-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # merge_group 不支持事件级 paths 过滤，先在一个轻量 Linux job 中判断组合
@@ -48,6 +59,9 @@ jobs:
   # 保留，避免这些事件连轻量路由 job 都启动。
   changes:
     runs-on: ubuntu-22.04
+    # The workflow default (360 min) would let a hung job burn runner minutes;
+    # both jobs are minutes of work when healthy.
+    timeout-minutes: 10
     outputs:
       wrapper: ${{ steps.filter.outputs.wrapper }}
     steps:
@@ -79,6 +93,10 @@ jobs:
       matrix:
         os: [macos-15, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Minutes of work when healthy (init a tiny crate, compile, run the
+    # wrapper probes); the cap keeps a hung cargo from burning the 360-minute
+    # default, including on the scarce macOS runner.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
