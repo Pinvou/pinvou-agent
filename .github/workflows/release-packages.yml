@@ -391,6 +391,40 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # [linker consistency, 2026-10-02] Select the bundled lld (lld-link) for
+      # the shipped binary too. The windows-msvc default is link.exe, so with
+      # the release profile's lto="thin" the ThinLTO backends run inside
+      # rustc's own process and link.exe links the plain objects — the exact
+      # shape the windows-rust-test leg just fixed (#642: lld-link links the
+      # same inputs ~20% faster with roughly half the committed memory of
+      # link.exe). Same probed two-step as #642 because the stable flag
+      # surface for picking lld differs per target: on 1.99 the
+      # `-C linker-features=+lld` stabilization (linux-gnu only) does not
+      # parse for MSVC and the explicit linker+flavor pair wins.
+      # No /threads:1 cap here, unlike the test leg: this job is time-bound
+      # (86 min of a 150 cap) and has never thrashed memory — capping would
+      # only slow the release.
+      # NOTE for the reviewer: this changes the shipped nsis binary (different
+      # linker, same source). Revert = delete this step.
+      - name: Probe and export the Windows lld link flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          echo 'fn main() {}' > "$probe/probe.rs"
+          if rustc -C linker-features=+lld -o "$probe/probe.exe" "$probe/probe.rs" 2>"$probe/a.err"; then
+            flags="-C linker-features=+lld"
+          elif rustc -C linker=rust-lld -C linker-flavor=lld-link \
+              -o "$probe/probe.exe" "$probe/probe.rs" 2>"$probe/b.err"; then
+            flags="-C linker=rust-lld -C linker-flavor=lld-link"
+          else
+            echo "FAIL: this toolchain has no stable flag to select lld" >&2
+            cat "$probe/a.err" "$probe/b.err" >&2 || true
+            exit 1
+          fi
+          echo "probed RUSTFLAGS=$flags"
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+
       # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
       # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响,无自举依赖。
       - name: 编译 Windows 栈 wrapper(.exe)
