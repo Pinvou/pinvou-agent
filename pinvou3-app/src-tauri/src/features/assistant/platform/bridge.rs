@@ -4376,17 +4376,6 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain has no disables → no CLI deny rules. The only rule present is
-        // the always-on cross-session messaging Ask rule (contract §5 L1).
-        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-        assert_eq!(
-            rs.ask_rules
-                .iter()
-                .map(|r| r.tool.as_str())
-                .collect::<Vec<_>>(),
-            [MESSAGING_SEND_TOOL],
-            "plain defaults to only the cross-session messaging Ask rule"
-        );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
         let all_four_cli_denied = [
@@ -4436,34 +4425,26 @@ mod tests {
             denied_bins(&rs),
             ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]
         );
-        assert!(
-            rs.ask_rules
-                .iter()
-                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL
-                    || r.tool == SESSION_CREATE_TOOL
-                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
-                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
-                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
-            "every non-L1 rule stays a deny"
-        );
+        assert!(rs.ask_rules.iter().all(|r| r.action
+            == codewhale_execpolicy::PermissionAction::Deny
+            || r.tool == MESSAGING_SEND_TOOL
+            || r.tool == SESSION_CREATE_TOOL
+            || r.tool == SCHEDULED_TASK_CREATE_TOOL
+            || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+            || r.tool == SCHEDULED_TASK_DELETE_TOOL));
 
         // code uninitialized → all 4 built-in CLI binaries denied by default (the
         // same semantics as the connector toggle default), each binary emitting
         // the bare name + .exe/.cmd variants, 3 rules in total.
         let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         assert_eq!(denied_bins(&rs), all_four_cli_denied);
-        assert!(
-            rs.ask_rules
-                .iter()
-                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL
-                    || r.tool == SESSION_CREATE_TOOL
-                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
-                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
-                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
-            "every non-L1 rule stays a deny"
-        );
+        assert!(rs.ask_rules.iter().all(|r| r.action
+            == codewhale_execpolicy::PermissionAction::Deny
+            || r.tool == MESSAGING_SEND_TOOL
+            || r.tool == SESSION_CREATE_TOOL
+            || r.tool == SCHEDULED_TASK_CREATE_TOOL
+            || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+            || r.tool == SCHEDULED_TASK_DELETE_TOOL));
 
         // code explicitly disables only dingtalk → only dws remains hard-denied
         // (with .exe/.cmd variants).

@@ -23,7 +23,6 @@ pub mod knowledge;
 pub mod marketplace;
 pub mod memory;
 pub mod messaging;
-pub(crate) mod monitor;
 pub mod monitor;
 pub mod multiagent;
 pub mod personas;

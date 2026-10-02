@@ -435,11 +435,22 @@ mod tests {
             let ids: Vec<&str> = registry.iter().map(|f| f.id.as_str()).collect();
             assert_eq!(
                 ids,
-                ["long-memory", "session-mention", "session-messaging"],
+                [
+                    "long-memory",
+                    "scheduled-task-automation",
+                    "session-creation",
+                    "session-mention",
+                    "session-messaging",
+                ],
                 "sorted output"
             );
             for feature in &registry {
-                assert_eq!(feature.plugins, ["session-reader".to_string()]);
+                let expected_plugins = if feature.id == "scheduled-task-automation" {
+                    &["app-automations".to_string()][..]
+                } else {
+                    &["session-reader".to_string()][..]
+                };
+                assert_eq!(feature.plugins, expected_plugins);
                 assert!(feature.enabled, "default (no state) is all enabled");
             }
             let read_tools = [
@@ -458,6 +469,29 @@ mod tests {
                 messaging.tools,
                 ["mcp_session-reader_send_message_to_session".to_string()]
             );
+            let creation = registry
+                .iter()
+                .find(|f| f.id == "session-creation")
+                .unwrap();
+            assert_eq!(
+                creation.tools,
+                ["mcp_session-reader_create_session".to_string()]
+            );
+            let scheduled = registry
+                .iter()
+                .find(|f| f.id == "scheduled-task-automation")
+                .unwrap();
+            let mut scheduled_expected = [
+                "mcp_app-automations_create_scheduled_task".to_string(),
+                "mcp_app-automations_read_scheduled_task".to_string(),
+                "mcp_app-automations_list_scheduled_tasks".to_string(),
+                "mcp_app-automations_update_scheduled_task".to_string(),
+                "mcp_app-automations_delete_scheduled_task".to_string(),
+            ];
+            scheduled_expected.sort();
+            let mut scheduled_actual = scheduled.tools.clone();
+            scheduled_actual.sort();
+            assert_eq!(scheduled_actual, scheduled_expected);
         });
     }
 
