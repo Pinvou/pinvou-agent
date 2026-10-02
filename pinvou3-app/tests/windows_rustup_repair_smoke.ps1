@@ -47,10 +47,10 @@ if ($LASTEXITCODE -ne 0) {
 
 try {
   # The repair engine's refusal guards are the core safety contract: they must
-  # reject the shared account rustup, a filesystem root and a non-empty
-  # unmarked directory before touching anything. Exercise them for real here;
-  # every case below throws before rustup runs, so at most an empty lock file
-  # is created inside the throwaway test home.
+  # reject the shared account rustup, a filesystem root, a non-empty unmarked
+  # directory and a missing RUSTUP_HOME before touching anything. Exercise
+  # them for real here; every case below throws before rustup runs, so at
+  # most an empty lock file is created inside the throwaway test home.
   $previousRustupHome = $env:RUSTUP_HOME
   $previousCargoHome = $env:CARGO_HOME
   $previousManagedFlag = $env:PINVOU3_MANAGED_RUSTUP
@@ -77,10 +77,19 @@ try {
       Name = "a non-empty unmarked directory"
       Home = $unmarkedHome
       Message = "Refusing to adopt a non-empty unmarked RUSTUP_HOME"
+    },
+    [pscustomobject]@{
+      Name = "a missing RUSTUP_HOME"
+      Home = $null
+      Message = "Refusing automatic repair without an isolated RUSTUP_HOME"
     }
   )
   foreach ($guard in $guardRejections) {
-    $env:RUSTUP_HOME = $guard.Home
+    if ($null -eq $guard.Home) {
+      Remove-Item Env:RUSTUP_HOME -ErrorAction SilentlyContinue
+    } else {
+      $env:RUSTUP_HOME = $guard.Home
+    }
     $rejectionMessage = $null
     try {
       & $repairScript
@@ -163,7 +172,7 @@ try {
     "Using configured source: http://127.0.0.1:1",
     "Repair attempt 1/1 failed using configured source",
     "Resetting the incomplete isolated toolchain before retry",
-    "Using Rust official source: https://static.rust-lang.org",
+    "Using rsproxy mirror: https://rsproxy.cn",
     "Toolchain repair succeeded using"
   )
   foreach ($evidence in $expectedRepairEvidence) {

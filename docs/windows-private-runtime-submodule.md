@@ -106,11 +106,15 @@ rustup. When the toolchain pinned in `src-tauri/rust-toolchain.toml` provides
 libdir, it is reused read-only. Otherwise the build switches to an isolated
 `RUSTUP_HOME` (`pinvou3-app/.cache/rustup/<channel>-<host-triple>`, overridable
 with `PINVOU3_RUSTUP_HOME`) and repairs the toolchain there, trying a
-configured `RUSTUP_DIST_SERVER` first and then the official Rust source, rsproxy and TUNA,
-with a bounded timeout per install attempt and an overall repair budget
-(`-RepairTimeoutSeconds`, 1500 s by default). The script refuses to modify the
-account's shared `~/.rustup`, a filesystem root, or any non-empty directory that
-lacks its `.pinvou3-managed-rustup` marker. `npm run test:windows-rustup-repair`
+configured `RUSTUP_DIST_SERVER` first, then the rsproxy and USTC mirrors
+(mirror-first, matching the #619 runtime-download convention), and the
+official Rust source last, with a bounded timeout per install attempt and an
+overall repair budget (`-RepairTimeoutSeconds`, 1500 s by default). The script
+refuses to modify the account's shared `~/.rustup`, a filesystem root, any
+non-empty directory that lacks its `.pinvou3-managed-rustup` marker, or a run
+without an isolated `RUSTUP_HOME`. If a repair, reset, or the budget runs out,
+the error names the isolated `RUSTUP_HOME`, which is always safe to delete and
+re-run. `npm run test:windows-rustup-repair`
 exercises this path natively on Windows, including the incomplete `-CheckOnly`
 classifications and a removed rust-std. While Tauri runs, `build.js` logs the
 CLI PID, phase and a heartbeat every minute.
