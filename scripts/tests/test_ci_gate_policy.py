@@ -911,10 +911,27 @@ class CiGatePolicyTests(unittest.TestCase):
         # 70% of RAM, the 8G /mnt swapfile is the only unbounded overflow
         # layer. A leftover opt-in switch turns this red; the main flow must
         # call setup_disk_swap unconditionally (top level, no indentation)
-        # and the 8G size is pinned.
+        # and the 8G size is pinned. The 2026-10 degraded-mode branch (no
+        # zram swap active) doubles the size to 16G — the sole overflow layer
+        # behind the ~14.2GB rust-test link peaks — and the flaky
+        # linux-modules-extra install retries once; both behaviors are
+        # pinned so the hardening cannot silently regress.
         source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
         self.assertNotIn("PINVOU3_CI_ENABLE_DISK_SWAP", source)
         self.assertIn("DISK_SWAP_SIZE_KIB=$((8 * 1024 * 1024))", source)
+        self.assertIn("DISK_SWAP_SIZE_KIB=$((16 * 1024 * 1024))", source)
+        self.assertIn(
+            "swapon --show=NAME --noheadings 2>/dev/null | grep -q '/dev/zram'",
+            source,
+        )
+        self.assertIn(
+            'warn "apt-get install ${modules_pkg} failed once; retrying"',
+            source,
+        )
+        self.assertIn(
+            'warn "apt-get install ${modules_pkg} failed again; giving up on zram layers"',
+            source,
+        )
         self.assertIn(
             'log "provisioning the mandatory /mnt disk swap"\nsetup_disk_swap',
             source,
