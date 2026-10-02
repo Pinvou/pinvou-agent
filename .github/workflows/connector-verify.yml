@@ -60,10 +60,15 @@ jobs:
             suffix: ""
             can_run: true
           - platform: darwin-x64
-            runs-on: macos-15
+            # macos-15-intel: the standard Intel image (still free for public
+            # repos) actually executes the pinned x86_64 CLIs. On the arm64
+            # image this leg could only sha256/file-check them (can_run was
+            # false); Rosetta is not guaranteed on hosted images, so a real
+            # Intel runner is the honest way to run them.
+            runs-on: macos-15-intel
             resources: macos/x86_64
             suffix: ""
-            can_run: false
+            can_run: true
           - platform: windows-x64
             runs-on: windows-latest
             resources: windows/x86_64
