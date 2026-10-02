@@ -318,6 +318,14 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
                 // uninstall the package stays installed — the rows must stay
                 // too (fail-closed: installed + denied beats installed +
                 // enabled), and the primary error surfaces for a retry.
+                // Round-16 disclosure (review): this strip runs after the
+                // uninstall returns, outside the transaction and import locks
+                // — the same round-12 B2 window shape the skill lane carries
+                // (see capability-governance §3.2): a concurrent same-id
+                // deny-first registration landing in the window can be wiped
+                // by this strip. Owned-rows-only by construction; direction
+                // is fail-closed (a wiped fresh registration is restored by
+                // the next gate run).
                 if result.is_ok() {
                     if let Err(e) = crate::features::marketplace::scope::
                         remove_bundle_from_disabled_scopes_exact(&rollback_tool_id)
