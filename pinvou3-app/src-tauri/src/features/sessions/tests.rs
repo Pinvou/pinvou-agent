@@ -48,9 +48,10 @@ impl Drop for TestHomeGuard {
 /// dangling on a deleted directory.
 fn isolated_store() -> (SessionStore, TestHomeGuard) {
     let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-    // pid + nanos: ENV_LOCK only serializes within this process, so two
-    // concurrent cargo test processes can still collide on the same nanosecond
-    // (paths::tests' unique_suffix is not reachable here; assemble pid directly).
+    // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+    // names can collide across two concurrent cargo test processes (the
+    // lock only serializes in-process) — a collision shares the dir, and
+    // the other process's boot reconcile can reclaim this test's records.
     let tmp = std::env::temp_dir().join(format!(
         // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
         // names can collide across two concurrent cargo test processes (the
@@ -5334,6 +5335,185 @@ fn delete_aborts_and_preserves_the_pair_when_the_aux_cascade_fails() {
     );
 }
 
+/// The harder half of the fault taxonomy (round-33 MAJOR-5): a fault that
+/// strikes AFTER the aux record committed. Upstream
+/// `delete_session_record` removes the JSON before directory cleanup, so a
+/// post-record fault returns `(committed=true, Err)`: the aux record is
+/// durably gone and its deletion hook fired, while the main delete aborts.
+/// The window must converge: on retry the derived-id probe reports no aux,
+/// the cascade is skipped, and the main delete completes.
+#[test]
+fn delete_with_a_post_record_aux_fault_converges_on_retry() {
+    let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+    store
+        .inject_post_record_delete_fault(&aux.id, ErrorKind::PermissionDenied)
+        .expect("fail the aux deletion's cleanup after the record committed");
+
+    let error = store
+        .delete(&main.metadata.id)
+        .expect_err("the post-record cascade fault must still abort the main delete");
+    assert!(
+        format!("{error:#}").contains("delete aux session"),
+        "the error must name the cascade leg: {error:#}"
+    );
+
+    // The post-commit window's shape: the aux record is durably gone (its
+    // hook fired with it), the main record survived the abort.
+    assert!(
+        store.load(&main.metadata.id).is_ok(),
+        "the main session must be kept when the cascade faults after the aux committed"
+    );
+    assert!(
+        store.durable_session_record_is_absent(&aux.id),
+        "the aux record must be durably gone once its deletion committed"
+    );
+    let published = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        published.iter().any(|id| id == &aux.id),
+        "a committed aux deletion must publish its deletion hook: {published:?}"
+    );
+    drop(published);
+
+    // Convergence: the retry skips the cascade (probe = NotFound) and
+    // deletes the main.
+    store
+        .delete(&main.metadata.id)
+        .expect("the retry must complete the main delete");
+    assert!(
+        store.durable_session_record_is_absent(&main.metadata.id),
+        "the main record must be gone after the retry"
+    );
+}
+
+/// Round-32 review minor 2: the orphan pass's `read_dir`-based identity must
+/// cover an UNREADABLE orphan whose parent is dead. Driving the pass from
+/// the parsed listing instead would silently drop exactly this record —
+/// invisible to every list, exempt from the budget, holding the user's
+/// side-chat text forever.
+#[test]
+fn retention_reclaims_an_unreadable_orphan_aux_by_filename_identity() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    // Dead parent + unreadable orphan: the parsed listing drops the corrupt
+    // record, so only the filename-driven pass can see it.
+    std::fs::remove_file(
+        store
+            .manager
+            .sessions_dir()
+            .join(format!("{}.json", main.metadata.id)),
+    )
+    .expect("remove the parent record out of band");
+    let aux_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::write(&aux_path, b"{ not json").expect("corrupt the orphan record");
+    store.invalidate_list_cache();
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert!(
+        !aux_path.exists(),
+        "the unreadable orphan must be reclaimed by filename identity"
+    );
+}
+
+/// Round-32 review minor 3: the entry parent-load fault classification.
+/// A transient read fault on the parent record must surface as a load
+/// error, never as "the parent session no longer exists" — misreporting a
+/// transient fault at panel-open as a deletion would flip the panel into
+/// the wrong failure class. The fault injection is the unix ELOOP symlink
+/// (same shape as the two probe tests above); the portable directory
+/// variant pins the probe side cross-platform in
+/// `fail_closed_probes_treat_a_non_file_record_as_present`.
+#[cfg(unix)]
+#[test]
+fn aux_creation_classifies_a_transient_parent_fault_as_not_deleted() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    // The ELOOP trick: a self-referential symlink makes every read of the
+    // record fail with a non-NotFound fault.
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", main.metadata.id));
+    std::fs::remove_file(&record).expect("remove the healthy parent record");
+    std::os::unix::fs::symlink(&record, &record).expect("self-referential symlink");
+
+    let error = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect_err("the transient parent fault must surface");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("load the parent session"),
+        "a transient fault must keep its load-error classification: {rendered}"
+    );
+    assert!(
+        !rendered.contains("no longer exists"),
+        "a transient fault must never read as a deletion: {rendered}"
+    );
+    // Control: a genuinely missing parent is the deletion class.
+    std::fs::remove_file(&record).ok();
+    let error = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect_err("the missing parent must surface");
+    assert!(
+        format!("{error:#}").contains("no longer exists"),
+        "the deletion class keeps its own message: {error:#}"
+    );
+}
+
+/// Round-32 review minor 4 — portable (non-unix) fail-closed coverage: a
+/// DIRECTORY sitting at the record path is the non-NotFound state every
+/// platform can produce (and what sync/AV clients approximate while holding
+/// a file). Both probes must read it as "present", never "absent"; the
+/// ELOOP tests only cover the unix fault shape.
+#[test]
+fn fail_closed_probes_treat_a_non_file_record_as_present() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    let aux_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::remove_file(&aux_path).expect("remove the record file");
+    std::fs::create_dir(&aux_path).expect("replace the record with a directory");
+    store.invalidate_list_cache();
+
+    assert!(
+        !store.durable_session_record_is_absent(&aux.id),
+        "a directory at the record path is not an absent record"
+    );
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "the derived-id probe must read the non-file record as present (fail-closed)"
+    );
+}
+
 /// Deleting an aux session alone (the discard path): the main session is
 /// unaffected and the forward query reports no aux afterwards.
 #[test]
@@ -5374,12 +5554,30 @@ fn get_or_create_aux_session_reuses_recreates_and_rejects_aux_of_aux() {
     let first = store
         .get_or_create_aux_session(&main.metadata.id)
         .expect("create aux");
+    // A transcript makes the reuse leg content-bearing (round-32 review M1):
+    // under derived ids the id alone is vacuous — a mutation that always
+    // falls through to create_aux_session returns the same id (the derived
+    // id is a pure function of the parent) while silently overwriting the
+    // record at the same path. Loading the transcript through the second
+    // ensure's result is what actually pins the load-then-reuse branch.
+    store
+        .update_messages(&first.id, vec![user_text("q"), assistant_text("a")])
+        .expect("seed the aux transcript");
     let again = store
         .get_or_create_aux_session(&main.metadata.id)
         .expect("reuse aux");
     assert_eq!(
         again.id, first.id,
         "an existing aux record must be reused, not recreated"
+    );
+    assert_eq!(
+        store
+            .load(&again.id)
+            .expect("load the reused aux")
+            .messages
+            .len(),
+        2,
+        "the reused aux record must be the SAME record: a create-fallthrough would have wiped its transcript"
     );
 
     // Out-of-band record loss: the ensure recreates a fresh record under the
@@ -5444,6 +5642,68 @@ fn create_aux_session_rejects_scheduled_parent() {
         store.aux_session_id("sched-1").is_none(),
         "a rejected creation must not leave an aux record behind"
     );
+}
+
+/// Executing truth table for the alias-defeating `sched-` predicate
+/// (round-38 MAJOR-1): the case-insensitive prefix is load-bearing for four
+/// gates (send gates, list filter, retention candidacy, delete refusal), so
+/// reverting it to an exact `starts_with("sched-")` must turn this test
+/// red. The comment-stripped shape pins cannot do that — they bind call
+/// sites, not the predicate's own body, which is exactly the branch the
+/// mutation sweep found unpinned.
+#[test]
+fn sched_predicate_is_case_insensitive_and_rejects_non_prefixes() {
+    for id in [
+        "sched-1",
+        "SCHED-1",
+        "Sched-1",
+        "sChEd-abcdef",
+        "sched-日本語",
+    ] {
+        assert!(
+            super::validators::is_sched_session_id(id),
+            "{id} must classify as a scheduled session id: the prefix is matched case-insensitively"
+        );
+    }
+    for id in [
+        "sched",
+        "schedX",
+        "xsched-1",
+        "aux-1",
+        "session-1",
+        "",
+        // Shorter than the prefix with the boundary cut mid-character: the
+        // boundary-safe `get(..6)` yields None rather than panicking or
+        // partially matching.
+        "sched日本語",
+    ] {
+        assert!(
+            !super::validators::is_sched_session_id(id),
+            "{id} must NOT classify as a scheduled session id"
+        );
+    }
+}
+
+/// The case-variant leg of the delete-refusal gate (round-36 minor 2,
+/// executing pin per round-38 MAJOR-1): a `SCHED-` id must be refused as
+/// the automation's record even when no such session exists — the refusal
+/// precedes the ordinary NotFound, so a hand-copied alias file on a
+/// case-insensitive filesystem is never deletable out-of-band and a
+/// nonexistent case-variant id does not read as an ordinary miss.
+#[test]
+fn delete_refuses_case_variant_sched_ids_without_a_record() {
+    let (store, _g) = isolated_store();
+    for id in ["SCHED-ghost", "Sched-ghost", "sCHed-ghost"] {
+        let error = store
+            .delete(id)
+            .expect_err("a case-variant sched- id must be refused, not treated as a miss");
+        assert!(
+            error
+                .to_string()
+                .contains("Scheduled-run sessions are deleted through their automation"),
+            "the refusal must be the automation-ownership error, not NotFound: {error:#}"
+        );
+    }
 }
 
 /// get-or-create must fail closed on a load error that is not NotFound: a
@@ -5877,6 +6137,94 @@ fn retention_aux_activity_protects_main_session_from_eviction() {
     assert_eq!(
         store.list().expect("chat list").len(),
         MAX_SESSIONS_PER_KIND
+    );
+}
+
+/// Round-33 MAJOR-7: the pair-liveness ordering must not trust the parsed
+/// listing for its aux freshness leg alone. The listing silently drops a
+/// record it cannot read, so an in-use pair whose aux record fails to parse
+/// would sort by the stale main `updated_at`, drift past the eviction line,
+/// and the fail-closed delete-side probe — which does NOT trust the listing
+/// — would then cascade-evict the live pair. A freshness-map miss now stats
+/// the record directly, so a real mtime keeps the pair alive.
+#[test]
+fn retention_aux_freshness_survives_a_listing_parse_blind_spot() {
+    let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
+    let now = Utc::now();
+    let main_id = "retention-blind-main";
+    // The oldest main session owns the freshest side chat: without the
+    // stat fallback it is the first eviction victim.
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed oldest main");
+    let aux = store.create_aux_session(main_id).expect("create aux");
+    store
+        .update_messages(&aux.id, Vec::new())
+        .expect("aux turn save refreshes the aux record");
+    // The blind spot: the aux record's JSON becomes unparseable, so the
+    // metadata listing silently drops it and the freshness map built from
+    // that listing no longer contains the derived id. The record itself is
+    // alive on disk (fresh mtime) and its pair is in use.
+    let aux_path = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::write(&aux_path, b"{ not json")
+        .expect("corrupt the aux record for the listing blind spot");
+    let mut stalest_peer = String::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let peer_id = format!("retention-blind-peer-{index}");
+        if index == MAX_SESSIONS_PER_KIND - 1 {
+            stalest_peer = peer_id.clone();
+        }
+        let mut session = create_saved_session_with_id_and_mode(
+            peer_id,
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert!(
+        store.load(main_id).is_ok(),
+        "the in-use pair behind an unreadable aux record must not be evicted"
+    );
+    assert!(
+        aux_path.exists(),
+        "the unreadable-but-alive aux record must not be cascade-evicted"
+    );
+    assert!(
+        store.load(&stalest_peer).is_err(),
+        "the truly stalest peer is the eviction victim instead"
+    );
+    let seen = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        !seen.iter().any(|id| id == main_id || id == &aux.id),
+        "no part of the protected pair may reach a deletion hook: {seen:?}"
     );
 }
 

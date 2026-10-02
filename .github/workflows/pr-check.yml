@@ -421,6 +421,18 @@ jobs:
       - name: fork-guard 指纹层 (秒级,不编译)
         run: ./scripts/fork-guard.sh --fast
 
+      # Merge authored-identifier audit (round-30 m10 wiring): enumerate the
+      # resolution-authored identifiers of every merge commit on the branch
+      # and print them (disclosure-only, always exits 0) — makes
+      # "resolution content reached the tree" visible on every PR instead of
+      # relying on a per-round manual run.
+      - name: Merge authored audit (seconds)
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
+          base_ref="${base_ref#refs/heads/}"
+          python3 scripts/audit-merge-authored.py "origin/$base_ref"
+
       - name: fork 合规联动 (gitlink ↔ fork-modifications)
         run: |
           base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
@@ -1053,6 +1065,17 @@ jobs:
       - name: cargo test --lib --no-run（编译链接测试二进制）
         if: ${{ github.event_name != 'push' }}
         run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
+
+      # Test registry guard: a duplicated #[test] registers one case twice
+      # and swallows the adjacent case's attributes (happened twice on PR
+      # #455, rounds 26/28), and is invisible to the total run count
+      # (inflation and shrinkage cancel out). Reuses the previous step's
+      # build artifacts, done in seconds: assert no duplicated registration
+      # paths + every consent-critical pin is present
+      # (scripts/test-registry-guard.py).
+      - name: test-registry guard (duplicates + required pins)
+        if: ${{ github.event_name != 'push' }}
+        run: python3 scripts/test-registry-guard.py
 
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
         if: ${{ github.event_name != 'push' }}

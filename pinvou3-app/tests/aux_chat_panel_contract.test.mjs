@@ -45,11 +45,34 @@ test('the controller is a module-scope singleton shared by every mounted panel',
 test('M5: per-task registries and staged quotes purge on session deletion', () => {
   // M5: the per-task registries (restart epochs, unsent drafts) and staged
   // quotes purge when the sessions domain reports the task deleted — wired
-  // once at module scope, armed from the bind effect.
+  // once at module scope, armed from the first bind effect. Two legs: the
+  // sessions-slice diff (chat tasks) and the session:deleted event (every
+  // id — list_sessions excludes code-mode sessions, so the diff leg alone
+  // never learns a code task was deleted, round-33 MAJOR-3).
   assert.match(auxChatPanel, /wireAuxSessionPurge\(\);/);
   assert.match(auxChatPanel, /bridge\.state\.subscribeMany\(\['sessions'\]/);
   assert.match(auxChatPanel, /reconcileLiveTaskIds\(knownTaskIds, liveTaskIds/);
   assert.match(auxChatPanel, /auxChatController\.purgeTask\(taskId\)/);
+  assert.match(auxChatPanel, /bridge\.sessions\.onSessionDeleted/);
+  assert.match(auxChatPanel, /knownTaskIds\.delete\(id\)/);
+  assert.match(auxChatPanel, /auxChatController\.purgeTask\(id\)/);
+});
+
+test('the armed New Topic visible label is the short confirm, not the full sentence (round-35 MAJOR-3)', () => {
+  // The full destructive sentence overflowed the 420 px dock minimum; the
+  // short key is the VISIBLE span while the complete copy stays in the
+  // title/aria. Pin the consumption, not just the dictionaries: deleting
+  // newTopicConfirmShort must fail here AND in ui_language_coverage.
+  assert.match(
+    auxChatPanel,
+    /\{view\.restartArmed \? copy\.newTopicConfirmShort : copy\.newTopic\}/,
+    'the armed visible label must consume newTopicConfirmShort',
+  );
+  assert.match(
+    auxChatPanel,
+    /title=\{view\.restartArmed \? copy\.newTopicConfirm : copy\.newTopic\}/,
+    'the full destructive copy stays in the title attribute',
+  );
 });
 
 test('one controller panel per mounted instance, mirrored into state and disposed on unmount', () => {
@@ -130,7 +153,10 @@ test('busy, in-flight and failure banners render straight from the controller vi
 });
 
 test('M6: the stuck banner died with the two-invoke restart', () => {
-  assert.doesNotMatch(auxChatPanel, /discardStuck/);
+  // Negative pins run raw (round-36 minor 9): the stripped text can hide a
+  // residue inside a comment, and the dead name must be gone from the file
+  // entirely — the sibling pin below already runs raw for the same reason.
+  assert.doesNotMatch(auxChatPanelRaw, /discardStuck/);
   assert.doesNotMatch(auxChatPanelRaw, /aux-chat-discard-stuck/);
   assert.match(auxChatPanel, /copy\.discardFailed/);
 });
@@ -239,7 +265,11 @@ test('ConversationTimeline renders aux quote chips in the user bubble', () => {
   // text remains.
   assert.match(conversation, /const userQuotes = Array\.isArray\(turn\.userQuotes\) \? turn\.userQuotes : \[\];/);
   assert.match(conversation, /turn\.userText \|\| userAttachments\.length \|\| userQuotes\.length/);
-  assert.match(conversation, /userQuotes\.map\(\(quote, index\)/);
+  // Round-36: the chips render through the extracted ConversationUserQuotes
+  // component (the aux branch pushed the turn renderer over the
+  // cognitive-complexity cap); the map + testid moved into it.
+  assert.match(conversation, /function ConversationUserQuotes\(/);
+  assert.match(conversation, /<ConversationUserQuotes quotes=\{userQuotes\} hasBody=\{Boolean\(turn\.userText\)\} \/>/);
   assert.match(conversation, /data-testid="conversation-user-quote"/);
 });
 
@@ -253,4 +283,50 @@ test('a duplicate quote surfaces the trilingual notice instead of silent success
     /if \(result\.duplicate\) \{[\s\S]{0,300}?copy\.quoteDuplicate[\s\S]{0,300}?if \(onQuote\) onQuote\(\);\s*return;\s*\}/,
     'a duplicate quote must surface the trilingual notice instead of reporting silent success (round-30 D5)',
   );
+});
+
+test('both quote notice branches cancel the armed deferred evaluation (round-33 MAJOR-1)', () => {
+  // mouseup precedes click: clicking the chip arms evaluateTimerRef before
+  // handleQuote runs, and the DOM selection survives (onMouseDown
+  // preventDefaults) — so the over-limit and duplicate branches must cancel
+  // the pending evaluation themselves, or the deferred evaluateSelection
+  // overwrites the notice with the plain Quote affordance one macrotask
+  // later. The success path goes through hidePopover, which already cancels.
+  const handleQuote = auxQuoteSelection.slice(auxQuoteSelection.indexOf('const handleQuote'));
+  assert.match(handleQuote, /if \(!result\.ok\) \{[\s\S]{0,400}?cancelPendingEvaluation\(\);/);
+  assert.match(handleQuote, /if \(result\.duplicate\) \{[\s\S]{0,400}?cancelPendingEvaluation\(\);/);
+  assert.match(auxQuoteSelection, /const hidePopover = useCallback\(\(\) => \{[\s\S]{0,300}?cancelPendingEvaluation\(\);/);
+});
+
+test('defense-in-depth conjuncts stay pinned as such (round-33 MAJOR-4 residue)', () => {
+  // Mutation-sweep verdict at this head: these two guards are not killable
+  // through public behavior — the watchdog's binding half never differs from
+  // its generation half in any reachable flow (a binding change implies a
+  // generation change; the derived aux id makes the converse invisible), and
+  // the draft-delete listener's task recheck is unreachable because the
+  // registration is per-task and unsubscribed on rebind. Their combined
+  // deletion IS executing-test red, and each stays pinned here as documented
+  // defense-in-depth (the same treatment commit 9ee1c8609 applied elsewhere).
+  // Anchor-resolution guards (the vacuous-slice class right_dock_occlusion_
+  // gate pins): a renamed anchor would make indexOf return -1 and the slice
+  // run to near-EOF, passing on unrelated copies (round-32 review minor 15).
+  const watchdogStart = controller.indexOf('armSendWatchdog(sentTaskId, sendPromise');
+  const watchdogEnd = controller.indexOf('await sendPromise;');
+  assert.ok(
+    watchdogStart >= 0 && watchdogEnd > watchdogStart,
+    'watchdog callback anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const watchdog = controller.slice(watchdogStart, watchdogEnd);
+  assert.match(watchdog, /if \(!sendingLatch\) return;/);
+  assert.match(watchdog, /if \(generation !== sendGeneration \|\| view\.auxId !== sentAuxId\) return;/);
+  assert.match(watchdog, /if \(auxChatBusy\(normalizeAuxSnapshot\(auxChat\.snapshot\(sentAuxId\)\)\)\) return;/);
+  const listenerStart = controller.indexOf('draftDeleteUnsubscribe = subscribeTaskListeners');
+  const listenerEnd = controller.indexOf('if (!auxChat || !sessionId) return;');
+  assert.ok(
+    listenerStart >= 0 && listenerEnd > listenerStart,
+    'draft-listener anchors must resolve (a vacuous slice would pass on unrelated copies)',
+  );
+  const draftListener = controller.slice(listenerStart, listenerEnd);
+  assert.match(draftListener, /if \(sessionIdMirror !== sessionId\) return;/);
+  assert.match(draftListener, /view\.draft = '';/);
 });

@@ -2188,7 +2188,12 @@ function timeStr() { return pinvouSharedweb().timeStr(); }
             state.sessions = await invoke("web_access_list_sessions");
           } catch (e) {
             console.warn("list_sessions failed", e);
-            state.sessions = [];
+            // Keep the previously observed list on a transient refresh
+            // failure: an empty snapshot would read as "every task deleted"
+            // to the aux-chat purge reconcile (wireAuxSessionPurge), which
+            // would purge every task's unsent drafts and staged quotes. The
+            // archived leg below keeps its previous list for the same reason.
+            state.sessions = state.sessions || [];
           }
           try {
             state.archivedSessions = await invoke(

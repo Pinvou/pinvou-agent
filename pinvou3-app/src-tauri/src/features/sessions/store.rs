@@ -150,6 +150,11 @@ impl SessionStore {
     /// legacy-table-only entries (round-8 review B1). Secondary stores opened
     /// later via [`Self::boot`] must not repeat it.
     pub fn boot_for_process_startup() -> Result<Self> {
+        // Order constraint (review #455): this boot creates sessions/
+        // directory entries (a first-boot self-write trace), so the
+        // disabled_bundles migration verdict must complete before it —
+        // lib.rs `startup_order_contract` pins the order via source-position
+        // assertions.
         let store = Self::boot_inner(true)?;
         store.migrate_legacy_session_workspaces();
         Ok(store)
@@ -511,6 +516,12 @@ impl SessionStore {
     /// a delete. Cross-process delete races remain unguarded (no flock here,
     /// consistent with the other sidecar writers).
     pub fn delete(&self, id: &str) -> Result<()> {
+        // An invalid id must fail as itself: the derived-id probe below is
+        // fail-closed (an unreadable record counts as "present"), so garbage
+        // input would otherwise surface as a fabricated "delete aux session"
+        // cascade error naming an aux id that was never a session
+        // (round-34 minor 5).
+        super::validators::validate_session_id(id)?;
         let _mutation = self.scheduled_mutation.lock();
         self.delete_locked(id)
     }
@@ -518,12 +529,19 @@ impl SessionStore {
     /// Locking contract of [`Self::delete`]: the caller holds
     /// `scheduled_mutation`. The internal create-rollback paths call the
     /// public [`Self::delete`], which acquires the guard — neither rollback
-    /// site runs while a persist's guard is still held.
+    /// site runs while a persist's guard is still held. The one exception is
+    /// the aux cascade below: it runs inside the guard, so it calls
+    /// [`Self::delete_locked`] directly.
     fn delete_locked(&self, id: &str) -> Result<()> {
         // An aux session is never a scheduled session, so this refusal guard
         // applies to cascade targets naturally and the auxiliary-conversation
         // path cannot bypass it.
-        if self.is_scheduled_session(id)? {
+        // The prefix leg is alias-defeating (round-36 minor 2): on a
+        // case-insensitive filesystem a hand-copied `SCHED-<id>.json` IS the
+        // automation's record file, and the exact registry check alone
+        // would let `delete("SCHED-<id>")` remove it without the
+        // automation-owned path.
+        if super::validators::is_sched_session_id(id) || self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
         // Auxiliary-conversation cascade: deleting a main session first
@@ -532,8 +550,13 @@ impl SessionStore {
         // NotFound counts as "no aux", so a transient stat fault can never
         // skip the cascade. The aux id never owns an aux itself, so the
         // recursion depth is bounded at 1 by the prefix check inside
-        // `aux_session_id`. The cascade is all-or-nothing: a failed aux
-        // delete aborts the main delete and preserves both records.
+        // `aux_session_id`. A failed aux delete aborts the main delete — but
+        // "abort" is not all-or-nothing once the aux record itself committed:
+        // a post-record cleanup fault on the aux leg leaves the aux durably
+        // gone (its deletion hook fired) while the main record survives
+        // (retention.rs documents the same window for the eviction leg). The
+        // state converges: on retry the derived-id probe reports no aux, the
+        // cascade is skipped, and the main delete completes.
         if let Some(aux_id) = self.aux_session_id(id) {
             // The mutation guard is already held here, so the cascade leg
             // must re-enter `delete_locked`, not the public `delete` —
@@ -965,6 +988,29 @@ impl SessionStore {
         // the sidecar before publishing the session JSON; when a later step
         // fails and the session is rolled back, `purge_session_side_maps`
         // removes this binding along with it.
+        // Concurrent-ensure narrowing (round-34 minor 1, hoisted above the
+        // model-sidecar write per round-36 minor 1): a lagging ensure that
+        // observed NotFound at its own entry load must not overwrite a
+        // record a concurrent ensure (or a turn on it) just published at
+        // the same derived path — a healthy record is reused, and a record
+        // that loads with any other error fails closed exactly like the
+        // entry probe (never overwrite what cannot be read). The hoist also
+        // NARROWS the losing-creator window on the winner's
+        // `_session_models.json` binding (round-37 MAJOR-3: a winner
+        // publishing between this re-check and the sidecar write still gets
+        // its binding overwritten with the parent's current choice — the
+        // re-check narrows, it does not stop, so the earlier reviewer
+        // wording said too much). This re-check is not an atomic create:
+        // a save landing after another creator's first transcript write can
+        // still clobber, and closing that residual window needs a
+        // foundation-level exclusive-create — disclosed.
+        match self.load(&id) {
+            Ok(existing) => return Ok(existing.metadata),
+            Err(error) if !is_not_found_error(&error) => {
+                return Err(error).with_context(|| "re-check the aux record before create");
+            }
+            Err(_) => {}
+        }
         if let Some(model_id) = self.session_model_override(parent_id) {
             self.set_session_model_id(&id, Some(model_id))?;
         }

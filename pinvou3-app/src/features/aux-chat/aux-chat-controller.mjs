@@ -48,10 +48,16 @@ export { removeAuxQuote } from './aux-quote.mjs';
  *   which serializes against the turn the accepted dispatch started — so
  *   the delete strictly follows the delivery and destroys it with the old
  *   transcript → the draft stays as recovery material.
- * - A SUCCESSFUL ack landing after the reset completed is unreachable: the
- *   backend send path holds the same turn gate, so a dispatch queued behind
- *   the delete finds the session gone and rejects (the gate's "no queued
- *   sender resurrects the session" property).
+ * - A SUCCESSFUL ack landing after the reset completed is unreachable for a
+ *   dispatch already queued on the turn gate: its under-gate store load
+ *   then finds the session gone and rejects (the gate's "no queued sender
+ *   resurrects the session" property). A dispatch stalled BEFORE the gate —
+ *   the reserve, title write and baseline load all run ungated — while the
+ *   entire reset completes can still submit into the fresh record the
+ *   create half published at the same derived path and succeed. That
+ *   residual is bounded and visible (the net rule below keeps the text in
+ *   the composer); closing it completely needs the registered backend
+ *   epoch/idempotency token.
  * - Reset rejects (delete half OR create half failed): the folded backend
  *   error cannot say which half ran, so the old transcript — and a delivery
  *   in it — MAY have survived. The controller deliberately keeps the draft
@@ -79,8 +85,13 @@ const RESTART_CONFIRM_MS = 4000;
 // restarting/bindingPending on the current task forever — a rebind or
 // unmount recovers, but New Topic (the only in-panel recovery) is disabled
 // while restarting. A timed-out reset surfaces as the reset-failure state
-// (whose copy points at New Topic, re-enabled by the outer finally); the
-// late resolution stays inert behind the generation checks.
+// (whose copy points at New Topic, re-enabled by the outer finally). The
+// generation checks make the late RESOLUTION inert for panel state — but
+// the backend reset's EFFECT is not inert: it can still land and delete
+// the record after the user followed the banner's advice and moved on
+// (round-35 MAJOR-1). Until the backend grows an epoch/idempotency token
+// (registered), the timed-out task is marked and its rebind keeps the
+// honest failure banner instead of walking the user back into the window.
 const SETTLE_WATCHDOG_MS = 180_000;
 
 // Same bound for the send registry's failsafe (round-23 should-fix 1): a
@@ -101,16 +112,53 @@ export const clearedIfSent = (current, text) => (current.trim() === text ? '' : 
 // so their per-task registries are purged. The known set is mutated in place
 // (deleted ids dropped, new ids added), which is what makes the initial
 // empty sessions snapshot safe — "never seen" is not "deleted".
+// The streak state for the two-consecutive-miss rule (round-37 MAJOR-1)
+// rides the knownIds set through a WeakMap: it dies with the wiring that
+// owns the set and needs no signature change at the two call sites.
+const pendingMissesByKnown = new WeakMap();
 export const reconcileLiveTaskIds = (knownIds, liveIds, purgeTask) => {
+  // A mid-life EMPTY listing is not a deletion report (round-32 review
+  // minor 14): refresh failures keep the previous list, so an empty slice
+  // now means the backend genuinely returned nothing — far more likely a
+  // listing fault than every known task having been deleted while the panel
+  // was mounted. Mass-purging every task's drafts/quotes/epochs on it would
+  // be exactly the "silently eat user input" outcome this module never
+  // produces; skip and wait for the next refresh. Real deletions still
+  // purge while this bail stands: the session:deleted event leg fires per
+  // id authoritatively.
+  if (liveIds.size === 0 && knownIds.size > 0) return;
+  // A successful but PARTIAL listing is the same hazard in miniature
+  // (round-37 MAJOR-1): `SessionManager::list_sessions` silently skips any
+  // record whose metadata read/parse faults (the sync/AV class), so one
+  // transient fault yields a non-empty slice that omits a live task — and
+  // purging on that single miss would eat its draft, staged quotes and
+  // restart epoch while the task is alive. A diff purge therefore requires
+  // the id to be missing from TWO CONSECUTIVE non-empty listings: one
+  // listing fault is transient, two in a row is a deletion report. This
+  // costs the eventless retention-eviction leg one refresh of delay and
+  // leaves the authoritative session:deleted channel untouched.
+  const pendingMisses = pendingMissesByKnown.get(knownIds) || new Map();
+  pendingMissesByKnown.set(knownIds, pendingMisses);
   // Deleting from a Set mid-iteration is specified-safe (the iterator simply
   // skips removed entries), so no snapshot copy is needed here.
   for (const taskId of knownIds) {
-    if (!liveIds.has(taskId)) {
-      knownIds.delete(taskId);
-      purgeTask(taskId);
+    if (liveIds.has(taskId)) {
+      pendingMisses.delete(taskId);
+      continue;
     }
+    const misses = (pendingMisses.get(taskId) || 0) + 1;
+    if (misses < 2) {
+      pendingMisses.set(taskId, misses);
+      continue;
+    }
+    pendingMisses.delete(taskId);
+    knownIds.delete(taskId);
+    purgeTask(taskId);
   }
-  for (const taskId of liveIds) knownIds.add(taskId);
+  for (const taskId of liveIds) {
+    pendingMisses.delete(taskId);
+    knownIds.add(taskId);
+  }
 };
 
 export function createAuxChatController(options = {}) {
@@ -128,7 +176,11 @@ export function createAuxChatController(options = {}) {
   } = options;
 
   const withSettleBound = (promise) => new Promise((resolve, reject) => {
-    const timer = setTimeoutFn(() => reject(new Error('reset settle bound exceeded')), settleWatchdogMs);
+    const timer = setTimeoutFn(() => {
+      const error = new Error('reset settle bound exceeded');
+      error.settleBound = true;
+      reject(error);
+    }, settleWatchdogMs);
     promise.then(
       (value) => { clearTimeoutFn(timer); resolve(value); },
       (error) => { clearTimeoutFn(timer); reject(error); },
@@ -199,6 +251,21 @@ export function createAuxChatController(options = {}) {
     };
   };
 
+  // Tasks whose reset hit the settle bound (round-35 MAJOR-1): the
+  // backend reset is still alive past the 180 s UI bound and CAN still
+  // land — deleting the record the user was told to keep using (its id is
+  // derived, so the recreate is invisible). The marker keeps the rebind's
+  // discardFailed banner honest until the backend call actually settles
+  // (either outcome — by then the disk state is whatever the reset made
+  // it, and the next bind re-ensures the truth). Controller-scoped like
+  // the registries: a rebind/remount must not forget a live hazard.
+  const settleTimedOutResets = new Set();
+  // task -> the live raw backend reset promises (round-36 MAJOR-2): the
+  // hazard marker retires only when this set empties, because the backend
+  // serializes resets in issue order — an older R1 settling first must not
+  // retire the marker while a newer R2 can still delete the record.
+  const liveResetsByTask = new Map();
+
   // taskId -> unsent composer draft, module-scoped for the same reason as
   // the send registry above: a draft belongs to the task, not to this
   // instance, while the panel unmounts on close and on sched- switches.
@@ -218,7 +285,12 @@ export function createAuxChatController(options = {}) {
   // for the SPA's lifetime. The staged conversation quotes go through the
   // same purge. The in-flight registries (send/reset) are deliberately NOT
   // touched: their entries belong to the exact operation that registered
-  // them and leave through the identity-gated settle paths.
+  // them and leave through the identity-gated settle paths. The settle-bound
+  // hazard marker is deliberately NOT purged either (round-36 MAJOR-2
+  // disposition): while the old backend reset is still live it genuinely
+  // threatens a recreated same-id task's fresh record, so the lingering
+  // banner is truthful, not stale — and it self-retires through the
+  // live-reset set the moment the last live reset settles.
   const purgeTask = (taskId) => {
     restartEpochByTask.delete(taskId);
     if (draftByTask.has(taskId)) deleteDraftAndNotify(taskId);
@@ -373,6 +445,13 @@ export function createAuxChatController(options = {}) {
       // latch the new task's panel disabled forever (the old restart's
       // finally can no longer be relied on once its generation went stale).
       view.restarting = false;
+      // EXCEPT for a settle-bound timed-out reset (round-35 MAJOR-1): the
+      // backend reset is still pending and can still delete this record —
+      // keep the discardFailed banner instead of auto-clearing the one
+      // honest signal the user has. It retires when the backend settles.
+      if (settleTimedOutResets.has(sessionId)) {
+        view.discardFailed = true;
+      }
       // Same latch class for sends: a never-settling auxChat.send invoke must
       // not permanently block sends across later task rebinds either. Only the
       // panel-level latch resets here — the duplicate-send guard itself lives
@@ -553,6 +632,11 @@ export function createAuxChatController(options = {}) {
       // never-settling invoke itself (whose registry entry the watchdog
       // deletes by identity inside armSendWatchdog).
       armSendWatchdog(sentTaskId, sendPromise, () => {
+        // A failsafe firing after dispose()/bridge teardown must not read
+        // the bridge snapshot or write latched state on a dead instance
+        // (round-34 minor 11); the registry delete in armSendWatchdog still
+        // runs and stays correct for the module-scoped registries.
+        if (disposed) return;
         if (!sendingLatch) return;
         if (generation !== sendGeneration || view.auxId !== sentAuxId) return;
         if (auxChatBusy(normalizeAuxSnapshot(auxChat.snapshot(sentAuxId)))) return;
@@ -759,8 +843,40 @@ export function createAuxChatController(options = {}) {
       // still live, and the bind flow must await this promise before
       // re-ensuring the same task — otherwise it would bind the doomed aux
       // session that this reset deletes behind its back.
-      const resetPromise = withSettleBound(auxChat.reset(sessionId));
+      const rawReset = auxChat.reset(sessionId);
+      const resetPromise = withSettleBound(rawReset);
       resetInFlightByTask.set(sessionId, resetPromise);
+      // Track the live backend call per task (round-36 MAJOR-2): when the
+      // LAST one settles — long after any UI bound, either outcome — the
+      // disk holds whatever the resets made of it and the marker retires;
+      // the next bind shows the truthful state. An older reset settling
+      // first retires nothing while a newer one is still live.
+      let live = liveResetsByTask.get(sessionId);
+      if (!live) {
+        live = new Set();
+        liveResetsByTask.set(sessionId, live);
+      }
+      live.add(rawReset);
+      rawReset.then(
+        () => {
+          const set = liveResetsByTask.get(sessionId);
+          if (!set) return;
+          set.delete(rawReset);
+          if (set.size === 0) {
+            liveResetsByTask.delete(sessionId);
+            settleTimedOutResets.delete(sessionId);
+          }
+        },
+        () => {
+          const set = liveResetsByTask.get(sessionId);
+          if (!set) return;
+          set.delete(rawReset);
+          if (set.size === 0) {
+            liveResetsByTask.delete(sessionId);
+            settleTimedOutResets.delete(sessionId);
+          }
+        },
+      );
       try {
         try {
           const nextAuxId = await resetPromise;
@@ -776,6 +892,16 @@ export function createAuxChatController(options = {}) {
           emit();
         } catch (error) {
           console.warn('[pinvou3][aux-chat] restart reset failed', error);
+          // The settle-bound marker is CONTROLLER state and must be set
+          // BEFORE the generation gate (round-36 MAJOR-1): the defeating
+          // path is exactly "user rebinds before the bound fires" — the
+          // same instance's generation bumps, and a gated add would never
+          // run, leaving the rebind free to auto-clear the banner while
+          // the backend reset is still pending. The view writes below
+          // stay gated.
+          if (error && error.settleBound) {
+            settleTimedOutResets.add(sessionId);
+          }
           if (generation !== restartGeneration) return;
           // Honest failure surface (M6): the folded backend error cannot say
           // whether the delete half ran, so the safest assumption is "the old
