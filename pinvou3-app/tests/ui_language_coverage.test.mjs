@@ -72,9 +72,11 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiProjects',
     'uiArtifacts',
     'uiToolDetails',
+    'uiAuxChat',
     'uiBuiltinPlugins',
-    // uiBuiltinFeatures lands with #586's switch UI (its only key was an
-    // orphan before that).
+    'uiBuiltinFeatures',
+    'uiSessionMention',
+    'uiSessionMessage',
     'uiAuxChat',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
@@ -190,6 +192,14 @@ for (const language of ['zh', 'en', 'ja']) {
   // the ledger's lowercase cancelled token (case-insensitive match); the key
   // must exist in all three locales.
   assert.ok(dict[language].uiConversation.cancelled, `${language}.uiConversation.cancelled must exist`);
+  // Session mention (PR #586): every key consumed by SessionMentionControls /
+  // ChatView must exist in all three locales (function keys typed as such).
+  for (const key of ['menuTitle', 'menuEmpty', 'dropHint', 'cardUnavailable', 'cardDisabled']) {
+    assert.ok(dict[language].uiSessionMention[key], `${language}.uiSessionMention.${key} must exist`);
+  }
+  for (const fnKey of ['chipRemove', 'cardJump']) {
+    assert.equal(typeof dict[language].uiSessionMention[fnKey], 'function', `${language}.uiSessionMention.${fnKey} must be a function`);
+  }
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }

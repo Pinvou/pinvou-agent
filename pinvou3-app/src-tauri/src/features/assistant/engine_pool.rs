@@ -2080,6 +2080,10 @@ impl EnginePool {
         // path injected by build_engine_config_for_session_roots) and must
         // exist before spawn, otherwise the first turn's prompt has no
         // `## Skills` block.
+        // Aux sessions are isolated pure-Q&A engines (zero tools, minimal
+        // instructions): they get no skill surface, so no composed directory
+        // is materialized — the send path and the toggle hot refresh skip aux
+        // on the same rule (round-31 M8).
         let materialize_skills_started = Instant::now();
         // Aux sessions are isolated pure-Q&A engines (zero tools, minimal
         // instructions): they get no skill surface, so no composed directory
@@ -3227,6 +3231,63 @@ impl EnginePool {
             },
         )
         .await
+    }
+
+    /// Deliver a cross-session message as a new turn — the idle-wake path of
+    /// `features::messaging` (docs/builtin-toolset-contract.md §6: target
+    /// idle / not loaded → dispatch immediately, the scheduled-task wake
+    /// precedent). Mirrors `send_user_message` minus its benchmark gate;
+    /// the session's own mode governs the turn.
+    pub(crate) async fn deliver_messaging_turn(
+        &self,
+        session_id: &str,
+        content: String,
+    ) -> Result<()> {
+        let reservation = self.reserve_turn(session_id)?;
+        // First-turn persona guard: the chat command prepends the full
+        // persona card body once via take_pending_turn_injections (the
+        // per-turn light anchor in send_reserved_user_message is not enough
+        // on its own); a session whose first-ever turn is a delivered
+        // cross-session message must get the same treatment. The checkout is
+        // bound across submission and committed on success — dropping it
+        // uncommitted would restore the body and re-inject the full card on
+        // the next normal turn (same transactional pattern as
+        // app/commands/chat.rs).
+        let pending_injections = self.store.take_pending_turn_injections(session_id);
+        let mut engine_content = content.clone();
+        if let Some(body) = pending_injections.persona_body() {
+            engine_content = format!("{body}\n\n---\n\n{engine_content}");
+        }
+        // The transcript item keeps the delivered block text: the sender-card
+        // renderer requires the cross-session header at the very start.
+        let display_message = user_display_message(content);
+        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+            && self.swarm_mode_available(session_id))
+        .then(ExpertRosterSnapshot::capture);
+        let expert_candidates = expert_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.available_role_lines(&engine_content))
+            .unwrap_or_default();
+        let mode = self.store.mode_state(session_id).mode.to_app_mode();
+        match self
+            .send_reserved_user_message(
+                session_id,
+                engine_content,
+                display_message,
+                mode,
+                false,
+                expert_snapshot,
+                expert_candidates,
+                reservation,
+            )
+            .await
+        {
+            Ok(()) => {
+                pending_injections.commit();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Execute the initial turn for a pre-created scheduled session and wait

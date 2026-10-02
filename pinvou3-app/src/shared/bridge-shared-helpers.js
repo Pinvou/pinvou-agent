@@ -2345,6 +2345,8 @@
   }
 
   // web+tauriSettings 共享
+
+  // web+tauriSettings 共享
   async function getEffectiveModelConfig(sessionId) {
     return invoke("get_effective_model_config", {
       sessionId: arguments.length ? (sessionId || null) : (state.activeSessionId || null),
@@ -3130,8 +3132,9 @@
     finishVoiceInput(true, false);
   }
 
-  // web+tauriVoice shared (both lanes keep a local clearVoiceInput override:
-  // ending the unsent voice operation is lane-owned state machine work)
+  // web+tauriVoice 共享
+
+  // web+tauriVoice 共享
   function appendVoiceText(base, text) {
     const left = String(base || "").trimEnd();
     const right = String(text || "").trim();
@@ -3423,7 +3426,7 @@
     },
     "tauriSettings": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, getEffectiveModelConfig: b.getEffectiveModelConfig, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, loadEffectiveModelConfig: b.loadEffectiveModelConfig });
+      return Object.freeze({ loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, dismissVllmSetup: b.dismissVllmSetup, getEffectiveModelConfig: b.getEffectiveModelConfig, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, loadEffectiveModelConfig: b.loadEffectiveModelConfig });
     },
     "tauriInteraction": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
@@ -3451,7 +3454,7 @@
     },
     "tauriVoice": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText });
+      return Object.freeze({ setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, cancelVoiceInput: b.cancelVoiceInput, clearVoiceInput: b.clearVoiceInput, appendVoiceText: b.appendVoiceText });
     },
     "tauriKnowledgeModel": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));

@@ -4332,9 +4332,29 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-lock")
                 .unwrap();
-            manager
-                .install_with_python("upload-lock", &std::collections::HashMap::new(), &python)
-                .unwrap();
+            // Store (Preset) reinstall of untrusted dependencies: since
+            // PR #547 Windows fails closed with an explicit error (the
+            // "never execute" contract holds by never reaching the
+            // downloader); other platforms keep warn-skip, the install
+            // succeeds but likewise never reaches the downloader.
+            let reinstall = manager.install_with_python(
+                "upload-lock",
+                &std::collections::HashMap::new(),
+                &python,
+            );
+            // Runtime check (capabilities::is_windows): tests must not use
+            // cfg(target_os) (architecture guard
+            // rust_target_cfg_outside_adapter baseline is 0).
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "the Windows store path must fail closed on untrusted dependencies"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "untrusted wheel lock must never reach the downloader"
@@ -4359,9 +4379,20 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-pip")
                 .unwrap();
-            manager
-                .install("upload-pip", &std::collections::HashMap::new())
-                .unwrap();
+            // Same branch as upload-lock: the Windows store path fails closed
+            // on untrusted pip declarations (PR #547); other platforms install
+            // successfully but pip is never executed.
+            let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
+            if crate::platform::capabilities::is_windows() {
+                assert!(
+                    reinstall
+                        .unwrap_err()
+                        .contains("未经过 Windows 可验证依赖锁"),
+                    "the Windows store path must fail closed on untrusted dependencies"
+                );
+            } else {
+                reinstall.unwrap();
+            }
             assert_eq!(
                 connectors::take_pending_pip_install_result_for_test(),
                 1,
@@ -5349,14 +5380,18 @@ mod tests {
                 variant.builtin,
                 "the folded membership probe must recognize the variant as builtin"
             );
+            // The catalog values track the builtin manifest's current shape:
+            // L1 + read/write since the cross-session messaging tool joined
+            // the family (the fake disk manifest's L2/evil.write must still
+            // never leak through).
             assert_eq!(
                 variant.security_level.as_deref(),
-                Some("L0"),
+                Some("L1"),
                 "audit values must come from the embedded catalog, not the disk manifest"
             );
             assert_eq!(
                 variant.data_access,
-                vec!["sessions.read".to_string()],
+                vec!["sessions.read".to_string(), "sessions.write".to_string()],
                 "data access must come from the embedded catalog"
             );
         });

@@ -211,6 +211,12 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
+/// Full model-visible name of the cross-session send tool
+/// (`mcp_<server>_<tool>` registry convention; server key session-reader,
+/// tool send_message_to_session). Consumed by the execpolicy Ask rule in
+/// [`Pinvou3Bridge::scope_deny_ruleset_with`] and by features::messaging's
+/// audit records.
+pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
 /// The exec-root resolver and "two roots" types for native code sessions are
 /// defined in one place, [`crate::features::sessions`] (SessionStore and the
 /// bridge share the same implementation); this re-export keeps existing call
@@ -2309,6 +2315,7 @@ impl Pinvou3Bridge {
         //     gates on Feature::Mcp, never on allowed_tools — without this
         //     every aux spawn would boot the full MCP server set
         //     (subprocesses + network) and discard 100% of their tools.
+        let is_aux = crate::features::sessions::is_aux_session_id(session_id);
         if is_aux {
             cfg.allowed_tools = Some(Vec::new());
             cfg.instructions = vec![InstructionSource::Inline {
@@ -2424,6 +2431,18 @@ impl Pinvou3Bridge {
         let mut rules = self.cli_deny_rules(session_id);
         rules.extend(self.skill_script_deny_rules(session_id));
         rules.extend(safety_rules);
+        // Cross-session messaging (docs/builtin-toolset-contract.md §5 L1):
+        // a typed Ask rule is registered for send_message_to_session as the
+        // enforcement point of the pending approval-mode split. It does not
+        // prompt today — the engine consults ask rules for exec_shell and
+        // the file tools only, and production sessions run full-auto — so
+        // the working gates are the app's mutating-tool approval posture at
+        // call time and features::messaging's watcher-side validation
+        // (isolated senders/targets). The audit trail is written by
+        // features::messaging at delivery time; the tool name is
+        // single-sourced here (messaging imports it — dependency direction
+        // messaging -> assistant, never the reverse).
+        rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -4309,6 +4328,17 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
+        // plain has no disables → no CLI deny rules. The only rule present is
+        // the always-on cross-session messaging Ask rule (contract §5 L1).
+        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
+        assert_eq!(
+            rs.ask_rules
+                .iter()
+                .map(|r| r.tool.as_str())
+                .collect::<Vec<_>>(),
+            [MESSAGING_SEND_TOOL],
+            "plain defaults to only the cross-session messaging Ask rule"
+        );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
         let all_four_cli_denied = [
@@ -4361,7 +4391,9 @@ mod tests {
         assert!(
             rs.ask_rules
                 .iter()
-                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
+                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
+                    || r.tool == MESSAGING_SEND_TOOL),
+            "every non-messaging rule stays a deny"
         );
 
         // code uninitialized → all 4 built-in CLI binaries denied by default (the
@@ -4372,7 +4404,9 @@ mod tests {
         assert!(
             rs.ask_rules
                 .iter()
-                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
+                .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
+                    || r.tool == MESSAGING_SEND_TOOL),
+            "every non-messaging rule stays a deny"
         );
 
         // code explicitly disables only dingtalk → only dws remains hard-denied
@@ -4543,6 +4577,50 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Cross-session messaging (docs/builtin-toolset-contract.md §5 L1):
+    /// the composed ruleset always carries the typed Ask rule for
+    /// send_message_to_session — the user-confirmation gate that holds in
+    /// every permission mode (a typed ask overrides trusted candidates).
+    #[test]
+    fn scope_deny_ruleset_asks_for_session_messaging_send() {
+        let bridge = fixture_bridge();
+        let ruleset = bridge.scope_deny_ruleset("sess-plain");
+        let rule = ruleset
+            .ask_rules
+            .iter()
+            .find(|r| r.tool == MESSAGING_SEND_TOOL)
+            .expect("the messaging send tool must carry a typed Ask rule");
+        assert_eq!(rule.action, codewhale_execpolicy::PermissionAction::Ask);
+        assert!(
+            rule.command.is_none(),
+            "the ask rule matches any invocation"
+        );
+        // Drift pin: the rule's tool name must stay byte-identical to the
+        // manifest's registered full name (a rename on either side would
+        // silently disarm the registered Ask rule — the approval-mode-split
+        // enforcement point). Asserted here (assistant)
+        // rather than in marketplace: an assistant -> marketplace edge is the
+        // existing direction, and a marketplace -> assistant import would
+        // close a dependency cycle.
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .unwrap()
+                .expect("session-reader is in the embedded catalog");
+        assert!(
+            manifest
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == MESSAGING_SEND_TOOL),
+            "the Ask rule's tool name must match the manifest registration"
+        );
+    }
+
+    /// Channel 3 data source: script directories of scope-disabled skills generate
+    /// deny rules (code uninitialized denies all by default; on this fork
+    /// uninitialized plain = AllowAll, producing no deny rules — DenyAll tightening
+    /// is tracked separately); rules disappear once the skill is enabled; shares one
+    /// ruleset with the CLI binary deny.
 
     /// Channel 3 data source: script directories of scope-disabled skills
     /// (plain/code uninitialized both deny all by default) generate deny

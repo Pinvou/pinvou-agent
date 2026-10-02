@@ -172,8 +172,38 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Write-semantics decision template**: when writing a message into a running session,
   the design must declare queue (wait for the current turn) vs steer (inject into the
   current turn); do not reinvent.
+- **Inter-session delivery semantics** (session-reader `send_message_to_session`,
+  landed 2026-09): a target that is mid-turn gets the message **steered** into its
+  current turn; an idle or not-yet-loaded target gets a **new turn dispatched
+  immediately** (the scheduled-task wake precedent — the receiving session's model
+  sees the message at once and may reply by calling the same tool). Delivery never
+  writes the target's session file directly: the MCP server validates and spools
+  (`~/.pinvou3/messaging/spool/<uuid>.json`), and an app-side Rust watcher performs
+  the steer/dispatch through the engine pool, so the persistence actor's
+  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  carries a machine-readable sender header block (the session-mention block pattern
+  mirrored on receive) that the timeline renders as a sender card and all three
+  auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
-  idempotency key or be naturally idempotent.
+  idempotency key or be naturally idempotent. `send_message_to_session` takes an
+  optional `idempotency_key` (requires `from_session`, so the namespace is
+  never global); the spool file is named by the sender+target-scoped sha256 of
+  `"<from_session>|<to_session>|<key>"`, so a retried call replaces its own
+  pending message and can never clobber another session's (transient delivery
+  failures retry with backoff; poison files are quarantined under
+  `messaging/spool/failed/`).
+- **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
+  model-supplied and unauthenticated — the working gates are the app's
+  mutating-tool approval posture at call time and the watcher-side isolated
+  sender/target validation, plus the audit log; the registered typed Ask rule
+  is the enforcement point awaiting the approval-mode split, not the
+  `from_session` field; delivery is at-least-once (a crash between delivery and the done-marker write replays on
+  next boot); a steer accepted against a mid-turn target can still be dropped
+  by the foundation when that turn is cancelled (the `chat:steer_dropped`
+  window is not yet correlated); receive-side historical sender cards have no
+  "feature off" degradation yet and the `session-messaging` switch is
+  settings.json-only (no UI) — both follow the session-mention precedent and
+  land with the feature's own settings page.
 
 ## 7. Presentation to the model
 
@@ -207,10 +237,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 
 | Tool | Server | Level | Status |
 |---|---|---|---|
-| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
-| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
+| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
+| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| Inter-session messaging (`send_message_to_session`-like) | session-reader | L1 | not initiated; mind sched- ownership and queue/steer semantics in design |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by the app's mutating-tool approval posture at call time + audit log; a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

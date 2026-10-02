@@ -393,6 +393,8 @@ impl SessionStore {
             .clone();
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
+        // Scheduled conversations share the durable store so detail/history can
+        // load them normally, but remain owned by the Scheduled Tasks surface.
         // Multi-agent is a persistent switch on ordinary sessions, not a separate
         // session type; only scheduled sessions are isolated here — all other
         // history goes into the ordinary list.

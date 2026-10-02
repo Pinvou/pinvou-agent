@@ -109,8 +109,18 @@ const chatViewSource = await readFile(
 );
 assert.match(
   chatViewSource,
-  /splitAttachmentLine\(item\.text\)/,
-  'UserBubble must derive body text and attachments from the shared parser',
+  /splitSessionMessageBlock\(item\.text\)/,
+  'UserBubble must strip the received-message sender block first (session_message_block.test.mjs covers the block contract)',
+);
+assert.match(
+  chatViewSource,
+  /splitSessionMentionBlock\(messageSplit\.text\)/,
+  'UserBubble must feed the mention splitter with the message-stripped body (session_mention.test.mjs covers the block contract)',
+);
+assert.match(
+  chatViewSource,
+  /splitAttachmentLine\(mentionSplit\.text\)/,
+  'UserBubble must derive body text and attachments from the shared parser (fed with the mention-stripped text)',
 );
 
 for (const relativePath of [

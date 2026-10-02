@@ -238,7 +238,9 @@ const expectedProtocolHashes = {
   // get_session_workspace_binding query + bound-draft staged mode application
   // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
   // Recomputed for the shared-helper dedup (see batch note above).
-  // Recomputed for the sidecar read-failure surfacing: the persona/review
+  // Recomputed for the merge of the landed builtin-plugin framework
+  // (#585's sidecar read-failure surfacing and builtin toggles) with the
+  // session-mention/aux-chat and cross-session messaging chain: the persona/review
   // reads moved into local loadPersonaEventsForSession /
   // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
   // before degrading to []; same two commands, no new invoke or listen

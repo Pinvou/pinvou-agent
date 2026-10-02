@@ -644,7 +644,7 @@ dictZh.uiToolDetails.showRawErrors = true;
 // 注:weather/iwencai/wecom-bot 的 zh label 由泛化的「API Key/Webhook Key」改为与
 // manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
-  'session-reader':{ title:'会话读取', subtitle:'只读读取本机其他会话的历史记录', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史：在输入框 @ 引用某个会话后，AI 按需翻页读取其内容（默认安装，纯本地读取会话文件，不联网、不上传）。内置插件不可卸载；会话读取能力可经内置功能开关关闭。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
+  'session-reader':{ title:'会话读取', subtitle:'读取本机其他会话的历史记录；可向其他会话发送消息', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史（在输入框 @ 引用某个会话后按需翻页读取），并可向其他会话投递消息（以发送卡片形式送达；默认安装，纯本地读取会话文件，不联网、不上传，投递写入审计）。卸载后 @ 引用会话将无法被读取。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
   card3:{ title:'QQ邮箱 API', subtitle:'智能邮件收发与线程提炼', desc:'提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。' },
@@ -673,19 +673,22 @@ dictZh.uiBuiltinPlugins = {
   sectionTitle:'内置插件',
   kindLabel:'类型',
   pageIntro:'应用自带的内置插件，随应用一起升级。此页面仅用于透明展示其能力与数据访问范围，不提供卸载或开关。',
-  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 受模式控制',
+  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 随模式受控',
+
+
   toolsLabel:'工具清单',
   securityLabel:'安全级别',
   versionLabel:'版本',
   versionNote:'随应用升级',
   dataAccessLabel:'数据访问范围',
   levels:{ L0:'只读：不修改任何状态，内容标注为不可信', L1:'写入：会产生用户可见的副作用（如发消息、建任务）', L2:'破坏性：删除/覆盖等不可逆操作，需显式授权' },
-  dataAccess:{ 'sessions.read':'本机会话存储（只读）' },
+  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息（写入）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
 // §3.3 hook): reused by future per-feature settings pages for the "feature
 // disabled" degradation of existing entry points.
+dictZh.uiBuiltinFeatures = { disabledNotice:'该内置功能已关闭，相关入口与能力已停用。' };
 
 Object.assign(dictZh.uiCodexWorkspace, { showRawErrors:true, operationFailed:'工作区操作失败，请重试' });
 
@@ -913,6 +916,8 @@ dictZh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 
+dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', dropHint:'松开即可引用该会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`打开会话：${label}`, cardUnavailable:'会话已删除', cardDisabled:'功能已关闭' };
+dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'来自另一个会话', jump:name=>`打开会话：${name}`, unavailable:'会话已删除' };
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 

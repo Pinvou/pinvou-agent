@@ -98,7 +98,19 @@ pub(crate) async fn chat_with_reservation(
             .map(|attachment| attachment.basename.clone())
             .unwrap_or_default()
     } else {
-        message.trim().to_string()
+        // A leading session-mention injection block (## Referenced chats
+        // contract + JSON metadata, see session-mention.js) is machine
+        // context, not user body text: strip it before auto-titling so a
+        // refs-only first send does not name the session after the contract.
+        // A received cross-session message block (features::messaging) is
+        // machine context too: strip it OUTERMOST first (the sender block
+        // wraps the body; the body itself may start with a mention block),
+        // matching the frontend parse order in UserBubble.
+        super::sessions::strip_session_mention_block(super::sessions::strip_session_message_block(
+            message.trim(),
+        ))
+        .trim()
+        .to_string()
     };
     if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
         log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");
