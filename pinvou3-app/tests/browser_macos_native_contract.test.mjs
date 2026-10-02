@@ -81,7 +81,7 @@ const main = read('src', 'app', 'main.jsx');
 const normalMacBuildEntrypoints = [
   read('package.json'),
   read('scripts', 'tauri', 'build.js'),
-  readRepo('.github', 'workflows', 'mac-build.yml'),
+  readRepo('.github', 'workflows', 'pr-check.yml'),
   readRepo('.github', 'workflows', 'release-packages.yml'),
   readRepo('scripts', 'release-macos.sh'),
 ].join('\n');

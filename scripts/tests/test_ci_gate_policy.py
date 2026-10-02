@@ -7,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PR_WORKFLOW = ROOT / ".github/workflows/pr-check.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-packages.yml"
-MAC_WORKFLOW = ROOT / ".github/workflows/mac-build.yml"
 REQUIRED_WORKFLOWS = (
     ROOT / ".github/workflows/dco.yml",
     ROOT / ".github/workflows/secret-scan.yml",
@@ -424,7 +423,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # The -D-warnings hard gate must stay in this job (single shared
         # cache); rust-lint must not compile the workspace a second time.
         self.assertIn(
-            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server --locked -- -D warnings",
             knowledge,
         )
         self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
@@ -593,7 +592,6 @@ class CiGatePolicyTests(unittest.TestCase):
 
         for workflow_path in (
             ".github/workflows/pr-check.yml",
-            ".github/workflows/mac-build.yml",
         ):
             self.assertNotIn(
                 workflow_path,
@@ -891,7 +889,7 @@ class CiGatePolicyTests(unittest.TestCase):
                 self.assertIn(name, phase_of)
                 self.assertEqual(phase_of[name], phase)
         self.assertIn("--all-targets --features dev-tools", windows_rust_test)
-        self.assertIn("--lib --no-run --message-format=json", windows_rust_test)
+        self.assertIn("--lib --no-run --locked --message-format=json", windows_rust_test)
 
         # Both legs restore one established namespace; only regression on
         # main may save, so there is no second writer or new key.
@@ -1235,46 +1233,144 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn(match.group(1), secret_scan)
 
-    def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
-        # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
-        # filter 只在该 workflow 被触发后才有机会匹配,因此 bundle_chain 的每条
-        # 路径都必须被 on.push.paths 覆盖;不被覆盖的条目永远不会命中(死条目),
-        # 会误导读者以为该路径变更会跑 smoke(例如 VERSION:VERSION-only push
-        # 不触发 mac-build,版本同步提交经 tauri.conf.json/package.json 进入)。
-        mac_workflow = MAC_WORKFLOW.read_text(encoding="utf-8")
-        trigger_block = mac_workflow.split("\non:", maxsplit=1)[1].split(
-            "\npermissions:", maxsplit=1
-        )[0]
-        trigger_paths = _extract_quoted_paths(trigger_block)
-        self.assertTrue(trigger_paths, "mac-build on.push.paths 解析为空")
-
-        bundle_chain_block = mac_workflow.split(
-            "\n            bundle_chain:", maxsplit=1
-        )[1].split("\n\n", maxsplit=1)[0]
-        bundle_chain_paths = _extract_quoted_paths(bundle_chain_block)
-        self.assertTrue(bundle_chain_paths, "mac-build bundle_chain 解析为空")
-
-        for entry in bundle_chain_paths:
-            self.assertTrue(
-                _is_covered_by_trigger(entry, trigger_paths),
-                f"bundle_chain 路径不被 on.push.paths 覆盖(死条目): {entry}",
+    def test_mac_bundle_smoke_is_gated_on_bundle_chain_paths(self):
+        # mac-build.yml(2026-10 折叠进 pr-check 的 macos-rust-check 前)的
+        # bundle_chain filter 决定何时追加 universal bundle smoke。折叠后 filter
+        # 迁入 pr-check 的 changes job,smoke step 只在 push 且 bundle_chain 命中
+        # 时执行;本测试锁定:filter 条目齐全(漏一条 = 打包链路变更静默跳过
+        # smoke)、smoke step 消费该 output、且 PR/Queue 侧不跑(PR 侧由
+        # release-contract-test 覆盖轻量契约,VERSION bump 由 release-packages
+        # 构建全量 dmg)。VERSION 刻意不在 filter 中:真实版本同步提交必伴随
+        # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain。
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("bundle_chain:", changes)
+        bundle_chain_paths = _extract_quoted_paths(
+            changes.split("            bundle_chain:", maxsplit=1)[1]
+        )
+        self.assertTrue(bundle_chain_paths, "bundle_chain 解析为空")
+        for entry in (
+            "pinvou3-app/scripts/tauri/**",
+            "pinvou3-app/src-tauri/tauri.conf.json",
+            "pinvou3-app/src-tauri/config/**",
+            "pinvou3-app/src-tauri/packaging/**",
+            "pinvou3-app/src-tauri/resources/**",
+            "pinvou3-app/package.json",
+            "pinvou3-app/package-lock.json",
+            "pinvou3-app/vite.config.mjs",
+        ):
+            self.assertIn(
+                entry,
+                bundle_chain_paths,
+                f"bundle_chain 缺少打包链路条目,该路径变更会静默跳过 bundle smoke: {entry}",
             )
 
-    def test_pure_frontend_changes_do_not_trigger_macos_rust_build(self):
-        # Pure-frontend paths must not enter the mac-build trigger set (avoids
-        # needless native builds); but package.json/package-lock.json changes
-        # must trigger (the lockfile affects the build).
-        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py to
-        # remove the duplicated parsing of the same mac-build.yml trigger
-        # block across two files.
-        trigger = MAC_WORKFLOW.read_text(encoding="utf-8").split("\non:", maxsplit=1)[
-            1
-        ].split("\npermissions:", maxsplit=1)[0]
+        macos_job = self.pr_workflow.split(
+            "\n  macos-rust-check:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        smoke_step = macos_job.split(
+            "- name: Tauri bundle smoke", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            smoke_step,
+            "bundle smoke 必须只在 push 且打包链路变更时执行",
+        )
+        self.assertIn(
+            "node scripts/tauri/build.js build --target universal-apple-darwin",
+            smoke_step,
+        )
+        self.assertNotIn(
+            "continue-on-error",
+            smoke_step,
+            "universal bundle smoke 必须能挡掉主线(macos 打包链路坏了必须红)",
+        )
 
-        self.assertIn("'pinvou3-app/src-tauri/**'", trigger)
-        self.assertNotIn("'pinvou3-app/src/**'", trigger)
-        self.assertIn("'pinvou3-app/package.json'", trigger)
-        self.assertIn("'pinvou3-app/package-lock.json'", trigger)
+    def test_pure_frontend_changes_do_not_trigger_macos_rust_build(self):
+        # Pure-frontend paths must not route into the native macOS job (it is
+        # gated by rust filters only), and the bundle_chain filter must not
+        # treat pure-frontend src/** as a packaging-chain change — but
+        # package.json/package-lock.json must stay bundle_chain triggers (the
+        # lockfile affects the build). Formerly pinned the standalone
+        # mac-build.yml trigger; the workflow was folded into pr-check's
+        # macos-rust-check in 2026-10.
+        macos_job = self.pr_workflow.split(
+            "\n  macos-rust-check:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
+            "\n    runs-on:", maxsplit=1
+        )[0]
+        for output in ("frontend", "pet"):
+            self.assertNotIn(
+                f"needs.changes.outputs.{output}",
+                job_if,
+                f"macos-rust-check is a rust gate; {output} changes must not trigger it",
+            )
+
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        bundle_chain_paths = _extract_quoted_paths(
+            changes.split("            bundle_chain:", maxsplit=1)[1]
+        )
+        self.assertNotIn(
+            "pinvou3-app/src/**",
+            bundle_chain_paths,
+            "纯前端 src/** 不得进入 bundle_chain(避免无谓的 native 构建)",
+        )
+        self.assertIn("pinvou3-app/package.json", bundle_chain_paths)
+        self.assertIn("pinvou3-app/package-lock.json", bundle_chain_paths)
+
+    def test_macos_native_regression_legs_survived_the_mac_build_fold(self):
+        # mac-build.yml was deleted in 2026-10 and its push-only coverage was
+        # folded into macos-rust-check. Its old failure mode was silent: the
+        # workflow kept "running" (cancel-failing) for weeks with zero
+        # coverage. Pin each folded leg so removing one cannot go unnoticed.
+        macos_job = self.pr_workflow.split(
+            "\n  macos-rust-check:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+
+        # Full native lib regression: push-only, serial threads, locked.
+        test_step = macos_job.split(
+            "- name: macOS full lib tests", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "if: ${{ github.event_name == 'push' }}", test_step
+        )
+        self.assertIn(
+            "cargo test --lib --features benchmark-hooks --locked -- --test-threads=1",
+            test_step,
+        )
+
+        # The release-fast compile smoke and the verify script stay push-only.
+        release_fast = macos_job.split(
+            "- name: Cargo build (release-fast", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn("github.event_name == 'push'", release_fast)
+        self.assertIn(
+            "cargo build --profile release-fast --target aarch64-apple-darwin --lib",
+            release_fast,
+        )
+        verify_step = macos_job.split(
+            "- name: Verify 脚本", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn("always() && github.event_name == 'push'", verify_step)
+        self.assertIn("./scripts/run-mac-verify.sh --skip-test", verify_step)
+
+        # The computer_use filtered run yields to the full leg on push (the
+        # full suite executes the same tests) and keeps guarding PR legs.
+        computer_use = macos_job.split(
+            "- name: macOS computer_use unit tests", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn("github.event_name != 'push'", computer_use)
+
+        # Deployment-target parity with the release job.
+        self.assertIn('MACOSX_DEPLOYMENT_TARGET: "11.0"', macos_job)
 
     def test_wrapper_smoke_routes_merge_groups_before_platform_matrix(self):
         # rustc-wrapper-smoke must first pass the paths-filter gate before
