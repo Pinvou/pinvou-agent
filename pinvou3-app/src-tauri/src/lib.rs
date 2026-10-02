@@ -788,7 +788,19 @@ pub fn run() {
             // persists the frozen fresh-vs-upgrade verdict, ahead of every
             // first-startup write.
             startup::mark("disabled_bundles_migration:start");
-            let _ = crate::features::marketplace::scope::load_disabled_bundles_startup();
+            let (_, freeze_persist_failed) =
+                crate::features::marketplace::scope::load_disabled_bundles_startup();
+            if freeze_persist_failed {
+                // The CRITICAL log line for this failure fires inside the read
+                // — before the log plugin attaches below — so release builds
+                // would never see it (round-16 review). The startup timeline
+                // file persists from startup::init above and survives.
+                startup::mark_with_detail(
+                    "rust",
+                    "disabled_bundles_migration",
+                    "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
+                );
+            }
             startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);

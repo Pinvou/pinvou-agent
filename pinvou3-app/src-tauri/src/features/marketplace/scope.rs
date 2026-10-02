@@ -696,27 +696,39 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 /// commands — no executor is starved. If the lock file itself cannot be
 /// opened, the read degrades (and logs once): an unsynchronized freeze
 /// would be worse.
-pub fn load_disabled_bundles_startup() -> DisabledBundlesFile {
+///
+/// Returns the read state plus whether a freeze-verdict persist FAILED
+/// during this read (the `UNPERSISTED_VERDICT` memo is armed for this home).
+/// The bool exists because the failure logs at a point where the Tauri log
+/// plugin is not yet attached (round-16 review) — the caller mirrors it
+/// onto the startup timeline, which persists before any logger exists.
+pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
     let _process_guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match open_scope_lock_file() {
+    let (file, read_persists) = match open_scope_lock_file() {
         Ok(file) => {
             let mut lock = fd_lock::RwLock::new(file);
-            let _os_guard = loop {
+            // Some: the OS lock is held for the read below (freezes persist).
+            // None: acquisition failed — degrade to the unlocked,
+            // never-persisting read.
+            let os_guard = loop {
                 match lock.write() {
-                    Ok(guard) => break guard,
+                    Ok(guard) => break Some(guard),
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => {
                         log_scope_read_failure(
                             LOG_LOCK_OPEN,
                             &format!("startup locked read degraded to unlocked: {error}"),
                         );
-                        return read_disabled_bundles_file(false);
+                        break None;
                     }
                 }
             };
-            read_disabled_bundles_file(true)
+            match os_guard {
+                Some(_os_guard) => (read_disabled_bundles_file(true), true),
+                None => (read_disabled_bundles_file(false), false),
+            }
         }
         Err(error) => {
             log_scope_read_failure(
@@ -725,9 +737,21 @@ pub fn load_disabled_bundles_startup() -> DisabledBundlesFile {
                     "cross-process lock unavailable at startup; unlocked read without persist: {error}"
                 ),
             );
-            read_disabled_bundles_file(false)
+            (read_disabled_bundles_file(false), false)
         }
-    }
+    };
+    // A freeze persist failure arms the verdict memo (a first read in this
+    // process, so the memo can only be armed by THIS read); surface it even
+    // though the log line landed before the logger attached. The degraded
+    // arms never persist freezes, so they cannot fail this way.
+    let freeze_persist_failed = read_persists
+        && UNPERSISTED_VERDICT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|(memo_home, _)| *memo_home == paths::pinvou3_home())
+            .unwrap_or(false);
+    (file, freeze_persist_failed)
 }
 
 /// Read under the full lock: read-time repairs persist (serialized with every
@@ -2746,6 +2770,40 @@ mod tests {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .is_none(),
                 "the marker must be cleared by the successful-persist tail"
+            );
+        });
+    }
+
+    /// Round-16 (review): the startup read must report a freeze-persist
+    /// failure. Its CRITICAL log line fires at the top of the Tauri setup
+    /// hook — before the log plugin attaches — so release builds never see
+    /// it; the returned flag is what the host mirrors onto the startup
+    /// timeline. Detector: the verdict memo (a first read in a process arms
+    /// it only when the freeze failed; later reads short-circuit on the memo
+    /// — the in-process verdict deliberately holds until restart). The flag
+    /// converges once a save succeeds: the success tail clears the memos and
+    /// the next startup read re-freezes for real.
+    #[test]
+    fn startup_read_reports_a_failed_freeze_persist() {
+        with_temp_home("pinvou3-scope-startup-freeze-fail", || {
+            FAIL_NEXT_DISABLED_BUNDLES_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let (_, failed) = load_disabled_bundles_startup();
+            assert!(failed, "the failed freeze persist must be reported");
+            // The memo short-circuits later reads, so the flag stays up:
+            // the verdict still is not durably persisted.
+            let (_, still_failed) = load_disabled_bundles_startup();
+            assert!(
+                still_failed,
+                "the memo-held verdict must keep the report up"
+            );
+            // Any successful save clears the memos (success tail); the next
+            // startup read freezes for real.
+            try_save_disabled_bundles_file(&DisabledBundlesFile::default())
+                .expect("the home is writable again");
+            let (_, failed_after_save) = load_disabled_bundles_startup();
+            assert!(
+                !failed_after_save,
+                "a successful persist must clear the report"
             );
         });
     }
