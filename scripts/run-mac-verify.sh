@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mac dev 验证脚本：编译 + 单测 + brew 依赖 + connector CLI 探测 + macOS bundle/plist 校验。
-# 不做 GUI 端到端(需手动)。集成到 mac-build.yml CI 末尾。
+# 不做 GUI 端到端(需手动)。集成到 pr-check 的 macos-rust-check push 腿
+# (2026-10 起;原独立 mac-build.yml 已删除并折叠进该 job)。
 #
 # 用法:
 #   ./scripts/run-mac-verify.sh                 # 完整跑
@@ -42,8 +43,8 @@ if [ "$SKIP_TEST" -eq 0 ]; then
     VERIFY_FAIL=1
   fi
 else
-  # --skip-test:上游 mac-build.yml 已跑 cargo check/test,这里不重复(省 ~10min)。
-  # 后续 step 3-7 用绝对路径,不依赖此处 cwd。
+  # --skip-test:上游 CI(macos-rust-check 的 full lib tests 腿)已跑 cargo test,
+  # 这里不重复(省 ~10min)。后续 step 3-7 用绝对路径,不依赖此处 cwd。
   echo "=== 1/2. cargo check/test (skipped via --skip-test;上游 CI 已跑) ==="
 fi
 
@@ -161,10 +162,22 @@ echo "=== 7. universal 二进制双切片校验 (arm64 + x86_64) ==="
 # 产物由 npx tauri build --target universal-apple-darwin 产出(tauri 内部双切片 + lipo 合成,
 # 非 cargo target)。校验策略:产物存在时验两个切片齐全(核心硬失败);产物不存在只 warn ——
 # verify --skip-test 常在未打包场景跑(本地 dev / 非 main 分支),硬失败会挡住所有未构建
-# universal 的正常流程。main push 时 mac-build.yml 的 bundle smoke 产 universal 产物,
-# 本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
-APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
-if [ -f "$APP_BIN" ]; then
+# universal 的正常流程。main push 时 macos-rust-check 的 bundle smoke 产
+# universal 产物,本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
+# 产物路径按 profile 探测:CI bundle smoke 用 release-fast(-- --profile 透传给
+# cargo,bundle 落在 target/<triple>/release-fast/bundle/ 下),本地完整跑走默认
+# release。2026-10 审计发现此处只认 release/ 路径——CI 冒烟产物永远 miss,下面的
+# 核心硬校验自 mac-build 时代起就没真正激活过;两条路径都认后冒烟产物即时命中。
+UNIVERSAL_BUNDLE_ROOT="$APP_SRC_TAURI/target/universal-apple-darwin"
+APP_BIN=""
+for profile_dir in release-fast release; do
+    candidate="$UNIVERSAL_BUNDLE_ROOT/$profile_dir/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+    if [ -f "$candidate" ]; then
+        APP_BIN="$candidate"
+        break
+    fi
+done
+if [ -n "$APP_BIN" ]; then
     APP_BUNDLE="${APP_BIN%/Contents/MacOS/pinvou3-tauri}"
     BUNDLED_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
     if /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$BUNDLED_INFO_PLIST" >/dev/null 2>&1; then
@@ -202,7 +215,7 @@ if [ -f "$APP_BIN" ]; then
         VERIFY_FAIL=1
     fi
 else
-    echo "  ⚠ universal 产物未构建: $APP_BIN"
+    echo "  ⚠ universal 产物未构建: $UNIVERSAL_BUNDLE_ROOT/{release-fast,release}/bundle/macos/pinvou3.app"
     echo "    (需 npx tauri build --target universal-apple-darwin;main push 时 CI bundle smoke 产出后此校验自动激活)"
 fi
 
