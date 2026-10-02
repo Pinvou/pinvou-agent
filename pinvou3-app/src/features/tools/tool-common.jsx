@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { BookOpen, Building2, ChevronDown, CloudSun, Code, FileText, Hexagon, Layout, LineChart, Mail, MessageCircle, Navigation, Package, Palette, Presentation, Search, Send, TrendingDown, TrendingUp, Video } from '../../components/icons.jsx';
+import { SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_LIST_TOOL, SCHEDULED_TASK_UPDATE_TOOL, scheduledTaskCreateSummary, scheduledTaskDeleteSummary, scheduledTaskListSummary, scheduledTaskUpdateSummary } from './scheduled-task-tool-logic.js';
 import { builtinToolShortName, MODE_CONTROLLED_BUILTIN_SKILL_IDS } from './builtin-plugin-logic.js';
 import { bridge } from '../../hooks/useBridge.js';
 import { _ARTIFACT_FMT, _artifactKind } from '../../shared/artifact-utils.js';
@@ -198,6 +199,17 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           return args.status === 'completed' ? t.tsDone
             : args.status === 'in_progress' ? t.tsInProgress
             : args.status === 'pending' ? t.tsPending : '';
+        // app-automations (scheduled tasks): create summary = task name +
+        // rrule; update = target id + changed fields; delete = target id;
+        // list = the localized verb plus the requested limit.
+        case SCHEDULED_TASK_CREATE_TOOL:
+          return scheduledTaskCreateSummary(args, t.uiScheduledTaskTool.nameQuote);
+        case SCHEDULED_TASK_UPDATE_TOOL:
+          return scheduledTaskUpdateSummary(args);
+        case SCHEDULED_TASK_DELETE_TOOL:
+          return scheduledTaskDeleteSummary(args);
+        case SCHEDULED_TASK_LIST_TOOL:
+          return scheduledTaskListSummary(args, t.uiScheduledTaskTool.listLabel, t.uiScheduledTaskTool.limitSuffix);
         default:
           return '';
       }
