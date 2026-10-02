@@ -58,11 +58,25 @@ struct ProjectsFile {
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
+/// Outcome of moving a session's project membership; the frontend uses it to
+/// show "moved to the project (and added folder xx)".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
-    /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
+    /// The project the session now belongs to; an explicit move-out is
+    /// `None` as well.
+    pub project_id: Option<String>,
+    /// Folder that joined the target project as a side effect
+    /// (canonicalized); `None` when nothing new joined.
     pub added_root: Option<PathBuf>,
+}
+
+/// Report of what deleting a project did: affected sessions are only
+/// unbound (they fall back to implicit grouping), never deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeleteProjectReport {
+    /// Every session that lost its explicit binding, in deterministic
+    /// (sorted) order so cross-process consumers emit stable output.
+    pub affected_session_ids: Vec<String>,
 }
 
 /// Round-8 review M3: a rebind failure must distinguish a genuine overlap
@@ -572,7 +586,7 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+    pub fn delete_project(&self, project_id: &str) -> Result<DeleteProjectReport> {
         let mut state = self.state.write();
         let Some(index) = state
             .projects
@@ -584,12 +598,18 @@ impl ProjectStore {
         state.projects.remove(index);
         // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
         // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected = explicit_assignments_of(&state.assignments, project_id);
+        let mut affected = explicit_assignments_of(&state.assignments, project_id);
+        // The report serializes across processes (the CLI prints it
+        // verbatim); make the order deterministic instead of exposing the
+        // HashMap's iteration order.
+        affected.sort();
         for session_id in &affected {
             state.assignments.remove(session_id);
         }
         persist_locked(&state, &self.path)?;
-        Ok(())
+        Ok(DeleteProjectReport {
+            affected_session_ids: affected,
+        })
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -684,7 +704,10 @@ impl ProjectStore {
             state.assignments.insert(session_id.to_string(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(MoveSessionOutcome { added_root })
+        Ok(MoveSessionOutcome {
+            project_id: project_id.map(str::to_string),
+            added_root,
+        })
     }
 
     /// Pure candidate computation shared by [`plan_rebind_roots`] (the

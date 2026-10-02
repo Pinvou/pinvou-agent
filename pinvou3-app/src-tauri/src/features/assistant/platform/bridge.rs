@@ -4376,6 +4376,17 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
+        // plain has no disables → no CLI deny rules. The only rule present is
+        // the always-on cross-session messaging Ask rule (contract §5 L1).
+        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
+        assert_eq!(
+            rs.ask_rules
+                .iter()
+                .map(|r| r.tool.as_str())
+                .collect::<Vec<_>>(),
+            [MESSAGING_SEND_TOOL],
+            "plain defaults to only the cross-session messaging Ask rule"
+        );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
         let all_four_cli_denied = [
