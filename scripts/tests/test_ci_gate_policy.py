@@ -976,6 +976,16 @@ class CiGatePolicyTests(unittest.TestCase):
                 len(lines),
             )
             block = _without_yaml_comments("\n".join(lines[start:end]))
+            # main's #642 lld probe prints its probe errors with
+            # `cat ... >&2 || true` inside the branch that then exits 1, so
+            # the idiom there cannot mask a gate command's status. Excise
+            # exactly that diagnostic line before the scan; every other
+            # occurrence of the idioms below still fails the pin.
+            block = "\n".join(
+                line
+                for line in block.splitlines()
+                if 'cat "$probe/a.err" "$probe/b.err" >&2 || true' not in line
+            )
             for idiom in ("|| true", "|| :", "|| exit 0"):
                 self.assertNotIn(
                     idiom,
