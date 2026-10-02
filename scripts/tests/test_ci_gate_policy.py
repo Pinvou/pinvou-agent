@@ -1415,14 +1415,22 @@ class CiGatePolicyTests(unittest.TestCase):
         node_step = macos_job.split(
             "- name: Node.js (universal bundle smoke, push only)", maxsplit=1
         )[1].split("\n      - name:", maxsplit=1)[0]
-        self.assertIn("github.event_name == 'push'", node_step)
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            node_step,
+            "node setup is only consumed by the bundle_chain-gated smoke; "
+            "gating it the same way stops paying npm ci on unrelated pushes",
+        )
         self.assertIn(
             "cache-dependency-path: pinvou3-app/package-lock.json", node_step
         )
         npm_step = macos_job.split(
             "- name: 安装前端依赖 (universal bundle smoke, push only)", maxsplit=1
         )[1].split("\n      - name:", maxsplit=1)[0]
-        self.assertIn("github.event_name == 'push'", npm_step)
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            npm_step,
+        )
         self.assertIn("npm ci", npm_step)
         # Provisioning must precede the smoke step in the job body.
         self.assertLess(

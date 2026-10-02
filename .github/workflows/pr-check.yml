@@ -1778,17 +1778,26 @@ jobs:
       # file:line still comes from Location rodata, not debuginfo.
       #
       # [lld experiment, 2026-10-02] Previously thin LTO was deliberately not
-      # mirrored here: Apple ld cannot consume bitcode, so the backends would
-      # run uncapped inside rustc's process. The same was true of Windows
-      # link.exe, and #642 solved it by selecting the bundled lld — this
-      # experiment ports that: select rust-lld's Mach-O port (ld64.lld) for
-      # the outer link so thin LTO's bitcode lands there, with the same
-      # --thinlto-jobs=1/--threads=1 caps the linux leg uses (both flags
-      # exist in lld's Mach-O driver, and it ad-hoc signs arm64 outputs by
-      # default so the linked test binary executes on the runner). The PR
-      # leg exercises the compile + test-binary link + execution; the
-      # push-only release-fast/bundle legs would need their own validation
-      # before any release-path rollout.
+      # mirrored here: with thin LTO the final crate's rustc consumes the
+      # dependency bitcode (cargo compiles deps with -C linker-plugin-lto)
+      # and runs the ThinLTO backends in its own process, and there is no
+      # cap knob — an uncapped in-process pass on a 7 GB runner. This
+      # experiment turns it on and measures. The outer linker never sees
+      # bitcode on any platform (rustc hands it only post-LTO objects, see
+      # the Cargo.toml lto note), so the experiment only swaps the
+      # object-link step to rust-lld's Mach-O port (ld64.lld), which links
+      # those objects faster than Apple ld; --threads=1 caps lld's own
+      # internal threading (lld uses all hardware threads by default) while
+      # --thinlto-jobs=1 stays flag parity with the linux leg but caps
+      # nothing here. Should a follow-up move the backends into lld via
+      # -C linker-plugin-lto on the final crate, the consumer would be this
+      # same bundled rust-lld (LLVM build identical to rustc's, resolved
+      # from the rustc sysroot, never from PATH), so producer and consumer
+      # cannot skew. ld64.lld ad-hoc signs arm64 outputs by default, so the
+      # linked test binary executes on the runner. The PR leg exercises the
+      # compile + test-binary link + execution; the push-only
+      # release-fast/bundle legs would need their own validation before any
+      # release-path rollout.
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_DEV_LTO: "thin"
     steps:
@@ -1814,11 +1823,14 @@ jobs:
 
       # [lld experiment] Probe which stable rustc flag selects the bundled
       # ld64.lld for this apple-darwin toolchain, then export the winning
-      # flags as RUSTFLAGS. Tier order mirrors #642's Windows probe: the
-      # -C linker-features=+lld stabilization is linux-gnu-only, so the
-      # explicit linker+flavor pair is the expected winner; the third tier
-      # drops the thinlto/threads caps if the linked toolchain rejects them
-      # (uncapped backends are the pre-experiment status quo, not a failure).
+      # flags as RUSTFLAGS. Tier order mirrors #642's Windows probe:
+      # -C linker-features=+lld is unstable on every stable target (1.90.0
+      # stabilized only the x86_64-linux -lld opt-out), so tier 1
+      # hard-errors in seconds on stable and the explicit linker+flavor
+      # pair is the expected winner; tier 1 stays so a future +lld
+      # stabilization is picked up automatically. The third tier drops the
+      # thinlto/threads link-args if the toolchain rejects them (uncapped
+      # lld threading is a degradation, not a failure).
       # No -syslibroot is passed: rustc emits it itself for the ld64.lld
       # flavor (the first probe revision injected it by hand into the caps
       # array and broke argv - the SDK path leaked through as an input file,
@@ -1861,7 +1873,6 @@ jobs:
           fi
           echo "probed RUSTFLAGS=$flags"
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
-          echo "MACOS_LLD_EXPERIMENT=1" >> "$GITHUB_ENV"
 
       # bge-m3 is a gitignored large asset (559MB); a clean CI checkout does not have it.
       # Create empty placeholder files to pass tauri-build's resource validation
@@ -1934,12 +1945,14 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      # 前端依赖只为 push 专属的 universal bundle smoke 服务(build.js 内部
-      # require.resolve("@tauri-apps/cli/tauri.js") 且 beforeBuildCommand 跑
-      # vite build,均需 node_modules)。PR 腿(check + computer_use)已实证
-      # 不依赖 node_modules,不装以省时。同原 mac-build.yml 的两个 step。
+      # Frontend deps serve only the push-only universal bundle smoke
+      # (build.js does require.resolve("@tauri-apps/cli/tauri.js") and
+      # beforeBuildCommand runs vite build — both need node_modules). The
+      # PR legs (check + computer_use) are verified not to need
+      # node_modules, so they skip the install to save time. Same two
+      # steps as the old mac-build.yml.
       - name: Node.js (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -1947,7 +1960,7 @@ jobs:
           cache-dependency-path: pinvou3-app/package-lock.json
 
       - name: 安装前端依赖 (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
@@ -1961,7 +1974,10 @@ jobs:
           if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
             echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
             echo "CARGO_PROFILE_RELEASE_FAST_STRIP=none" >> "$GITHUB_ENV"
-            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
+            # Compose, not replace: keep the probed lld linker flags exported
+            # by the probe step above; overwriting RUSTFLAGS here would
+            # silently drop them for the release-fast/bundle legs below.
+            echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-C strip=none" >> "$GITHUB_ENV"
             echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
           else
             echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
