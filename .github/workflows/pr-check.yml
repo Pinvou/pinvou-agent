@@ -1611,6 +1611,14 @@ jobs:
             'owner_claimed' \
             'import_rejects_case_variant_connector_ids' \
             'strips_under_import_lock' \
+            'standalone_components_deny_first' \
+            'market_id_collisions' \
+            'keeps_deny_entries' \
+            'keeps_deny_entry_when' \
+            'credentials_only_after' \
+            'stale_store_record_survives' \
+            'leaves_no_deny_entry' \
+            'entries_in_lock' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
