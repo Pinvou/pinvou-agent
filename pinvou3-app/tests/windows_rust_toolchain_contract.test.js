@@ -207,7 +207,17 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
   assert.match(rustToolchainGuard, /exit 2/u);
   assert.match(rustToolchainGuard, /PINVOU3_MANAGED_RUSTUP -ne "1"/u);
   assert.match(rustToolchainGuard, /\.pinvou3-managed-rustup/u);
+  // The marker value must be verified, not just the filename: a torn write
+  // must be rejected instead of adopted for destructive repair.
+  assert.match(rustToolchainGuard, /pinvou3-managed-rustup-v1/u);
+  assert.match(rustToolchainGuard, /Invalid managed RUSTUP_HOME marker/u);
   assert.match(rustToolchainGuard, /non-empty unmarked RUSTUP_HOME/u);
+  // A repair with RUSTUP_HOME unset must refuse before any path resolution:
+  // [IO.Path]::GetFullPath("") would otherwise resolve to the process CWD.
+  assert.match(
+    rustToolchainGuard,
+    /Refusing automatic repair without an isolated RUSTUP_HOME/u,
+  );
   assert.match(rustToolchainGuard, /\.pinvou3-toolchain\.lock/u);
   assert.match(rustToolchainGuard, /shared RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /filesystem root as RUSTUP_HOME/u);
@@ -241,6 +251,25 @@ test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(rustToolchainGuard, /RepairTimeoutSeconds = 1500/u);
   assert.match(rustToolchainGuard, /exceeded its \{0\}s budget/u);
   assert.match(rustToolchainGuard, /\[ValidateRange\(1, 7200\)\]/u);
+  // The bounded ranges must stay attached to their parameters: without them
+  // a 0/negative timeout makes WaitForExit(0) degenerate into an instant
+  // timeout per attempt.
+  assert.match(
+    rustToolchainGuard,
+    /\[ValidateRange\(1, 3600\)\]\s*\r?\n\s*\[int\]\$InstallAttemptTimeoutSeconds/u,
+  );
+  assert.match(
+    rustToolchainGuard,
+    /\[ValidateRange\(1, 5\)\]\s*\r?\n\s*\[int\]\$RepairAttemptsPerSource/u,
+  );
+  // The lock wait must out-wait the holder's legitimate worst case (the
+  // overall repair budget plus one more bounded install attempt and slack),
+  // so a second build queues behind a live repair instead of failing
+  // spuriously mid-repair.
+  assert.match(
+    rustToolchainGuard,
+    /LockTimeoutSeconds = \(\s*\$RepairTimeoutSeconds \+ \$InstallAttemptTimeoutSeconds \+ 300\s*\)/u,
+  );
   // A rustup kill race (InvalidOperationException, Win32Exception) must count
   // as a failed attempt and must never hang on an unbounded wait or stream
   // read afterwards.
@@ -249,14 +278,31 @@ test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(rustToolchainGuard, /\$stdoutTask\.Wait\(10000\)/u);
 });
 
-test("fallback sources try official before the CN mirrors", () => {
-  const official = rustToolchainGuard.indexOf('"https://static.rust-lang.org"');
-  const rsproxy = rustToolchainGuard.indexOf('"https://rsproxy.cn"');
-  const tuna = rustToolchainGuard.indexOf('"https://mirrors.tuna.tsinghua.edu.cn/rustup"');
-  assert.ok(official > -1, "the official source must stay in the fallback chain");
+test("fallback sources stay mirror-first with pinned endpoints", () => {
+  // Mirror-first per the #619 runtime-download convention: the repair engine
+  // exists for machines where the official source stalls. The endpoints are
+  // pinned exactly — TUNA was dropped because it only mirrors the rolling
+  // channels and 404s on pinned manifests, and a moved or mistyped mirror URL
+  // must not silently strand the fallback chain.
+  assert.match(rustToolchainGuard, /DistServer = "https:\/\/rsproxy\.cn"/u);
+  assert.match(rustToolchainGuard, /UpdateRoot = "https:\/\/rsproxy\.cn\/rustup"/u);
+  assert.match(rustToolchainGuard, /DistServer = "https:\/\/mirrors\.ustc\.edu\.cn\/rust-static"/u);
+  assert.match(rustToolchainGuard, /UpdateRoot = "https:\/\/mirrors\.ustc\.edu\.cn\/rust-static\/rustup"/u);
+  assert.match(rustToolchainGuard, /DistServer = "https:\/\/static\.rust-lang\.org"/u);
+  assert.match(rustToolchainGuard, /UpdateRoot = "https:\/\/static\.rust-lang\.org\/rustup"/u);
+  const fallbackOrder = [
+    rustToolchainGuard.indexOf('DistServer = "https://rsproxy.cn"'),
+    rustToolchainGuard.indexOf('DistServer = "https://mirrors.ustc.edu.cn/rust-static"'),
+    rustToolchainGuard.indexOf('DistServer = "https://static.rust-lang.org"'),
+  ];
   assert.ok(
-    official < rsproxy && rsproxy < tuna,
-    "fallback order must be official, rsproxy, then TUNA",
+    fallbackOrder.every((index) => index >= 0) &&
+      fallbackOrder[0] < fallbackOrder[1] && fallbackOrder[1] < fallbackOrder[2],
+    "fallback order must be mirror-first: rsproxy, USTC, then the official source",
+  );
+  assert.ok(
+    rustToolchainGuard.indexOf('Name = "configured source"') < fallbackOrder[0],
+    "a configured RUSTUP_DIST_SERVER must keep priority over the built-in fallbacks",
   );
 });
 
@@ -289,12 +335,21 @@ test("the repair script retries across download sources with bounded attempts", 
   assert.match(rustToolchainGuard, /Name = "configured source"/u);
   assert.match(rustToolchainGuard, /https:\/\/static\.rust-lang\.org/u);
   assert.match(rustToolchainGuard, /https:\/\/rsproxy\.cn/u);
-  assert.match(rustToolchainGuard, /mirrors\.tuna\.tsinghua\.edu\.cn\/rustup/u);
+  assert.match(rustToolchainGuard, /mirrors\.ustc\.edu\.cn\/rust-static/u);
   assert.match(rustToolchainGuard, /InstallAttemptTimeoutSeconds = 600/u);
   assert.match(rustToolchainGuard, /RepairAttemptsPerSource = 2/u);
   assert.match(rustToolchainGuard, /Repair attempt \$attempt\/\$RepairAttemptsPerSource/u);
   assert.match(rustToolchainGuard, /WaitForExit\(\$TimeoutSeconds \* 1000\)/u);
   assert.match(rustToolchainGuard, /return 124/u);
+  // The Kill() race catch must stay: a rustup exiting inside the kill window
+  // must count as a failed attempt, not abort the whole repair.
+  assert.match(
+    rustToolchainGuard,
+    /catch \[System\.InvalidOperationException\], \[System\.ComponentModel\.Win32Exception\]/u,
+  );
+  // A wedged reset or exhausted repair must tell the operator the safe way
+  // out instead of repeating an opaque failure.
+  assert.match(rustToolchainGuard, /safe to delete the isolated RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /postInstallInvalid/u);
   for (const command of ["cargo", "rustc", "clippy-driver", "rustfmt"]) {
     assert.match(rustToolchainGuard, new RegExp(`"${command}"`, "u"));
@@ -318,6 +373,13 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   );
   assert.match(rustupRepairSmoke, /Refusing to use a filesystem root as RUSTUP_HOME/u);
   assert.match(rustupRepairSmoke, /Refusing to adopt a non-empty unmarked RUSTUP_HOME/u);
+  assert.match(rustupRepairSmoke, /Refusing automatic repair without an isolated RUSTUP_HOME/u);
+  // The guard verdict must actually compare against the expected message: a
+  // neutered comparison would pass vacuously while every pinned string stays.
+  assert.match(
+    rustupRepairSmoke,
+    /-not \$rejectionMessage\.Contains\(\$guard\.Message\)/u,
+  );
   assert.match(rustupRepairSmoke, /Guard rejected/u);
   // The incomplete -CheckOnly branch must execute for real twice: once over
   // the corrupted binaries, once over the removed rust-std target libdir.

@@ -1,13 +1,20 @@
 param(
   [switch]$CheckOnly,
-  [ValidateRange(1, 7200)]
-  [int]$LockTimeoutSeconds = 600,
   [ValidateRange(1, 3600)]
   [int]$InstallAttemptTimeoutSeconds = 600,
   [ValidateRange(1, 5)]
   [int]$RepairAttemptsPerSource = 2,
   [ValidateRange(1, 7200)]
-  [int]$RepairTimeoutSeconds = 1500
+  [int]$RepairTimeoutSeconds = 1500,
+  # A waiter must out-wait the holder's legitimate worst case: the overall
+  # repair budget plus one more bounded install attempt, plus probe/reset
+  # slack. The lock is handle-based and released on crash, so a long wait can
+  # only mean a live, still-useful repair on the other side; a fixed 600s
+  # deadline made a second build on the same checkout fail spuriously while
+  # the holder was legitimately mid-repair.
+  [int]$LockTimeoutSeconds = (
+    $RepairTimeoutSeconds + $InstallAttemptTimeoutSeconds + 300
+  )
 )
 
 $ErrorActionPreference = "Stop"
@@ -200,21 +207,27 @@ try {
     }
   }
 
+  # Mirror-first, matching the #619 runtime-download convention: this engine
+  # exists for machines where the official source stalls, so the CN mirrors
+  # come first and the official source is the last resort. rsproxy serves the
+  # pinned dist manifests from its bare domain; USTC's rust-static carries
+  # both the dist manifests and the rustup update root. TUNA only mirrors the
+  # rolling channels and 404s on pinned manifests, so it is useless here.
   $fallbackSources = @(
-    [pscustomobject]@{
-      Name = "Rust official source"
-      DistServer = "https://static.rust-lang.org"
-      UpdateRoot = "https://static.rust-lang.org/rustup"
-    },
     [pscustomobject]@{
       Name = "rsproxy mirror"
       DistServer = "https://rsproxy.cn"
       UpdateRoot = "https://rsproxy.cn/rustup"
     },
     [pscustomobject]@{
-      Name = "TUNA mirror"
-      DistServer = "https://mirrors.tuna.tsinghua.edu.cn/rustup"
-      UpdateRoot = "https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
+      Name = "USTC mirror"
+      DistServer = "https://mirrors.ustc.edu.cn/rust-static"
+      UpdateRoot = "https://mirrors.ustc.edu.cn/rust-static/rustup"
+    },
+    [pscustomobject]@{
+      Name = "Rust official source"
+      DistServer = "https://static.rust-lang.org"
+      UpdateRoot = "https://static.rust-lang.org/rustup"
     }
   )
 
@@ -399,9 +412,13 @@ try {
         if ([DateTime]::UtcNow -ge $repairDeadline) {
           $repairFailures += "$($source.Name) attempt $attempt (repair budget of $RepairTimeoutSeconds s exhausted)"
           throw (
-            "[rustup] Rust toolchain repair exceeded its {0}s budget; attempts: {1}" -f
+            (
+              "[rustup] Rust toolchain repair exceeded its {0}s budget; attempts: {1}. " +
+              "It is safe to delete the isolated RUSTUP_HOME at {2} and re-run the build."
+            ) -f
             $RepairTimeoutSeconds,
-            ($repairFailures -join "; ")
+            ($repairFailures -join "; "),
+            $managedRustupHome
           )
         }
         Write-Host (
@@ -453,7 +470,10 @@ try {
             "toolchain", "uninstall", $toolchain
           )
           if ($resetExitCode -ne 0) {
-            throw "[rustup] Failed to reset the isolated Rust toolchain: $toolchain"
+            throw (
+              "[rustup] Failed to reset the isolated Rust toolchain: $toolchain. " +
+              "It is safe to delete the isolated RUSTUP_HOME at $managedRustupHome and re-run the build."
+            )
           }
         }
         if ($attempt -lt $RepairAttemptsPerSource) {
@@ -467,9 +487,13 @@ try {
 
     if (-not $repairSucceeded) {
       throw (
-        "[rustup] Failed to repair Rust toolchain {0}; attempts: {1}" -f
+        (
+          "[rustup] Failed to repair Rust toolchain {0}; attempts: {1}. " +
+          "It is safe to delete the isolated RUSTUP_HOME at {2} and re-run the build."
+        ) -f
         $toolchain,
-        ($repairFailures -join "; ")
+        ($repairFailures -join "; "),
+        $managedRustupHome
       )
     }
 
