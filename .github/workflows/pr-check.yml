@@ -979,6 +979,11 @@ jobs:
       #     推过内存峰值并导致 hosted runner 与 GitHub 失联。
       #   - --threads=1:also serialize lld's final link; after BrowserCore enlarged the test
       #     binary, limiting only ThinLTO backends still exhausted hosted-runner memory there.
+      # 机制备注(2026-10 校准):rustc ≥1.90 起 x86_64-linux-gnu 默认就用自带的
+      # rust-lld 自链(mold 实验 PR #644 的失败日志实证:cc 命令行里有 rustc 注入的
+      # -B<sysroot>/.../gcc-ld)。上面的 -fuse-ld=lld 在 jammy gcc 11 下是冗余兜底
+      # (gcc 找不到 ld.lld 时回退 -B 目录的 ld,即 rust-lld),保留为旧工具链/本地
+      # 环境兜底;真正承重的是两个 --thinlto/--threads 守护。
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
