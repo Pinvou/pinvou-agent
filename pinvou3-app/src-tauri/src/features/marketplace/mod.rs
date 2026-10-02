@@ -290,7 +290,13 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
     // exists, skip writing a new one — repeated reads of a file whose
     // recovery cannot complete (unverifiable mcp.json, failing save) must not
     // accumulate timestamped copies. One preserved copy is enough for manual
-    // recovery; deleting it re-arms the quarantine.
+    // recovery; deleting it re-arms the quarantine. Round-16 (review): only a
+    // non-empty REGULAR file counts as a preserved copy — a stray empty file
+    // or a planted directory with the prefix is not evidence, and treating it
+    // as one would skip the quarantine and let the caller overwrite the
+    // genuinely corrupt original with nothing preserved. A real copy is
+    // always write_atomic output (non-empty), so this cannot double-write
+    // over a legitimate copy.
     let sibling_prefix = format!("{name}.corrupt.");
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
@@ -298,6 +304,8 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
                 .file_name()
                 .to_string_lossy()
                 .starts_with(&sibling_prefix)
+                && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry.metadata().map(|m| m.len() > 0).unwrap_or(false)
             {
                 return Ok(());
             }

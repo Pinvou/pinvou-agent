@@ -416,18 +416,6 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
     let content = match read_data_file_shared(&path) {
         Ok(c) => c,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            {
-                // Verdict not yet persisted: this process keeps the first
-                // verdict, denying first-boot traces a chance to re-evaluate.
-                let memo = UNPERSISTED_VERDICT
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if let Some((home, file)) = memo.as_ref() {
-                    if *home == paths::pinvou3_home() {
-                        return file.clone();
-                    }
-                }
-            }
             let home = paths::pinvou3_home();
             // Round-20 MAJOR B, crash-window evidence: a `.corrupt.*` sibling
             // proves a converged-era store EXISTED and was lost without a
@@ -446,6 +434,10 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             // registered case must keep protecting, so the legacy migration
             // is skipped here entirely — legacy files are pre-convergence
             // remnants when the unified store demonstrably existed.
+            // Round-16 (review): this check runs BEFORE the in-process verdict
+            // memo — the memo is this process's own frozen evaluation and may
+            // predate a store-loss episode a sibling proves; the fail-closed
+            // recovery must outrank it.
             if corrupt_sidecar_evidence_exists(&home) {
                 log_scope_read_failure(
                     LOG_RECOVERY,
@@ -474,6 +466,18 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                         Some((home, recovered.clone()));
                 }
                 return recovered;
+            }
+            {
+                // Verdict not yet persisted: this process keeps the first
+                // verdict, denying first-boot traces a chance to re-evaluate.
+                let memo = UNPERSISTED_VERDICT
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some((memo_home, file)) = memo.as_ref() {
+                    if *memo_home == paths::pinvou3_home() {
+                        return file.clone();
+                    }
+                }
             }
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
@@ -569,6 +573,9 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((home, file.clone()));
             }
+            // Clean read (the store read fine or did not exist): degradation
+            // over, re-arm the latch (round-16 review).
+            clear_scope_read_failure_log();
             return file;
         }
         Err(error) => {
@@ -667,6 +674,12 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
     if persist_repairs && normalize_stored_lists(&mut file) {
         save_disabled_bundles_file(&file);
     }
+    // Clean read (the store parsed): degradation over, re-arm the latch
+    // (round-16 review). The recovery arms return before this point and keep
+    // their bit set, so a persistently broken store with a retrying writer
+    // re-logs once per failure mode instead of being silenced by the next
+    // locked load.
+    clear_scope_read_failure_log();
     file
 }
 
@@ -718,12 +731,12 @@ pub fn load_disabled_bundles_startup() -> DisabledBundlesFile {
 }
 
 /// Read under the full lock: read-time repairs persist (serialized with every
-/// other lock holder). Write critical sections load through this.
+/// other lock holder). Write critical sections load through this. The
+/// read-failure latch is re-armed by `read_disabled_bundles_file` itself on
+/// its clean exits only (round-16 review): a locked load that just traveled a
+/// recovery arm must not wipe the bit that arm just set.
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
-    let file = read_disabled_bundles_file(true);
-    // Fully locked and fully readable: degradation over, re-arm the latch.
-    clear_scope_read_failure_log();
-    file
+    read_disabled_bundles_file(true)
 }
 
 /// Corrupt-file recovery core shared by the parse-error and unreadable-salvage
@@ -1217,46 +1230,54 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             .map(|p| p == &home)
             .unwrap_or(false);
         if degraded && path.exists() {
-            // The memo can be stale: a peer process may have healed the store
-            // after this process's persist failed (in-process memos cannot see
-            // the peer's clearing save). Re-verify before preserving — a file
-            // that reads and parses is the live store, not an unreadable
-            // original; renaming it aside would strand a spurious preservation
-            // copy (no data loss either way, but the next read would then
-            // re-derive from sibling evidence instead of the file).
-            let still_unreadable = match std::fs::read(&path) {
-                Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
-                Err(_) => true,
-            };
-            if !still_unreadable {
-                UNREADABLE_ORIGINAL
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
-            } else {
-                let stamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                // Round-21 minor 1: rename-aside copies use their OWN `.unreadable.`
-                // namespace, deliberately distinct from quarantine's `.corrupt.` —
-                // a stale preservation copy must not satisfy the no-sibling rule
-                // and rob a later genuine corruption of its preserved copy. Both
-                // kinds count as store-existed evidence for the NotFound read.
-                let sidecar =
-                    path.with_file_name(format!("disabled_bundles.json.unreadable.{stamp}"));
-                std::fs::rename(&path, &sidecar).map_err(|error| {
-                    format!(
-                        "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
-                        sidecar.display()
-                    )
-                })?;
-                renamed_aside = Some(sidecar.clone());
-                log::warn!(
-                    "[marketplace] unreadable disabled_bundles.json preserved as {} before overwrite",
-                    sidecar.display()
-                );
+            // Round-16 (review): an armed marker must never precede an
+            // unpreserved destruction, so the on-disk bytes are renamed
+            // aside unconditionally. The earlier form re-verified the file
+            // and skipped preservation when it read back parseable — the
+            // right call for a stale memo over a store this process just
+            // read fine, but silently destructive when THIS critical
+            // section's own load was the recovered arm (a transient EIO at
+            // load, clean bytes by save time): the in-memory state then
+            // derives from the fail-closed recovered view, the process
+            // never consumed the real bytes, and overwriting them without
+            // a preservation copy destroyed every persisted opt-out. The
+            // readable-file case now costs one `.unreadable.` evidence
+            // copy — harmless clutter by the round-15 analysis's own
+            // admission — and the still-unreadable case is unchanged. The
+            // success tail below clears the marker.
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                // Same pre-epoch guard as the quarantine copies: a broken
+                // RTC must not collapse every preservation onto stamp 1 —
+                // and since this path has no no-sibling skip (each episode's
+                // bytes may differ, so skipping would destroy the current
+                // bytes unpreserved), the collision loop below keeps every
+                // copy distinct.
+                .unwrap_or(1);
+            // Round-21 minor 1: rename-aside copies use their OWN `.unreadable.`
+            // namespace, deliberately distinct from quarantine's `.corrupt.` —
+            // a stale preservation copy must not satisfy the no-sibling rule
+            // and rob a later genuine corruption of its preserved copy. Both
+            // kinds count as store-existed evidence for the NotFound read.
+            let mut n = stamp;
+            let mut sidecar =
+                path.with_file_name(format!("disabled_bundles.json.unreadable.{n}"));
+            while sidecar.exists() {
+                n += 1;
+                sidecar = path.with_file_name(format!("disabled_bundles.json.unreadable.{n}"));
             }
+            std::fs::rename(&path, &sidecar).map_err(|error| {
+                format!(
+                    "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
+                    sidecar.display()
+                )
+            })?;
+            renamed_aside = Some(sidecar.clone());
+            log::warn!(
+                "[marketplace] disabled_bundles.json preserved as {} before overwrite (unreadable-original marker armed)",
+                sidecar.display()
+            );
         }
     }
     let write_result = (|| {
@@ -1307,11 +1328,19 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             }
         }
     }
-    // Round-19 MAJOR 4: the unreadable-original marker has no payload tuple —
-    // a successful persist means the (renamed-aside) file is the truth again.
-    *UNREADABLE_ORIGINAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    // Round-19 MAJOR 4: the unreadable-original marker stores the arming
+    // home, so the successful-persist clear is home-guarded like the tuple
+    // memos above (round-16 review): a save under home A must not clear a
+    // marker armed for home B (tests switch PINVOU3_HOME; production has
+    // one home).
+    {
+        let mut slot = UNREADABLE_ORIGINAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.as_ref().map(|p| p == &home).unwrap_or(false) {
+            *slot = None;
+        }
+    }
     Ok(())
 }
 
@@ -2658,29 +2687,36 @@ mod tests {
         });
     }
 
-    /// Round-15 (stale-memo hardening): the preservation memo can outlive
-    /// its condition — a peer process may have healed the store after this
-    /// process's persist failed, and in-process memos cannot see the peer's
-    /// clearing save. A save with the memo armed must re-verify the original:
-    /// a file that reads and parses is the live store and must NOT be
-    /// renamed aside as a spurious `.unreadable.` preservation copy; the
-    /// stale memo is cleared instead.
+    /// Round-16 (review): an armed unreadable-original marker must never
+    /// precede an unpreserved destruction. The round-15 form re-verified the
+    /// file and skipped preservation when it read back parseable — right for
+    /// a store this process just read fine (the in-memory state derives from
+    /// it), but silently destructive when THIS critical section's own load
+    /// was the recovered arm (a transient read failure at load, clean bytes
+    /// by save time): the in-memory state then derives from the fail-closed
+    /// recovered view, the process never consumed the real bytes, and the
+    /// overwrite destroyed every persisted opt-out with no copy. The save now
+    /// renames the on-disk bytes aside unconditionally while the marker is
+    /// armed — the readable case costs one `.unreadable.` evidence copy, the
+    /// write lands, and the marker is cleared by the successful-persist tail.
     #[test]
-    fn save_with_stale_unreadable_memo_keeps_a_healed_file() {
+    fn save_with_armed_unreadable_marker_preserves_the_on_disk_store() {
         with_temp_home("pinvou3-scope-stale-memo", || {
             let path = disabled_bundles_path();
-            // A peer healed the store: a perfectly valid file is on disk.
-            std::fs::write(&path, r#"{"scopes":{"plain":["weather"]}}"#).unwrap();
-            // This process still carries the armed preservation memo.
+            let on_disk = r#"{"scopes":{"plain":["weather"]}}"#;
+            // A valid store is on disk (a healed peer, or this section's own
+            // load having hit a transient read failure) while the memo is
+            // armed.
+            std::fs::write(&path, on_disk).unwrap();
             *UNREADABLE_ORIGINAL
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 Some(crate::platform::paths::pinvou3_home());
 
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
-                .expect("a healed file must not block the write");
+                .expect("an armed marker must not block the write");
 
-            let stale: Vec<std::path::PathBuf> = std::fs::read_dir(paths::pinvou3_home())
+            let preserved: Vec<std::path::PathBuf> = std::fs::read_dir(paths::pinvou3_home())
                 .unwrap()
                 .flatten()
                 .map(|e| e.path())
@@ -2691,16 +2727,25 @@ mod tests {
                         .unwrap_or(false)
                 })
                 .collect();
-            assert!(
-                stale.is_empty(),
-                "a healed file must not be preserved as unreadable: {stale:?}"
+            assert_eq!(
+                preserved.len(),
+                1,
+                "the on-disk store must be preserved exactly once before the overwrite: {preserved:?}"
             );
+            assert_eq!(
+                std::fs::read(&preserved[0]).unwrap(),
+                on_disk.as_bytes(),
+                "the preserved copy must carry the on-disk bytes"
+            );
+            let landed = std::fs::read_to_string(&path).expect("the persist must land");
+            serde_json::from_str::<DisabledBundlesFile>(&landed)
+                .expect("the new state must be the live store again");
             assert!(
                 UNREADABLE_ORIGINAL
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .is_none(),
-                "the stale memo must be cleared by the re-verification"
+                "the marker must be cleared by the successful-persist tail"
             );
         });
     }
@@ -4434,7 +4479,9 @@ mod tests {
 fn quarantine_corrupt_disabled_bundles(content: &[u8], error: &str) -> Result<(), String> {
     let path = disabled_bundles_path();
     super::quarantine_corrupt_state_file(&path, content)?;
-    eprintln!(
+    // Log, not stderr (round-16 review): packaged Windows GUIs never see
+    // eprintln output — same routing as the read-failure latch above.
+    log::warn!(
         "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined, attempting the fail-closed reset"
     );
     Ok(())
