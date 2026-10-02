@@ -199,6 +199,17 @@ fn install_marketplace_tool_sync(
     tool_id: &str,
     user_config: &std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
+    // Round-16 (review): probe catalog existence BEFORE the deny-first gate —
+    // a garbage direct-IPC id would otherwise seed phantom deny rows, default-
+    // off markers and ledger entries for a package that cannot exist (pure
+    // over-denial surviving until the next composer full-list write). Same
+    // lookup and same error as the install's own validation, so the UX for a
+    // bad id is unchanged apart from timing.
+    match crate::features::marketplace::mcp_catalog::embedded_manifest(tool_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(format!("工具 '{tool_id}' 不存在")),
+        Err(error) => return Err(error),
+    }
     install_marketplace_tool_gates(tool_id)?;
     crate::features::marketplace::MarketplaceManager::new().install(tool_id, user_config)
 }
@@ -348,12 +359,35 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
         // The tool's own consent sync already ran right after the install
         // commit (round-21 MAJOR 2, before the network validation); only the
         // companion loop remains here.
+        let normalized_tool_id = crate::features::marketplace::scope::to_package_id(&tool_id);
         for sid in mgr.companion_skills(&tool_id) {
+            // Round-16 (review): on the known-pack-shield edge the companion
+            // normalizes to a DIFFERENT pack — its consent write is then a
+            // real registration for that pack and must run deny-first,
+            // BEFORE the install lands content, so a refused registration
+            // aborts with nothing touched (the post-landing sync below stays
+            // as the fail-visible belt; the known-clause makes it skip once
+            // the pre-land registration landed). The common case normalizes
+            // to the tool's own id, which the tool-level sync above already
+            // registered.
+            let divergent =
+                crate::features::marketplace::scope::to_package_id(&sid) != normalized_tool_id;
+            if divergent {
+                crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
+                    .map_err(|refused| {
+                        format!(
+                            "companion skill '{sid}': DenyAll sync refused before anything was installed: {refused}"
+                        )
+                    })?;
+            }
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
+                continue;
+            }
+            if !divergent {
                 continue;
             }
             // A newly installed companion skill joins the DenyAll scope disabled
@@ -371,10 +405,6 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             // refresh covers only the four CLI connector gates). That edge
             // therefore fails the command, exactly like the tool-level
             // sync's fail-visible persist above.
-            let normalized = crate::features::marketplace::scope::to_package_id(&sid);
-            if normalized == crate::features::marketplace::scope::to_package_id(&tool_id) {
-                continue;
-            }
             if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
                 return Err(format!(
@@ -817,6 +847,14 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // anything lands, so a re-install can never destroy the pre-existing
     // copy in a rollback. The gate skips known bundles (their entries ARE
     // the recorded consent), so a reinstall never re-runs the write.
+    // Round-16 (review): existence probe first — same rationale as the tool
+    // install's probe (a garbage id must not seed phantom deny rows); same
+    // lookup and error as the install's own validation.
+    if !crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .preset_skill_exists(skill_id)
+    {
+        return Err(format!("未知预置技能 '{skill_id}'"));
+    }
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -997,8 +1035,12 @@ fn deny_all_pre_land(id: &str, skills: &[String]) -> Result<(), String> {
         .flatten()
         .map(|record| record.installed)
         .unwrap_or(false);
+    // Round-16 (review): one manifest snapshot serves every owner-claim
+    // check below — the per-skill wrapper re-walked all manifests per
+    // component.
+    let tools = crate::features::marketplace::MarketplaceManager::new().available_tools();
     for skill in skills {
-        let owner = crate::features::marketplace::bundle::skill_owner_package(skill);
+        let owner = crate::features::marketplace::bundle::skill_owner_package_with(&tools, skill);
         if owner != *skill {
             continue;
         }
@@ -1824,17 +1866,21 @@ mod tests {
     /// `MarketplaceManager::install`, so a refused registration lands nothing
     /// at all. Driving the gate helper in isolation
     /// (`install_tool_gates_refuse_before_anything_lands`) would stay green
-    /// if the command were reverted to install-first-then-gate; an unknown
-    /// tool id keeps every world hermetic — the fixed world refuses at the
-    /// gate (the error names the lock), while a reverted ordering fails on
-    /// the install's own error, which does not name the lock.
+    /// if the command were reverted to install-first-then-gate. The id is a
+    /// REAL catalog package ("weather"): the round-16 existence probe passes,
+    /// the fixed world refuses at the gate (the error names the lock), and
+    /// the dir/record asserts below are what catch a reverted ordering — an
+    /// install-first shape would land the weather package before the gate
+    /// refused. (Round-15's unknown-id probe of this shape, "gate-wiring-
+    /// probe", became an ordering-blind shortcut when the round-16 existence
+    /// probe moved ahead of the gate: a garbage id now fails with the
+    /// catalog error before any lock is consulted.)
     #[test]
     fn install_tool_sync_refused_before_anything_lands() {
         with_temp_home(|| {
             init_code_scope_then_break_lock();
 
-            let error = install_marketplace_tool_sync("gate-wiring-probe", &Default::default())
-                .unwrap_err();
+            let error = install_marketplace_tool_sync("weather", &Default::default()).unwrap_err();
             assert!(
                 error.contains("disabled_bundles.lock"),
                 "the refusal must come from the consent gate and name the lock \
@@ -1842,16 +1888,66 @@ mod tests {
             );
             assert!(
                 !crate::platform::paths::bundles_root()
-                    .join("gate-wiring-probe")
+                    .join("weather")
                     .exists(),
                 "a refused install must not create the package dir"
             );
             assert!(
                 crate::features::marketplace::store::BundleStore::new()
-                    .get("gate-wiring-probe")
+                    .get("weather")
                     .unwrap()
                     .is_none(),
                 "a refused install must not write an install record"
+            );
+        });
+    }
+
+    /// Round-16 (review): a garbage direct-IPC id must fail on the existence
+    /// probe BEFORE the deny-first gate — otherwise the gate seeds phantom
+    /// deny rows, default-off markers and ledger entries for a package that
+    /// cannot exist (pure over-denial surviving until the next composer
+    /// full-list write, and a dead ledger entry suppressing any future
+    /// startup backfill). Both install lanes are pinned: the error is the
+    /// catalog's own, and the persisted consent state is untouched.
+    #[test]
+    fn install_unknown_ids_write_no_consent_state() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let tool_error =
+                install_marketplace_tool_sync("definitely-not-a-tool", &Default::default())
+                    .unwrap_err();
+            assert!(
+                tool_error.contains("不存在"),
+                "the tool probe must fail with the catalog's own error: {tool_error}"
+            );
+            assert!(
+                !tool_error.contains("disabled_bundles.lock"),
+                "the gate must not have run for a nonexistent id: {tool_error}"
+            );
+
+            let skill_error = install_marketplace_skill_sync("definitely-not-a-skill").unwrap_err();
+            assert!(
+                skill_error.contains("未知预置技能"),
+                "the skill probe must fail with the install's own error: {skill_error}"
+            );
+            assert!(
+                !skill_error.contains("disabled_bundles.lock"),
+                "the gate must not have run for a nonexistent skill: {skill_error}"
+            );
+
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the initialized deny state must gain no phantom rows"
+            );
+            assert!(
+                crate::features::marketplace::scope::load_disabled_bundles_file()
+                    .install_default_synced
+                    .is_empty(),
+                "the sync ledger must gain no dead entries"
             );
         });
     }

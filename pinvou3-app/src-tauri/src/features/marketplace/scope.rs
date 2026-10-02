@@ -21,7 +21,6 @@
 //!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
-use crate::features::marketplace::bundle::skill_owner_package;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -1285,8 +1284,7 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             // and rob a later genuine corruption of its preserved copy. Both
             // kinds count as store-existed evidence for the NotFound read.
             let mut n = stamp;
-            let mut sidecar =
-                path.with_file_name(format!("disabled_bundles.json.unreadable.{n}"));
+            let mut sidecar = path.with_file_name(format!("disabled_bundles.json.unreadable.{n}"));
             while sidecar.exists() {
                 n += 1;
                 sidecar = path.with_file_name(format!("disabled_bundles.json.unreadable.{n}"));
@@ -1841,6 +1839,12 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
 /// On an unreadable store the check errs toward "not known" for the same
 /// reason.
 pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
+    // Round-16 (review): one manifest walk and one skill enumeration serve
+    // the whole gate — the un-hoisted form re-walked every manifest once per
+    // owner-claim check (per candidate record, then again for the claim
+    // clause) and enumerated the installed skills up to twice.
+    let tools = MarketplaceManager::new().available_tools();
+    let installed_skills = SkillMarketplaceManager::new().installed_skill_ids();
     if let Ok(records) = crate::features::marketplace::store::BundleStore::new().records() {
         if records.iter().any(|record| {
             record.id == package_id
@@ -1849,10 +1853,9 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
                 && (crate::platform::paths::bundles_root()
                     .join(&record.id)
                     .is_dir()
-                    || SkillMarketplaceManager::new()
-                        .installed_skill_ids()
+                    || installed_skills
                         .iter()
-                        .any(|skill| skill_owner_package(skill) == record.id))
+                        .any(|skill| skill_owner_package_with(&tools, skill) == record.id))
         }) {
             return true;
         }
@@ -1860,10 +1863,9 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
     if super::bundle::cli_connector_skills_materialized(package_id) {
         return true;
     }
-    SkillMarketplaceManager::new()
-        .installed_skill_ids()
+    installed_skills
         .iter()
-        .any(|skill| skill_owner_package(skill) == package_id)
+        .any(|skill| skill_owner_package_with(&tools, skill) == package_id)
 }
 
 /// retry of the sync is safe (idempotent membership push).

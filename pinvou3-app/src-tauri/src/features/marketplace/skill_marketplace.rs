@@ -415,8 +415,11 @@ impl SkillMarketplaceManager {
     /// a directory-tree SHA-256 fingerprint per installed preset skill
     /// (`preset_update_available`); these paths only care about install state.
     /// Lenient read: a per-entry IO failure counts as "not installed" and is
-    /// swallowed — fine for display/list paths, fail-open for a consent gate.
-    /// The DenyAll default computation must use `installed_skill_ids_strict`.
+    /// swallowed — fine for display/list paths. In the consent gate a miss
+    /// errs toward "not known", i.e. toward REGISTRATION (over-denial,
+    /// fail-closed), so the leniency is safe there too (round-16 review:
+    /// the earlier "fail-open for a consent gate" wording was wrong). The
+    /// DenyAll default computation must still use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         let mut out: Vec<String> = preset_manifests()
             .iter()
@@ -532,6 +535,14 @@ impl SkillMarketplaceManager {
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
         preset_manifests().iter().find(|m| m.id == id)
+    }
+
+    /// Whether `id` names an embedded preset skill (round-16 review): the
+    /// install command's deny-first gate runs an existence probe through this
+    /// so a garbage direct-IPC id cannot seed phantom deny rows for a package
+    /// that cannot exist. Same lookup discipline as `install`'s validation.
+    pub fn preset_skill_exists(&self, id: &str) -> bool {
+        preset_manifests().iter().any(|m| m.id == id)
     }
 
     /// 安装预置技能:从嵌入资源复制到 `bundles/<owner>/skills/<name>/`
