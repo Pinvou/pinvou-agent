@@ -202,7 +202,9 @@ test("the Windows build entry checks the toolchain before building", () => {
 });
 
 test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
-  assert.match(rustToolchainGuard, /workspace-scoped RUSTUP_HOME/u);
+  // Workspace scoping itself is pinned functionally against build.js in the
+  // "isolated RUSTUP_HOME is workspace scoped" test above; here the guard
+  // script's own decisions are pinned.
   assert.match(rustToolchainGuard, /if \(\$CheckOnly\)/u);
   assert.match(rustToolchainGuard, /exit 2/u);
   assert.match(rustToolchainGuard, /PINVOU3_MANAGED_RUSTUP -ne "1"/u);
@@ -232,7 +234,7 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
   );
 });
 
-test("the toolchain probe covers rust-std, not just the four binaries", () => {
+test("the toolchain probe covers rust-std, not just the binaries", () => {
   assert.match(rustToolchainGuard, /function Test-RustStdTargetLib/u);
   assert.match(rustToolchainGuard, /--print target-libdir/u);
   // Every completeness gate must consult the std check: the read-only
@@ -245,6 +247,17 @@ test("the toolchain probe covers rust-std, not just the four binaries", () => {
   );
   assert.match(rustToolchainGuard, /invalidAccountCommands \+= "rust-std"/u);
   assert.match(rustToolchainGuard, /invalidEntries \+= "rust-std"/u);
+  // cargo clippy / cargo fmt shell out to the cargo-clippy/cargo-fmt shims,
+  // so both the account probe and the isolated repair gate must cover them.
+  const probeList = '"cargo", "rustc", "clippy-driver", "rustfmt", "cargo-clippy", "cargo-fmt"';
+  assert.match(
+    rustToolchainGuard,
+    new RegExp(`\\$requiredCommands = @\\(\\s*${probeList}`, "u"),
+  );
+  assert.match(
+    rustToolchainGuard,
+    new RegExp(`foreach \\(\\$command in @\\(\\s*${probeList}`, "u"),
+  );
 });
 
 test("the repair is bounded overall and survives a stalled kill", () => {
@@ -261,6 +274,13 @@ test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(
     rustToolchainGuard,
     /\[ValidateRange\(1, 5\)\]\s*\r?\n\s*\[int\]\$RepairAttemptsPerSource/u,
+  );
+  // The derived lock default is an expression; the range must stay attached
+  // so a caller-passed 0 cannot degenerate into an instant, misleading lock
+  // timeout while an unrelated repair holds the lock.
+  assert.match(
+    rustToolchainGuard,
+    /\[ValidateRange\(1, 7200\)\]\s*\r?\n\s*\[int\]\$LockTimeoutSeconds/u,
   );
   // The lock wait must out-wait the holder's legitimate worst case (the
   // overall repair budget plus one more bounded install attempt and slack),
@@ -281,9 +301,10 @@ test("the repair is bounded overall and survives a stalled kill", () => {
 test("fallback sources stay mirror-first with pinned endpoints", () => {
   // Mirror-first per the #619 runtime-download convention: the repair engine
   // exists for machines where the official source stalls. The endpoints are
-  // pinned exactly — TUNA was dropped because it only mirrors the rolling
-  // channels and 404s on pinned manifests, and a moved or mistyped mirror URL
-  // must not silently strand the fallback chain.
+  // pinned exactly — rsproxy and USTC serve dist manifests and the rustup
+  // update root for rolling and version-pinned channels alike, while TUNA
+  // 404s version-pinned manifests, and a moved or mistyped mirror URL must
+  // not silently strand the fallback chain.
   assert.match(rustToolchainGuard, /DistServer = "https:\/\/rsproxy\.cn"/u);
   assert.match(rustToolchainGuard, /UpdateRoot = "https:\/\/rsproxy\.cn\/rustup"/u);
   assert.match(rustToolchainGuard, /DistServer = "https:\/\/mirrors\.ustc\.edu\.cn\/rust-static"/u);
@@ -325,10 +346,32 @@ test("the repair installs every component pinned in rust-toolchain.toml", () => 
 });
 
 test("the repair script retries across download sources with bounded attempts", () => {
+  // The channel must be read from rust-toolchain.toml at both entry points
+  // (read-only account probe and destructive repair), never hardcoded: the
+  // channel in the toml is the single source of truth and currently floats
+  // with stable.
+  const channelProbe = '\'(?m)^\\s*channel\\s*=\\s*"([^"]+)"\'';
+  assert.ok(
+    (rustToolchainGuard.split(channelProbe).length - 1) >= 2,
+    "both -CheckOnly and the repair path must extract the channel from rust-toolchain.toml",
+  );
+  assert.ok(
+    (rustupRepairSmoke.split(channelProbe).length - 1) >= 1,
+    "the smoke must resolve the channel from rust-toolchain.toml too",
+  );
   assert.match(rustToolchainGuard, /"toolchain", "install"/u);
   assert.match(rustToolchainGuard, /"--profile", "minimal"/u);
   assert.match(rustToolchainGuard, /"toolchain", "uninstall"/u);
+  // The uninstall reset must be bounded like the install: it is the one
+  // rustup call over ~1 GB of files, and an unbounded reset outlasts the
+  // repair budget and the waiters' derived lock deadline.
+  assert.match(
+    rustToolchainGuard,
+    /"toolchain", "uninstall", \$toolchain\s*\)\s*-TimeoutSeconds \$InstallAttemptTimeoutSeconds/u,
+  );
   assert.match(rustToolchainGuard, /RUSTUP_DOWNLOAD_TIMEOUT/u);
+  // The bounded download timeout must have an actual value, not just a name.
+  assert.match(rustToolchainGuard, /RUSTUP_DOWNLOAD_TIMEOUT = "600"/u);
   assert.match(rustToolchainGuard, /function Invoke-Rustup/u);
   assert.match(rustToolchainGuard, /ErrorActionPreference = "Continue"/u);
   assert.match(rustToolchainGuard, /RUSTUP_DIST_SERVER/u);
@@ -351,12 +394,17 @@ test("the repair script retries across download sources with bounded attempts", 
   // out instead of repeating an opaque failure.
   assert.match(rustToolchainGuard, /safe to delete the isolated RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /postInstallInvalid/u);
-  for (const command of ["cargo", "rustc", "clippy-driver", "rustfmt"]) {
+  for (const command of [
+    "cargo", "rustc", "clippy-driver", "rustfmt", "cargo-clippy", "cargo-fmt",
+  ]) {
     assert.match(rustToolchainGuard, new RegExp(`"${command}"`, "u"));
   }
 });
 
 test("the native repair smoke corrupts only its own temporary toolchain", () => {
+  // The smoke must invoke the real repair script, not a vendored copy that
+  // can silently drift from scripts/ci/ensure-rust-toolchain.ps1.
+  assert.match(rustupRepairSmoke, /\.\.\\scripts\\ci\\ensure-rust-toolchain\.ps1/u);
   assert.match(rustupRepairSmoke, /pinvou-rustup-repair-/u);
   assert.match(rustupRepairSmoke, /-CheckOnly/u);
   assert.match(rustupRepairSmoke, /127\.0\.0\.1:1/u);
@@ -374,6 +422,10 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   assert.match(rustupRepairSmoke, /Refusing to use a filesystem root as RUSTUP_HOME/u);
   assert.match(rustupRepairSmoke, /Refusing to adopt a non-empty unmarked RUSTUP_HOME/u);
   assert.match(rustupRepairSmoke, /Refusing automatic repair without an isolated RUSTUP_HOME/u);
+  // The fifth guard (destructive mode without the managed flag) must be
+  // exercised live too, not just text-pinned against the condition.
+  assert.match(rustupRepairSmoke, /Managed = \$null/u);
+  assert.match(rustupRepairSmoke, /PINVOU3_MANAGED_RUSTUP -ErrorAction SilentlyContinue/u);
   // The guard verdict must actually compare against the expected message: a
   // neutered comparison would pass vacuously while every pinned string stays.
   assert.match(
@@ -390,6 +442,22 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   );
   assert.match(rustupRepairSmoke, /A missing rust-std was not detected/u);
   assert.match(rustupRepairSmoke, /InstallAttemptTimeoutSeconds 300/u);
+  // Every environment variable the smoke mutates must be restored on both
+  // the pass and fail paths; pinning only one entry let the others regress.
+  for (const name of [
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+    "PINVOU3_MANAGED_RUSTUP",
+    "RUSTUP_DIST_SERVER",
+    "RUSTUP_UPDATE_ROOT",
+    "RUSTUP_DOWNLOAD_TIMEOUT",
+  ]) {
+    assert.match(
+      rustupRepairSmoke,
+      new RegExp(`@\\("${name}", \\$previous`, "u"),
+      `the smoke must restore ${name} even when it fails`,
+    );
+  }
   assert.match(
     rustupRepairSmoke,
     /RUSTUP_DOWNLOAD_TIMEOUT", \$previousDownloadTimeout/u,
