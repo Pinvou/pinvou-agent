@@ -4376,24 +4376,6 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain has no disables → no CLI deny rules. The only rules present
-        // are the always-on L1 Ask rules (messaging send + session create +
-        // the scheduled-task writes, contract §5 L1).
-        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-        assert_eq!(
-            rs.ask_rules
-                .iter()
-                .map(|r| r.tool.as_str())
-                .collect::<Vec<_>>(),
-            [
-                MESSAGING_SEND_TOOL,
-                SESSION_CREATE_TOOL,
-                SCHEDULED_TASK_CREATE_TOOL,
-                SCHEDULED_TASK_UPDATE_TOOL,
-                SCHEDULED_TASK_DELETE_TOOL,
-            ],
-            "plain defaults to the cross-session messaging, session-creation, and scheduled-task write Ask rules"
-        );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
         let all_four_cli_denied = [

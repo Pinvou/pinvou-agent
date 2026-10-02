@@ -668,7 +668,7 @@ dictJa.uiBuiltinPlugins = {
   sectionTitle:'内蔵プラグイン',
   kindLabel:'タイプ',
   pageIntro:'アプリに同梱され、アプリと共に更新されるプラグインです。このページは能力とデータアクセス範囲の透明な表示のみを目的としており、アンインストールやオフの操作はできません。',
-  readonlyBadge:'内蔵 · 常時有効', readonlyModeBadge:'組み込み · モード制御',
+  readonlyBadge:'内蔵 · 常時有効', readonlyModeBadge:'内蔵 · モード制御',
 
 
   toolsLabel:'ツール一覧',

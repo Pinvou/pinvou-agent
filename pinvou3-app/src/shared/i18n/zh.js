@@ -674,7 +674,7 @@ dictZh.uiBuiltinPlugins = {
   sectionTitle:'内置插件',
   kindLabel:'类型',
   pageIntro:'应用自带的内置插件，随应用一起升级。此页面仅用于透明展示其能力与数据访问范围，不提供卸载或开关。',
-  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 随模式受控',
+  readonlyBadge:'内置 · 始终启用', readonlyModeBadge:'内置 · 受模式控制',
 
 
   toolsLabel:'工具清单',
