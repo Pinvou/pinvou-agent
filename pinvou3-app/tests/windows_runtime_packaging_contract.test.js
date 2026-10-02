@@ -504,10 +504,13 @@ assert.match(
   /isDev && process\.platform === "win32" \? stageWindowsOnnxRuntime\(\) : null/,
   "Windows dev must stage only the pinned ONNX Runtime before starting Tauri",
 );
-assert.doesNotMatch(
+// Positive anchor: only a build/bundle command may widen into the full
+// packaging runtime. A negative "(hasTauriBuildCommand || isDev)" scan would
+// also hit the unrelated Windows toolchain-check gate above.
+assert.match(
   buildScript,
-  /\(hasTauriBuildCommand \|\| isDev\)[\s\S]*?stageWindowsRuntime\(\)/,
-  "Windows dev must not stage the complete packaging runtime",
+  /hasTauriBuildCommand && process\.platform === "win32"\s*\?\s*stageWindowsRuntime\(\)/u,
+  "only a build/bundle command must stage the complete packaging runtime",
 );
 assert.match(
   buildScript,

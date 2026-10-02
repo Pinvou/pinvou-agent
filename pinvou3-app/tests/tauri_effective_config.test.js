@@ -580,6 +580,7 @@ fakeTauriChild.pid = 4242;
 let currentTime = 0;
 let heartbeatCallback = null;
 let heartbeatCleared = false;
+let heartbeatUnrefed = false;
 const tauriResult = runTauri(["build"], {
   environment: tauriEnvironment,
   spawnChild: (command, args, options) => {
@@ -592,7 +593,11 @@ const tauriResult = runTauri(["build"], {
   setIntervalFn: (callback, interval) => {
     assert.equal(interval, 60_000);
     heartbeatCallback = callback;
-    return { unref() {} };
+    return {
+      unref() {
+        heartbeatUnrefed = true;
+      },
+    };
   },
   clearIntervalFn: () => {
     heartbeatCleared = true;
@@ -609,6 +614,11 @@ heartbeatCallback();
 assert.match(tauriLogs[1], /phase=build, elapsed=1m 1s/);
 fakeTauriChild.emit("exit", 0, null);
 assert.equal(heartbeatCleared, true, "the heartbeat must stop once the Tauri CLI exits");
+assert.equal(
+  heartbeatUnrefed,
+  true,
+  "the heartbeat timer must be unrefed so it cannot keep the build process alive",
+);
 assert.match(tauriLogs[2], /phase=build, elapsed=1m 1s, exit=0/);
 async function verifyTauriExitCode() {
   try {
