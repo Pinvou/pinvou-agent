@@ -27,6 +27,7 @@ Run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 from __future__ import annotations
 
 import builtins
+import hashlib
 import importlib.util
 import json
 import os
@@ -647,6 +648,7 @@ class StdioContractTests(unittest.TestCase):
                 "read_session",
                 "list_sessions",
                 "send_message_to_session",
+                "create_session",
             ])
 
             call = self._rpc(proc, "tools/call", {
@@ -1058,6 +1060,241 @@ class SessionsDirResolutionTests(unittest.TestCase):
                 os.environ.pop("PINVOU3_HOME", None)
             else:
                 os.environ["PINVOU3_HOME"] = old
+
+
+
+
+class CreateSessionValidationTests(unittest.TestCase):
+    """create_session: argument validation (contract §5 L1)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-test-")
+        self.requests = Path(self.tmp) / "session-requests"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "title": "早报会话",
+            "first_message": "汇总今天的新闻",
+        }
+        args.update(overrides)
+        # Zero the wait: validation failures return before any polling, and a
+        # passing shape must not stall the suite for RESULT_WAIT_SECONDS.
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+        try:
+            return server.create_session(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_title_and_message_caps(self):
+        _, error = self._call(title="x" * 201)
+        self.assertIn("title", error)
+        _, error = self._call(title="   ")
+        self.assertIn("title", error)
+        _, error = self._call(first_message="x" * (server.MAX_FIRST_MESSAGE_CHARS + 1))
+        self.assertIn("first_message", error)
+        _, error = self._call(first_message=" ")
+        self.assertIn("first_message", error)
+
+    def test_workspace_must_be_absolute_existing_dir(self):
+        _, error = self._call(workspace_path="relative/path")
+        self.assertIn("workspace_path", error)
+        _, error = self._call(workspace_path=str(Path(self.tmp) / "missing"))
+        self.assertIn("workspace_path", error)
+        _, error = self._call(workspace_path="x" * (server.MAX_WORKSPACE_PATH_CHARS + 1))
+        self.assertIn("workspace_path", error)
+        payload, error = self._call(workspace_path=self.tmp)
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+
+    def test_optional_field_caps(self):
+        _, error = self._call(model_id="x" * (server.MAX_MODEL_ID_CHARS + 1))
+        self.assertIn("model_id", error)
+        _, error = self._call(from_title="x" * (server.MAX_SENDER_TITLE_CHARS + 1))
+        self.assertIn("from_title", error)
+
+    def test_idempotency_key_requires_from_session(self):
+        _, error = self._call(idempotency_key="k1")
+        self.assertIn("idempotency_key", error)
+        _, error = self._call(idempotency_key="x" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1))
+        self.assertIn("idempotency_key", error)
+
+    def test_isolated_senders_are_rejected(self):
+        for prefix in ("sched-run1", "aux-side1", "eval_case1", "AUX-X"):
+            _, error = self._call(from_session=prefix)
+            self.assertIsNotNone(error, prefix)
+
+    def test_all_optional_session_create_is_valid(self):
+        payload, error = self._call(title=None, first_message=None)
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+
+
+class CreateSessionSpoolAndResultTests(unittest.TestCase):
+    """create_session: spool write, idempotency, result-marker wait."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-spool-")
+        self.requests = Path(self.tmp) / "session-requests"
+        self._old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+
+    def tearDown(self):
+        server.RESULT_WAIT_SECONDS = self._old_wait
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "title": "早报会话",
+            "first_message": "汇总今天的新闻",
+        }
+        args.update(overrides)
+        return server.create_session(**args)
+
+    def _spool_dir(self):
+        return Path(self.requests, "spool")
+
+    def _spooled(self):
+        return sorted(self._spool_dir().glob("*.json"))
+
+    def _write_marker(self, spool_id, payload):
+        done = self._spool_dir() / ".done"
+        done.mkdir(parents=True, exist_ok=True)
+        (done / ("%s.json" % spool_id)).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_valid_request_spools_full_record(self):
+        payload, error = self._call(
+            title="早报会话",
+            first_message="汇总今天的新闻",
+            workspace_path=self.tmp,
+            model_id="m1",
+            from_session="src0001",
+            from_title="源会话",
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertFalse(payload["duplicate"])
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["title"], "早报会话")
+        self.assertEqual(record["first_message"], "汇总今天的新闻")
+        self.assertEqual(record["workspace_path"], str(self.tmp))
+        self.assertEqual(record["model_id"], "m1")
+        self.assertEqual(record["from_session"], "src0001")
+        self.assertEqual(record["from_title"], "源会话")
+        self.assertEqual(record["idempotency_key"], None)
+
+    def test_idempotency_key_reuses_one_spool_file(self):
+        for _ in range(2):
+            self._call(first_message="首次", from_session="src0001", idempotency_key="k1")
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["first_message"], "首次")
+
+    def test_spool_file_name_is_sender_scoped_sha256(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        files = self._spooled()
+        expected = hashlib.sha256(
+            "src0001|create|k1".encode("utf-8")).hexdigest()
+        self.assertEqual(files[0].stem, expected)
+
+    def test_no_key_uses_unique_files(self):
+        self._call()
+        self._call()
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_marker_hit_returns_session_ids(self):
+        self._call(title="早报会话", from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {
+                "ok": True, "session_id": "sess0001", "title": "早报会话",
+            })
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(title="早报会话", from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["sessionId"], "sess0001")
+        self.assertEqual(payload["title"], "早报会话")
+        self.assertTrue(payload["ok"])
+
+    def test_preexisting_marker_reports_duplicate_result(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        self._write_marker(spool_id, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+        })
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual(payload["sessionId"], "sess0001")
+
+    def test_failed_marker_surfaces_as_error(self):
+        # A stale failure marker is unlinked on re-spool (fresh attempt), so
+        # the error must land DURING this call's wait to be surfaced.
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {"ok": False, "error": "model_id 不存在"})
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(payload)
+        self.assertIn("model_id", error)
+
+    def test_retry_after_failure_gets_fresh_result_not_stale_error(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        self._write_marker(spool_id, {"ok": False, "error": "transient"})
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {
+                "ok": True, "session_id": "sess0002", "title": "重试会话",
+            })
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["sessionId"], "sess0002")
+
+    def test_spool_errors_do_not_leak_host_paths(self):
+        # A regular file occupying the spool path makes makedirs fail: the
+        # error must be the sanitized fixed message, never the OSError text.
+        self.requests.mkdir(parents=True)
+        (self.requests / "spool").write_text("not a dir", encoding="utf-8")
+        _, error = self._call()
+        self.assertEqual(error, "session request queue is not writable")
+
+    def test_wait_timeout_returns_pending_not_error(self):
+        payload, error = self._call()
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertIn("queued", payload["note"])
 
 
 if __name__ == "__main__":

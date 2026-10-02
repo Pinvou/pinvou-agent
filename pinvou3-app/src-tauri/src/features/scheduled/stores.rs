@@ -74,6 +74,11 @@ impl Default for ScheduledTaskModelBindingRegistry {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ScheduledTaskKindEntry {
     pub(crate) kind: String,
+    /// `session_message` kind parameter: the session the message is delivered
+    /// into at each fire. Absent for every other kind; skipped on
+    /// serialization so older entries keep their exact on-disk shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target_session: Option<String>,
     pub(crate) updated_at: String,
 }
 
@@ -752,6 +757,10 @@ pub(crate) enum ScheduledTaskKindLookup {
     Chat,
     /// Created as a memory-organize task; the executor runs it app-side.
     MemoryOrganize,
+    /// Created as a scheduled-message task; each fire delivers the stored
+    /// prompt into the target session (steer / new turn) instead of starting
+    /// a new conversation.
+    SessionMessage { target_session: String },
     /// An entry exists but its value is not a kind this build supports
     /// (hand-edited sidecar, or a task written by a different app version).
     /// The executor must fail such a run instead of degrading it to a chat
@@ -761,15 +770,19 @@ pub(crate) enum ScheduledTaskKindLookup {
 }
 
 impl VersionedJsonStore<ScheduledTaskKindRegistry> {
-    /// Reads the task kind for DTO display. Only `memory_organize` is a
-    /// supported kind for now; any other value left in the file surfaces as
-    /// None (an ordinary chat task), mirroring the creation-side allow-list.
-    /// The executor uses [`Self::kind_lookup_for`] instead, which distinguishes
-    /// an unsupported value from no entry at all.
+    /// Reads the task kind for DTO display. `memory_organize` and
+    /// `session_message` are the supported kinds; any other value left in
+    /// the file surfaces as None (an ordinary chat task), mirroring the
+    /// creation-side allow-list. The executor uses [`Self::kind_lookup_for`]
+    /// instead, which distinguishes an unsupported value from no entry at
+    /// all.
     pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
         match self.kind_lookup_for(automation_id) {
             ScheduledTaskKindLookup::MemoryOrganize => {
                 Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            }
+            ScheduledTaskKindLookup::SessionMessage { .. } => {
+                Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE.to_string())
             }
             ScheduledTaskKindLookup::Chat | ScheduledTaskKindLookup::Unsupported(_) => None,
         }
@@ -781,6 +794,17 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
             None => ScheduledTaskKindLookup::Chat,
             Some(entry) => match entry.kind.as_str() {
                 SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE => match entry.target_session.as_deref() {
+                    Some(target) if !target.trim().is_empty() => {
+                        ScheduledTaskKindLookup::SessionMessage {
+                            target_session: target.trim().to_string(),
+                        }
+                    }
+                    // A target-less session_message entry is drift (the
+                    // creation path never writes one): fail the run like an
+                    // unsupported kind instead of guessing.
+                    _ => ScheduledTaskKindLookup::Unsupported(entry.kind.clone()),
+                },
                 other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
             },
         }
@@ -802,6 +826,7 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
                     automation_id.to_string(),
                     ScheduledTaskKindEntry {
                         kind,
+                        target_session: None,
                         updated_at: chrono::Utc::now().to_rfc3339(),
                     },
                 );
@@ -819,6 +844,56 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Kind + delivery target in one entry (the `session_message` kind's
+    /// parameter). Same persist/restore discipline as [`Self::set_kind`].
+    pub(crate) fn set_kind_with_target(
+        &self,
+        automation_id: &str,
+        kind: &str,
+        target_session: &str,
+    ) -> Result<()> {
+        if automation_id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        // Defensive: a target entry only makes sense for the session_message
+        // kind, and a blank target would strand the task in the drift path
+        // (runs fail instead of degrading to chat).
+        if kind != SCHEDULED_TASK_KIND_SESSION_MESSAGE {
+            bail!("only the session_message kind carries a target session");
+        }
+        if target_session.trim().is_empty() {
+            bail!("target session cannot be empty");
+        }
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(automation_id).cloned();
+        registry.tasks.insert(
+            automation_id.to_string(),
+            ScheduledTaskKindEntry {
+                kind: kind.to_string(),
+                target_session: Some(target_session.trim().to_string()),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        if let Err(error) = self.persist(&registry) {
+            <ScheduledTaskKindRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                previous,
+            );
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The stored delivery target of a `session_message` task (None for any
+    /// other kind or a drifted entry).
+    pub(crate) fn target_session_for(&self, automation_id: &str) -> Option<String> {
+        match self.kind_lookup_for(automation_id) {
+            ScheduledTaskKindLookup::SessionMessage { target_session } => Some(target_session),
+            _ => None,
+        }
     }
 }
 
