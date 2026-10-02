@@ -1153,10 +1153,13 @@ class CiGatePolicyTests(unittest.TestCase):
             changes,
         ).group(1)
         for trigger in (
+            ".github/workflows/pr-check.yml",
             "pinvou3-app/scripts/ci/**",
             "pinvou3-app/scripts/tauri/build.js",
             "pinvou3-app/tests/windows_rustup_repair_smoke.ps1",
+            "pinvou3-app/tests/windows_rust_toolchain_contract.test.js",
             "pinvou3-app/src-tauri/rust-toolchain.toml",
+            "pinvou3-app/package.json",
         ):
             self.assertIn(trigger, repair_filter)
 

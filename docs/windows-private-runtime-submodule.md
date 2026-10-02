@@ -101,8 +101,9 @@ push 或在 `main` 上执行的 `workflow_dispatch` 才能进入 `windows-releas
 
 Before any Windows `tauri dev`, `build` or `bundle`, `build.js` runs
 `scripts/ci/ensure-rust-toolchain.ps1 -CheckOnly` against the build account's
-rustup. When the toolchain pinned in `src-tauri/rust-toolchain.toml` provides
-`cargo`, `rustc`, `clippy-driver`, `rustfmt` and a populated rust-std target
+rustup. When the toolchain channel configured in `src-tauri/rust-toolchain.toml`
+(currently the floating `stable`) provides `cargo`, `rustc`, `clippy-driver`,
+`cargo-clippy`, `rustfmt`, `cargo-fmt` and a populated rust-std target
 libdir, it is reused read-only. Otherwise the build switches to an isolated
 `RUSTUP_HOME` (`pinvou3-app/.cache/rustup/<channel>-<host-triple>`, overridable
 with `PINVOU3_RUSTUP_HOME`) and repairs the toolchain there, trying a
@@ -114,7 +115,11 @@ refuses to modify the account's shared `~/.rustup`, a filesystem root, any
 non-empty directory that lacks its `.pinvou3-managed-rustup` marker, or a run
 without an isolated `RUSTUP_HOME`. If a repair, reset, or the budget runs out,
 the error names the isolated `RUSTUP_HOME`, which is always safe to delete and
-re-run. `npm run test:windows-rustup-repair`
+re-run. The probes only check presence and health, so under the floating
+`stable` channel a reused isolated toolchain stays at the stable it was
+installed with until a probe fails or the home is deleted; account-home
+`rustup update` and CI installs do not refresh it. `npm run
+test:windows-rustup-repair`
 exercises this path natively on Windows, including the incomplete `-CheckOnly`
 classifications and a removed rust-std. While Tauri runs, `build.js` logs the
 CLI PID, phase and a heartbeat every minute.
@@ -124,10 +129,11 @@ reuses, while it is not older than its source) `src-tauri/scripts/rustc-stack-wr
 and passes it to the Tauri CLI through `RUSTC_WRAPPER`, so `npm run dev` from
 PowerShell gets the same 16 MiB compiler stack as `run-dev.sh` and CI without
 leaking `RUST_MIN_STACK` into the app. A recompilation writes a temporary
-output and renames it into place, so an interrupted build cannot poison the
-cache. An explicit caller `RUSTC_WRAPPER` is kept (it logs that the stack fix
-is then not applied); a missing wrapper source or a failed compile stops the
-build.
+output and renames it into place (the shell selector compiles the same way),
+so an interrupted build cannot poison the cache. An explicit caller
+`RUSTC_WRAPPER` is kept (the log states whether it is this stack wrapper or a
+foreign one such as sccache that forgoes the stack fix); a missing wrapper
+source or a failed compile stops the build.
 
 resolver 只负责验证、展开运行时并生成 `target/windows-runtime/runtime-descriptor.json`；
 `scripts/tauri/windows-installer.js` 只在目标包含 NSIS 时消费 descriptor 中的 VC Runtime。

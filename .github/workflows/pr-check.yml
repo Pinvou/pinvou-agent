@@ -403,6 +403,7 @@ jobs:
               - 'pinvou3-app/scripts/ci/**'
               - 'pinvou3-app/scripts/tauri/build.js'
               - 'pinvou3-app/tests/windows_rustup_repair_smoke.ps1'
+              - 'pinvou3-app/tests/windows_rust_toolchain_contract.test.js'
               - 'pinvou3-app/src-tauri/rust-toolchain.toml'
               - 'pinvou3-app/package.json'
 
@@ -2054,7 +2055,11 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.windows_rustup_repair == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The smoke keeps the engine's production 1500 s repair budget; a
+    # pathological all-sources-stall run must clip after the engine's own
+    # diagnostics, not before them, so the cap needs headroom over checkout +
+    # setup + the toolchain copy + that budget.
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -2064,13 +2069,13 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Install the pinned Rust toolchain
+      - name: Install the configured Rust toolchain
         shell: pwsh
         run: |
           $config = Get-Content pinvou3-app/src-tauri/rust-toolchain.toml -Raw
           $match = [regex]::Match($config, '(?m)^\s*channel\s*=\s*"([^"]+)"')
           if (-not $match.Success) {
-            throw "Unable to read the pinned Rust toolchain."
+            throw "Unable to read the Rust toolchain channel."
           }
           rustup toolchain install $match.Groups[1].Value `
             --profile minimal --component clippy --component rustfmt --no-self-update
@@ -2087,7 +2092,7 @@ jobs:
 
       # The smoke copies the account toolchain into a temporary RUSTUP_HOME,
       # deletes cargo.exe/rustc.exe there, and requires the repair script to
-      # fail over from an unreachable source to the official source.
+      # fail over from an unreachable source to the next mirror in the chain.
       - name: Isolated toolchain repair and download-source fallback
         run: npm --prefix pinvou3-app run test:windows-rustup-repair
 
