@@ -691,9 +691,10 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
-            'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '
+            'RUSTFLAGS: "-C link-arg=-B/usr/local/libexec/mold '
             '-C link-arg=-Wl,--thinlto-jobs=1 '
-            '-C link-arg=-Wl,--threads=1"',
+            '-C link-arg=-Wl,--threads=1 '
+            '-C link-arg=-Wl,--no-fork"',
             rust_test,
         )
 

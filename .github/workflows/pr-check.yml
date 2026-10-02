@@ -977,7 +977,12 @@ jobs:
       #     binary, limiting only ThinLTO backends still exhausted hosted-runner memory there.
       # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
       CARGO_PROFILE_DEV_LTO: "thin"
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
+      # [mold experiment] 外层链接器 lld → mold(-B 注入;jammy gcc 11 不认
+      # -fuse-ld=mold)。bitcode 走 mold 的 linker-plugin 接口(LLVMgold),两个内存
+      # 守护原样保留(--thinlto-jobs 被 mold 映射到插件 jobs=,--threads 是其自身
+      # 并发;--no-fork 让 /usr/bin/time 看得到 link 子进程的 RSS)。回退 = 把 -B 行
+      # 换回 -fuse-ld=lld。
+      RUSTFLAGS: "-C link-arg=-B/usr/local/libexec/mold -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1 -C link-arg=-Wl,--no-fork"
       # Cargo.toml [profile.dev] 固化 line-tables-only(本地调试体验);CI 改为完全
       # 关闭 DWARF:panic 的 file:line 由 Location(rodata)提供,不依赖 debuginfo。
       # 关掉后缩小目标文件与测试二进制体积,降低 ThinLTO link 内存峰值和 target
@@ -1025,6 +1030,38 @@ jobs:
       # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
       - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
         run: bash scripts/ci-libpipewire-build.sh
+
+      # [mold experiment, 2026-10-02] Swap the outer linker from lld to mold for
+      # this leg and A/B it against the lld baseline. Motivation and constraints:
+      # - With CARGO_PROFILE_DEV_LTO=thin, cargo/rustc hand LLVM bitcode to the
+      #   linker, so the "outer link" splits into the in-linker ThinLTO backends
+      #   plus classic symbol resolution/output writing. mold implements the GCC
+      #   linker-plugin API (it loads LLVMgold.so for the bitcode work) and is
+      #   typically much faster than lld at the classic phase; whether that shows
+      #   up here (and whether peak RSS drops) is exactly what this experiment
+      #   measures via the /usr/bin/time -v lines.
+      # - Platform reach: mold is ELF/Linux-only. Windows (MSVC) and macOS
+      #   (Mach-O) are out of scope; the release debs stay on lld for now
+      #   (shipped-artifact changes need their own ELF-policy validation).
+      # - Version pinned by SHA-256 like gitleaks/actionlint. jammy's apt mold
+      #   is 1.0.3 (Dec 2021, pre-Rust-rewrite); the release tarball is
+      #   statically linked and ships libexec/mold/ld, which gcc's -B flag
+      #   accepts — jammy's gcc 11 rejects `-fuse-ld=mold` outright (needs
+      #   gcc >= 12.1), so -B is the portable wiring.
+      # - `--no-fork` keeps mold's link in the measured process tree: by
+      #   default mold forks a child that does the linking, and orphaned
+      #   grandchildren escape /usr/bin/time's rusage, which would silently
+      #   under-report the very Max RSS this experiment exists to compare.
+      - name: Install mold linker (experiment)
+        run: |
+          set -euo pipefail
+          curl --retry 3 -fsSL -o /tmp/mold.tar.gz \
+            "https://github.com/rui314/mold/releases/download/v2.42.1/mold-2.42.1-x86_64-linux.tar.gz"
+          echo "6ff270c9bf07d2bec5c98aa324eb7c4daf6a1a4d815c05ff1708049616047855  /tmp/mold.tar.gz" | sha256sum --check -
+          sudo tar -xzf /tmp/mold.tar.gz -C /usr/local --strip-components=1
+          /usr/local/bin/mold --version
+          echo "LINKER=mold-2.42.1" >> "$GITHUB_ENV"
+
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
