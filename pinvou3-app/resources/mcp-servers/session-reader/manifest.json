@@ -1,14 +1,15 @@
 {
   "id": "session-reader",
   "name": "会话读取",
-  "description": "只读、分页读取本机其他 Pinvou 会话的历史记录（配合输入框 @ 引用会话使用）；并支持向其他会话发送消息（发送即投递，接收方会话中以发送卡片展示，投递写入审计）",
-  "version": "1.1.0",
+  "description": "只读、分页读取本机其他 Pinvou 会话的历史记录（配合输入框 @ 引用会话使用）；并支持向其他会话发送消息（发送即投递，接收方会话中以发送卡片展示，投递写入审计）；以及创建新会话并可附带首条消息（写入需逐次确认）",
+  "version": "1.2.0",
   "icon": "message-square",
   "category": "效率工具",
   "mcp_tools": [
     "mcp_session-reader_read_session",
     "mcp_session-reader_list_sessions",
-    "mcp_session-reader_send_message_to_session"
+    "mcp_session-reader_send_message_to_session",
+    "mcp_session-reader_create_session"
   ],
   "command": "python",
   "args": [
@@ -33,6 +34,9 @@
     ],
     "mcp_session-reader_send_message_to_session": [
       "session-messaging"
+    ],
+    "mcp_session-reader_create_session": [
+      "session-creation"
     ]
   }
 }
