@@ -29,7 +29,7 @@ on the app crate; only `pet` is exempt from both filters.
 
 ## What the job runs
 
-The job shell is `bash`; four steps opt into `pwsh`. Steps 1-4 and the
+The job shell is `bash`; four steps opt into `pwsh`. Steps 1-5 and the
 cache restore run on both legs; the leg of every later step is noted. In
 order:
 
@@ -175,13 +175,15 @@ the previous 90-minute cap during the link step, and run 34802015051 was
 cancelled mid-build after PR #478 added the full `pinvou-cli` workspace
 compile, so the cap moved to 180. The 2026-10 stable rollover to 1.99.0 then
 invalidated the rust-cache key and the cold test-binary link OOM'd (see the
-previous section), consuming the whole 180-minute budget twice
-(runs 36919362322 and 36940184038), so `timeout-minutes` is now 240 —
-headroom for one fully cold toolchain rollover per channel bump; the cap
+previous section), killed at the 180-minute cap (run 36919362322) and then,
+after the cap moved to 240, at that cap too (run 36940184038) — the raise
+alone could not fix an out-of-memory link. `timeout-minutes` is therefore 240
+together with the link-memory recipe above, with headroom for one fully cold
+toolchain rollover per channel bump; the cap
 applies per leg, since either leg can still compile cold on a cache miss.
 
-On failure, read the import-diagnostic output (step 9) and the failing filter
-name (steps 10–11); cache restore misses stay visible rollback signals. Do not
+On failure, read the import-diagnostic output (step 10) and the failing filter
+name (steps 11-12); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing
 failures to warnings, or adding another independent large target cache beyond
