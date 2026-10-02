@@ -2140,7 +2140,6 @@ mod tests {
                 content_fingerprint: Some("fp".to_string()),
                 installed_at: "2026-09-30T00:00:00+00:00".to_string(),
                 degraded: None,
-                assets: Vec::new(),
                 extra: serde_json::Map::new(),
             })
             .unwrap();
@@ -2205,7 +2204,6 @@ mod tests {
                 content_fingerprint: Some("fp".to_string()),
                 installed_at: "2026-09-30T00:00:00+00:00".to_string(),
                 degraded: None,
-                assets: Vec::new(),
                 extra: serde_json::Map::new(),
             })
             .unwrap();

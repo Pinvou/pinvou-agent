@@ -254,3 +254,36 @@
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
 
 §6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。
+
+
+---
+
+## 10. 实施扩展记录：定时消息（session_message kind，2026-09-29，同分支追加定稿）
+
+在 §9 的 CRUD 基础上增加第三种任务 kind：`session_message`（定时消息）——到点不新建对话，而是把任务 prompt 投递进指定会话（忙则 steer、闲则新 turn，复用 features/messaging 的投递语义）。
+
+### 10.1 设计要点
+
+| 决策点 | 结论 | 理由 |
+|---|---|---|
+| 形态 | 任务 kind，而非新工具族 | 调度/CRUD/面板/暂停恢复/运行历史全部复用；新开调度环是重复建设 |
+| kind 推导 | create 的 `target_session` 字段出现即 session_message；update 的 `target_session` 仅为既有 session_message 任务的改投目标（retarget），不能把普通任务变成定时消息 | 工具面与面板同构表达，无半指定状态；显式 kind 参数与之互斥 |
+| 目标白名单 | 仅普通会话；sched-/aux-/eval_ 全层拒绝（server 校验、watcher 重校验、executor 每次投递前再校验） | 定时唤醒无人值守会话是递归方向；隔离前缀语义沿用契约 §5 |
+| target 存储 | 复用 task-kinds sidecar（entry 增量加 target_session 字段） | 不新建 store 文件；旧记录经 serde default 兼容 |
+| 消息体 | 即任务 prompt（≤32k，与消息通道同限） | 上限在 create 与 update 都校验，executor 每次投递前兜底复检；面板/详情/运行记录天然展示，无新字段 |
+| 自指 | 允许（target=创建者会话是主用例） | 当前产品为全自动审批，实际审查入口是时间线结果卡与审计；消息全文在时间线可见 |
+| run 记录 | thread-less（同 memory_organize），result text 指明目标会话 | 目标会话才是要打开的东西；已知限制：run 记录暂不可点击跳转目标会话 |
+| 失效处理 | 目标会话被删除 → 该次投递 run 标记 failed（投递通道自身报错） | 不静默重试死循环；下次到点同样失败并留痕 |
+| steer 丢失窗口 | steer 被接受但 foundation 随后丢弃该 turn → run 记录记为 Completed、消息实际未达 | 与 features/messaging 相同的既有窗口（messaging/mod.rs 文档），本 kind 继承并如实披露；量级为罕见事件 |
+| 投递时限 | steer + dispatch 共用一个 30s 上限（消息通道为每段各 30s） | 引擎冷启动偏慢时该次投递可能超时失败；下次到点重试（已在上表失效处理中说明） |
+
+### 10.2 验收追加
+
+| # | 场景 | 验证方式 | 优先级 |
+|---|---|---|---|
+| J1 | 定时消息到点投递（忙 steer / 闲新 turn） | ◇Rust executor 测试 + 手工 | P0 |
+| J2 | 目标白名单三层拦截 | ◇python + ◇Rust（create 拒绝 / watcher 隔离+charset / executor helper 单测） | P0 |
+| J3 | kind 一次性：普通任务不可经 update 转换 | ◇Rust | P0 |
+| J4 | retarget 仅限 session_message 任务且目标须存在 | ◇Rust | P1 |
+| J5 | watcher 回路落 kind+target sidecar | ◇Rust | P0 |
+| J6 | 投递 run 记录 thread-less 且 result 指明目标 | ◇Rust + 手工 | P1 |

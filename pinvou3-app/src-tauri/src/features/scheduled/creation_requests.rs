@@ -168,6 +168,11 @@ pub(crate) struct SpooledCreationRequest {
     pub rrule: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// `session_message` mode marker: when present, the task delivers its
+    /// prompt into this session at each fire instead of starting new
+    /// conversations.
+    #[serde(default)]
+    pub target_session: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -233,7 +238,10 @@ fn check_optional_field(value: &Option<String>, label: &str, max_chars: usize) -
 impl SpooledCreationRequest {
     /// Server-side re-validation of a spool record, per kind (contract §4.4:
     /// errors are explicit; §5: the L1 write re-checks everything it was
-    /// told). Mirrors the MCP server's per-kind validation exactly.
+    /// told). Mirrors every MCP-server rule that is checkable without live
+    /// store access (shape, caps, charsets, isolation prefixes); the live
+    /// probes (task exists, target session exists) stay with the domain
+    /// layer and surface as retried failures with a terminal marker.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported spool schema_version {}", self.schema_version);
@@ -260,6 +268,7 @@ impl SpooledCreationRequest {
                     && self.rrule.is_none()
                     && self.model_id.is_none()
                     && self.paused.is_none()
+                    && self.target_session.is_none()
                 {
                     bail!("update must provide at least one field to change");
                 }
@@ -272,6 +281,7 @@ impl SpooledCreationRequest {
                     ("prompt", &self.prompt),
                     ("rrule", &self.rrule),
                     ("model_id", &self.model_id),
+                    ("target_session", &self.target_session),
                 ] {
                     if field
                         .as_deref()
@@ -302,6 +312,30 @@ impl SpooledCreationRequest {
                 // clobber each other's pending request (mirrors the MCP
                 // server's validation).
                 bail!("idempotency_key requires from_session so the key is scoped to one sender");
+            }
+        }
+        check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
+        if let Some(target) = self
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            // Same charset the server enforces: a hostile or padded target
+            // must poison immediately, not burn three transient retries
+            // inside the domain's own session lookup.
+            if target.len() > MAX_TASK_ID_LEN
+                || !target
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                bail!("invalid target_session id");
+            }
+            if is_sched_session_id(target)
+                || is_aux_session_id(target)
+                || target.to_ascii_lowercase().starts_with("eval_")
+            {
+                bail!("target_session {target} is an isolated or unattended session");
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
@@ -589,6 +623,7 @@ fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskIn
         cwds: Vec::new(),
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         kind: None,
         mode: None,
         allow_shell: None,
@@ -606,6 +641,7 @@ fn build_update_input(request: &SpooledCreationRequest) -> UpdateScheduledTaskIn
         cwds: None,
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         mode: None,
         allow_shell: None,
         trust_mode: None,
@@ -655,12 +691,19 @@ fn audit_request(
             ("rrule", request.rrule.is_some()),
             ("model_id", request.model_id.is_some()),
             ("paused", request.paused.is_some()),
+            ("target_session", request.target_session.is_some()),
         ]
         .into_iter()
         .filter(|(_, present)| *present)
         .map(|(label, _)| label)
         .collect();
         detail["changed"] = serde_json::json!(changed);
+    }
+    if let Some(target) = request.target_session.as_deref() {
+        // A delivery target — set at create or moved by a retarget —
+        // redirects where every future prompt fires: the audit line must say
+        // where it goes either way.
+        detail["target_session"] = serde_json::json!(target);
     }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
@@ -1553,6 +1596,236 @@ mod tests {
         assert_eq!(records.len(), 1, "the request itself is still honored");
     }
 
+    #[tokio::test]
+    async fn scheduled_message_request_lands_kind_and_target() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        // A real ordinary session file so the domain's existence probe passes.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(sessions_dir.join("reqsrc01").join("workspace")).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("target001.json"),
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1, "the scheduled-message task is created");
+        assert_eq!(
+            state.task_kinds.kind_for(&records[0].id).as_deref(),
+            Some("session_message")
+        );
+        assert_eq!(
+            state
+                .task_kinds
+                .target_session_for(&records[0].id)
+                .as_deref(),
+            Some("target001"),
+            "the delivery target lands in the sidecar"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("msg.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "create");
+        assert_eq!(marker["task_id"], records[0].id);
+        // The audit line names the delivery target: it redirects where every
+        // future prompt of this task fires.
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("audit record");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_create");
+        assert_eq!(line["detail"]["target_session"], "target001");
+    }
+
+    #[tokio::test]
+    async fn tampered_message_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // An unattended target smuggled past the server is the recursion
+        // direction — quarantined without creating anything. Case variants
+        // and hostile charsets poison at the watcher too, not only at the
+        // server.
+        std::fs::write(
+            spool.join("selfwake.json"),
+            spool_record_json(&[("target_session", serde_json::json!("sched-run1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-upper.json"),
+            spool_record_json(&[("target_session", serde_json::json!("AUX-side1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-eval.json"),
+            spool_record_json(&[("target_session", serde_json::json!("EVAL_b1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("padded.json"),
+            spool_record_json(&[("target_session", serde_json::json!("target 001"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("selfwake.json").exists());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no task may be created from a hostile target"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_only_update_spool_retargets_the_task() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        for id in ["target001", "target002"] {
+            let snapshot = format!(
+                r#"{{"schema_version":1,"metadata":{{"id":"{id}","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"}},"messages":[],"system_prompt":null}}"#
+            );
+            std::fs::write(sessions_dir.join(format!("{id}.json")), snapshot).unwrap();
+        }
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let created = state
+            .automations
+            .lock()
+            .await
+            .list_automations()
+            .unwrap()
+            .pop()
+            .expect("session-message task created");
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target001")
+        );
+
+        // The typical retarget call: an update whose ONLY changed field is
+        // target_session. Before the Update-arm fix this record died as
+        // poison with no marker while the caller was told "pending".
+        std::fs::write(
+            spool.join("retarget.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!(created.id)),
+                ("name", serde_json::Value::Null),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
+                ("paused", serde_json::Value::Null),
+                ("target_session", serde_json::json!("target002")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target002"),
+            "the target-only update retargeted the task"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("retarget.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], true);
+        assert!(!spool.join("retarget.json").exists());
+    }
+
+    #[tokio::test]
+    async fn success_marker_suppresses_a_replayed_request() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        // A replay after a completed create: the spool file re-lands (the
+        // server rewrites it), but the success marker wins — no second task.
+        std::fs::write(
+            done_dir().join("replay.json"),
+            serde_json::json!({"ok": true, "task_id": "already-there"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(spool.join("replay.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "the success marker suppresses the replay (C3)"
+        );
+        assert!(!spool.join("replay.json").exists(), "the replay is dropped");
+    }
+
     #[test]
     fn sender_validation_rejects_isolated_and_malformed_ids() {
         let mut request = valid_record();
@@ -1587,6 +1860,12 @@ mod tests {
             "paused-only update is a valid no-op field set"
         );
         request.paused = None;
+        request.target_session = Some("target001".to_string());
+        assert!(
+            request.validate().is_ok(),
+            "a target-only retarget is a valid update (the typical call)"
+        );
+        request.target_session = None;
         assert!(
             request.validate().is_err(),
             "update with no field to change is rejected"
@@ -1633,6 +1912,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -1704,6 +1984,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
