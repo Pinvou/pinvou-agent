@@ -87,6 +87,11 @@ const MAX_SPOOL_FILE_BYTES: u64 = 256 * 1024;
 /// Transient creation failures retry on consecutive polls; quarantine only
 /// after this many attempts (design C4: quarantine + failure marker).
 const MAX_CREATE_ATTEMPTS: u32 = 3;
+/// Round-11 sibling parity: the pending-file ceiling — the sorted tail
+/// beyond this many queued records is quarantined with failure markers
+/// (hostile growth bounded; each excess record answers its recorded error
+/// on the next call instead of fresh pending).
+const MAX_PENDING_FILES: usize = 256;
 /// Watch poll interval: task creations are rare; the MCP server's synchronous
 /// wait covers up to 5s, so 1s keeps the typical create inside one poll.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -168,6 +173,11 @@ pub(crate) struct SpooledCreationRequest {
     pub rrule: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// `session_message` mode marker: when present, the task delivers its
+    /// prompt into this session at each fire instead of starting new
+    /// conversations.
+    #[serde(default)]
+    pub target_session: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -196,7 +206,10 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     // side-chats (the MCP server rejects all three for every request kind;
     // re-checked here because the spool directory is user-writable —
     // defense in depth, mirrors messaging).
-    if is_sched_session_id(id) || is_aux_session_id(id) || id.starts_with("eval_") {
+    if is_sched_session_id(id)
+        || is_aux_session_id(id)
+        || id.to_ascii_lowercase().starts_with("eval_")
+    {
         bail!("from_session {id} is an isolated session and cannot request task operations");
     }
     Ok(())
@@ -233,7 +246,11 @@ fn check_optional_field(value: &Option<String>, label: &str, max_chars: usize) -
 impl SpooledCreationRequest {
     /// Server-side re-validation of a spool record, per kind (contract §4.4:
     /// errors are explicit; §5: the L1 write re-checks everything it was
-    /// told). Mirrors the MCP server's per-kind validation exactly.
+    /// told). Mirrors every MCP-server rule that is checkable without live
+    /// store access (shape, caps, charsets, isolation prefixes); the live
+    /// probes (task exists, target session exists) stay with the domain
+    /// layer; missing or corrupt targets poison on attempt 1 (the
+    /// permanent-domain classification), not retried failures.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported spool schema_version {}", self.schema_version);
@@ -260,6 +277,7 @@ impl SpooledCreationRequest {
                     && self.rrule.is_none()
                     && self.model_id.is_none()
                     && self.paused.is_none()
+                    && self.target_session.is_none()
                 {
                     bail!("update must provide at least one field to change");
                 }
@@ -272,6 +290,7 @@ impl SpooledCreationRequest {
                     ("prompt", &self.prompt),
                     ("rrule", &self.rrule),
                     ("model_id", &self.model_id),
+                    ("target_session", &self.target_session),
                 ] {
                     if field
                         .as_deref()
@@ -302,6 +321,30 @@ impl SpooledCreationRequest {
                 // clobber each other's pending request (mirrors the MCP
                 // server's validation).
                 bail!("idempotency_key requires from_session so the key is scoped to one sender");
+            }
+        }
+        check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
+        if let Some(target) = self
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            // Same charset the server enforces: a hostile or padded target
+            // must poison immediately, not burn three transient retries
+            // inside the domain's own session lookup.
+            if target.len() > MAX_TASK_ID_LEN
+                || !target
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                bail!("invalid target_session id");
+            }
+            if is_sched_session_id(target)
+                || is_aux_session_id(target)
+                || target.to_ascii_lowercase().starts_with("eval_")
+            {
+                bail!("target_session {target} is an isolated or unattended session");
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
@@ -589,6 +632,7 @@ fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskIn
         cwds: Vec::new(),
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         kind: None,
         mode: None,
         allow_shell: None,
@@ -606,6 +650,7 @@ fn build_update_input(request: &SpooledCreationRequest) -> UpdateScheduledTaskIn
         cwds: None,
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         mode: None,
         allow_shell: None,
         trust_mode: None,
@@ -661,12 +706,19 @@ fn audit_request(
             ("rrule", request.rrule.is_some()),
             ("model_id", request.model_id.is_some()),
             ("paused", request.paused.is_some()),
+            ("target_session", request.target_session.is_some()),
         ]
         .into_iter()
         .filter(|(_, present)| *present)
         .map(|(label, _)| label)
         .collect();
         detail["changed"] = serde_json::json!(changed);
+    }
+    if let Some(target) = request.target_session.as_deref() {
+        // A delivery target — set at create or moved by a retarget —
+        // redirects where every future prompt fires: the audit line must say
+        // where it goes either way.
+        detail["target_session"] = serde_json::json!(target);
     }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
@@ -703,6 +755,10 @@ fn audit_request_shadow(
         "outcome": outcome,
         "task_id": task_id,
         "task_name": task_name,
+        // The delivery destination belongs in the append-only trail too
+        // (round-4 minor 7): a from_session-less retarget otherwise leaves
+        // the destination only in mutable state.
+        "target_session": request.target_session,
         "spool_stem": spool_stem,
         "claimed_from_session": request.from_session,
         "claimed_from_session_verified": false,
@@ -859,7 +915,16 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 request.name.as_deref().unwrap_or_default(),
                 "apply-failed",
             );
-            Processed::Retry(anyhow::anyhow!(error))
+            let error = anyhow::anyhow!(error);
+            // Domain rejections that can never succeed on retry poison
+            // immediately instead of burning the transient budget
+            // (review round-3 domain minor: three doomed attempts ate ~3s
+            // of the MCP server's 5s sync window).
+            if is_permanent_domain_error(&format!("{error:#}")) {
+                Processed::Poison(error)
+            } else {
+                Processed::Retry(error)
+            }
         }
     }
 }
@@ -888,6 +953,7 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
         ("paused", serde_json::json!(normalized_paused)),
         ("prompt", serde_json::json!(&request.prompt)),
         ("rrule", serde_json::json!(&request.rrule)),
+        ("target_session", serde_json::json!(&request.target_session)),
         ("task_id", serde_json::json!(&request.task_id)),
     ]);
     use sha2::Digest;
@@ -896,14 +962,76 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Validation-shaped domain errors (charset/isolation/caps/kind rules and
+/// missing targets) — retrying the same record can never fix them.
+fn is_permanent_domain_error(error: &str) -> bool {
+    const PERMANENT_MARKERS: [&str; 13] = [
+        "invalid target_session",
+        "cannot be blank",
+        "isolated or unattended",
+        "isolated and cannot",
+        "exceeds",
+        "cannot be combined",
+        "only scheduled-message tasks",
+        "require memory to be enabled",
+        "not found",
+        // A permanently corrupt target can never load — poison, don't burn
+        // the retry budget (round-4 minor 3).
+        "could not be loaded",
+        // Round-5 minor 1: the ACP/code disposition and the kind errors are
+        // permanent too — no retry can fix them.
+        "ACP/code session",
+        "pass target_session to create",
+        "Unsupported scheduled task kind",
+    ];
+    PERMANENT_MARKERS
+        .iter()
+        .any(|marker| error.contains(marker))
+}
+
+/// Bounded spool read for the ceiling arm (round-11): stat-gated and
+/// capped at [`MAX_SPOOL_FILE_BYTES`] — the tail beyond the pending
+/// ceiling is exactly the hostile zone.
+fn read_spool_bounded(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    if std::fs::metadata(path)
+        .map(|meta| meta.len() > MAX_SPOOL_FILE_BYTES)
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    let mut buf = Vec::new();
+    let file = std::fs::File::open(path).ok()?;
+    file.take(MAX_SPOOL_FILE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_SPOOL_FILE_BYTES {
+        return None;
+    }
+    Some(buf)
+}
+
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create done dir {}", parent.display()))?;
     }
     // Atomic tmp+rename: the server polls this file, so it must never
-    // observe a torn write.
+    // observe a torn write. Round-11 sibling parity: the tmp path is
+    // model-computable (sha256(from|kind|task_id|key)) — a planted FIFO
+    // would block fs::write forever and wedge the single watcher task.
+    // Refuse non-regular tmp files before writing.
     let tmp = path.with_extension("json.tmp");
+    if tmp
+        .symlink_metadata()
+        .map(|meta| !meta.is_file())
+        .unwrap_or(false)
+    {
+        anyhow::bail!(
+            "result marker tmp path is not a regular file: {}",
+            tmp.display()
+        );
+    }
     std::fs::write(&tmp, payload.to_string())
         .with_context(|| format!("write result marker {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("publish result marker {}", path.display()))
@@ -923,6 +1051,16 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
     // must not silently swallow a queued request), and make every
     // non-NotFound outcome observable — suppression now says WHY via
     // the log.
+    // Round-7 minor 1: stat-gate BEFORE the read (the spool sibling's
+    // order) — a hostile oversized .done marker was fully read once per
+    // poll; the post-read length check stays as the growth-race backstop.
+    if std::fs::metadata(path)
+        .map(|meta| meta.len() > MAX_RESULT_MARKER_BYTES as u64)
+        .unwrap_or(true)
+    {
+        log::warn!("[scheduled-creation] result marker oversize: {:?}", path);
+        return false;
+    }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
@@ -1160,6 +1298,44 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
+    // Round-11 sibling parity: the ceiling quarantines the sorted tail.
+    // The record read is BOUNDED (session_creation's round-11 M3 lesson —
+    // the tail is exactly the hostile zone, never slurp it whole), and a
+    // digest-bound readable ok:true receipt is never overwritten.
+    if files.len() > MAX_PENDING_FILES {
+        for path in files.split_off(MAX_PENDING_FILES) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unnamed>")
+                .to_string();
+            log::warn!(
+                "[scheduled-creation] quarantining {name}: pending-file ceiling {MAX_PENDING_FILES} exceeded"
+            );
+            let mut suppressed = false;
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let marker = done_dir().join(format!("{stem}.json"));
+                // BOUNDED parse of the tail record (session_creation's
+                // round-11 M3 lesson — the ceiling tail is the hostile
+                // zone); only a digest-bound recorded success suppresses.
+                if let Some(request) = read_spool_bounded(&path)
+                    .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
+                {
+                    suppressed = result_marker_suppresses(&marker, &spool_request_digest(&request));
+                }
+                if !suppressed {
+                    write_failure_marker(
+                        stem,
+                        &anyhow::anyhow!("pending-file ceiling {MAX_PENDING_FILES} exceeded"),
+                    );
+                }
+            }
+            quarantine(&path);
+            if !path.exists() {
+                retries.attempts.remove(&name);
+            }
+        }
+    }
     for path in files {
         let Some(name) = path
             .file_name()
@@ -1168,9 +1344,45 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         else {
             continue;
         };
+        // Round-11 sibling parity (657's review): the retry budget GATES the
+        // apply — the exhausted state (marker write + quarantine rename both
+        // persistently failing) must stop writing tasks; the unconditional
+        // budget clears would otherwise re-arm the compound failure every
+        // poll (~3 domain writes per poll, forever). Mirrors
+        // session_creation's round-4 R1 gate shape.
+        if retries
+            .attempts
+            .get(&name)
+            .map(|count| *count >= MAX_CREATE_ATTEMPTS)
+            .unwrap_or(false)
+        {
+            log::warn!(
+                "[scheduled-creation] retry budget exhausted for {name} (marker and quarantine both failing); not re-applying"
+            );
+            let exhausted_error =
+                anyhow::anyhow!("retry budget exhausted (marker and quarantine both failing)");
+            audit_failure(sessions, &path, &exhausted_error);
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&name)
+                .to_string();
+            write_failure_marker(&stem, &exhausted_error);
+            quarantine(&path);
+            if !path.exists() {
+                retries.attempts.remove(&name);
+            }
+            continue;
+        }
         match process_spool_file(path.as_path(), creator, sessions, notifier).await {
             Processed::Done => {
-                retries.attempts.remove(&name);
+                // Round-11 sibling parity: the budget clears only when the
+                // file actually moved (session_creation's post-rename
+                // guard) — a persistently failing removal must not re-arm
+                // the compound failure loop.
+                if !path.exists() {
+                    retries.attempts.remove(&name);
+                }
                 if let Err(error) = std::fs::remove_file(&path) {
                     // The marker exists, so the operation stays deduped, but
                     // a stuck file would loop Done/remove every poll — say
@@ -1181,7 +1393,10 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 }
             }
             Processed::Poison(error) => {
-                retries.attempts.remove(&name);
+                // Round-11 sibling parity: post-rename guard (see Done).
+                if !path.exists() {
+                    retries.attempts.remove(&name);
+                }
                 log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
                 audit_failure(sessions, &path, &error);
                 quarantine(&path);
@@ -1202,9 +1417,15 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     log::warn!(
                         "[scheduled-creation] quarantining {name} after {count} create attempts: {error:#}"
                     );
-                    retries.attempts.remove(&name);
                     audit_failure(sessions, &path, &error);
                     quarantine(&path);
+                    // Round-11 sibling parity: the budget clears only when
+                    // the quarantine rename actually moved the file — the
+                    // unconditional clear re-armed the compound failure
+                    // (failing rename + marker-write loop) every poll.
+                    if !path.exists() {
+                        retries.attempts.remove(&name);
+                    }
                     let stem = path
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -1291,6 +1512,7 @@ mod tests {
             kind: SpoolRequestKind::Create,
             id: "irrelevant".to_string(),
             task_id: None,
+            target_session: None,
             name: Some("早报".to_string()),
             prompt: Some("汇总".to_string()),
             rrule: Some("FREQ=DAILY;BYHOUR=8".to_string()),
@@ -1302,7 +1524,7 @@ mod tests {
         };
         assert_eq!(
             spool_request_digest(&request),
-            "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe"
+            "e3ee5656710820acad7daa187ed50fe7a2295020d3d66f5bd37fc7afea42f755"
         );
         let mut update = request;
         update.kind = SpoolRequestKind::Update;
@@ -1314,7 +1536,16 @@ mod tests {
         update.paused = Some(true);
         assert_eq!(
             spool_request_digest(&update),
-            "3e5a7833ac3bd752cf7cc5dd72b0ff4347a65c4155bbe2b69c0fb61673d9bf53"
+            "80d24d63000aa38aa3f4c1866155e42e91d57594189996443d336fc2754bfca6"
+        );
+        // Round-6 minor 6: a NON-NULL target_session vector — the first two
+        // hashed only the null form, so a value-normalization divergence
+        // (one side trimming/case-folding before hashing) stayed green.
+        let mut retarget = update.clone();
+        retarget.target_session = Some("sess-7777".to_string());
+        assert_eq!(
+            spool_request_digest(&retarget),
+            "87f414a68c6034ca1d625fc05f682c8f0811aef01752f9b4cf1d140a5aac6af3"
         );
     }
 
@@ -1777,6 +2008,280 @@ mod tests {
         assert_eq!(records.len(), 1, "the request itself is still honored");
     }
 
+    #[tokio::test]
+    async fn scheduled_message_request_lands_kind_and_target() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        // A real ordinary session file so the domain's existence probe passes.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(sessions_dir.join("reqsrc01").join("workspace")).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("target001.json"),
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1, "the scheduled-message task is created");
+        assert_eq!(
+            state.task_kinds.kind_for(&records[0].id).as_deref(),
+            Some("session_message")
+        );
+        assert_eq!(
+            state
+                .task_kinds
+                .target_session_for(&records[0].id)
+                .as_deref(),
+            Some("target001"),
+            "the delivery target lands in the sidecar"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("msg.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "create");
+        assert_eq!(marker["task_id"], records[0].id);
+        // The audit line names the delivery target: it redirects where every
+        // future prompt of this task fires.
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("audit record");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_create");
+        assert_eq!(line["detail"]["target_session"], "target001");
+    }
+
+    /// Round-4 M5b: the target re-check runs for EVERY kind — an update-kind
+    /// record with a hostile target poisons too (the arm a create-only
+    /// mutation would leave unguarded).
+    #[tokio::test]
+    async fn update_kind_hostile_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("upd-hostile.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!("t-1")),
+                ("target_session", serde_json::json!("sched-run9")),
+            ]),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(calls.clone()),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("upd-hostile.json").exists(),
+            "an update-kind hostile target must poison, not apply"
+        );
+        assert!(!spool.join("upd-hostile.json").exists());
+    }
+
+    #[tokio::test]
+    async fn tampered_message_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // An unattended target smuggled past the server is the recursion
+        // direction — quarantined without creating anything. Round-6
+        // minor 7 (honest scope): this pins the SYSTEM invariant (nothing
+        // created, every shape quarantined) — it does NOT attribute the
+        // quarantine to the watcher's own checks, because the domain
+        // re-check poisons the same records; the watcher-only coverage is
+        // pinned by the unit tests on the individual check fns.
+        std::fs::write(
+            spool.join("selfwake.json"),
+            spool_record_json(&[("target_session", serde_json::json!("sched-run1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-upper.json"),
+            spool_record_json(&[("target_session", serde_json::json!("AUX-side1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-eval.json"),
+            spool_record_json(&[("target_session", serde_json::json!("EVAL_b1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("padded.json"),
+            spool_record_json(&[("target_session", serde_json::json!("target 001"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("selfwake.json").exists());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no task may be created from a hostile target"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_only_update_spool_retargets_the_task() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        for id in ["target001", "target002"] {
+            let snapshot = format!(
+                r#"{{"schema_version":1,"metadata":{{"id":"{id}","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"}},"messages":[],"system_prompt":null}}"#
+            );
+            std::fs::write(sessions_dir.join(format!("{id}.json")), snapshot).unwrap();
+        }
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let created = state
+            .automations
+            .lock()
+            .await
+            .list_automations()
+            .unwrap()
+            .pop()
+            .expect("session-message task created");
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target001")
+        );
+
+        // The typical retarget call: an update whose ONLY changed field is
+        // target_session. Before the Update-arm fix this record died as
+        // poison with no marker while the caller was told "pending".
+        std::fs::write(
+            spool.join("retarget.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!(created.id)),
+                ("name", serde_json::Value::Null),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
+                ("paused", serde_json::Value::Null),
+                ("target_session", serde_json::json!("target002")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target002"),
+            "the target-only update retargeted the task"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("retarget.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], true);
+        assert!(!spool.join("retarget.json").exists());
+    }
+
+    #[tokio::test]
+    async fn success_marker_suppresses_a_replayed_request() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        // A replay after a completed create: the spool file re-lands (the
+        // server rewrites it), but the success marker wins — no second
+        // task. Round-7 M1b (rebase onto #628's digest gate): the plant
+        // must be digest-BOUND to the record — the gate refuses bare
+        // {"ok":true} markers now.
+        let digest = spool_request_digest(
+            &serde_json::from_str::<SpooledCreationRequest>(&spool_record_json(&[])).unwrap(),
+        );
+        std::fs::write(
+            done_dir().join("replay.json"),
+            serde_json::json!({"ok": true, "task_id": "already-there", "request_digest": digest})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(spool.join("replay.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "the success marker suppresses the replay (C3)"
+        );
+        assert!(!spool.join("replay.json").exists(), "the replay is dropped");
+    }
+
     #[test]
     fn sender_validation_rejects_isolated_and_malformed_ids() {
         let mut request = valid_record();
@@ -1811,6 +2316,12 @@ mod tests {
             "paused-only update is a valid no-op field set"
         );
         request.paused = None;
+        request.target_session = Some("target001".to_string());
+        assert!(
+            request.validate().is_ok(),
+            "a target-only retarget is a valid update (the typical call)"
+        );
+        request.target_session = None;
         assert!(
             request.validate().is_err(),
             "update with no field to change is rejected"
@@ -1857,6 +2368,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -1928,6 +2440,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -2079,11 +2592,111 @@ mod tests {
         .expect("re-enable scheduled-task-automation");
     }
 
-    /// Round-9 M5: the receipt guard — apply a record (receipt lands),
-    /// corrupt the spool bytes to invalid JSON, re-drain: the poison arm
-    /// must NOT overwrite the ok:true receipt (the last-resort idempotency
-    /// defense for post-apply corruption; the round-8 guard was
-    /// mutation-proven unpinned).
+    /// Round-11 sibling parity: the budget-stickiness pin — with failed/
+    /// squatted by a regular file, an exhausted budget must gate the apply
+    /// across polls (the unconditional clears re-armed the compound
+    /// failure: ~3 domain writes per poll, forever).
+    #[tokio::test]
+    async fn exhausted_budget_gates_across_polls_when_rename_fails() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        // Squat the quarantine directory with a regular file: every rename
+        // into failed/ fails, so the record stays.
+        std::fs::write(failed_dir(), b"not a directory").unwrap();
+        let mut retries = RetryState::default();
+        retries
+            .attempts
+            .insert("stuck.json".to_string(), MAX_CREATE_ATTEMPTS);
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "first poll: the exhausted budget gates the apply"
+        );
+        assert!(
+            spool.join("stuck.json").exists(),
+            "the rename failed; the record stays"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(MAX_CREATE_ATTEMPTS),
+            "the budget was not recycled by the failing rename"
+        );
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "second poll: still gated — the budget does not re-buy"
+        );
+    }
+
+    /// Round-11 sibling parity: the pending-file ceiling — the sorted tail
+    /// beyond 256 is quarantined with failure markers and applies nothing.
+    #[tokio::test]
+    async fn pending_ceiling_quarantines_tail_without_applying() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..=(MAX_PENDING_FILES as u32) {
+            let name = format!("c{i:05}.json");
+            std::fs::write(spool.join(&name), spool_record_json(&[])).unwrap();
+        }
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let created = state
+            .automations
+            .lock()
+            .await
+            .list_automations()
+            .unwrap()
+            .len();
+        assert_eq!(
+            created, MAX_PENDING_FILES,
+            "exactly the ceiling applies; the tail never reaches the domain"
+        );
+        assert!(
+            failed_dir()
+                .join(format!("c{:05}.json", MAX_PENDING_FILES))
+                .exists(),
+            "the sorted tail is the quarantined excess"
+        );
+    }
+
+    /// Round-9 M5 (#628): the receipt guard — apply a record (receipt
+    /// lands), corrupt the spool bytes to invalid JSON, re-drain: the
+    /// poison arm must NOT overwrite the ok:true receipt.
     #[tokio::test]
     async fn poisoned_record_never_overwrites_a_landed_ok_receipt() {
         let _home = TempHome::new();
@@ -2105,8 +2718,6 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&landed).unwrap()["ok"]
                 == serde_json::json!(true)
         );
-        // Corrupt the spool bytes AFTER the successful apply — the exact
-        // class probe-before-validate cannot cover.
         std::fs::write(spool.join("receipt.json"), b"not json{").unwrap();
         process_pending_spool(
             &StateCreator(&state),

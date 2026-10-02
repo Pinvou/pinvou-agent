@@ -64,6 +64,9 @@ test('update summary shows target id and changed fields', () => {
   assert.equal(
     scheduledTaskUpdateSummary({ task_id: 't-1', name: '新名', paused: true }),
     't-1 · name/paused',
+    // Round-7 minor 6: target_session is IN the update summary key set —
+    // reverting the UPDATE_FIELD_KEYS line passed the whole suite.
+    [scheduledTaskUpdateSummary({ task_id: 't-1', target_session: 'sess-9' }), 't-1 · target_session'],
   );
   assert.equal(scheduledTaskUpdateSummary({ task_id: 't-1' }), 't-1');
   assert.equal(scheduledTaskUpdateSummary({}), '');
