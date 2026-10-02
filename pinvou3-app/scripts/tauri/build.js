@@ -198,8 +198,15 @@ function prepareWindowsRustcStackWrapper(
 
   const configuredWrapper = environment.RUSTC_WRAPPER?.trim();
   if (configuredWrapper) {
+    // Normalize the value, then be explicit: the caller's wrapper wins (same
+    // precedence as run-dev.sh), but a non-stack wrapper such as sccache does
+    // not inject RUST_MIN_STACK, so the compiler children keep the default
+    // 2 MiB stacks that are known to overflow on codewhale-tui.
     environment.RUSTC_WRAPPER = configuredWrapper;
-    log(`[build] Reusing configured rustc stack wrapper: ${configuredWrapper}`);
+    log(
+      `[build] Reusing caller-provided RUSTC_WRAPPER: ${configuredWrapper}; ` +
+        "the 16 MiB compiler stack fix is NOT applied to compiler children.",
+    );
     return { path: configuredWrapper, source: "environment" };
   }
 
@@ -212,24 +219,36 @@ function prepareWindowsRustcStackWrapper(
   const needsCompilation = !fs.existsSync(wrapperPath)
     || fs.statSync(sourcePath).mtimeMs > fs.statSync(wrapperPath).mtimeMs;
   if (needsCompilation) {
-    const result = spawnCompiler(
-      "rustc",
-      ["-O", sourcePath, "-o", wrapperPath],
-      {
-        cwd: APP_ROOT,
-        env: { ...environment },
-        stdio: "inherit",
-        windowsHide: true,
-      },
-    );
-    if (result.error) {
-      throw new Error(`Failed to compile Windows rustc stack wrapper: ${result.error.message}`);
-    }
-    // Never fall back to an unwrapped compiler: it is known to overflow.
-    if (result.status !== 0 || !fs.existsSync(wrapperPath)) {
-      throw new Error(
-        `Failed to compile Windows rustc stack wrapper (exit ${result.status ?? "unknown"})`,
+    // Compile to a unique temporary name and rename atomically: an interrupted
+    // build (Ctrl-C, CI kill) must never leave a partial executable that the
+    // mtime cache would then reuse forever.
+    const tempWrapperPath = `${wrapperPath}.${process.pid}.tmp`;
+    let result;
+    try {
+      result = spawnCompiler(
+        "rustc",
+        ["-O", sourcePath, "-o", tempWrapperPath],
+        {
+          cwd: APP_ROOT,
+          env: { ...environment },
+          stdio: "inherit",
+          windowsHide: true,
+        },
       );
+      // Never fall back to an unwrapped compiler: it is known to overflow.
+      if (result.error) {
+        throw new Error(`Failed to compile Windows rustc stack wrapper: ${result.error.message}`);
+      }
+      if (result.status !== 0 || !fs.existsSync(tempWrapperPath)) {
+        throw new Error(
+          `Failed to compile Windows rustc stack wrapper (exit ${result.status ?? "unknown"})`,
+        );
+      }
+      fs.renameSync(tempWrapperPath, wrapperPath);
+    } finally {
+      if (fs.existsSync(tempWrapperPath)) {
+        fs.rmSync(tempWrapperPath, { force: true });
+      }
     }
   }
 
@@ -748,7 +767,10 @@ async function main() {
   const skipLinuxAsr = process.env.PINVOU3_SKIP_LINUX_ASR === "1";
   const skipKnowledgeHost = process.env.PINVOU3_SKIP_KNOWLEDGE_HOST === "1";
   const additionalConfigs = [];
-  if (hasTauriBuildCommand && process.platform === "win32") {
+  // Dev compiles with cargo exactly like build/bundle, so a partially
+  // installed toolchain must be repaired before `tauri dev` too; the wrapper
+  // injection below already covers both paths the same way.
+  if (process.platform === "win32" && (hasTauriBuildCommand || isDev)) {
     await ensureWindowsRustToolchain();
   }
   // Windows 的 fastembed 使用动态 ONNX Runtime。正式包 staging 完整运行时并通过
