@@ -118,12 +118,12 @@ function runRustToolchainScript(
   });
 }
 
-// Windows build machines have failed at `cargo metadata` because the pinned
-// toolchain was only partially installed (missing cargo, rustc, clippy or
-// rustfmt). A complete account toolchain is reused read-only; otherwise the
-// build switches to an isolated, marker-protected RUSTUP_HOME and repairs it
-// there with download-source fallback. Exit code 2 from -CheckOnly means
-// "incomplete"; any other non-zero code is a hard failure.
+// Windows build machines have failed at `cargo metadata` because the
+// configured toolchain was only partially installed (missing cargo, rustc,
+// clippy or rustfmt). A complete account toolchain is reused read-only;
+// otherwise the build switches to an isolated, marker-protected RUSTUP_HOME
+// and repairs it there with download-source fallback. Exit code 2 from
+// -CheckOnly means "incomplete"; any other non-zero code is a hard failure.
 async function ensureWindowsRustToolchain(
   {
     env = process.env,
@@ -197,21 +197,27 @@ function prepareWindowsRustcStackWrapper(
   if (platform !== "win32") return null;
 
   const configuredWrapper = environment.RUSTC_WRAPPER?.trim();
+  const stackWrapperPath = path.join(scriptsPath, "rustc-stack-wrapper.exe");
   if (configuredWrapper) {
-    // Normalize the value, then be explicit: the caller's wrapper wins (same
-    // precedence as run-dev.sh), but a non-stack wrapper such as sccache does
-    // not inject RUST_MIN_STACK, so the compiler children keep the default
-    // 2 MiB stacks that are known to overflow on codewhale-tui.
+    // The caller's wrapper wins (same precedence as run-dev.sh). run-dev.sh
+    // and the release-packages Windows job get here with this very stack
+    // wrapper, so only a different wrapper (sccache and friends) forgoes the
+    // RUST_MIN_STACK injection and keeps the default 2 MiB compiler stacks
+    // that are known to overflow on codewhale-tui.
     environment.RUSTC_WRAPPER = configuredWrapper;
+    const isStackWrapper = path.win32.resolve(configuredWrapper).toLowerCase()
+      === path.win32.resolve(stackWrapperPath).toLowerCase();
     log(
-      `[build] Reusing caller-provided RUSTC_WRAPPER: ${configuredWrapper}; ` +
-        "the 16 MiB compiler stack fix is NOT applied to compiler children.",
+      isStackWrapper
+        ? `[build] Reusing caller-provided RUSTC_WRAPPER (the Windows rustc stack wrapper): ${configuredWrapper}`
+        : `[build] Reusing caller-provided RUSTC_WRAPPER: ${configuredWrapper}; ` +
+          "the 16 MiB compiler stack fix is NOT applied to compiler children.",
     );
     return { path: configuredWrapper, source: "environment" };
   }
 
   const sourcePath = path.join(scriptsPath, "rustc-stack-wrapper.rs");
-  const wrapperPath = path.join(scriptsPath, "rustc-stack-wrapper.exe");
+  const wrapperPath = stackWrapperPath;
   if (!fs.existsSync(sourcePath)) {
     throw new Error(`Windows rustc stack wrapper source is missing: ${sourcePath}`);
   }
@@ -626,6 +632,7 @@ function formatElapsed(milliseconds) {
 }
 
 function tauriPhase(preparedArgs) {
+  if (preparedArgs[0] === "dev") return "dev";
   const commandIndex = tauriCommandIndex(preparedArgs);
   return commandIndex >= 0 ? preparedArgs[commandIndex] : "command";
 }

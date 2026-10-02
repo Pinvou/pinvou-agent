@@ -40,10 +40,15 @@ case "$(uname -s)" in
       # 在 rustc 参数位不可靠。
       # 编译失败即报错终止:Windows 栈溢出已实证,静默退回"不注入"会把 wrapper
       # 构建失败重新表现为难诊断的 rustc 栈溢出。
-      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$exe")"; then
+      # 与 scripts/tauri/build.js 相同的原子替换:先写唯一临时文件再改名,
+      # 中断的编译绝不能留下半截 exe 被下次的 mtime 缓存永远复用。
+      tmp_exe="$exe.$$.$RANDOM.tmp"
+      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$tmp_exe")"; then
+        rm -f "$tmp_exe"
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
+      mv -f "$tmp_exe" "$exe"
     fi
     cygpath -m "$exe"
     ;;
