@@ -610,7 +610,7 @@ pub fn install_mcp_secret_resolver() {
 /// plugins cannot be uninstalled or disabled — the attempt is rejected
 /// server-side (docs/builtin-toolset-contract.md §3.1) — so a missing
 /// BundleStore record only ever means "not seeded yet".
-pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
+pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader", "app-automations"];
 
 /// 当前(plain)会话侧不可用包/native 工具 → 模型可见工具全名(喂给引擎
 /// disallowed_tools 的)。
