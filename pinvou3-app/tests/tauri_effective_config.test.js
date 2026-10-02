@@ -629,6 +629,28 @@ async function verifyTauriExitCode() {
   }
 }
 void verifyTauriExitCode();
+// A dev run must report its own phase instead of the generic "command" label.
+const devLogs = [];
+const devChild = new EventEmitter();
+devChild.pid = 4243;
+const devResult = runTauri(["dev"], {
+  environment: {},
+  spawnChild: () => devChild,
+  heartbeatIntervalMs: 0,
+  log: (message) => devLogs.push(message),
+});
+assert.match(devLogs[0], /pid=4243, phase=dev/);
+devChild.emit("exit", 0, null);
+assert.match(devLogs[1], /phase=dev, elapsed=0s, exit=0/);
+async function verifyDevExitCode() {
+  try {
+    assert.equal(await devResult, 0);
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
+}
+void verifyDevExitCode();
 const ortEnvironment = tauriRuntimeEnvironment(
   { onnxRuntimeDylib: "C:\\runtime\\onnxruntime.dll" },
   tauriEnvironment,
