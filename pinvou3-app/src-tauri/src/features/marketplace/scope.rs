@@ -21,6 +21,7 @@
 //!
 //! 依赖方向：本模块与 `bundle` / `skill_marketplace` 同属 marketplace 领域，只依赖
 //! `platform::paths` 与 marketplace 内既有类型，不反向依赖 assistant 运行时。
+use crate::features::marketplace::bundle::skill_owner_package;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -98,18 +99,201 @@ fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
 }
 
-/// `disabled_bundles.json` 读-改-写的进程内串行化。
+/// In-process serialization for the `disabled_bundles.json` read-modify-write.
 ///
-/// Lock order (round-11 M1, shared convention with
-/// `MARKETPLACE_TRANSACTION_LOCK`): only TRANSACTION → FILE nesting is allowed
-/// (e.g. uninstall holds the transaction lock for switch cleanup); this lock's
-/// holder **must not** acquire the transaction lock — corrupt `installed.json`
-/// recovery on the DenyAll resolution / switch-write paths rebuilds in memory
-/// only, taking no transaction lock and persisting no registry state (the only
-/// side effect is the quarantine sidecar copy; see the read-only recovery
-/// branch of `try_installed_ids`); the next writer holding the transaction lock
-/// persists the registry.
+/// #515: an in-process mutex alone cannot stop cross-process races — the GUI
+/// and headless hosts can share one `~/.pinvou3` home and both install/toggle
+/// packs, so two concurrent load→save sections silently drop each other's
+/// writes (a lost update; the lost side is the user's explicit off, which is
+/// fail-open on the DenyAll gate). Every write critical section must go
+/// through `with_scope_file_lock`: take this mutex first, then the OS-level
+/// file lock (flock / LockFileEx via `fd-lock`, the same primitive and crate
+/// as the remote-control process-ownership lock). Each acquisition opens a
+/// fresh file, so the OS lock actually excludes other threads of this process
+/// too; the in-process mutex stays in front of it so the read path's
+/// `try_write` can only ever be beaten by a *peer* process, and so a write's
+/// load→modify→save is exclusive before the OS lock is even attempted.
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Cross-process lock file path (same directory as the data file; holds no
+/// user data).
+fn disabled_bundles_lock_path() -> PathBuf {
+    paths::pinvou3_home().join("disabled_bundles.lock")
+}
+
+/// Opens (creating if missing) the cross-process lock file. Shared by the
+/// blocking write path and the try-lock read path.
+fn open_scope_lock_file() -> Result<std::fs::File, String> {
+    let lock_path = disabled_bundles_lock_path();
+    let open = || crate::platform::filesystem::open_private_lock_file(&lock_path);
+    // Open first: once the home exists — the steady state, and hot reads are
+    // the common case — this skips the per-read create_dir_all probe; only a
+    // missing file/directory pays for it.
+    match open() {
+        Ok(file) => Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = lock_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create {}: {e}", parent.display()))?;
+            }
+            open().map_err(|error| format!("open {}: {error}", lock_path.display()))
+        }
+        Err(error) => Err(format!("open {}: {error}", lock_path.display())),
+    }
+}
+
+/// Runs a write critical section `f` while holding the combined in-process
+/// mutex + OS file lock that serializes every `disabled_bundles.json`
+/// load→save against the peer process (GUI / headless sharing the home)
+/// (#515). Fallible, not non-blocking: the wait is unbounded by design. Hot
+/// readers are immune to that hang via `try_lock` degradation (see
+/// `load_disabled_bundles_file`).
+///
+/// Returns `Err` when cross-process serialization cannot be established (the
+/// lock file cannot be opened or locked, e.g. a filesystem without lock
+/// support). Callers must then refuse the read-modify-write instead of running
+/// it unsynchronized — an unlocked RMW is exactly the cross-process lost
+/// update this module guards against.
+///
+/// Blocking has no timeout (fd-lock v4 has no timeout API): the OS releases
+/// the lock when the peer process exits or crashes (flock / LockFileEx die
+/// with the fd), but a frozen peer (SIGSTOP / debugger) makes this process
+/// wait indefinitely. Locking is same-host by construction: flock provides no
+/// cross-host mutual exclusion on network filesystems, so hosts sharing a
+/// network-mounted home are outside this module's threat model. The critical
+/// section is a local JSON read-modify-write (the widest variant, the
+/// connector-switch sync, additionally enumerates installed ids), so that
+/// fail-stop hang (frozen peer only) is accepted over a fail-open lost update.
+///
+/// Lock order within this module is uniform: in-process mutex → OS file lock, and
+/// the only other lock reachable inside a critical section is the bundle
+/// store's own mutex, on two legs: the one-time legacy-migration leg's id
+/// normalization and the DenyAll resolution's installed-ids enumeration (the
+/// save-side input normalization walks the in-memory manifest without taking
+/// the store mutex). That ordering is never
+/// reversed — no store method enters this module's critical sections — so no
+/// deadlock class exists. Conversely, a scope critical section never takes any
+/// lock beyond the store mutex above, but the nesting across it is NOT uniform
+/// module-wide (round-12 review): the uninstall path holds the transaction
+/// lock across scope strips, the restore path holds the per-id import lock
+/// across the scope registration, and the import pre-land gate deliberately
+/// holds NO other lock; the recycle-bin lock is never held across a scope
+/// section.
+fn with_scope_file_lock<F, R>(f: F) -> Result<R, String>
+where
+    F: FnOnce() -> R,
+{
+    let _process_guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let file = open_scope_lock_file()?;
+    let mut lock = fd_lock::RwLock::new(file);
+    // The in-process mutex is already held while the OS lock is taken, and
+    // the store mutex (see the lock-order note above) is never held by
+    // another thread waiting on this one, so deadlock is impossible. A
+    // signal-interrupted flock retries instead of surfacing as a spurious
+    // write refusal.
+    let _os_guard = loop {
+        match lock.write() {
+            Ok(guard) => break guard,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(format!(
+                    "lock {}: {error}",
+                    disabled_bundles_lock_path().display()
+                ));
+            }
+        }
+    };
+    Ok(f())
+}
+
+/// Per-mode once-only logging for scope-read failures. The engine-side hot
+/// readers hit these paths on every turn, so a persistently unavailable lock
+/// or an unreadable data file must not print a line per read — the first
+/// occurrence per failure mode is enough to make the degradation diagnosable.
+static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn log_scope_read_failure(mode: u8, detail: &str) {
+    use std::sync::atomic::Ordering;
+    if READ_FAILURE_LOGGED.fetch_or(mode, Ordering::Relaxed) & mode == 0 {
+        // log (not stderr): packaged Windows GUIs never see eprintln output.
+        log::warn!("[scope] {detail}");
+    }
+}
+
+const LOG_LOCK_OPEN: u8 = 1 << 0;
+const LOG_LOCK_PROBE: u8 = 1 << 1;
+/// Recovery-arm observations (lost-store evidence, unconsumable legacy,
+/// unreadable original): their arms are reached on EVERY read while the
+/// condition persists — including degraded hot reads, which deliberately set
+/// no memo — so without the latch a contended read on such a home would log
+/// a line per engine turn.
+const LOG_RECOVERY: u8 = 1 << 2;
+
+/// Re-arm the per-mode latch after a fully locked, fully successful WRITE-path
+/// read: every degradation mode has recovered, so a later persistent failure
+/// is diagnosable again. (Hot readers that acquire the full lock do not
+/// re-arm — conservative: never over-logs.)
+fn clear_scope_read_failure_log() {
+    use std::sync::atomic::Ordering;
+    READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
+}
+
+/// Loads the file for policy reads. Bounded by construction against *both*
+/// contention dimensions: the in-process mutex is only *tried* (a local write
+/// parked on a frozen peer's OS lock holds it, and hot readers must not hang
+/// behind that), and the OS lock is only *tried* as well. When either is
+/// unavailable the read degrades to a bounded, never-persisting unlocked
+/// snapshot — writes replace the file atomically, so the snapshot is always a
+/// complete (possibly just-superseded) state, and the next uncontended read
+/// converges the file.
+///
+/// The bounded degrade is what keeps the engine-side hot readers (per-turn
+/// inventory reminders, deny rulesets, engine spawn config) safe to call
+/// directly: unlike the write path no operation needs to be kept off the
+/// Tokio executor for them. Contention on either lock is a normal, silent
+/// degradation; an unexpected lock error is logged once per failure mode and
+/// degrades the same way.
+pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
+    let _process_guard = match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+        Ok(guard) => guard,
+        // A local writer is inside its critical section (possibly parked on a
+        // frozen peer's OS lock): degrade exactly like peer contention.
+        Err(std::sync::TryLockError::WouldBlock) => return read_disabled_bundles_file(false),
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    match open_scope_lock_file() {
+        Ok(file) => match fd_lock::RwLock::new(file).try_write() {
+            Ok(_guard) => read_disabled_bundles_file(true),
+            // Peer contention is the designed, silent degradation.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                read_disabled_bundles_file(false)
+            }
+            Err(error) => {
+                log_scope_read_failure(
+                    LOG_LOCK_PROBE,
+                    &format!(
+                        "cross-process lock probe failed; unlocked read without persist: {error}"
+                    ),
+                );
+                read_disabled_bundles_file(false)
+            }
+        },
+        Err(error) => {
+            log_scope_read_failure(
+                LOG_LOCK_OPEN,
+                &format!("cross-process lock unavailable; unlocked read without persist: {error}"),
+            );
+            read_disabled_bundles_file(false)
+        }
+    }
+}
+
+// Windows: `read_shared` opens the data file with FILE_SHARE_DELETE so a read
+// in flight during a peer's locked atomic-replace persist cannot turn into a
+// sharing violation and a spurious refusal of that write.
+use crate::platform::filesystem::read_shared as read_data_file_shared;
 
 /// In-process verdict memo for freeze persist failures (review #455 R7-M2):
 /// when the "fresh vs upgraded" verdict could not be persisted, later reads in
@@ -186,12 +370,6 @@ pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointRes
 
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
 /// 串行（与旧两份文件的 #287 竞态范式一致）。
-pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    load_disabled_bundles_file_locked()
-}
 
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
 /// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
@@ -233,9 +411,9 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// persisted to disk** (setting the `plain_defaults_migrated` marker) as a
 /// freeze — otherwise a fresh install is misjudged as an upgrade by first-boot
 /// traces and flips back to fully on (review #455 blocker).
-fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
+fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
     let path = disabled_bundles_path();
-    let content = match std::fs::read_to_string(&path) {
+    let content = match read_data_file_shared(&path) {
         Ok(c) => c,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             {
@@ -269,15 +447,25 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // is skipped here entirely — legacy files are pre-convergence
             // remnants when the unified store demonstrably existed.
             if corrupt_sidecar_evidence_exists(&home) {
-                eprintln!(
-                    "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted"
+                log_scope_read_failure(
+                    LOG_RECOVERY,
+                    "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
                 let recovered = DisabledBundlesFile {
                     plain_defaults_migrated: true,
                     ..DisabledBundlesFile::default()
                 };
-                if let Err(freeze_error) = try_save_disabled_bundles_file(&recovered) {
-                    eprintln!(
+                let freeze_result = if persist_repairs {
+                    try_save_disabled_bundles_file(&recovered)
+                } else {
+                    // Degraded read: neither the disk persist nor the verdict
+                    // memo — the memo is a fully-locked-read artifact, and a
+                    // degraded view must never freeze an evaluation that ran
+                    // without the migration writes.
+                    Ok(())
+                };
+                if let Err(freeze_error) = freeze_result {
+                    log::error!(
                         "[scope] CRITICAL: failed to persist the lost-store recovery verdict: {freeze_error}; holding the in-process verdict until restart"
                     );
                     *UNPERSISTED_VERDICT
@@ -325,15 +513,21 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 // untouched for manual recovery; main's strict legacy
                 // parser (and its pins, removed earlier in this PR) is
                 // restored here over the new fail-closed recovery shape.
-                eprintln!(
-                    "[marketplace] a legacy scope file exists but cannot be consumed; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted"
+                log_scope_read_failure(
+                    LOG_RECOVERY,
+                    "[marketplace] a legacy scope file exists but cannot be consumed; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
                 let recovered = DisabledBundlesFile {
                     plain_defaults_migrated: true,
                     ..DisabledBundlesFile::default()
                 };
-                if let Err(freeze_error) = try_save_disabled_bundles_file(&recovered) {
-                    eprintln!(
+                let freeze_result = if persist_repairs {
+                    try_save_disabled_bundles_file(&recovered)
+                } else {
+                    Ok(())
+                };
+                if let Err(freeze_error) = freeze_result {
+                    log::error!(
                         "[scope] CRITICAL: failed to persist the unconsumable-legacy recovery verdict: {freeze_error}; holding the in-process verdict until restart"
                     );
                     *UNPERSISTED_VERDICT
@@ -361,8 +555,13 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // fallback) **in this process only** — across a restart the
             // first-boot-trace re-evaluation hazard returns (the registered
             // crash-during-freeze family, round-28 nit).
-            if let Err(freeze_error) = try_save_disabled_bundles_file(&file) {
-                eprintln!(
+            let freeze_result = if persist_repairs {
+                try_save_disabled_bundles_file(&file)
+            } else {
+                Ok(())
+            };
+            if let Err(freeze_error) = freeze_result {
+                log::error!(
                     "[scope] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error}; holding the in-process verdict (plain initialized = {}) until restart - first-boot traces will not re-open the fresh/upgraded evaluation",
                     file.initialized.contains(SessionMode::Plain.as_str())
                 );
@@ -395,11 +594,18 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 Ok(bytes) => {
                     // Raw bytes quarantine (R7-M1: a lossy copy is mojibake) with
                     // the shared memo/try-save recovery core (round-10 m5).
-                    return quarantine_and_recover_disabled_bundles(&bytes, &error.to_string());
+                    return quarantine_and_recover_disabled_bundles(
+                        &bytes,
+                        &error.to_string(),
+                        persist_repairs,
+                    );
                 }
                 Err(salvage_error) => {
-                    eprintln!(
-                        "[marketplace] disabled_bundles.json exists but is unreadable ({error}; salvage read failed: {salvage_error}); skipping quarantine and overwrite this read, fail-closed applies in memory"
+                    log_scope_read_failure(
+                        LOG_RECOVERY,
+                        &format!(
+                            "[marketplace] disabled_bundles.json exists but is unreadable ({error}; salvage read failed: {salvage_error}); skipping quarantine and overwrite this read, fail-closed applies in memory"
+                        ),
                     );
                     // Round-19 MAJOR 4: mark the home so the next persist
                     // preserves the unreadable bytes (rename-aside) instead of
@@ -428,10 +634,14 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // recover fully off — set only the migration marker (frozen as
             // the fresh-install verdict) and initialize no scope;
             // uninitialized scopes fall back to DenyAll (review #455).
-            quarantine_and_recover_disabled_bundles(content.as_bytes(), &error.to_string())
+            quarantine_and_recover_disabled_bundles(
+                content.as_bytes(),
+                &error.to_string(),
+                persist_repairs,
+            )
         }
     };
-    if !file.plain_defaults_migrated {
+    if persist_repairs && !file.plain_defaults_migrated {
         file.initialized
             .insert(SessionMode::Plain.as_str().to_string());
         file.plain_defaults_migrated = true;
@@ -445,7 +655,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         // NotFound read (the re-run itself stays idempotent — the verdict
         // derives from the file's own contents).
         if let Err(error) = try_save_disabled_bundles_file(&file) {
-            eprintln!(
+            log::error!(
                 "[scope] CRITICAL: failed to persist the legacy migration verdict: {error}; holding the in-process verdict until a save succeeds"
             );
             *UNPERSISTED_VERDICT
@@ -454,9 +664,65 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 Some((paths::pinvou3_home(), file.clone()));
         }
     }
-    if normalize_stored_lists(&mut file) {
+    if persist_repairs && normalize_stored_lists(&mut file) {
         save_disabled_bundles_file(&file);
     }
+    file
+}
+
+/// Startup hoisted read (the `disabled_bundles_migration` freeze). Unlike
+/// the hot readers this one must fully LOCK: the fresh-vs-upgraded verdict
+/// has to be computed and persisted before any first-boot trace exists — a
+/// degraded read here would discard the verdict, the app's own first-boot
+/// writes would pollute the wide upgrade signal, and the next locked read
+/// would flip plain to AllowAll permanently (the fail-open the freeze
+/// exists to prevent). The wait is the same no-timeout wait as every
+/// writer's (a peer's normal critical section is millisecond-scale; a
+/// FROZEN peer blocks boot indefinitely — the accepted fail-stop direction,
+/// see the module lock note), and at startup — before engines and
+/// commands — no executor is starved. If the lock file itself cannot be
+/// opened, the read degrades (and logs once): an unsynchronized freeze
+/// would be worse.
+pub fn load_disabled_bundles_startup() -> DisabledBundlesFile {
+    let _process_guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match open_scope_lock_file() {
+        Ok(file) => {
+            let mut lock = fd_lock::RwLock::new(file);
+            let _os_guard = loop {
+                match lock.write() {
+                    Ok(guard) => break guard,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        log_scope_read_failure(
+                            LOG_LOCK_OPEN,
+                            &format!("startup locked read degraded to unlocked: {error}"),
+                        );
+                        return read_disabled_bundles_file(false);
+                    }
+                }
+            };
+            read_disabled_bundles_file(true)
+        }
+        Err(error) => {
+            log_scope_read_failure(
+                LOG_LOCK_OPEN,
+                &format!(
+                    "cross-process lock unavailable at startup; unlocked read without persist: {error}"
+                ),
+            );
+            read_disabled_bundles_file(false)
+        }
+    }
+}
+
+/// Read under the full lock: read-time repairs persist (serialized with every
+/// other lock holder). Write critical sections load through this.
+fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
+    let file = read_disabled_bundles_file(true);
+    // Fully locked and fully readable: degradation over, re-arm the latch.
+    clear_scope_read_failure_log();
     file
 }
 
@@ -467,7 +733,11 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
 /// closed overwrite; on save failure record the memo and leave the original
 /// in place. The recovered state never initializes any scope (DenyAll
 /// fallback) — see the branch comments for the consent rationale.
-fn quarantine_and_recover_disabled_bundles(raw: &[u8], error: &str) -> DisabledBundlesFile {
+fn quarantine_and_recover_disabled_bundles(
+    raw: &[u8],
+    error: &str,
+    persist_repairs: bool,
+) -> DisabledBundlesFile {
     let recovered = DisabledBundlesFile {
         plain_defaults_migrated: true,
         ..DisabledBundlesFile::default()
@@ -482,8 +752,22 @@ fn quarantine_and_recover_disabled_bundles(raw: &[u8], error: &str) -> DisabledB
             }
         }
     }
+    if !persist_repairs {
+        // Degraded read: no quarantine copy and no recovery overwrite — both
+        // are writes, and this read must never write unsynchronized. The
+        // fail-closed default is transient (nothing persisted); the next
+        // locked read re-runs the recovery. The corrupt original stays in
+        // place with NO preserved copy, so arm the unreadable-original marker
+        // exactly like the quarantine-failure arm below: a later writer must
+        // rename those bytes aside instead of blind-writing over the only
+        // copy.
+        *UNREADABLE_ORIGINAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(paths::pinvou3_home());
+        return recovered;
+    }
     if let Err(quarantine_err) = quarantine_corrupt_disabled_bundles(raw, error) {
-        eprintln!(
+        log::warn!(
             "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
         );
         // Round-29 m1 (review #455): quarantine failed, so NO preserved copy
@@ -499,7 +783,7 @@ fn quarantine_and_recover_disabled_bundles(raw: &[u8], error: &str) -> DisabledB
         return recovered;
     }
     if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
-        eprintln!(
+        log::warn!(
             "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
         );
         *PENDING_CORRUPT_RECOVERY
@@ -579,9 +863,6 @@ pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
 
-/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
-/// hoist): one `available_tools()` walk serves the whole id list instead of
-/// one per entry.
 /// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
 /// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
@@ -747,7 +1028,7 @@ fn merge_legacy_scope_file_into(
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
         Err(error) => {
-            eprintln!("[scope] read {} failed: {error}", path.display());
+            log::warn!("[scope] read {} failed: {error}", path.display());
             return true;
         }
     };
@@ -764,11 +1045,11 @@ fn merge_legacy_scope_file_into(
         return false;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        eprintln!("[scope] parse {} failed", path.display());
+        log::warn!("[scope] parse {} failed", path.display());
         return true;
     };
     let Some(obj) = value.as_object() else {
-        eprintln!("[scope] {} is not a JSON object", path.display());
+        log::warn!("[scope] {} is not a JSON object", path.display());
         return true;
     };
     // A file that is valid JSON but only partially matches a documented shape is
@@ -793,7 +1074,7 @@ fn merge_legacy_scope_file_into(
         Some(serde_json::Value::Object(scopes)) => {
             for (key, arr) in scopes {
                 let Some(ids) = scope_ids(arr) else {
-                    eprintln!(
+                    log::warn!(
                         "[scope] {} has a malformed scope entry {key}",
                         path.display()
                     );
@@ -811,13 +1092,13 @@ fn merge_legacy_scope_file_into(
                     }
                 }
                 Some(_) => {
-                    eprintln!("[scope] {} has a non-array \"initialized\"", path.display());
+                    log::warn!("[scope] {} has a non-array \"initialized\"", path.display());
                     return true;
                 }
             }
         }
         Some(_) => {
-            eprintln!("[scope] {} has a non-object \"scopes\"", path.display());
+            log::warn!("[scope] {} has a non-object \"scopes\"", path.display());
             return true;
         }
         None if obj.contains_key("plain")
@@ -828,7 +1109,7 @@ fn merge_legacy_scope_file_into(
             for key in ["plain", "code"] {
                 let Some(value) = obj.get(key) else { continue };
                 let Some(ids) = scope_ids(value) else {
-                    eprintln!(
+                    log::warn!(
                         "[scope] {} has a malformed scope entry {key}",
                         path.display()
                     );
@@ -846,7 +1127,7 @@ fn merge_legacy_scope_file_into(
                 }
                 Some(serde_json::Value::Bool(false)) => {}
                 Some(_) => {
-                    eprintln!(
+                    log::warn!(
                         "[scope] {} has a non-bool \"code_initialized\"",
                         path.display()
                     );
@@ -855,7 +1136,7 @@ fn merge_legacy_scope_file_into(
             }
         }
         None => {
-            eprintln!("[scope] {} has no recognizable scope shape", path.display());
+            log::warn!("[scope] {} has no recognizable scope shape", path.display());
             return true;
         }
     }
@@ -864,7 +1145,7 @@ fn merge_legacy_scope_file_into(
             None => {}
             Some(serde_json::Value::Bool(enabled)) => file.project_skills_enabled = *enabled,
             Some(_) => {
-                eprintln!(
+                log::warn!(
                     "[scope] {} has a non-bool \"project_skills_enabled\"",
                     path.display()
                 );
@@ -902,7 +1183,7 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
 /// success (#571).
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
     if let Err(error) = try_save_disabled_bundles_file(file) {
-        eprintln!("[scope] {error}");
+        log::warn!("[scope] {error}");
     }
 }
 
@@ -936,27 +1217,46 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             .map(|p| p == &home)
             .unwrap_or(false);
         if degraded && path.exists() {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            // Round-21 minor 1: rename-aside copies use their OWN `.unreadable.`
-            // namespace, deliberately distinct from quarantine's `.corrupt.` —
-            // a stale preservation copy must not satisfy the no-sibling rule
-            // and rob a later genuine corruption of its preserved copy. Both
-            // kinds count as store-existed evidence for the NotFound read.
-            let sidecar = path.with_file_name(format!("disabled_bundles.json.unreadable.{stamp}"));
-            std::fs::rename(&path, &sidecar).map_err(|error| {
-                format!(
-                    "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
+            // The memo can be stale: a peer process may have healed the store
+            // after this process's persist failed (in-process memos cannot see
+            // the peer's clearing save). Re-verify before preserving — a file
+            // that reads and parses is the live store, not an unreadable
+            // original; renaming it aside would strand a spurious preservation
+            // copy (no data loss either way, but the next read would then
+            // re-derive from sibling evidence instead of the file).
+            let still_unreadable = match std::fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+                Err(_) => true,
+            };
+            if !still_unreadable {
+                UNREADABLE_ORIGINAL
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take();
+            } else {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                // Round-21 minor 1: rename-aside copies use their OWN `.unreadable.`
+                // namespace, deliberately distinct from quarantine's `.corrupt.` —
+                // a stale preservation copy must not satisfy the no-sibling rule
+                // and rob a later genuine corruption of its preserved copy. Both
+                // kinds count as store-existed evidence for the NotFound read.
+                let sidecar =
+                    path.with_file_name(format!("disabled_bundles.json.unreadable.{stamp}"));
+                std::fs::rename(&path, &sidecar).map_err(|error| {
+                    format!(
+                        "refusing to overwrite unreadable disabled_bundles.json: rename-aside to {} failed: {error}",
+                        sidecar.display()
+                    )
+                })?;
+                renamed_aside = Some(sidecar.clone());
+                log::warn!(
+                    "[marketplace] unreadable disabled_bundles.json preserved as {} before overwrite",
                     sidecar.display()
-                )
-            })?;
-            renamed_aside = Some(sidecar.clone());
-            eprintln!(
-                "[marketplace] unreadable disabled_bundles.json preserved as {} before overwrite",
-                sidecar.display()
-            );
+                );
+            }
         }
     }
     let write_result = (|| {
@@ -985,11 +1285,11 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             // sibling evidence keeps the verdict fail-closed (round-20
             // MAJOR B).
             match std::fs::rename(sidecar, &path) {
-                Ok(()) => eprintln!(
+                Ok(()) => log::warn!(
                     "[marketplace] disabled_bundles.json write failed ({error}); the unreadable original was restored from {}",
                     sidecar.display()
                 ),
-                Err(restore_error) => eprintln!(
+                Err(restore_error) => log::warn!(
                     "[marketplace] disabled_bundles.json write failed ({error}) and restoring the unreadable original from {} failed too: {restore_error}; the corrupt-copy evidence keeps the next read fail-closed",
                     sidecar.display()
                 ),
@@ -1100,7 +1400,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             let mut ids: Vec<String> = match manager.try_installed_ids() {
                 Ok(ids) => ids,
                 Err(error) => {
-                    eprintln!(
+                    log::warn!(
                         "[scope] {error}; DenyAll expansion falls back to the full available catalog (fail-closed)"
                     );
                     let mut catalog: Vec<String> =
@@ -1144,7 +1444,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                 // population itself is unknowable (the lenient upload read
                 // yields nothing to union); with an unreadable packages root,
                 // straggler-copy-only skills of neither kind can be seen.
-                eprintln!(
+                log::warn!(
                     "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
                 );
                 let mut blanket: Vec<String> =
@@ -1246,99 +1546,102 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // The DenyAll computed default and the install-sync exemption already
     // exclude builtin ids, so legitimate internal callers are unaffected.
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
-    let tools = MarketplaceManager::new().available_tools();
-    let normalized: Vec<String> = ids
-        .iter()
-        .map(|id| to_package_id_with(&tools, id))
-        .collect();
-    let mut file = load_disabled_bundles_file_locked();
-    let key = scope.as_str().to_string();
-    let was_uninitialized = !file.initialized.contains(&key);
-    let previous = file.scopes.get(&key).cloned().unwrap_or_default();
-    // First composer write on an uninitialized DenyAll scope (round-13 B1):
-    // the composer holds the *effective* set — the full on-the-fly DenyAll
-    // expansion on a fresh install, every pack rendered off — and sends the
-    // whole list. Without seeding, that write would materialize the expansion
-    // as stored entries with no `default_off_scopes` markers: every untouched
-    // pack would become an "explicit user opt-out" the user never made, and
-    // the welcome/scene opt-in would refuse it forever. Seed the markers from
-    // the pre-write effective expansion ∩ the new list, the same attribution
-    // the enable path's materialization arm uses: entries off-by-default that
-    // stay off are defaults (liftable), entries newly written off here are
-    // the user's own verdict (no marker). Computed before the mutations below
-    // — the expansion depends on the still-uninitialized state. Under an
-    // AllowAll policy there is no expansion and nothing to seed.
-    let seeded_defaults: Vec<String> =
-        if was_uninitialized && scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
-            resolve_scope_disabled_ids(&file, scope)
-                .into_iter()
-                .filter(|id| normalized.contains(id))
-                .collect()
-        } else {
-            Vec::new()
-        };
-    file.scopes.insert(key.clone(), normalized.clone());
-    file.initialized.insert(key.clone());
-    // The composer sends the whole list, not a per-id gesture, so this write
-    // says nothing about who switched a given entry off. Keep the
-    // install-default marker for entries that were already persisted as off
-    // and stay off (`previous ∩ new`): the user did not transition them in
-    // this write, and dropping the marker would turn a pack they never touched
-    // into an explicit opt-out that the welcome/scene opt-in has to refuse —
-    // the round-11 B2 contradiction, re-opened by any unrelated composer
-    // toggle (round-12 self-review). Entries entering the list here are the
-    // user's own verdict and carry no marker; entries leaving it are on again,
-    // so their marker goes with them.
-    let retained: Vec<String> = if was_uninitialized {
-        // Round-13 B1: markers come from the pre-write expansion (above), not
-        // from `previous ∩ new` — on a fresh install `previous` is empty, so
-        // the persisted-list filter would retain nothing and strand every
-        // default as an unattributed opt-out. Over-attribution is safe: a
-        // marker only makes a later enable *easier*.
-        seeded_defaults
-    } else {
-        file.default_off_scopes
-            .get(&key)
-            .map(|markers| {
-                markers
-                    .iter()
-                    .filter(|id| previous.contains(id) && normalized.contains(id))
-                    .cloned()
+    with_scope_file_lock(|| {
+        // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
+        let tools = MarketplaceManager::new().available_tools();
+        let mut normalized: Vec<String> = ids
+            .iter()
+            .map(|id| to_package_id_with(&tools, id))
+            .collect();
+        // Read-side normalization dedups anyway; persist deduped so repeated
+        // toggles cannot accumulate duplicate entries on disk.
+        let mut seen = std::collections::HashSet::new();
+        normalized.retain(|id| seen.insert(id.clone()));
+        let mut file = load_disabled_bundles_file_locked();
+        let key = scope.as_str().to_string();
+        let was_uninitialized = !file.initialized.contains(&key);
+        let previous = file.scopes.get(&key).cloned().unwrap_or_default();
+        // First composer write on an uninitialized DenyAll scope (round-13 B1):
+        // the composer holds the *effective* set — the full on-the-fly DenyAll
+        // expansion on a fresh install, every pack rendered off — and sends the
+        // whole list. Without seeding, that write would materialize the expansion
+        // as stored entries with no `default_off_scopes` markers: every untouched
+        // pack would become an "explicit user opt-out" the user never made, and
+        // the welcome/scene opt-in would refuse it forever. Seed the markers from
+        // the pre-write effective expansion ∩ the new list, the same attribution
+        // the enable path's materialization arm uses: entries off-by-default that
+        // stay off are defaults (liftable), entries newly written off here are
+        // the user's own verdict (no marker). Computed before the mutations below
+        // — the expansion depends on the still-uninitialized state. Under an
+        // AllowAll policy there is no expansion and nothing to seed.
+        let seeded_defaults: Vec<String> =
+            if was_uninitialized && scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
+                resolve_scope_disabled_ids(&file, scope)
+                    .into_iter()
+                    .filter(|id| normalized.contains(id))
                     .collect()
-            })
-            .unwrap_or_default()
-    };
-    if retained.is_empty() {
-        file.default_off_scopes.remove(&key);
-    } else {
-        file.default_off_scopes.insert(key.clone(), retained);
-    }
-    // Round-23 MINOR 4 honesty note (direction corrected in round-24 minor
-    // 9): when this write lands over an unreadable/recovered store (the
-    // `UNREADABLE_ORIGINAL` / `PENDING_CORRUPT_RECOVERY` paths), the
-    // in-memory file's scopes are uninitialized — the next composer save
-    // takes the seeding arm above, which ADDS install-default markers to the
-    // re-seeded entries. The original bytes are preserved rename-aside, but
-    // attribution is lost in the opposite direction the round-23 wording
-    // claimed: trapped user opt-outs are re-persisted as liftable
-    // install-defaults, not as explicit verdicts — persisting entries
-    // without markers would have made them MORE explicit, not less.
-    // Attribution is lost, not
-    // the verdicts; recovering the original's markers is the corrupt-recovery
-    // rebuild's job, not this writer's.
-    // The persist is fail-loud (round-19 MAJOR 1): main's #563 made this
-    // writer's failure a user-visible command error (the frontend rolls the
-    // toggle back and alerts), and with #563 now in this PR's merge base,
-    // keeping the old fire-and-forget tail would silently downgrade a shipped
-    // contract. The #515 rework still owns the deeper composer concerns — the
-    // whole-list replace's cross-process RMW and the stale-snapshot
-    // resurrection (round-14 M1) — but a lost write now surfaces instead of
-    // rendering success over unpersisted state.
-    try_save_disabled_bundles_file(&file)
+            } else {
+                Vec::new()
+            };
+        file.scopes.insert(key.clone(), normalized.clone());
+        file.initialized.insert(key.clone());
+        // The composer sends the whole list, not a per-id gesture, so this write
+        // says nothing about who switched a given entry off. Keep the
+        // install-default marker for entries that were already persisted as off
+        // and stay off (`previous ∩ new`): the user did not transition them in
+        // this write, and dropping the marker would turn a pack they never touched
+        // into an explicit opt-out that the welcome/scene opt-in has to refuse —
+        // the round-11 B2 contradiction, re-opened by any unrelated composer
+        // toggle (round-12 self-review). Entries entering the list here are the
+        // user's own verdict and carry no marker; entries leaving it are on again,
+        // so their marker goes with them.
+        let retained: Vec<String> = if was_uninitialized {
+            // Round-13 B1: markers come from the pre-write expansion (above), not
+            // from `previous ∩ new` — on a fresh install `previous` is empty, so
+            // the persisted-list filter would retain nothing and strand every
+            // default as an unattributed opt-out. Over-attribution is safe: a
+            // marker only makes a later enable *easier*.
+            seeded_defaults
+        } else {
+            file.default_off_scopes
+                .get(&key)
+                .map(|markers| {
+                    markers
+                        .iter()
+                        .filter(|id| previous.contains(id) && normalized.contains(id))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        if retained.is_empty() {
+            file.default_off_scopes.remove(&key);
+        } else {
+            file.default_off_scopes.insert(key.clone(), retained);
+        }
+        // Round-23 MINOR 4 honesty note (direction corrected in round-24 minor
+        // 9): when this write lands over an unreadable/recovered store (the
+        // `UNREADABLE_ORIGINAL` / `PENDING_CORRUPT_RECOVERY` paths), the
+        // in-memory file's scopes are uninitialized — the next composer save
+        // takes the seeding arm above, which ADDS install-default markers to the
+        // re-seeded entries. The original bytes are preserved rename-aside, but
+        // attribution is lost in the opposite direction the round-23 wording
+        // claimed: trapped user opt-outs are re-persisted as liftable
+        // install-defaults, not as explicit verdicts — persisting entries
+        // without markers would have made them MORE explicit, not less.
+        // Attribution is lost, not
+        // the verdicts; recovering the original's markers is the corrupt-recovery
+        // rebuild's job, not this writer's.
+        // The persist is fail-loud (round-19 MAJOR 1): main's #563 made this
+        // writer's failure a user-visible command error (the frontend rolls the
+        // toggle back and alerts), and with #563 now in this PR's merge base,
+        // keeping the old fire-and-forget tail would silently downgrade a shipped
+        // contract. The #515 rework still owns the deeper composer concerns — the
+        // whole-list replace's cross-process RMW and the stale-snapshot
+        // resurrection (round-14 M1) — but a lost write now surfaces instead of
+        // rendering success over unpersisted state.
+        try_save_disabled_bundles_file(&file)
+    })?
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -1369,19 +1672,22 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
     // function (not just the command layer) so every caller inherits it —
     // same layering as the disable path (review round-5 minor 3).
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
-    let tools = MarketplaceManager::new().available_tools();
-    let normalized: Vec<String> = ids
-        .iter()
-        .map(|id| to_package_id_with(&tools, id))
-        .collect();
-    let mut file = load_disabled_bundles_file_locked();
-    file.hidden_scopes
-        .insert(scope.as_str().to_string(), normalized);
-    try_save_disabled_bundles_file(&file)
+    with_scope_file_lock(|| {
+        // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
+        let tools = MarketplaceManager::new().available_tools();
+        let mut normalized: Vec<String> = ids
+            .iter()
+            .map(|id| to_package_id_with(&tools, id))
+            .collect();
+        // Read-side normalization dedups anyway; persist deduped so repeated
+        // toggles cannot accumulate duplicate entries on disk.
+        let mut seen = std::collections::HashSet::new();
+        normalized.retain(|id| seen.insert(id.clone()));
+        let mut file = load_disabled_bundles_file_locked();
+        file.hidden_scopes
+            .insert(scope.as_str().to_string(), normalized);
+        try_save_disabled_bundles_file(&file)
+    })?
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -1431,6 +1737,82 @@ pub fn save_disabled_bundles(ids: &[String]) {
 /// session with zero consent while the install reported success (fail-open,
 /// the worse direction of the enable path's round-12 invariant "applied and
 /// persisted"). Callers surface the error after their own success commit; a
+/// Deny-first consent registration for the CLI connector channels
+/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills` and the auth-gate
+/// refresh / startup backfill): when the connector is about to become
+/// visible (materialize its skill files), register it in the initialized
+/// DenyAll scopes FIRST, so a refused registration aborts before anything is
+/// exposed. A hidden (`show == false`) connector needs no registration. The
+/// known-bundle skip ignores the connect-time `Builtin` record (written
+/// before the gate ever runs), so the FIRST visibility always registers;
+/// once the connector's full companion layout is materialized on disk it
+/// counts as known (see `consent_gate_bundle_already_known`), preserving the
+/// user's recorded enable — including across the startup auth-gate refresh.
+/// Hiding the connector again and re-showing: while the sync ledger entry
+/// survives (only teardown clears it), a re-show is a no-op — re-registration
+/// happens on the disconnect→reconnect path, whose teardown clears the ledger
+/// (fresh-install semantics for a user re-connect action).
+pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+    if !show {
+        return Ok(());
+    }
+    let package_id = to_package_id(connector_id);
+    // LEDGER-GATED (the startup-refresh boundary, #455 round-31): the sync
+    // itself skips only *known* bundles; a ledgered-but-uninstalled pair
+    // (the enable removed the row, the ledger entry survives) would re-arm
+    // through the ungated install sync at every boot and silently revert the
+    // enable. A ledger entry for any scope = a sync already ran for this
+    // pack; teardown clears the entries, so a fresh reconnect re-registers.
+    let ledger = load_disabled_bundles_file().install_default_synced;
+    if SessionMode::ALL
+        .iter()
+        .any(|mode| ledger.contains(&format!("{}:{package_id}", mode.as_str())))
+    {
+        return Ok(());
+    }
+    // The sync itself skips known bundles (their consent is recorded), so a
+    // re-show never re-denies an enable.
+    sync_deny_all_scopes_after_install(connector_id)
+}
+
+/// Whether the normalized consent-gate id is already a user-consented
+/// installation in this home: a store record from a user-facing channel
+/// (preset install / upload) backed by content, a CLI connector whose
+/// companion skill dirs are fully materialized on disk, or a skill on disk
+/// claimed by this package. The record clause requires content corroboration
+/// (the package dir, or an installed skill mapping to the record's id): a
+/// log-only `store.remove` failure mid-uninstall leaves a stale
+/// `installed = true` record behind, and trusting it would let a same-id
+/// reinstall skip registration and land ungoverned — a content-less record
+/// errs toward "not known" so the gate registers (over-denial, fail-closed).
+/// On an unreadable store the check errs toward "not known" for the same
+/// reason.
+pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
+    if let Ok(records) = crate::features::marketplace::store::BundleStore::new().records() {
+        if records.iter().any(|record| {
+            record.id == package_id
+                && record.installed
+                && record.source != crate::features::marketplace::store::BundleSource::Builtin
+                && (crate::platform::paths::bundles_root()
+                    .join(&record.id)
+                    .is_dir()
+                    || SkillMarketplaceManager::new()
+                        .installed_skill_ids()
+                        .iter()
+                        .any(|skill| skill_owner_package(skill) == record.id))
+        }) {
+            return true;
+        }
+    }
+    if super::bundle::cli_connector_skills_materialized(package_id) {
+        return true;
+    }
+    SkillMarketplaceManager::new()
+        .installed_skill_ids()
+        .iter()
+        .any(|skill| skill_owner_package(skill) == package_id)
+}
+
 /// retry of the sync is safe (idempotent membership push).
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
     sync_deny_all_scopes_inner(raw_id, false)
@@ -1463,62 +1845,70 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
     if crate::features::marketplace::builtin::is_builtin_tool(&package_id) {
         return Ok(());
     }
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
-        }
-        let key = mode.as_str();
-        if !file.initialized.contains(key) {
-            // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
-            // record the pair. A connect/install sync on a fresh home runs
-            // exactly here — plain is uninitialized by design until the
-            // user's first composer/welcome/scene write materializes it — so
-            // skipping the ledger made the user's FIRST enable observably
-            // identical to "never synced": the next boot's refresh backfilled
-            // the default-off row over it. Recording (without pushing any
-            // row — the uninitialized scope is covered by the on-the-fly
-            // expansion) marks the pair as seen, so the post-materialization
-            // refresh leaves the enable in place.
+    // Known-bundle skip: a bundle whose consent is already recorded (store
+    // record / materialized CLI companions / claimed skill / sync ledger)
+    // must not re-run the registration — a reinstall or reimport would
+    // re-deny recorded consent, and with the scope lock unavailable it would
+    // refuse outright. Every caller (deny-first gates, pre-land import gate,
+    // companions, ima reconnect) inherits the skip from here.
+    if consent_gate_bundle_already_known(&package_id) {
+        return Ok(());
+    }
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            if !file.initialized.contains(key) {
+                // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
+                // record the pair. A connect/install sync on a fresh home runs
+                // exactly here — plain is uninitialized by design until the
+                // user's first composer/welcome/scene write materializes it — so
+                // skipping the ledger made the user's FIRST enable observably
+                // identical to "never synced": the next boot's refresh backfilled
+                // the default-off row over it. Recording (without pushing any
+                // row — the uninitialized scope is covered by the on-the-fly
+                // expansion) marks the pair as seen, so the post-materialization
+                // refresh leaves the enable in place.
+                let ledger_key = format!("{key}:{package_id}");
+                if !file.install_default_synced.contains(&ledger_key) {
+                    file.install_default_synced.push(ledger_key);
+                    changed = true;
+                }
+                continue;
+            }
             let ledger_key = format!("{key}:{package_id}");
+            if ledger_gated && file.install_default_synced.contains(&ledger_key) {
+                continue;
+            }
+            let ids = file.scopes.entry(key.to_string()).or_default();
+            if !ids.iter().any(|id| id == &package_id) {
+                ids.push(package_id.clone());
+                // Mark the entry as install-written (round-11 B2): the off is a
+                // default, not a user verdict — later user-initiated enables may
+                // remove it without tripping the explicit-opt-out refusal.
+                let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
+                if !defaults.iter().any(|id| id == &package_id) {
+                    defaults.push(package_id.clone());
+                }
+                changed = true;
+            }
+            // Recorded even when the row already existed — the ledger answers
+            // "did a sync ever run for this pair", which is what keeps the
+            // STARTUP refresh from re-adding a lifted row later.
             if !file.install_default_synced.contains(&ledger_key) {
                 file.install_default_synced.push(ledger_key);
                 changed = true;
             }
-            continue;
         }
-        let ledger_key = format!("{key}:{package_id}");
-        if ledger_gated && file.install_default_synced.contains(&ledger_key) {
-            continue;
+        if changed {
+            try_save_disabled_bundles_file(&file)?;
         }
-        let ids = file.scopes.entry(key.to_string()).or_default();
-        if !ids.iter().any(|id| id == &package_id) {
-            ids.push(package_id.clone());
-            // Mark the entry as install-written (round-11 B2): the off is a
-            // default, not a user verdict — later user-initiated enables may
-            // remove it without tripping the explicit-opt-out refusal.
-            let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
-            if !defaults.iter().any(|id| id == &package_id) {
-                defaults.push(package_id.clone());
-            }
-            changed = true;
-        }
-        // Recorded even when the row already existed — the ledger answers
-        // "did a sync ever run for this pair", which is what keeps the
-        // STARTUP refresh from re-adding a lifted row later.
-        if !file.install_default_synced.contains(&ledger_key) {
-            file.install_default_synced.push(ledger_key);
-            changed = true;
-        }
-    }
-    if changed {
-        try_save_disabled_bundles_file(&file)?;
-    }
-    Ok(())
+        Ok(())
+    })?
 }
 
 /// Sync every scope after a bundle uninstall/disconnect: drop the id from each
@@ -1557,76 +1947,76 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
 /// corrupt file is left for the regular read path's fail-closed recovery)
 /// and removes exactly the caller-resolved owner's rows from the three sets.
 pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), String> {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = disabled_bundles_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        // Nothing was ever stored for cleanup.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "reading disabled_bundles.json for the exact cleanup: {error}"
-            ));
+    with_scope_file_lock(|| {
+        let path = disabled_bundles_path();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // Nothing was ever stored for cleanup.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "reading disabled_bundles.json for the exact cleanup: {error}"
+                ));
+            }
+        };
+        let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+            Ok(file) => file,
+            // Skip the cleanup on a corrupt store: the regular read path owns the
+            // fail-closed recovery (quarantine + DenyAll fallback), and blindly
+            // overwriting from here could race or bypass the quarantine. The
+            // leftover rows are the stale-deny direction (fail-safe).
+            Err(error) => {
+                return Err(format!(
+                    "disabled_bundles.json unparseable — skipping the exact cleanup (recovery is owned by the regular read path): {error}"
+                ));
+            }
+        };
+        let mut changed = false;
+        for ids in file.scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != package_id);
+            changed |= ids.len() != before;
         }
-    };
-    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
-        Ok(file) => file,
-        // Skip the cleanup on a corrupt store: the regular read path owns the
-        // fail-closed recovery (quarantine + DenyAll fallback), and blindly
-        // overwriting from here could race or bypass the quarantine. The
-        // leftover rows are the stale-deny direction (fail-safe).
-        Err(error) => {
-            return Err(format!(
-                "disabled_bundles.json unparseable — skipping the exact cleanup (recovery is owned by the regular read path): {error}"
-            ));
+        // The visibility sets are cleared too: a leftover hidden entry would
+        // keep a future same-id reinstall invisible.
+        for ids in file.hidden_scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != package_id);
+            changed |= ids.len() != before;
         }
-    };
-    let mut changed = false;
-    for ids in file.scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != package_id);
-        changed |= ids.len() != before;
-    }
-    // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
-    for ids in file.hidden_scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != package_id);
-        changed |= ids.len() != before;
-    }
-    // The marker must go with the entry (round-12 self-review): a stale
-    // install-default marker would later let a welcome/scene opt-in lift a
-    // *user* off that re-added the same id (uninstall or logout clears the
-    // stored entry, then the user switches the connector off again).
-    for defaults in file.default_off_scopes.values_mut() {
-        let before = defaults.len();
-        defaults.retain(|id| id != package_id);
-        changed |= defaults.len() != before;
-    }
-    // Round-31 BLOCKER (review #455): teardown also clears the pack's
-    // install-default sync ledger entries, so a fresh install / reconnect
-    // re-syncs default-off. This is the TEARDOWN-only hook: the composer
-    // enable path rewrites the scope lists wholesale and deliberately does
-    // NOT come through here — a user enable must keep the ledger entry
-    // (that is what makes the enable sticky against the startup refresh).
-    // Round-32 minor 1 (review #455): the entries are `"<scope>:<pack>"`, so
-    // the clear matches them EXACTLY per scope key — a suffix match would let
-    // a pack id whose tail equals another pack id (`a:b` vs `b`) lose its
-    // ledger entry on the other pack's teardown (spurious default-off re-push
-    // at the next refresh).
-    let mut ledger_keys: Vec<String> = Vec::new();
-    for mode in SessionMode::ALL {
-        ledger_keys.push(format!("{}:{package_id}", mode.as_str()));
-    }
-    let before_ledger = file.install_default_synced.len();
-    file.install_default_synced
-        .retain(|entry| !ledger_keys.contains(entry));
-    changed |= file.install_default_synced.len() != before_ledger;
-    if changed {
-        try_save_disabled_bundles_file(&file)?;
-    }
-    Ok(())
+        // The marker must go with the entry (round-12 self-review): a stale
+        // install-default marker would later let a welcome/scene opt-in lift a
+        // *user* off that re-added the same id (uninstall or logout clears the
+        // stored entry, then the user switches the connector off again).
+        for defaults in file.default_off_scopes.values_mut() {
+            let before = defaults.len();
+            defaults.retain(|id| id != package_id);
+            changed |= defaults.len() != before;
+        }
+        // Round-31 BLOCKER (review #455): teardown also clears the pack's
+        // install-default sync ledger entries, so a fresh install / reconnect
+        // re-syncs default-off. This is the TEARDOWN-only hook: the composer
+        // enable path rewrites the scope lists wholesale and deliberately does
+        // NOT come through here — a user enable must keep the ledger entry
+        // (that is what makes the enable sticky against the startup refresh).
+        // Round-32 minor 1 (review #455): the entries are `"<scope>:<pack>"`, so
+        // the clear matches them EXACTLY per scope key — a suffix match would let
+        // a pack id whose tail equals another pack id (`a:b` vs `b`) lose its
+        // ledger entry on the other pack's teardown (spurious default-off re-push
+        // at the next refresh).
+        let mut ledger_keys: Vec<String> = Vec::new();
+        for mode in SessionMode::ALL {
+            ledger_keys.push(format!("{}:{package_id}", mode.as_str()));
+        }
+        let before_ledger = file.install_default_synced.len();
+        file.install_default_synced
+            .retain(|entry| !ledger_keys.contains(entry));
+        changed |= file.install_default_synced.len() != before_ledger;
+        if changed {
+            try_save_disabled_bundles_file(&file)?;
+        }
+        Ok(())
+    })?
 }
 
 /// Batch-enable entry for user actions such as scenario opt-ins (review #455
@@ -1695,125 +2085,124 @@ pub fn enable_packages_in_scope(
     if ids.is_empty() {
         return Ok(EnablePackagesOutcome::default());
     }
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let key = scope.as_str();
-    if file.initialized.contains(key) {
-        // Initialized scope: refuse only ids the **user** explicitly turned
-        // off — stored entries not attributable to the install default
-        // (round-11 B2 fixes the round-10 Major 2 contradiction: install-sync
-        // writes stored+default_off, so a just-installed pack stays enableable
-        // and the welcome/scene opt-in works for the upgraded cohort).
-        // Round-16 minor 2 caveat: ids absent from the stored list are treated
-        // as already-on (`not_applied` stays empty here) — the
-        // install-commits-after-snapshot race that m3 reports for the
-        // expansion arm has no equivalent signal in this arm.
-        let stored = file.scopes.get(key).cloned().unwrap_or_default();
-        let defaults = file
-            .default_off_scopes
-            .get(key)
-            .cloned()
-            .unwrap_or_default();
-        let blocked: Vec<String> = ids
-            .iter()
-            .filter(|id| stored.contains(id) && !defaults.contains(id))
-            .cloned()
-            .collect();
-        if !blocked.is_empty() {
-            return Ok(EnablePackagesOutcome {
-                blocked,
-                not_applied: Vec::new(),
-                state_changed: false,
-            });
-        }
-    }
-    let mut not_applied: Vec<String> = Vec::new();
-    let mut changed = false;
-    let mut applied: Vec<String> = Vec::new();
-    if file.initialized.contains(key) {
-        if let Some(list) = file.scopes.get_mut(key) {
-            let before = list.len();
-            list.retain(|id| !ids.contains(id));
-            changed |= list.len() != before;
-        }
-        // An enable clears the install-default marker too: the pack is now on
-        // by the user's own gesture; a later disable is that user's verdict.
-        if let Some(defaults) = file.default_off_scopes.get_mut(key) {
-            let before = defaults.len();
-            defaults.retain(|id| !ids.contains(id));
-            changed |= defaults.len() != before;
-        }
-        applied = ids.clone();
-    } else if scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
-        let mut effective = resolve_scope_disabled_ids(&file, scope);
-        let not_applied_ids: Vec<String> = ids
-            .iter()
-            .filter(|id| !effective.contains(id))
-            .cloned()
-            .collect();
-        let before = effective.len();
-        effective.retain(|id| !ids.contains(id));
-        if effective.len() != before {
-            // Materialized snapshot (expansion − enabled ids): every entry is
-            // off-by-default, not user-verdict — later enables of other packs
-            // from the snapshot must not trip the explicit refusal (B2).
-            file.default_off_scopes
-                .insert(key.to_string(), effective.clone());
-            file.scopes.insert(key.to_string(), effective);
-            file.initialized.insert(key.to_string());
-            applied = ids
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let key = scope.as_str();
+        if file.initialized.contains(key) {
+            // Initialized scope: refuse only ids the **user** explicitly turned
+            // off — stored entries not attributable to the install default
+            // (round-11 B2 fixes the round-10 Major 2 contradiction: install-sync
+            // writes stored+default_off, so a just-installed pack stays enableable
+            // and the welcome/scene opt-in works for the upgraded cohort).
+            // Round-16 minor 2 caveat: ids absent from the stored list are treated
+            // as already-on (`not_applied` stays empty here) — the
+            // install-commits-after-snapshot race that m3 reports for the
+            // expansion arm has no equivalent signal in this arm.
+            let stored = file.scopes.get(key).cloned().unwrap_or_default();
+            let defaults = file
+                .default_off_scopes
+                .get(key)
+                .cloned()
+                .unwrap_or_default();
+            let blocked: Vec<String> = ids
                 .iter()
-                .filter(|id| !not_applied_ids.contains(id))
+                .filter(|id| stored.contains(id) && !defaults.contains(id))
                 .cloned()
                 .collect();
-            changed = true;
-        } else {
-            // No requested id sits in the expansion: an explicit user action
-            // would be silently voided — log it (round-11 m5; the id is
-            // likely not installed/known yet, so there is nothing to persist).
-            eprintln!(
-                "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
-            );
+            if !blocked.is_empty() {
+                return Ok(EnablePackagesOutcome {
+                    blocked,
+                    not_applied: Vec::new(),
+                    state_changed: false,
+                });
+            }
         }
-        not_applied = not_applied_ids;
-    }
-    if let Some(hidden) = file.hidden_scopes.get_mut(key) {
-        let before = hidden.len();
-        hidden.retain(|id| !ids.contains(id));
-        changed |= hidden.len() != before;
-    }
-    // Round-37 C1 (review #455): an explicit enable also RECORDS the ledger
-    // pair. The connect/install sync normally wrote it first (the
-    // uninitialized arm records without pushing a row); recording here closes
-    // the surviving window where that sync's persist FAILED between connect
-    // and enable — the row is absent and the pair unledgered, so the next
-    // boot's refresh classified the enable as never-synced and reverted it
-    // (surfaced only as a startup timeline mark). A ledger entry written by
-    // the enable is the same fact the refresh gates on — "this pair was
-    // settled", whatever wrote it. Only APPLIED ids are recorded: a
-    // not_applied id was never enabled, and ledgering it would suppress the
-    // legitimate backfill of its default-off row.
-    for id in &applied {
-        let ledger_key = format!("{key}:{id}");
-        if !file.install_default_synced.contains(&ledger_key) {
-            file.install_default_synced.push(ledger_key);
-            changed = true;
+        let mut not_applied: Vec<String> = Vec::new();
+        let mut changed = false;
+        let mut applied: Vec<String> = Vec::new();
+        if file.initialized.contains(key) {
+            if let Some(list) = file.scopes.get_mut(key) {
+                let before = list.len();
+                list.retain(|id| !ids.contains(id));
+                changed |= list.len() != before;
+            }
+            // An enable clears the install-default marker too: the pack is now on
+            // by the user's own gesture; a later disable is that user's verdict.
+            if let Some(defaults) = file.default_off_scopes.get_mut(key) {
+                let before = defaults.len();
+                defaults.retain(|id| !ids.contains(id));
+                changed |= defaults.len() != before;
+            }
+            applied = ids.clone();
+        } else if scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
+            let mut effective = resolve_scope_disabled_ids(&file, scope);
+            let not_applied_ids: Vec<String> = ids
+                .iter()
+                .filter(|id| !effective.contains(id))
+                .cloned()
+                .collect();
+            let before = effective.len();
+            effective.retain(|id| !ids.contains(id));
+            if effective.len() != before {
+                // Materialized snapshot (expansion − enabled ids): every entry is
+                // off-by-default, not user-verdict — later enables of other packs
+                // from the snapshot must not trip the explicit refusal (B2).
+                file.default_off_scopes
+                    .insert(key.to_string(), effective.clone());
+                file.scopes.insert(key.to_string(), effective);
+                file.initialized.insert(key.to_string());
+                applied = ids
+                    .iter()
+                    .filter(|id| !not_applied_ids.contains(id))
+                    .cloned()
+                    .collect();
+                changed = true;
+            } else {
+                // No requested id sits in the expansion: an explicit user action
+                // would be silently voided — log it (round-11 m5; the id is
+                // likely not installed/known yet, so there is nothing to persist).
+                log::warn!(
+                    "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
+                );
+            }
+            not_applied = not_applied_ids;
         }
-    }
-    if changed {
-        // Fail-visible (round-12 review): the caller must not report
-        // "enabled" when the state did not reach disk — the hot refresh reads
-        // the file back, so a swallowed failure leaves the tool invisible to
-        // the model while the UI claims the opt-in happened.
-        try_save_disabled_bundles_file(&file)?;
-    }
-    Ok(EnablePackagesOutcome {
-        blocked: Vec::new(),
-        not_applied,
-        state_changed: changed,
-    })
+        if let Some(hidden) = file.hidden_scopes.get_mut(key) {
+            let before = hidden.len();
+            hidden.retain(|id| !ids.contains(id));
+            changed |= hidden.len() != before;
+        }
+        // Round-37 C1 (review #455): an explicit enable also RECORDS the ledger
+        // pair. The connect/install sync normally wrote it first (the
+        // uninitialized arm records without pushing a row); recording here closes
+        // the surviving window where that sync's persist FAILED between connect
+        // and enable — the row is absent and the pair unledgered, so the next
+        // boot's refresh classified the enable as never-synced and reverted it
+        // (surfaced only as a startup timeline mark). A ledger entry written by
+        // the enable is the same fact the refresh gates on — "this pair was
+        // settled", whatever wrote it. Only APPLIED ids are recorded: a
+        // not_applied id was never enabled, and ledgering it would suppress the
+        // legitimate backfill of its default-off row.
+        for id in &applied {
+            let ledger_key = format!("{key}:{id}");
+            if !file.install_default_synced.contains(&ledger_key) {
+                file.install_default_synced.push(ledger_key);
+                changed = true;
+            }
+        }
+        if changed {
+            // Fail-visible (round-12 review): the caller must not report
+            // "enabled" when the state did not reach disk — the hot refresh reads
+            // the file back, so a swallowed failure leaves the tool invisible to
+            // the model while the UI claims the opt-in happened.
+            try_save_disabled_bundles_file(&file)?;
+        }
+        Ok(EnablePackagesOutcome {
+            blocked: Vec::new(),
+            not_applied,
+            state_changed: changed,
+        })
+    })?
 }
 
 /// Consent gate for trash restores (review #455 R5-m5 / R9-M2): a **single
@@ -1860,6 +2249,14 @@ fn apply_restore_consent_gate_impl(
     let mut ids: Vec<String> = skill_ids
         .iter()
         .map(|id| to_package_id_with(&tools, id))
+        // The physical-aware fold is only sound for ids that fold onto THIS
+        // pack (a component dir physically nested in the restored package).
+        // An inner skill name claimed by — or physically nested under — a
+        // FOREIGN installed pack must not be written here: the row would land
+        // on the foreign pack's id (over-denying a live pack the user may
+        // have enabled) while the restored pack's own consent is already
+        // covered by the verbatim pack row below.
+        .filter(|mapped| mapped == &pack_id || skill_ids.contains(mapped))
         .collect();
     // Round-24 MAJOR 1: the pack's own row is never re-owned. At gate time the
     // pack dir is still in the recycle bin, so the known-pack shield cannot see
@@ -1875,77 +2272,76 @@ fn apply_restore_consent_gate_impl(
     if ids.is_empty() {
         return Ok(());
     }
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    // Round-16 MAJOR1, force pass: materialize uninitialized DenyAll scopes
-    // once, before the per-id loop — `expansion ∪ ids` with install-default
-    // markers, then initialize the scope. Per-id re-add below then finds every
-    // id already stored and only asserts the markers.
-    if force_uninitialized {
-        for mode in SessionMode::ALL {
-            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-                continue;
-            }
-            let key = mode.as_str();
-            if file.initialized.contains(key) {
-                continue;
-            }
-            let mut stored = resolve_scope_disabled_ids(&file, *mode);
-            for id in &ids {
-                if !stored.iter().any(|x| x == id) {
-                    stored.push(id.clone());
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        // Round-16 MAJOR1, force pass: materialize uninitialized DenyAll scopes
+        // once, before the per-id loop — `expansion ∪ ids` with install-default
+        // markers, then initialize the scope. Per-id re-add below then finds every
+        // id already stored and only asserts the markers.
+        if force_uninitialized {
+            for mode in SessionMode::ALL {
+                if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                    continue;
                 }
-            }
-            file.scopes.insert(key.to_string(), stored.clone());
-            file.default_off_scopes.insert(key.to_string(), stored);
-            file.initialized.insert(key.to_string());
-            changed = true;
-        }
-    }
-    for id in &ids {
-        // Hidden leftover cleanup: hidden entries left after an uninstall
-        // would wrongly hide restored packs.
-        for hidden in file.hidden_scopes.values_mut() {
-            let before = hidden.len();
-            hidden.retain(|x| x != id);
-            changed |= hidden.len() != before;
-        }
-        // Initialized DenyAll scopes: add the id back into the disabled set
-        // (consent gate) and mark it install-default (round-11 B2): the
-        // restore click is not a verdict against future opt-ins — the
-        // welcome/scene enable may still lift it, same as a fresh install's
-        // default-off. Round-16 minor 1: the marker push lives inside the
-        // new-entry guard — re-arming a marker on a stored entry without one
-        // would re-attribute a surviving user verdict as install-default.
-        for mode in SessionMode::ALL {
-            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-                continue;
-            }
-            let key = mode.as_str();
-            if !file.initialized.contains(key) {
-                continue;
-            }
-            let list = file.scopes.entry(key.to_string()).or_default();
-            if !list.iter().any(|x| x == id) {
-                list.push(id.clone());
+                let key = mode.as_str();
+                if file.initialized.contains(key) {
+                    continue;
+                }
+                let mut stored = resolve_scope_disabled_ids(&file, *mode);
+                for id in &ids {
+                    if !stored.iter().any(|x| x == id) {
+                        stored.push(id.clone());
+                    }
+                }
+                file.scopes.insert(key.to_string(), stored.clone());
+                file.default_off_scopes.insert(key.to_string(), stored);
+                file.initialized.insert(key.to_string());
                 changed = true;
-                let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
-                if !defaults.iter().any(|x| x == id) {
-                    defaults.push(id.clone());
+            }
+        }
+        for id in &ids {
+            // Hidden leftover cleanup: hidden entries left after an uninstall
+            // would wrongly hide restored packs.
+            for hidden in file.hidden_scopes.values_mut() {
+                let before = hidden.len();
+                hidden.retain(|x| x != id);
+                changed |= hidden.len() != before;
+            }
+            // Initialized DenyAll scopes: add the id back into the disabled set
+            // (consent gate) and mark it install-default (round-11 B2): the
+            // restore click is not a verdict against future opt-ins — the
+            // welcome/scene enable may still lift it, same as a fresh install's
+            // default-off. Round-16 minor 1: the marker push lives inside the
+            // new-entry guard — re-arming a marker on a stored entry without one
+            // would re-attribute a surviving user verdict as install-default.
+            for mode in SessionMode::ALL {
+                if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                    continue;
+                }
+                let key = mode.as_str();
+                if !file.initialized.contains(key) {
+                    continue;
+                }
+                let list = file.scopes.entry(key.to_string()).or_default();
+                if !list.iter().any(|x| x == id) {
+                    list.push(id.clone());
+                    changed = true;
+                    let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
+                    if !defaults.iter().any(|x| x == id) {
+                        defaults.push(id.clone());
+                    }
                 }
             }
         }
-    }
-    if changed {
-        // Fire-and-forget here would leave a restored pack live with zero
-        // consent after a failed save (round-10 m4): propagate so the caller
-        // can fail the restore — restore is idempotent, the user retries.
-        try_save_disabled_bundles_file(&file)?;
-    }
-    Ok(())
+        if changed {
+            // Fire-and-forget here would leave a restored pack live with zero
+            // consent after a failed save (round-10 m4): propagate so the caller
+            // can fail the restore — restore is idempotent, the user retries.
+            try_save_disabled_bundles_file(&file)?;
+        }
+        Ok(())
+    })?
 }
 
 /// 项目级 skills 开关（默认关）。
@@ -1958,15 +2354,14 @@ pub fn project_skills_enabled() -> bool {
 /// (user governance state must not be silently lost — same principle as the
 /// toggle/visibility writes).
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    if file.project_skills_enabled == enabled {
-        return Ok(());
-    }
-    file.project_skills_enabled = enabled;
-    try_save_disabled_bundles_file(&file)
+    with_scope_file_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        if file.project_skills_enabled == enabled {
+            return Ok(());
+        }
+        file.project_skills_enabled = enabled;
+        try_save_disabled_bundles_file(&file)
+    })?
 }
 
 #[cfg(test)]
@@ -2175,6 +2570,13 @@ mod tests {
             let path = disabled_bundles_path();
             let original = b"corrupt-user-optouts{{{".to_vec();
             std::fs::write(&path, &original).unwrap();
+            // Pre-create the cross-process lock file so the read runs FULLY
+            // LOCKED (opening an existing file in a read-only home succeeds):
+            // without it the lock OPEN itself fails and the read takes the
+            // degraded arm — a different failure than the quarantine-failure
+            // arm this test pins (round-14 review: the fixture used to steer
+            // onto the wrong arm).
+            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
 
             // Read-only DIRECTORY (0o555): the file itself stays readable, so
             // the read reaches the parse-corrupt branch, but the quarantine
@@ -2252,6 +2654,110 @@ mod tests {
                 on_disk.get("plain_defaults_migrated"),
                 Some(&serde_json::Value::Bool(true)),
                 "the writer's recovered state is the store again: {on_disk}"
+            );
+        });
+    }
+
+    /// Round-15 (stale-memo hardening): the preservation memo can outlive
+    /// its condition — a peer process may have healed the store after this
+    /// process's persist failed, and in-process memos cannot see the peer's
+    /// clearing save. A save with the memo armed must re-verify the original:
+    /// a file that reads and parses is the live store and must NOT be
+    /// renamed aside as a spurious `.unreadable.` preservation copy; the
+    /// stale memo is cleared instead.
+    #[test]
+    fn save_with_stale_unreadable_memo_keeps_a_healed_file() {
+        with_temp_home("pinvou3-scope-stale-memo", || {
+            let path = disabled_bundles_path();
+            // A peer healed the store: a perfectly valid file is on disk.
+            std::fs::write(&path, r#"{"scopes":{"plain":["weather"]}}"#).unwrap();
+            // This process still carries the armed preservation memo.
+            *UNREADABLE_ORIGINAL
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(crate::platform::paths::pinvou3_home());
+
+            try_save_disabled_bundles_file(&DisabledBundlesFile::default())
+                .expect("a healed file must not block the write");
+
+            let stale: Vec<std::path::PathBuf> = std::fs::read_dir(paths::pinvou3_home())
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains(".unreadable."))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert!(
+                stale.is_empty(),
+                "a healed file must not be preserved as unreadable: {stale:?}"
+            );
+            assert!(
+                UNREADABLE_ORIGINAL
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_none(),
+                "the stale memo must be cleared by the re-verification"
+            );
+        });
+    }
+
+    /// Invalid UTF-8 must be quarantined like a corrupt parse (round-12
+    /// review): `read_to_string` reports it as an I/O `InvalidData` error,
+    /// not a parse error, so without that classification the bytes are never
+    /// moved aside and every later write refuses forever — the exact outcome
+    /// the quarantine exists to prevent. Pin: write binary garbage → the
+    /// locked read quarantines the RAW bytes, recovers fail-closed, the data
+    /// file self-heals, and the next write lands.
+    #[test]
+    fn invalid_utf8_file_quarantines_then_self_heals() {
+        with_temp_home("pinvou3-scope-invalid-utf8-quarantine", || {
+            let home = paths::pinvou3_home();
+            let path = disabled_bundles_path();
+            let garbage: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x7f, 0xc3];
+            std::fs::write(&path, &garbage).unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                "the invalid-UTF-8 read must recover fail-closed: {file:?}"
+            );
+            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains(".corrupt."))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert_eq!(
+                sidecars.len(),
+                1,
+                "the invalid-UTF-8 bytes must be quarantined once: {sidecars:?}"
+            );
+            assert_eq!(
+                std::fs::read(&sidecars[0]).unwrap(),
+                garbage,
+                "the quarantined evidence must be the raw bytes, not a lossy re-encoding"
+            );
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("plain_defaults_migrated"),
+                "a writable home self-heals on the same read"
+            );
+
+            // The RMW is not poisoned forever: the next write lands on the
+            // recovered state.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"weather".to_string())
             );
         });
     }
@@ -3028,25 +3534,192 @@ mod tests {
             let guard = DISABLED_BUNDLES_FILE_LOCK
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            // 持锁期间 bundles 文件尚未写入（迁移被串行化）。
-            assert!(
-                !disabled_bundles_path().exists(),
-                "持锁期间读路径不得先行迁移落盘"
-            );
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                ready_tx
+                    .send(())
+                    .expect("reader start signal before taking the lock");
+                load_disabled_bundles_for_plain_for_lock_test()
+            });
+            ready_rx
+                .recv()
+                .expect("reader thread should signal it started");
+            // The lock is held here, so a working lock keeps the migration
+            // write pending; broken serialization makes it land immediately.
+            assert_data_file_absent_within();
             drop(guard);
-            assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
+            // The contended read degrades (in-process mutex held by this
+            // thread) and returns the migrated view without persisting.
+            // Bounded receive, not join(): a WouldBlock-degrade regression
+            // would otherwise block this thread forever while holding
+            // ENV_LOCK, hanging the whole suite instead of failing it.
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let joined = reader.join();
+                let _ = done_tx.send(joined);
+            });
+            let joined = done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("contended reader must degrade and finish, not block");
+            assert_eq!(
+                joined.expect("reader thread must not panic"),
+                vec!["weather".to_string()]
+            );
+            assert!(!disabled_bundles_path().exists());
+            // The next uncontended read runs fully locked and converges the
+            // file to the new format.
+            let got = load_disabled_bundles_for_plain_for_lock_test();
+            assert_eq!(got, vec!["weather".to_string()]);
             let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
                 content.contains("\"scopes\""),
-                "释放锁后迁移完成: {content}"
+                "migration should land on the next uncontended read: {content}"
             );
         });
     }
 
+    fn assert_data_file_absent_within() {
+        let window = std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + window;
+        while std::time::Instant::now() < deadline {
+            assert!(
+                !disabled_bundles_path().exists(),
+                "data file written while the lock was still held — serialization is broken"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
         load_disabled_bundles_for(ConnectorScope::Plain)
+    }
+
+    /// Blocks until the spawned worker holds the in-process scope mutex: with
+    /// the foreign OS lock held by the test, a worker past the mutex is
+    /// parked on (or just failed) the OS-lock acquisition. Without this
+    /// handshake the absence assert below could pass before the worker even
+    /// reached the lock.
+    fn wait_until_scope_mutex_held() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+                // Not held by the worker yet — retry shortly.
+                Ok(guard) => drop(guard),
+                // Held by the worker: with the foreign lock held, it is now
+                // either blocked on the OS lock or its acquisition failed.
+                Err(std::sync::TryLockError::WouldBlock) => return,
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    drop(p.into_inner());
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker never reached the scope lock acquisition point"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Runs `worker` on another thread while the test holds the OS-level
+    /// scope lock through a second fd (the peer-process shape), asserting the
+    /// data file stays untouched until the foreign lock is released.
+    fn assert_blocked_until_foreign_lock_release<R, F>(worker: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(disabled_bundles_lock_path())
+            .expect("test should be able to open the lock file");
+        let mut foreign = fd_lock::RwLock::new(file);
+        let foreign_guard = foreign
+            .write()
+            .expect("test should be able to take the foreign cross-process write lock");
+        let handle = std::thread::spawn(worker);
+        wait_until_scope_mutex_held();
+        assert_data_file_absent_within();
+        drop(foreign_guard);
+        handle
+            .join()
+            .expect("worker should finish once the foreign lock is released")
+    }
+
+    /// #515 cross-process contention on the READ path: while a peer holds the
+    /// OS lock, a load must degrade promptly to the unlocked, never-persisting
+    /// view (bounded — hot readers never couple to a peer's critical section)
+    /// instead of blocking or writing unsynchronized. A later uncontended read
+    /// converges the on-disk format.
+    #[test]
+    fn cross_process_lock_contention_degrades_read_without_persist() {
+        with_temp_home("pinvou3-scope-cross-process", || {
+            let legacy = r#"["weather"]"#;
+            let conn = paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+            std::fs::write(&conn, legacy).unwrap();
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(disabled_bundles_lock_path())
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let got = load_disabled_bundles_for_plain_for_lock_test();
+                done_tx.send(got).expect("reader should send its result");
+            });
+            // A contended read must return promptly. recv_timeout doubles as
+            // the regression assertion: a blocking read hangs here and fails
+            // the test with a bounded, diagnosable timeout.
+            let got = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("contended read must degrade instead of blocking on the peer's lock");
+            assert_eq!(got, vec!["weather".to_string()]);
+            assert!(
+                !disabled_bundles_path().exists(),
+                "a contended read must not persist the migration"
+            );
+
+            drop(foreign_guard);
+            reader.join().expect("reader thread should finish");
+
+            // A later uncontended read runs fully locked and converges the
+            // file to the new format.
+            let got = load_disabled_bundles_for_plain_for_lock_test();
+            assert_eq!(got, vec!["weather".to_string()]);
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"scopes\""),
+                "migration should land on the next uncontended read: {content}"
+            );
+        });
+    }
+
+    /// #515 symmetric case for the WRITE path: while a foreign fd holds the
+    /// lock, the save must not land first; after the release the write lands
+    /// with its full content.
+    #[test]
+    fn cross_process_lock_blocks_save_write_until_release() {
+        with_temp_home("pinvou3-scope-cross-process-save", || {
+            assert_blocked_until_foreign_lock_release(|| {
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                    .expect("write should succeed once the foreign lock is released");
+            });
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"weather\""),
+                "write should land after the lock is released: {content}"
+            );
+        });
     }
 
     /// Round-13 B1: the first composer whole-list write on a fresh install
@@ -3154,6 +3827,111 @@ mod tests {
             )
             .unwrap();
         skill_dir
+    }
+
+    /// Clause 1 of the consent gate must not trust a stored `installed` flag
+    /// alone: a log-only `store.remove` failure mid-uninstall leaves a stale
+    /// `installed = true` record while the content is already gone, and a
+    /// later reinstall that treated the record as known would skip
+    /// registration and land ungoverned (round-12 P2-2). Without corroborating
+    /// content — the package dir, or an installed skill claiming the id — the
+    /// record errs toward NOT known, so the reinstall registers
+    /// (over-denial, fail-closed).
+    #[test]
+    fn consent_gate_requires_content_behind_installed_records() {
+        with_temp_home("pinvou3-scope-gate-stale-record", || {
+            let store = crate::features::marketplace::store::BundleStore::new();
+
+            // Stale record with NO content behind it: must err toward register.
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "stale-mirror",
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            assert!(
+                !consent_gate_bundle_already_known("stale-mirror"),
+                "an installed record without content must err toward NOT known (register)"
+            );
+
+            // Positive control: the same record corroborated by its package
+            // content dir vouches for known.
+            std::fs::create_dir_all(paths::bundles_root().join("stale-mirror")).unwrap();
+            assert!(
+                consent_gate_bundle_already_known("stale-mirror"),
+                "an installed record with its content dir present is known"
+            );
+        });
+    }
+
+    /// The CLI-connector gate helper registers only when the connector is
+    /// about to become visible; a hidden connector must not write the deny
+    /// state at all.
+    #[test]
+    fn connector_gate_registers_only_when_shown() {
+        with_temp_home("pinvou3-scope-gate-shown", || {
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+            // The connect flow writes the Builtin install record BEFORE the
+            // consent gate runs (`bundle_store_on_connected` precedes the
+            // connected event that triggers `*_apply_skills`); reproduce that
+            // ordering so the fixture cannot false-pass on a known-skip that
+            // vouches for the connector (round 6 B1).
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "feishu",
+                        crate::features::marketplace::store::BundleSource::Builtin,
+                    ),
+                )
+                .unwrap();
+
+            deny_first_register_connector("feishu", false)
+                .expect("a hidden connector needs no registration");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "a hidden connector must not be registered"
+            );
+
+            deny_first_register_connector("feishu", true).expect(
+                "a visible connector registers deny-first even with the connect-time Builtin record present",
+            );
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "feishu".to_string()]
+            );
+        });
+    }
+
+    /// On case-insensitive filesystems (default macOS/Windows) a case-variant
+    /// companion dir is the SAME physical dir as the real connector's, so a
+    /// planted variant must not be able to spoof the materialized
+    /// known-clause into skipping first-connect registration (round-12 B3).
+    /// The exact-name probe counts it as missing → the gate registers
+    /// (over-denial, fail-closed).
+    #[test]
+    fn consent_gate_ignores_case_variant_connector_dirs() {
+        with_temp_home("pinvou3-scope-gate-case-variant", || {
+            let variant = paths::bundles_root()
+                .join("dingtalk")
+                .join("skills")
+                .join("Dws");
+            std::fs::create_dir_all(&variant).unwrap();
+            std::fs::write(variant.join("SKILL.md"), "planted").unwrap();
+
+            assert!(
+                !crate::features::marketplace::bundle::cli_connector_skills_materialized(
+                    "dingtalk"
+                ),
+                "a case-variant dir must not count as a materialized companion layout"
+            );
+            assert!(
+                !consent_gate_bundle_already_known("dingtalk"),
+                "the gate must treat a case-variant layout as not known (register)"
+            );
+        });
     }
 
     /// Uninitialized DenyAll (code) default deny set = installed connector
@@ -3504,6 +4282,12 @@ mod tests {
             .unwrap();
 
             let home = crate::platform::paths::pinvou3_home();
+            // The cross-process lock file must already exist: opening an
+            // existing file in a read-only home succeeds, so the failure lands
+            // on the data-file write this test pins (creating the lock in a
+            // read-only home would fail earlier with a lock-path error — a
+            // different, also-honest failure).
+            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
             let probe = home.join(".root-probe");
             if std::fs::write(&probe, b"").is_ok() {
@@ -3559,6 +4343,12 @@ mod tests {
 
         with_temp_home("pinvou3-scope", || {
             let home = crate::platform::paths::pinvou3_home();
+            // The cross-process lock file must already exist: opening an
+            // existing file in a read-only home succeeds, so the failure lands
+            // on the data-file write this test pins (creating the lock in a
+            // read-only home would fail earlier with a lock-path error — a
+            // different, also-honest failure).
+            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
             let probe = home.join(".root-probe");
             if std::fs::write(&probe, b"").is_ok() {
@@ -3569,6 +4359,11 @@ mod tests {
                 );
                 return;
             }
+
+            // The cross-process lock file must already exist so the first
+            // read runs FULLY LOCKED (opening an existing file in a read-only
+            // home succeeds): the freeze memo under test is a locked-read
+            // artifact — a degraded read neither persists nor memoizes.
 
             // First read on a fresh home: fresh-install verdict, persist fails,
             // the in-process memo carries the verdict.

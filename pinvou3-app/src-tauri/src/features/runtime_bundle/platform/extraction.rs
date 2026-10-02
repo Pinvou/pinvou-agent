@@ -525,7 +525,7 @@ impl Pinvou3Bundle {
                 if !Self::marketplace_tool_residue_present(tool_id) {
                     return Ok(());
                 }
-                // 卸载失败(如今最常见的是损坏 mcp.json 拒绝写入器)必须留日志:
+                // 卸载失败(如今最常见的是损坏 mcp.json 拒重置而整体回滚)必须留日志:
                 // 此前 `let _ =` 无声吞掉,损坏窗口内每个启动都静默复发。
                 let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
                     .uninstall(tool_id)
@@ -766,11 +766,13 @@ impl Pinvou3Bundle {
         skill_dirs: &[&str],
         state_fn: impl Fn() -> bool,
     ) -> bool {
-        let target = Self::connector_package_skills_dir(connector_id);
         state_fn()
-            && skill_dirs
-                .iter()
-                .all(|dir| target.join(dir).join("SKILL.md").is_file())
+            // Shares the consent gate's exact-name bar (round-12 B3) so the
+            // cache and the gate cannot diverge on case-variant states.
+            && crate::features::marketplace::bundle::cli_connector_skill_dirs_present(
+                connector_id,
+                skill_dirs,
+            )
     }
 
     /// 飞书域技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。

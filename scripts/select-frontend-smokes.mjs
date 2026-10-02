@@ -32,7 +32,7 @@ const FEATURE_COMMANDS = new Map([
   ["knowledge", [command("npm", "test:kb-smoke")]],
   ["pet", [command("node", "tests/pet_selector_ui_smoke.js")]],
   ["scheduled", [command("node", "tests/scheduled_tasks_smoke.js")]],
-  ["settings", [command("npm", "test:settings-ui")]],
+  ["settings", [command("npm", "test:settings-ui"), command("npm", "test:composer-tools-smoke"), command("npm", "test:composer-pending-enable-smoke")]],
   ["tools", [command("npm", "test:tool-store"), command("npm", "test:tool-store-import"), command("npm", "test:tool-store-grouping"), command("npm", "test:tool-store-recycle-bin")]],
   ["updater", [command("node", "tests/update_notice_ui_smoke.js")]],
   ["web", [command("npm", "test:webui")]],

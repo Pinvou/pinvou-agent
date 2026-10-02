@@ -86,6 +86,52 @@ pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// Whether a CLI connector's companion skill dirs are FULLY materialized on
+/// disk (`bundles/<id>/skills/<dir>/`, the same layout and all-dirs-present
+/// bar as the startup visibility cache). The DenyAll consent gate's
+/// known-bundle decision uses this: the files can only have been written by
+/// an earlier gated show (or carried over from a pre-locking version, where
+/// a connected connector's visible skills were the recorded status quo), so
+/// their presence vouches for recorded consent. A partially materialized
+/// state (an interrupted show) errs toward "not known" — registration is
+/// over-denial, not exposure. Non-CLI ids are always false.
+///
+/// Case caveat (round-12 review): on case-insensitive filesystems the
+/// EXACT-name check makes a case-variant planted dir count as partial, so
+/// the gate registers (over-denial, fail-closed). A poisoned pre-upgrade
+/// state converges once the variant package is uninstalled — the next gated
+/// show re-extracts under the canonical names.
+pub(crate) fn cli_connector_skills_materialized(id: &str) -> bool {
+    let dirs = cli_bundle_skill_dirs(id);
+    !dirs.is_empty() && cli_connector_skill_dirs_present(id, dirs)
+}
+
+/// Exact-name materialization check for a CLI connector's companion dirs:
+/// every expected dir must exist UNDER ITS EXACT NAME (read_dir, not path
+/// resolution) with a SKILL.md file inside. Path resolution would let a
+/// case-variant directory planted on a case-insensitive filesystem
+/// (macOS/Windows) vouch for consent it never received (round-12 review
+/// B3); exact names cannot. The startup visibility cache
+/// (`cached_connector_skills_visible`) shares this helper so the two bars
+/// cannot diverge.
+pub(crate) fn cli_connector_skill_dirs_present(id: &str, dirs: &[&str]) -> bool {
+    let skills_dir = crate::platform::paths::bundles_root()
+        .join(id)
+        .join("skills");
+    let Ok(entries) = std::fs::read_dir(&skills_dir) else {
+        return false;
+    };
+    let present: std::collections::HashSet<std::ffi::OsString> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|entry| entry.file_name())
+        .collect();
+    dirs.iter().all(|dir| {
+        present.contains(std::ffi::OsStr::new(*dir))
+            && skills_dir.join(dir).join("SKILL.md").is_file()
+    })
+}
+
 /// CLI 连接器的二进制名（execpolicy 硬拦截按它构造 deny 规则）。
 pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
     BUILTIN_CLI_BUNDLES
@@ -95,10 +141,19 @@ pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
 }
 
 /// 技能目录名 → CLI 连接器 id（内置清单反查；非 CLI companion 返回 None）。
+///
+/// Case-folded like the exact-name bar of every other CLI identity claim: on
+/// case-insensitive filesystems (default macOS/Windows) a case-variant
+/// on-disk directory resolves to the connector's dir regardless of declared
+/// casing (round-12 review), so the reverse claim must fold the same way or
+/// the vocabulary guards and the consent gate would disagree about what
+/// counts as the connector's companion. On Linux this can only over-deny a
+/// hypothetical distinct package whose skill dir differs solely by case —
+/// the import pipeline rejects such names, so the fold converges.
 pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
     BUILTIN_CLI_BUNDLES
         .iter()
-        .find(|(.., dirs, _)| dirs.contains(&skill_dir))
+        .find(|(.., dirs, _)| dirs.iter().any(|d| d.eq_ignore_ascii_case(skill_dir)))
         .map(|(id, ..)| *id)
 }
 /// Skill dir name → owner pack id (manifest-claim semantics; the lens for
