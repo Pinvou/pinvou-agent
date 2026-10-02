@@ -49,8 +49,14 @@ try {
   # The repair engine's refusal guards are the core safety contract: they must
   # reject the shared account rustup, a filesystem root and a non-empty
   # unmarked directory before touching anything. Exercise them for real here;
-  # every case below throws before rustup runs, so nothing is mutated.
+  # every case below throws before rustup runs, so at most an empty lock file
+  # is created inside the throwaway test home.
   $previousRustupHome = $env:RUSTUP_HOME
+  $previousCargoHome = $env:CARGO_HOME
+  $previousManagedFlag = $env:PINVOU3_MANAGED_RUSTUP
+  $previousDistServer = $env:RUSTUP_DIST_SERVER
+  $previousUpdateRoot = $env:RUSTUP_UPDATE_ROOT
+  $previousDownloadTimeout = $env:RUSTUP_DOWNLOAD_TIMEOUT
   $env:PINVOU3_MANAGED_RUSTUP = "1"
   $unmarkedHome = Join-Path $temporaryRoot "unmarked"
   New-Item -ItemType Directory -Path $unmarkedHome -Force | Out-Null
@@ -89,7 +95,6 @@ try {
     }
     Write-Host "[test] Guard rejected $($guard.Name): OK"
   }
-  $env:RUSTUP_HOME = $previousRustupHome
 
   New-Item -ItemType Directory -Path $temporaryToolchains, $temporaryCargo -Force |
     Out-Null
@@ -135,9 +140,20 @@ try {
   # fallback source promptly when a distribution endpoint stalls.
   $env:RUSTUP_DOWNLOAD_TIMEOUT = "120"
 
+  # With RUSTUP_HOME pointed at the corrupted copy, the real -CheckOnly probe
+  # must classify it as incomplete (exit 2) before any repair runs; this is
+  # the only place the incomplete branch executes against real rustup state.
+  & $repairScript -CheckOnly
+  if ($LASTEXITCODE -ne 2) {
+    throw (
+      "Inconsistent toolchain was not detected by -CheckOnly (exit $LASTEXITCODE, expected 2)."
+    )
+  }
+  Write-Host "[test] -CheckOnly detected the corrupted toolchain: OK"
+
   $repairOutput = @(
     & $repairScript `
-      -InstallAttemptTimeoutSeconds 120 `
+      -InstallAttemptTimeoutSeconds 300 `
       -RepairAttemptsPerSource 1 *>&1
   )
   $repairOutput | ForEach-Object { Write-Host $_ }
@@ -163,8 +179,44 @@ try {
     }
   }
 
+  # rust-std corruption with intact binaries must be detected too: the four
+  # binary probes never link against std, so the target libdir is probed
+  # directly. Remove it and require -CheckOnly to classify the toolchain as
+  # incomplete through the real probe path.
+  $stdTargetLibDir = (& rustup run $Toolchain rustc --print target-libdir |
+    Select-Object -Last 1)
+  $stdTargetLibDir = "$stdTargetLibDir".Trim()
+  if ([string]::IsNullOrWhiteSpace($stdTargetLibDir) -or -not $stdTargetLibDir.StartsWith(
+    $resolvedTemporaryRoot,
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+    throw "Unexpected std target libdir outside the isolated test root: $stdTargetLibDir"
+  }
+  Remove-Item -LiteralPath $stdTargetLibDir -Recurse -Force
+  & $repairScript -CheckOnly
+  if ($LASTEXITCODE -ne 2) {
+    throw (
+      "A missing rust-std was not detected by -CheckOnly (exit $LASTEXITCODE, expected 2)."
+    )
+  }
+  Write-Host "[test] -CheckOnly detected the missing rust-std: OK"
+
   Write-Host "[test] Isolated inconsistent-toolchain repair: PASS"
 } finally {
+  foreach ($entry in @(
+    @("RUSTUP_HOME", $previousRustupHome),
+    @("CARGO_HOME", $previousCargoHome),
+    @("PINVOU3_MANAGED_RUSTUP", $previousManagedFlag),
+    @("RUSTUP_DIST_SERVER", $previousDistServer),
+    @("RUSTUP_UPDATE_ROOT", $previousUpdateRoot),
+    @("RUSTUP_DOWNLOAD_TIMEOUT", $previousDownloadTimeout)
+  )) {
+    if ($null -eq $entry[1]) {
+      Remove-Item -LiteralPath "Env:\$($entry[0])" -ErrorAction SilentlyContinue
+    } else {
+      Set-Item -LiteralPath "Env:\$($entry[0])" -Value $entry[1]
+    }
+  }
   if (Test-Path -LiteralPath $temporaryRoot) {
     $resolved = (Resolve-Path -LiteralPath $temporaryRoot).Path
     $temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())

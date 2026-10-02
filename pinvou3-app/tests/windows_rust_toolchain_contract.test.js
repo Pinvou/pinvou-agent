@@ -191,7 +191,8 @@ test("elapsed time is formatted for build heartbeats", () => {
 test("the Windows build entry checks the toolchain before building", () => {
   assert.match(
     buildScript,
-    /if \(hasTauriBuildCommand && process\.platform === "win32"\) \{\s*await ensureWindowsRustToolchain\(\);/u,
+    /if \(process\.platform === "win32" && \(hasTauriBuildCommand \|\| isDev\)\) \{\s*await ensureWindowsRustToolchain\(\);/u,
+    "dev compiles with cargo too, so the toolchain check must cover dev, not only build/bundle",
   );
   assert.ok(
     buildScript.indexOf("await ensureWindowsRustToolchain();") <
@@ -212,6 +213,69 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
   assert.match(rustToolchainGuard, /filesystem root as RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /rust-toolchain\.toml/u);
   assert.doesNotMatch(rustToolchainGuard, /Get-Process|Stop-Process/u);
+  // The adopt-or-refuse decision must run under the managed-home lock, so
+  // two concurrent first-time builds cannot both adopt the same home.
+  assert.ok(
+    rustToolchainGuard.indexOf("[IO.FileShare]::None") <
+      rustToolchainGuard.indexOf('".pinvou3-managed-rustup"'),
+    "the marker adopt-or-refuse decision must be serialized by the lock",
+  );
+});
+
+test("the toolchain probe covers rust-std, not just the four binaries", () => {
+  assert.match(rustToolchainGuard, /function Test-RustStdTargetLib/u);
+  assert.match(rustToolchainGuard, /--print target-libdir/u);
+  // Every completeness gate must consult the std check: the read-only
+  // account probe, the initial isolated probe, the post-install success
+  // gate and the final verification.
+  assert.equal(
+    (rustToolchainGuard.match(/Test-RustStdTargetLib -RustupPath/gu) || []).length,
+    4,
+    "rust-std must be probed at every completeness gate",
+  );
+  assert.match(rustToolchainGuard, /invalidAccountCommands \+= "rust-std"/u);
+  assert.match(rustToolchainGuard, /invalidEntries \+= "rust-std"/u);
+});
+
+test("the repair is bounded overall and survives a stalled kill", () => {
+  assert.match(rustToolchainGuard, /RepairTimeoutSeconds = 1500/u);
+  assert.match(rustToolchainGuard, /exceeded its \{0\}s budget/u);
+  assert.match(rustToolchainGuard, /\[ValidateRange\(1, 7200\)\]/u);
+  // A rustup kill race (InvalidOperationException, Win32Exception) must count
+  // as a failed attempt and must never hang on an unbounded wait or stream
+  // read afterwards.
+  assert.match(rustToolchainGuard, /Win32Exception/u);
+  assert.match(rustToolchainGuard, /WaitForExit\(5000\)/u);
+  assert.match(rustToolchainGuard, /\$stdoutTask\.Wait\(10000\)/u);
+});
+
+test("fallback sources try official before the CN mirrors", () => {
+  const official = rustToolchainGuard.indexOf('"https://static.rust-lang.org"');
+  const rsproxy = rustToolchainGuard.indexOf('"https://rsproxy.cn"');
+  const tuna = rustToolchainGuard.indexOf('"https://mirrors.tuna.tsinghua.edu.cn/rustup"');
+  assert.ok(official > -1, "the official source must stay in the fallback chain");
+  assert.ok(
+    official < rsproxy && rsproxy < tuna,
+    "fallback order must be official, rsproxy, then TUNA",
+  );
+});
+
+test("the repair installs every component pinned in rust-toolchain.toml", () => {
+  const componentsMatch = toolchainConfig.match(/^\s*components\s*=\s*\[([^\]]*)\]/mu);
+  const pinned = componentsMatch
+    ? [...componentsMatch[1].matchAll(/"([^"]+)"/gu)].map((entry) => entry[1])
+    : [];
+  assert.ok(
+    pinned.includes("clippy") && pinned.includes("rustfmt"),
+    "fixture expectation: rust-toolchain.toml pins clippy and rustfmt",
+  );
+  for (const component of pinned) {
+    assert.match(
+      rustToolchainGuard,
+      new RegExp(`"--component", "${component}"`, "u"),
+      `the repair must install the pinned ${component} component`,
+    );
+  }
 });
 
 test("the repair script retries across download sources with bounded attempts", () => {
@@ -255,6 +319,20 @@ test("the native repair smoke corrupts only its own temporary toolchain", () => 
   assert.match(rustupRepairSmoke, /Refusing to use a filesystem root as RUSTUP_HOME/u);
   assert.match(rustupRepairSmoke, /Refusing to adopt a non-empty unmarked RUSTUP_HOME/u);
   assert.match(rustupRepairSmoke, /Guard rejected/u);
+  // The incomplete -CheckOnly branch must execute for real twice: once over
+  // the corrupted binaries, once over the removed rust-std target libdir.
+  assert.equal(
+    (rustupRepairSmoke.match(/-ne 2/gu) || []).length,
+    2,
+    "the smoke must require exit 2 from both real -CheckOnly corruption probes",
+  );
+  assert.match(rustupRepairSmoke, /A missing rust-std was not detected/u);
+  assert.match(rustupRepairSmoke, /InstallAttemptTimeoutSeconds 300/u);
+  assert.match(
+    rustupRepairSmoke,
+    /RUSTUP_DOWNLOAD_TIMEOUT", \$previousDownloadTimeout/u,
+    "mutated environment must be restored even when the smoke fails",
+  );
   assert.match(
     packageJson.scripts["test:windows-rustup-repair"],
     /tests\/windows_rustup_repair_smoke\.ps1/u,
@@ -280,7 +358,7 @@ test("the Windows rustc stack wrapper is compiled once and then reused", (t) => 
     log: () => {},
     spawnCompiler: (command, args, options) => {
       compileInvocations.push({ command, args, options });
-      fs.writeFileSync(wrapperPath, "fixture executable");
+      fs.writeFileSync(args[3], "fixture executable");
       return { status: 0 };
     },
   });
@@ -288,9 +366,21 @@ test("the Windows rustc stack wrapper is compiled once and then reused", (t) => 
   assert.equal(environment.RUSTC_WRAPPER, wrapperPath);
   assert.equal(compileInvocations.length, 1);
   assert.equal(compileInvocations[0].command, "rustc");
-  assert.deepEqual(compileInvocations[0].args, ["-O", sourcePath, "-o", wrapperPath]);
+  assert.equal(compileInvocations[0].args[0], "-O");
+  assert.equal(compileInvocations[0].args[1], sourcePath);
+  assert.equal(compileInvocations[0].args[2], "-o");
+  assert.match(
+    compileInvocations[0].args[3],
+    /rustc-stack-wrapper\.exe\.\d+\.tmp$/u,
+    "the wrapper must be compiled to a unique temporary name",
+  );
   assert.equal(compileInvocations[0].options.env.RUSTUP_TOOLCHAIN, "fixture-toolchain");
   assert.equal(compileInvocations[0].options.windowsHide, true);
+  assert.ok(fs.existsSync(wrapperPath), "the compiled wrapper must be renamed into place");
+  assert.ok(
+    !fs.existsSync(compileInvocations[0].args[3]),
+    "the temporary wrapper must not survive a successful compile",
+  );
 
   const cachedEnvironment = {};
   const cached = prepareWindowsRustcStackWrapper({
@@ -313,9 +403,9 @@ test("the Windows rustc stack wrapper is compiled once and then reused", (t) => 
     platform: "win32",
     scriptsPath,
     log: () => {},
-    spawnCompiler: () => {
+    spawnCompiler: (command, args) => {
       rebuilt = true;
-      fs.writeFileSync(wrapperPath, "rebuilt fixture executable");
+      fs.writeFileSync(args[3], "rebuilt fixture executable");
       return { status: 0 };
     },
   });
@@ -385,6 +475,36 @@ test("a missing or failed wrapper build stops before Cargo can overflow", (t) =>
       spawnCompiler: () => ({ error: new Error("rustc not found") }),
     }),
     /Failed to compile Windows rustc stack wrapper: rustc not found/u,
+  );
+
+  // A failed rebuild must leave an existing wrapper untouched: the compile
+  // goes to a temporary name and only a successful build is renamed into
+  // place, so an interrupted rebuild cannot poison the mtime cache.
+  fs.writeFileSync(path.join(scriptsPath, "rustc-stack-wrapper.exe"), "previous wrapper");
+  const newer = new Date(Date.now() + 120_000);
+  fs.utimesSync(path.join(scriptsPath, "rustc-stack-wrapper.rs"), newer, newer);
+  assert.throws(
+    () => prepareWindowsRustcStackWrapper({
+      environment: {},
+      platform: "win32",
+      scriptsPath,
+      log: () => {},
+      spawnCompiler: (command, args) => {
+        fs.writeFileSync(args[3], "partial executable");
+        return { status: 1 };
+      },
+    }),
+    /Failed to compile Windows rustc stack wrapper \(exit 1\)/u,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(scriptsPath, "rustc-stack-wrapper.exe"), "utf8"),
+    "previous wrapper",
+    "a failed rebuild must not clobber the existing wrapper",
+  );
+  assert.equal(
+    fs.readdirSync(scriptsPath).filter((entry) => entry.endsWith(".tmp")).length,
+    0,
+    "a failed rebuild must clean up its temporary output",
   );
 });
 

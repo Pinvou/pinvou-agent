@@ -1,13 +1,50 @@
 param(
   [switch]$CheckOnly,
+  [ValidateRange(1, 7200)]
   [int]$LockTimeoutSeconds = 600,
   [ValidateRange(1, 3600)]
   [int]$InstallAttemptTimeoutSeconds = 600,
   [ValidateRange(1, 5)]
-  [int]$RepairAttemptsPerSource = 2
+  [int]$RepairAttemptsPerSource = 2,
+  [ValidateRange(1, 7200)]
+  [int]$RepairTimeoutSeconds = 1500
 )
 
 $ErrorActionPreference = "Stop"
+
+# cargo/rustc -V never touch the standard library, so a toolchain whose
+# rust-std was wiped or half-extracted passes every binary probe. The target
+# libdir reported by rustc must exist and be populated for real compiles.
+function Test-RustStdTargetLib {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$RustupPath,
+    [Parameter(Mandatory = $true)]
+    [string]$Toolchain
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $targetLibDir = & $RustupPath run $Toolchain rustc --print target-libdir 2>$null |
+      Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0) {
+      return $false
+    }
+    $targetLibDir = "$targetLibDir".Trim()
+    if ([string]::IsNullOrWhiteSpace($targetLibDir)) {
+      return $false
+    }
+    if (-not (Test-Path -LiteralPath $targetLibDir -PathType Container)) {
+      return $false
+    }
+    return @(
+      Get-ChildItem -LiteralPath $targetLibDir -Force -ErrorAction SilentlyContinue
+    ).Count -gt 0
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+}
 
 if ($CheckOnly) {
   $accountToolchainFile = Join-Path $PSScriptRoot "..\..\src-tauri\rust-toolchain.toml"
@@ -39,6 +76,9 @@ if ($CheckOnly) {
       if ($LASTEXITCODE -ne 0) {
         $invalidAccountCommands += $command
       }
+    }
+    if (-not (Test-RustStdTargetLib -RustupPath $accountRustupPath -Toolchain $accountToolchain)) {
+      $invalidAccountCommands += "rust-std"
     }
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
@@ -80,20 +120,6 @@ if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
 }
 
 New-Item -ItemType Directory -Path $managedRustupHome -Force | Out-Null
-$managedMarker = Join-Path $managedRustupHome ".pinvou3-managed-rustup"
-if (-not (Test-Path -LiteralPath $managedMarker)) {
-  $existingEntries = @(Get-ChildItem -LiteralPath $managedRustupHome -Force)
-  if ($existingEntries.Count -gt 0) {
-    throw "[rustup] Refusing to adopt a non-empty unmarked RUSTUP_HOME: $managedRustupHome"
-  }
-  Set-Content -LiteralPath $managedMarker `
-    -Value "pinvou3-managed-rustup-v1" -Encoding Ascii
-}
-$markerValue = (Get-Content -LiteralPath $managedMarker -Raw).Trim()
-if ($markerValue -ne "pinvou3-managed-rustup-v1") {
-  throw "[rustup] Invalid managed RUSTUP_HOME marker: $managedMarker"
-}
-$env:RUSTUP_HOME = $managedRustupHome
 
 $lockPath = Join-Path $managedRustupHome ".pinvou3-toolchain.lock"
 $lockDeadline = [DateTime]::UtcNow.AddSeconds($LockTimeoutSeconds)
@@ -115,6 +141,26 @@ while ($null -eq $lockStream) {
 }
 
 try {
+  # The adopt-or-refuse decision runs under the lock so two concurrent
+  # first-time builds cannot both adopt the same home. The lock file is the
+  # only entry a fresh home may already carry.
+  $managedMarker = Join-Path $managedRustupHome ".pinvou3-managed-rustup"
+  if (-not (Test-Path -LiteralPath $managedMarker)) {
+    $existingEntries = @(Get-ChildItem -LiteralPath $managedRustupHome -Force | Where-Object {
+      $_.Name -ne ".pinvou3-toolchain.lock"
+    })
+    if ($existingEntries.Count -gt 0) {
+      throw "[rustup] Refusing to adopt a non-empty unmarked RUSTUP_HOME: $managedRustupHome"
+    }
+    Set-Content -LiteralPath $managedMarker `
+      -Value "pinvou3-managed-rustup-v1" -Encoding Ascii
+  }
+  $markerValue = (Get-Content -LiteralPath $managedMarker -Raw).Trim()
+  if ($markerValue -ne "pinvou3-managed-rustup-v1") {
+    throw "[rustup] Invalid managed RUSTUP_HOME marker: $managedMarker"
+  }
+  $env:RUSTUP_HOME = $managedRustupHome
+
   Write-Host "[rustup] Checking the isolated Rust toolchain: $managedRustupHome"
 
   $toolchainFile = Join-Path $PSScriptRoot "..\..\src-tauri\rust-toolchain.toml"
@@ -231,14 +277,37 @@ try {
         $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
         if ($timedOut) {
           # rustup can exit inside the window between the timed-out wait and
-          # the kill; .NET Kill() then throws InvalidOperationException. That
-          # race must count as a failed attempt, not abort the whole repair.
+          # the kill; .NET Kill() then throws InvalidOperationException, and
+          # a Win32Exception (already gone, access denied) is equally
+          # possible. Either race must count as a failed attempt, not abort
+          # the whole repair.
           try {
             $process.Kill()
-          } catch [System.InvalidOperationException] {
+          } catch [System.InvalidOperationException], [System.ComponentModel.Win32Exception] {
           }
+          # A kill that could not complete must not hang the repair on the
+          # unbounded WaitForExit either; the attempt is failed regardless.
+          $null = $process.WaitForExit(5000)
+
+          # Bounded drain: a surviving handle holder could otherwise stall
+          # the stream reads past the per-attempt timeout.
+          $null = $stdoutTask.Wait(10000)
+          $null = $stderrTask.Wait(10000)
+          $stdoutText = ""
+          if ($stdoutTask.IsCompleted) { $stdoutText = $stdoutTask.Result }
+          $stderrText = ""
+          if ($stderrTask.IsCompleted) { $stderrText = $stderrTask.Result }
+          $nativeOutput = @($stdoutText, $stderrText) -join "`n"
+          $nativeOutput -split '[\r\n]+' | ForEach-Object {
+            if (-not [string]::IsNullOrWhiteSpace($_)) {
+              Write-Host "[rustup] $_"
+            }
+          }
+          Write-Warning (
+            "[rustup] Rustup attempt timed out after $TimeoutSeconds seconds."
+          )
+          return 124
         }
-        $process.WaitForExit()
 
         $nativeOutput = @(
           $stdoutTask.GetAwaiter().GetResult(),
@@ -250,12 +319,6 @@ try {
           }
         }
 
-        if ($timedOut) {
-          Write-Warning (
-            "[rustup] Rustup attempt timed out after $TimeoutSeconds seconds."
-          )
-          return 124
-        }
         return $process.ExitCode
       } finally {
         $process.Dispose()
@@ -311,21 +374,36 @@ try {
   }
 
   $requiredCommands = @("cargo", "rustc", "clippy-driver", "rustfmt")
-  $invalidCommands = @($requiredCommands | Where-Object {
+  $invalidEntries = @($requiredCommands | Where-Object {
     -not (Test-RustComponent -Command $_)
   })
+  if (-not (Test-RustStdTargetLib -RustupPath $rustupPath -Toolchain $toolchain)) {
+    $invalidEntries += "rust-std"
+  }
 
-  if ($invalidCommands.Count -gt 0) {
+  if ($invalidEntries.Count -gt 0) {
     Write-Warning (
       "[rustup] Rust $toolchain is incomplete ({0}); repairing the isolated toolchain." -f
-      ($invalidCommands -join ", ")
+      ($invalidEntries -join ", ")
     )
 
     $repairSucceeded = $false
     $repairFailures = @()
+    # Checked between attempts, so the worst case is this budget plus one
+    # bounded install attempt; without it four sources could wander for
+    # over an hour before anything gives up.
+    $repairDeadline = [DateTime]::UtcNow.AddSeconds($RepairTimeoutSeconds)
     foreach ($source in $repairSources) {
       Set-RustupSource -Source $source
       foreach ($attempt in 1..$RepairAttemptsPerSource) {
+        if ([DateTime]::UtcNow -ge $repairDeadline) {
+          $repairFailures += "$($source.Name) attempt $attempt (repair budget of $RepairTimeoutSeconds s exhausted)"
+          throw (
+            "[rustup] Rust toolchain repair exceeded its {0}s budget; attempts: {1}" -f
+            $RepairTimeoutSeconds,
+            ($repairFailures -join "; ")
+          )
+        }
         Write-Host (
           "[rustup] Repair attempt $attempt/$RepairAttemptsPerSource using $($source.Name)."
         )
@@ -347,6 +425,9 @@ try {
           $postInstallInvalid = @($requiredCommands | Where-Object {
             -not (Test-RustComponent -Command $_)
           })
+          if (-not (Test-RustStdTargetLib -RustupPath $rustupPath -Toolchain $toolchain)) {
+            $postInstallInvalid += "rust-std"
+          }
           if ($postInstallInvalid.Count -eq 0) {
             $repairSucceeded = $true
             Write-Host "[rustup] Toolchain repair succeeded using $($source.Name)."
@@ -392,14 +473,17 @@ try {
       )
     }
 
-    $failedCommands = @($requiredCommands | Where-Object {
+    $failedEntries = @($requiredCommands | Where-Object {
       -not (Test-RustComponent -Command $_)
     })
-    if ($failedCommands.Count -gt 0) {
+    if (-not (Test-RustStdTargetLib -RustupPath $rustupPath -Toolchain $toolchain)) {
+      $failedEntries += "rust-std"
+    }
+    if ($failedEntries.Count -gt 0) {
       throw (
         "[rustup] Rust toolchain verification failed after repair ({0}): {1}" -f
         $toolchain,
-        ($failedCommands -join ", ")
+        ($failedEntries -join ", ")
       )
     }
   }
