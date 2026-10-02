@@ -1819,20 +1819,17 @@ jobs:
       # the explicit linker+flavor pair is the expected winner; the third
       # tier drops the thinlto/threads caps if the linked toolchain rejects
       # them (uncapped backends are the pre-experiment status quo, not a
-      # failure). The explicit -syslibroot covers direct-linker invocations
-      # that bypass the cc driver's implicit SDK lookup and is harmless when
-      # redundant. An unsupported flag fails the probe in seconds instead of
-      # surfacing hours into the cold build.
+      # failure). No -syslibroot is passed: rustc emits it itself for the
+      # ld64.lld flavor (first probe revision injected it by hand and broke
+      # argv - the SDK path leaked through as an input file). An unsupported
+      # flag fails the probe in seconds instead of surfacing hours into the
+      # cold build.
       - name: Probe and export the macOS lld link flags
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
           echo 'fn main() {}' > "$probe/probe.rs"
-          sdk="$(xcrun --show-sdk-path 2>/dev/null || true)"
           caps=(-C link-arg=--thinlto-jobs=1 -C link-arg=--threads=1)
-          if [ -n "$sdk" ]; then
-            caps+=(-C link-arg=-syslibroot -C link-arg="$sdk")
-          fi
           if rustc -C linker-features=+lld "${caps[@]}" \
               -o "$probe/probe" "$probe/probe.rs" 2>"$probe/a.err"; then
             flags="-C linker-features=+lld"
