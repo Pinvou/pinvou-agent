@@ -1788,6 +1788,18 @@ jobs:
       # folded push legs compile against the same deployment target the
       # release artifacts do.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # Link-memory parity with the linux/windows test legs (they set the same
+      # pair): drop DWARF so objects and the test binary shrink — panic
+      # file:line still comes from Location rodata, not debuginfo.
+      #
+      # Deliberately NOT mirrored: CARGO_PROFILE_DEV_LTO=thin. On linux/windows
+      # the bitcode is handed to an lld-family linker whose backends the
+      # --thinlto-jobs flag can cap. On macOS the external linker is Apple ld,
+      # which cannot consume bitcode, so rustc would run the ThinLTO backends
+      # in its own process with no cap knob — moving the memory peak into an
+      # uncapped in-process pass on a 7 GB runner. The legs are green without
+      # it; revisit only together with a measurement (and the dmg split).
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
