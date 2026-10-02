@@ -1815,15 +1815,20 @@ jobs:
       # [lld experiment] Probe which stable rustc flag selects the bundled
       # ld64.lld for this apple-darwin toolchain, then export the winning
       # flags as RUSTFLAGS. Tier order mirrors #642's Windows probe: the
-      # -C linker-features=+lld stabilization is linux-gnu-only on 1.99, so
-      # the explicit linker+flavor pair is the expected winner; the third
-      # tier drops the thinlto/threads caps if the linked toolchain rejects
-      # them (uncapped backends are the pre-experiment status quo, not a
-      # failure). No -syslibroot is passed: rustc emits it itself for the
-      # ld64.lld flavor (first probe revision injected it by hand and broke
-      # argv - the SDK path leaked through as an input file). An unsupported
-      # flag fails the probe in seconds instead of surfacing hours into the
-      # cold build.
+      # -C linker-features=+lld stabilization is linux-gnu-only, so the
+      # explicit linker+flavor pair is the expected winner; the third tier
+      # drops the thinlto/threads caps if the linked toolchain rejects them
+      # (uncapped backends are the pre-experiment status quo, not a failure).
+      # No -syslibroot is passed: rustc emits it itself for the ld64.lld
+      # flavor (the first probe revision injected it by hand into the caps
+      # array and broke argv - the SDK path leaked through as an input file,
+      # which both cap-bearing tiers misreported as "caps rejected" until the
+      # 2026-10-02 rerun with the fixed probe won tier 2 outright; a control
+      # compile with a bogus -- flag is hard-rejected by ld64.lld, so a tier
+      # that reaches the link stage genuinely accepted the caps).
+      # Each rejected tier prints its stderr so a fallback is always
+      # explainable from the step log alone. An unsupported flag fails the
+      # probe in seconds instead of surfacing hours into the cold build.
       - name: Probe and export the macOS lld link flags
         run: |
           set -euo pipefail
@@ -1832,18 +1837,27 @@ jobs:
           caps=(-C link-arg=--thinlto-jobs=1 -C link-arg=--threads=1)
           if rustc -C linker-features=+lld "${caps[@]}" \
               -o "$probe/probe" "$probe/probe.rs" 2>"$probe/a.err"; then
-            flags="-C linker-features=+lld"
-          elif rustc -C linker=rust-lld -C linker-flavor=ld64.lld "${caps[@]}" \
-              -o "$probe/probe" "$probe/probe.rs" 2>"$probe/b.err"; then
-            flags="-C linker=rust-lld -C linker-flavor=ld64.lld"
-          elif rustc -C linker=rust-lld -C linker-flavor=ld64.lld \
-              -o "$probe/probe" "$probe/probe.rs" 2>"$probe/c.err"; then
-            flags="-C linker=rust-lld -C linker-flavor=ld64.lld"
-            echo "::warning::toolchain rejected thinlto/threads caps; linking uncapped"
+            flags="-C linker-features=+lld ${caps[*]}"
           else
-            echo "FAIL: this toolchain has no stable way to select ld64.lld" >&2
-            cat "$probe/a.err" "$probe/b.err" "$probe/c.err" >&2 || true
-            exit 1
+            echo "probe: tier 1 (-C linker-features=+lld) rejected:" >&2
+            sed 's/^/  /' "$probe/a.err" >&2
+            if rustc -C linker=rust-lld -C linker-flavor=ld64.lld "${caps[@]}" \
+                -o "$probe/probe" "$probe/probe.rs" 2>"$probe/b.err"; then
+              flags="-C linker=rust-lld -C linker-flavor=ld64.lld ${caps[*]}"
+            else
+              echo "probe: tier 2 (rust-lld ld64.lld + thinlto/threads caps) rejected:" >&2
+              sed 's/^/  /' "$probe/b.err" >&2
+              if rustc -C linker=rust-lld -C linker-flavor=ld64.lld \
+                  -o "$probe/probe" "$probe/probe.rs" 2>"$probe/c.err"; then
+                flags="-C linker=rust-lld -C linker-flavor=ld64.lld"
+                echo "::warning::toolchain rejected thinlto/threads caps; linking uncapped"
+              else
+                echo "probe: tier 3 (rust-lld ld64.lld, uncapped) rejected:" >&2
+                sed 's/^/  /' "$probe/c.err" >&2
+                echo "FAIL: this toolchain has no stable way to select ld64.lld" >&2
+                exit 1
+              fi
+            fi
           fi
           echo "probed RUSTFLAGS=$flags"
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
