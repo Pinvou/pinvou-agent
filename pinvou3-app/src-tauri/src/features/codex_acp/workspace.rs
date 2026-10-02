@@ -11,15 +11,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-// `SEARCH_LIMIT`, `PREVIEW_LIMIT` and `DIFF_LIMIT` are `pub` because the
-// headless CLI's `code` commands, which depend on this crate, apply the same
-// caps and reference these constants so the two surfaces cannot drift apart.
 const LIST_LIMIT: usize = 500;
-pub const SEARCH_LIMIT: usize = 300;
+const SEARCH_LIMIT: usize = 300;
 const WALK_LIMIT: usize = 20_000;
-pub const PREVIEW_LIMIT: usize = 512 * 1024;
+const PREVIEW_LIMIT: usize = 512 * 1024;
 const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
-pub const DIFF_LIMIT: usize = 1024 * 1024;
+const DIFF_LIMIT: usize = 1024 * 1024;
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -780,13 +777,7 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
 
     let truncated = text.len() > DIFF_LIMIT;
     if truncated {
-        // Byte-capped cuts must floor to a char boundary (`String::truncate`
-        // panics mid-char — the common case for CJK diffs near the cap), via
-        // the crate-wide helper the P0 convention routes all such cuts
-        // through. The CLI's diff lane carries the same guard, so the shared
-        // `DIFF_LIMIT` cannot panic on one surface and cut cleanly on the
-        // other.
-        truncate_to_byte_cap(&mut text, DIFF_LIMIT);
+        text.truncate(DIFF_LIMIT);
         text.push_str("\n\n…差异过大，已截断");
     }
     diff_cache_put(session_id, &root, &relative, text.clone(), truncated);
@@ -795,14 +786,6 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         text,
         truncated,
     })
-}
-
-/// The byte-capped cut `workspace_diff` performs: floor to a char boundary
-/// via the crate-wide helper, then truncate. A function so the truncation
-/// test drives the exact production cut rather than a transcription.
-fn truncate_to_byte_cap(text: &mut String, limit: usize) {
-    let boundary = crate::platform::strings::truncate_utf8(text, limit).len();
-    text.truncate(boundary);
 }
 
 /// 校验相对路径落在工作区内，但不要求文件存在（git diff 可展示已删除文件）。
@@ -1411,40 +1394,6 @@ mod tests {
         assert!(normalize_relative_path("../secret.txt").is_err());
         assert!(normalize_relative_path("/absolute/secret.txt").is_err());
         assert!(resolve_workspace_file(root.path(), "missing.txt").is_err());
-    }
-
-    #[test]
-    fn diff_truncation_cuts_on_char_boundaries() {
-        // A full cap of CJK.
-        let mut text = "界".repeat(DIFF_LIMIT / 3 + 4);
-        truncate_to_byte_cap(&mut text, DIFF_LIMIT);
-        assert!(text.len() <= DIFF_LIMIT);
-        assert!(
-            text.chars().all(|c| c == '界'),
-            "the cut must land on a char boundary"
-        );
-
-        // A 4-byte emoji straddling a small cap.
-        let mut emoji = "a🏖b".to_string();
-        truncate_to_byte_cap(&mut emoji, 3);
-        assert_eq!(emoji, "a");
-
-        let mut small = "ab界界".to_string();
-        truncate_to_byte_cap(&mut small, 3);
-        assert_eq!(small, "ab");
-
-        let mut exact = "abc".to_string();
-        truncate_to_byte_cap(&mut exact, 3);
-        assert_eq!(exact, "abc");
-
-        // Under the cap: untouched, whatever the content.
-        let mut short = "短文🐱".to_string();
-        truncate_to_byte_cap(&mut short, 1024);
-        assert_eq!(short, "短文🐱");
-
-        let mut empty = String::new();
-        truncate_to_byte_cap(&mut empty, 0);
-        assert_eq!(empty, "");
     }
 
     #[test]

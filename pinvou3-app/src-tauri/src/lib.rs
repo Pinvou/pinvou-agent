@@ -1193,6 +1193,16 @@ pub fn run() {
                         pool.clone(),
                         store_for_engine.clone(),
                     );
+                    // Session-creation request watcher (features::sessions):
+                    // drains the spool written by the session-reader MCP server
+                    // (create_session), creating each requested session through
+                    // the store's own pipeline (never stealing focus) and
+                    // emitting session:list_changed. Same app-lifetime form.
+                    features::session_creation::spawn_session_creation_watcher(
+                        pool.clone(),
+                        store_for_engine.clone(),
+                        handle.clone(),
+                    );
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
                         Ok(false) => {}
