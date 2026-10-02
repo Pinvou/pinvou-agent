@@ -3301,7 +3301,16 @@ mod tests {
             .find("\n    /// ")
             .or_else(|| rest.find("\n    pub fn "))
             .expect("next item");
-        let body = &rest[..end];
+        // Round-16 (review): match CODE, not comments — whole-line `//`
+        // comments are filtered before the assertions so a doc/comment
+        // mention of the lock or the strip can no longer satisfy the pin.
+        // (Only whole-line comments are filtered: stripping intra-line `//`
+        // would corrupt string literals such as URLs.)
+        let body = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             body.contains("import_lock_for") && body.contains(".lock()"),
             "the helper must hold the per-id import lock itself"
@@ -3313,6 +3322,13 @@ mod tests {
         assert!(
             !body.contains("self.uninstall("),
             "the helper must not delegate to uninstall (its guard drops at return)"
+        );
+        // An explicit early drop of the import-lock guard before the strip
+        // would satisfy every literal above while un-doing the invariant —
+        // refuse the shape outright.
+        assert!(
+            !body.contains("drop(import_lock"),
+            "the helper must not drop the import lock before the strip"
         );
     }
 

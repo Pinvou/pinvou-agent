@@ -4019,10 +4019,18 @@ mod tests {
     #[test]
     fn consent_gate_ignores_case_variant_connector_dirs() {
         with_temp_home("pinvou3-scope-gate-case-variant", || {
+            // Round-16 (review): derive the planted name from the catalog so a
+            // catalog rename cannot silently turn this pin into an unrelated
+            // dir; if a catalog ever shipped mixed case, the materialized
+            // probe below would fail loudly instead of pinning nothing.
+            let real = crate::features::marketplace::bundle::cli_bundle_skill_dirs("dingtalk")
+                .first()
+                .copied()
+                .expect("the dingtalk catalog entry must declare its companion dirs");
             let variant = paths::bundles_root()
                 .join("dingtalk")
                 .join("skills")
-                .join("Dws");
+                .join(real.to_uppercase());
             std::fs::create_dir_all(&variant).unwrap();
             std::fs::write(variant.join("SKILL.md"), "planted").unwrap();
 
