@@ -4000,10 +4000,22 @@ impl EnginePool {
             // sessions keep present_artifact hidden), and the entries lock is
             // released before sending, avoiding holding the global engine
             // table lock across awaits.
+            // Round-9 M2(b) (#628): compose the unattended shield for
+            // scheduled hidden sessions — CodeWhale applies the op as a
+            // plain OVERWRITE of config.disallowed_tools, so the un-gated
+            // broadcast replaced a live scheduled run's shield with the
+            // ordinary catalog (turns after the toggle ran unshielded).
+            let shaped = if crate::features::sessions::is_sched_session_id(&sid) {
+                crate::features::assistant::engine::unattended_disallowed_tools(
+                    &self.bridge.shape_disallowed_tools(&sid, tools.clone()),
+                )
+            } else {
+                self.bridge.shape_disallowed_tools(&sid, tools.clone())
+            };
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
+                    tools: Some(shaped),
                 })
                 .await
             {
@@ -9668,5 +9680,30 @@ mod probed_facts_wiring_tests {
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    /// Round-9 M2(b) (#628): the toggle broadcast COMPOSES the unattended
+    /// shield for sched- sessions — CodeWhale applies SetDisallowedTools as
+    /// a plain overwrite, so an un-gated broadcast replaced a live
+    /// scheduled run's shield with the ordinary catalog. Source pin: the
+    /// set_disallowed_all body routes sched- ids through
+    /// unattended_disallowed_tools; deleting the branch turns this red.
+    #[test]
+    fn toggle_broadcast_composes_the_shield_for_sched_sessions() {
+        let source = include_str!("engine_pool.rs");
+        let fn_start = source
+            .find("pub async fn set_disallowed_all")
+            .expect("set_disallowed_all must exist");
+        let fn_body = &source[fn_start..fn_start + 1600];
+        let gate = fn_body
+            .find("is_sched_session_id(&sid)")
+            .expect("the sched branch exists");
+        let compose = fn_body
+            .find("unattended_disallowed_tools")
+            .expect("the composition");
+        assert!(
+            gate < compose,
+            "sched ids route through the shield composition in the broadcast"
+        );
     }
 }

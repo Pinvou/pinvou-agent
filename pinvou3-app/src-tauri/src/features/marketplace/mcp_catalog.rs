@@ -122,6 +122,21 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
             include_str!("../../../../resources/mcp-servers/wecom-bot/server.py"),
         )],
     },
+    // App automations (local stdio; lets the model create scheduled tasks from
+    // any session, landing in the same ~/.pinvou3/automations store the panel
+    // uses. The server spools to task-requests/ and the app-side watcher in
+    // features/scheduled/creation_requests.rs performs the actual creation;
+    // installed by default, see marketplace::ensure_default_installed_mcp_tools).
+    McpPackageSpec {
+        id: "app-automations",
+        manifest_json: include_str!(
+            "../../../../resources/mcp-servers/app-automations/manifest.json"
+        ),
+        files: &[(
+            "server.py",
+            include_str!("../../../../resources/mcp-servers/app-automations/server.py"),
+        )],
+    },
 ];
 
 /// Look up an embedded package by id (absent from the catalog = custom /
@@ -320,7 +335,7 @@ mod tests {
                 assert!(!content.is_empty(), "{} 的 {name} 为空", spec.id);
             }
         }
-        // 12 known embedded packages
-        assert_eq!(MCP_PACKAGES.len(), 12);
+        // 13 known embedded packages
+        assert_eq!(MCP_PACKAGES.len(), 13);
     }
 }

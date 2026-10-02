@@ -1082,6 +1082,16 @@ pub fn run() {
                     // marketplace / knowledge changes) recompute against the
                     // same current flag state.
                     computer_use_shared.add_to_disallow_list_when_disabled(&mut tools);
+                    // Base automation tools are dead in app sessions: the
+                    // foundation `automation`/`send_later` tools are registered
+                    // in the engine's tool catalog but their AutomationManager
+                    // is never attached here, so every call fails with
+                    // "AutomationManager is not attached". Leaving them visible
+                    // only invites the model to retry the dead path instead of
+                    // the working app-automations MCP tool. (`tasks`/`github`
+                    // stay untouched — out of scope.)
+                    tools.push("automation".to_string());
+                    tools.push("send_later".to_string());
                     tools
                 })
             };
@@ -1171,6 +1181,7 @@ pub fn run() {
                             &pool.bridge,
                             pool.clone(),
                             store_for_engine.clone(),
+                            &handle,
                         ),
                     );
                     match scheduled_state {

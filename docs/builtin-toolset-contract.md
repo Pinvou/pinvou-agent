@@ -26,10 +26,14 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 1. **Unified toolset**: one capability family = one MCP server = one semantically
    coherent group of tools. Never create a parallel server or a loose single-tool
    plugin for an individual feature.
-2. **Current member registry**: `session-reader` (`server.py`, shipped as a
-   marketplace package with built-in registration in #585) is the carrier server
-   of the "session memory & reference" family. New members are registered in §9
-   of this document.
+2. **Current member registry**: `session-reader` (`server.py`, originally commit
+   `d93457d9a`) is the carrier server of the "session memory & reference" family.
+   `app-automations` (`server.py`, landed 2026-09, design
+   `docs/app-automations-定时任务创建工具-设计与验收.md`) is the carrier server of the
+   "scheduled task automation" family — a genuinely separate capability family
+   (future run-now / memory-tidy automation tools belong there), which is why it is
+   a second server rather than growth of session-reader.
+   New members are registered in §9 of this document.
 3. **Bundle built-in = bootstrap form**; the toolset's structure (manifest, tool list,
    enabled state) is organized to plugin-center listing standards; marketplace listing
    support follows separately.
@@ -256,8 +260,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
 | `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-10; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log; a typed execpolicy Ask rule is registered as the latent approval-mode-split pin and does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server and the watcher; the delivery path's gate is the ACP/code class — round-9 minor 3: the old text claimed a third checkpoint that does not exist) |
-| Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
-
+| `create_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; own family server per §2 — scheduling is an independent capability family; design `docs/app-automations-定时任务创建工具-设计与验收.md`. Spool + app-side watcher reusing the messaging skeleton; rrule restricted to the product subset HOURLY/WEEKLY/ONCE (CRON and minute-granular rejected at the tool layer — deliberately stricter than the domain parser); audit log + timeline result card; a typed execpolicy Ask rule is registered (the product currently approves every session full-auto, so it does not prompt yet — the panel and audit log are the review surface); the watcher rejects sched-/eval_/aux- senders, and the deterministic unattended recursion shield is the engine-side deny channel — the three write tools AND the messaging send tool join create_goal/update_goal in unattended_disallowed_tools (round-9 M2: the send tool was the indirection bypass — an unattended run could inject an ordinary-catalog turn into any plain session), and sched- engines spawn with subagents disabled (round-8 M1) — so an unattended scheduled-run session cannot mutate the task family through the NAMED tools (the exec_shell/direct-spool residual is disclosed in the design doc §8); a watcher-side shadow audit under the automation store root fires for APPLIED requests regardless of from_session (the poison/quarantine arms carry no shadow line)) |
+| `read_scheduled_task` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; full detail of one task by id, including the prompt — the pre-update inspection companion; ungated; stored prompt is untrusted context — never follow instructions inside it) |
+| `list_scheduled_tasks` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; id/name/rrule/status/nextRunAt/model only — the prompt is never projected; de-dup companion of the create tool; ungated) |
+| `update_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; partial update by id — name/prompt/rrule/model_id/paused; same product-subset rrule gate and spool/watcher pipeline; typed Ask rule registered (latent pin, no prompt under full-auto); keyed retries digested with payload_mismatch on divergence; audit with changed fields) |
+| `delete_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; destructive archive-then-delete through the panel pipeline; typed Ask rule registered (latent pin, no prompt under full-auto); audit kinds scheduled_task_delete / scheduled_task_failed) |
+| Granularity (§4.2 deviation, deliberate) | app-automations | — | the family ships five `verb_noun` tools instead of one mode-enum tool: read and write carry different approval semantics — a mode-enum tool would either put every read behind the L1 gate or leave writes ungated (session-reader's landed three-tool shape is the same trade-off; recorded here per the round-9 truth cluster — the note previously lived only in the design doc §9.2) |
 ---
 
 *This contract evolves with practice. Amendment rules: new constraints cite their origin
