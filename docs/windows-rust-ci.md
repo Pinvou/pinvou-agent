@@ -149,10 +149,10 @@ post-LTO objects), `CARGO_PROFILE_DEV_DEBUG=0` (no DWARF; panic file:line
 comes from `Location` rodata), and `RUSTFLAGS` selecting the bundled lld
 with `/threads:1` so lld-link's internal threading and the final link stay
 serial (the linux leg uses the gcc-driver equivalents `-fuse-ld=lld`,
-`--thinlto-jobs=1`, `--threads=1`; `--thinlto-jobs` has no effect here
-because no bitcode reaches the linker). Growing the hosted runner's
-pagefile is
-not an option: a pagefile change requires a reboot a CI job cannot perform,
+`--thinlto-jobs=1`, `--threads=1`; `--thinlto-jobs` is a no-op on both legs
+because no bitcode reaches the linker — it stays only pending a separately
+evaluated removal). Growing the hosted runner's pagefile is not an option: a
+pagefile change requires a reboot a CI job cannot perform,
 so peak link memory is cut below RAM instead. The linker-selection flags are
 probed per toolchain by step 4, since the stable surface for picking lld has
 moved between releases.

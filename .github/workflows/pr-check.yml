@@ -1403,10 +1403,13 @@ jobs:
       # hours; runs 36919362322 and 36940184038 were killed at the 180/240
       # caps). Same OOM the linux rust-test leg already solved; mirror its
       # measured recipe for MSVC: thin LTO shrinks the test binary cross-crate
-      # (cargo passes -C linker-plugin-lto to dependencies), lld consumes that
-      # bitcode natively and links with a far smaller peak than link.exe,
-      # /threads:1 serializes both the ThinLTO backends and the final link,
-      # and dropping DWARF shrinks objects further (panic file:line comes
+      # (cargo compiles dependency crates with -C linker-plugin-lto; the final
+      # crate's rustc consumes that bitcode in-process, so the linker receives
+      # only post-LTO objects), lld-link links those objects with a far
+      # smaller peak than link.exe, /threads:1 serializes lld-link's own
+      # threading and the final link (the ThinLTO backends run inside rustc
+      # with no knob to cap them), and dropping DWARF shrinks objects further
+      # (panic file:line comes
       # from Location rodata, not debuginfo). Growing the hosted runner's
       # pagefile instead needs a reboot a CI job cannot perform, so the fix
       # is to cut peak link memory below RAM. The linker flags are probed and
@@ -1456,10 +1459,12 @@ jobs:
 
       # Probe which stable rustc flag selects the bundled lld for MSVC on this
       # toolchain, then export the winning flags as RUSTFLAGS for every later
-      # step. linker-features went stable first; the explicit linker+flavor
-      # pair is the fallback. An unsupported flag fails the probe in seconds;
-      # without it the failure would surface only at the final link, hours
-      # into the cold build.
+      # step. On stable today arm 2 always wins: +lld is unstable on every
+      # target and the stable -lld opt-out is x86_64-linux-gnu only, so MSVC
+      # needs the explicit linker+flavor pair; arm 1 stays so a future +lld
+      # stabilization is picked up automatically. An unsupported flag fails
+      # the probe in seconds; without it the failure would surface only at
+      # the final link, hours into the cold build.
       - name: Probe and export the Windows lld link flags
         shell: bash
         run: |

@@ -113,7 +113,7 @@ jobs:
       # jammy gcc 11 下实际是冗余兜底(gcc 按名字找 ld.lld 时 -B 目录先于 PATH);
       # 保留它是为旧工具链/本地环境兜底,勿据此注释断定链器是 apt 的 ld.lld。
       # ThinLTO backend 在 rustc 进程内,无需 cap:release O3 + codegen-units=1
-      # 场景下 4 核全速稳定(近期发布 11/11 绿)。
+      # 场景下 4 核稳定(近期发布 11/11 绿)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
@@ -251,8 +251,10 @@ jobs:
       # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
       # lld 保留:BFD ld 对大型 Rust binary 的对象链接耗时/内存差(同 x64);链接器
       # 只收 LTO 后的普通对象,跨 crate 合并在最终 crate 的 rustc 进程内完成。
-      # 机制备注(2026-10 校准,同 x64):rustc ≥1.90 默认自链 rust-lld,本 flag
-      # 为旧工具链兜底;ThinLTO backend 在 rustc 进程内,无需 cap(同 x64 的理由)。
+      # 机制备注(2026-10 校准):rustc 1.90 的 rust-lld 默认自链仅限
+      # x86_64-unknown-linux-gnu,aarch64 上 rustc 仍走 cc→BFD,本 flag 就是
+      # 实际生效的 lld 选择(apt 的 ld.lld),并非兜底;ThinLTO backend 在
+      # rustc 进程内,无需 cap(同 x64 的理由)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
@@ -405,10 +407,11 @@ jobs:
       # rustc hands the linker only plain objects (see the Cargo.toml lto
       # note), so this swaps the object-linking step only. #642 moved the test
       # leg because link.exe thrashed the hosted runner's pagefile there
-      # (silent ~3.6 h runs killed at the cap; runs 36919362322/36940184038)
-      # while the lld-link recipe runs green; this release job has itself
-      # always finished with link.exe (0.10.6: 94m42s of a 150 cap, no OOM
-      # recorded) — the swap is for cross-leg consistency on the same
+      # (silent 3-4 h runs killed at their 180/240-minute caps; runs
+      # 36919362322/36940184038) while the lld-link recipe runs green; this
+      # release job has itself built every completed release with link.exe
+      # (0.10.6: 94m42s of a 150 cap; a cancelled 0.10.5 attempt left no OOM
+      # evidence) — the swap is for cross-leg consistency on the same
       # workspace, not an OOM fix here.
       # Same probed two-step as #642: stable has no target-spanning flag to
       # pick lld. On 1.99 `-C linker-features=+lld` is unstable on every
@@ -417,8 +420,8 @@ jobs:
       # stays so a future +lld stabilization is picked up automatically, and
       # both arms do a real link — a pass cannot be a silent no-op.
       # No /threads:1 cap here, unlike the test leg: the job is time-bound and
-      # has never thrashed memory on either linker — capping would only slow
-      # the release.
+      # has never recorded a link-memory thrash with link.exe — capping would
+      # only slow the release.
       # NOTE for the reviewer: this changes the shipped nsis binary (different
       # linker, same source). Revert = delete this step.
       - name: Probe and export the Windows lld link flags
