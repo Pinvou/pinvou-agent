@@ -104,16 +104,16 @@ jobs:
       # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。
       # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
       # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
-      # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64);
-      # release profile 的 thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
-      # (生成 LLVM bitcode),link 阶段必须用支持 bitcode 的链接器。
+      # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64)。
+      # 链接器只收 LTO 后的普通对象:thin LTO 的跨 crate 合并由最终 crate 的 rustc
+      # 在自身进程内完成(cargo 只给依赖 crate 传 -C linker-plugin-lto),选 lld 是
+      # 为对象链接的耗时/内存,不是 bitcode 支持。
       # 机制备注(2026-10 校准):rustc ≥1.90 起 x86_64-linux-gnu 默认就用自带的
       # rust-lld 自链(rustc 自己往 cc 注入 -B<sysroot>/.../gcc-ld),本 flag 在
-      # jammy gcc 11 下实际是冗余兜底(gcc 找不到 ld.lld 时回退 -B 目录的 ld);
+      # jammy gcc 11 下实际是冗余兜底(gcc 按名字找 ld.lld 时 -B 目录先于 PATH);
       # 保留它是为旧工具链/本地环境兜底,勿据此注释断定链器是 apt 的 ld.lld。
-      # ThinLTO backend 并行刻意不设 --thinlto-jobs cap:release 产物 O2/O3 +
-      # codegen-units=1 场景下 4 核全速稳定(近期发布 11/11 绿),与 rust-test
-      # 的 jobs=1 内存守护是不同约束。
+      # ThinLTO backend 在 rustc 进程内,无需 cap:release O3 + codegen-units=1
+      # 场景下 4 核全速稳定(近期发布 11/11 绿)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
@@ -249,10 +249,10 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
       # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
-      # lld 是必需的:thin LTO 让 rustc 给依赖 crate 传 -C linker-plugin-lto
-      # (生成 LLVM bitcode,link 阶段做跨 crate 合并),BFD ld 无法处理 LLVM bitcode。
+      # lld 保留:BFD ld 对大型 Rust binary 的对象链接耗时/内存差(同 x64);链接器
+      # 只收 LTO 后的普通对象,跨 crate 合并在最终 crate 的 rustc 进程内完成。
       # 机制备注(2026-10 校准,同 x64):rustc ≥1.90 默认自链 rust-lld,本 flag
-      # 为旧工具链兜底;ThinLTO backend 并行刻意不设 cap(同 x64 的理由)。
+      # 为旧工具链兜底;ThinLTO backend 在 rustc 进程内,无需 cap(同 x64 的理由)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
@@ -401,18 +401,24 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # [linker consistency, 2026-10-02] Select the bundled lld (lld-link) for
-      # the shipped binary too. The windows-msvc default is link.exe, so with
-      # the release profile's lto="thin" the ThinLTO backends run inside
-      # rustc's own process and link.exe links the plain objects — the exact
-      # shape the windows-rust-test leg just fixed (#642: lld-link links the
-      # same inputs ~20% faster with roughly half the committed memory of
-      # link.exe). Same probed two-step as #642 because the stable flag
-      # surface for picking lld differs per target: on 1.99 the
-      # `-C linker-features=+lld` stabilization (linux-gnu only) does not
-      # parse for MSVC and the explicit linker+flavor pair wins.
-      # No /threads:1 cap here, unlike the test leg: this job is time-bound
-      # (86 min of a 150 cap) and has never thrashed memory — capping would
-      # only slow the release.
+      # the shipped binary too, matching the windows-rust-test leg (#642).
+      # rustc hands the linker only plain objects (see the Cargo.toml lto
+      # note), so this swaps the object-linking step only. #642 moved the test
+      # leg because link.exe thrashed the hosted runner's pagefile there
+      # (silent ~3.6 h runs killed at the cap; runs 36919362322/36940184038)
+      # while the lld-link recipe runs green; this release job has itself
+      # always finished with link.exe (0.10.6: 94m42s of a 150 cap, no OOM
+      # recorded) — the swap is for cross-leg consistency on the same
+      # workspace, not an OOM fix here.
+      # Same probed two-step as #642: stable has no target-spanning flag to
+      # pick lld. On 1.99 `-C linker-features=+lld` is unstable on every
+      # target (it parses and then hard-errors; only the `-lld` opt-out is
+      # stable, x86_64-linux-gnu only), so arm 2 always wins today; arm 1
+      # stays so a future +lld stabilization is picked up automatically, and
+      # both arms do a real link — a pass cannot be a silent no-op.
+      # No /threads:1 cap here, unlike the test leg: the job is time-bound and
+      # has never thrashed memory on either linker — capping would only slow
+      # the release.
       # NOTE for the reviewer: this changes the shipped nsis binary (different
       # linker, same source). Revert = delete this step.
       - name: Probe and export the Windows lld link flags
@@ -513,10 +519,10 @@ jobs:
     # 实测仍持续增长：0.10.0-0.10.2 分别 138/219/226 分钟(run 34747563852/
     # 34877996483/35308587808)，0.10.3(run 35377723253)在 241 分钟处撞线被取消，
     # macOS dmg 因此缺席发布而其余三平台完成。放宽至 360 分钟。
-    # 链接机制备注(2026-10 校准):macOS 的 Apple ld 吃不了 LLVM bitcode,release
-    # 的 thin LTO 由 rustc 在自身进程内完成(无 --thinlto-jobs 式 cap 可调),Apple ld
-    # 只链普通对象——本 job 的时长大头与内存峰值都在 rustc 侧;缓解手段是拆分
-    # universal 构建(见 follow-up)而非换链器。
+    # 链接机制备注(2026-10 校准):thin LTO 的跨 crate 合并由最终 crate 的 rustc
+    # 在自身进程内完成(Apple ld 只链普通对象,不经手 bitcode),且无 cap 可调——
+    # 本 job 的时长大头与内存峰值都在 rustc 侧;缓解手段是拆分 universal 构建
+    # (需 Tauri universal-bundler 改造,另行跟进)而非换链器。
     timeout-minutes: 360
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
