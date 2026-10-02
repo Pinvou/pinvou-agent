@@ -668,7 +668,10 @@ impl Pinvou3Bundle {
             if !path.exists() {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
             }
-            match std::fs::read_to_string(&path) {
+            // read_shared（按名钉住共享文件的读侧约定，round-16 review）：该探测
+            // 与 scope 写进程共享 disabled_bundles.json，对端可能正处
+            // rename-replace 落盘窗口；Windows 读侧共享语义由此按名声明。
+            match crate::platform::filesystem::read_shared(&path) {
                 Ok(content) => {
                     if content.contains(tool_id) {
                         return true;

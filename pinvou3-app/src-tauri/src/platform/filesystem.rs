@@ -424,9 +424,17 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
 /// callers' bounded try-lock funnel cannot bound a syscall below it). A
 /// planted FIFO that survives both is not refused: flock on it succeeds and
 /// all peers opening the same path exclude on the same inode, so exclusion
-/// still holds — the file just is not the regular lock file. Windows relies
-/// on the owning profile directory's ACL,
-/// consistent with the rest of the application data tree.
+/// still holds — the file just is not the regular lock file. A planted
+/// HARDLINK is likewise not refused (flock still excludes on the shared
+/// inode), but the stat-gated tighten then re-modes the linked victim's
+/// inode — disclosed, accepted for a private home (round-16 review).
+/// Deleting or replacing the file while a peer holds the lock splits
+/// exclusion across two inodes on BOTH platforms (Unix unlink is always
+/// possible; Windows opens the handle with the default share mode, which
+/// includes FILE_SHARE_DELETE) — do not delete the lock file while other
+/// Pinvou processes may be running. Cross-user protection on Windows relies
+/// on the owning profile directory's ACL, consistent with the rest of the
+/// application data tree.
 pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -455,10 +463,13 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
             file.set_permissions(std::fs::Permissions::from_mode(0o600))
                 .map_err(|error| {
                     // Name the file and the recovery: every scope write refuses
-                    // while this fails, and the lock file holds no user data, so
-                    // fixing its mode (or deleting it) is always safe.
+                    // while this fails, and the lock file holds no user data.
+                    // Advice is rename-aside, not deletion (round-16 review):
+                    // deleting the file while a peer holds the flock splits
+                    // exclusion across two inodes — the lost update the lock
+                    // exists to prevent.
                     std::io::Error::other(format!(
-                        "tighten {} to 0600: {error} (fix the file's permissions or remove it; it holds no data)",
+                        "tighten {} to 0600: {error} (fix the file's permissions, or rename it aside while no other Pinvou process is running; it holds no data)",
                         path.display()
                     ))
                 })?;
