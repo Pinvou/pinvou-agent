@@ -36,7 +36,10 @@
 //!   `cancel_marketplace_tool_oauth_login`: cancelling a non-running or
 //!   unknown id answers `{"cancelled": false, "status": "not_running"}` with
 //!   exit 0 rather than a usage error, so a script sees the not-running fact
-//!   instead of an error class. The login flow itself
+//!   instead of an error class. The field means "a login was cancelled in
+//!   this process" — the GUI's `true` arm also covers arming a pending
+//!   cancellation for a not-running login, a state a one-shot CLI process
+//!   can never own, so the CLI always answers false here. The login flow itself
 //!   (`deepseek_tui::mcp::oauth::perform_oauth_login_for_server_with_cancel`)
 //!   is foundation-internal and not reachable from this crate, so the command
 //!   fails with `oauth_login_unavailable_in_cli` instead of half-reimplementing
@@ -1852,7 +1855,12 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // up front so a store failure surfaces as the lane's error
             // instead of a fabricated `missing_credentials` row.
             let mut resolved_credentials = Vec::new();
-            for spec in &bundle.credentials {
+            // The verdict consults REQUIRED credentials only (bundle.rs's
+            // missing-required filter; the GUI's pre-read does the same), so
+            // an optional credential is never touched here: a store failure
+            // or a first-touch keyring prompt for a secret the verdict never
+            // reads would fail or interrupt the command for nothing.
+            for spec in bundle.credentials.iter().filter(|spec| spec.required) {
                 let present = if !bundle.installed {
                     false
                 } else {
@@ -1995,7 +2003,14 @@ fn set_enabled(
         let mut ids =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
         if enabled {
-            ids.retain(|existing| existing != &packages);
+            // Drop the normalized projection, not just the exact spelling:
+            // the verification below checks the same projection, so a stale
+            // differently-spelled entry (a companion skill id still spelled
+            // raw) must not survive an enable and deadlock every retry into
+            // a remedy-less hard failure.
+            ids.retain(|existing| {
+                pinvou3_lib::features::marketplace::scope::package_id_for(existing) != packages
+            });
         } else if !ids.iter().any(|existing| existing == &packages) {
             ids.push(packages.clone());
         }

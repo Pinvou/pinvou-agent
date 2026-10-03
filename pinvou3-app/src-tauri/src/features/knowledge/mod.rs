@@ -17,6 +17,11 @@ mod l1;
 // app command layer (`app::commands::knowledge` owns the Tauri command
 // wrappers via the passthrough macros).
 pub mod model_download;
+// The headless CLI (`pinvou knowledge asr`-adjacent model checks) consumes
+// the completeness predicate through this re-export instead of a copy: it
+// cannot name the transitive `pinvou-knowledge` crate, and a copy silently
+// desynced the two surfaces every time the manifest changed.
+pub use pinvou_knowledge::model_download::model_directory_is_complete;
 mod query;
 mod scanner;
 mod store;
@@ -714,7 +719,7 @@ impl KnowledgeService {
                 use std::io::Write as _;
                 let _ = writeln!(
                     std::io::stderr(),
-                    "[knowledge] scan thread panicked (contained; no missing-file cleanup this round): {panic:?}"
+                    "[knowledge] scan thread panicked (contained; the stale sweep's outcome is unknown): {panic:?}"
                 );
             }
         });

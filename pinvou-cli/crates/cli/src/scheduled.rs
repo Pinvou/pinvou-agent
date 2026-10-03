@@ -1980,7 +1980,10 @@ enabled in settings",
 /// write (model binding, workspace pin) failed: restores the captured
 /// pre-update definition, then re-resolves its slot through the foundation
 /// (a verbatim `next_run_at` could hand the sweep a past-due slot to fire
-/// late). Every restore step is best-effort and disclosed — the returned
+/// late). If the re-resolution of an ACTIVE task is refused, the rollback
+/// parks the task paused (which clears the slot) rather than leaving a
+/// past-due slot for the sweep to deliver late. Every restore step is
+/// best-effort and disclosed — the returned
 /// error is the ORIGINAL failure, with any rollback trouble surfaced on
 /// stderr.
 fn rollback_committed_update_definition(
@@ -2007,9 +2010,32 @@ fn rollback_committed_update_definition(
         .map_err(|restore_error| CliError::failed(format!("{restore_error:#}")))
     });
     if let Err(restore_error) = reresolved {
-        note!(
-            "warning: scheduled update: the rollback could not re-resolve the pre-update schedule: {restore_error}"
-        );
+        // The dangerous shape is an ACTIVE pre-update status whose resume
+        // was refused (a one-shot whose anchor elapsed while the command
+        // ran): the raw-restored `next_run_at` is then past due and the
+        // foundation sweep delivers it late — exactly what the
+        // re-resolution step exists to prevent. Pausing clears the slot,
+        // trading a late fire for a disclosed paused task.
+        let parked = if status == "active" {
+            store_holder.manager().and_then(|manager| {
+                manager
+                    .pause_automation(id)
+                    .map_err(|pause_error| CliError::failed(format!("{pause_error:#}")))
+            })
+        } else {
+            Err(CliError::failed("status not active"))
+        };
+        match parked {
+            Ok(_parked) => note!(
+                "warning: scheduled update: the rollback could not re-resolve the pre-update \
+                 schedule ({restore_error}); the task is left PAUSED with its previous \
+                 definition — resume it after checking the schedule"
+            ),
+            Err(_) => note!(
+                "warning: scheduled update: the rollback could not re-resolve the pre-update \
+                 schedule: {restore_error}"
+            ),
+        }
     }
     error
 }

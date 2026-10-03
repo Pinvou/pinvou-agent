@@ -15,7 +15,11 @@ pub mod code_checkpoints;
 pub mod codex_acp;
 pub(crate) mod computer_use;
 pub(crate) mod connectors;
-pub(crate) mod deliverables;
+// `pub` for the headless CLI (`pinvou artifacts list`): the deliverable
+// extension whitelist and the category mapping must be ONE table shared
+// with the GUI surface — a copy there drifts silently (the CLI's forced
+// mirror predated the widening).
+pub mod deliverables;
 pub mod dependencies;
 pub mod feedback;
 pub mod files;

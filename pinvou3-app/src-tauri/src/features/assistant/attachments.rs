@@ -163,6 +163,10 @@ where
         return None;
     }
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The same litter rule as the arms above: a rejected target must
+        // not leave the staged file (here fully written) behind.
+        drop(destination);
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))
@@ -333,6 +337,10 @@ where
         return None;
     }
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The same litter rule as the arms above: a rejected target must
+        // not leave the staged file (here fully written) behind.
+        drop(destination);
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))

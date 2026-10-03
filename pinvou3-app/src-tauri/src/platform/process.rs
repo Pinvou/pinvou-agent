@@ -152,6 +152,16 @@ fn external_command_for(executable: &Path, windows: bool) -> Command {
 /// working directory must not win PATH resolution on a platform where exe
 /// search historically includes it — the hardened
 /// `external_application_path` resolution is the point of sharing.
+///
+/// The Windows `.cmd`/`.bat` branch keeps the manual `cmd /D /S /C` wrap
+/// (unlike the CLI's own `build_command`, which delegates to std's hardened
+/// batch quoting): these shims NEED the cmd interpretation to run at all
+/// — an npm `.cmd` spawned directly is treated as a non-executable image —
+/// and every current caller passes a fixed, first-party-resolved path with
+/// no attacker-shaped argument material, so the BatBadBut argument-quoting
+/// class the CLI pin guards against has no vector here. If a caller ever
+/// forwards external arguments through this helper, route that caller
+/// through `build_command`'s std delegation instead of extending the wrap.
 pub fn external_command(executable: &Path) -> Command {
     external_command_for(executable, crate::platform::capabilities::is_windows())
 }

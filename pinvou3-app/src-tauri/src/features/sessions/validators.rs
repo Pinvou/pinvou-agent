@@ -51,7 +51,7 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
 /// every case-sensitive prefix test misses it, running a full-tool turn over
 /// the aux session. Every is-aux decision must go through this helper so the
 /// gates hold regardless of filesystem case semantics.
-pub(crate) fn is_aux_session_id(id: &str) -> bool {
+pub fn is_aux_session_id(id: &str) -> bool {
     // `get(..4)` instead of slicing: byte slicing panics when the index falls
     // inside a multibyte UTF-8 char, and these guards run on client-supplied
     // ids before any charset validation (e.g. the delete_session cascade

@@ -2163,6 +2163,31 @@ fn import_display_name_matches_the_gui_sanitizer() {
         serde_json::json!(expected),
         "the stored display name must be sanitized and capped at 128 chars"
     );
+
+    // The no-trim rule: the GUI's sanitizer filters and caps but never
+    // trims, so leading/trailing spaces must survive into the stored name
+    // (a trim-on-store revert silently diverged the two surfaces).
+    // (the extension must stay last for the format gate, so the trailing
+    // half of the no-trim rule is pinned by the leading spaces here — a
+    // trim strips both ends by the same stroke)
+    let spaced = home.path().join("  spaced name.md");
+    std::fs::write(&spaced, "---\nname: spaced-name-skill\n---\nbody").unwrap();
+    run_ok(&["pinvou", "plugins", "import", spaced.to_str().unwrap()]);
+    let bundles: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
+    )
+    .unwrap();
+    let record = bundles["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == "spaced-name-skill")
+        .expect("bundle record for the spaced import");
+    assert_eq!(
+        record["source"],
+        serde_json::json!("upload:  spaced name.md"),
+        "the display name must be stored untrimmed, exactly like the GUI stores it"
+    );
 }
 
 /// `wrap_markdown_skill` PREPENDS a frontmatter block, so the bytes that go

@@ -75,7 +75,7 @@
 //!   `remote_kb_probe_private_endpoint`, re-exported as a free function;
 //!   `RemoteKnowledgeProbe` was already public via `request_join_confirmed`,
 //!   so no new types entered the app crate's surface). Async network call →
-//!   the same windowless product host.
+//!   the same bare async host as the other remote lanes.
 //! - host status → `features::shared_knowledge_host::status()` (async) via
 //!   the same host runtime; install/upgrade/backup stay GUI/host-bound.
 //!
@@ -132,7 +132,7 @@
 //! ([`open_service`] opens without it) and with `resume`/`retry`'s own
 //! state transitions for the CLI's own stranded jobs.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::support::{render, require_yes, sandbox_home, success};
@@ -868,8 +868,8 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
                 return Err(CliError::failed(format!(
                     "knowledge scan start: the scan thread aborted before finishing \
                      (phase: interrupted, scanned: {}); partial results may be indexed, \
-                     the completion marker was not persisted and no stale entries were \
-                     removed — re-run the command",
+                     the completion marker was not persisted and the stale sweep's \
+                     outcome is unknown — re-run the command",
                     state.scanned
                 )));
             }
@@ -1087,11 +1087,10 @@ fn search(
 }
 
 /// Parses a UTC `YYYY-MM-DD` date into UNIX seconds for the search DTO's
-/// `mtimeAfter`/`mtimeBefore` (the GUI frontend sends epoch seconds directly;
-/// the civil-days conversion is inlined deliberately — chrono IS a
-/// dependency, but this arithmetic must keep matching the foundation's
-/// day-boundary computation exactly, the same rationale as the scheduled
-/// family's copy). Invalid shapes are usage errors, like bad ids.
+/// `mtimeAfter`/`mtimeBefore` (the GUI frontend sends epoch seconds
+/// directly; the civil-days conversion is inlined and pinned by hand-computed
+/// fixtures so the UTC day boundary is stable regardless of the platform's
+/// chrono version). Invalid shapes are usage errors, like bad ids.
 fn parse_date_epoch(value: &str, flag: &str) -> Result<i64, CliError> {
     let invalid = || {
         CliError::usage(format!(
@@ -2018,7 +2017,7 @@ fn index_failed(
 fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let dir = configured_model_dir();
-    let installed = model_directory_complete(&dir);
+    let installed = pinvou3_lib::features::knowledge::model_directory_is_complete(&dir);
     let ready = service.semantic_ready();
     let human = format!(
         "version: {MODEL_VERSION}\nmodel_dir: {}\ninstalled: {installed}\nready: {ready}\n\
@@ -2038,37 +2037,6 @@ fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "scope": "process-local",
         }),
     )))
-}
-
-/// CLI-side mirror of `pinvou_knowledge::model_download::
-/// model_directory_is_complete` (pinvou-knowledge/src/model_download.rs, the
-/// single source of truth): the directory is canonicalized first, then one of
-/// the ONNX variants plus the four tokenizer/config files must be present.
-///
-/// The upstream helper is `pub`, but `pinvou-knowledge` is only a TRANSITIVE
-/// dependency here (it enters the graph through `pinvou3-tauri`), and
-/// `pinvou3_lib` does not re-export it — a Rust crate cannot name a
-/// transitive dependency, so calling it would mean adding a direct
-/// `pinvou-knowledge` path dependency to this crate's Cargo.toml. Until that
-/// happens this copy must stay behaviourally identical, canonicalization
-/// included: without it a symlinked model directory (`current -> models/v3`,
-/// a supported override shape) answers differently here than in the app.
-/// Keep both halves in sync when the model manifest changes.
-fn model_directory_complete(dir: &Path) -> bool {
-    let Ok(dir) = std::fs::canonicalize(dir) else {
-        return false;
-    };
-    let onnx = dir.join("model.onnx").is_file()
-        || dir.join("onnx").join("model_int8.onnx").is_file()
-        || dir.join("onnx").join("model.onnx").is_file();
-    onnx && [
-        "tokenizer.json",
-        "config.json",
-        "special_tokens_map.json",
-        "tokenizer_config.json",
-    ]
-    .iter()
-    .all(|name| dir.join(name).is_file())
 }
 
 /// Same resolution order as the GUI (`configured_model_dir` in
@@ -2176,7 +2144,7 @@ fn empty_remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> 
 /// GUI `remote_kb_probe_private_endpoint`: the unauthenticated TLS-pinned
 /// identity handshake, re-exported by the app crate as
 /// `features::remote_knowledge::probe_private_identity`. Async network call →
-/// windowless product host, like the other remote surfaces. The human output
+/// the bare async host, like the other remote surfaces. The human output
 /// shows the confirmable identity fields; JSON carries the full probe
 /// (public CA identity material — the GUI requires out-of-band confirmation
 /// of the identity code before any join).
@@ -2392,8 +2360,9 @@ fn remote_search(
 }
 
 /// GUI `shared_kb_host_status`; the snapshot function is async (systemd
-/// probe + optional local health check), so it runs through the windowless
-/// product host (needs a display on headless Linux).
+/// probe + optional local health check), so it runs on the bare async host
+/// (`run_bare_host`: no Tauri context, no session-store boot, no display —
+/// usable on headless Linux).
 #[cfg(feature = "product-backend")]
 fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
@@ -2423,21 +2392,20 @@ fn host_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &value)))
 }
 
-/// The remote/host surfaces are async network client calls; run them through
-/// the windowless product host — the same bootstrap as `agent run` (needs a
-/// display on headless Linux; documented in the module docs and the
-/// `#[ignore]`d tests). The closure parameter types are the host's
-/// `EnginePool`/`SessionStore` (supplied by inference, as in memory.rs —
-/// `engine_pool` is `pub(crate)` and not nameable from the CLI).
+/// The remote/host surfaces are async network client calls; run them on the
+/// bare async host (`run_bare_host`: rustls/env/runtime only — no Tauri
+/// context, no session-store boot, no display; documented in the module
+/// docs and the `#[ignore]`d tests). The closures are zero-argument: the
+/// lanes need no engine pool or session store.
 #[cfg(feature = "product-backend")]
 fn host_error(operation: &str, error: anyhow::Error) -> CliError {
     CliError::failed(format!("knowledge {operation}: {error:#}"))
 }
 
 // Featureless refusals for the remote/host cluster (the `agent_task`
-// family's stub precedent): the windowless product host these commands
-// bootstrap is a product-backend capability, and a featureless build
-// links neither it nor `anyhow`.
+// family's stub precedent): the bare async host these commands bootstrap
+// is a product-backend capability, and a featureless build links neither
+// it nor `anyhow`.
 #[cfg(not(feature = "product-backend"))]
 fn remote_connections(_output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))

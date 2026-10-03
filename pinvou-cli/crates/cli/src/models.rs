@@ -2584,7 +2584,9 @@ fn probe_local<S: CredentialStore>(
     // earned, and the detail names the flag that would let the next run
     // actually classify it.
     if kind == LOCAL_KIND_PROBE_FAILED {
-        let detail = "a local-server probe failed unexpectedly, so the round was              incomplete; rerun the probe (if it repeats, the server's behavior on one              of the probed endpoints is crashing the probe)";
+        let detail = "a local-server probe failed unexpectedly, so the round was \
+             incomplete; rerun the probe (if it repeats, the server's behavior on one \
+             of the probed endpoints is crashing the probe)";
         let text = render(
             output,
             format!("url: {target}\nkind: {kind}\ndetail: {detail}"),

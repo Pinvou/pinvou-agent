@@ -58,7 +58,11 @@
 //! The per-attempt timeout budget is measured from *after* the host is up, so it
 //! bounds the model round-trip like the GUI's does rather than the tokio /
 //! Tauri / `SessionStore` boot; `POSTPROCESS_TOTAL_BUDGET` is the separate
-//! overall bound on the command.
+//! overall bound on the command. Disclosed side effect of that shared boot:
+//! the store's retention sweep runs on the way up, so a stateless-looking
+//! `voice postprocess` can evict the oldest unpinned sessions exactly like
+//! any other store-opening command (unlike the `monitor`/remote lanes, which
+//! moved to `run_bare_host` precisely because they need no store).
 //!
 //! What `voice postprocess` deliberately does NOT mirror is the GUI's
 //! *client-side* voice pipeline in `platform/tauri/bridge/voice.js`: the
@@ -593,8 +597,8 @@ fn external_asr_command() -> Option<PathBuf> {
         "PADDLESPEECH_BIN",
     ] {
         if let Ok(path) = std::env::var(name) {
-            // Mirror `asr_tool_exists` exactly (`platform/*/asr_tool_path`
-            // availability): a configured value counts when it exists as a
+            // Availability parity with `asr_tool_exists` (`platform/*/
+            // asr_tool_path`): a configured value counts when it exists as a
             // file OR resolves on PATH as a bare name — the app's probe
             // accepts both shapes, and the spawn side drives bare names
             // through `build_command`. A file-only probe here would strand
@@ -602,6 +606,13 @@ fn external_asr_command() -> Option<PathBuf> {
             // the remediation note tells the user to set the variable they
             // already set. Anything unresolvable stays unconfigured, so
             // asr-status still refuses to report ready for a missing tool.
+            // One disclosed deviation from the app's first-non-empty rule:
+            // an unresolvable variable here falls through to the NEXT
+            // candidate instead of ending the search (the app tests only
+            // the first non-empty var, then the managed engine). This side
+            // is the more permissive one — it can never strand a working
+            // tool — but a broken first var with a valid second one answers
+            // "configured" here and "missing" in the GUI.
             if !path.trim().is_empty() {
                 let configured = PathBuf::from(path.trim());
                 if configured.is_file() || command_exists(&configured) {
@@ -2320,7 +2331,14 @@ fn postprocess(
     });
     let human = format!(
         "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\n{}",
-        mode_str, outcome.source, outcome.truncated, outcome.text, POSTPROCESS_NOTE
+        mode_str,
+        outcome.source,
+        outcome.truncated,
+        // The text is model output parsing an untrusted document: the same
+        // ESC/bidi block sanitizer as the transcribe lane applies (JSON mode
+        // keeps the verbatim bytes via serde).
+        crate::support::collapse_block_control_characters(&outcome.text),
+        POSTPROCESS_NOTE
     );
     Ok(success(render(output, human, &value)))
 }

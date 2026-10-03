@@ -279,10 +279,11 @@ super-permission pkexec toggle.
   `sessions`, `scheduled`, `personas`, `projects` families boots the shared
   session store and runs its retention (see the family rows above). The same
   sweep also runs inside every command that boots the windowless product
-  host — `monitor status|snapshot`, `voice postprocess`, `memory organize`
-  — because the host's session-store boot is shared; a diagnostic-looking
-  `monitor status` can therefore evict the oldest unpinned chat sessions
-  exactly like a `sessions list`. The sweep reports on and evicts from BOTH
+  host — `voice postprocess`, `memory organize` — because the host's
+  session-store boot is shared. `monitor status|snapshot` and the
+  `knowledge remote *` reads do NOT: they run on a bare async host with no
+  session-store boot, so no retention sweep can fire from a status command.
+  The sweep reports on and evicts from BOTH
   budgets in one pass: unpinned GUI chat sessions above the 50-session chat
   cap and unpinned headless `agent run` sessions (`agentic_` ids) above their
   own 50-session cap. Separating the budgets means headless runs no longer
@@ -299,12 +300,10 @@ super-permission pkexec toggle.
   (provably empty) CLI-side mount sweep, and `knowledge mounts`/`mount`/
   `unmount` refuse before opening the store — precisely so an impossible
   command cannot evict sessions on its way to saying so. The remote/host
-  lanes are NOT in that class: `remote probe`, `remote collections`,
-  `remote search`, and `host status` ride the windowless product host
-  (`run_windowless_host` boots the session store on its way up), so they
-  run the retention sweep like every other store-opening command;
-  `remote connections` does too whenever connections are configured — with
-  none configured it answers offline without booting.
+  lanes are in the same safe class: `remote probe`, `remote connections`,
+  `remote collections`, `remote search`, and `host status` run on the bare
+  async host (`run_bare_host` — no Tauri context, no session-store boot),
+  so none of them can run the retention sweep.
 - Two inherited upstream gaps this CLI mirrors byte-for-byte: the
   credential-component path refusal (`files ingest`, `artifacts read`/`write`,
   `feedback submit --attach/--body-file`, `agent run --attach`) compares path
