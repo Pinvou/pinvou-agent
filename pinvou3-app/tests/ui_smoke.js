@@ -2586,6 +2586,83 @@ async function expand(page) {
       && settledWidth === 480,
     JSON.stringify({ handleState, initialWidth, afterGrow, afterShrink, atMin, clampedBelow, atMax, clampedAbove, persistedAtMax, ariaAtMax, settledWidth }));
 
+  // ⑩d Pointer operability of the same handle. ⑩c only drives KeyboardEvent
+  // dispatch, which works even when the handle is a 6×0 sliver: Tailwind
+  // preflight pins <hr> to height:0 and absolute top-0/bottom-0 cannot stretch
+  // a non-auto height — exactly how pointer resize shipped broken. Assert the
+  // strip is really hit-testable, then drag with trusted CDP mouse input.
+  // Earlier steps leave view/modal state behind (search view, guidance
+  // dialogs); pointer gestures unlike dispatched KeyboardEvents actually
+  // hit-test, so normalize to the plain draft view first.
+  await page.keyboard.press('Escape');
+  await sleep(150);
+  await page.keyboard.press('Escape');
+  await sleep(150);
+  await clickText(page, '新对话');
+  await sleep(400);
+  const handleGeometry = await page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) return null;
+    const rect = handle.getBoundingClientRect();
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const top = document.elementFromPoint(center.x, center.y);
+    return {
+      height: Math.round(rect.height),
+      // Zero-area elements never win hit-testing: with the height bug the top
+      // element at the strip's center is the sidebar list, not the handle.
+      hit: top === handle,
+      coverClass: top && top !== handle && typeof top.className === 'string' ? top.className.slice(0, 60) : null,
+    };
+  });
+  const handleCenter = () => page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) throw new Error('sidebar-resize-handle not found');
+    const rect = handle.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+  // Re-read the center before every gesture: the strip rides the sidebar edge,
+  // so coordinates captured before a resize are stale by the next drag.
+  const dragHandleBy = async (dx) => {
+    const center = await handleCenter();
+    await page.mouse.move(center.x, center.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 12; step++) {
+      await page.mouse.move(center.x + (dx / 12) * step, center.y);
+      await sleep(20);
+    }
+    await page.mouse.up();
+    await sleep(120);
+  };
+  await dragHandleBy(-100);
+  const pointerDragWidth = await sidebarWidthOf();
+  const pointerDragPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
+  await dragHandleBy(-2000);
+  const pointerClampWidth = await sidebarWidthOf();
+  const pointerClampPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
+  // Headless CDP input never advances Chromium's OS-backed double-click count
+  // (consecutive clicks keep detail=1), so a native dblclick cannot be
+  // synthesized here; dispatch it directly to cover the onDoubleClick wiring.
+  await page.evaluate(() => {
+    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+    if (!handle) throw new Error('sidebar-resize-handle not found');
+    handle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  });
+  // 450ms lets the 300ms width transition settle, like ⑩c's settledWidth check.
+  await sleep(450);
+  const dblclickResetWidth = await sidebarWidthOf();
+  const dblclickResetPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
+  rec('⑩d sidebar splitter pointer drag (hit-test + drag + clamp + dblclick reset + persistence)',
+    !!handleGeometry
+      && handleGeometry.height > 0
+      && handleGeometry.hit
+      && pointerDragWidth === 480 - 100
+      && pointerDragPersisted === '380'
+      && pointerClampWidth === 220
+      && pointerClampPersisted === '220'
+      && dblclickResetWidth === 280
+      && dblclickResetPersisted === '280',
+    JSON.stringify({ handleGeometry, pointerDragWidth, pointerDragPersisted, pointerClampWidth, pointerClampPersisted, dblclickResetWidth, dblclickResetPersisted }));
+
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
 
