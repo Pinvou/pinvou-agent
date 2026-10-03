@@ -8,7 +8,7 @@ import { can, isWeb } from '../../shared/platform.js';
 import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 import { cardBtnCls } from '../../shared/card-buttons.mjs';
-import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
+import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';

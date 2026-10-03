@@ -3,7 +3,7 @@ import { Brain, Clock, Cpu, Database, RotateCcw, Server } from '../../components
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { formatCompactCount } from '../../shared/format-number.js';
-import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
+import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 
 // 界面语言 → BCP 47 locale，用于时钟等本地化格式化
 const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
