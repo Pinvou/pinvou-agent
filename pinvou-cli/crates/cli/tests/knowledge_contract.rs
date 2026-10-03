@@ -2119,7 +2119,9 @@ fn host_status_reports_the_shared_host_snapshot() {
         serde_json::json!("https://127.0.0.1:3210")
     );
     assert!(status["supported"].is_boolean());
-    assert!(status["app_version"].is_string());
+    // `SharedKnowledgeHostStatus` serializes camelCase (the family's
+    // GUI-DTO convention); the snake_case key never exists.
+    assert!(status["appVersion"].is_string());
 }
 
 #[test]

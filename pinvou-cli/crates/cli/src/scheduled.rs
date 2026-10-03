@@ -2132,6 +2132,13 @@ fn update(
                 error,
             ));
         }
+        // No model pin to roll back, and the definition update itself is
+        // already committed: the failure stays a failure in its own class
+        // (retryable, like the GUI's repair), but a stderr note names the
+        // landed half instead of the exit reading as if nothing changed.
+        crate::note!(
+            "warning: the workspace repair failed; the definition update itself is already committed"
+        );
         return Err(error);
     }
     if validated_model_id.is_some() {
@@ -2310,8 +2317,16 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
     if !pause {
         // Same GUI step as create/update: the durable workspace stays pinned
         // to the id-derived path, and a missing/empty stored cwd is
-        // persisted like the GUI's `update_automation(cwds: …)` repair.
-        ensure_workspace(&store_holder, &mut def)?;
+        // persisted like the GUI's `update_automation(cwds: …)` repair. The
+        // failure note names the committed flip: a bare exit 1 here would
+        // disown an already-persisted resume, the exact shape the two
+        // enrichment guards below refuse.
+        if let Err(error) = ensure_workspace(&store_holder, &mut def) {
+            crate::note!(
+                "warning: the workspace repair for {id} failed ({error}); \
+the resume itself is committed"
+            );
+        }
     }
     // Enrichment is best-effort: the status flip is committed above, so a
     // sessions store boot failure must not report the command as failed —

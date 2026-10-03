@@ -620,6 +620,16 @@ fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {
     let original = std::fs::metadata(&sessions_root).unwrap().permissions();
     std::fs::set_permissions(&sessions_root, std::fs::Permissions::from_mode(0o555)).unwrap();
 
+    // Running as root (or on a filesystem that ignores mode bits) bypasses
+    // DAC: the writes below would succeed and the expect_err would fail
+    // spuriously — restore and skip, like the knowledge/code siblings.
+    let probe = sessions_root.join(".dac-probe");
+    if std::fs::write(&probe, b"probe").is_ok() {
+        std::fs::remove_file(&probe).ok();
+        std::fs::set_permissions(&sessions_root, original).unwrap();
+        return;
+    }
+
     let pin = run(&["pinvou", "sessions", "pin", &id]);
     let archive = run(&["pinvou", "sessions", "archive", &id]);
 

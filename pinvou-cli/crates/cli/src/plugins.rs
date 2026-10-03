@@ -803,10 +803,12 @@ fn tools_install(
         .map_err(|error| feature_error("tools install", id, error))?;
     // Companion skills follow the package (GUI `install_marketplace_tool`):
     // a companion INSTALL failure is logged and does not roll back the MCP
-    // install (a skill is an enhancement). The DenyAll scope syncs are the
-    // same best-effort entry points the GUI calls: a failed consent-file
-    // write is logged by the scope layer (a documented fail-open concession
-    // there), not returned.
+    // install (a skill is an enhancement). The consent sync that follows
+    // each install is NOT best-effort: `sync_after_install_or_fail` below
+    // maps a failed consent-file write to a command failure with the GUI's
+    // consent marker — a failed consent write must not set an installed
+    // connector live by default, so it fails the command instead of being
+    // logged (the companion install itself stays the only log-only half).
     let mut companion_note = Vec::new();
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
@@ -926,14 +928,16 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     } else {
         ""
     };
-    // Same fact as the note above, in both output modes: the CLI uninstall
-    // never deletes stored remote OAuth tokens (the disclosed deviation from
-    // the GUI's token-store teardown), so the field states what IS the case.
+    // Same fact as the note above, in both output modes — and gated on the
+    // same condition: for a tool with no remote OAuth the unconditional
+    // `true` read as "tokens existed and were kept", a fact the CLI cannot
+    // even see (`token_check: "unavailable_in_cli"`). The field states what
+    // IS the case for THIS uninstall.
     let value = serde_json::json!({
         "id": id,
         "action": "uninstalled",
         "recycled": recycles_with_package,
-        "oauth_tokens_kept": true,
+        "oauth_tokens_kept": keeps_oauth_tokens,
     });
     Ok(success(render(
         output,

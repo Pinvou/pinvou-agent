@@ -737,17 +737,42 @@ fn validate_rebind_to(to: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Mirror of the GUI's `reject_nested_rebind_target` (equality is handled by
-/// the caller first): a target inside the old directory deepens on every
-/// rerun (/a/x → /a/x/new/x → …), breaking idempotency. The GUI compares
-/// folded identity keys through `platform::os::path_identity_is_same_or_nested`,
-/// which is `pub(crate)` to the app crate; the CLI compares components with
-/// `Path::starts_with` — both operands are already in the entry-normalized
-/// resolved display form, so the match is whole-component and the one
-/// deviation is Windows case-only spellings, where the app's canonicalize at
-/// validation time already removes the case difference in practice.
+/// Same-folder spelling test for the to-lane retry admit: trailing
+/// separators are trimmed and Windows case-only drift folds away, mirroring
+/// the GUI's `filesystem_path_identity_key` comparison (#463 round-14)
+/// without the `pub(crate)` helper. A raw `!=` there reads a healthy
+/// to-lane session as needing sync, causing a spurious rewrite plus a
+/// fabricated "rebound" report entry.
+fn same_workspace_spelling(a: &str, b: &str) -> bool {
+    fn trim(s: &str) -> &str {
+        s.trim_end_matches(['/', '\\'])
+    }
+    let (a, b) = (trim(a), trim(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// Mirror of the GUI's `reject_nested_rebind_target`, both arms (equality is
+/// handled by the caller first):
+/// - a target inside the old directory deepens on every rerun
+///   (/a/x → /a/x/new/x → …), breaking idempotency;
+/// - the mirror geometry (#463 round-17 MAJOR-2) — the old directory strictly
+///   inside the target — deepens a binding at `from/sub` one level per rerun
+///   (`from/B/sub` → `from/B/B/sub`) while run 1 is even false-failed by the
+///   fence rescan, which is why the GUI refuses it fatally and this CLI must
+///   too instead of performing a rebind the desktop app would have rejected.
+/// The GUI compares folded identity keys through
+/// `platform::os::path_identity_is_same_or_nested`, which is `pub(crate)` to
+/// the app crate; the CLI compares components with `Path::starts_with` — both
+/// operands are already in the entry-normalized resolved display form, so the
+/// match is whole-component and the one deviation is Windows case-only
+/// spellings, where the app's canonicalize at validation time already removes
+/// the case difference in practice.
 fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
-    to_display.starts_with(from)
+    to_display.starts_with(from) || from.starts_with(to_display)
 }
 
 /// Mirror of `SessionStore::durable_session_record_is_absent` (the helper is
@@ -827,9 +852,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
     }
     if rebind_target_is_same_or_nested(&to_display, &from_display) {
+        // Direction-neutral copy: the marker stays stable for scripts, and
+        // the mirror arm (the old folder inside the destination) must not
+        // print a message that describes only the first arm.
         return Err(CliError::failed(
-            "projects rebind: the destination cannot sit inside the original folder \
-             (REBIND_TO_NESTED)",
+            "projects rebind: the source and destination folders must not be \
+             nested inside each other (REBIND_TO_NESTED)",
         ));
     }
     // Root pre-flight (REBIND_ROOTS_CONFLICT): the roots commit LAST, so an
@@ -1082,7 +1110,10 @@ fn admit_to_lane_retry_candidate(
         return;
     }
     let needs_metadata_sync = match sessions.load(&session_id) {
-        Ok(session) => session.metadata.workspace != bound_path,
+        Ok(session) => !same_workspace_spelling(
+            &session.metadata.workspace.to_string_lossy(),
+            &bound_path.to_string_lossy(),
+        ),
         Err(_) => true,
     };
     if needs_metadata_sync {
