@@ -98,15 +98,22 @@ class CiGatePolicyTests(unittest.TestCase):
         cls.pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
         cls.release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    def test_full_release_only_runs_for_version_or_manual_trigger(self):
+    def test_full_release_only_runs_for_tag_or_manual_trigger(self):
+        # 2026-10 CI 成本重构:全平台安装包只挂 release tag(或人工触发)。
+        # main 上 VERSION bump 的 push 不再自动构建,发布动作 = 打 tag。
         trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1
         )[0]
         self.assertNotIn("pull_request:", trigger)
-        self.assertIn("push:", trigger)
-        self.assertIn("paths:\n      - 'VERSION'", trigger)
+        self.assertNotIn("branches:", trigger)
+        self.assertNotIn("paths:", trigger)
+        self.assertIn("tags:", trigger)
+        self.assertIn("- 'v*'", trigger)
         self.assertIn("workflow_dispatch:", trigger)
         self.assertIn("cancel-in-progress: false", self.release_workflow)
+        # tag 触发时 tag 名必须与 VERSION 一致(fail closed)。
+        self.assertIn('TAG="${GITHUB_REF#refs/tags/}"', self.release_workflow)
+        self.assertIn('!= "v$V"', self.release_workflow)
 
     def test_release_workflow_does_not_reference_retired_web_template(self):
         for retired_reference in (
@@ -165,20 +172,41 @@ class CiGatePolicyTests(unittest.TestCase):
             if not line.lstrip().startswith("#")
         )
         self.assertNotIn("branches:", active_pull_request_trigger)
-        self.assertIn("ready_for_review", pull_request_trigger)
-        self.assertIn("converted_to_draft", pull_request_trigger)
+        # 2026-10 成本重构:PR 门禁强度不再随 Ready/Draft 或 ci:full-rust
+        # 标签切换——PR 阶段一律轻量,ready_for_review/labeled 事件随策略退役。
+        self.assertNotIn("ready_for_review", active_pull_request_trigger)
+        self.assertNotIn("labeled", active_pull_request_trigger)
+        self.assertNotIn("unlabeled", active_pull_request_trigger)
+        self.assertIn("converted_to_draft", active_pull_request_trigger)
 
         frontend = self.pr_workflow.split(
             "\n  frontend-test:", maxsplit=1
         )[1].split("\n  relay-test:", maxsplit=1)[0]
-        self.assertIn("github.event.pull_request.draft == false", frontend)
-        self.assertIn("Ready PR 定向浏览器 smoke", frontend)
+        # PR 阶段禁止构建:Vite build / web build / 兼容审计 / 浏览器 smoke
+        # 全部收口到 Merge Queue;PR 只保留零构建的 lint + 逻辑测试。
+        self.assertNotIn("Ready PR 定向浏览器 smoke", frontend)
+        self.assertNotIn("github.event.pull_request.draft == false", frontend)
         self.assertIn("Merge Queue diff-selected browser smoke", frontend)
         self.assertIn("github.event.merge_group.base_sha", frontend)
         self.assertIn("github.event.merge_group.head_sha", frontend)
-        self.assertEqual(frontend.count("select-frontend-smokes.mjs"), 2)
+        self.assertEqual(frontend.count("select-frontend-smokes.mjs"), 1)
         self.assertNotIn("npm run test:browser-smoke", frontend)
         self.assertEqual(frontend.count("npm run test:markdown"), 0)
+        for build_step in (
+            "npm run build:ui",
+            "npm run build:web",
+            "npm run audit:compat",
+        ):
+            step = frontend.split(f"run: {build_step}", maxsplit=1)[0]
+            gate = step.rsplit("if: ${{", maxsplit=1)[1]
+            self.assertIn(
+                "github.event_name == 'merge_group'",
+                gate,
+                f"{build_step} 必须挂在 merge_group 条件下(PR 阶段禁止构建)",
+            )
+        # PR/Queue 共用的逻辑测试仍保留(零构建反馈)。
+        self.assertIn("- name: 前端逻辑测试 (pet 全套 + diff parser + markdown)", frontend)
+        self.assertNotIn("if:", frontend.split("run: npm test", maxsplit=1)[0].rsplit("- name: 前端逻辑测试", maxsplit=1)[1])
 
     def test_static_analysis_gate_configs_route_to_frontend_test(self):
         # The static-analysis gates (oxlint/Biome/knip/jsconfig/audit-compat)
@@ -496,10 +524,11 @@ class CiGatePolicyTests(unittest.TestCase):
             )[0]
         )
         self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
-        self.assertIn(
-            "github.event.pull_request.draft == false",
-            cli_test,
-            "draft PRs must skip the heavy CLI leg like the other rust jobs",
+        # 2026-10 成本重构:PR 阶段一律不触发 CLI 编译腿(不再区分 draft)。
+        self.assertNotIn(
+            "pull_request",
+            cli_test.split("\n    runs-on:", maxsplit=1)[0],
+            "the CLI leg must never run on pull_request events (PR 阶段禁止构建)",
         )
         self.assertIn("- name: Set up zram and swap", cli_test)
         self.assertIn("scripts/ci-memory-setup.sh", cli_test)
@@ -614,15 +643,23 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust_full must not enumerate internal feature files",
         )
 
-    def test_rust_modes_run_combined_full_regression_only_for_high_risk(self):
+    def test_rust_regression_runs_on_queue_and_main_only(self):
         self.assertIn("merge_group:", self.pr_workflow)
-        self.assertIn("ci:full-rust", self.pr_workflow)
+        # 2026-10 成本重构:ci:full-rust 标签随"PR 阶段禁止构建"一并退役——
+        # PR 门禁强度不再可切换,编译类验证只看 Merge Queue 与 main push
+        # (只扫非注释文本;头部的迁移说明允许提到旧策略名)。
+        self.assertNotIn("ci:full-rust", _without_yaml_comments(self.pr_workflow))
         rust_lint = self.pr_workflow.split(
             "\n  rust-lint:", maxsplit=1
         )[1].split("\n  rust-test:", maxsplit=1)[0]
         self.assertIn("timeout-minutes: 30", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
-        self.assertIn("github.event.pull_request.draft == false", rust_lint)
+        # PR 只跑零编译的 fmt 快检;clippy/deny/doc 等重检查仅在 Queue/main。
+        self.assertIn(
+            "RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' }}",
+            rust_lint,
+        )
+        self.assertNotIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
         self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
@@ -638,14 +675,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "needs.changes.outputs.rust_full == 'true'",
             rust_test,
         )
-        self.assertIn(
-            "needs.changes.outputs.rust_code == 'true'",
-            rust_test,
-        )
-        self.assertIn("github.event.pull_request.draft == false", rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            rust_test,
+        # PR 分支已整体移除:rust-test 的 job 条件不得再引用 pull_request。
+        rust_test_if = rust_test.split("\n    runs-on:", maxsplit=1)[0]
+        self.assertNotIn(
+            "pull_request",
+            rust_test_if,
+            "rust-test must never run on pull_request events (PR 阶段禁止构建)",
         )
         # Main is a cumulative compile verification and must not depend on
         # adjacent diff paths.
@@ -864,8 +899,13 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("max-parallel: 2", windows_rust_test)
         self.assertIn("phase: [all-targets-check, regression]", windows_rust_test)
         # Routing is job level, so it applies to both legs unchanged.
-        job_if = windows_rust_test.split("\n    if: >-", 1)[1].split("\n    strategy:", 1)[0]
+        job_if = windows_rust_test.split("\n    if: ${{", 1)[1].split("}}", 1)[0]
         self.assertNotIn("matrix.phase", job_if)
+        # 2026-10 成本重构:原生 Windows 腿只在每日夜间调度(或手动补跑)触发。
+        self.assertIn("github.event_name == 'schedule'", job_if)
+        self.assertIn("github.event_name == 'workflow_dispatch'", job_if)
+        self.assertNotIn("pull_request", job_if)
+        self.assertNotIn("event_name == 'push'", job_if)
 
         steps = re.split(r"\n      - name: ", windows_rust_test)[1:]
         phase_of = {}
@@ -949,25 +989,25 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn('verify_file "$archive" "$expected" >/dev/null 2>&1', source)
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
-        # Main's Windows regression must remain independent of adjacent diff paths.
+        # 2026-10 成本重构:原生 Windows 回归只在每日夜间调度(或手动补跑)
+        # 触发,与相邻 diff 路径无关;PR 与 main push 不再消耗 Windows 分钟。
         windows_rust_test = self.pr_workflow.split(
             "\n  windows-rust-test:", maxsplit=1
         )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
         self.assertIn(
-            "github.event_name == 'push' ||", windows_rust_test
+            "github.event_name == 'schedule'",
+            windows_rust_test,
         )
         self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
+            "github.event_name == 'workflow_dispatch'",
             windows_rust_test,
         )
         self.assertNotIn("github.event_name == 'merge_group'", windows_rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            windows_rust_test,
+        self.assertNotIn(
+            "needs.changes.outputs", windows_rust_test,
+            "schedule 触发不依赖 paths-filter 输出",
         )
-        self.assertIn(
-            "github.event.pull_request.draft == false", windows_rust_test
-        )
+        self.assertNotIn("github.event.pull_request", windows_rust_test)
         # Cold Windows compile plus the lib link check recently died at the
         # 90-minute cap while passing runs already took 85-87 minutes; the
         # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
@@ -1238,51 +1278,36 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn(match.group(1), secret_scan)
 
-    def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
-        # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
-        # filter 只在该 workflow 被触发后才有机会匹配,因此 bundle_chain 的每条
-        # 路径都必须被 on.push.paths 覆盖;不被覆盖的条目永远不会命中(死条目),
-        # 会误导读者以为该路径变更会跑 smoke(例如 VERSION:VERSION-only push
-        # 不触发 mac-build,版本同步提交经 tauri.conf.json/package.json 进入)。
+    def test_mac_build_runs_only_on_nightly_schedule_and_manual(self):
+        # 2026-10 CI 成本重构:mac-build 从「每次相关 main push」收口为
+        # 「每日夜间调度 + 手动触发」。9 月账单:macOS 3-core 7.7 万分钟/月
+        # (占 Actions 毛成本 63%),per-push 触发是主因之一。bundle_chain
+        # 路径分层随 per-push 触发一并退役:夜间全量固定含 universal bundle
+        # smoke,不再依赖 paths 过滤。
         mac_workflow = MAC_WORKFLOW.read_text(encoding="utf-8")
         trigger_block = mac_workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1
         )[0]
-        trigger_paths = _extract_quoted_paths(trigger_block)
-        self.assertTrue(trigger_paths, "mac-build on.push.paths 解析为空")
-
-        bundle_chain_block = mac_workflow.split(
-            "\n            bundle_chain:", maxsplit=1
-        )[1].split("\n\n", maxsplit=1)[0]
-        bundle_chain_paths = _extract_quoted_paths(bundle_chain_block)
-        self.assertTrue(bundle_chain_paths, "mac-build bundle_chain 解析为空")
-
-        for entry in bundle_chain_paths:
-            self.assertTrue(
-                _is_covered_by_trigger(entry, trigger_paths),
-                f"bundle_chain 路径不被 on.push.paths 覆盖(死条目): {entry}",
-            )
-
-    def test_pure_frontend_changes_do_not_trigger_macos_rust_build(self):
-        # Pure-frontend paths must not enter the mac-build trigger set (avoids
-        # needless native builds); but package.json/package-lock.json changes
-        # must trigger (the lockfile affects the build).
-        # Folded in from scripts/tests/test_ci_trigger_routing_policy.py to
-        # remove the duplicated parsing of the same mac-build.yml trigger
-        # block across two files.
-        trigger = MAC_WORKFLOW.read_text(encoding="utf-8").split("\non:", maxsplit=1)[
-            1
-        ].split("\npermissions:", maxsplit=1)[0]
-
-        self.assertIn("'pinvou3-app/src-tauri/**'", trigger)
-        self.assertNotIn("'pinvou3-app/src/**'", trigger)
-        self.assertIn("'pinvou3-app/package.json'", trigger)
-        self.assertIn("'pinvou3-app/package-lock.json'", trigger)
+        self.assertNotIn("pull_request:", trigger_block)
+        self.assertNotIn("push:", trigger_block)
+        self.assertIn("schedule:", trigger_block)
+        self.assertIn("cron: '23 21 * * *'", trigger_block)
+        self.assertIn("workflow_dispatch:", trigger_block)
+        # 无 push 事件后 paths 过滤与 bundle_chain 路由 job 都是死代码
+        # (只扫非注释文本,头部的迁移说明不算)。
+        active = _without_yaml_comments(mac_workflow)
+        self.assertNotIn("bundle_chain", active)
+        self.assertNotIn("dorny/paths-filter", active)
+        self.assertNotIn("needs: changes", active)
+        # 全量 bundle smoke 无条件运行。
+        self.assertIn("- name: Tauri bundle smoke (验证 dmg/app 打包)", mac_workflow)
 
     def test_wrapper_smoke_routes_merge_groups_before_platform_matrix(self):
         # rustc-wrapper-smoke must first pass the paths-filter gate before
-        # entering the three-platform matrix, so wrapper-unrelated PRs do not
-        # run the full three-platform smoke.
+        # entering the three-platform matrix, so wrapper-unrelated queued
+        # PRs do not run the full three-platform smoke.
+        # 2026-10 成本重构:pull_request 触发已移除(PR 阶段禁止构建);
+        # merge_group(无事件级 paths,靠 changes 路由)与 main push paths 保留。
         # Folded in from scripts/tests/test_ci_trigger_routing_policy.py.
         workflow = (
             ROOT / ".github/workflows/rustc-wrapper-smoke.yml"
@@ -1290,20 +1315,17 @@ class CiGatePolicyTests(unittest.TestCase):
         trigger = workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1
         )[0]
-        pull_request = trigger.split("\n  pull_request:", maxsplit=1)[1].split(
-            "\n  merge_group:", maxsplit=1
-        )[0]
         push = trigger.split("\n  push:", maxsplit=1)[1]
         changes = workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  smoke:", maxsplit=1
         )[0]
         smoke = workflow.split("\n  smoke:", maxsplit=1)[1]
 
+        self.assertNotIn("pull_request:", trigger)
         self.assertIn("merge_group:", trigger)
         self.assertIn("push:", trigger)
         self.assertIn("paths:", trigger)
         workflow_path = "'.github/workflows/rustc-wrapper-smoke.yml'"
-        self.assertIn(workflow_path, pull_request)
         self.assertIn(workflow_path, push)
         self.assertIn(workflow_path, changes)
         self.assertIn("uses: dorny/paths-filter@v4", changes)
@@ -1311,6 +1333,52 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("needs: changes", smoke)
         self.assertIn("if: ${{ needs.changes.outputs.wrapper == 'true' }}", smoke)
         self.assertIn("os: [macos-15, ubuntu-22.04, windows-latest]", smoke)
+
+    def test_pr_events_never_enable_compile_or_native_jobs(self):
+        # 2026-10 CI 成本重构的核心契约:PR 阶段只允许零编译的静态/逻辑检查。
+        # 任何把编译/原生 job 重新接回 pull_request 的改动必须先修改本测试,
+        # 并同步评估 9 月账单级别的成本影响(macOS 7.7 万分钟/月、Windows
+        # 14.4 万分钟/月均源于 per-push 全量腿)。
+        heavy_jobs = (
+            "rust-test",
+            "cli-test",
+            "windows-rust-test",
+            "macos-rust-check",
+            "windows-codex-runtime-test",
+            "macos-codex-runtime-test",
+        )
+        for job in heavy_jobs:
+            block = _without_yaml_comments(
+                self.pr_workflow.split(f"\n  {job}:", maxsplit=1)[1]
+            )
+            cond = block.split("\n    if:", maxsplit=1)[1].split(
+                "\n    runs-on:", maxsplit=1
+            )[0]
+            self.assertNotIn(
+                "pull_request",
+                cond,
+                f"{job} 的触发条件不得引用 pull_request(PR 阶段禁止构建)",
+            )
+        # knowledge-rust 在 PR 上只保留零编译步骤:clippy/test/工具链/缓存
+        # 步骤必须挂在非 PR 条件下。
+        knowledge = _without_yaml_comments(
+            self.pr_workflow.split("\n  knowledge-rust:", maxsplit=1)[1].split(
+                "\n  rust-lint:", maxsplit=1
+            )[0]
+        )
+        self.assertGreaterEqual(
+            knowledge.count("if: ${{ github.event_name != 'pull_request' }}"),
+            5,
+            "knowledge-rust 的 clippy/test/toolchain/cache 步骤必须全部避开 PR 事件",
+        )
+        # connector-verify 五平台矩阵同样不得再挂 pull_request。
+        connector = (
+            ROOT / ".github/workflows/connector-verify.yml"
+        ).read_text(encoding="utf-8")
+        connector_trigger = connector.split("\non:", maxsplit=1)[1].split(
+            "\npermissions:", maxsplit=1
+        )[0]
+        self.assertNotIn("pull_request:", connector_trigger)
 
 
 
