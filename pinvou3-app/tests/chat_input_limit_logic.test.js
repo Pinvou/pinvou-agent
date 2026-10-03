@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const logicPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'chat-input-limit.js');
+const logicPath = path.join(__dirname, '..', 'src', 'shared', 'chat-input-limit.js');
 const code = fs.readFileSync(logicPath, 'utf8')
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');

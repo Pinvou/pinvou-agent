@@ -3,7 +3,7 @@ import { MessageSquare, Quote, RotateCcw, Send, X } from '../../components/icons
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { constrainChatInput } from '../chat/chat-input-limit.js';
+import { constrainChatInput } from '../../shared/chat-input-limit.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { transitionConversationScrollState } from '../conversation/conversation-scroll.js';
 import {
