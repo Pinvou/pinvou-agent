@@ -1806,15 +1806,37 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
     )))
 }
 
-/// Mirror of `wecom_config_dir` (real home, not PINVOU3_HOME). An unset
+/// Mirror of `wecom_config_dir` (real home, not PINVOU3_HOME), resolved the
+/// way the GUI's `user_home_dir` resolves it per platform: `HOME` on unix —
+/// never `USERPROFILE`, which WSL interop exports pointing at the Windows
+/// profile and which would send the destructive `remove_dir_all` below at a
+/// tree neither the vendor CLI nor the GUI ever wrote while reporting the
+/// real tokens still live — and `USERPROFILE` first on Windows. An unset
 /// home is an error, not an empty path: the directory feeds a destructive
 /// `remove_dir_all`, and `Path::new("").join(...)` would resolve against
 /// the process cwd.
+#[cfg(unix)]
+fn wecom_config_dir() -> Result<PathBuf, CliError> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return Err(CliError::failed(
+            "connectors: cannot locate the wecom credential directory: HOME is not set",
+        ));
+    }
+    Ok(Path::new(&home).join(".config").join("wecom"))
+}
+
+/// Windows half of the split above (see the unix doc for the home-policy
+/// rationale): `USERPROFILE` first, falling back to `HOME`, matching the
+/// precedence the GUI's Windows `user_home_dir` leads with.
+#[cfg(windows)]
 fn wecom_config_dir() -> Result<PathBuf, CliError> {
     let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_default();
-    if home.is_empty() {
+    if home.trim().is_empty() {
         return Err(CliError::failed(
             "connectors: cannot locate the wecom credential directory: neither USERPROFILE nor HOME is set",
         ));
@@ -3695,17 +3717,26 @@ fn redact_ima_known_credentials(mut text: String, client_id: &str, api_key: &str
 }
 
 /// Mirror of `ima_logout`: delete both secrets, uninstall ima-skills, then
-/// remove it from each scope's disabled and visibility sets.
+/// remove its consent rows.
 ///
-/// Deviation from the GUI, on purpose (round-18 finding 4): the GUI's
-/// `remove_bundle_from_disabled_scopes` is a `let _ =`-logged best-effort
-/// there, but this logout reports itself complete, so the CLI cannot swallow
-/// a failed scope cleanup — a stale disabled entry would keep a reconnected
-/// ima hidden from the very scopes that just wrote it. The same job the GUI
-/// does over the raw file is performed through the public per-scope load /
-/// modify / save primitives so the failure is observed and reported truthfully
-/// (per-scope sequential writes: no two-scope transaction exists; the scope
-/// layer logs nothing on write failure, so the CLI's error names the file).
+/// Deviations from the GUI, on purpose:
+/// - Reporting (round-18 finding 4): the GUI degrades a cleanup persist
+///   failure to `log::warn!`, but this logout reports itself complete, so
+///   the CLI cannot swallow a failed cleanup — a stale disabled entry would
+///   keep a reconnected ima hidden from the very scopes that just wrote it.
+///   The same error the GUI logs is surfaced here instead.
+/// - Ordering (GUI parity, `ima.rs`): a failed skill uninstall stops the run
+///   BEFORE the consent cleanup. With `bundles/ima/` still on disk, stripping
+///   the consent rows would set ima-skills live with zero consent in every
+///   initialized scope — the fail-open direction; keeping the rows leaves
+///   the logout retryable (rows and pack dir both intact).
+///
+/// The cleanup uses the GUI's exact-owner raw-file form
+/// (`remove_bundle_from_disabled_scopes_exact`), not a normalized
+/// load/modify/save: the normalized load re-owns dir-absent ids onto foreign
+/// packs and persists the remap before the removal runs (the round-26 MAJOR
+/// the exact form exists to prevent), and it would also miss the default-off
+/// markers and the install-default sync ledger the exact form clears.
 fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = SystemCredentialStore::new();
@@ -3713,66 +3744,47 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let api_result = store.delete(&ima_secret_ref("api_key"));
     // The skill uninstall is part of this logout's promised state: a failed
     // one is collected here and named in the error below rather than being
-    // swallowed — reporting "ima logged out" while the skill's directories
-    // stay on disk is the exact partial-success masking the scope cleanup
-    // below refuses. Best-effort in ORDER only: it runs before the
-    // credential verdicts so its failure can join the reported set.
-    let skill_uninstall = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
-    let skill_uninstall_failure = skill_uninstall
-        .err()
-        .map(|error| format!("skill uninstall: {error}"));
-    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(IMA_SKILL_ID);
-    let mut scope_failures: Vec<String> = Vec::new();
-    for scope in [
-        pinvou3_lib::features::marketplace::ConnectorScope::Plain,
-        pinvou3_lib::features::marketplace::ConnectorScope::Code,
-    ] {
-        let mut ids = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
-        let before = ids.len();
-        ids.retain(|id| id != &package_id);
-        if ids.len() != before {
-            if let Err(error) =
-                pinvou3_lib::features::marketplace::save_disabled_bundles_for(scope, &ids)
-            {
-                scope_failures.push(format!("scope {}: {error}", scope.as_str()));
+    // swallowed — and it GATES the consent cleanup (see the module doc).
+    let skill_uninstall_failure = match SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
+        Ok(()) => None,
+        Err(error) => Some(format!("skill uninstall: {error}")),
+    };
+    let cleanup_note = if skill_uninstall_failure.is_some() {
+        "the skill uninstall FAILED (its consent rows were kept, GUI parity)"
+    } else {
+        "the skill uninstall succeeded and the consent cleanup already ran"
+    };
+    // Consent cleanup runs only when the uninstall landed, through the
+    // GUI's exact-owner form (all scopes, hidden rows, default-off markers,
+    // and the install-default ledger in one raw-file pass).
+    let scope_failures: Vec<String> = match skill_uninstall_failure {
+        Some(_) => Vec::new(),
+        None => {
+            use pinvou3_lib::features::marketplace::scope::{
+                package_id_for, remove_bundle_from_disabled_scopes_exact,
+            };
+            let package_id = package_id_for(IMA_SKILL_ID);
+            match remove_bundle_from_disabled_scopes_exact(&package_id) {
+                Ok(()) => Vec::new(),
+                Err(error) => vec![format!("consent cleanup: {error}")],
             }
         }
-        let mut hidden = pinvou3_lib::features::marketplace::load_hidden_bundles_for(scope);
-        let before = hidden.len();
-        hidden.retain(|id| id != &package_id);
-        if hidden.len() != before {
-            if let Err(error) =
-                pinvou3_lib::features::marketplace::save_hidden_bundles_for(scope, &hidden)
-            {
-                scope_failures.push(format!("hidden (scope {}): {error}", scope.as_str()));
-            }
-        }
-    }
+    };
     client_result.map_err(|error| {
         credential_error(format!(
-            "{error}. Note: the skill uninstall {} and the scope cleanup already ran \
-             before this failure; retrying only repeats the credential store step",
-            if skill_uninstall_failure.is_some() {
-                "FAILED"
-            } else {
-                "succeeded"
-            },
+            "{error}. Note: {cleanup_note} before this failure; retrying only \
+             repeats the credential store step",
         ))
     })?;
     let api_error = api_result.err().map(|error| {
         credential_error(format!(
-            "{error}. Note: the skill uninstall {} and the scope cleanup already ran \
-             before this failure; retrying only repeats the credential store step",
-            if skill_uninstall_failure.is_some() {
-                "FAILED"
-            } else {
-                "succeeded"
-            },
+            "{error}. Note: {cleanup_note} before this failure; retrying only \
+             repeats the credential store step",
         ))
     });
-    // A skill-uninstall failure is partial state, not a masked success: it
-    // joins the scope failures (if any) in one honest report naming what
-    // landed and what did not.
+    // A skill-uninstall or consent-cleanup failure is partial state, not a
+    // masked success: both join in one honest report naming what landed and
+    // what did not.
     let mut partial: Vec<String> = Vec::new();
     if let Some(failure) = skill_uninstall_failure {
         partial.push(failure);
