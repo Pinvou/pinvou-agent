@@ -12,7 +12,6 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -102,9 +101,9 @@ fn bundled_engine_intact(path: &Path) -> bool {
 }
 
 pub fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .output()
+    let mut probe = crate::platform::process::HiddenCommand::new("ffmpeg");
+    probe.arg("-version");
+    crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -364,14 +363,22 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     }
 
     // 浏览器录音多为 48k/立体声，sense-voice 只吃 16k mono，先转码。
+    // 损坏输入可让 demuxer 挂死：60s 超时 + kill-tree（与 files/ 的同类
+    // ffmpeg/pdftotext 兜底一致），失败降级用原始 wav。
     let norm = std::env::temp_dir().join(format!("pinvou3-asr-{}.wav", std::process::id()));
     let input = if ffmpeg_available() {
-        let ff = Command::new("ffmpeg")
-            .args(["-y", "-i"])
-            .arg(wav)
-            .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
-            .arg(&norm)
-            .output();
+        let ff = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = crate::platform::process::HiddenCommand::new("ffmpeg");
+                command
+                    .args(["-y", "-i"])
+                    .arg(wav)
+                    .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
+                    .arg(&norm);
+                command
+            },
+            std::time::Duration::from_secs(60),
+        );
         match ff {
             Ok(o)
                 if o.status.success() && norm.metadata().map(|m| m.len() > 44).unwrap_or(false) =>
@@ -393,13 +400,21 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     if !bundled_engine_intact(&engine) {
         return Err("本地语音识别引擎完整性校验失败，已拒绝执行；请重新安装 pinvou3。".to_string());
     }
-    let out = Command::new(&engine)
-        .current_dir(&work_dir)
-        .arg("-m")
-        .arg(&model)
-        .arg(&input)
-        .args(["-t", "4", "-l", "auto", "-itn"])
-        .output();
+    // 转写是长任务（长录音可到数分钟），给 300s 宽限：超时 kill-tree 防止
+    // 引擎挂死把调用线程拖到永远，而不是把正常转写误杀。
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = crate::platform::process::HiddenCommand::new(&engine);
+            command
+                .current_dir(&work_dir)
+                .arg("-m")
+                .arg(&model)
+                .arg(&input)
+                .args(["-t", "4", "-l", "auto", "-itn"]);
+            command
+        },
+        std::time::Duration::from_secs(300),
+    );
     let _ = std::fs::remove_file(&norm);
     let out = out.map_err(|e| format!("启动语音识别引擎失败: {e}"))?;
     if !out.status.success() {
