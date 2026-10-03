@@ -33,146 +33,13 @@
 //! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{collapse_control_characters, read_text_file_capped, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::deliverables::{DELIVERABLE_EXTS, deliverable_category};
 use pinvou3_lib::features::sessions::{SessionStore, is_aux_session_id};
-
-/// Whether the staged file is readable by anyone but its owner.
-///
-/// Only meaningful on unix; on other platforms both variants behave
-/// identically and inherit the default ACL, exactly like the app's own
-/// `atomic_write_private` (whose private mode is a POSIX-only `O_CREAT` mode
-/// argument).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WriteVisibility {
-    /// Default process umask. For content that is not more sensitive than the
-    /// directory it lives in (session deliverables the user asked to write).
-    Inherit,
-    /// `0600`. For files holding user-authored free text or an injected
-    /// persona body — content the user typed, which no other account on a
-    /// shared machine has any reason to read.
-    OwnerOnly,
-}
-
-/// Stage-then-rename write shared by the CLI lanes that persist a file
-/// (`artifacts write`, `feedback submit`; the dropped `personas equip` lane
-/// was its third consumer).
-///
-/// **Why a local copy.** The app already owns a hardened version of this
-/// (`platform::filesystem::atomic_write` / `atomic_write_private`), but
-/// `platform::filesystem` is declared `pub(crate) mod` in `pinvou3-app`, so no
-/// item in it — public or not — is nameable from this crate. Exporting it is a
-/// `pinvou3-app` change and therefore outside this change's boundary, so the
-/// three hand-rolled writers that had each drifted from the app's semantics
-/// are collapsed into this single one instead. If the app ever makes that
-/// module public, this function is the only place to delete.
-///
-/// It reproduces the two guarantees the three copies had lost:
-///
-/// - **`create_new(true)`.** They staged with `std::fs::write`, i.e.
-///   `O_CREAT|O_TRUNC` with no `O_EXCL`: a leftover temp file from a crashed
-///   run was silently reused, and a symlink planted at the predictable temp
-///   path (`<pid>` and a timestamp are both guessable in a shared `/tmp`-like
-///   directory) was *followed*, redirecting the write to the link's target.
-///   `create_new` turns both into a plain error.
-/// - **A propagated `fsync`.** They ran
-///   `let _ = File::open(&tmp).and_then(|f| f.sync_all());` two lines under a
-///   comment explaining that the fsync is what makes the write crash-safe —
-///   discarding the one result that says whether it happened. A failing
-///   `sync_all` (ENOSPC, EIO) now fails the write instead of renaming
-///   possibly-unwritten pages over the target.
-///
-/// It also adds the parent-directory fsync the app does after the rename, so
-/// the *link* to the new file is durable and not just its contents.
-///
-/// Not reproduced: the app's Windows `ReplaceFileW` state machine with its
-/// backup/rollback path. `std::fs::rename` is atomic-enough for these three
-/// callers (all of which write a file the CLI itself owns, none under a
-/// concurrent GUI writer) and a partial reimplementation of that state machine
-/// would be worse than none.
-#[cfg_attr(not(unix), allow(unused_variables))]
-pub(crate) fn atomic_write(
-    path: &Path,
-    content: &[u8],
-    visibility: WriteVisibility,
-) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} has no usable file name", path.display()),
-            )
-        })?;
-    // Hidden sibling in the target's own directory: same filesystem (so the
-    // rename is atomic) and never surfaced as a stray visible file.
-    let token = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0)
-    );
-    let tmp = parent.join(format!(".{file_name}.tmp-{token}"));
-    atomic_write_staged(path, &tmp, content, visibility)
-}
-
-/// [`atomic_write`] with the staging path supplied by the caller.
-///
-/// Split out purely so the tests can plant something at a *known* temp path:
-/// the real one embeds a nanosecond timestamp, which makes the `create_new`
-/// guarantee — the one the three previous copies lacked — untestable through
-/// the public entry point.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn atomic_write_staged(
-    path: &Path,
-    tmp: &Path,
-    content: &[u8],
-    visibility: WriteVisibility,
-) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stage = (|| -> std::io::Result<()> {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if visibility == WriteVisibility::OwnerOnly {
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        }
-        let mut file = options.open(tmp)?;
-        file.write_all(content)?;
-        // Propagated, not discarded: this is the step that makes the rename
-        // safe to perform at all.
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(error) = stage {
-        // Only clean up staging failures that are *not* "something was already
-        // there": removing a path we refused to open would delete exactly the
-        // file (or symlink) `create_new` protected.
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            let _ = std::fs::remove_file(tmp);
-        }
-        return Err(error);
-    }
-    if let Err(error) = std::fs::rename(tmp, path) {
-        let _ = std::fs::remove_file(tmp);
-        return Err(error);
-    }
-    // Best-effort like the app's helper: the data is already durable, this
-    // only shortens the window in which the directory entry is not. Platforms
-    // that refuse to open or fsync a directory are not an error here.
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
-}
 
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
@@ -421,15 +288,27 @@ struct DeliverableIndex {
 /// before the parse), while the unfiltered lane still finds it via the
 /// caller's parsed-id re-check. Only externally rewritten stores can hold
 /// such records.
-fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
+fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, CliError> {
     let sessions_dir = pinvou3_lib::platform::paths::sessions_root();
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
-        Err(_) => {
-            return DeliverableIndex {
+        // A missing sessions root is a genuinely empty store, not a failure.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DeliverableIndex {
                 rows: Vec::new(),
                 skipped: Vec::new(),
-            };
+            });
+        }
+        // Anything else (EACCES on a locked-down home, `sessions` shadowed by
+        // a regular file) must not render as "no deliverables": the
+        // `skipped_sessions` disclosure exists precisely so a consumer can
+        // tell "empty" from "index incomplete" — an empty EVERYTHING is the
+        // one shape that reads as a clean bill.
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "artifacts list: cannot read the sessions root {}: {error}",
+                sessions_dir.display()
+            )));
         }
     };
     let mut by_path: HashMap<String, DeliverableRow> = HashMap::new();
@@ -576,7 +455,7 @@ fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
     let mut rows: Vec<DeliverableRow> = by_path.into_values().collect();
     rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
     skipped.sort();
-    DeliverableIndex { rows, skipped }
+    Ok(DeliverableIndex { rows, skipped })
 }
 
 /// Outcome of a capped session-record read for [`deliverable_index`].
@@ -759,7 +638,7 @@ pub fn execute(command: ArtifactsCommand, output: OutputMode) -> Result<CliOutco
 }
 
 fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let DeliverableIndex { mut rows, skipped } = deliverable_index(session.as_deref());
+    let DeliverableIndex { mut rows, skipped } = deliverable_index(session.as_deref())?;
     if let Some(session) = session.as_deref() {
         // Kept even though the scan already short-circuited on the filename:
         // the reported `session_id` comes from the record's `metadata/id`, and
@@ -919,7 +798,7 @@ fn write(
     // deliverable is no more sensitive than the session directory that holds
     // it, so the mode stays at the process umask — unlike the feedback bundle
     // and the persona sidecar, which carry user-authored text.
-    atomic_write(&path, content.as_bytes(), WriteVisibility::Inherit).map_err(|error| {
+    pinvou3_lib::platform::atomic_write(&path, content.as_bytes()).map_err(|error| {
         CliError::failed(format!(
             "artifact_write_failed({}): {error}",
             path.display()
@@ -1069,68 +948,29 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces_the_target_with_the_new_content() {
+        // The widened app writer (`platform::filesystem::atomic_write`, the
+        // one implementation behind this lane since the local copy was
+        // deleted) must leave exactly the new content and no staging residue.
         let dir = scratch("happy");
         let target = dir.join("report.md");
         std::fs::write(&target, b"old").unwrap();
-        atomic_write(&target, b"new", WriteVisibility::Inherit).unwrap();
+        pinvou3_lib::platform::atomic_write(&target, b"new").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
-        // Nothing staged is left behind.
+        // Nothing staged is left behind: neither the tmp nor the Windows
+        // state machine's backup sibling.
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
             .map(|entry| entry.file_name())
-            .filter(|name| name.to_string_lossy().contains(".tmp-"))
+            .filter(|name| {
+                let name = name.to_string_lossy();
+                name.contains(".tmp-") || name.contains(".bak-")
+            })
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `std::fs::write` (`O_CREAT|O_TRUNC`, the three previous copies) happily
-    /// reuses a leftover temp file from a crashed run. `create_new` refuses,
-    /// and the refusal must not take the existing file with it.
-    #[test]
-    fn staging_refuses_an_occupied_temp_path() {
-        let dir = scratch("occupied");
-        let target = dir.join("report.md");
-        let tmp = dir.join(".report.md.tmp-fixed");
-        std::fs::write(&target, b"old").unwrap();
-        std::fs::write(&tmp, b"leftover").unwrap();
-        let error = atomic_write_staged(&target, &tmp, b"new", WriteVisibility::Inherit)
-            .expect_err("an occupied temp path must fail the write");
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
-        assert_eq!(std::fs::read(&target).unwrap(), b"old");
-        assert_eq!(std::fs::read(&tmp).unwrap(), b"leftover");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The reason the above matters: without `O_EXCL` the staging write
-    /// *follows* a symlink planted at the predictable temp path, so an
-    /// attacker who can write to the directory redirects the content — and the
-    /// subsequent rename — wherever they point it.
-    #[cfg(unix)]
-    #[test]
-    fn staging_refuses_a_symlink_planted_at_the_temp_path() {
-        let dir = scratch("symlink");
-        let target = dir.join("report.md");
-        let victim = dir.join("victim.txt");
-        let tmp = dir.join(".report.md.tmp-fixed");
-        std::fs::write(&victim, b"do not clobber").unwrap();
-        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
-        let error = atomic_write_staged(&target, &tmp, b"attacker", WriteVisibility::Inherit)
-            .expect_err("a symlinked temp path must fail the write");
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
-        assert_eq!(std::fs::read(&victim).unwrap(), b"do not clobber");
-        assert!(!target.exists(), "the write must not have landed");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A record that passes the stat probe can still grow past the scan cap
-    /// before the read lands (TOCTOU between `metadata().len()` and the
-    /// open). The capped read must cut off at the cap instead of slurping
-    /// the grown file whole, while a record of exactly the cap still reads
-    /// end to end. `read_record_capped` takes the cap as a parameter so this
-    /// boundary is testable without a 32 MiB fixture; the production call
-    /// site passes `MAX_LIST_SCAN_BYTES`.
     #[test]
     fn capped_record_read_cuts_off_past_the_cap() {
         let dir = scratch("capped-read");
@@ -1203,7 +1043,7 @@ mod tests {
 
         let dir = scratch("mode");
         let target = dir.join("secret.json");
-        atomic_write(&target, b"{}", WriteVisibility::OwnerOnly).unwrap();
+        pinvou3_lib::platform::atomic_write_private(&target, b"{}").unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "got {mode:o}");
         let _ = std::fs::remove_dir_all(&dir);

@@ -2890,7 +2890,15 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let mut active_keys = std::collections::HashSet::new();
     for def in &defs {
         let task_id = str_field(def, "id").unwrap_or("").to_owned();
-        for run in store_holder.list_runs(&task_id, None)? {
+        // Push the limit down per task: the foundation truncates the
+        // sortable file listing BEFORE reading (`list_runs(id, limit)`),
+        // and the union of per-task top-K always contains the global top-K,
+        // so the sort+truncate below returns identical rows without reading
+        // every historical run file of every task. One narrowing, accepted:
+        // with a limit set, an active run id beyond the per-task top-K no
+        // longer suppresses an equal archived-twin id below — a layout only
+        // a hand-crafted store can produce, since run ids are fresh per run.
+        for run in store_holder.list_runs(&task_id, limit)? {
             active_keys.insert((
                 task_id.clone(),
                 str_field(&run, "id").unwrap_or("").to_owned(),

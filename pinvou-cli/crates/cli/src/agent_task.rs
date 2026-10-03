@@ -950,12 +950,11 @@ mod tests {
             .join(session_id)
             .join("persona_equipped.json");
         std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
-        crate::artifacts::atomic_write(
+        pinvou3_lib::platform::atomic_write_private(
             &sidecar,
             serde_json::json!({ "persona_id": "user-gone", "pending_body": "GHOST BODY" })
                 .to_string()
                 .as_bytes(),
-            crate::artifacts::WriteVisibility::OwnerOnly,
         )
         .unwrap();
 

@@ -103,19 +103,21 @@ for (const file of [CLAUDE, CODEX, KIMI, PROVIDERS_MOD]) {
   );
 }
 
-// 原子写（公共助手在 providers/mod.rs）+ 一次性备份 + 拒绝覆盖不可解析文件
+// 原子写（公共助手在 providers/mod.rs）+ 一次性备份 + 拒绝覆盖不可解析文件。
+// staging 名带 pid（跨进程写手不再互相 rename 半成品），仍以 fs::rename 收口。
 assert.ok(
-  PROVIDERS_MOD.includes('with_extension("tmp")') &&
+  PROVIDERS_MOD.includes('json.{}.tmp') &&
+    PROVIDERS_MOD.includes('std::process::id()') &&
     PROVIDERS_MOD.includes('fs::rename'),
-  '公共写入助手必须 .tmp + fs::rename 原子替换'
+  '公共写入助手必须 pid 后缀 .tmp + fs::rename 原子替换'
 );
 assert.ok(
   PROVIDERS_MOD.includes('pinvou3-bak'),
   '首次受管写入必须备份 .pinvou3-bak'
 );
 assert.ok(
-  STORE.includes('json.tmp') && STORE.includes('fs::rename'),
-  'store 必须 .tmp + fs::rename 原子写'
+  STORE.includes('json.tmp.{') && STORE.includes('fs::rename'),
+  'store 必须 pid 后缀 .tmp + fs::rename 原子写'
 );
 for (const file of [CLAUDE, CODEX, KIMI]) {
   assert.ok(file.includes('atomic_write'), `${file} 必须经原子写助手落盘`);

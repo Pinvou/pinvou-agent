@@ -530,6 +530,18 @@ class CiGatePolicyTests(unittest.TestCase):
             "the connector lock tables are include_str!'d into the CLI; "
             "without this entry a lock-table PR runs no CLI leg at all",
         )
+        # The wider include_str!/build.rs input class: build.rs reads four
+        # bundle instruction files + deny_sensitive_paths.sh unconditionally
+        # (panicking when absent) and native_installer.rs include_str!s the
+        # dws LICENSE — a bundle-resource-only rename must not skip the CLI
+        # legs any more than a lock-table edit does.
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/resources/common/bundle/**'",
+            cli_paths,
+            "the bundle resources are build.rs/include_str! inputs of every "
+            "pinvoy3-tauri compile; without this entry a bundle-resource PR "
+            "runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
