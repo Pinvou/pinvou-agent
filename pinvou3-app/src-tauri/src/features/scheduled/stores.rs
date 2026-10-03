@@ -552,6 +552,21 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                         if FileStamp::of(self.path.as_ref()).is_none() {
                             *self.seen.write() = Some(FileStamp::ABSENT);
                         }
+                    } else {
+                        // The file stayed in place (LogInPlace quarantine or an
+                        // I/O read error): the failure is deterministic given
+                        // unchanged bytes, so without pricing the corrupt
+                        // file's stamp every lookup re-reads, re-parses,
+                        // re-fails and re-warns for as long as it stays
+                        // corrupt (the GUI task-list poll reads the UI
+                        // metadata registry per row). Recording the stamp
+                        // answers "unchanged" until something actually
+                        // rewrites the file — the stamp moving IS the repair
+                        // signal, and the next read retries then.
+                        // `stamp` is the head-of-reload stat (an Option:
+                        // None means the stat itself failed, which keeps
+                        // retrying — the safe direction).
+                        *self.seen.write() = stamp.clone();
                     }
                     return;
                 }
@@ -797,7 +812,20 @@ where
     /// moved keeps the poll a `stat` when nothing changed, while a CLI write
     /// in the window is merged into the compacted map instead of being
     /// overwritten by this handle's stale copy.
-    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()>
+    ///
+    /// `is_live` is the deletion oracle for ids NOT in `automation_ids`: the
+    /// listing is a snapshot taken BEFORE this call, so a CLI task created
+    /// between the listing and the merge would be merged in and then
+    /// immediately retain-deleted — for the kind registry that silently
+    /// downgrades the task to an unattended full-permission chat run (the
+    /// exact hazard [`ScheduledTaskKindLookup`] exists to prevent). The
+    /// caller confirms liveness against the definitions still on disk; the
+    /// predicate only runs for ids the listing does not already keep.
+    pub(crate) fn compact(
+        &self,
+        automation_ids: &HashSet<String>,
+        is_live: impl Fn(&str) -> bool,
+    ) -> Result<()>
     where
         T::Entry: PartialEq,
     {
@@ -806,7 +834,7 @@ where
         let before = registry.tasks_map().clone();
         registry
             .tasks_map()
-            .retain(|id, _| automation_ids.contains(id));
+            .retain(|id, _| automation_ids.contains(id) || is_live(id));
         if *registry.tasks_map() == before {
             return Ok(());
         }
@@ -1438,6 +1466,61 @@ mod foreign_writer_tests {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
     }
 
+    /// The listing compact keeps by is a snapshot taken before the merge: a
+    /// CLI task created between the listing and compact would be merged in
+    /// and then retain-deleted — for the kind registry that silently
+    /// downgrades the task to an unattended full-permission chat run, the
+    /// hazard `kind_lookup_for`'s disk-consult exists to prevent. Compact
+    /// must confirm liveness against the definitions still on disk before
+    /// deleting an unlisted id, and must still collect ids whose definition
+    /// is confirmed gone.
+    #[test]
+    fn compact_confirms_liveness_before_deleting_an_unlisted_id() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        // The GUI poll's snapshot: only its own task. The CLI's task exists
+        // on disk but landed after the listing was taken.
+        write_kind_registry(&path, serde_json::json!({ "gui-task": kind_entry_json() }));
+        let store = kind_store(&path);
+
+        // The CLI lands its kind record between the listing and compact;
+        // compact's stamp merge pulls it into this handle's map.
+        let mut with_cli = serde_json::json!({ "gui-task": kind_entry_json() });
+        with_cli["cli-task"] = kind_entry_json();
+        write_kind_registry(&path, with_cli);
+
+        let listing: HashSet<String> = ["gui-task".to_string()].into();
+        // Definition still on disk (the closure the task-list poll passes):
+        // the merged foreign entry must survive the compact.
+        store
+            .compact(&listing, |id| id == "cli-task")
+            .expect("compact");
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a listing-missing task whose definition exists must not be compacted away"
+        );
+        assert_eq!(
+            store.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Definition confirmed gone (the task was really deleted): the
+        // sidecar entry garbage-collects exactly as before.
+        let store = kind_store(&path);
+        store.compact(&listing, |_id| false).expect("compact");
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::Chat,
+            "a task whose definition is gone must still garbage-collect"
+        );
+        assert_eq!(
+            store.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A foreign write that lands between this handle's last read and its
     /// persist must not be silently destroyed by the whole-file rename: the
     /// persist re-checks the file's stamp and refuses. The refusal is
@@ -1706,7 +1789,7 @@ mod foreign_writer_tests {
         // The GUI poll compacts for its listing, which includes the
         // foreign-created task. Pre-fix, the GUI persisted its stale
         // in-memory map and erased the foreign kind write.
-        gui.compact(&HashSet::from(["cli-task".to_string()]))
+        gui.compact(&HashSet::from(["cli-task".to_string()]), |_id| false)
             .expect("gui compact");
         assert_eq!(
             gui.kind_lookup_for("cli-task"),

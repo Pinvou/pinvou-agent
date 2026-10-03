@@ -273,7 +273,7 @@ pub(crate) fn recover_interrupted_replace(
 /// "切换成功但重启后丢失"。tmp + rename 保证目标要么是旧完整内容、
 /// 要么是新完整内容，永无中间态。失败清理按替换终态区分（对齐
 /// artifacts 版）：不得把装着旧完整内容的恢复候选一并删掉。
-pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, false)
 }
 
@@ -281,7 +281,7 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
 /// with private permissions immediately. Use it for configurations containing secrets or
 /// unauthenticated local-port data to avoid a pre-rename default-umask window on Unix.
 /// Windows continues to rely on the user-directory ACL.
-pub(crate) fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
+pub fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, true)
 }
 

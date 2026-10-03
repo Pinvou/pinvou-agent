@@ -1589,13 +1589,20 @@ pub async fn list_scheduled_tasks(
         .iter()
         .map(|record| record.id.clone())
         .collect::<HashSet<_>>();
-    if let Err(error) = state.model_bindings.compact(&current_ids) {
+    // The listing above is a snapshot: a CLI task landing between it and the
+    // compact merge would be retain-deleted (the kind loss silently
+    // downgrades the task to an unattended chat run), so liveness for
+    // unlisted ids is confirmed against the definitions still on disk — the
+    // foundation re-reads each def per `get_automation`, which is exactly
+    // the freshness compact's deletion oracle needs.
+    let is_live = |id: &str| manager.get_automation(id).is_ok();
+    if let Err(error) = state.model_bindings.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled model bindings: {error:#}");
     }
-    if let Err(error) = state.task_kinds.compact(&current_ids) {
+    if let Err(error) = state.task_kinds.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task kinds: {error:#}");
     }
-    if let Err(error) = state.ui_metadata.compact(&current_ids) {
+    if let Err(error) = state.ui_metadata.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
     }
     let session_titles = scheduled_session_titles(&state.sessions)

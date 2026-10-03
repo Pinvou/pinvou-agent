@@ -2313,6 +2313,17 @@ mod tests {
                 Err(()),
                 NeverStartedDisposition::KeepInspectable,
             ),
+            // Zero-message + engine ACTIVE + one-shot + factory title: a
+            // live engine outranks the stale zero-message disk sample, so
+            // the record takes the legacy delete arm — the row the replaced
+            // test pinned ("the two arms differ for KEEP_SESSION unset").
+            (
+                Ok(false),
+                true,
+                false,
+                Ok(true),
+                NeverStartedDisposition::LegacyCleanupStarted,
+            ),
             // Started (durable messages) + default keep: inspectable.
             (
                 Ok(true),
@@ -3684,7 +3695,10 @@ mod tests {
     #[test]
     fn submit_err_admission_decides_from_the_transcript_revision() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
-        let (store, _tmp) = lifecycle_home("submit-admission");
+        let (store, tmp) = lifecycle_home("submit-admission");
+        // The scratch home must not leak per CI run (every sibling wraps it
+        // in the guard; this test's binding was the one that didn't).
+        let _tmp_cleanup = TempDirGuard::new(tmp);
 
         seed_record(&store, "adm_probe", &[user_text("first")]);
         let pre = super::transcript_revision(&store.load("adm_probe").unwrap().messages).unwrap();
@@ -4372,7 +4386,21 @@ mod tests {
     #[test]
     fn the_panic_arm_restores_before_resuming_and_gates_on_submit_entered() {
         let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-        let quiet = std::panic::take_hook();
+        // The quiet hook must be restorable even when an assert between here
+        // and the manual restore fires mid-test: a leaked silencing hook
+        // would blind every LATER test's panic output (the failure is still
+        // recorded, but with no message to diagnose). The guard is the
+        // backstop; the manual restore below keeps the closing asserts'
+        // failures audible.
+        struct RestoreHook(Option<std::panic::DefaultHook>);
+        impl Drop for RestoreHook {
+            fn drop(&mut self) {
+                if let Some(hook) = self.0.take() {
+                    std::panic::set_hook(hook);
+                }
+            }
+        }
+        let mut hook_guard = RestoreHook(Some(std::panic::take_hook()));
         std::panic::set_hook(Box::new(|_| {}));
 
         // Pre-submit (gate clear): the restore must COMPLETE before the
@@ -4436,7 +4464,12 @@ mod tests {
                 }),
             ))
             .expect_err("the resumed panic must surface even when the gate holds the restore");
-        std::panic::set_hook(quiet);
+        std::panic::set_hook(
+            hook_guard
+                .0
+                .take()
+                .expect("the original hook must still be held"),
+        );
         assert!(
             !restored.load(std::sync::atomic::Ordering::SeqCst),
             "a panic past the submit boundary must NOT roll the pins back"

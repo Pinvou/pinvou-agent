@@ -367,6 +367,20 @@ impl AcpProvidersStore {
             .and_then(|state| state.current_provider_id.clone())
     }
 
+    /// Fresh read of the whole per-agent state — the display/export input
+    /// `list`/`export` render. The plain `state` reads only the in-memory
+    /// map, which a CLI process can have stale-dated: a settings card or an
+    /// export taken after a concurrent CLI switch would contradict the
+    /// fresh `effective()` attribution rendered beside it. Reloads under
+    /// the write guard so every later reader sees the adopted state,
+    /// exactly like the mutators.
+    pub(crate) fn state_after_reload(&self, agent: &str) -> AgentProvidersState {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).cloned().unwrap_or_default()
+    }
+
     /// Fresh read of one provider record — the decision input `switch`
     /// applies to the CLI config file. The plain `get` reads only the
     /// in-memory map, which a CLI process can have stale-dated: applying a
@@ -770,7 +784,10 @@ impl ProviderManager {
 
     pub fn list(&self, agent: &str) -> Result<AcpProvidersView> {
         validate_agent(agent)?;
-        let state = self.store.state(agent);
+        // Fresh read: this view is rendered beside `effective()`'s live
+        // config attribution, so a stale store card ("current: A" next to
+        // "active: B" after a CLI switch) is a self-contradicting UI.
+        let state = self.store.state_after_reload(agent);
         let (effective, config_unreadable) = self.effective(agent);
         // 配置文件的 relay 配置归因：codex/kimi 可反推 id 精确匹配；claude 的 env
         // 无法反推，只要 store 有当前 provider 且文件有 relay 配置即归因 App 写入。
@@ -1126,7 +1143,7 @@ impl ProviderManager {
             api_key: Option<String>,
         }
         let mut entries = Vec::new();
-        for record in &self.store.state(agent).providers {
+        for record in &self.store.state_after_reload(agent).providers {
             entries.push(ExportEntry {
                 id: record.id.clone(),
                 name: record.name.clone(),
