@@ -311,7 +311,10 @@ where
     // needs a ./ prefix; see the note in `parse_gaia_submission`.)
     while values.first().is_some_and(|token| token == "--output") {
         let value = values.get(1).ok_or_else(|| {
-            CliError::usage("--output requires human or json (submission files use --destination)")
+            CliError::usage(
+                "--output requires human or json (subcommands that export to a file take \
+                 `--output PATH` instead — see their usage line)",
+            )
         })?;
         match value.as_str() {
             "json" | "human" => {
@@ -352,7 +355,8 @@ where
     // start with `--`), so this only fires on genuinely incomplete lines.
     if values.last().map(String::as_str) == Some("--output") {
         return Err(CliError::usage(
-            "--output requires human or json (submission files use --destination)",
+            "--output requires human or json (subcommands that export to a file take \
+             `--output PATH` instead — see their usage line)",
         ));
     }
     if values.first().map(String::as_str) == Some("agent") {

@@ -347,6 +347,13 @@ pub struct AgenticTaskReport {
     /// can use this to tell "finished, but past the line" from "cancelled".
     #[serde(default)]
     pub completed_after_deadline: bool,
+    /// Whether the turn was durably submitted to the engine. The setup
+    /// TIMEOUT arm is the one `Ok` report whose turn provably never entered
+    /// the engine; the CLI's one-shot persona consume keys off this flag so
+    /// a timed-out setup cannot spend a staged persona body on a turn that
+    /// never ran. `false` only on that arm.
+    #[serde(default)]
+    pub submitted: bool,
     pub assistant_text: String,
     pub tool_events: Vec<AgenticToolEvent>,
     pub usage: Option<AgenticUsageReport>,
@@ -1583,6 +1590,7 @@ async fn run_turn(
                     status: "timeout".to_string(),
                     timed_out: true,
                     completed_after_deadline: false,
+                    submitted: false,
                     assistant_text: String::new(),
                     tool_events: Vec::new(),
                     usage: None,
@@ -1663,6 +1671,7 @@ async fn run_turn(
                     status,
                     timed_out,
                     completed_after_deadline,
+                    submitted: true,
                     assistant_text: turn.assistant_text,
                     tool_events: turn
                         .tool_events
@@ -1697,6 +1706,7 @@ async fn run_turn(
                     status: "timeout".to_string(),
                     timed_out: true,
                     completed_after_deadline: false,
+                    submitted: true,
                     assistant_text,
                     tool_events,
                     usage: None,
@@ -1731,6 +1741,7 @@ async fn run_turn(
                     },
                     timed_out,
                     completed_after_deadline: false,
+                    submitted: true,
                     assistant_text,
                     tool_events,
                     usage: None,
@@ -3325,6 +3336,7 @@ mod tests {
             status: "Completed".to_string(),
             timed_out: true,
             completed_after_deadline: true,
+            submitted: true,
             assistant_text: "done".to_string(),
             tool_events: vec![AgenticToolEvent {
                 name: "Bash".to_string(),

@@ -2122,11 +2122,14 @@ snapshot refresh deferred after organize"
 /// (the post-organize refresh reports through stderr only).
 fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
     for warning in warnings {
+        // The detail composes filesystem paths (cleanup failures), so it
+        // gets the same control-character collapse as the human-lines
+        // variant of this helper.
         note!(
             "[memory] {} {}: {}",
-            warning["code"].as_str().unwrap_or(""),
-            warning["source"].as_str().unwrap_or(""),
-            warning["detail"].as_str().unwrap_or(""),
+            support::collapse_control_characters(warning["code"].as_str().unwrap_or("")),
+            support::collapse_control_characters(warning["source"].as_str().unwrap_or("")),
+            support::collapse_control_characters(warning["detail"].as_str().unwrap_or("")),
         );
     }
 }

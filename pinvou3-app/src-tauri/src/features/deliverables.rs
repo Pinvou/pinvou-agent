@@ -43,7 +43,10 @@ pub struct DeliverableItem {
     size: u64,
 }
 
-const DELIVERABLE_EXTS: &[&str] = &[
+/// The deliverable extension whitelist, shared with the headless CLI's
+/// `artifacts list` (which imports this table instead of a hand copy — a
+/// copy silently dropped every extension added here later).
+pub const DELIVERABLE_EXTS: &[&str] = &[
     "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
     "jpeg", "svg", "gif", "webp", "zip",
 ];
@@ -64,7 +67,7 @@ const DV_VIEW_CACHE_LIMIT: usize = 512;
 /// with no side effects, so the cached value is safe to reuse.
 static DV_VIEW_CACHE: StampCache<DvSessionView> = StampCache::new(DV_VIEW_CACHE_LIMIT);
 
-fn deliverable_category(ext: &str) -> &'static str {
+pub fn deliverable_category(ext: &str) -> &'static str {
     match ext {
         "html" | "htm" | "mhtml" | "mht" => "web",
         "ppt" | "pptx" | "odp" | "dps" => "ppt",

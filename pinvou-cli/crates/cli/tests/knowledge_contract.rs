@@ -1795,6 +1795,91 @@ fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root()
     );
 }
 
+/// The walk-error veto, end to end: a WALKED root that contains an unreadable
+/// subtree (a chmod-000 directory) must veto that root's stale sweep for the
+/// round — the unreadable slice's entries are just as undecidable as the
+/// readable ones, so a deleted file under the vetoed root must SURVIVE the
+/// rescan (the safe direction: ghosts linger) and be swept only by the next
+/// fully readable round. The unit pins live in the scanner/feature crates;
+/// this one proves the whole command surface honors the veto. Unix-only: the
+/// unreadable subtree is produced with mode bits, which other platforms do
+/// not honor.
+#[cfg(unix)]
+#[test]
+fn scan_start_vetoes_the_stale_sweep_when_a_walked_root_has_an_unreadable_subtree() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-walk-error-veto");
+    let docs = home.path().join("docs");
+    std::fs::create_dir_all(docs.join("locked")).unwrap();
+    std::fs::write(docs.join("kept.txt"), "stays while vetoed").unwrap();
+    std::fs::write(docs.join("locked").join("inside.md"), "# hidden").unwrap();
+
+    let seeded = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs.to_str().unwrap(),
+    ]);
+    assert_eq!(seeded["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(2),
+        "both files must be indexed before the veto scenario"
+    );
+
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(docs.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    if docs.join("locked").read_dir().is_ok() {
+        // Running as root (or on a filesystem that ignores mode bits)
+        // bypasses the unreadable-subtree condition, so the veto cannot be
+        // exercised here; restore and skip instead of failing spuriously.
+        std::fs::set_permissions(docs.join("locked"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        return;
+    }
+
+    // `kept.txt` disappears while the root carries an unreadable subtree:
+    // the round must report done (the readable part was still indexed) but
+    // NOT sweep the vanished entry.
+    std::fs::remove_file(docs.join("kept.txt")).unwrap();
+    let vetoed = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs.to_str().unwrap(),
+    ]);
+    assert_eq!(vetoed["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(2),
+        "the walk error must veto the stale sweep: the vanished entry lingers"
+    );
+
+    // The next fully readable round cleans the ghost.
+    std::fs::set_permissions(docs.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let healed = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs.to_str().unwrap(),
+    ]);
+    assert_eq!(healed["phase"], serde_json::json!("done"));
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(
+        stats["totalFiles"],
+        serde_json::json!(1),
+        "the fully readable round must sweep the vanished entry"
+    );
+}
+
 /// The walker does not follow symlinks, so a symlinked `--root` would key the
 /// same files a second time under the link's path — and, one scan later,
 /// sweep the originals as stale. `scan start` canonicalizes the root first,
@@ -2022,7 +2107,8 @@ fn remote_connections_answer_offline_without_configured_servers() {
 
 #[test]
 #[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
-           boots the windowless product host (needs a display/xvfb); \
+           dials the local shared-knowledge-host endpoint (run_bare_host: no \
+           display needed, but the endpoint must be up); \
            command: pinvou knowledge host status"]
 fn host_status_reports_the_shared_host_snapshot() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2038,8 +2124,8 @@ fn host_status_reports_the_shared_host_snapshot() {
 
 #[test]
 #[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
-           boots the windowless product host (needs a display/xvfb) and dials the \
-           endpoint; command: pinvou knowledge remote probe <url>"]
+           dials a real endpoint over the network (run_bare_host: no display \
+           needed); command: pinvou knowledge remote probe <url>"]
 fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::new("remote-probe-dead");
@@ -2057,7 +2143,8 @@ fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
 }
 
 #[test]
-#[ignore = "opt-in: needs a display (windowless host boot) plus real network; \
+#[ignore = "opt-in: needs a configured remote endpoint and real network \
+            (run_bare_host: no display needed); \
             command: pinvou knowledge remote connections (configured server)"]
 fn remote_connections_probe_a_configured_server() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

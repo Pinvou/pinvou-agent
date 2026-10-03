@@ -11,7 +11,7 @@ mod kimi;
 pub(crate) mod lifecycle;
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -304,6 +304,7 @@ impl AcpProvidersStore {
     /// `persist_locked`): at any quiescent point the file is the latest
     /// truth, and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
@@ -320,6 +321,7 @@ impl AcpProvidersStore {
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
+        let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let Some(state) = agents.get_mut(agent) else {
@@ -338,11 +340,29 @@ impl AcpProvidersStore {
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
+        let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
         state.current_provider_id = provider_id.map(str::to_string);
         Self::persist_locked(&agents, &self.path)
+    }
+
+    /// Fresh read of `current` for the decision paths that gate a CLI-config
+    /// rewrite (`save`'s active-provider arm, `delete`'s revert arm). The
+    /// plain `current()` reads only the in-memory map, which a CLI process
+    /// can have stale-dated: deciding from the stale value rewrites (or
+    /// fails to revert) the config for a provider that is no longer current
+    /// — the config/store split-brain the reload-on-mutator fix closed for
+    /// writes. Reloads under the write guard so every later reader sees the
+    /// adopted state, exactly like the mutators.
+    pub fn current_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
+            .get(agent)
+            .and_then(|state| state.current_provider_id.clone())
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
@@ -360,6 +380,7 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
+        let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
@@ -386,6 +407,18 @@ impl AcpProvidersStore {
             return;
         };
         let Ok(file) = serde_json::from_str::<AcpProvidersFile>(&raw) else {
+            // A file that turned corrupt AFTER boot (holding the other
+            // surface's writes this process never saw) would otherwise be
+            // destroyed by this process's next persist with no recoverable
+            // copy — `load_or_empty`'s `.pinvou3-bak` was taken at boot, or
+            // not at all in a CLI one-shot. Preserve it once, same shape as
+            // the boot backup: fixed `.invalid` sibling, never overwritten.
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".invalid");
+            let quarantine = path.with_file_name(name);
+            if !quarantine.exists() {
+                let _ = fs::copy(path, &quarantine);
+            }
             return;
         };
         *agents = file.agents;
@@ -405,14 +438,49 @@ impl AcpProvidersStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
+        // The tmp name carries the pid: a fixed name let two surfaces
+        // rename each other's half-written file into place (the loser's
+        // rename then ENOENTs and the winner's content was the loser's).
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
         let value = AcpProvidersFile {
             version: STORE_VERSION,
             agents: agents.clone(),
         };
-        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
+        if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(&value)?) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
         fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    /// Cross-process lock serializing the reload→mutate→persist section
+    /// against the other surface's mutators (the GUI holds this store for
+    /// its whole lifetime; every `pinvou code providers` command is another
+    /// process mutating the same file). The in-process write guard alone
+    /// left the read-write-rename window open: a peer process could commit
+    /// between this process's reload and rename and be silently erased.
+    /// The lock file carries no state and the OS releases it when the
+    /// holder dies, so a crash cannot wedge the store. Best-effort: if the
+    /// lock file itself cannot be opened (permissions), the caller proceeds
+    /// unlocked — the pre-lock behavior — rather than refusing provider
+    /// writes on a settings-adjacent edge.
+    fn section_lock(&self) -> Option<fs::File> {
+        let lock_path = self.path.with_extension("json.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        // Blocking by design: mutators are human-frequency and the section
+        // is a read + a small rename, so contention costs milliseconds; the
+        // GUI's alternative — a refusal on a busy store — would surface as
+        // a settings error for a transient cross-process race.
+        match file.lock() {
+            Ok(()) => Some(file),
+            Err(_) => None,
+        }
     }
 }
 
@@ -776,7 +844,7 @@ impl ProviderManager {
         // store.current=B」的分裂态。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
+        if self.store.current_after_reload(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
@@ -813,7 +881,7 @@ impl ProviderManager {
         // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        let was_current = self.store.current(agent).as_deref() == Some(provider_id);
+        let was_current = self.store.current_after_reload(agent).as_deref() == Some(provider_id);
         let removed = self.store.get(agent, provider_id);
         if was_current {
             match removed.as_ref() {
@@ -1149,6 +1217,7 @@ fn fixture_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     fn tmp_store(dir: &Path) -> AcpProvidersStore {
         let path = dir.join("acp-providers.json");
@@ -1156,6 +1225,168 @@ mod tests {
             path,
             agents: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The reload→mutate→persist section is serialized ACROSS processes:
+    /// while another process holds the section lock, a mutator here waits
+    /// instead of renaming its own snapshot over the peer's just-committed
+    /// write (the lost-update window the in-process write guard left open).
+    #[test]
+    fn mutators_wait_for_another_process_holding_the_section_lock() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cli = tmp_store(&dir);
+
+        // An external "process" (any holder of the same lock file) owns the
+        // section.
+        let lock_path = dir.join("acp-providers.json.lock");
+        let holder = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock().unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let done_in = done.clone();
+        let worker = std::thread::spawn(move || {
+            let cli = cli;
+            cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+            done_in.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the mutator must wait while the section lock is held elsewhere"
+        );
+        holder.unlock().unwrap();
+        worker.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file that turned corrupt after boot (holding writes this process
+    /// never saw) must be preserved before this process's persist replaces
+    /// it — `load_or_empty`'s boot-time `.pinvou3-bak` never saw it either.
+    #[test]
+    fn reload_into_quarantines_a_file_that_turned_corrupt_after_boot() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let store = tmp_store(&dir);
+
+        let corrupt = b"{ this never parses";
+        fs::write(&path, corrupt).unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        store.upsert("codex", record("pv-a", "A")).unwrap();
+
+        let quarantine = dir.join("acp-providers.json.invalid");
+        assert_eq!(
+            fs::read(&quarantine).unwrap(),
+            corrupt,
+            "the pre-persist corrupt bytes must survive in the .invalid sibling"
+        );
+        // The store itself heals forward: the file now parses and carries
+        // the mutation.
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"pv-a\""),
+            "the persist landed: {on_disk}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The decision primitive behind `save`'s active-provider arm and
+    /// `delete`'s revert arm: a long-lived side whose in-memory `current`
+    /// was stale-dated by a CLI process's `set_current` must answer the
+    /// disk's value, not its own stale one — deciding from the stale value
+    /// rewrote the CLI config for a provider that was no longer current
+    /// (the config/store split-brain).
+    #[test]
+    fn current_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        gui.set_current("codex", Some("pv-a")).unwrap();
+        // Both sides saw the same state so far; the memory answer agrees.
+        assert_eq!(cli.current_after_reload("codex").as_deref(), Some("pv-a"));
+
+        // The CLI process switches behind the GUI's back: disk now says
+        // pv-b while the GUI's memory still says pv-a.
+        cli.set_current("codex", Some("pv-b")).unwrap();
+        assert_eq!(
+            gui.current("codex").as_deref(),
+            Some("pv-a"),
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "the decision read must adopt the disk state"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Shared behavior contracts of the three CLI ConfigWriters, locked in one

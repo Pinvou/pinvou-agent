@@ -107,6 +107,7 @@ pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 pub(crate) use self::store::NEW_CHAT_TITLE;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
+pub use self::validators::is_aux_session_id;
 /// Re-export the crate-visible sched-id predicate: the send gates
 /// (alias-defeating, round-34 minor 4) and the tests that pin the
 /// predicate itself.
@@ -116,8 +117,7 @@ pub(crate) use self::validators::is_sched_session_id;
 /// `projects` family's orphan probe, the rest stays out of the public API.
 pub use self::validators::validate_session_id;
 pub(crate) use self::validators::{
-    aux_side_effect_exclusion, is_aux_session_id, validate_scheduled_task_id,
-    validate_user_workspace_path,
+    aux_side_effect_exclusion, validate_scheduled_task_id, validate_user_workspace_path,
 };
 /// Re-export the rebind outcome (public rebind docs link into it; the module
 /// itself stays private).

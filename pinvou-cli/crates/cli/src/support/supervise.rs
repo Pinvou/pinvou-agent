@@ -68,14 +68,16 @@ pub fn install_signal_cleanup() {
 /// signals blocked, a pending interrupt stays pending until the unblock
 /// below and is delivered once, with the child already registered.
 ///
-/// THREAD REQUIREMENT: the block/unblock here is per-thread. The guarantee
-/// holds only when this runs on the main thread before worker threads are
-/// spawned (the process-wide rule `install_signal_cleanup` already
-/// establishes): an interrupt landing in the window on a worker thread is
-/// delivered to the main thread's still-open handler, which re-raises with
-/// the fresh child unregistered. Every current call site runs on `main`;
-/// a future worker-thread caller must route through the main thread's
-/// supervision instead.
+/// THREAD REQUIREMENT: this is the only form a non-main thread may use. The
+/// spawn→register window below is excluded from the interrupt snapshot via
+/// [`imp::spawn_window`], so a signal arriving while any thread is inside the
+/// window is answered by a watcher snapshot that either already contains the
+/// fresh group or waits for the window to close first — the orphan window a
+/// raw `spawn()` + [`register_child_group`] pair would leave on a worker
+/// thread (where the block/unblock here is per-thread and defers nothing) is
+/// closed by that mutual exclusion on EVERY thread. On the main thread the
+/// sigmask block additionally keeps the pending signal parked until the
+/// unblock, so it is delivered once, with the child already registered.
 ///
 /// The spawn→register window blocks the interrupt family on the spawning
 /// thread, and the child would inherit that mask across fork. Std does NOT
@@ -109,10 +111,19 @@ pub fn spawn_supervised(
             });
         }
         let saved = imp::block_interrupt_signals();
+        // The window guard makes the spawn→register pair atomic against the
+        // watcher's snapshots: on a worker thread the sigmask block above
+        // defers nothing (an interrupt is delivered to main's handler while
+        // this spawn is in flight), so the exclusion is what keeps the fresh
+        // group inside the cleanup's phase-1 forward instead of orphaned.
+        // The pre_exec closure still holds no lock IN THE CHILD: it runs
+        // between fork and exec and only calls sigprocmask.
+        let _window = imp::spawn_window();
         let spawned = command.spawn();
         if let Ok(child) = &spawned {
             imp::register(child.id());
         }
+        drop(_window);
         imp::restore_interrupt_signals(saved);
         spawned
     }
@@ -125,7 +136,10 @@ pub fn spawn_supervised(
 /// Registers a live child process group so an interrupt later forwards to it.
 /// Call right after a successful `spawn` of a `set_process_group` child — the
 /// pgid is the child's pid — and pair every exit from the lifetime (normal
-/// completion, timeout kill) with [`forget_child_group`].
+/// completion, timeout kill) with [`forget_child_group`]. Main-thread only:
+/// the spawn→register exclusion lives inside [`spawn_supervised`], so a
+/// split spawn + register pair is safe only where the sigmask window defers
+/// the interrupt (see `spawn_supervised`'s thread requirement).
 pub fn register_child_group(pgid: u32) {
     #[cfg(unix)]
     {
@@ -162,10 +176,10 @@ pub fn park_while_interrupt_cleanup_concludes() {
 ///
 /// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
 /// the release half is per-site — a missed `forget` leaves a stale pgid the
-/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Every
-/// current site pairs the forget on all exits (several via RAII guards);
-/// keep it that way, or give the registry a shared RAII handle instead of
-/// a new manual pair.
+/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Prefer the
+/// RAII [`GroupGuard`] over a new manual pair: the manual pairs answer the
+/// ordinary return paths only, and a panic between spawn and the paired
+/// forget used to leave the group registered.
 pub fn forget_child_group(pgid: u32) {
     #[cfg(unix)]
     {
@@ -174,6 +188,41 @@ pub fn forget_child_group(pgid: u32) {
     #[cfg(not(unix))]
     {
         let _ = pgid;
+    }
+}
+
+/// RAII handle over one registered child group: releases the registration on
+/// drop, so every exit — ordinary return AND unwind — is paired, and a panic
+/// between spawn and the explicit forget cannot leave the pgid registered
+/// for the OS to recycle onto an unrelated process. Sites that must release
+/// EARLY (before a drain grace, so an interrupt inside the grace window
+/// cannot forward-signal a recycled pgid) call [`GroupGuard::release`]
+/// explicitly; every other exit forgets at scope end, after whatever kill
+/// the arm performed.
+pub(crate) struct GroupGuard {
+    pgid: u32,
+    armed: bool,
+}
+
+impl GroupGuard {
+    /// Wrap a pgid that `spawn_supervised` just registered.
+    pub(crate) fn arm(pgid: u32) -> Self {
+        Self { pgid, armed: true }
+    }
+
+    /// Immediate paired release — the reaped-or-dead case where the forget
+    /// must happen NOW rather than at scope end.
+    pub(crate) fn release(mut self) {
+        self.armed = false;
+        forget_child_group(self.pgid);
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            forget_child_group(self.pgid);
+        }
     }
 }
 
@@ -224,6 +273,13 @@ mod imp {
     /// lifetime) and tiny, and the codebase's caches use the same
     /// `OnceLock<Mutex<…>>` shape (voice.rs, models.rs).
     static CHILD_GROUPS: OnceLock<Mutex<Vec<libc::pid_t>>> = OnceLock::new();
+
+    /// Excludes a spawn→register window (held inside `spawn_supervised`)
+    /// from the watcher's registry snapshots: a fresh group is either in the
+    /// registry before a snapshot runs, or the snapshot waits for the window
+    /// to close first. Contention is bounded by one fork+exec, never by a
+    /// child's runtime.
+    static SPAWN_WINDOW: Mutex<()> = Mutex::new(());
 
     static INSTALL: Once = Once::new();
     /// Set by the watcher the moment cleanup starts. Main's exit path parks
@@ -416,8 +472,11 @@ mod imp {
         CLEANUP_STARTED.store(true, Ordering::Release);
         note_seen();
 
-        // Phase 1 — ask every registered group to stop.
-        for pgid in snapshot() {
+        // Phase 1 — ask every registered group to stop. The snapshot closes
+        // the spawn window (see `snapshot_spawn_safe`): a group whose
+        // spawning thread was mid-fork is either already registered here or
+        // the snapshot waited for the register to land.
+        for pgid in snapshot_spawn_safe() {
             // SAFETY: kill(2) to a group we registered; ESRCH (already gone)
             // is fine to ignore.
             unsafe {
@@ -429,7 +488,9 @@ mod imp {
         // function the unit tests pin; this loop is only its effect.
         let started = Instant::now();
         loop {
-            let survivors: Vec<libc::pid_t> = snapshot()
+            // Same spawn-window discipline as phase 1: a spawn completing
+            // during the grace is registered before this snapshot sees it.
+            let survivors: Vec<libc::pid_t> = snapshot_spawn_safe()
                 .into_iter()
                 .filter(|pgid| group_alive(*pgid))
                 .collect();
@@ -660,6 +721,21 @@ mod imp {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// Held across a supervised spawn→register pair (inside
+    /// `spawn_supervised`), and briefly by the watcher around each snapshot
+    /// via [`snapshot_spawn_safe`].
+    pub(super) fn spawn_window() -> std::sync::MutexGuard<'static, ()> {
+        SPAWN_WINDOW.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Registry snapshot with the spawn window closed: the returned list is
+    /// the complete set of groups at an instant where no thread sits between
+    /// spawn and register, so an interrupt cleanup cannot miss a fresh child.
+    pub(super) fn snapshot_spawn_safe() -> Vec<libc::pid_t> {
+        let _window = spawn_window();
+        snapshot()
     }
 }
 

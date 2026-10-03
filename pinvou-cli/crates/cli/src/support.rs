@@ -333,6 +333,9 @@ fn is_row_unsafe_char(ch: char) -> bool {
             // (rows are fed by vendor/user titles).
             | '\u{200E}' | '\u{200F}' // LRM / RLM
             | '\u{061C}' // ARABIC LETTER MARK
+            | '\u{2060}' // WORD JOINER: invisible, renders two different
+                         // strings identically (the hiding hazard this
+                         // module's threat model names)
         )
 }
 
@@ -893,7 +896,8 @@ mod tests {
         assert_eq!(collapse_control_characters("a\tb\nc"), "a b c");
         for unsafe_char in [
             '\u{00AD}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{2028}', '\u{2029}', '\u{202A}',
-            '\u{202C}', '\u{202E}', '\u{2066}', '\u{2069}', '\u{FEFF}',
+            '\u{202C}', '\u{202E}', '\u{2066}', '\u{2069}', '\u{FEFF}', '\u{200E}', '\u{200F}',
+            '\u{061C}', '\u{2060}',
         ] {
             let title = format!("ok{unsafe_char}row");
             assert_eq!(
