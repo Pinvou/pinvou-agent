@@ -101,12 +101,11 @@ fn bundled_engine_intact(path: &Path) -> bool {
 }
 
 pub fn ffmpeg_available() -> bool {
-    crate::platform::process::output_with_timeout(
-        crate::platform::process::HiddenCommand::new("ffmpeg").arg("-version"),
-        std::time::Duration::from_secs(10),
-    )
-    .map(|o| o.status.success())
-    .unwrap_or(false)
+    let mut probe = crate::platform::process::HiddenCommand::new("ffmpeg");
+    probe.arg("-version");
+    crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// 各组件就绪状态，前端据此决定是否弹「安装依赖」框。
