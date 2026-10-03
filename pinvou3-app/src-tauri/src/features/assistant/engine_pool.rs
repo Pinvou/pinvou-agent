@@ -2962,6 +2962,10 @@ impl EnginePool {
                 match std::fs::remove_dir_all(&dir) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    // Plain eprintln!: this twin is compiled in default
+                    // (non-benchmark) builds where `product_runtime` is
+                    // cfg'd out, and the closed-stderr panic it risks is
+                    // bounded to a detached best-effort sweep.
                     Err(error) => {
                         eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
                     }
@@ -2990,9 +2994,9 @@ impl EnginePool {
                 match std::fs::remove_dir_all(&dir) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
-                    }
+                    Err(error) => crate::features::assistant::product_runtime::note_stderr(
+                        &format!("[engine_pool] {label} {} failed: {error}", dir.display()),
+                    ),
                 }
             }
         });
@@ -6887,7 +6891,7 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// The headless stub-cleanup guard: `StillMessageFree` re-checks
+    /// The headless stub-cleanup guard: `StillAStub` re-checks
     /// emptiness UNDER the turn gate, so a record whose transcript landed
     /// between the disposition's outside-the-gate sample and the delete is
     /// kept (started transcript, the only copy) while a genuine zero-message

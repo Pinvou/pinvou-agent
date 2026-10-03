@@ -1387,6 +1387,29 @@ where
                 store.load_pinned_sessions();
                 store.load_hidden_sessions();
                 app.manage(store.clone());
+                // The kb tools' visibility predicate consults these two
+                // services (same single source as the GUI, lib.rs); without
+                // managing them here the headless policy saw `None` on every
+                // spawn and denied kb_search/kb_open_source even with a fully
+                // indexed local KB or mounted remote collections. Both
+                // constructions are best-effort, exactly like the GUI's:
+                // a failed init logs and leaves the tools denied.
+                match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    Err(error) => eprintln!("[headless] knowledge service init failed: {error:#}"),
+                }
+                match crate::features::remote_knowledge::RemoteKnowledgeService::load(
+                    crate::features::remote_knowledge::RemoteKnowledgeService::default_path(),
+                ) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    Err(error) => {
+                        eprintln!("[headless] remote knowledge service init failed: {error}")
+                    }
+                }
                 let pool = build_pool(app.handle().clone(), store.clone())?;
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -1489,8 +1512,11 @@ where
     })
 }
 
-/// Build an EnginePool with the same tool_policy combination as the GUI. The
-/// tool_factory intentionally stays narrower than the GUI's: computer_use is
+/// Build an EnginePool with the same tool_policy combination as the GUI:
+/// `unavailable_tool_names` plus the kb pair gated by the same
+/// `KnowledgeService::kb_tools_usable` predicate over the services the
+/// windowless setup manages above. The tool_factory intentionally stays
+/// narrower than the GUI's: computer_use is
 /// not constructed here because headless hosts have no consent UI to answer
 /// its grant/confirm prompts (the tool would be unusable and unsupervised).
 /// The `agentic_task` headless host reuses this constructor so agentic turns
@@ -1510,10 +1536,22 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
         let mut tools = crate::features::marketplace::unavailable_tool_names();
-        let kb_usable = app
-            .try_state::<knowledge::KnowledgeService>()
-            .map(|service| service.has_indexed_content() && service.semantic_ready())
-            .unwrap_or(false);
+        // The GUI's single-source predicate (KnowledgeService::kb_tools_usable
+        // via lib.rs): visibility tracks CONTENT/CONNECTIONS, deliberately not
+        // the embedding model's load state — a visibility that fluctuates with
+        // the model makes the snapshot recalc write kb_search into disallowed
+        // and the tool's on-demand self-heal reload unreachable. The old
+        // headless formula (`has_indexed_content() && semantic_ready()`) was
+        // both a different rule and moot: no service was managed here, so kb
+        // tools were denied on every headless run.
+        let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+            app.try_state::<knowledge::KnowledgeService>()
+                .map(|service| service.has_indexed_content())
+                .unwrap_or(false),
+            app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+                .map(|service| service.has_connections())
+                .unwrap_or(false),
+        );
         if !kb_usable {
             tools.extend(["kb_search".to_owned(), "kb_open_source".to_owned()]);
         }

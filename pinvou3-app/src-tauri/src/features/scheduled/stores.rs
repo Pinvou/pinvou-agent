@@ -1903,6 +1903,9 @@ mod foreign_writer_tests {
             store.kind_lookup_for("t1"),
             ScheduledTaskKindLookup::MemoryOrganize
         );
+        // The store's `seen` stamp describes v1 right now; capture the same
+        // stat for the aliasing guard below.
+        let seeded_stamp = FileStamp::of(&path);
 
         // Two foreign writes, equal byte length, different key: renaming the
         // key keeps the payload shape (and thus length) identical while the
@@ -1913,14 +1916,16 @@ mod foreign_writer_tests {
         let second_write = FileStamp::of(&path);
         // The identity signal can be aliased by the environment itself: an
         // atomic rename hands the freed tmp inode number to the NEXT write's
-        // tmp file, and a coarse mtime tick hides the ordering — both writes
-        // then carry an identical stamp and the store's "no change" verdict
-        // is correct for the signal it has. That is the same aliasing the
-        // no-identity guard above acknowledges, one layer up: the test can
+        // tmp file, and a coarse mtime tick hides the ordering — two writes
+        // (or a write and the seeded v1, whose two-char keys share the byte
+        // length) then carry an identical stamp, and the store's "no change"
+        // verdict is correct for the signal it has. That is the same aliasing
+        // the no-identity guard above acknowledges, one layer up: the test can
         // only demand second-write visibility where the environment actually
-        // provides a distinguishing signal.
+        // provides a signal distinguishing the second write from BOTH the
+        // first one and the seeded v1 the handle recorded.
         if let (Some(first), Some(second)) = (first_write, second_write) {
-            if first == second {
+            if first == second || Some(second) == seeded_stamp {
                 return;
             }
         } else {

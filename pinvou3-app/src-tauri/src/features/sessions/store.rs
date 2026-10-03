@@ -57,7 +57,9 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 /// language.
 pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
 
-/// Id prefix minted by the headless `agent run` path (`agentic_{pid}_{n}`).
+/// Id prefix minted by the headless `agent run` path (the fresh ids are
+/// `agentic_{pid}_{unix_millis}_{counter}`; retention keys on the prefix
+/// only).
 ///
 /// Retention keys the headless budget on it, so the prefix is a durable
 /// contract between the runner and the sweep rather than a formatting detail;
