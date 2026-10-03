@@ -825,9 +825,32 @@ pub fn reconcile_import_journal() -> Result<(), String> {
 
 /// 统一导入：解压插件包（mcp / skill / 组合）→ 安全校验 → 识别 → 落盘
 /// `bundles/<id>/`（mcp/ + skills/ + 图标）→ 登记 BundleStore。
+///
+/// Test-only scaffolding: this wrapper runs the pipeline with NO consent
+/// gate, so content would land without any deny registration. Every
+/// production channel must go through `import_plugin_package_gated` (the
+/// deny-first pre-land hook) — the same standing rule as
+/// `skill_marketplace::import_package_named`.
+#[cfg(test)]
 pub fn import_plugin_package(
     zip_path: &str,
     display_name: &str,
+) -> Result<PluginImportReport, String> {
+    import_plugin_package_gated(zip_path, display_name, &|_, _| Ok(()))
+}
+
+/// Same pipeline with a pre-land gate hook: `pre_land` runs after the package
+/// id is fixed and fully validated but BEFORE any content lands on disk or
+/// replaces an existing installation. A `pre_land` refusal aborts the import
+/// with nothing touched — the DenyAll consent gate uses this to register the
+/// deny entry before the package is exposed (#515/#517 review round 4):
+/// rolling an already-landed import back via uninstall would destroy a
+/// pre-existing installation (re-import overwrites), while a deny-first
+/// refusal loses nothing.
+pub fn import_plugin_package_gated(
+    zip_path: &str,
+    display_name: &str,
+    pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
 ) -> Result<PluginImportReport, String> {
     let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
@@ -1004,7 +1027,10 @@ pub fn import_plugin_package(
             }
         }
     }
-    if !crate::features::marketplace::bundle::cli_bundle_skill_dirs(&id).is_empty() {
+    if !crate::features::marketplace::bundle::cli_bundle_skill_dirs(&id).is_empty()
+        || crate::features::marketplace::bundle::builtin_cli_bundle_ids()
+            .any(|cid| cid.eq_ignore_ascii_case(&id))
+    {
         return Err(format!("包 id '{id}' 与内置 CLI 连接器冲突，请改用其它 id"));
     }
     // 已下线内置技能名拒收（plugin-package-spec §10 承诺的导入校验）：包 id 与
@@ -1024,6 +1050,46 @@ pub fn import_plugin_package(
             ));
         }
     }
+    // Preset skill-market id rejection covers only the "alias-split" shape
+    // (round-11 P2-2): an id unlike every preset skill name (e.g.
+    // tencent-docs-skill) is an independent entry in the deny-list vocabulary,
+    // so an upload claiming it would make the consent gate treat the real
+    // preset as already known and skip its registration (fail-open), and
+    // read-time normalization would fold the preset's alias vocabulary onto
+    // the upload. Ids that ARE preset skill names (gongwen-family ids where
+    // id == skill name) are NOT blanket-rejected: the export → re-import
+    // round-trip contract (package_export's round-trip pin) allows such user
+    // package ids while they self-map. The owner-claim divergence check
+    // immediately below closes the remaining window: with an installed
+    // claimant the id no longer self-maps, and importing under it would leave
+    // the consent gate registering (or skipping on) the claimant's id — so
+    // the round-trip contract holds without a fail-open exception.
+    if crate::features::marketplace::skill_marketplace::is_preset_market_id(&id)
+        && !crate::features::marketplace::skill_marketplace::is_preset_skill_name(&id)
+    {
+        return Err(format!(
+            "包 id '{id}' 与市场预置技能 id 冲突，请改用其它 id 或通过市场直接安装"
+        ));
+    }
+    // Owner-claim divergence (round-12 review B1): `to_package_id` folds an
+    // id onto an installed claimant's consent vocabulary — an installed
+    // package's declared companion skill name, a CLI companion dir, or
+    // `ima-skills`. Importing a PACKAGE under such an id would make the
+    // consent gate register (or skip on) the claimant's id while this
+    // package lands keyed by its own id, ungoverned in initialized DenyAll
+    // scopes (live-reproduced: gongwen installed + import id
+    // `government-writing`). The check is state-dependent on purpose: with
+    // no claimant installed the id self-maps and stays importable, which
+    // keeps the export → re-import round-trip contract
+    // (`export_installed_plugin_allows_preset_named_id_without_preset_skill`)
+    // intact. The skill-name half of the same collision is already rejected
+    // by the component owner check below.
+    let folded = crate::features::marketplace::scope::to_package_id(&id);
+    if folded != id {
+        return Err(format!(
+            "包 id '{id}' 已被包 '{folded}' 的配套技能词汇占用，请改用其它 id"
+        ));
+    }
     // Preset/companion/cross-package skill name collisions are rejected up
     // front, consistent with the two skill_marketplace channels (which sweep
     // duplicate copies after install — this pipeline never sweeps, so without
@@ -1034,6 +1100,11 @@ pub fn import_plugin_package(
         if crate::features::marketplace::skill_marketplace::is_preset_skill_name(skill_name) {
             return Err(format!(
                 "技能 '{skill_name}' 与市场预置技能冲突，请改用其它名称"
+            ));
+        }
+        if crate::features::marketplace::skill_marketplace::is_preset_market_id(skill_name) {
+            return Err(format!(
+                "技能 '{skill_name}' 与市场预置技能 id 冲突，请改用其它名称"
             ));
         }
         let owner = crate::features::marketplace::bundle::skill_owner_package(skill_name);
@@ -1091,6 +1162,19 @@ pub fn import_plugin_package(
         }
     }
 
+    // Pre-land gate hook: the id is final and validated here, nothing has
+    // been written yet. A refusal aborts the whole import before any content
+    // lands or an existing installation is replaced (deny-first consent gate,
+    // #517 review round 4). The identified skill components ride along so
+    // the gate can also register standalone components deny-first
+    // (round-11 P2-3). Runs before the same-id import lock on purpose:
+    // the gate then takes no import lock at all, so the import lock is never
+    // held ACROSS a wait on another importer (the scope RMW lock itself may
+    // be nested inside transaction/import/recycle locks one-directionally —
+    // see `scope::with_scope_file_lock`'s lock-order note; the reverse
+    // nesting never happens).
+    pre_land(&id, &skills)?;
+
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
     // 注：旧 spanner/ 与 runtime/ 子树已删除，导入侧不再识别这两类前缀。
     let pkg_dir = crate::platform::paths::bundles_root().join(&id);
@@ -1099,6 +1183,20 @@ pub fn import_plugin_package(
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
     let import_lock = import_lock_for(&id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+    // Re-check the fold divergence under the import lock (round-14 P2): the
+    // first check ran before the consent gate, and a claimant (preset skill
+    // install, CLI companion, ima connect) completing in between would fold
+    // this id onto the claimant — the gate registers (or skips on) the
+    // claimant's id while this package lands keyed by its own id, ungoverned.
+    // Nothing has landed at this point, so the refusal aborts with the home
+    // untouched (the gate's earlier registration is an over-denial row on an
+    // installed claimant — fail-closed).
+    let folded = crate::features::marketplace::scope::to_package_id(&id);
+    if folded != id {
+        return Err(format!(
+            "包 id '{id}' 已被包 '{folded}' 的配套技能词汇占用，请改用其它 id"
+        ));
+    }
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -3047,10 +3145,12 @@ mod tests {
             zw.finish().unwrap();
         }
         let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
-        assert!(
-            err.contains("已存在于包 'other-pkg'"),
-            "跨包撞名应拒收，实际: {err}"
-        );
+        // Merged-world note: the round-12-B1 owner-claim vocabulary check
+        // (7a96f2a3) now fires before the skill-name collision check for this
+        // fixture — the id "foo" folds onto the physically present
+        // other-pkg's vocabulary. Either rejection is the pin: the import is
+        // refused naming other-pkg.
+        assert!(err.contains("other-pkg"), "跨包撞名应拒收，实际: {err}");
         assert!(foreign.join("SKILL.md").is_file(), "外来包副本不得被动");
         assert!(
             !dir.join("bundles").join("foo").exists(),

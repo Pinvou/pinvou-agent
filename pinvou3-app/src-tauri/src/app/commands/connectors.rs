@@ -41,9 +41,14 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_disabled_bundles_for(
-        scope,
-    ))
+    // The read path tries the cross-process flock (#515) and degrades instead
+    // of blocking, but it still takes the in-process scope mutex and does file
+    // I/O; keep it off the executor thread (aligned with the write commands).
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_disabled_bundles_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_disabled_connectors join: {e}"))
 }
 
 /// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
@@ -80,7 +85,11 @@ pub async fn set_bundle_visibility(
 #[tauri::command]
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_hidden_bundles_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_bundle_visibility join: {e}"))
 }
 
 /// Outcome of `enable_marketplace_packages` (round-11 m11): an explicit
@@ -198,7 +207,14 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::scope::set_project_skills_enabled(enabled)?;
+    // The write path takes the cross-process file lock (#515) and can block
+    // on flock until the peer process releases it; keep it off the executor
+    // (aligned with set_disabled_connectors / set_bundle_visibility).
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::set_project_skills_enabled(enabled)
+    })
+    .await
+    .map_err(|e| format!("set_project_skills_enabled join: {e}"))??;
     // The toggle affects code-session composed catalogs: rewrite the online
     // session composed catalogs, hot-refresh the load_skill hidden check and the
     // execpolicy rule set (project-level skills rejoin the deny/allow sets), and
@@ -212,7 +228,9 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    Ok(crate::features::marketplace::scope::project_skills_enabled())
+    tokio::task::spawn_blocking(crate::features::marketplace::scope::project_skills_enabled)
+        .await
+        .map_err(|e| format!("get_project_skills_enabled join: {e}"))
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的
@@ -334,12 +352,13 @@ async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, S
 
 /// ima 连接成功会安装配套技能 ima-skills（domain 层落盘）→ 重写在线会话组合目录
 /// （skill 双 scope 治理事件驱动时机）+ 热刷 execpolicy 规则集（技能脚本 deny 规则
-/// 随目录变化，四轮评审 M-6a）。失败分两态（round-26 minor 4 修正措辞）：域层
-/// 安装/凭据前的失败 = 技能未装上，本就不需重写；**同意状态持久化失败** = 技能
-/// 已装上但命令以 Err 返回且跳过本函数的重写——前端经 imaSkillsFailed 模板给出
-/// 手动关闭指引。残留方向是 **stale-allow**（同意行未持久化 → 已初始化 scope 的
-/// 新会话默认开启该包；与 domain 层错误文案一致；round-27 m1 修正方向措辞），
-/// 由前端指引与 DenyAll 未初始化兜底共同收口，非 fail-safe。
+/// 随目录变化，四轮评审 M-6a）。失败分两态：域层凭据/安装前的失败 = 技能未装上，
+/// 本就不需重写；**同意门拒绝**（本 PR 的 deny-first 语义）= 门在任何凭据写入/
+/// 内容落地之前运行，拒绝时命令以 Err 返回且**什么都没有落地**（无凭据、无技能
+/// 目录、无记录），跳过本函数的重写自然无害。旧的 stale-allow 形态（技能已装上
+/// 但同意行未持久化）已不可能由本通道产生：round-13 起同意门先于一切落盘，拒绝
+/// 即中止；带 `CONSENT_SYNC_FAILURE_MARKER` 的 imaSkillsFailed 前端指引分支仅对
+/// 旧构建的会话残留有意义。
 // The disallowed hot-refresh is required since the native-tool ownership gate:
 // the freshly installed package flips `ima_openapi` from denied to admitted
 // for DenyAll scopes' explicit-enable path, and online engines must see it.

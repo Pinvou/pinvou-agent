@@ -290,7 +290,13 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
     // exists, skip writing a new one — repeated reads of a file whose
     // recovery cannot complete (unverifiable mcp.json, failing save) must not
     // accumulate timestamped copies. One preserved copy is enough for manual
-    // recovery; deleting it re-arms the quarantine.
+    // recovery; deleting it re-arms the quarantine. Round-16 (review): only a
+    // non-empty REGULAR file counts as a preserved copy — a stray empty file
+    // or a planted directory with the prefix is not evidence, and treating it
+    // as one would skip the quarantine and let the caller overwrite the
+    // genuinely corrupt original with nothing preserved. A real copy is
+    // always write_atomic output (non-empty), so this cannot double-write
+    // over a legitimate copy.
     let sibling_prefix = format!("{name}.corrupt.");
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
@@ -298,6 +304,8 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
                 .file_name()
                 .to_string_lossy()
                 .starts_with(&sibling_prefix)
+                && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry.metadata().map(|m| m.len() > 0).unwrap_or(false)
             {
                 return Ok(());
             }
@@ -545,9 +553,10 @@ pub use types::{
 #[cfg(test)]
 pub use crate::features::marketplace::scope::save_disabled_bundles;
 pub use crate::features::marketplace::scope::{
-    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    deny_first_register_connector, load_disabled_bundles, load_disabled_bundles_for,
+    load_disabled_bundles_startup, load_hidden_bundles_for, remove_bundle_from_disabled_scopes,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    sync_deny_all_scopes_refresh, unavailable_bundles_for,
 };
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
@@ -1352,7 +1361,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
-    pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+    /// Uninstalls a marketplace tool: removes the mcp.json entry, the
+    /// installed.json id, the bundles.json mirror, and disposes the package
+    /// dir by source. Returns whether THIS call actually removed the install
+    /// record: a vacuous uninstall (no record — e.g. racing a same-id install
+    /// whose deny-first gate just registered the entries but whose record has
+    /// not landed yet) returns `Ok(false)` and must leave every scope entry
+    /// alone, or it would re-enable the package as it lands. Callers must
+    /// key every scope-strip decision on this outcome — never on their own
+    /// pre-uninstall probe, and never after this function returns (the
+    /// transaction lock is released; the in-transaction strip in
+    /// `cleanup_uninstalled_tool_state` is the only race-free one).
+    pub fn uninstall(&self, tool_id: &str) -> Result<bool, String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
         // §3.1 server-side defense in depth): even if the frontend never
         // offers the action, a direct command/IPC call must be rejected here.
@@ -1394,6 +1414,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_default()
             .into_iter()
             .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
+        // Snapshot before the transaction closure moves `upload_record`: the
+        // in-lock cleanup needs to know whether companion dirs were recycled
+        // with the package (Upload path) to strip their entries in-lock.
+        let recycles_upload = upload_record.is_some();
 
         // Upload 整包回收 preflight（M2）：回收站不可用（同 id 目标残留/根目录不可
         // 建）时在拆任何供给面之前 fail loud —— 此前 secrets/installed.json/mcp.json
@@ -1435,6 +1459,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 覆盖 mcp.json / installed.json，bundles.json 镜像与包目录在快照之外，
         // 拒绝若发生在它们之后，回滚将不完整。调整顺序前先读这条。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let mut removed_install_record = false;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
             let mut installed = self.try_installed_ids_for_writer()?;
@@ -1454,6 +1479,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     false
                 }
             };
+            removed_install_record = removed_by_us;
 
             // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
             // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
@@ -1513,7 +1539,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // fully usable instead of producing a half-uninstalled state.
         // Upload 组合包的 companion 目录已随整包搬离（false 分支的清理自然空转）；
         // 预置 companion 物理删除沿用既有语义（可重获得）。
-        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets, false, &companion_owners);
+        // Scope entries are consent state: strip them only when this call
+        // actually removed the install record. A vacuous uninstall (no record
+        // — e.g. racing a same-id install whose deny-first gate just
+        // registered the entries but whose record has not landed yet) must
+        // leave the entries alone, or it would re-enable the package as it
+        // lands. Only the scope legs are gated; secrets of a provisioned
+        // manifest still belong to this teardown. The strips here run under
+        // MARKETPLACE_TRANSACTION_LOCK — a registration a concurrent install
+        // makes after this point survives (round-11 P2-1); there is no
+        // post-return strip.
+        self.cleanup_uninstalled_tool_state(
+            tool_id,
+            &secret_targets,
+            false,
+            &companion_owners,
+            removed_install_record,
+            recycles_upload,
+        );
 
         // Environments and wheel caches are garbage-collected by reference to the still-installed MCPs.
         // A failed cleanup never rolls back the finished uninstall; the next uninstall retries, so a held file cannot leave the tool stuck in a half state where the config is gone but uninstall keeps erroring.
@@ -1522,7 +1565,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             log::warn!("[marketplace] prune Python dependencies failed: {error}");
         }
 
-        Ok(())
+        Ok(removed_install_record)
     }
 
     fn active_python_locks_from_committed_state(
@@ -1644,11 +1687,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         secret_targets: &[(String, String)],
         preserve_companion_skills: bool,
         companion_owners: &[(String, String)],
+        remove_scope_entries: bool,
+        strip_recycled_companions: bool,
     ) {
         for (target, key) in secret_targets {
             let reference = secrets::mcp_secret_reference(tool_id, target, key);
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
+        }
+        // Scope entries are consent state: strip them only when this call
+        // actually removed the install record. A vacuous uninstall (no record
+        // — e.g. racing a same-id install whose deny-first gate just
+        // registered the entries but whose record has not landed yet) must
+        // leave the entries alone, or it would re-enable the package as it
+        // lands. Only the scope legs are gated; secrets of a provisioned
+        // manifest still belong to this teardown.
+        if !remove_scope_entries {
+            return;
         }
         // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id and this
         // cleanup runs after the dir is deleted/redeliverable-stripped — the
@@ -1682,33 +1737,71 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             .into_iter()
             .collect();
-        for skill_id in self.companion_skills(tool_id) {
-            if !unavailable.contains(&skill_id) {
+        // Iterate the PRE-TRANSACTION snapshot, not the live manifest: an
+        // Upload recycle has already moved the package directory, so the
+        // manifest (and with it the live companion list) is gone by the time
+        // this cleanup runs — the snapshot is the only record of which
+        // companions existed (round-28 MAJOR 1, review #455).
+        for (skill_id, owner) in companion_owners.iter() {
+            let skill_id = skill_id.as_str();
+            let owner = owner.as_str();
+            // On the Upload-recycle path the package directory (the
+            // companions' own copies included) has already moved into the
+            // recycle bin inside this transaction: there is nothing to
+            // uninstall, the live `unavailable` enumeration cannot see the
+            // companions, and a sweeping `SkillMarketplaceManager::uninstall`
+            // must NOT run — its candidate scan covers every
+            // `bundles/*/skills/<name>` copy and could delete a FOREIGN
+            // installed pack's same-named companion. Strip the consent rows
+            // directly; the physical copies left with the package. This leg
+            // deliberately skips the `unavailable` shared-claimant guard the
+            // else-branch keeps: the whole point is that the recycled copies
+            // are invisible to the live enumeration, and admission checks
+            // reject two live packs sharing a companion, so the snapshot
+            // owner can only be this pack's own (round-14 review: a foreign
+            // strip would require a poisoned owner snapshot).
+            if strip_recycled_companions {
+                Self::strip_companion_rows(tool_id, skill_id, owner);
                 continue;
             }
-            // Round-28 MAJOR 1 (review #455): the owner comes from the
-            // pre-transaction snapshot threaded by the caller — re-resolving
-            // here would run against the post-commit world where this tool's
-            // claim is dead and the fallback can re-own the name onto a live
-            // foreign pack. Exact form on that snapshot; the best-effort
-            // swallow stays per this leg's policy.
-            let Some(owner) = companion_owners
-                .iter()
-                .find(|(sid, _)| sid == &skill_id)
-                .map(|(_, owner)| owner)
-            else {
-                // No pre-transaction snapshot (the companion list changed
-                // between snapshot and cleanup): keep the conservative no-op —
-                // without a claims-alive resolution this leg must not guess.
-                log::warn!(
-                    "[marketplace] no pre-transaction owner snapshot for companion '{skill_id}' of {tool_id}; skipping its consent cleanup"
-                );
+            if !unavailable.contains(skill_id) {
                 continue;
-            };
-            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(&owner) {
+            }
+            // Keep the deny entry when the skill teardown fails: the skill is
+            // still on disk, and clearing its entry here would silently
+            // re-enable it in initialized DenyAll scopes (same fail-closed
+            // policy as ima_logout's failed-uninstall branch and the eager
+            // twin's abort-on-failure). A vacuous uninstall (never installed)
+            // keeps them too.
+            match skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    log::warn!(
+                        "[marketplace] companion skill '{skill_id}' cleanup failed while uninstalling {tool_id}; keeping its deny entry (fail-closed): {error}"
+                    );
+                    continue;
+                }
+            }
+            Self::strip_companion_rows(tool_id, skill_id, owner);
+        }
+    }
+
+    /// Strips one companion's consent rows after a successful teardown: the
+    /// owner-pack rows (the deny-first registration's normalized id) and the
+    /// raw companion-skill-id rows (a standalone-era entry keyed by the skill
+    /// id itself — with the claim dead, read-time normalization can no longer
+    /// fold it onto the owner, so an owner-only strip would strand it).
+    fn strip_companion_rows(tool_id: &str, skill_id: &str, owner: &str) {
+        if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(owner) {
+            log::warn!(
+                "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+            );
+        }
+        if owner != skill_id {
+            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(skill_id) {
                 log::warn!(
-                    "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+                    "[marketplace] persisting the standalone-era companion cleanup for '{skill_id}' of {tool_id} failed: {e}"
                 );
             }
         }
@@ -1779,6 +1872,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     &secret_targets,
                     preserve_companions,
                     &companion_owners,
+                    true,
+                    true,
                 );
                 if let Err(error) = store::BundleStore::new().remove(tool_id) {
                     log::warn!(
@@ -2569,6 +2664,71 @@ mod tests {
     /// The in-process secret registry is snapshotted-cleared-restored the
     /// same way (secrets no longer land in the process env; the isolation
     /// point moves from env to the registry).
+    /// Round-8 review: the post-commit companion cleanup must keep a deny
+    /// entry when that skill's own teardown fails — the skill is still on
+    /// disk, so removing the entry would silently re-enable it. Broken
+    /// bundles.json makes the skill uninstall abort fail-closed while the
+    /// directory stays put; the store and scope files are independent, so
+    /// only the companion teardown is affected.
+    #[test]
+    fn companion_cleanup_keeps_deny_entry_when_skill_uninstall_fails() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+        with_temp_home(|| {
+            // The catalog's tencent-docs package declares companion
+            // tencent-docs-skill; give it the installed companion layout.
+            let skill_dir = paths::pinvou3_home()
+                .join("bundles")
+                .join("tencent-docs")
+                .join("skills")
+                .join("tencent-docs");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), "companion body").unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["tencent-docs-skill".to_string()])
+                .unwrap();
+
+            // Phase 1: broken store -> skill uninstall aborts fail-closed ->
+            // the deny entry must survive.
+            let store_path = paths::pinvou3_home()
+                .join("marketplace")
+                .join("bundles.json");
+            std::fs::create_dir_all(&store_path).unwrap();
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.cleanup_uninstalled_tool_state(
+                "tencent-docs",
+                &[],
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                true,
+                false,
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a failed post-commit companion uninstall must keep the deny entry (fail-closed)"
+            );
+
+            // Phase 2: store readable again -> teardown succeeds -> the entry
+            // is removed with the skill actually gone.
+            std::fs::remove_dir_all(&store_path).unwrap();
+            mgr.cleanup_uninstalled_tool_state(
+                "tencent-docs",
+                &[],
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                true,
+                false,
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a successful companion uninstall removes the deny entry as before"
+            );
+        });
+    }
+
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // The verdict memo is keyed by home directory, but temp dirs reuse
@@ -2589,15 +2749,34 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        // Panic-safe restore (round-11 P3): a failing assertion unwinds past
+        // this guard, so a leaked PINVOU3_HOME / secret env can no longer
+        // cascade unrelated failures into every later test in the binary.
+        struct RestoreEnv {
+            prev: Option<String>,
+            prev_secrets: std::collections::HashMap<String, String>,
+            dir: std::path::PathBuf,
         }
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match &self.prev {
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+                secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _restore = RestoreEnv {
+            prev,
+            prev_secrets,
+            dir: dir.clone(),
+        };
+        f();
     }
 
     /// G4 回归：mcp.json 路径重写以新目录存在为前提——自定义 MCP 搬迁 kept
@@ -6555,6 +6734,10 @@ mod tests {
 
         with_temp_home(|| {
             let home = crate::platform::paths::pinvou3_home();
+            // Pre-create the cross-process lock file so the failure lands on
+            // the data-file write this test pins (creating the lock in a
+            // read-only home would fail earlier with a lock-path error).
+            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
             let probe = home.join(".root-probe");
             if std::fs::write(&probe, b"").is_ok() {

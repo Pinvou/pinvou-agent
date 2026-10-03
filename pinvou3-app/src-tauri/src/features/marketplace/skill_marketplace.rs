@@ -147,6 +147,28 @@ fn preset_manifests() -> &'static [SkillManifest] {
     ]
 }
 
+/// Preset alias (round-8 review): one preset names its marketplace id
+/// differently from its frontmatter skill_name / on-disk directory
+/// (tencent-docs-skill <-> tencent-docs) — one package, two names. The
+/// consent vocabulary (card id, stored deny entries, gate registrations)
+/// uses the marketplace id while the materialization layer scans directory
+/// names, so the admission side must try the id alias for a directory that
+/// no owner claim covers, or the standalone preset's deny entry never
+/// matches and the skill materializes into initialized DenyAll scopes
+/// despite the recorded deny (fail-open).
+///
+/// Deliberately NOT folded into `bundle::skill_owner_package`: for this
+/// preset the owning MCP package id (tencent-docs) collides with the
+/// directory name string itself, and that function also normalizes MCP
+/// package ids on the save/remove paths, where aliasing would cross-fire
+/// and rewrite one package's consent entries into the other's vocabulary.
+pub(crate) fn preset_id_for_skill_name(skill_name: &str) -> Option<&'static str> {
+    preset_manifests()
+        .iter()
+        .find(|m| m.skill_name == skill_name && m.id != m.skill_name)
+        .map(|m| m.id)
+}
+
 // 前端展示态 ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,8 +415,11 @@ impl SkillMarketplaceManager {
     /// a directory-tree SHA-256 fingerprint per installed preset skill
     /// (`preset_update_available`); these paths only care about install state.
     /// Lenient read: a per-entry IO failure counts as "not installed" and is
-    /// swallowed — fine for display/list paths, fail-open for a consent gate.
-    /// The DenyAll default computation must use `installed_skill_ids_strict`.
+    /// swallowed — fine for display/list paths. In the consent gate a miss
+    /// errs toward "not known", i.e. toward REGISTRATION (over-denial,
+    /// fail-closed), so the leniency is safe there too (round-16 review:
+    /// the earlier "fail-open for a consent gate" wording was wrong). The
+    /// DenyAll default computation must still use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         let mut out: Vec<String> = preset_manifests()
             .iter()
@@ -510,6 +535,14 @@ impl SkillMarketplaceManager {
 
     fn preset(&self, id: &str) -> Option<&'static SkillManifest> {
         preset_manifests().iter().find(|m| m.id == id)
+    }
+
+    /// Whether `id` names an embedded preset skill (round-16 review): the
+    /// install command's deny-first gate runs an existence probe through this
+    /// so a garbage direct-IPC id cannot seed phantom deny rows for a package
+    /// that cannot exist. Same lookup discipline as `install`'s validation.
+    pub fn preset_skill_exists(&self, id: &str) -> bool {
+        preset_manifests().iter().any(|m| m.id == id)
     }
 
     /// 安装预置技能:从嵌入资源复制到 `bundles/<owner>/skills/<name>/`
@@ -853,7 +886,40 @@ impl SkillMarketplaceManager {
     /// 删除——整个 `bundles/<id>/` 搬入回收站（用户唯一副本，可恢复/手动彻底
     /// 删除）；companion 技能随属主 MCP 包整包回收，其候选目录已随包搬离，
     /// 下方循环自然跳过、结尾清登记即可（recycle-aware）。
-    pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
+    ///
+    /// Returns whether an installation was actually torn down (a store record
+    /// was present, candidate content was deleted, or an Upload package was
+    /// recycled). A vacuous `Ok(false)` — nothing on disk and no record — lets
+    /// callers keep the deny entries: stripping them there would remove the
+    /// deny-first consent entry a concurrent same-id install may have just
+    /// registered (its install record lands after the gate) and re-enable the
+    /// skill as it lands. Same guard as the MCP tool uninstall's
+    /// `store_record.is_none()` early return.
+    pub fn uninstall(&self, skill_id: &str) -> Result<bool, String> {
+        let dir_name = self.precheck_uninstall(skill_id)?;
+        // From here the same-id import lock is held to the end of the
+        // critical section: the unified import, the legacy import, and the
+        // display edit (`update_display_meta`) share this one lock and lock
+        // order (import lock → store file lock). Concurrent uninstalls used
+        // to run without it, so a display edit's "read backup → write
+        // SKILL.md" critical section could be interleaved by an uninstall
+        // (the edit returned success while its directory was already gone —
+        // the narrow comment-disclosed window).
+        // The one guard spans the whole teardown (`uninstall_locked`); for
+        // `uninstall_and_strip_scope` that same guard also spans the scope
+        // strip (round-12 review B2 — the strip never runs after the
+        // lock-protected teardown returned).
+        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.uninstall_locked(skill_id, &dir_name)
+    }
+
+    /// Pre-lock validation shared by `uninstall` and
+    /// `uninstall_and_strip_scope` (round-12 review B2): the builtin guard,
+    /// the id → directory resolution, and the name safety check run before
+    /// the per-id import lock is taken, so a refusal never touches the lock.
+    /// Returns the resolved on-disk directory name.
+    fn precheck_uninstall(&self, skill_id: &str) -> Result<String, String> {
         // Builtin guard (docs/builtin-toolset-contract.md §3.1, defense in
         // depth): a builtin package's companion skill must not be removable
         // through the skill lane either — builtin exposure changes go through
@@ -873,13 +939,17 @@ impl SkillMarketplaceManager {
         if !is_safe_skill_name(&dir_name) {
             return Err(format!("非法技能名 '{dir_name}'"));
         }
-        // 自此持同 id import_lock 至函数尾：与统一导入/遗留导入/展示编辑
-        // （update_display_meta）共用同一把锁、同一锁序（import_lock → store
-        // file_lock）。此前并发卸载不持锁，展示编辑「读备份 → 写 SKILL.md」
-        // 临界区可能被卸载插队（编辑成功返回而目录已删，仅注释披露的窄窗口）。
-        let import_lock = super::plugin_import::import_lock_for(skill_id);
-        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        let legacy = self.legacy_skills_dir.join(&dir_name);
+        Ok(dir_name)
+    }
+
+    /// The lock-protected teardown of `uninstall`: deletes the on-disk
+    /// copies and the bundles.json mirror entry, and reports whether an
+    /// installation was actually torn down (see `uninstall`'s contract).
+    /// Caller MUST hold the per-id `import_lock_for(skill_id)`; split out of
+    /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
+    /// this teardown and its scope strip (round-12 review B2).
+    fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
+        let legacy = self.legacy_skills_dir.join(dir_name);
 
         // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
         // 同口径：bundles.json 读不出按可能 Upload 处理 —— 中止卸载报错，不照删
@@ -887,9 +957,10 @@ impl SkillMarketplaceManager {
         let record = self.bundle_store.get(skill_id).map_err(|e| {
             format!("读取 bundles.json 失败，中止卸载 {skill_id}（fail-closed）: {e}")
         })?;
+        let record_present = record.is_some();
         if let Some(record) = record {
             if matches!(record.source, super::store::BundleSource::Upload(_)) {
-                let owner = super::bundle::skill_owner_package(&dir_name);
+                let owner = super::bundle::skill_owner_package(dir_name);
                 let pkg_dir = self.packages_root.join(skill_id);
                 if owner == skill_id && pkg_dir.is_dir() {
                     // Standalone uploaded skill package: move the whole
@@ -918,7 +989,7 @@ impl SkillMarketplaceManager {
                         }
                         return Err(format!("移入回收站失败（{skill_id}）: {e}"));
                     }
-                    return Ok(());
+                    return Ok(true);
                 }
                 if owner != skill_id && pkg_dir.is_dir() {
                     // Upload 登记且包目录仍在，但属主被其他已装包认领（例如回收
@@ -936,7 +1007,7 @@ impl SkillMarketplaceManager {
         }
 
         let mut deleted_any = false;
-        for dir in self.package_candidate_dirs(&dir_name) {
+        for dir in self.package_candidate_dirs(dir_name) {
             if !dir.is_dir() {
                 continue;
             }
@@ -965,7 +1036,46 @@ impl SkillMarketplaceManager {
                 "[skill-marketplace] failed to delete bundles.json mirror entry (uninstall {skill_id}): {e}"
             );
         }
-        Ok(())
+        Ok(record_present || deleted_any)
+    }
+
+    /// Uninstall plus the caller-side scope strip, with the per-id import
+    /// lock held across BOTH: the teardown and the strip share one critical
+    /// section, so a deny-first registration a concurrent same-id install
+    /// makes after this function returns survives (round-11 P2-1), and the
+    /// previous post-return strip — which ran with the lock already released
+    /// and could delete a just-registered fresh entry (round-12 review B2) —
+    /// is gone. The residual is the same in-section window the MCP tool lane
+    /// has: a gate that reads the store in the instant between the record
+    /// removal and the strip still registers and is then stripped
+    /// (microsecond scale, fail-open, disclosed in capability-governance
+    /// §3.2). A vacuous `Ok(false)` strips nothing; a refused strip only
+    /// logs (the leftover entry fails closed). The strip targets the
+    /// pre-teardown owner snapshot via the exact form (round-26 MAJOR 1).
+    /// Only for teardown paths with no outer transaction lock (ima logout);
+    /// the skill command lane keeps its own post-return strip with a
+    /// pre-teardown owner snapshot (its callers are the ones that know the
+    /// owner), and the tool uninstall's companion legs strip inside
+    /// `cleanup_uninstalled_tool_state` instead.
+    pub fn uninstall_and_strip_scope(&self, skill_id: &str) -> Result<bool, String> {
+        let dir_name = self.precheck_uninstall(skill_id)?;
+        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Round-26 MAJOR 1 exact-form rule: the rows were owned by the
+        // pre-teardown owner mapping, so snapshot it while the claims are
+        // alive — re-normalizing the id after `uninstall_locked` deleted the
+        // directories is hijackable by a foreign claim. Today's only caller
+        // passes `ima-skills`, whose owner is the dir-independent hard rule
+        // (`ima-skills` → `ima`), so behavior is unchanged; this closes the
+        // latent hazard for a future caller with a generic skill id.
+        let owner = crate::features::marketplace::bundle::skill_owner_package(skill_id);
+        let torn_down = self.uninstall_locked(skill_id, &dir_name)?;
+        if torn_down {
+            if let Err(error) = super::scope::remove_bundle_from_disabled_scopes_exact(&owner) {
+                log::warn!("[skill-marketplace] scope cleanup for {skill_id} skipped: {error}");
+            }
+        }
+        Ok(torn_down)
     }
 
     /// Test-only scaffolding: imports a user-uploaded zip skill package
@@ -995,6 +1105,32 @@ impl SkillMarketplaceManager {
         &self,
         zip_path: &str,
         display_name: &str,
+    ) -> Result<String, String> {
+        self.import_package_named_gated(zip_path, display_name, &|_| Ok(()))
+    }
+
+    /// Same pipeline with a pre-land gate hook: `pre_land` runs once the skill
+    /// name (= package id) is derived and fully validated but BEFORE any
+    /// content lands on disk or replaces an existing installation. A refusal
+    /// aborts the import with nothing touched — the DenyAll consent gate uses
+    /// this to register the deny entry before the skill is exposed (#515/#517
+    /// review round 4): uninstalling an already-landed re-import would destroy
+    /// the user's pre-existing copy (import overwrites in place), while a
+    /// deny-first refusal loses nothing. Runs before the same-id import lock
+    /// on purpose: the gate then takes no import lock at all, so the import
+    /// lock is never held ACROSS a wait on another importer (the scope RMW
+    /// lock itself may be nested inside transaction/import/recycle locks
+    /// one-directionally — see `scope::with_scope_file_lock`'s lock-order
+    /// note; the reverse nesting never happens).
+    /// Test-only scaffolding (like `import_package_named`, its only caller):
+    /// the production skill-zip channel is the unified plugin-package pipeline
+    /// with its own pre-land gate (`plugin_import::import_plugin_package_gated`).
+    #[cfg(test)]
+    pub fn import_package_named_gated(
+        &self,
+        zip_path: &str,
+        display_name: &str,
+        pre_land: &dyn Fn(&str) -> Result<(), String>,
     ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
@@ -1057,6 +1193,15 @@ impl SkillMarketplaceManager {
         if is_preset_skill_name(&name) {
             return Err(format!("技能名 '{name}' 与市场预置技能冲突，请改名后重试"));
         }
+        // Same vocabulary guard as the plugin-package pipeline: an upload
+        // keyed under a preset MARKET id would make the consent gate treat
+        // the real preset as already known and fold the alias vocabulary
+        // onto the upload (round-11 P2-2).
+        if is_preset_market_id(&name) {
+            return Err(format!(
+                "技能名 '{name}' 与市场预置技能 id 冲突，请改名后重试"
+            ));
+        }
         let owner = super::bundle::skill_owner_package(&name);
         if owner != name {
             return Err(format!(
@@ -1073,6 +1218,12 @@ impl SkillMarketplaceManager {
                 "技能 '{name}' 已存在于包 '{other}'，请先卸载该包或改名后重试"
             ));
         }
+
+        // Pre-land gate hook: the name is final and validated here, nothing
+        // has been written yet. A refusal aborts the whole import before any
+        // content lands or an existing installation is replaced (deny-first
+        // consent gate, #517 review round 4).
+        pre_land(&name)?;
 
         // 自此持同 id import_lock 至函数尾：staged 暂存目录就位于共享路径
         // `bundles/<name>/skills/` 之下，锁外 staging 会与统一导入的 rename、
@@ -2523,6 +2674,16 @@ pub(crate) fn is_preset_skill_name(skill_name: &str) -> bool {
         .any(|m| m.skill_name == skill_name)
 }
 
+/// Whether `name` collides with a preset skill's MARKET id — the id install
+/// records and deny entries are keyed under. Upload channels must reject
+/// such ids up front: a record or deny entry under a preset market id makes
+/// the consent gate treat the real preset as already known (its install
+/// skips registration — fail-open), and read-time normalization would fold
+/// the preset's alias vocabulary onto the upload.
+pub(crate) fn is_preset_market_id(name: &str) -> bool {
+    preset_manifests().iter().any(|m| m.id == name)
+}
+
 /// On-disk copies of `skill_name` under `<packages_root>/*/skills/` whose
 /// package dir name differs from `own_pkg` (staging dirs like `<id>.tmp` /
 /// `<id>.old` are excluded by the component-id check). Upload channels use
@@ -3099,10 +3260,11 @@ mod tests {
             assert!(builtin_claims_skill("trip-notes"));
             assert!(builtin_claims_skill("skill:trip-notes"));
             // End-to-end wiring pin (review round-4 minor 1): the guard lives
-            // in `uninstall` itself, so a real call through the default-roots
-            // manager must hit the same rejection — deleting the
-            // `builtin_claims_skill` block there turns this red (new() takes
-            // no ENV_LOCK, so it is safe inside with_temp_home).
+            // in `uninstall`'s precheck (`precheck_uninstall`, shared with
+            // `uninstall_and_strip_scope`), so a real call through the
+            // default-roots manager must hit the same rejection — deleting
+            // the `builtin_claims_skill` block there turns this red (new()
+            // takes no ENV_LOCK, so it is safe inside with_temp_home).
             let mgr = SkillMarketplaceManager::new();
             let err = mgr.uninstall("trip-notes").unwrap_err();
             assert!(
@@ -3115,6 +3277,59 @@ mod tests {
             // manager here would deadlock — `with_roots` takes ENV_LOCK,
             // which with_temp_home already holds.
         });
+    }
+
+    /// The skill lane's consent strip must run while the per-id import lock
+    /// is still held (round-12 review B2): a post-return strip can delete a
+    /// deny-first registration a concurrent same-id install just made. The
+    /// property is not behaviorally observable through the public API (the
+    /// broken shape also blocks on the lock, just earlier), so pin the
+    /// structure: the helper must acquire the lock itself and strip before
+    /// dropping it, and must NOT delegate to `uninstall` (whose guard would
+    /// drop at its return).
+    #[test]
+    fn uninstall_and_strip_scope_strips_under_import_lock() {
+        let source = include_str!("skill_marketplace.rs");
+        let start = source
+            .find("pub fn uninstall_and_strip_scope")
+            .expect("helper must exist");
+        let rest = &source[start..];
+        // The helper is followed by the `/// Test-only scaffolding:` doc
+        // comment of the test-only zip import, so a 4-space-indented doc
+        // comment (or a sibling `pub fn`) ends the body slice exactly.
+        let end = rest
+            .find("\n    /// ")
+            .or_else(|| rest.find("\n    pub fn "))
+            .expect("next item");
+        // Round-16 (review): match CODE, not comments — whole-line `//`
+        // comments are filtered before the assertions so a doc/comment
+        // mention of the lock or the strip can no longer satisfy the pin.
+        // (Only whole-line comments are filtered: stripping intra-line `//`
+        // would corrupt string literals such as URLs.)
+        let body = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("import_lock_for") && body.contains(".lock()"),
+            "the helper must hold the per-id import lock itself"
+        );
+        assert!(
+            body.contains("remove_bundle_from_disabled_scopes"),
+            "the strip must live inside the helper"
+        );
+        assert!(
+            !body.contains("self.uninstall("),
+            "the helper must not delegate to uninstall (its guard drops at return)"
+        );
+        // An explicit early drop of the import-lock guard before the strip
+        // would satisfy every literal above while un-doing the invariant —
+        // refuse the shape outright.
+        assert!(
+            !body.contains("drop(import_lock"),
+            "the helper must not drop the import lock before the strip"
+        );
     }
 
     /// F2/F3 回归：install 落盘后清扫同名其余物理副本（滞留包目录 + 带标记

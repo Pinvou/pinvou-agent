@@ -788,7 +788,19 @@ pub fn run() {
             // persists the frozen fresh-vs-upgrade verdict, ahead of every
             // first-startup write.
             startup::mark("disabled_bundles_migration:start");
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            let (_, freeze_persist_failed) =
+                crate::features::marketplace::scope::load_disabled_bundles_startup();
+            if freeze_persist_failed {
+                // The CRITICAL log line for this failure fires inside the read
+                // — before the log plugin attaches below — so release builds
+                // would never see it (round-16 review). The startup timeline
+                // file persists from startup::init above and survives.
+                startup::mark_with_detail(
+                    "rust",
+                    "disabled_bundles_migration",
+                    "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
+                );
+            }
             startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
@@ -1215,7 +1227,7 @@ pub fn run() {
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            let _ = crate::features::marketplace::scope::load_disabled_bundles_startup();
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -1837,7 +1849,7 @@ mod startup_order_contract {
             include_str!("lib.rs"),
             &[
                 "crate::features::marketplace::scope::",
-                "load_disabled_bundles()",
+                "load_disabled_bundles_startup()",
             ]
             .concat(),
             &["SessionStore::", "boot_for_process_startup()"].concat(),
@@ -1847,7 +1859,7 @@ mod startup_order_contract {
         // SessionStore boot.
         assert_migration_read_precedes(
             include_str!("features/assistant/product_runtime/headless_bridge.rs"),
-            "marketplace::scope::load_disabled_bundles()",
+            "marketplace::scope::load_disabled_bundles_startup()",
             "SessionStore::boot()",
             "headless_bridge.rs",
         );
@@ -1855,7 +1867,7 @@ mod startup_order_contract {
         // (ensure_dirs / default settings.json first-startup writes).
         assert_migration_read_precedes(
             include_str!("bin/dump_system_prompt.rs"),
-            "load_disabled_bundles()",
+            "load_disabled_bundles_startup()",
             "Pinvou3Bridge::boot()",
             "dump_system_prompt.rs",
         );
