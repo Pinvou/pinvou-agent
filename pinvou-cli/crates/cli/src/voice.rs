@@ -945,6 +945,18 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
     if let Some(custom) = custom.as_deref() {
+        // Same entry gate as `connectors::download_https`: the override is
+        // operator-controlled, but a cleartext scheme is refused outright
+        // rather than downloaded (the pinned constants are all https; an
+        // http override is indistinguishable from a mistake or a MITM).
+        if reqwest::Url::parse(custom)
+            .map(|parsed| parsed.scheme() != "https")
+            .unwrap_or(true)
+        {
+            return Err(CliError::failed(
+                "voice asr-install: PINVOU3_ASR_MODEL_URL must be an https URL",
+            ));
+        }
         // The app's `model_download_urls` tries ONLY the override: a broken
         // custom URL must fail the install instead of silently installing
         // the public model behind the operator's back. The error class from
@@ -959,15 +971,25 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
         }
         return Ok(dest);
     }
+    // Same error-class discipline as the custom-URL arm above: a disk-full
+    // (or any non-checksum) failure must not be mislabeled as "verify the
+    // checksum" — keep the LAST attempt's URL-safe error class and surface
+    // it beside the generic advice.
+    let mut last_error: Option<String> = None;
     for url in [spec.primary_url, spec.mirror_url] {
-        if download_to(url, &dest, spec.sha256).is_ok() {
-            return Ok(dest);
+        match download_to(url, &dest, spec.sha256) {
+            Ok(()) => return Ok(dest),
+            Err(error) => {
+                let _ = std::fs::remove_file(&dest);
+                last_error = Some(error.to_string());
+            }
         }
-        let _ = std::fs::remove_file(&dest);
     }
-    Err(CliError::failed(
-        "voice asr-install: model download failed or checksum mismatch; verify manually and retry",
-    ))
+    Err(CliError::failed(format!(
+        "voice asr-install: model download failed or checksum mismatch ({}); \
+         verify manually and retry",
+        last_error.unwrap_or_default()
+    )))
 }
 
 fn file_is_sha256(path: &Path, expected: &str) -> bool {
@@ -1047,9 +1069,26 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     // raw `File exists` naming an internal path; the reserve helper heals
     // exactly that case — a leftover REGULAR file is unlinked and re-
     // reserved once, while a planted symlink keeps the refusal.
+    // The 900 s total matches the mirrored app helper's budget
+    // (`platform/download.rs`): at ~300 KB/s the 254 MiB Windows q8 model
+    // needs ~870 s, so the GUI install succeeds where a tighter budget
+    // would fail both URLs. The read-idle bound the app carries stays
+    // not-copied (see the module header) — a stalled connection still ends
+    // at the total budget, just later than the app's 30 s idle cut.
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600))
+        .timeout(Duration::from_secs(900))
         .connect_timeout(Duration::from_secs(30))
+        // Same https-only redirect policy as the connectors download lane
+        // (`download_https`) and the GUI's `download_verified`: integrity is
+        // pinned by sha256, but a scheme-downgrading redirect must not leak
+        // the model URL to a plaintext hop.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .user_agent(concat!("pinvou-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| CliError::failed(format!("voice asr-install: client: {error}")))?;

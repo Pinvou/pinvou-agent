@@ -171,7 +171,15 @@ fn write_file(
         .create_new(true)
         .open(destination)
         .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
+            // Unix reports an existing path as `AlreadyExists`, but Windows
+            // `CREATE_NEW` against an existing DIRECTORY reports
+            // ERROR_ACCESS_DENIED (`PermissionDenied`) — the refusal is
+            // decided by "the path is already there", with the raw error
+            // only as the fallback message (same classification as
+            // `sessions export`).
+            let already_there =
+                error.kind() == std::io::ErrorKind::AlreadyExists || destination.exists();
+            if already_there {
                 CliError::failed(format!(
                     "files ingest: refusing to overwrite {}; choose a destination that does \
                      not exist yet",

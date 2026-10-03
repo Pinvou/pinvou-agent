@@ -2062,19 +2062,46 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     // first, then one retry through npmmirror — "registry.npmjs.org is
     // often unreachable on China networks" is the GUI's own rationale for
     // the second attempt. Marker lines separate the attempts in the shared
-    // append-only log (the app's `append_cli_install_log`, with its 8 MiB
-    // rotation) so the first failure's cause is not lost.
+    // append-only log so the first failure's cause is not lost. An `Err`
+    // from the first attempt (the 180 s timeout, a wait error, a spawn
+    // failure) is retry-worthy exactly like a clean non-zero exit — on the
+    // networks this mirror exists for the dominant failure mode is the
+    // npmjs.org hang into the timeout, so aborting here would skip the
+    // mirror that would have succeeded (the GUI falls through on `Err`
+    // too, `tmeet.rs` `first.as_ref().is_ok_and`).
     pinvou3_lib::features::append_cli_install_log("── npm install (default npm registry) ──");
-    if run_npm_attempt(spec, &npm, None)? {
+    let first = run_npm_attempt(spec, &npm, None);
+    if first.as_ref().is_ok_and(|ok| *ok) {
         return Ok(true);
     }
     pinvou3_lib::features::append_cli_install_log(
         "── default registry failed, retrying via npmmirror ──",
     );
-    if run_npm_attempt(spec, &npm, Some(pinvou3_lib::platform::NPM_MIRROR_REGISTRY))? {
+    let second = run_npm_attempt(spec, &npm, Some(pinvou3_lib::platform::NPM_MIRROR_REGISTRY));
+    if second.as_ref().is_ok_and(|ok| *ok) {
         return Ok(true);
     }
-    Ok(false)
+    // Both attempts failed. Clean double non-zero exits keep the caller's
+    // `{display_name} CLI install failed` + log-hint shape; any hard `Err`
+    // (timeout/wait/spawn) is aggregated starting from the FIRST error,
+    // the GUI's rule — reporting only the retry error would bury a first
+    // failure unrelated to the network.
+    let mut causes: Vec<String> = Vec::new();
+    if let Err(primary) = &first {
+        causes.push(format!("default registry error: {primary}"));
+    }
+    if let Err(retry) = &second {
+        causes.push(format!("npmmirror retry error: {retry}"));
+    }
+    if causes.is_empty() {
+        return Ok(false);
+    }
+    let log_path = pinvou3_home().join("cli-install.log");
+    Err(CliError::failed(format!(
+        "npm install failed: {}; log at {}",
+        causes.join("; "),
+        log_path.display()
+    )))
 }
 
 /// One npm attempt of [`run_npm_install`]: appends its stdout/stderr to the
@@ -2093,6 +2120,12 @@ fn run_npm_attempt(
         registry_arg = format!("--registry={registry}");
         args.push(&registry_arg);
     }
+    // The GUI's `run_with_timeout` rotates the shared log past its 8 MiB
+    // budget before each run; this lane redirects npm stdio into the same
+    // file directly, so it enforces the same bound itself (the comment on
+    // `run_npm_install` claims "the app's rotation" — this call is what
+    // makes that true here).
+    pinvou3_lib::features::rotate_cli_install_log_if_oversized(&log_path);
     let mut cmd = crate::support::build_command(npm, &args);
     crate::support::set_process_group(&mut cmd);
     // The GUI's tmeet install applies the user npm prefix (the shared
@@ -2384,6 +2417,14 @@ fn find_file_by_name(dir: &Path, name: &str) -> Option<PathBuf> {
 /// HTTPS-only download capped at the app's archive limit, staged through a
 /// `.part` sibling so a crashed download never leaves a truncated file at the
 /// real path (rename is atomic on the same filesystem).
+/// Remove debris from a previous crashed download at the predictable `.part`
+/// path so the exclusive create below can proceed. Best-effort by design:
+/// a planted directory at the path fails `remove_file`, and the exclusive
+/// create then fails loudly with the path named — the safe direction.
+fn clear_stale_part(part: &Path) {
+    let _ = std::fs::remove_file(part);
+}
+
 fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| CliError::failed("connector download URL is invalid"))?;
@@ -2418,6 +2459,17 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     }
     let part = destination.with_extension("part");
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
+    // A hard kill (SIGKILL, power loss, OOM) mid-download leaves the `.part`
+    // behind — none of the handled error paths below run — and `create_new`
+    // would then fail with `AlreadyExists` on every future run of every
+    // candidate, wedging the install behind a user-hunted stale file. The
+    // GUI's mirror pre-cleans for exactly this reason
+    // (`native_installer.rs`: "a leftover ... would break the 'any candidate
+    // failure cleans up the staging file' semantics"). Removing the entry
+    // first is safe against the symlink plant the `create_new` below guards:
+    // `remove_file` unlinks the link itself, never its target, and the
+    // exclusive create still refuses any entry this call did not remove.
+    clear_stale_part(&part);
     // `create_new`, not `create`: `File::create` follows a symlink
     // pre-planted at the fully predictable `.part` name and would truncate
     // its target, then publish the renamed symlink — the exclusive
@@ -2431,9 +2483,12 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
         use std::os::unix::fs::OpenOptionsExt as _;
         open_options.mode(0o600);
     }
-    let mut file = open_options
-        .open(&part)
-        .map_err(|error| CliError::failed(format!("cannot create archive file: {error}")))?;
+    let mut file = open_options.open(&part).map_err(|error| {
+        CliError::failed(format!(
+            "cannot create archive file {}: {error}",
+            part.display()
+        ))
+    })?;
     let copied = match std::io::copy(&mut reader, &mut file) {
         Ok(copied) => copied,
         Err(error) => {
@@ -3928,6 +3983,81 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_stale_part_removes_a_crashed_download_debris() {
+        // A SIGKILL/power-loss mid-download leaves the regular-file `.part`
+        // behind and none of download_https' handled error paths run; the
+        // pre-clean must unlink it so the next install's exclusive create is
+        // not wedged behind "File exists" forever (round-35 M2).
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-stale-part-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&workspace).expect("test workspace");
+        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
+        std::fs::write(&part, b"half a download").expect("seed the stale .part");
+        clear_stale_part(&part);
+        assert!(!part.exists(), "the stale .part must be gone");
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_stale_part_unlinks_a_planted_symlink_itself_not_its_target() {
+        // The symlink-plant defense stays intact: `remove_file` unlinks the
+        // LINK, never its target, and the exclusive create below still
+        // refuses any entry this call did not remove.
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-part-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&workspace).expect("test workspace");
+        let victim = workspace.join("victim.txt");
+        std::fs::write(&victim, b"keep").expect("seed the victim");
+        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
+        std::os::unix::fs::symlink(&victim, &part).expect("plant the symlink");
+        clear_stale_part(&part);
+        assert!(!part.exists(), "the planted link must be unlinked");
+        assert!(
+            victim.exists(),
+            "the planted link's target must survive untouched"
+        );
+        assert_eq!(
+            std::fs::read(&victim).expect("the victim must stay readable"),
+            b"keep"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn clear_stale_part_leaves_a_directory_for_the_exclusive_create_to_refuse() {
+        // A directory at the path is not download debris; the best-effort
+        // removal must not recurse, and the exclusive create still fails
+        // loudly with the path named.
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-part-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&workspace).expect("test workspace");
+        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
+        std::fs::create_dir(&part).expect("plant the directory");
+        clear_stale_part(&part);
+        assert!(part.is_dir(), "the directory must be left for create_new");
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
 
     #[test]
     fn ima_error_redaction_removes_the_exact_credential_values() {

@@ -103,6 +103,12 @@ fn providers_usage() -> String {
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
 const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M] --yes>";
 const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session> --yes>";
+/// Parse-time cap for `code run --timeout-secs`, identical to the library
+/// clamp the wired consumers use (`MAX_TIMEOUT_SECS` in `agent_task.rs`, the
+/// connect lanes in `connectors.rs`): the refusal must stay in lockstep so
+/// the day the one-shot turn is wired, no new value class appears.
+const CODE_RUN_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
+
 const RUN_USAGE: &str = "usage: pinvou code run <agent> --workspace DIR (--prompt-file F|--prompt S) [--timeout-secs N]";
 const PERMISSIONS_USAGE: &str = "usage: pinvou code permissions <session>";
 const RESPOND_USAGE: &str = "usage: pinvou code respond <session> <request-id> <allow|deny>";
@@ -864,6 +870,17 @@ fn parse_run(rest: &[String]) -> Result<CodeCommand, CliError> {
             if parsed == 0 {
                 return Err(CliError::usage(
                     "code run --timeout-secs must be a positive integer",
+                ));
+            }
+            // Same 7-day ceiling as the consumers that actually wire a
+            // timeout (`agent_task.rs`'s library clamp, `connectors.rs`'s
+            // connect lanes): an unbounded u64 would overflow
+            // `Instant + Duration` and exit 101 with no report the day this
+            // flag is wired. Refusing at parse time keeps the contract
+            // identical across families.
+            if parsed > CODE_RUN_TIMEOUT_SECS_MAX {
+                return Err(CliError::usage(
+                    "code run --timeout-secs must be at most 604800 (7 days)",
                 ));
             }
             Some(parsed)
@@ -4986,13 +5003,32 @@ fn workspace_diff(
                 note!(
                     "code workspace diff: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
                      remaining changed files are not included — diff them with \
-                     `pinvou code workspace diff --file <path>`"
+                     `pinvou code workspace diff <session> <path>`"
                 );
                 if !combined.is_empty() {
                     combined.push('\n');
                 }
                 combined.push_str(&format!(
                     "# diff truncated: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
+                     remaining changed files are not included\n"
+                ));
+            }
+            // The payload cap is the same truncation as the file cap — small
+            // diffs accumulate past 1 MiB without any single file hitting the
+            // per-file cap — so it gets the same three-channel treatment:
+            // in-band marker, `truncated` flag, stderr note. Without it the
+            // human output would just stop mid-hunk with no explanation.
+            if hit_diff_limit {
+                note!(
+                    "code workspace diff: stopped at the 1 MiB payload cap; the \
+                     remaining changed files are not included — diff them with \
+                     `pinvou code workspace diff <session> <path>`"
+                );
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&format!(
+                    "# diff truncated: stopped at the 1 MiB payload cap; the \
                      remaining changed files are not included\n"
                 ));
             }

@@ -855,7 +855,14 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // `scanned` keeps advancing (the walker reports every 5000 entries and
     // once per root), so "still running and not counting" is the honest
     // signature of a lost thread.
+    // The stall bound watches BOTH counters: `scanned` (countable entries,
+    // reported every 5000) and `raw_seen` (a heartbeat ticked every 5000
+    // RAW enumerations, pre-prune). A pruned-heavy tree — millions of
+    // disallowed files under a few countable ones — walks healthily for a
+    // long time without `scanned` moving, and keying on it alone would
+    // misclassify that walk as a wedged thread and kill it mid-tree.
     let mut last_scanned = service.status().scanned;
+    let mut last_raw_seen = service.status().raw_seen;
     let mut last_progress = std::time::Instant::now();
     loop {
         let state = service.status();
@@ -875,17 +882,19 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
             }
             return scan_out("scan completed (process-local)", state, output);
         }
-        if state.scanned != last_scanned {
+        if state.scanned != last_scanned || state.raw_seen != last_raw_seen {
             last_scanned = state.scanned;
+            last_raw_seen = state.raw_seen;
             last_progress = std::time::Instant::now();
         } else if last_progress.elapsed() >= scan_no_progress_timeout() {
             return Err(CliError::failed(format!(
                 "knowledge scan start: the scan is still flagged running but reported no \
-                 progress for {:?} (scanned: {}); the scan thread is gone or wedged — \
+                 progress for {:?} (scanned: {}, raw: {}); the scan thread is gone or wedged — \
                  partial results may be indexed and the completion marker was not \
                  persisted",
                 last_progress.elapsed(),
-                state.scanned
+                state.scanned,
+                state.raw_seen
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
