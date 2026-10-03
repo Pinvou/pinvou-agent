@@ -43,12 +43,15 @@ case "$(uname -s)" in
       # 与 scripts/tauri/build.js 相同的原子替换:先写唯一临时文件再改名,
       # 中断的编译绝不能留下半截 exe 被下次的 mtime 缓存永远复用。
       tmp_exe="$exe.$$.$RANDOM.tmp"
+      # MSVC rustc -O 链接带 /DEBUG:临时 exe 旁还会写一个同名 .pdb
+      # (临时名去掉 .tmp 换成 .pdb),必须与临时 exe 一起清理。
       if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$tmp_exe")"; then
-        rm -f "$tmp_exe"
+        rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
       mv -f "$tmp_exe" "$exe"
+      rm -f "${tmp_exe%.tmp}.pdb"
     fi
     cygpath -m "$exe"
     ;;

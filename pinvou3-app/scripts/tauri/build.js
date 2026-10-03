@@ -229,6 +229,9 @@ function prepareWindowsRustcStackWrapper(
     // build (Ctrl-C, CI kill) must never leave a partial executable that the
     // mtime cache would then reuse forever.
     const tempWrapperPath = `${wrapperPath}.${process.pid}.tmp`;
+    // MSVC links with /DEBUG, so the temp compile also writes a sibling
+    // "<temp base>.pdb" beside the temporary executable; both twins go.
+    const tempPdbPath = `${wrapperPath}.${process.pid}.pdb`;
     let result;
     try {
       result = spawnCompiler(
@@ -252,8 +255,10 @@ function prepareWindowsRustcStackWrapper(
       }
       fs.renameSync(tempWrapperPath, wrapperPath);
     } finally {
-      if (fs.existsSync(tempWrapperPath)) {
-        fs.rmSync(tempWrapperPath, { force: true });
+      for (const leftover of [tempWrapperPath, tempPdbPath]) {
+        if (fs.existsSync(leftover)) {
+          fs.rmSync(leftover, { force: true });
+        }
       }
     }
   }
