@@ -868,6 +868,21 @@ fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool 
     if walked > 0 {
         return true;
     }
+    // A root the walker refuses BY POLICY (its basename sits on the
+    // exclusion list — `build`, `dist`, `venv`, `.cache`, …) is not "walked
+    // and empty": `walk_pruned` subjects the depth-0 root to the same skip
+    // predicate as every entry, so a readable, non-empty excluded-name root
+    // also reports zero entries and zero errors. Authorizing the sweep here
+    // would delete the slice of a directory nobody ever looked at while
+    // reporting `done, scanned: 0`. The empty-looking exclusion-root round
+    // therefore vetoes, exactly like a walk error (the safe lingering
+    // direction); a root the user genuinely emptied AND renamed off the
+    // exclusion list sweeps on the next round.
+    if let Some(name) = root.file_name().and_then(|name| name.to_str())
+        && Excluder::default().is_skipped(name, true, None)
+    {
+        return false;
+    }
     // A symlinked root is followed for traversal (walkdir's follow_root_links
     // defaults to true; only the root ENTRY itself reports is_symlink and is
     // skipped by the recorder), so a non-empty target yields walked > 0 and

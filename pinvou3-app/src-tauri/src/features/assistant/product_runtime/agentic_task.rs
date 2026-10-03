@@ -1302,6 +1302,17 @@ async fn run_turn(
     // existing session's copies must be swept when the turn provably never
     // started, or they orphan under the caller's workspace.
     let mut staged_attachment_copies: Vec<std::path::PathBuf> = Vec::new();
+    // The staging task's join handle, owned HERE — outside the deadline-
+    // scoped setup future — and parked by `prompt_with_attachments` through
+    // the mutable borrow below. A deadline firing while staging is in flight
+    // drops the setup future at its staging await; a handle owned by that
+    // future would detach the blocking task, whose writes then land AFTER
+    // the teardown disposition (re-creating a deleted session directory, or
+    // stranding unreferenced copies inside a kept one). With the handle
+    // parked here, the arms that drop the setup join the task first (see
+    // `join_staged_attachments`), so the sweep sees the real copies and no
+    // write outlives the disposition.
+    let mut staging_in_flight: Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>> = None;
     // Set immediately before `runtime.submit`; read by the timeout arm to tell
     // "the deadline hit while staging attachments" (nothing ran, restore the
     // pins) from "the deadline hit around the submit" (a turn may have been
@@ -1413,8 +1424,14 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let (content, consumed_sources, staged_copies) =
-            prompt_with_attachments(store, session_id, request, existing_session).await?;
+        let (content, consumed_sources, staged_copies) = prompt_with_attachments(
+            store,
+            session_id,
+            request,
+            existing_session,
+            &mut staging_in_flight,
+        )
+        .await?;
         staged_attachment_copies = staged_copies;
         // Marks the point past which a deadline hit is genuinely ambiguous:
         // the submit may already have admitted the turn, so the timeout arm
@@ -1504,7 +1521,12 @@ async fn run_turn(
                 // the pins back mid-turn would evict the engine under it —
                 // there the pins stay, like those of any submitted run. The
                 // sequencing itself is extracted (and pinned) in
-                // [`resume_unwind_after_pinned_restore`].
+                // [`resume_unwind_after_pinned_restore`]. The staging task,
+                // if the panic caught it mid-flight, is joined first so no
+                // staged write outlives the unwind (the handle is owned
+                // outside the dropped setup future — see
+                // `staging_in_flight`).
+                join_staged_attachments(&mut staging_in_flight).await;
                 resume_unwind_after_pinned_restore(&submit_entered, panic, |reason| {
                     restore_pre_run_pins(
                         runtime,
@@ -1565,7 +1587,15 @@ async fn run_turn(
             // never ran a turn, so the pins are put back exactly like on a
             // setup failure. Past that point the outcome is genuinely
             // ambiguous (the turn may have been admitted), and there the pins
-            // stay, like those of any submitted run.
+            // stay, like those of any submitted run. Either way, the staging
+            // task the dropped setup future left joinable is joined first
+            // (bounded): its batch either lands with its copies adopted into
+            // the sweep below, or the note names the detachment — the old
+            // shape, where an in-flight staging detached immediately and
+            // wrote after the teardown, is gone.
+            if let Some(copies) = join_staged_attachments(&mut staging_in_flight).await {
+                staged_attachment_copies = copies;
+            }
             if !submit_entered.load(Ordering::SeqCst) {
                 restore_pre_run_pins(
                     runtime,
@@ -1764,11 +1794,57 @@ async fn run_turn(
 /// by absolute path. Images get the `image_analyze` hard-rule text, which the
 /// product tool allowlist always provides, so no model image-capability probe
 /// is needed.
+/// One staging batch's output: the ingested attachments for the prompt, the
+/// consumed sources, and the staged workspace copies the failure arms sweep.
+type StagedBatch = (
+    Vec<IngestResult>,
+    Vec<std::path::PathBuf>,
+    Vec<std::path::PathBuf>,
+);
+
+/// Upper bound on how long the failure arms wait for a staging task that was
+/// still running when the deadline (or a panic) dropped the setup future.
+/// Staging is capped at 16 × 20 MiB plus bounded ingest work, so this grace
+/// covers every real completion; expiring it degrades to the pre-fix
+/// behavior (detached task) rather than hanging the report on a wedged
+/// filesystem read.
+const STAGING_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Joins a staging task whose setup future was dropped before its staging
+/// await completed (deadline or panic arm). On a clean join the copies list
+/// is returned for the caller's sweep; a staging failure self-swept its own
+/// partials and yields `None`; a grace expiry leaves the task detached with
+/// a stderr note — the outcome a dropped handle used to produce instantly,
+/// now only after a grace that real staging always fits inside.
+async fn join_staged_attachments(
+    staging_in_flight: &mut Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>>,
+) -> Option<Vec<std::path::PathBuf>> {
+    let join = staging_in_flight.as_mut()?;
+    match tokio::time::timeout(STAGING_JOIN_GRACE, &mut *join).await {
+        Ok(Ok(Ok((_, _, copies)))) => Some(copies),
+        Ok(Ok(Err(_))) => None,
+        Ok(Err(join_error)) => {
+            super::note_stderr(&format!(
+                "agentic staging task ended abnormally after the deadline: {join_error}"
+            ));
+            None
+        }
+        Err(_elapsed) => {
+            super::note_stderr(
+                "agentic staging task did not finish within the post-deadline grace; \
+                 its copies may land unreferenced",
+            );
+            None
+        }
+    }
+}
+
 async fn prompt_with_attachments(
     store: &SessionStore,
     session_id: &str,
     request: &AgenticTaskRequest,
     existing_session: bool,
+    staging_in_flight: &mut Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>>,
 ) -> Result<(String, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
     if request.attachments.is_empty() {
         return Ok((request.prompt.clone(), Vec::new(), Vec::new()));
@@ -1789,10 +1865,18 @@ async fn prompt_with_attachments(
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
     let staging_root = ledger_root.clone();
-    let staged =
-        tokio::task::spawn_blocking(move || stage_and_ingest_batch(&attachments, &staging_root))
-            .await
-            .context("attachment staging task")??;
+    let join =
+        tokio::task::spawn_blocking(move || stage_and_ingest_batch(&attachments, &staging_root));
+    // Park the handle in the caller's slot BEFORE awaiting, then await by
+    // mutable borrow of the parked handle: a deadline firing at this await
+    // drops only the borrow (and with it the setup future) — the blocking
+    // task stays joinable for the failure arms instead of detaching
+    // mid-write.
+    *staging_in_flight = Some(join);
+    let staged = match staging_in_flight.as_mut() {
+        Some(join) => (&mut *join).await.context("attachment staging task")??,
+        None => unreachable!("the staging handle was parked above"),
+    };
     let (ingested, consumed_sources, staged_copies) = staged;
     Ok((
         build_message_with_attachments_in_dir(
@@ -3375,7 +3459,10 @@ mod tests {
     #[test]
     fn report_deserializes_without_new_marker_field() {
         // Older reports (without completed_after_deadline) must still parse,
-        // defaulting the marker to false.
+        // defaulting the marker to false — and `submitted` to false too:
+        // the CLI's one-shot persona consume gates on that default, so a
+        // flipped default would silently spend a staged persona body on a
+        // timed-out setup.
         let json = r#"{
             "session_id":"agentic_1_0",
             "status":"timeout",
@@ -3387,6 +3474,7 @@ mod tests {
         }"#;
         let parsed: AgenticTaskReport = serde_json::from_str(json).unwrap();
         assert!(!parsed.completed_after_deadline);
+        assert!(!parsed.submitted, "the serde default must stay false");
         assert_eq!(parsed.status, "timeout");
     }
 

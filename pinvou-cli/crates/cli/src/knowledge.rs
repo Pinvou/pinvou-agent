@@ -1378,7 +1378,11 @@ fn collections_add_sources(
     // collection between the pre-check above and `start_index` carries a
     // fresh job id, passes the guards below, and this command then blocks
     // on and reports the APP's import while its own sources were never
-    // enqueued. Re-running the command is the remedy.
+    // enqueued. Re-running the command is the remedy. A further residual
+    // of the same race: if that APP-owned import then stays quiet past this
+    // invocation's stall timeout, the timeout interrupts the app's healthy
+    // job (it lands `interrupted`, immediately resumable — no data loss,
+    // but a live GUI import was flipped as a side effect).
     let state = service.start_index(id, paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
     // requested sources are silently dropped — a fresh job reports
@@ -2054,7 +2058,7 @@ fn configured_model_dir() -> PathBuf {
 /// desktop app's download orchestration (`features/knowledge/
 /// model_download.rs`). A one-shot CLI process can never have a download of
 /// its own in flight (`model download` is honestly unavailable headless),
-/// so the flag it sets is read by nobody and the {@code cancelled:true} the
+/// so the flag it sets is read by nobody and the `cancelled: true` the
 /// command used to print was a no-op reported as success. Same honest
 /// refusal pattern as `model download` itself.
 fn model_cancel(_output: OutputMode) -> Result<CliOutcome, CliError> {

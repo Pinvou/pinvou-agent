@@ -238,11 +238,11 @@ fn fixture_skill_zip(home: &Path) -> PathBuf {
 #[test]
 fn parses_every_plugins_subcommand() {
     for args in [
-        vec!["pinvoy", "plugins", "tools", "list"],
-        vec!["pinvoy", "plugins", "tools", "list", "--installed-only"],
-        vec!["pinvoy", "plugins", "tools", "install", "weather"],
+        vec!["pinvou", "plugins", "tools", "list"],
+        vec!["pinvou", "plugins", "tools", "list", "--installed-only"],
+        vec!["pinvou", "plugins", "tools", "install", "weather"],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "tools",
             "install",
@@ -253,17 +253,17 @@ fn parses_every_plugins_subcommand() {
             "OTHER=MY_OTHER_ENV",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "tools",
             "uninstall",
             "weather",
             "--yes",
         ],
-        vec!["pinvoy", "plugins", "tools", "auth", "qcc"],
-        vec!["pinvoy", "plugins", "tools", "oauth-login", "qcc"],
+        vec!["pinvou", "plugins", "tools", "auth", "qcc"],
+        vec!["pinvou", "plugins", "tools", "oauth-login", "qcc"],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "tools",
             "oauth-login",
@@ -271,51 +271,51 @@ fn parses_every_plugins_subcommand() {
             "--timeout",
             "30",
         ],
-        vec!["pinvoy", "plugins", "tools", "oauth-cancel", "qcc"],
-        vec!["pinvoy", "plugins", "skills", "list"],
-        vec!["pinvoy", "plugins", "skills", "list", "--installed-only"],
-        vec!["pinvoy", "plugins", "skills", "install", "visualizer"],
-        vec!["pinvoy", "plugins", "skills", "update", "visualizer"],
+        vec!["pinvou", "plugins", "tools", "oauth-cancel", "qcc"],
+        vec!["pinvou", "plugins", "skills", "list"],
+        vec!["pinvou", "plugins", "skills", "list", "--installed-only"],
+        vec!["pinvou", "plugins", "skills", "install", "visualizer"],
+        vec!["pinvou", "plugins", "skills", "update", "visualizer"],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "skills",
             "uninstall",
             "visualizer",
             "--yes",
         ],
-        vec!["pinvoy", "plugins", "import", "/tmp/skill.zip"],
-        vec!["pinvoy", "plugins", "export", "my-pkg"],
+        vec!["pinvou", "plugins", "import", "/tmp/skill.zip"],
+        vec!["pinvou", "plugins", "export", "my-pkg"],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "export",
             "my-pkg",
             "--output",
             "/tmp/out.zip",
         ],
-        vec!["pinvoy", "plugins", "meta", "my-pkg", "--name", "New Name"],
+        vec!["pinvou", "plugins", "meta", "my-pkg", "--name", "New Name"],
         vec![
-            "pinvoy",
+            "pinvou",
             "plugins",
             "meta",
             "my-pkg",
             "--description",
             "New description",
         ],
-        vec!["pinvoy", "plugins", "recycle", "list"],
-        vec!["pinvoy", "plugins", "recycle", "restore", "my-pkg"],
-        vec!["pinvoy", "plugins", "recycle", "purge", "my-pkg", "--yes"],
+        vec!["pinvou", "plugins", "recycle", "list"],
+        vec!["pinvou", "plugins", "recycle", "restore", "my-pkg"],
+        vec!["pinvou", "plugins", "recycle", "purge", "my-pkg", "--yes"],
         vec![
-            "pinvoy", "plugins", "recycle", "export", "my-pkg", "--output", "x.zip",
+            "pinvou", "plugins", "recycle", "export", "my-pkg", "--output", "x.zip",
         ],
-        vec!["pinvoy", "plugins", "readiness"],
-        vec!["pinvoy", "plugins", "enable", "weather"],
-        vec!["pinvoy", "plugins", "enable", "weather", "--scope", "plain"],
-        vec!["pinvoy", "plugins", "disable", "weather", "--scope", "code"],
-        vec!["pinvoy", "plugins", "disable", "weather", "--scope", "both"],
-        vec!["pinvoy", "plugins", "project-skills", "on"],
-        vec!["pinvoy", "plugins", "project-skills", "off"],
+        vec!["pinvou", "plugins", "readiness"],
+        vec!["pinvou", "plugins", "enable", "weather"],
+        vec!["pinvou", "plugins", "enable", "weather", "--scope", "plain"],
+        vec!["pinvou", "plugins", "disable", "weather", "--scope", "code"],
+        vec!["pinvou", "plugins", "disable", "weather", "--scope", "both"],
+        vec!["pinvou", "plugins", "project-skills", "on"],
+        vec!["pinvou", "plugins", "project-skills", "off"],
     ] {
         parse_args(args).unwrap_or_else(|error| panic!("valid command rejected: {error}"));
     }
@@ -324,31 +324,31 @@ fn parses_every_plugins_subcommand() {
 #[test]
 fn plugins_usage_errors_exit_two() {
     // missing / unknown subcommands
-    assert!(usage_error(&["pinvoy", "plugins"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "plugins", "bogus"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "bogus"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "plugins", "skills", "bogus"]).contains("usage"));
-    assert!(usage_error(&["pinvoy", "plugins", "recycle", "bogus"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins", "bogus"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins", "tools"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "bogus"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins", "skills", "bogus"]).contains("usage"));
+    assert!(usage_error(&["pinvou", "plugins", "recycle", "bogus"]).contains("usage"));
     // missing ids
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "install"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "uninstall"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "auth"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "oauth-login"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "oauth-cancel"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "skills", "install"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "skills", "uninstall"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "export"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "meta"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "recycle", "restore"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "recycle", "purge"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "recycle", "export"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "enable"]).contains("id"));
-    assert!(usage_error(&["pinvoy", "plugins", "disable"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "install"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "uninstall"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "auth"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "oauth-login"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "oauth-cancel"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "skills", "install"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "skills", "uninstall"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "export"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "meta"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "recycle", "restore"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "recycle", "purge"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "recycle", "export"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "enable"]).contains("id"));
+    assert!(usage_error(&["pinvou", "plugins", "disable"]).contains("id"));
     // unsupported / malformed options
-    assert!(usage_error(&["pinvoy", "plugins", "tools", "list", "--bogus"]).contains("--bogus"));
+    assert!(usage_error(&["pinvou", "plugins", "tools", "list", "--bogus"]).contains("--bogus"));
     let no_equals = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "install",
@@ -364,18 +364,18 @@ fn plugins_usage_errors_exit_two() {
         "the --secret refusal must not echo the argument: {no_equals}"
     );
     assert!(
-        usage_error(&["pinvoy", "plugins", "tools", "install", "w", "--secret"])
+        usage_error(&["pinvou", "plugins", "tools", "install", "w", "--secret"])
             .contains("KEY=ENV_VAR_NAME")
     );
     assert!(
         usage_error(&[
-            "pinvoy", "plugins", "tools", "install", "w", "--secret", "=ENV"
+            "pinvou", "plugins", "tools", "install", "w", "--secret", "=ENV"
         ])
         .contains("non-empty KEY")
     );
     assert!(
         usage_error(&[
-            "pinvoy",
+            "pinvou",
             "plugins",
             "tools",
             "oauth-login",
@@ -387,7 +387,7 @@ fn plugins_usage_errors_exit_two() {
     );
     assert!(
         usage_error(&[
-            "pinvoy",
+            "pinvou",
             "plugins",
             "tools",
             "oauth-login",
@@ -398,12 +398,12 @@ fn plugins_usage_errors_exit_two() {
         .contains("positive integer")
     );
     assert!(
-        usage_error(&["pinvoy", "plugins", "tools", "auth", "q", "--full"])
+        usage_error(&["pinvou", "plugins", "tools", "auth", "q", "--full"])
             .contains("accepts no options")
     );
     assert!(
         usage_error(&[
-            "pinvoy",
+            "pinvou",
             "plugins",
             "skills",
             "list",
@@ -413,21 +413,21 @@ fn plugins_usage_errors_exit_two() {
         .contains("--archived")
     );
     // meta requires at least one editable field
-    assert!(usage_error(&["pinvoy", "plugins", "meta", "p"]).contains("--name"));
+    assert!(usage_error(&["pinvou", "plugins", "meta", "p"]).contains("--name"));
     // scope values are validated with the valid values named
     assert!(
-        usage_error(&["pinvoy", "plugins", "enable", "w", "--scope", "global"]).contains("plain")
+        usage_error(&["pinvou", "plugins", "enable", "w", "--scope", "global"]).contains("plain")
     );
     assert!(
-        usage_error(&["pinvoy", "plugins", "disable", "w", "--scope", "CODE"]).contains("plain")
+        usage_error(&["pinvou", "plugins", "disable", "w", "--scope", "CODE"]).contains("plain")
     );
     // project-skills only accepts on|off
-    assert!(usage_error(&["pinvoy", "plugins", "project-skills", "true"]).contains("on or off"));
-    assert!(usage_error(&["pinvoy", "plugins", "project-skills"]).contains("on or off"));
+    assert!(usage_error(&["pinvou", "plugins", "project-skills", "true"]).contains("on or off"));
+    assert!(usage_error(&["pinvou", "plugins", "project-skills"]).contains("on or off"));
     // import requires a path; readiness accepts nothing
-    assert!(usage_error(&["pinvoy", "plugins", "import"]).contains("PATH"));
+    assert!(usage_error(&["pinvou", "plugins", "import"]).contains("PATH"));
     assert!(
-        usage_error(&["pinvoy", "plugins", "readiness", "extra"]).contains("accepts no arguments")
+        usage_error(&["pinvou", "plugins", "readiness", "extra"]).contains("accepts no arguments")
     );
 }
 
@@ -440,7 +440,7 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("import-list");
     let dir = fixture_skill_dir(home.path());
-    let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    let stdout = run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert!(
         stdout.contains(FIXTURE_DIR_SKILL),
         "skills list should mention the imported directory skill"
@@ -451,13 +451,13 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     );
 
     let zip = fixture_skill_zip(home.path());
-    let stdout = run_ok(&["pinvoy", "plugins", "import", zip.to_str().unwrap()]);
+    let stdout = run_ok(&["pinvou", "plugins", "import", zip.to_str().unwrap()]);
     assert!(
         stdout.contains(FIXTURE_ZIP_SKILL),
         "skills list should mention the imported zip skill"
     );
 
-    let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
+    let human = run_ok(&["pinvou", "plugins", "skills", "list"]);
     assert!(human.contains(FIXTURE_DIR_SKILL));
     assert!(human.contains(FIXTURE_ZIP_SKILL));
     assert!(
@@ -465,11 +465,11 @@ fn import_directory_and_zip_show_up_in_skills_list() {
         "skills list should mark imported skills uploaded"
     );
 
-    let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
+    let installed_only = run_ok(&["pinvou", "plugins", "skills", "list", "--installed-only"]);
     assert!(installed_only.contains(FIXTURE_DIR_SKILL));
     assert!(installed_only.contains(FIXTURE_ZIP_SKILL));
 
-    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let skills = value["skills"].as_array().expect("skills array");
     let fixture = skills
         .iter()
@@ -498,9 +498,9 @@ fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
         "---\nname: collapse-hostile\ndescription: ok\tinjected\trow\n---\n# body\n",
     )
     .unwrap();
-    run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
 
-    let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
+    let human = run_ok(&["pinvou", "plugins", "skills", "list"]);
     let rows = human
         .lines()
         .filter(|line| line.contains("collapse-hostile"))
@@ -517,7 +517,7 @@ fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
     );
 
     // JSON keeps the verbatim description — only the human row sanitizes.
-    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let skills = value["skills"].as_array().expect("skills array");
     let fixture = skills
         .iter()
@@ -537,7 +537,7 @@ fn import_md_file_with_and_without_frontmatter() {
 
     let named = home.path().join("contract-md-skill.md");
     std::fs::write(&named, "---\nname: contract-md-skill\n---\nbody").unwrap();
-    let stdout = run_ok(&["pinvoy", "plugins", "import", named.to_str().unwrap()]);
+    let stdout = run_ok(&["pinvou", "plugins", "import", named.to_str().unwrap()]);
     assert!(
         stdout.contains("contract-md-skill"),
         "import output should mention the skill id from the file name"
@@ -548,7 +548,7 @@ fn import_md_file_with_and_without_frontmatter() {
     // fail with "SKILL.md lacks name", so success proves the injection ran.
     let plain = home.path().join("plain notes.md");
     std::fs::write(&plain, "just some body text").unwrap();
-    let stdout = run_ok(&["pinvoy", "plugins", "import", plain.to_str().unwrap()]);
+    let stdout = run_ok(&["pinvou", "plugins", "import", plain.to_str().unwrap()]);
     assert!(
         stdout.contains("plain-notes"),
         "import output should mention the sanitized fallback id"
@@ -576,7 +576,7 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
             format!("body for {name} without a frontmatter name"),
         )
         .unwrap();
-        let value = run_json(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+        let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
         ids.push(value["id"].as_str().expect("string id").to_owned());
     }
     assert_ne!(ids[0], ids[1], "distinct names must yield distinct ids");
@@ -602,7 +602,7 @@ fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
         let dir = home.path().join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), format!("body for {name}")).unwrap();
-        let value = run_json(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+        let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
         ids.push(value["id"].as_str().expect("string id").to_owned());
     }
     assert_ne!(
@@ -618,20 +618,20 @@ fn import_rejects_missing_path_and_unsupported_extension() {
     let home = SandboxHome::new("import-errors");
 
     let missing = home.path().join("nope.zip");
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", missing.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", missing.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("does not exist"), "message: {message}");
 
     let txt = home.path().join("file.txt");
     std::fs::write(&txt, "x").unwrap();
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", txt.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", txt.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Usage);
     assert!(message.contains(".zip"), "message: {message}");
 
     // Directory without a root SKILL.md is rejected as a failed import.
     let bare = home.path().join("bare-dir");
     std::fs::create_dir_all(&bare).unwrap();
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", bare.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", bare.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("SKILL.md"), "message: {message}");
 }
@@ -665,7 +665,7 @@ fn import_rejects_oversize_markdown_file() {
 
     let oversized = home.path().join("oversize.md");
     write_sparse(&oversized, import_package_limit() + 1);
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", oversized.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
@@ -688,7 +688,7 @@ fn import_rejects_directory_over_cumulative_limit() {
     // alone.
     write_sparse(&dir.join("a.bin"), import_package_limit() - 1024);
     write_sparse(&dir.join("b.bin"), 2048);
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
@@ -720,7 +720,7 @@ fn import_directory_at_the_cap_fails_preflight_with_the_limit_message() {
         import_package_limit() - skill_md.len() as u64,
     );
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
@@ -759,7 +759,7 @@ fn import_directory_counts_root_skill_md_once() {
     drop(file);
     write_sparse(&dir.join("a.bin"), import_package_limit() - 12288);
 
-    let parsed = parse_args(vec!["pinvoy", "plugins", "import", dir.to_str().unwrap()])
+    let parsed = parse_args(vec!["pinvou", "plugins", "import", dir.to_str().unwrap()])
         .expect("valid command");
     match execute(parsed) {
         Ok(outcome) => {
@@ -790,7 +790,7 @@ fn import_rejects_fifo_skill_file_without_reading() {
         .status()
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", fifo.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("not a regular file"), "message: {message}");
 }
@@ -807,7 +807,7 @@ fn import_rejects_oversize_zip_package() {
 
     let oversized = home.path().join("oversize.zip");
     write_sparse(&oversized, import_package_limit() + 1);
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", oversized.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
@@ -827,7 +827,7 @@ fn import_rejects_fifo_zip_package_without_opening() {
         .status()
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", fifo.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("not a regular file"), "message: {message}");
 }
@@ -849,7 +849,7 @@ fn import_directory_skips_fifo_entries() {
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
 
-    let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    let stdout = run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert!(
         stdout.contains("fifo-dir-skill"),
         "import output should mention the skill from the fifo dir"
@@ -861,10 +861,10 @@ fn meta_updates_upload_package_and_rejects_preset() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("meta");
     let dir = fixture_skill_dir(home.path());
-    run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
 
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "meta",
         FIXTURE_DIR_SKILL,
@@ -896,7 +896,7 @@ fn meta_updates_upload_package_and_rejects_preset() {
     );
 
     // Preset/embedded packages refuse display-meta overrides (GUI parity).
-    let (message, code) = run_err(&["pinvoy", "plugins", "meta", "visualizer", "--name", "Nope"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "meta", "visualizer", "--name", "Nope"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("visualizer"), "message: {message}");
 }
@@ -911,7 +911,7 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     let home = SandboxHome::new("scope-roundtrip");
 
     run_ok(&[
-        "pinvoy", "plugins", "disable", "weather", "--scope", "plain",
+        "pinvou", "plugins", "disable", "weather", "--scope", "plain",
     ]);
     let file = disabled_bundles_json(home.path());
     // Plain scope converges to DenyAll too: the first toggle initializes the
@@ -923,7 +923,7 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
         serde_json::json!(["feishu", "wecom", "dingtalk", "tmeet", "weather"])
     );
 
-    run_ok(&["pinvoy", "plugins", "disable", "weather", "--scope", "code"]);
+    run_ok(&["pinvou", "plugins", "disable", "weather", "--scope", "code"]);
     let file = disabled_bundles_json(home.path());
     // Uninitialized code scope defaults to deny-all (builtin CLI connector
     // ids included); disabling weather freezes that list plus weather.
@@ -938,7 +938,7 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     );
 
     // Default scope is `both`.
-    run_ok(&["pinvoy", "plugins", "disable", "obsidian"]);
+    run_ok(&["pinvou", "plugins", "disable", "obsidian"]);
     let file = disabled_bundles_json(home.path());
     let plain = file["scopes"]["plain"].as_array().unwrap();
     assert_eq!(
@@ -951,7 +951,7 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     let code = file["scopes"]["code"].as_array().unwrap();
     assert!(code.contains(&serde_json::json!("obsidian")));
 
-    run_ok(&["pinvoy", "plugins", "enable", "weather", "--scope", "both"]);
+    run_ok(&["pinvou", "plugins", "enable", "weather", "--scope", "both"]);
     let file = disabled_bundles_json(home.path());
     let plain = file["scopes"]["plain"].as_array().unwrap();
     let code = file["scopes"]["code"].as_array().unwrap();
@@ -959,7 +959,7 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     assert!(!code.contains(&serde_json::json!("weather")));
     assert!(plain.contains(&serde_json::json!("obsidian")));
 
-    let stdout = run_ok(&["pinvoy", "plugins", "enable", "obsidian", "--scope", "code"]);
+    let stdout = run_ok(&["pinvou", "plugins", "enable", "obsidian", "--scope", "code"]);
     assert!(
         stdout.contains("scope=code"),
         "enable output should confirm scope=code"
@@ -977,7 +977,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     let home = SandboxHome::new("scope-companion-remap");
 
     let disabled = run_json(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "disable",
         "ima-skills",
@@ -998,7 +998,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     );
 
     let enabled = run_json(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "enable",
         "ima-skills",
@@ -1023,7 +1023,7 @@ fn project_skills_round_trip() {
     let home = SandboxHome::new("project-skills");
 
     assert!(!disabled_bundles_json_exists(home.path()));
-    let stdout = run_ok(&["pinvoy", "plugins", "project-skills", "on"]);
+    let stdout = run_ok(&["pinvou", "plugins", "project-skills", "on"]);
     assert!(
         stdout.contains("enabled"),
         "project-skills on should confirm enabled"
@@ -1033,7 +1033,7 @@ fn project_skills_round_trip() {
         serde_json::json!(true)
     );
 
-    run_ok(&["pinvoy", "plugins", "project-skills", "off"]);
+    run_ok(&["pinvou", "plugins", "project-skills", "off"]);
     assert_eq!(
         disabled_bundles_json(home.path())["project_skills_enabled"],
         serde_json::json!(false)
@@ -1053,13 +1053,13 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-list");
 
-    let human = run_ok(&["pinvoy", "plugins", "tools", "list"]);
+    let human = run_ok(&["pinvou", "plugins", "tools", "list"]);
     for known in ["weather", "qcc", "obsidian", "pptx"] {
         assert!(human.contains(known), "catalog should list {known}");
     }
     assert!(!human.contains("installed\t"), "nothing installed yet");
 
-    let value = run_json(&["pinvoy", "plugins", "tools", "list"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "list"]);
     let tools = value["tools"].as_array().expect("tools array");
     assert!(tools.len() >= 11, "embedded catalog has 11 packages");
     let weather = tools.iter().find(|tool| tool["id"] == "weather").unwrap();
@@ -1080,7 +1080,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     }
     assert_eq!(weather["installed"], serde_json::json!(false));
 
-    let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
+    let installed_only = run_ok(&["pinvou", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         installed_only.is_empty(),
         "installed-only list must be empty before any install"
@@ -1092,27 +1092,27 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("tools-roundtrip");
 
-    let stdout = run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    let stdout = run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     assert!(
         stdout.contains("installed qcc"),
         "tools install output should confirm installed qcc"
     );
 
-    let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
+    let installed_only = run_ok(&["pinvou", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         installed_only.contains("qcc"),
         "tools list should include installed qcc"
     );
 
     // Destructive uninstall requires --yes (exit 2 before touching state).
-    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "uninstall", "qcc"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "tools", "uninstall", "qcc"]);
     assert_eq!(code, ExitCode::Usage);
     assert!(message.contains("--yes"), "message: {message}");
 
     // qcc is a remote OAuth tool: the headless CLI never reaches the
     // foundation token store, so the human uninstall keeps disclosing that
     // stored tokens survive (the documented deviation from the GUI).
-    let stdout = run_ok(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
+    let stdout = run_ok(&["pinvou", "plugins", "tools", "uninstall", "qcc", "--yes"]);
     assert!(
         stdout.contains("stored OAuth tokens were kept"),
         "the uninstall must keep disclosing the kept OAuth tokens: {stdout}"
@@ -1120,8 +1120,8 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
 
     // JSON carries the same fact as the note, and a reinstall exercises the
     // disclosed consequence (the tool would come back still authorized).
-    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
-    let value = run_json(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "uninstall", "qcc", "--yes"]);
     assert_eq!(value["id"], serde_json::json!("qcc"));
     assert_eq!(value["action"], serde_json::json!("uninstalled"));
     assert_eq!(
@@ -1135,7 +1135,7 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
         "the JSON uninstall must carry the kept-OAuth-tokens fact"
     );
 
-    let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
+    let installed_only = run_ok(&["pinvou", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         !installed_only.contains("qcc"),
         "tools list --installed-only should drop uninstalled qcc"
@@ -1149,13 +1149,13 @@ fn tools_auth_reports_installed_and_oauth_states() {
     let _home = SandboxHome::new("tools-auth");
 
     // Non-OAuth tool, not installed.
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "obsidian"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "obsidian"]);
     assert_eq!(value["installed"], serde_json::json!(false));
     assert_eq!(value["oauth_required"], serde_json::json!(false));
     assert_eq!(value["status"], serde_json::json!("not_installed"));
 
     // Remote OAuth tool, not installed: server declared, no mcp.json yet.
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "qcc"]);
     assert_eq!(value["oauth_required"], serde_json::json!(true));
     assert_eq!(value["server_name"], serde_json::json!("qcc-company"));
     assert_eq!(value["mcp_configured"], serde_json::json!(false));
@@ -1163,8 +1163,8 @@ fn tools_auth_reports_installed_and_oauth_states() {
 
     // Installed OAuth tool: MCP config present, token presence not verifiable
     // headless (foundation token store) — conservative pending status.
-    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "qcc"]);
     assert_eq!(value["installed"], serde_json::json!(true));
     assert_eq!(value["mcp_configured"], serde_json::json!(true));
     assert_eq!(
@@ -1177,8 +1177,8 @@ fn tools_auth_reports_installed_and_oauth_states() {
     );
 
     // Installed non-OAuth tool reports connected.
-    run_ok(&["pinvoy", "plugins", "tools", "install", "obsidian"]);
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "obsidian"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "obsidian"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "obsidian"]);
     assert_eq!(value["status"], serde_json::json!("connected"));
 }
 
@@ -1188,7 +1188,7 @@ fn oauth_login_guards_and_cancel_behaviour() {
     let _home = SandboxHome::new("oauth-login");
 
     // Tool without a remote OAuth declaration → the feature's own error.
-    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "oauth-login", "obsidian"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "obsidian"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("does not declare a remote MCP OAuth login"),
@@ -1196,16 +1196,16 @@ fn oauth_login_guards_and_cancel_behaviour() {
     );
 
     // OAuth tool whose server is not in mcp.json yet (not installed).
-    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "oauth-login", "qcc"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("mcp.json"), "message: {message}");
 
     // Installed OAuth tool: the interactive OAuth flow lives in the
     // foundation crate the CLI does not link — deterministic, documented
     // exit-1 instead of a half-working reimplementation.
-    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "oauth-login",
@@ -1220,7 +1220,7 @@ fn oauth_login_guards_and_cancel_behaviour() {
     );
 
     // Cancel: a CLI process never owns an in-flight login.
-    let stdout = run_ok(&["pinvoy", "plugins", "tools", "oauth-cancel", "qcc"]);
+    let stdout = run_ok(&["pinvou", "plugins", "tools", "oauth-cancel", "qcc"]);
     assert!(
         stdout.contains("no active oauth login"),
         "oauth-cancel output should report no active login"
@@ -1238,7 +1238,7 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-secret-no-echo");
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "install",
@@ -1276,7 +1276,7 @@ fn tools_install_with_secret_persists_credential() {
     unsafe { std::env::set_var("PINVOU_CLI_TEST_AMAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "install",
@@ -1289,7 +1289,7 @@ fn tools_install_with_secret_persists_credential() {
         "tools install output should confirm installed weather"
     );
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "install", "iwencai"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "tools", "install", "iwencai"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("secret environment variable"),
@@ -1313,7 +1313,7 @@ fn tools_install_warns_when_remote_validation_is_skipped() {
     unsafe { std::env::set_var("PINVOU_CLI_TEST_PATSNAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "install",
@@ -1341,15 +1341,15 @@ fn skills_preset_install_update_uninstall_round_trip() {
     let _home = SandboxHome::new("skills-preset");
 
     // Update guard: only installed preset skills can be updated.
-    let (message, code) = run_err(&["pinvoy", "plugins", "skills", "update", "visualizer"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "skills", "update", "visualizer"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("not an installed preset skill"),
         "message: {message}"
     );
 
-    run_ok(&["pinvoy", "plugins", "skills", "install", "visualizer"]);
-    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    run_ok(&["pinvou", "plugins", "skills", "install", "visualizer"]);
+    let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let visualizer = value["skills"]
         .as_array()
         .unwrap()
@@ -1361,25 +1361,25 @@ fn skills_preset_install_update_uninstall_round_trip() {
     assert_eq!(visualizer["user_uploaded"], serde_json::json!(false));
 
     // Unknown skill id → feature's own error (exit 1).
-    let (message, code) = run_err(&["pinvoy", "plugins", "skills", "install", "no-such-skill"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "skills", "install", "no-such-skill"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("no-such-skill"), "message: {message}");
 
-    run_ok(&["pinvoy", "plugins", "skills", "update", "visualizer"]);
+    run_ok(&["pinvou", "plugins", "skills", "update", "visualizer"]);
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "skills", "uninstall", "visualizer"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "skills", "uninstall", "visualizer"]);
     assert_eq!(code, ExitCode::Usage);
     assert!(message.contains("--yes"), "message: {message}");
 
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "skills",
         "uninstall",
         "visualizer",
         "--yes",
     ]);
-    let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
+    let installed_only = run_ok(&["pinvou", "plugins", "skills", "list", "--installed-only"]);
     assert!(
         !installed_only.contains("visualizer"),
         "tools list --installed-only should drop uninstalled visualizer"
@@ -1392,11 +1392,11 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     let home = SandboxHome::new("export");
 
     let dir = fixture_skill_dir(home.path());
-    run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
 
     let dest = home.path().join("exports").join("fixture.zip");
     let stdout = run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "export",
         FIXTURE_DIR_SKILL,
@@ -1412,7 +1412,7 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
 
     // An existing destination is refused, not overwritten (exit 1).
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "export",
         FIXTURE_DIR_SKILL,
@@ -1436,7 +1436,7 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     let blocker = home.path().join("blocker");
     std::fs::write(&blocker, b"not a directory").unwrap();
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "export",
         FIXTURE_DIR_SKILL,
@@ -1451,12 +1451,12 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     );
 
     // Embedded preset packages refuse export (feature's own error, exit 1).
-    let (message, code) = run_err(&["pinvoy", "plugins", "export", "pptx"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "export", "pptx"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("pptx"), "message: {message}");
 
     // Unknown id → not installed.
-    let (message, code) = run_err(&["pinvoy", "plugins", "export", "never-installed"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "export", "never-installed"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("never-installed"), "message: {message}");
 }
@@ -1467,18 +1467,18 @@ fn recycle_round_trip_via_fixture() {
     let home = SandboxHome::new("recycle");
 
     let zip = fixture_skill_zip(home.path());
-    run_ok(&["pinvoy", "plugins", "import", zip.to_str().unwrap()]);
+    run_ok(&["pinvou", "plugins", "import", zip.to_str().unwrap()]);
 
     // Uploaded package uninstall = soft delete into the recycle bin.
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "skills",
         "uninstall",
         FIXTURE_ZIP_SKILL,
         "--yes",
     ]);
-    let value = run_json(&["pinvoy", "plugins", "recycle", "list"]);
+    let value = run_json(&["pinvou", "plugins", "recycle", "list"]);
     let entries = value["recycled"].as_array().expect("recycled array");
     assert_eq!(entries.len(), 1, "exactly one recycled entry");
     assert_eq!(entries[0]["id"], FIXTURE_ZIP_SKILL);
@@ -1488,7 +1488,7 @@ fn recycle_round_trip_via_fixture() {
     // Export while recycled: writes a re-importable zip.
     let dest = home.path().join("recycled-export.zip");
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "recycle",
         "export",
@@ -1500,8 +1500,8 @@ fn recycle_round_trip_via_fixture() {
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
     // Restore puts the skill back on the market list.
-    run_ok(&["pinvoy", "plugins", "recycle", "restore", FIXTURE_ZIP_SKILL]);
-    let value = run_json(&["pinvoy", "plugins", "skills", "list"]);
+    run_ok(&["pinvou", "plugins", "recycle", "restore", FIXTURE_ZIP_SKILL]);
+    let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let restored = value["skills"]
         .as_array()
         .unwrap()
@@ -1509,31 +1509,31 @@ fn recycle_round_trip_via_fixture() {
         .find(|skill| skill["id"] == FIXTURE_ZIP_SKILL)
         .expect("restored skill listed");
     assert_eq!(restored["installed"], serde_json::json!(true));
-    let value = run_json(&["pinvoy", "plugins", "recycle", "list"]);
+    let value = run_json(&["pinvou", "plugins", "recycle", "list"]);
     assert!(value["recycled"].as_array().unwrap().is_empty());
 
     // Uninstall again, then purge destroys the entry permanently.
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "skills",
         "uninstall",
         FIXTURE_ZIP_SKILL,
         "--yes",
     ]);
-    let (message, code) = run_err(&["pinvoy", "plugins", "recycle", "purge", FIXTURE_ZIP_SKILL]);
+    let (message, code) = run_err(&["pinvou", "plugins", "recycle", "purge", FIXTURE_ZIP_SKILL]);
     assert_eq!(code, ExitCode::Usage);
     assert!(message.contains("--yes"), "message: {message}");
 
     run_ok(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "recycle",
         "purge",
         FIXTURE_ZIP_SKILL,
         "--yes",
     ]);
-    let value = run_json(&["pinvoy", "plugins", "recycle", "list"]);
+    let value = run_json(&["pinvou", "plugins", "recycle", "list"]);
     assert!(value["recycled"].as_array().unwrap().is_empty());
     assert!(
         !home.path().join("bundles").join(FIXTURE_ZIP_SKILL).exists(),
@@ -1541,10 +1541,10 @@ fn recycle_round_trip_via_fixture() {
     );
 
     // Unknown ids surface the feature's own errors (exit 1).
-    let (_, code) = run_err(&["pinvoy", "plugins", "recycle", "restore", "no-such-id"]);
+    let (_, code) = run_err(&["pinvou", "plugins", "recycle", "restore", "no-such-id"]);
     assert_eq!(code, ExitCode::Failed);
     let (_, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "recycle",
         "purge",
@@ -1552,7 +1552,7 @@ fn recycle_round_trip_via_fixture() {
         "--yes",
     ]);
     assert_eq!(code, ExitCode::Failed);
-    let (_, code) = run_err(&["pinvoy", "plugins", "recycle", "export", "no-such-id"]);
+    let (_, code) = run_err(&["pinvou", "plugins", "recycle", "export", "no-such-id"]);
     assert_eq!(code, ExitCode::Failed);
 }
 
@@ -1565,13 +1565,13 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("readiness");
 
-    let human = run_ok(&["pinvoy", "plugins", "readiness"]);
+    let human = run_ok(&["pinvou", "plugins", "readiness"]);
     assert!(
         human.contains("weather"),
         "readiness output should mention the weather tool"
     );
 
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let bundles = value["bundles"].as_array().expect("bundles array");
     assert!(!bundles.is_empty(), "registry lists the embedded catalog");
     for bundle in bundles {
@@ -1710,7 +1710,7 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
             home.path(),
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"已断开授权：配套技能已随断开移除，重新连接即可恢复"}"#,
         );
-        let value = run_json(&["pinvoy", "plugins", "readiness"]);
+        let value = run_json(&["pinvou", "plugins", "readiness"]);
         let rows = value["bundles"].as_array().expect("bundles array");
         let feishu = rows
             .iter()
@@ -1733,7 +1733,7 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
             home.path(),
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"CLI 二进制 SHA-256 与 lock 表不符，待重新下载"}"#,
         );
-        let value = run_json(&["pinvoy", "plugins", "readiness"]);
+        let value = run_json(&["pinvou", "plugins", "readiness"]);
         let rows = value["bundles"].as_array().expect("bundles array");
         let feishu = rows
             .iter()
@@ -1765,7 +1765,7 @@ fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
         r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z"}"#,
     );
 
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let feishu = rows
         .iter()
@@ -1803,7 +1803,7 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
         r#"{"id":"canva-mcp","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"resources missing"}"#,
     );
 
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let canva = rows
         .iter()
@@ -1857,7 +1857,7 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
     unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
 
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let ima = rows
         .iter()
@@ -1882,8 +1882,8 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     // credentials first, so the reason stays missing_credentials — and the
     // GUI's installed override is credentials-OR-skill, so the row flips to
     // installed even though no credential is present.
-    run_ok(&["pinvoy", "plugins", "skills", "install", "ima-skills"]);
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let ima = rows
         .iter()
@@ -1898,7 +1898,7 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     );
     assert_eq!(ima["probe"], serde_json::json!("registry"));
     // Human row keeps the shared 6-column shape (probe column included).
-    let human = run_ok(&["pinvoy", "plugins", "readiness"]);
+    let human = run_ok(&["pinvou", "plugins", "readiness"]);
     let ima_line = human
         .lines()
         .find(|line| line.starts_with("ima\t"))
@@ -1997,7 +1997,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
 
     // Credentials present, companion skill NOT installed: the GUI's
     // skill_not_installed, not the registry branch's missing_credentials.
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let ima = rows
         .iter()
@@ -2025,7 +2025,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
 
     // Credentials + companion skill: ima_status's connected, the GUI's ready.
     run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
-    let value = run_json(&["pinvoy", "plugins", "readiness"]);
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
     let rows = value["bundles"].as_array().expect("bundles array");
     let ima = rows
         .iter()
@@ -2066,13 +2066,13 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
 fn tools_auth_degrades_on_a_damaged_mcp_json() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("tools-auth-corrupt-mcp");
-    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     let mcp = home.path().join("bundle").join("mcp.json");
     assert!(mcp.is_file(), "installing qcc should write mcp.json");
 
     // Unparseable bytes: degrade, do not fail.
     std::fs::write(&mcp, "{ this is not json").unwrap();
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "qcc"]);
     assert_eq!(value["installed"], serde_json::json!(true));
     assert_eq!(
         value["mcp_configured"],
@@ -2087,7 +2087,7 @@ fn tools_auth_degrades_on_a_damaged_mcp_json() {
         r#"{"servers":{"qcc-company":{"url":"https://example.invalid","args":"not-a-list"}}}"#,
     )
     .unwrap();
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "qcc"]);
     assert_eq!(
         value["mcp_configured"],
         serde_json::json!(false),
@@ -2101,7 +2101,7 @@ fn tools_auth_degrades_on_a_damaged_mcp_json() {
         r#"{"servers":{"qcc-company":{"url":"https://example.invalid","args":[]}}}"#,
     )
     .unwrap();
-    let value = run_json(&["pinvoy", "plugins", "tools", "auth", "qcc"]);
+    let value = run_json(&["pinvou", "plugins", "tools", "auth", "qcc"]);
     assert_eq!(value["mcp_configured"], serde_json::json!(true));
     assert_eq!(
         value["status"],
@@ -2117,10 +2117,10 @@ fn tools_auth_degrades_on_a_damaged_mcp_json() {
 fn oauth_login_propagates_a_damaged_mcp_json() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("oauth-login-corrupt-mcp");
-    run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
+    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     std::fs::write(home.path().join("bundle").join("mcp.json"), "{ nope").unwrap();
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "tools", "oauth-login", "qcc"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("mcp.json"),
@@ -2145,7 +2145,7 @@ fn import_display_name_matches_the_gui_sanitizer() {
     let raw = format!("{}\u{200B}\\{}.md", "a".repeat(60), "b".repeat(80));
     let file = home.path().join(&raw);
     std::fs::write(&file, "---\nname: long-name-skill\n---\nbody").unwrap();
-    run_ok(&["pinvoy", "plugins", "import", file.to_str().unwrap()]);
+    run_ok(&["pinvou", "plugins", "import", file.to_str().unwrap()]);
 
     let bundles: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
@@ -2212,7 +2212,7 @@ fn import_charges_the_wrapped_skill_md_against_the_limit() {
         import_package_limit() - body.len() as u64,
     );
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert_eq!(code, ExitCode::Failed);
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
@@ -2231,7 +2231,7 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("scope-reporting");
 
-    let value = run_json(&["pinvoy", "plugins", "disable", "weather", "--scope", "both"]);
+    let value = run_json(&["pinvou", "plugins", "disable", "weather", "--scope", "both"]);
     assert_eq!(
         value["scopes_applied"],
         serde_json::json!(["plain", "code"]),
@@ -2244,7 +2244,7 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
         "the JSON toggle carries the hot-refresh fact the human note states"
     );
 
-    let value = run_json(&["pinvoy", "plugins", "enable", "weather", "--scope", "code"]);
+    let value = run_json(&["pinvou", "plugins", "enable", "weather", "--scope", "code"]);
     assert_eq!(
         value["scopes_applied"],
         serde_json::json!(["code"]),
@@ -2252,7 +2252,7 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
     );
     assert_eq!(value["hot_refresh"], serde_json::json!("not_broadcast"));
 
-    let stdout = run_ok(&["pinvoy", "plugins", "enable", "weather", "--scope", "plain"]);
+    let stdout = run_ok(&["pinvou", "plugins", "enable", "weather", "--scope", "plain"]);
     assert!(
         stdout.contains("no hot-refresh broadcast"),
         "the toggle must disclose that live engines keep the stale whitelist: {stdout}"
@@ -2276,7 +2276,7 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("builtin-refusal");
 
-    let (message, code) = run_err(&["pinvoy", "plugins", "disable", "session-reader"]);
+    let (message, code) = run_err(&["pinvou", "plugins", "disable", "session-reader"]);
     assert_eq!(code, ExitCode::Failed, "{message}");
     assert!(
         message.contains("cannot be disabled or hidden"),
@@ -2287,7 +2287,7 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     // BUILTIN refusal is what fires (without it, the --yes usage error would
     // mask the rule; disable has no such gate).
     let (message, code) = run_err(&[
-        "pinvoy",
+        "pinvou",
         "plugins",
         "tools",
         "uninstall",

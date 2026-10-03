@@ -308,15 +308,22 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // an edition ever does upload.
     let uploaded = receipt.status == FeedbackStatus::Submitted;
     // Built before the payload takes ownership of the rows.
+    // Both cells come from argv (the `--attach` path and its file name), so
+    // the human lines go through the same cell sanitizer every other family
+    // row uses; JSON stays verbatim by contract.
     let attachment_lines = attachment_rows
         .iter()
         .map(|row| {
             format!(
                 "\nAttachment: {} ({}, {} bytes) {}",
-                row["name"].as_str().unwrap_or_default(),
+                crate::support::collapse_control_characters(
+                    row["name"].as_str().unwrap_or_default(),
+                ),
                 row["media_type"].as_str().unwrap_or_default(),
                 row["size_bytes"].as_u64().unwrap_or_default(),
-                row["path"].as_str().unwrap_or_default(),
+                crate::support::collapse_control_characters(
+                    row["path"].as_str().unwrap_or_default(),
+                ),
             )
         })
         .collect::<String>();

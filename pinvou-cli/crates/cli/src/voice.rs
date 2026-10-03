@@ -14,8 +14,7 @@
 //!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
 //!   "no speech" convention.
 //! - the app verifies downloaded models by size **and** sha256; the CLI
-//!   mirrors both (sha256 through the shared
-//!   `platform::connector_lock::file_sha256_hex`).
+//!   mirrors both (sha256 through the shared `platform::sha256_file`).
 //! - the app's transcript parser (`features::voice::transcript`) is shared
 //!   verbatim: the CLI calls `parse_asr_transcript` so engine protocols and
 //!   noise filters cannot drift between the two surfaces.
@@ -985,6 +984,43 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
 /// change to that helper's ordering or cleanup guarantees must be reflected
 /// here in the same pull request; the async/cancel/progress/idle-timeout
 /// machinery it carries has no CLI equivalent and is deliberately not copied.
+/// Open the staged `.part` for writing, healing the one wedge a previous
+/// run can leave behind: a SIGKILL/OOM between the open and the rename
+/// leaves the `.part` on disk, and a raw `create_new` would then refuse
+/// every retry with `File exists`, naming no remedy — while the mirrored
+/// app helper (`platform/download.rs`) overwrites its staging file and
+/// self-heals after exactly this interruption. A leftover REGULAR file is
+/// this command's own debris: unlink it and re-reserve once. Anything else
+/// at the predictable name (a symlink pre-planted for the truncate attack,
+/// a directory) keeps the refusal — the exclusive open is the symlink
+/// defense (`create_new`, not `create`: `File::create` would truncate the
+/// link's target and publish the renamed symlink), and the 0600 mode is set
+/// on the SAME open, matching the module's staged-file convention.
+fn open_staged_part(part: &Path) -> std::io::Result<std::fs::File> {
+    let reserve = || {
+        let mut open_options = std::fs::OpenOptions::new();
+        open_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            open_options.mode(0o600);
+        }
+        open_options.open(part)
+    };
+    match reserve() {
+        Ok(file) => Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::symlink_metadata(part).is_ok_and(|meta| meta.is_file()) {
+                std::fs::remove_file(part)?;
+                reserve()
+            } else {
+                Err(error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliError> {
     // Staged through a .part sibling and size-capped: a crashed or hostile
     // download must never leave a truncated/garbage file at the real path.
@@ -1026,7 +1062,7 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         })?;
     let result = (|| -> Result<(), CliError> {
         use std::io::Read as _;
-        let mut file = std::fs::File::create(&part).map_err(|error| {
+        let mut file = open_staged_part(&part).map_err(|error| {
             CliError::failed(format!("voice asr-install: {}: {error}", part.display()))
         })?;
         let mut reader = response.take(MAX_DOWNLOAD_BYTES + 1);
@@ -2551,8 +2587,12 @@ fn anthropic_stop_reason_says_truncated(response: &serde_json::Value) -> bool {
 /// doubao, glm, mimo, minimax, and qwen (preset, provider, or model name).
 /// The GUI's remaining URL-sniffing lanes need the crate-private
 /// `core::reasoning_dialect` helpers and stay skipped (disclosed on
-/// [`call_postprocess_model`]); without them the qwen model-name fallback here is the
-/// last-resort arm, exactly where the GUI puts its sniffing fallback.
+/// [`call_postprocess_model`]); its last-resort model-name fallback also
+/// disables thinking for `deepseek`-named models, which this lane does not
+/// cover — a DeepSeek model behind a custom endpoint keeps its reasoning
+/// here where the GUI suppresses it. That makes the qwen model-name
+/// fallback the last-resort arm here, exactly where the GUI puts its
+/// sniffing fallback.
 ///
 /// Branch order mirrors the GUI dispatch: a preset the GUI handles
 /// deterministically must never fall through to the model-name fallback.
@@ -3581,5 +3621,54 @@ content-length: {}\r\n\r\n{}",
             error.to_string().contains("--text"),
             "the refusal must name the text-source options: {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod staged_part_tests {
+    use super::*;
+
+    /// A leftover regular `.part` from a SIGKILLed run must not wedge every
+    /// retry: plain-file debris is unlinked and re-reserved. A symlink
+    /// pre-planted at the predictable name keeps the refusal (the exclusive
+    /// open is the symlink defense) and is left untouched for the error to
+    /// point at.
+    #[test]
+    #[cfg(unix)]
+    fn staged_part_open_heals_plain_debris_and_refuses_symlinks() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-voice-part-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("model.gguf.part");
+
+        std::fs::write(&part, b"stale debris").unwrap();
+        {
+            let _file = open_staged_part(&part).expect("plain debris must heal");
+        }
+        assert_eq!(
+            std::fs::metadata(&part).unwrap().len(),
+            0,
+            "the healed reservation must be a fresh empty file"
+        );
+
+        std::fs::remove_file(&part).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", &part).unwrap();
+        assert!(
+            open_staged_part(&part).is_err(),
+            "a planted symlink must keep the refusal"
+        );
+        assert_eq!(
+            std::fs::read_link(&part).unwrap(),
+            std::path::PathBuf::from("/etc/hostname"),
+            "the refusal must not touch the planted link"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
