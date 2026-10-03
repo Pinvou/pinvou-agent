@@ -1885,7 +1885,7 @@ fn probe_local_model_flag_names_a_saved_credential() {
 /// (see the `models` module doc), so this is the only automated check of the
 /// live Bing lane.
 #[test]
-#[ignore = "network: run with `pinvoy settings search test bing` against bing.com"]
+#[ignore = "network: run with `pinvou settings search test bing` against bing.com"]
 fn bing_probe_hits_live_endpoint() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("ignored-bing-test");
@@ -1902,9 +1902,9 @@ fn bing_probe_hits_live_endpoint() {
 /// `settings search set`), and spends one search against that provider's
 /// quota — which is the cost of the command meaning what its name says.
 ///
-/// `cargo test -p pinvoy-cli --test models_contract -- --ignored search_api_probe_validates_a_live_key`
+/// `cargo test -p pinvou-cli --test models_contract -- --ignored search_api_probe_validates_a_live_key`
 #[test]
-#[ignore = "network + quota: run with a real key, e.g. METASO_API_KEY=... pinvoy settings search test metaso"]
+#[ignore = "network + quota: run with a real key, e.g. METASO_API_KEY=... pinvou settings search test metaso"]
 fn search_api_probe_validates_a_live_key() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let provider =

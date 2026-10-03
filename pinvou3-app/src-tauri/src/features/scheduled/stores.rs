@@ -1088,6 +1088,10 @@ pub(crate) struct RemovedArchivedRun {
 
 impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
     pub(crate) fn metadata_for(&self, automation_id: &str) -> (bool, Option<String>) {
+        // Same foreign-writer discipline as the mutators beside which this
+        // read is rendered: a CLI-written pin must not be invisible to the
+        // GUI display until some other miss heals memory.
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -1310,6 +1314,9 @@ pub(crate) type ScheduledRunReadStore = VersionedJsonStore<ScheduledRunReadRegis
 
 impl VersionedJsonStore<ScheduledRunReadRegistry> {
     pub(crate) fn is_viewed(&self, automation_id: &str, run_id: &str) -> bool {
+        // Same foreign-writer discipline as `mark_viewed` beside it: the
+        // read must see a peer's persisted mark, not this handle's boot view.
+        self.reload_if_changed();
         self.registry
             .read()
             .viewed_runs

@@ -1278,7 +1278,7 @@ jobs:
 
   # pinvou-cli lint leg (round 18, review §3 "The CI leg doesn't lint the
   # CLI"): until now ~50k lines of CLI Rust had no clippy on any lane, and
-  # the src-tauri [lints] table (unwrap_used/expect_used deny) does not apply
+  # the src-tauri [lints] table (unwrap/expect kept at warn there) does not apply
   # to the pinvou-cli workspace. This job runs clippy on every CLI-triggering
   # PR, Merge Queue combined tree, and main push.
   # Scope decision — warn-visible only, deliberately NOT `-D warnings` yet:

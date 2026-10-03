@@ -1412,6 +1412,14 @@ fn edit<S: CredentialStore>(
             "--vision-model-id must name a different model",
         ));
     }
+    // The id is checked before any secret resolution: `--api-key-stdin`
+    // BLOCKS on the pipe, and a mistyped id would consume the pasted key and
+    // only then fail — the same pre-check ordering `code providers update`
+    // applies to its unknown-id refusal. An unreadable prefs store defers to
+    // the transaction below, which owns the real error surface for that.
+    if UserPrefs::load().model_by_id(id).is_none() {
+        return Err(CliError::failed(format!("model not found: {id}")));
+    }
     // Resolved before any prefs mutation so a missing environment variable is
     // reported without side effects (same ordering as `add`).
     let secret = resolve_secret(api_key_env, api_key_stdin)?;
@@ -3166,7 +3174,8 @@ struct SearchProbe {
 
 /// The search endpoints the product actually calls, copied from
 /// `CodeWhale/crates/tui/src/tools/web_search.rs` (`TAVILY_ENDPOINT`,
-/// `BOCHA_ENDPOINT`, `METASO_ENDPOINT`, `BAIDU_ENDPOINT`). They are duplicated
+/// `BOCHA_ENDPOINT`, `BAIDU_ENDPOINT`) and from `run_metaso_search`'s
+/// `{METASO_ENDPOINT}/search` composition. They are duplicated
 /// rather than imported because the CLI does not depend on the TUI crate;
 /// they must be changed together with that file.
 const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";
@@ -3519,9 +3528,7 @@ fn run_bing_probe() -> SearchProbe {
                     .read_to_end(&mut bytes)
                     .is_ok()
                 && bytes.len() <= PROBE_BODY_CAP_BYTES
-                && bytes
-                    .windows(17)
-                    .any(|window| window == b"<li class=\"b_algo\"");
+                && body_carries_result_element(&bytes);
             if body_is_result_shaped {
                 SearchProbe {
                     ok: true,
@@ -3548,6 +3555,22 @@ fn run_bing_probe() -> SearchProbe {
             }
         }
     }
+}
+
+/// The Bing result-page shape check, extracted so the needle stays pinned by
+/// a unit test: the marker is the 17-byte fragment `<li class="b_algo`
+/// (element opener + class attribute, NO closing quote), while the shipped
+/// code compared 17-byte windows against the 18-byte quote-terminated
+/// literal — a length-mismatched slice comparison is constant-false, which
+/// classified every genuine result page as `http_error`. The fragment ends
+/// at the class value on purpose: real pages append further classes
+/// (`"b_algo h-..."`) or the bare quote (`"b_algo"`), so only the shared
+/// prefix is a stable needle.
+fn body_carries_result_element(bytes: &[u8]) -> bool {
+    const RESULT_MARKER: &[u8] = b"<li class=\"b_algo";
+    bytes
+        .windows(RESULT_MARKER.len())
+        .any(|window| window == RESULT_MARKER)
 }
 
 /// Resolves the key a real search request would sign with, in the order
@@ -3610,6 +3633,31 @@ fn resolve_search_key<S: CredentialStore>(
 mod tests {
     use super::*;
     use pinvou3_lib::platform::credential_store::CredentialError;
+
+    /// The bing shape needle is pinned at its real length: the historical
+    /// `windows(17)` against the 18-byte `<li class="b_algo"` marker made
+    /// the comparison constant-false, so every genuine result page was
+    /// reported as `http_error` with exit 1. The non-ignored unit test keeps
+    /// the live-lane check honest (the endpoint test itself stays
+    /// `#[ignore]` — no network in CI).
+    #[test]
+    fn bing_shape_check_matches_a_real_result_page() {
+        let page = b"<html><body><ul><li class=\"b_algo\"><h2>Result</h2></li></ul></body></html>";
+        assert!(body_carries_result_element(page));
+        // Attribute-bearing variants share the leading fragment.
+        assert!(body_carries_result_element(b"<li class=\"b_algo h-4\">"));
+        // Consent/captcha pages (2xx, no result element) stay unshaped, as
+        // do hostile near-misses.
+        assert!(!body_carries_result_element(
+            b"<html>please accept cookies</html>"
+        ));
+        assert!(!body_carries_result_element(b"<li class=\"b_alg\">"));
+        assert!(!body_carries_result_element(b""));
+        // The plain quote-terminated form (the original needle's shape) and
+        // a needle-sized body, the boundary the old windows(17) missed.
+        assert!(body_carries_result_element(b"<li class=\"b_algo\""));
+        assert!(body_carries_result_element(b"<li class=\"b_algo"));
+    }
 
     /// The single normalization both credential lanes write through.
     ///

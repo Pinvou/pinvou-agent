@@ -3699,6 +3699,29 @@ fn providers_update_delete_key_requires_yes() {
         "the refusal must name --yes: {refusal}"
     );
 
+    // Ordering control: with the secret source UNSET, the refusal must still
+    // be the --yes gate and not a resolution failure — proving the gate runs
+    // before any secret resolution, exactly as the comment above claims. The
+    // variable is restored so the --yes lane below sees the seeded state.
+    unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") };
+    let outcome = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        added_id.as_str(),
+        "--agent",
+        "codex",
+        "--delete-key",
+    ])
+    .unwrap_err();
+    assert_eq!(outcome.exit_code(), ExitCode::Usage);
+    assert!(
+        outcome.to_string().contains("--yes"),
+        "with the secret unset the refusal must still be the --yes gate: {outcome}"
+    );
+    unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
+
     // The refusal persisted nothing: the credential is still configured.
     let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
     let providers = value["providers"]["providers"].as_array().unwrap();
