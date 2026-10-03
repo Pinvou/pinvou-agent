@@ -469,9 +469,13 @@ opt-level = 3
 # Thin LTO 替代 fat:fat 在 ubuntu 16GB runner 上编译 codewhale-tui + tauri 全图
 # 会 link 越线被 SIGTERM(merge_group run 实证)。thin 内存峰值与耗时远低于 fat,
 # 运行时优化损失可忽略(官方:大型项目 thin 常优于 fat)。
-# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode,
-# 把跨 crate LTO 推迟到 link 阶段),故 release 构建 link 阶段必须用支持 LLVM bitcode
-# 的链接器(lld);release-packages 的 Linux 发布 job 已注入 -fuse-ld=lld。
+# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode);
+# 最终 crate 的 -C lto=thin rustc 消费这些 bitcode,在自身进程内完成跨 crate ThinLTO,
+# 交给链接器的只有 LTO 后的普通对象(依赖代码也在内)。故任何平台的链接器都不经手
+# bitcode——windows link.exe/lld-link、macOS Apple ld、linux rust-lld/BFD 均是;
+# windows nsis 与 macOS dmg 发布即按此路径工作。选 lld 族是为对象链接的耗时/内存
+# (rustc ≥1.90 的 x86_64-linux-gnu 默认自带 rust-lld),release-packages 的 Linux
+# 发布 job 另注入 -fuse-ld=lld 作旧工具链兜底。
 lto = "thin"
 codegen-units = 1
 # macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
