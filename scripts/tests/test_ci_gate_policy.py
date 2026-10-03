@@ -885,6 +885,25 @@ class CiGatePolicyTests(unittest.TestCase):
                 required_gate,
                 f"{soft} in the accepted set would let a failed leg pass",
             )
+        # The verdict line itself is the last thing that can be disarmed
+        # (mutation-checked: `[[ "$failed" -eq 0 ]] || true` passed this
+        # whole suite before this pin existed). The bare `[[ ]]` must stay
+        # bare so a nonzero count fails the step.
+        self.assertTrue(
+            required_gate.rstrip().endswith('[[ "$failed" -eq 0 ]]'),
+            "required-gate must end in the bare failed-count verdict",
+        )
+        for suffix in (
+            "[[ \"$failed\" -eq 0 ]] || true",
+            "[[ \"$failed\" -eq 0 ]] || :",
+            "[[ \"$failed\" -eq 0 ]] || exit 0",
+        ):
+            self.assertNotIn(
+                suffix,
+                required_gate,
+                "a swallowed verdict would accept every failed gate while "
+                "every other test here stays green",
+            )
 
     def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
         # The workflow header states this policy in prose (no gate job
