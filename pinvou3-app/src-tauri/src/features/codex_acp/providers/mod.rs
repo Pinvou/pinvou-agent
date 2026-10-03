@@ -417,6 +417,22 @@ impl AcpProvidersStore {
             .and_then(|state| state.official_default_model.clone())
     }
 
+    /// Fresh read of the recorded official `default_model` — the value
+    /// `switch` writes back verbatim through `set_switch_state`. The plain
+    /// read is stale-datable the same way as `current_after_reload`: a
+    /// long-lived GUI whose in-memory copy predates a CLI switch would
+    /// decide "not recorded" from memory and persist that `None` over the
+    /// CLI-written value, breaking the later official-login restore the
+    /// field exists for (kimi's `default_model` is the concrete casualty).
+    pub(crate) fn official_default_model_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
+            .get(agent)
+            .and_then(|state| state.official_default_model.clone())
+    }
+
     /// 一次持久化设置切换状态（current + official_default_model）：
     /// 两次独立 persist 中途失败会留下半切换态（复审低危 3）。
     pub fn set_switch_state(
@@ -504,7 +520,14 @@ impl AcpProvidersStore {
             let _ = fs::remove_file(&tmp);
             return Err(error.into());
         }
-        fs::rename(&tmp, path)?;
+        if let Err(error) = fs::rename(&tmp, path) {
+            // Same litter rule as the write arm: a rename failure (cross-
+            // device, permission) must not strand the pid tmp file — the
+            // next persist of this process reuses the name, but a failed
+            // command should not leave half-written provider state behind.
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -842,7 +865,7 @@ impl ProviderManager {
         let existing = match provider_id {
             Some(id) => Some(
                 self.store
-                    .get(agent, id)
+                    .record_after_reload(agent, id)
                     .with_context(|| format!("Provider 不存在: {id}"))?,
             ),
             None => None,
@@ -912,7 +935,12 @@ impl ProviderManager {
                     }
                     _ => {
                         if let Err(rollback) = writer.restore_default_model(
-                            self.store.official_default_model(agent).as_deref(),
+                            // Fresh read: the rollback restores the official
+                            // login state, which is whatever the disk holds
+                            // now, not what this process booted with.
+                            self.store
+                                .official_default_model_after_reload(agent)
+                                .as_deref(),
                         ) {
                             context =
                                 format!("{context}；写回官方 default_model 也失败: {rollback:#}");
@@ -936,7 +964,13 @@ impl ProviderManager {
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
         let was_current = self.store.current_after_reload(agent).as_deref() == Some(provider_id);
-        let removed = self.store.get(agent, provider_id);
+        // Fresh read under the section lock, like `was_current`: the revert
+        // input must describe the record on disk, not the one at boot. A
+        // stale record survives the codex revert's equality gate (the top
+        // level `model` is only removed when it equals the reverted
+        // record's), leaving a removed provider's model name pointed at
+        // official auth.
+        let removed = self.store.record_after_reload(agent, provider_id);
         if was_current {
             match removed.as_ref() {
                 Some(record) => self.switch_official_after_removal(agent, record)?,
@@ -980,7 +1014,13 @@ impl ProviderManager {
         // 否则恢复官方时登录态断裂（N5）。
         let official_default_model = match writer.current_default_model()? {
             Some(value) => Some(value),
-            None => self.store.official_default_model(agent),
+            // Fresh read: this value is persisted verbatim by
+            // `set_switch_state` below, so a stale in-memory `None` (the
+            // GUI booted before a CLI switch recorded the official model)
+            // would overwrite the disk value and break the later
+            // official-login restore — kimi's `default_model` is the
+            // concrete casualty.
+            None => self.store.official_default_model_after_reload(agent),
         };
         writer.apply(&ProviderTarget::from_record(&record, Some(key)))?;
         // 单次持久化写入切换状态（低危 3：两步 persist 会留下半切换态）。
@@ -1027,7 +1067,11 @@ impl ProviderManager {
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
         let (_current, record) = self.store.current_and_record_after_reload(agent);
         let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
-        let official_default_model = self.store.official_default_model(agent);
+        // Same fresh-read discipline as the revert target: this value is
+        // written back verbatim by `restore_default_model`, so deciding it
+        // from a stale memory copy would silently skip the restore (or, via
+        // `switch`, persist the stale `None` over a CLI-written value).
+        let official_default_model = self.store.official_default_model_after_reload(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
         writer.restore_default_model(official_default_model.as_deref())?;
@@ -1044,7 +1088,9 @@ impl ProviderManager {
         removed: &ProviderRecord,
     ) -> Result<()> {
         validate_agent(agent)?;
-        let official_default_model = self.store.official_default_model(agent);
+        // Fresh read: this restore decides the official login state the same
+        // way `switch_official_locked` does.
+        let official_default_model = self.store.official_default_model_after_reload(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(Some(&ProviderTarget::from_record(removed, None)))?;
         writer.restore_default_model(official_default_model.as_deref())?;
@@ -1122,14 +1168,16 @@ impl ProviderManager {
                 continue;
             }
             // id 冲突（已存在或格式非法——仅前缀匹配不够，非法字符会写进 TOML
-            // 表名）时重新生成并告警。
+            // 表名）时重新生成并告警。冲突判定走 reload 后的 fresh read：仅读
+            // 内存会让本进程启动后对端（CLI/GUI 另一侧）新增的同 id 条目被
+            // upsert 静默覆盖，而不计入 id_conflicts。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
                 && entry.id.len() <= 64
                 && entry
                     .id
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && self.store.get(agent, &entry.id).is_none()
+                && self.store.record_after_reload(agent, &entry.id).is_none()
             {
                 entry.id.clone()
             } else {
@@ -1445,6 +1493,70 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The `official_default_model` decision primitive behind `switch` (and
+    /// the official revert arms): the value read here is persisted verbatim
+    /// by `set_switch_state` / `restore_default_model`, so a long-lived side
+    /// whose in-memory copy was stale-dated by a CLI switch would persist
+    /// its stale `None` over the CLI-written value — erasing the recorded
+    /// official default model and breaking the later official-login restore
+    /// (kimi's `default_model` is the concrete casualty).
+    #[test]
+    fn official_default_model_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-10-03T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+
+        // A CLI process switches behind the GUI's back AFTER the GUI booted:
+        // its switch decided the official default model from its own fresh
+        // read and recorded it on disk, while the long-lived GUI's memory
+        // still holds the boot-time None.
+        cli.set_switch_state("codex", Some("pv-b"), Some("kimi-code/k3"))
+            .unwrap();
+        assert_eq!(
+            gui.official_default_model("codex"),
+            None,
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.official_default_model_after_reload("codex").as_deref(),
+            Some("kimi-code/k3"),
+            "the decision read must adopt the disk state, not the stale memory"
+        );
+        // The mutator persists the decision value verbatim — which is why
+        // the decision read above must be fresh: a stale-None decision
+        // through the same mutator erases the recorded model.
+        cli.set_switch_state("codex", Some("pv-a"), None).unwrap();
+        assert_eq!(
+            cli.official_default_model_after_reload("codex"),
+            None,
+            "a None decision persists None — so the decision must be fresh-read"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The switch paths' half of the same split-brain discipline: a record
     /// resolved for `switch` must come from the disk state (a peer may have
     /// upserted after this process booted), and `set_switch_state` must
@@ -1644,8 +1756,15 @@ mod tests {
             "我的中转"
         );
         assert_eq!(store.current("codex").unwrap(), "pv-1234567890ab");
-        // 原子写：无残留 .tmp 文件
-        assert!(!store.path.with_extension("json.tmp").exists());
+        // 原子写：无残留 .tmp 文件。断言必须匹配 persist 实际写的 pid tmp
+        // 名（`acp-providers.json.<pid>.tmp`）——固定名 `json.tmp` 从未
+        // 被写过，旧断言恒真、钉不住泄漏。
+        assert!(
+            !store
+                .path
+                .with_extension(format!("json.{}.tmp", std::process::id()))
+                .exists()
+        );
         // 从同一路径重新加载验证往返
         let reloaded = load_from_path(&store.path);
         assert_eq!(reloaded.state("codex").providers.len(), 1);
