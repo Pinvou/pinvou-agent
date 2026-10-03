@@ -347,11 +347,17 @@ pub struct AgenticTaskReport {
     /// can use this to tell "finished, but past the line" from "cancelled".
     #[serde(default)]
     pub completed_after_deadline: bool,
-    /// Whether the turn was durably submitted to the engine. The setup
-    /// TIMEOUT arm is the one `Ok` report whose turn provably never entered
-    /// the engine; the CLI's one-shot persona consume keys off this flag so
-    /// a timed-out setup cannot spend a staged persona body on a turn that
-    /// never ran. `false` only on that arm.
+    /// Whether the turn was durably submitted to the engine. The only `Ok`
+    /// report that can carry `false` is the setup-timeout arm, and only when
+    /// the deadline fired BEFORE the submit was entered — there the turn
+    /// provably never ran and the CLI's one-shot persona consume skips, so a
+    /// staged body survives for the next run. Once the submit was entered the
+    /// outcome is genuinely ambiguous (the awaited future includes the lazy
+    /// engine spawn, and the turn may have been durably admitted and keep
+    /// running), so the report carries `submitted: true`: the one-shot
+    /// consume spends the staged body rather than risking a double injection
+    /// on the next run, the same at-least-once direction as every submitted
+    /// run.
     #[serde(default)]
     pub submitted: bool,
     pub assistant_text: String,
@@ -1230,6 +1236,34 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
 /// a post-prepare setup fault, setup timeout) the caller's lifecycle handling
 /// cleans up as stubs.
 #[allow(clippy::too_many_arguments)]
+/// The setup-timeout report. `submit_entered` decides `submitted` AND the
+/// error text: before the submit the turn provably never ran (setup-only
+/// wording); past that boundary the submit was in flight when the deadline
+/// fired — the turn may have been durably admitted and keep running — so the
+/// report claims submitted and names the ambiguity instead of the provable
+/// never-ran wording. Extracted so the flag-derivation (the field the CLI's
+/// one-shot persona consume keys off) is unit-pinned rather than buried in
+/// the deadline arm.
+fn setup_timeout_report(session_id: &str, submit_entered: bool) -> AgenticTaskReport {
+    let error = if submit_entered {
+        "agentic run did not finish within the timeout; the turn was being submitted when the \
+         deadline fired and its outcome is unknown"
+    } else {
+        "agentic session setup did not finish within the timeout"
+    };
+    AgenticTaskReport {
+        session_id: session_id.to_owned(),
+        status: "timeout".to_string(),
+        timed_out: true,
+        completed_after_deadline: false,
+        submitted: submit_entered,
+        assistant_text: String::new(),
+        tool_events: Vec::new(),
+        usage: None,
+        error: Some(error.to_string()),
+    }
+}
+
 async fn run_turn(
     runtime: &EnginePoolRuntime,
     store: &SessionStore,
@@ -1585,18 +1619,23 @@ async fn run_turn(
         Err(_elapsed) => {
             // A deadline that fired BEFORE the submit was entered provably
             // never ran a turn, so the pins are put back exactly like on a
-            // setup failure. Past that point the outcome is genuinely
-            // ambiguous (the turn may have been admitted), and there the pins
-            // stay, like those of any submitted run. Either way, the staging
-            // task the dropped setup future left joinable is joined first
-            // (bounded): its batch either lands with its copies adopted into
-            // the sweep below, or the note names the detachment — the old
-            // shape, where an in-flight staging detached immediately and
-            // wrote after the teardown, is gone.
+            // setup failure, and the report says submitted: false. Past that
+            // point the outcome is genuinely ambiguous (the turn may have
+            // been admitted and keep running — nothing here cancels it), so
+            // the pins stay, like those of any submitted run, and the report
+            // carries submitted: true so consumers keying side effects off
+            // it take the at-least-once direction instead of re-injecting a
+            // staged body next run. Either way, the staging task the dropped
+            // setup future left joinable is joined first (bounded): its
+            // batch either lands with its copies adopted into the sweep
+            // below, or the note names the detachment — the old shape, where
+            // an in-flight staging detached immediately and wrote after the
+            // teardown, is gone.
             if let Some(copies) = join_staged_attachments(&mut staging_in_flight).await {
                 staged_attachment_copies = copies;
             }
-            if !submit_entered.load(Ordering::SeqCst) {
+            let submit_entered = submit_entered.load(Ordering::SeqCst);
+            if !submit_entered {
                 restore_pre_run_pins(
                     runtime,
                     store,
@@ -1613,22 +1652,7 @@ async fn run_turn(
                     &staged_attachment_copies,
                 );
             }
-            return (
-                false,
-                Ok(AgenticTaskReport {
-                    session_id: session_id.to_owned(),
-                    status: "timeout".to_string(),
-                    timed_out: true,
-                    completed_after_deadline: false,
-                    submitted: false,
-                    assistant_text: String::new(),
-                    tool_events: Vec::new(),
-                    usage: None,
-                    error: Some(
-                        "agentic session setup did not finish within the timeout".to_string(),
-                    ),
-                }),
-            );
+            return (false, Ok(setup_timeout_report(session_id, submit_entered)));
         }
     };
     drop(suite_guard);
@@ -2157,8 +2181,9 @@ mod tests {
         arm_retention_eviction_observer, ensure_existing_chat_session, ensure_model_exists,
         ensure_stage_size, fresh_session_id, keep_session_from_env, never_started_disposition,
         one_shot_cleanup_decision, refuse_ingest_without_a_surviving_copy, restore_plan_mode,
-        resume_unwind_after_pinned_restore, retention_eviction_warning, stage_and_ingest_batch,
-        stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies, validate_attachments,
+        resume_unwind_after_pinned_restore, retention_eviction_warning, setup_timeout_report,
+        stage_and_ingest_batch, stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies,
+        validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -3483,6 +3508,38 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    /// The setup-timeout report's `submitted` flag must be derived from the
+    /// submit admission boundary, not hard-coded: before the submit the turn
+    /// provably never ran (`false`, setup-only wording); past it the submit
+    /// was in flight and the turn may have been admitted (`true`, ambiguous
+    /// wording) — the CLI's one-shot persona consume keys off this flag, so
+    /// a hard `false` would stage a double injection on the next run.
+    #[test]
+    fn setup_timeout_report_carries_the_submit_boundary() {
+        let before = setup_timeout_report("s-1", false);
+        assert!(!before.submitted);
+        assert_eq!(before.status, "timeout");
+        assert!(before.timed_out);
+        assert_eq!(
+            before.error.as_deref(),
+            Some("agentic session setup did not finish within the timeout"),
+            "the provably-never-ran case keeps the setup-only wording"
+        );
+
+        let entered = setup_timeout_report("s-1", true);
+        assert!(
+            entered.submitted,
+            "once the submit was entered the report must claim submitted — \
+             the one-shot consume takes the at-least-once direction"
+        );
+        assert_eq!(entered.status, "timeout");
+        let error = entered.error.as_deref().expect("error text present");
+        assert!(
+            error.contains("outcome is unknown"),
+            "the entered case must name the ambiguity, not claim setup never finished: {error}"
+        );
     }
 
     // -----------------------------------------------------------------------
