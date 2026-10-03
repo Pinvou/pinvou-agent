@@ -132,7 +132,7 @@
 //! ([`open_service`] opens without it) and with `resume`/`retry`'s own
 //! state transitions for the CLI's own stranded jobs.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::support::{render, require_yes, sandbox_home, success};
@@ -2017,7 +2017,7 @@ fn index_failed(
 fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let dir = configured_model_dir();
-    let installed = model_directory_complete(&dir);
+    let installed = pinvou3_lib::features::knowledge::model_directory_is_complete(&dir);
     let ready = service.semantic_ready();
     let human = format!(
         "version: {MODEL_VERSION}\nmodel_dir: {}\ninstalled: {installed}\nready: {ready}\n\
@@ -2037,37 +2037,6 @@ fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "scope": "process-local",
         }),
     )))
-}
-
-/// CLI-side mirror of `pinvou_knowledge::model_download::
-/// model_directory_is_complete` (pinvou-knowledge/src/model_download.rs, the
-/// single source of truth): the directory is canonicalized first, then one of
-/// the ONNX variants plus the four tokenizer/config files must be present.
-///
-/// The upstream helper is `pub`, but `pinvou-knowledge` is only a TRANSITIVE
-/// dependency here (it enters the graph through `pinvou3-tauri`), and
-/// `pinvou3_lib` does not re-export it — a Rust crate cannot name a
-/// transitive dependency, so calling it would mean adding a direct
-/// `pinvou-knowledge` path dependency to this crate's Cargo.toml. Until that
-/// happens this copy must stay behaviourally identical, canonicalization
-/// included: without it a symlinked model directory (`current -> models/v3`,
-/// a supported override shape) answers differently here than in the app.
-/// Keep both halves in sync when the model manifest changes.
-fn model_directory_complete(dir: &Path) -> bool {
-    let Ok(dir) = std::fs::canonicalize(dir) else {
-        return false;
-    };
-    let onnx = dir.join("model.onnx").is_file()
-        || dir.join("onnx").join("model_int8.onnx").is_file()
-        || dir.join("onnx").join("model.onnx").is_file();
-    onnx && [
-        "tokenizer.json",
-        "config.json",
-        "special_tokens_map.json",
-        "tokenizer_config.json",
-    ]
-    .iter()
-    .all(|name| dir.join(name).is_file())
 }
 
 /// Same resolution order as the GUI (`configured_model_dir` in

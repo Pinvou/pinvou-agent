@@ -38,7 +38,8 @@ use std::path::{Path, PathBuf};
 
 use crate::support::{collapse_control_characters, read_text_file_capped, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::features::sessions::SessionStore;
+use pinvou3_lib::features::deliverables::{DELIVERABLE_EXTS, deliverable_category};
+use pinvou3_lib::features::sessions::{SessionStore, is_aux_session_id};
 
 /// Whether the staged file is readable by anyone but its owner.
 ///
@@ -236,28 +237,6 @@ pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-// Forced mirror of `features::deliverables::DELIVERABLE_EXTS` and
-// `features::deliverables::deliverable_category`
-// (`pinvou3-app/src-tauri/src/features/deliverables.rs`). Both are
-// `pub(crate)` upstream and therefore not nameable from this crate, so the
-// whitelist and the category mapping are copied byte-for-byte. **They must
-// change together with the upstream definitions**: a deliverable extension
-// added there but not here silently disappears from `artifacts list`, and a
-// category renamed there makes the two surfaces disagree about the same file.
-const DELIVERABLE_EXTS: &[&str] = &[
-    "pptx", "ppt", "docx", "doc", "pdf", "html", "htm", "xlsx", "xls", "md", "csv", "png", "jpg",
-    "jpeg", "svg", "gif", "webp", "zip",
-];
-
-fn deliverable_category(ext: &str) -> &'static str {
-    match ext {
-        "html" | "htm" | "mhtml" | "mht" => "web",
-        "ppt" | "pptx" | "odp" | "dps" => "ppt",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "heic" => "img",
-        _ => "doc",
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -474,11 +453,10 @@ fn deliverable_index(only_session: Option<&str>) -> DeliverableIndex {
         // as the GUI index this module mirrors
         // (`features::deliverables::list_deliverable_index_impl` skips aux
         // stems before parsing): an aux transcript tracking a deliverable
-        // must not surface its paths outside the aux session.
-        if stem
-            .get(..4)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("aux-"))
-        {
+        // must not surface its paths outside the aux session. The predicate
+        // is the store's shared `is_aux_session_id` (imported, not copied),
+        // so a case-aliasing fix upstream cannot drift behind a copy.
+        if is_aux_session_id(stem.as_str()) {
             continue;
         }
         if only_session.is_some_and(|session| session != stem.as_str()) {
