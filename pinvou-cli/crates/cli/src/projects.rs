@@ -906,6 +906,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     for (session_id, bound_path) in agents.sessions_under_workspace(&to_display) {
         admit_to_lane_retry_candidate(session_id, bound_path, &sessions, &mut metadata_targets);
     }
+    // The scan is the lossy form, on purpose: this pass runs POST-rewrite,
+    // where a hard abort could not claim "nothing was moved" anymore — the
+    // GUI's own post-rewrite fence rescans lossy too (its checked form is
+    // for the pre-move SNAPSHOT/PLAN phases). An unreadable sessions root
+    // degrades to cache-only matches, disclosed on stderr; a rerun still
+    // converges the missed admittees.
     for (session_id, bound_path) in sessions.workspace_bindings_under(&to_display) {
         admit_to_lane_retry_candidate(session_id, bound_path, &sessions, &mut metadata_targets);
     }
