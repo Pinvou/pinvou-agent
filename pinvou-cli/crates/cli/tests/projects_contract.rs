@@ -1134,7 +1134,21 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     sessions
         .bind_session_workspace(&session_id, from.clone())
         .expect("seed the binding sidecar");
+    // A codex-lane session too: the plan-phase gate runs BEFORE the codex
+    // lane (the store's "nothing was moved" contract is lane-wide), so the
+    // agent index must still name the source when the run aborts. A command
+    // that let the codex lane rewrite first and only then hit the gate would
+    // fail this assertion.
+    let code_session = sessions
+        .create_new("test-model".to_owned(), None, from.clone())
+        .expect("create the code session");
+    let code_id = code_session.metadata.id;
     drop(sessions);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(from.clone()))
+        .expect("bind the code session");
+    drop(agents);
 
     // A legacy table that exists but can never parse: the plan-phase sync
     // reads it as corrupt and must abort the run.
@@ -1168,6 +1182,19 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     assert!(
         sidecar.contains(from.to_str().unwrap()),
         "the binding must still name the source (nothing may move): {sidecar}"
+    );
+    // Lane-wide: the codex lane had not started either when the gate fired.
+    let agents_after = SessionAgentStore::load_or_empty();
+    assert!(
+        agents_after
+            .sessions_under_workspace(&from)
+            .iter()
+            .any(|(id, _)| id == &code_id),
+        "the codex lane must not move before the legacy gate passes"
+    );
+    assert!(
+        agents_after.sessions_under_workspace(&to).is_empty(),
+        "no codex sidecar may name the destination after the abort"
     );
     // The corrupt table itself is preserved untouched (the gate refuses
     // instead of renaming or normalizing it).

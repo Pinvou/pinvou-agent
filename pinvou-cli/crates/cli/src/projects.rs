@@ -837,10 +837,43 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     store
         .plan_rebind_roots(&from_display, &to_display)
         .map_err(|error| {
-            CliError::failed(format!(
-                "projects rebind: rebinding would produce overlapping project roots \
-                 (REBIND_ROOTS_CONFLICT): {error:#}"
-            ))
+            // Only the overlap family wears the conflict copy (the GUI's
+            // same partition): a corrupt store holding a relative root
+            // would otherwise tell scripts to re-pick a destination that
+            // cannot fix the problem. The prefixes are single-sourced with
+            // the validator's bail! texts, so a wording change fails the
+            // app-side pin instead of silently degrading this copy.
+            let cause = error.root_cause().to_string();
+            if pinvou3_lib::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES
+                .iter()
+                .any(|prefix| cause.starts_with(prefix))
+            {
+                CliError::failed(format!(
+                    "projects rebind: rebinding would produce overlapping project roots \
+                     (REBIND_ROOTS_CONFLICT): {error:#}"
+                ))
+            } else {
+                project_error("rebind", error)
+            }
+        })?;
+    // Plain-chat lane, PLAN phase first (the #463 plan/apply split): the
+    // legacy global table is translated here — fail-closed with the typed
+    // REBIND_LEGACY_TABLE_* markers — BEFORE the codex lane below mutates.
+    // The store's contract is that the abort copy "nothing was moved" is
+    // literally true, which holds only while every earlier lane is still
+    // untouched; running the fused batch after the codex lane made the
+    // marker a falsehood (the codex sidecars had already moved). Only the
+    // typed markers keep their own message prefix, like the GUI command;
+    // untyped infrastructure failures get the family prefix.
+    let plain_plan = sessions
+        .plan_rebind_workspace_bindings(&from_display, &to_display)
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.starts_with("REBIND_") {
+                CliError::failed(message)
+            } else {
+                project_error("rebind", error)
+            }
         })?;
     // Codex lane: the store's own batch rewrites the helper index and the
     // authoritative code-session sidecars (off-index orphans included) and
@@ -848,14 +881,11 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     let prefix_outcome = agents
         .rebind_workspace_prefix(&from_display, &to_display)
         .map_err(|error| project_error("rebind", error))?;
-    // Plain-chat lane: the store's own batch moves the binding sidecars and
-    // the in-memory cache; the plan phase inside it translates the legacy
-    // global table BEFORE anything moves and fails the whole run with the
-    // typed REBIND_LEGACY_TABLE_* markers when that sync cannot (the #463
-    // plan/apply split), so no soft flag reaches the report anymore.
-    let plain_rebind = sessions
-        .rebind_workspace_bindings(&from_display, &to_display)
-        .map_err(|error| project_error("rebind", error))?;
+    // Plain-chat lane, APPLY phase: the store's own batch moves the binding
+    // sidecars and the in-memory cache. The legacy table already carries the
+    // plan's translations, so a fault here heals forward at the next boot
+    // (per-entry isolation; one failed write does not abort the round).
+    let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
     // Finally-stale sidecars of both lanes: no self-healing path remains in
     // this run, so they must be reported as failed for a rerun to converge
     // them via the on-disk prefix scan.
@@ -875,6 +905,17 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // "a rerun converges them" true instead of silent. (The contains-guard
     // keeps this a pure addition of NEW hits, exactly like the GUI.)
     for (session_id, _) in sessions.workspace_bindings_under(&from_display) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
+    // Codex twin of that plain-lane fence (the GUI's review-#463 round-15
+    // rescan): a codex session bound under `from` while this run was in
+    // flight is matched by neither to-lane pass below nor any earlier codex
+    // scan, so without this fence the run would report `rebound N
+    // (0 failed)` while the index record still names the vanished directory.
+    // Same contains-guard, same pure addition of NEW hits.
+    for (session_id, _) in agents.sessions_under_workspace(&from_display) {
         if !final_stale.contains(&session_id) {
             final_stale.push(session_id);
         }
@@ -989,18 +1030,32 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // revalidated under the store's write lock here.
     let affected_project_ids = store
         .rebind_roots(&from_display, &to_display)
-        .map_err(|error| match error {
-            RebindRootsError::Overlap(context) => CliError::failed(format!(
-                "projects rebind: rebinding would produce overlapping project roots \
+        .map_err(|error| {
+            // The session lanes have already moved by the time the roots
+            // commit runs: before failing, name what DID land on stderr so
+            // the report survives the abort (the GUI appends the same ids
+            // to its marker; a bare exit 1 here would make a retry guess).
+            if !rebound_session_ids.is_empty() || !failed_session_ids.is_empty() {
+                note!(
+                    "[projects] rebind: session lanes already landed before the roots \
+                     commit failed — rebound: {:?}; failed: {:?}",
+                    rebound_session_ids,
+                    failed_session_ids
+                );
+            }
+            match error {
+                RebindRootsError::Overlap(context) => CliError::failed(format!(
+                    "projects rebind: rebinding would produce overlapping project roots \
                      (REBIND_ROOTS_CONFLICT): {context:#}"
-            )),
-            // The typed marker rides the message the same way the GUI's
-            // command layer surfaces it (store.rs: the roots were restored,
-            // only the persist failed).
-            RebindRootsError::Persist(context) => CliError::failed(format!(
-                "projects rebind: REBIND_ROOTS_PERSIST: {context:#}"
-            )),
-            RebindRootsError::Other(context) => project_error("rebind", context),
+                )),
+                // The typed marker rides the message the same way the GUI's
+                // command layer surfaces it (store.rs: the roots were
+                // restored, only the persist failed).
+                RebindRootsError::Persist(context) => CliError::failed(format!(
+                    "projects rebind: REBIND_ROOTS_PERSIST: {context:#}"
+                )),
+                RebindRootsError::Other(context) => project_error("rebind", context),
+            }
         })?;
     rebind_report(
         output,
