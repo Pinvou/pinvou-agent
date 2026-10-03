@@ -102,7 +102,7 @@ pub fn record_conversation_attachments(
     std::fs::create_dir_all(parent).map_err(|error| format!("创建附件引用目录失败：{error}"))?;
     let payload = serde_json::to_vec_pretty(&records)
         .map_err(|error| format!("序列化附件引用失败：{error}"))?;
-    deepseek_tui::utils::write_atomic(&refs_path, &payload)
+    crate::platform::filesystem::atomic_write_private(&refs_path, &payload)
         .map_err(|error| format!("保存附件引用失败：{error:#}"))?;
     Ok(())
 }

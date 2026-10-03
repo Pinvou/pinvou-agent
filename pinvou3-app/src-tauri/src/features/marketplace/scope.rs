@@ -973,7 +973,7 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
         }
         let json = serde_json::to_string(file)
             .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
-        deepseek_tui::utils::write_atomic(&path, json.as_bytes())
+        crate::platform::filesystem::atomic_write_private(&path, json.as_bytes())
             .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
     })();
     if let Err(error) = write_result {

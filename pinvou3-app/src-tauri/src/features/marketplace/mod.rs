@@ -328,7 +328,7 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
     }
-    deepseek_tui::utils::write_atomic(path, bytes)
+    crate::platform::filesystem::atomic_write_private(path, bytes)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 

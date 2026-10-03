@@ -731,7 +731,7 @@ fn save_locked(path: &Path, file: &BundlesFile) -> Result<(), String> {
     }
     let json =
         serde_json::to_string_pretty(file).map_err(|e| format!("序列化 bundles.json 失败: {e}"))?;
-    deepseek_tui::utils::write_atomic(path, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
         .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
