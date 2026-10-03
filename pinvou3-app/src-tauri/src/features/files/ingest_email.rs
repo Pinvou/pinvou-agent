@@ -8,7 +8,6 @@
 // architecture-guard: allow-target-cfg -- msg_parser compiles on Windows only (cfg(windows) dependency section in Cargo.toml); the native .msg parsing branch shares that gating, while its pure decode helpers are gated `any(target_os = "windows", test)` so the cross-platform unit tests exercise them off-Windows
 
 use std::path::Path;
-use std::process::Command;
 
 use super::IngestResult;
 use super::estimate_tokens;
@@ -72,7 +71,7 @@ pub(super) fn ingest_email(
         // msgconvert 是 perl 脚本，网络/编码异常下会挂死，按超时 kill-tree。
         let conv = crate::platform::process::output_with_timeout_and_kill_tree(
             {
-                let mut command = Command::new("msgconvert");
+                let mut command = crate::platform::process::HiddenCommand::new("msgconvert");
                 command.current_dir(&tmpdir).arg(path);
                 command
             },
