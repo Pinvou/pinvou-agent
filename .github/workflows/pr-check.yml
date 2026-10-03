@@ -151,7 +151,14 @@ jobs:
     name: changes
     if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 5
+    # 10min: fetch-depth:0 checkout plus the memory-setup wrapper's worst case
+    # (240s + 15s kill grace) must not turn the intended non-fatal degradation
+    # into a hard job timeout. Since 2026-10 the fold makes this job's
+    # bundle_chain output load-bearing for the macos-rust-check bundle smoke
+    # on main pushes (a timed-out changes = silently skipped smoke), so this
+    # job now carries the same cap the folded mac-build changes job used for
+    # the identical step set.
+    timeout-minutes: 10
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
@@ -1741,12 +1748,16 @@ jobs:
         )
       }}
     runs-on: macos-15
-    # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test
-    # (180: the 90-minute cap was once killed at the link phase on the Windows leg, see
-    # that job), so a hang does not burn runner minutes for long. The folded
-    # push-only legs (full test + release-fast + occasional bundle smoke) stay
-    # far below it warm, and a cold run after a quota eviction has ~130
-    # minutes of headroom instead of mac-build's 50.
+    # A cold check build is slow (macOS runners slower still); same rationale
+    # as windows-rust-test's 240 (its 90-minute cap was once killed at the
+    # link phase, see that job): a hang does not burn runner minutes
+    # indefinitely. Warm, the folded push-only legs stay far below the cap.
+    # Fully cold, the 2026-10-02 validation replay of the whole sequence
+    # (lib test → release-fast → bundle smoke) ran out of this cap inside
+    # the first bundle smoke (~181m, on a branch also carrying the #644
+    # lld-experiment steps); a bust is not a death spiral — cache-on-failure
+    # below saves the partial target state and the next push converges
+    # (mac-build's 50m cap had no such path: save-on-success-only).
     timeout-minutes: 180
     env:
       # Same as mac-build: inject the sh stack wrapper per platform (the rustc/LLVM stack
@@ -1776,7 +1787,7 @@ jobs:
       # cargo invoked from the repo root via --manifest-path uses the same rustc
       # as locally (the file is the single source of truth; the version number is
       # not re-hardcoded in the workflow).
-      - name: Align rust-toolchain.toml pinned toolchain
+      - name: Align rust-toolchain.toml toolchain
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
@@ -1831,17 +1842,24 @@ jobs:
 
       # ── 以下为 push(main) 专属折叠腿(原 mac-build.yml 的核心覆盖)──────
       # 全量 native arm64 lib 回归(不传 --target:host triple 在 arm64 runner 上
-      # 就是 aarch64-apple-darwin;产物落在与上方 check 相同的 target/debug/,
-      # 增量复用)。与 rust-test 的 push 腿不同,这里执行完整测试:macOS 原生
-      # 行为没有其他执行腿,main 是它唯一的回归时机(MQ 不重复本 job,而 MQ 已在
-      # Linux 覆盖组合树)。e2e 依赖(relay/Chrome)不安装,真实 e2e 自动 skip
-      # (同 mac-build 的静默跳过语义,不设 PINVOU_REQUIRE_REMOTE_E2E)。
+      # 就是 aarch64-apple-darwin)。与上方 check 同 target/debug/ 目录,但 check
+      # 是 dev-tools 的 rmeta、本步是 benchmark-hooks 的 test codegen,编译图会
+      # 重编——跨步复用主要来自 restore 的 cache。与 rust-test 的 push 腿不同,
+      # 这里执行完整测试:macOS 原生行为没有其他执行腿,main 是它唯一的回归时机
+      # (MQ 不重复本 job,而 MQ 已在 Linux 覆盖组合树)。e2e 依赖(relay/Chrome)
+      # 不安装,真实 e2e 自动 skip(同 mac-build 的静默跳过语义,不设
+      # PINVOU_REQUIRE_REMOTE_E2E)。与 PR 腿的 computer_use 过滤跑一样带
+      # 0-match 守卫:整套 lib 测试静默跑空(如 cfg/attr 事故)必须红。
       - name: macOS full lib tests (native regression, push only)
         if: ${{ github.event_name == 'push' }}
         run: |
           set -euo pipefail
           cd pinvou3-app/src-tauri
-          cargo test --lib --features benchmark-hooks --locked -- --test-threads=1
+          cargo test --lib --features benchmark-hooks --locked -- --test-threads=1 2>&1 | tee /tmp/macos_lib_tests.log
+          grep -qE 'running [1-9][0-9]* tests?' /tmp/macos_lib_tests.log || {
+            echo "FAIL: the full lib suite ran 0 tests (silent no-op guard)" >&2
+            exit 1
+          }
 
       # universal bundle smoke 需要 arm64 + x86_64 双 target;装到
       # rust-toolchain.toml 解析出的工具链上(上方对齐 step 已把该工具链
@@ -1899,6 +1917,8 @@ jobs:
       # 打包链路 PR 合入前由 pr-check 的 release-contract-test 跑轻量发布契约,
       # VERSION bump 再由 release-packages 构建全量 dmg)。universal 打包失败
       # 会让本 job 失败,避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
+      # 若 changes job 本身失败,其输出为空,本步随之跳过(该 push 已因 changes
+      # 红而可见;下一次健康 push 会重新推导 bundle_chain)。
       # universal-apple-darwin 是 Tauri 专属 target(内部跑 aarch64+x86_64 两次
       # cargo + lipo),不是合法 rustc target triple;故 cargo check/test/build 仍
       # 用 host(aarch64),仅此处 tauri 构建用 universal,产出可在 Intel +
