@@ -1,17 +1,13 @@
 name: connector CLI verify
 
+# 2026-10 CI 成本重构:本 workflow 是含 2× macOS + 1× Windows 的五平台矩阵,
+# 从 PR paths 触发收口到 main push(组合树合并后立即验证);PR 阶段禁止原生
+# 构建,连接器路径的 PR 侧验证由 pr-check 的发布契约(ubuntu,零下载)承接。
+# 不挂 merge_group:本仓库实践确认 merge_group 不支持事件级 paths 过滤
+# (见 rustc-wrapper-smoke.yml 的 changes 路由注释),无过滤的矩阵会在每个
+# 入队 PR 上空跑五平台。
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/workflows/connector-verify.yml"
-      - "scripts/fetch-connectors.sh"
-      - "pinvou3-app/src-tauri/resources/platforms/**/bundle/connectors/**"
-      - "pinvou3-app/src-tauri/src/platform/paths.rs"
-      - "pinvou3-app/src-tauri/src/features/connectors/connector_cli.rs"
-      - "pinvou3-app/src-tauri/src/features/connectors/native_installer.rs"
-      - "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh"
-      - "pinvou3-app/src-tauri/src/platform/os/**"
   push:
     branches:
       - main
@@ -28,13 +24,10 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs for the same ref to avoid queueing and wasted runner
-# minutes. Only PR runs may cancel each other: on main pushes github.ref is
-# refs/heads/main, so an unconditional cancel would let rapid successive main
-# pushes kill each other's runs (same failure class pr-check guards against).
+# 无 PR 触发后不存在可互相同类取消的 ref;保持串行(连续 main push 顺序执行)。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   verify-connectors:

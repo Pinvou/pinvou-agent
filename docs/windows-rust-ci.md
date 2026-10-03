@@ -11,12 +11,20 @@ the required gate aggregates the matrix result, so both legs must pass:
 - `regression` links the `pinvou3_lib` test executable and runs everything
   that needs it (steps 8-12 below).
 
-Routing is job level and identical for both legs. The job runs on every push
-to `main` (cumulative Windows coverage plus cache warm-up) and on ready,
-non-draft pull requests matching the `rust_full` or `cli_rust` paths filters,
-or `rust_code` plus the explicit `ci:full-rust` label; Merge Queue, drafts,
-closed, and non-Rust pull requests are skipped. The matrix changes
-scheduling, not the set or failure semantics of the checks.
+Routing is job level and identical for both legs. Since the 2026-10 CI cost
+restructuring, the job runs once per day on the `schedule` trigger (UTC
+20:41, cumulative Windows coverage plus cache warm-up) and via
+`workflow_dispatch` for manual re-runs; it no longer runs on pushes to
+`main` or on pull requests (per-push native legs were the dominant Actions
+cost driver — see the `windows-rust-test` job comment in `pr-check.yml`).
+Merge Queue validates the combined tree on Linux only; Windows-specific
+regressions are caught by the nightly sweep at the latest. The matrix
+changes scheduling, not the set or failure semantics of the checks.
+
+The historical path-based routing (`rust_full` / `cli_rust` filters and the
+explicit `ci:full-rust` label on ready PRs) was removed together with the
+per-push trigger; the `rust_full` filter still drives the Linux
+`rust-test` on the Merge Queue:
 
 `rust_full` fails closed: all of `pinvou3-app/src-tauri/**/*.rs` plus shared
 manifests (`Cargo.toml`, `Cargo.lock`, `deny.toml`, `build.rs`,

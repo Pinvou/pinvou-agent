@@ -14,15 +14,9 @@ name: rustc-wrapper-smoke
 # 用最小 crate 继承仓库 wrapper 配置跑 cargo check(秒级,不编译全图),
 # 防止 wrapper 在某个平台不可执行(如 Windows os error 193 / Unix ENOEXEC)
 # 导致所有 Cargo build/check/test/run 全断。
+# 2026-10 CI 成本重构:三平台矩阵不再在 PR 上触发;wrapper 相关改动由
+# Merge Queue 组合树与 main push 验证(PR 阶段禁止构建)。
 on:
-  pull_request:
-    paths:
-      - 'pinvou3-app/src-tauri/.cargo/config.toml'
-      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper'
-      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs'
-      - 'pinvou3-app/src-tauri/scripts/rustc-stack-wrapper-select.sh'
-      - 'pinvou3-app/run-dev.sh'
-      - '.github/workflows/rustc-wrapper-smoke.yml'
   merge_group:
   push:
     branches: [main]
@@ -36,16 +30,17 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: rustc-wrapper-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  # merge_group 与 main push 共享 refs/heads/main 组,同类取消会互相杀掉
+  # 队列验证上下文(与其他 workflow 的守卫一致),改为串行。
+  cancel-in-progress: false
 
 jobs:
   # merge_group 不支持事件级 paths 过滤，先在一个轻量 Linux job 中判断组合
-  # diff；无关 PR 入队时跳过后续三个平台 runner。PR/push 的事件级 paths 仍
-  # 保留，避免这些事件连轻量路由 job 都启动。
+  # diff；无关入队组合跳过后续三个平台 runner。push 的事件级 paths 仍保留，
+  # 避免 main push 连轻量路由 job 都启动。
   changes:
     runs-on: ubuntu-22.04
     outputs:
