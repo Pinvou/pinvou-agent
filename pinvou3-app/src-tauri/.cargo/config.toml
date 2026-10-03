@@ -44,7 +44,7 @@
 #   - Windows 开发:run-dev.sh 调用 selector,selector 幂等编译并注入
 #     scripts/rustc-stack-wrapper.exe(经 CreateProcess 直启;无扩展名 sh
 #     会 os error 193)
-#   - CI:pr-check(rust-lint)、mac-build、release-packages
+#   - CI:pr-check(rust-lint、macos-rust-check)、release-packages
 #     (Linux x64/arm64、macOS universal)注入 sh 版;
 #     release-packages 的 Windows x64 与 pr-check 的 windows-rust-test
 #     先 rustc 编译 .exe 版再注入

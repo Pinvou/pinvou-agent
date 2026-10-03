@@ -13,6 +13,13 @@
 #   - The Pinvou/pinvou3 hosted runner is 2-core / 7.8 GiB RAM (free -h);
 #     the "16 GiB RAM" claimed by older comments was the public-repo
 #     runner spec.
+#   - 2026-10-01 re-measure (this repo, public-runner image refresh): root
+#     is now 146G with 79-102G free at job start (x64/arm); the 8G disk
+#     swapfile is ~10% of boot free instead of the 72G-era half-the-disk,
+#     and the aggressive cleanup tier measured 27.6 GiB reclaimable. The
+#     disk-cost trade comments below are kept as history; disk pressure is
+#     no longer the binding constraint — quota-evicted caches and RAM peaks
+#     are.
 #
 # Swap layers, preferred first:
 #   1. zram: zstd, priority 100; the virtual device is sized to 2x RAM at
@@ -39,10 +46,11 @@
 #      stuck sysfs write) is uninterruptible; the workflow-side
 #      `timeout 240` + non-fatal wrapper is the last line there, and
 #      PINVOU3_CI_DISABLE_ZRAM=1 is the standing opt-out.
-#   2. /mnt/swapfile (priority 10), 8 GiB, provisioned on EVERY runner:
-#      swap is mandatory, not opt-in (2026-09-19 decision) — with the zram
-#      pool hard-capped at 70% of RAM, this is the only unbounded overflow
-#      layer. The safety guards stay: /mnt is skipped when tmpfs (RAM
+#   2. /mnt/swapfile (priority 10), 8 GiB — raised to 16 GiB whenever the
+#      zram layer is inactive (2026-10 degraded mode; see below) —
+#      provisioned on EVERY runner: swap is mandatory, not opt-in
+#      (2026-09-19 decision) — with the zram pool hard-capped at 70% of
+#      RAM, this is the only unbounded overflow layer. The safety guards stay: /mnt is skipped when tmpfs (RAM
 #      backed) or too small, the file is capped at 60% of actual free
 #      space, and an image-provided /mnt/swapfile is rebuilt in place. On
 #      the single-disk hosted images this costs 8G of build disk — a
@@ -182,12 +190,26 @@ setup_zram() {
       warn_recoverable "no swap active; activating the image swapfile before the slow module install"
       activate_image_swap_fallback
     fi
-    if ! run_to 120 apt-get update -qq; then
+    if ! run_to 60 apt-get update -qq; then
       warn "apt-get update failed; the module install below may fail too"
     fi
-    if ! run_to 120 apt-get install -y -qq --no-install-recommends \
-      "linux-modules-extra-$(uname -r)"; then
-      warn "apt-get install linux-modules-extra-$(uname -r) failed"
+    # Two install attempts: the 2026-10-01 probe recorded a transient failure
+    # of this exact install (same kernel had succeeded on 2026-09-28), and a
+    # failed attempt degrades every rust-test job on that image to swap-only.
+    # The install caps (90 + 90) fit inside the workflow-side 240s wrapper
+    # next to the 60s update above, but the earlier zram probes and the 15s
+    # kill grace are outside that sum: if the wrapper wins the race the
+    # script dies mid-apt and the degraded-mode 16G swapfile below never
+    # runs — the image-swap fallback activated above is then the only
+    # overflow layer for that job.
+    local modules_pkg="linux-modules-extra-$(uname -r)"
+    if ! run_to 90 apt-get install -y -qq --no-install-recommends \
+      "${modules_pkg}"; then
+      warn "apt-get install ${modules_pkg} failed once; retrying"
+      if ! run_to 90 apt-get install -y -qq --no-install-recommends \
+        "${modules_pkg}"; then
+        warn "apt-get install ${modules_pkg} failed again; giving up on zram layers"
+      fi
     fi
     if ! modprobe_err="$(run_to 60 modprobe zram 2>&1)"; then
       warn "modprobe zram still failing after module install${modprobe_err:+: ${modprobe_err}}; giving up on zram"
@@ -285,9 +307,11 @@ setup_zram() {
   return 0
 }
 
-# Mandatory disk swap: the 8 GiB /mnt/swapfile is the unbounded overflow
-# layer beyond the zram pool cap and is provisioned on every runner (no
-# opt-in switch since 2026-09-19). On hosted images / and /mnt share one
+# Mandatory disk swap: the /mnt/swapfile is the unbounded overflow layer
+# beyond the zram pool cap and is provisioned on every runner (no opt-in
+# switch since 2026-09-19); 8 GiB normally, 16 GiB when zram is inactive
+# (sole overflow layer then, sized for the measured 14.2 GB rust-test
+# link peaks). On hosted images / and /mnt share one
 # ext4, so the guards below keep the file from taking the runner down.
 setup_disk_swap() {
   # /mnt safety checks are load bearing: on images where /mnt is tmpfs
@@ -400,6 +424,17 @@ elif setup_zram; then
   log "zram layer ready"
 else
   warn "zram layer unavailable; continuing with the remaining swap layers"
+fi
+
+# Degraded-mode headroom (2026-10): when no zram swap is active — flaky
+# modules-extra install or explicit opt-out — the disk swapfile is the ONLY
+# overflow layer behind the ~14.2GB rust-test link peaks, and 8G was sized
+# assuming zram would exist. Double it in that case; on the current image
+# family (146G root, 79-102G free) the disk cost is minor next to the
+# runner-death risk it backs.
+if ! swapon --show=NAME --noheadings 2>/dev/null | grep -q '/dev/zram'; then
+  DISK_SWAP_SIZE_KIB=$((16 * 1024 * 1024))
+  log "no zram swap active; raising the disk swapfile to 16G as the sole overflow layer"
 fi
 
 # Disk swap is mandatory (2026-09-19): the 8G /mnt swapfile is the only

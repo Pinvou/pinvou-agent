@@ -46,20 +46,26 @@ assert.match(
   "release must fail when the main binary is missing",
 );
 
-const macBuild = read(".github/workflows/mac-build.yml");
+// The universal bundle smoke moved from the deleted mac-build.yml into
+// pr-check.yml's macos-rust-check job (push-only, bundle_chain-gated) in
+// 2026-10; the contract follows it there.
+const prCheck = read(".github/workflows/pr-check.yml");
 const macRelease = read(".github/workflows/release-packages.yml");
-const bundleStart = macBuild.indexOf("- name: Tauri bundle smoke");
-const verifyStart = macBuild.indexOf("- name: Verify 脚本", bundleStart);
+const macosJob = prCheck.split("\n  macos-rust-check:", 2)[1].split(
+  "\n  windows-codex-runtime-test:", 2,
+)[0];
+const bundleStart = macosJob.indexOf("- name: Tauri bundle smoke");
+const verifyStart = macosJob.indexOf("- name: Verify 脚本", bundleStart);
 assert.ok(bundleStart >= 0 && verifyStart > bundleStart, "macOS bundle steps must exist");
-const bundleStep = macBuild.slice(bundleStart, verifyStart);
+const bundleStep = macosJob.slice(bundleStart, verifyStart);
 assert.match(bundleStep, /--target universal-apple-darwin/);
 assert.doesNotMatch(
   bundleStep,
   /continue-on-error:\s*true/,
-  "Universal bundle smoke must fail the main mac-build job",
+  "Universal bundle smoke must fail the native macOS job",
 );
 for (const [name, source] of [
-  ["mac-build.yml", macBuild],
+  ["pr-check.yml (macos-rust-check)", macosJob],
   ["release-packages.yml", macRelease],
 ]) {
   assert.match(
