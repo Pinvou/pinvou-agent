@@ -4386,22 +4386,11 @@ mod tests {
     #[test]
     fn the_panic_arm_restores_before_resuming_and_gates_on_submit_entered() {
         let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-        // The quiet hook must be restorable even when an assert between here
-        // and the manual restore fires mid-test: a leaked silencing hook
-        // would blind every LATER test's panic output (the failure is still
-        // recorded, but with no message to diagnose). The guard is the
-        // backstop; the manual restore below keeps the closing asserts'
-        // failures audible.
-        struct RestoreHook(Option<std::panic::DefaultHook>);
-        impl Drop for RestoreHook {
-            fn drop(&mut self) {
-                if let Some(hook) = self.0.take() {
-                    std::panic::set_hook(hook);
-                }
-            }
-        }
-        let mut hook_guard = RestoreHook(Some(std::panic::take_hook()));
-        std::panic::set_hook(Box::new(|_| {}));
+        // The quiet hook is installed around EACH block_on and restored
+        // IMMEDIATELY after it, before any assert runs: a leaked silencing
+        // hook would blind every LATER test's panic output. (The restore
+        // type is deliberately not named — the hook type moved across
+        // toolchains, so the save/restore relies on inference only.)
 
         // Pre-submit (gate clear): the restore must COMPLETE before the
         // payload surfaces, and the payload must be the original one — not
@@ -4409,26 +4398,27 @@ mod tests {
         let gate = std::sync::atomic::AtomicBool::new(false);
         let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = restored.clone();
-        let resumed = runtime
-            .block_on(futures_util::FutureExt::catch_unwind(
-                std::panic::AssertUnwindSafe(async move {
-                    let inner = futures_util::FutureExt::catch_unwind(
-                        std::panic::AssertUnwindSafe(async {
-                            panic!("setup exploded before the submit");
-                        }),
-                    )
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let first = runtime.block_on(futures_util::FutureExt::catch_unwind(
+            std::panic::AssertUnwindSafe(async move {
+                let inner =
+                    futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+                        panic!("setup exploded before the submit");
+                    }))
                     .await;
-                    let payload = inner.expect_err("the setup future must panic");
-                    resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
-                        let flag = flag.clone();
-                        async move {
-                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                        }
-                    })
-                    .await
-                }),
-            ))
-            .expect_err("the resumed panic must surface after the restore");
+                let payload = inner.expect_err("the setup future must panic");
+                resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                    let flag = flag.clone();
+                    async move {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+                .await
+            }),
+        ));
+        std::panic::set_hook(quiet);
+        let resumed = first.expect_err("the resumed panic must surface after the restore");
         assert!(
             restored.load(std::sync::atomic::Ordering::SeqCst),
             "the panic arm must run the restore to completion BEFORE resuming the unwind"
@@ -4444,32 +4434,28 @@ mod tests {
         let gate = std::sync::atomic::AtomicBool::new(true);
         let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = restored.clone();
-        let resumed = runtime
-            .block_on(futures_util::FutureExt::catch_unwind(
-                std::panic::AssertUnwindSafe(async move {
-                    let inner = futures_util::FutureExt::catch_unwind(
-                        std::panic::AssertUnwindSafe(async {
-                            panic!("setup exploded past the submit");
-                        }),
-                    )
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let second = runtime.block_on(futures_util::FutureExt::catch_unwind(
+            std::panic::AssertUnwindSafe(async move {
+                let inner =
+                    futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+                        panic!("setup exploded past the submit");
+                    }))
                     .await;
-                    let payload = inner.expect_err("the setup future must panic");
-                    resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
-                        let flag = flag.clone();
-                        async move {
-                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                        }
-                    })
-                    .await
-                }),
-            ))
+                let payload = inner.expect_err("the setup future must panic");
+                resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                    let flag = flag.clone();
+                    async move {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+                .await
+            }),
+        ));
+        std::panic::set_hook(quiet);
+        let resumed = second
             .expect_err("the resumed panic must surface even when the gate holds the restore");
-        std::panic::set_hook(
-            hook_guard
-                .0
-                .take()
-                .expect("the original hook must still be held"),
-        );
         assert!(
             !restored.load(std::sync::atomic::Ordering::SeqCst),
             "a panic past the submit boundary must NOT roll the pins back"
