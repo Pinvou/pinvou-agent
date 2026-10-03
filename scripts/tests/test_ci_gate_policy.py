@@ -1432,6 +1432,21 @@ class CiGatePolicyTests(unittest.TestCase):
             npm_step,
         )
         self.assertIn("npm ci", npm_step)
+        # The dual rustup targets feed the same universal build (lipo needs
+        # both arches); they are smoke-only provisioning too, so they carry
+        # the identical gate — otherwise unrelated pushes pay rustup while
+        # node/npm skip.
+        dual_target_step = macos_job.split(
+            "- name: 安装双 target (universal bundle smoke, push only)", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            dual_target_step,
+        )
+        self.assertIn(
+            "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
+            dual_target_step,
+        )
         # Provisioning must precede the smoke step in the job body.
         self.assertLess(
             macos_job.index("- name: Node.js (universal bundle smoke, push only)"),
@@ -1440,6 +1455,34 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Deployment-target parity with the release job.
         self.assertIn('MACOSX_DEPLOYMENT_TARGET: "11.0"', macos_job)
+
+    def test_macos_lld_experiment_wiring_is_pinned(self):
+        # The mac leg's linker experiment is easy to lose silently: a dropped
+        # env line or a replaced RUSTFLAGS write fails no build. The probe
+        # cannot self-validate these static pieces, so pin them:
+        # - the dev-profile env pair the experiment turns on (the linux leg
+        #   pins its own RUSTFLAGS/DEV_DEBUG exactly; mirror that here),
+        # - the compose-not-replace strip injection (a plain overwrite would
+        #   drop the probed linker flags on macOS 27+ runners),
+        # - the probe exporting RUSTFLAGS before the cache step (rust-cache
+        #   hashes RUSTFLAGS into its key, so the export must stay upstream
+        #   of it or the cache silently diverges from the link flags).
+        macos_job = self.pr_workflow.split(
+            "\n  macos-rust-check:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn('CARGO_PROFILE_DEV_LTO: "thin"', macos_job)
+        self.assertIn(
+            'RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-C strip=none', macos_job
+        )
+        probe_step = macos_job.split(
+            "- name: Probe and export the macOS lld link flags", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn('echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"', probe_step)
+        self.assertIn('echo "probed RUSTFLAGS=$flags"', probe_step)
+        self.assertLess(
+            macos_job.index("- name: Probe and export the macOS lld link flags"),
+            macos_job.index("uses: Swatinem/rust-cache@v2"),
+        )
 
     def test_main_rust_caches_save_on_failure_and_rust_test_keeps_targets(self):
         # cache-on-failure keeps one failed main run from stranding a

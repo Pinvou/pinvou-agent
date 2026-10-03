@@ -1939,9 +1939,10 @@ jobs:
 
       # universal bundle smoke 需要 arm64 + x86_64 双 target;装到
       # rust-toolchain.toml 解析出的工具链上(上方对齐 step 已把该工具链
-      # 设为 default)。仅 push 需要(PR 腿无 release-fast/bundle 步骤)。
+      # 设为 default)。仅 push 且打包链路需要(PR 腿无 release-fast/bundle
+      # 步骤),与下方 node/npm 两步及 bundle smoke 本体同条件。
       - name: 安装双 target (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 

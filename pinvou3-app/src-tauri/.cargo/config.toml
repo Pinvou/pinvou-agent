@@ -14,10 +14,12 @@
 #   linker = "clang"
 #   rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 #
-# macOS 不换链接器:Tauri 依赖 Apple ld 处理 framework,换 lld/zld 风险高于收益。
+# macOS:发布/产物路径仍用 Apple ld(Tauri 依赖它处理 framework,换 lld/zld 风险
+# 高于收益);CI 测试腿自 #646 起按 job 探针注入 probed ld64.lld(pr-check 的
+# macos-rust-check,实验性——push 专属 release/bundle 腿验证通过前不回填)。
 # Windows:CI 已按 job 注入 probed lld-link(pr-check 的 windows-rust-test 自 #642、
-# release-packages 的 build-windows-x64 自 2026-10-02),本文件仍不硬编码;本地
-# 覆盖照旧走 config.local.toml。
+# release-packages 的 build-windows-x64 自 2026-10-02)。
+# 两者本文件均不硬编码;本地覆盖照旧走 config.local.toml。
 #
 # 未来若团队统一约定要强制(如 CI 已确认装好 clang+lld),再把这些 rustflags 从
 # config.local.toml 提升回这里,并同步更新 CI 镜像。
