@@ -181,9 +181,11 @@ pub fn apply_user_npm_prefix(cmd: &mut Command) {
 }
 
 pub fn kill_pid_tree(pid: u32) {
-    let _ = connector_cli_command("", "taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .output();
+    // Delegate to platform::process so the taskkill gets the same 2s budget
+    // and null stdio wiring as every other bounded kill there; the local
+    // `.output()` below had none, so an app-exit harvest could hang on a
+    // wedged WMI/RPC. The fire-and-forget contract (return ()) is preserved.
+    let _ = crate::platform::process::kill_process_tree(pid);
 }
 
 fn apply_windows_connector_path(cmd: &mut Command) {
