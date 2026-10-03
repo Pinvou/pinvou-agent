@@ -824,7 +824,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     if from_display == to_display {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
-        return rebind_report(output, Vec::new(), Vec::new(), Vec::new(), false);
+        return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
     }
     if rebind_target_is_same_or_nested(&to_display, &from_display) {
         return Err(CliError::failed(
@@ -849,9 +849,10 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         .rebind_workspace_prefix(&from_display, &to_display)
         .map_err(|error| project_error("rebind", error))?;
     // Plain-chat lane: the store's own batch moves the binding sidecars and
-    // the in-memory cache, and translates the legacy global table BEFORE the
-    // sidecars move; its failures and legacy resurrections reach the report
-    // below.
+    // the in-memory cache; the plan phase inside it translates the legacy
+    // global table BEFORE anything moves and fails the whole run with the
+    // typed REBIND_LEGACY_TABLE_* markers when that sync cannot (the #463
+    // plan/apply split), so no soft flag reaches the report anymore.
     let plain_rebind = sessions
         .rebind_workspace_bindings(&from_display, &to_display)
         .map_err(|error| project_error("rebind", error))?;
@@ -978,24 +979,6 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
             failed_session_ids.push(session_id.clone());
         }
     }
-    // Legacy-table honesty: when the legacy global table survived the write,
-    // every session it would resurrect at the next boot joins the failures,
-    // independently of this run's rebound set (on a retry nothing is left to
-    // rewrite, so the rebound set alone would claim a false full success).
-    // An empty resurrection set with the failure flag set is the corrupt /
-    // unparsed-table case: there is no session id to name, but the run must
-    // not report a clean success either — the flag surfaces in the JSON and
-    // the human note names the stale table so a rerun after fixing it is
-    // obviously required (the store contract says the caller must report the
-    // sync failure; the GUI shares this blind spot today).
-    let legacy_sync_failed = plain_rebind.legacy_sync_failed;
-    if legacy_sync_failed {
-        for session_id in &plain_rebind.legacy_resurrection_ids {
-            if !failed_session_ids.contains(session_id) {
-                failed_session_ids.push(session_id.clone());
-            }
-        }
-    }
     // Project roots LAST: the overlap invariant was pre-flighted above and is
     // revalidated under the store's write lock here.
     let affected_project_ids = store
@@ -1005,6 +988,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 "projects rebind: rebinding would produce overlapping project roots \
                      (REBIND_ROOTS_CONFLICT): {context:#}"
             )),
+            // The typed marker rides the message the same way the GUI's
+            // command layer surfaces it (store.rs: the roots were restored,
+            // only the persist failed).
+            RebindRootsError::Persist(context) => CliError::failed(format!(
+                "projects rebind: REBIND_ROOTS_PERSIST: {context:#}"
+            )),
             RebindRootsError::Other(context) => project_error("rebind", context),
         })?;
     rebind_report(
@@ -1012,7 +1001,6 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         rebound_session_ids,
         failed_session_ids,
         affected_project_ids,
-        legacy_sync_failed,
     )
 }
 
@@ -1051,7 +1039,6 @@ fn rebind_report(
     rebound_session_ids: Vec<String>,
     failed_session_ids: Vec<String>,
     affected_project_ids: Vec<String>,
-    legacy_sync_failed: bool,
 ) -> Result<CliOutcome, CliError> {
     // Scope disclosure, every run and both output modes: stderr only, so a
     // `--output json` consumer's stdout parse is unaffected.
@@ -1072,32 +1059,11 @@ fn rebind_report(
         human.push_str("; failed sessions (a rerun retries them): ");
         human.push_str(&failed_session_ids.join(", "));
     }
-    if legacy_sync_failed {
-        // Fire whenever the flag is set, not only when the failed list is
-        // empty: with resurrection ids folded into that list (the common
-        // case) a rerun does NOT retry them while the stale table persists,
-        // so suppressing the note here would leave "a rerun retries them"
-        // as the only guidance — which is false for exactly those ids.
-        human.push_str(
-            "; WARNING: the legacy binding table could not be synced and is still on disk in \
-             the old format — fix or remove it and re-run, or the next boot migration will \
-             move bindings back",
-        );
-        if !failed_session_ids.is_empty() {
-            human.push_str(" (a rerun does not retry the ids the stale table would resurrect)");
-        }
-    }
-    let mut value = serde_json::json!({
+    let value = serde_json::json!({
         "rebound_session_ids": rebound_session_ids,
         "failed_session_ids": failed_session_ids,
         "affected_project_ids": affected_project_ids,
     });
-    if legacy_sync_failed {
-        value
-            .as_object_mut()
-            .expect("rebind report object")
-            .insert("legacy_sync_failed".to_owned(), serde_json::json!(true));
-    }
     Ok(success(render(output, human, &value)))
 }
 

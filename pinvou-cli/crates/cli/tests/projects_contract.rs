@@ -1108,12 +1108,13 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Round-27 review: a legacy table that exists but never parses (corrupt or
-/// hand-truncated) leaves `legacy_sync_failed` set with an EMPTY resurrection
-/// set — the run must not report a clean success while the stale table
-/// survives on disk (a later repair would let the boot migration move
-/// bindings back). The flag surfaces in the JSON; the human note names the
-/// table.
+/// A legacy table that exists but never parses (corrupt or hand-truncated)
+/// must fail the whole rebind with the typed `REBIND_LEGACY_TABLE_CORRUPT`
+/// marker BEFORE anything moves (the #463 plan/apply split made the legacy
+/// sync a fail-closed plan-phase gate): no sidecar is translated, so no
+/// report can claim a partial success while the stale table survives on disk
+/// (a later repair would let the boot migration move bindings back). The
+/// corrupt table itself must not be normalized away.
 #[test]
 fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1128,45 +1129,36 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
         .create_new("test-model".to_owned(), None, from.clone())
         .expect("create the session");
     let session_id = session.metadata.id;
-    // A real binding sidecar under `from` (create_new does not seed one):
-    // the sidecar lane must rebind this session even while the legacy table
-    // is unreadable.
+    // A real binding sidecar under `from`: the gate must refuse BEFORE this
+    // sidecar moves — that is the fail-closed contract under test.
     sessions
         .bind_session_workspace(&session_id, from.clone())
         .expect("seed the binding sidecar");
     drop(sessions);
 
-    // A legacy table that exists but can never parse: the migration reads it
-    // as failed and the rewrite must never treat it as data.
+    // A legacy table that exists but can never parse: the plan-phase sync
+    // reads it as corrupt and must abort the run.
     let legacy_table = home.sessions_root().join("_session_workspaces.json");
     std::fs::write(&legacy_table, b"{ truncated").expect("seed the corrupt legacy table");
 
-    let value = run_json(&[
+    let error = run(&[
         "pinvou",
         "projects",
         "rebind",
         from.to_str().unwrap(),
         to.to_str().unwrap(),
         "--yes",
-    ]);
-    assert_eq!(
-        value["legacy_sync_failed"],
-        serde_json::json!(true),
-        "the corrupt table must surface in the report, not vanish: {value}"
-    );
-    // The sidecar lane still rebinds the session (parse-failed bars only the
-    // LEGACY table rewrite, not the sidecars).
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+        "--output",
+        "json",
+    ])
+    .expect_err("the corrupt legacy table must fail the rebind");
+    let message = error.to_string();
     assert!(
-        rebound.contains(&session_id.as_str()),
-        "the sidecar lane rebinds the session: {rebound:?} — full report: {value}"
+        message.contains("REBIND_LEGACY_TABLE_CORRUPT"),
+        "the typed marker must reach the message: {message}"
     );
-    // The sidecar now points at the destination…
+    // Fail-closed: nothing moved — the sidecar still names the source, so a
+    // rerun after repairing the table converges from a coherent state.
     let sidecar = std::fs::read_to_string(
         home.sessions_root()
             .join(&session_id)
@@ -1174,11 +1166,11 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     )
     .expect("the binding sidecar must exist");
     assert!(
-        sidecar.contains(to.to_str().unwrap()),
-        "the binding must be translated to the destination: {sidecar}"
+        sidecar.contains(from.to_str().unwrap()),
+        "the binding must still name the source (nothing may move): {sidecar}"
     );
-    // The corrupt table itself is preserved untouched (the parse-failed
-    // marker bars the rewrite from renaming or normalizing it).
+    // The corrupt table itself is preserved untouched (the gate refuses
+    // instead of renaming or normalizing it).
     assert_eq!(
         std::fs::read(&legacy_table).unwrap(),
         b"{ truncated",
